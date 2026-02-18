@@ -1,0 +1,14 @@
+[project]
+name = "codeyun"
+version = "0.1.0"
+description = "CodeYun Monorepo"
+requires-python = ">=3.10"
+dependencies = [
+    "codeyun-backend",
+]
+
+[tool.uv.workspace]
+members = ["backend"]
+
+[tool.uv.sources]
+codeyun-backend = { workspace = true }
