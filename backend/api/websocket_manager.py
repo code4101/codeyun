@@ -16,7 +16,16 @@ class ConnectionManager:
         self.rooms: Dict[str, Set[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, room: str):
-        await websocket.accept()
+        # Handle WebSocket Sub-Protocol negotiation (e.g. for token auth)
+        # If client sends Sec-WebSocket-Protocol, we must include it in response.
+        protocol = websocket.headers.get("sec-websocket-protocol")
+        if protocol:
+            # Select the first protocol (which is our token)
+            selected = protocol.split(',')[0].strip()
+            await websocket.accept(subprotocol=selected)
+        else:
+            await websocket.accept()
+            
         if room not in self.rooms:
             self.rooms[room] = set()
         self.rooms[room].add(websocket)

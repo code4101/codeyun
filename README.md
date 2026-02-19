@@ -1,130 +1,130 @@
-# CodeYun (Code Cloud)
+# CodeYun (代码云)
 
-CodeYun is a personal super tool integration platform designed to provide a comprehensive solution for cross-device background task management, remote control, and system monitoring. It acts as a centralized hub for managing your digital environment.
+CodeYun 是一个个人超级工具集成平台，旨在为跨设备后台任务管理、远程控制和系统监控提供全面的解决方案。它作为一个中心枢纽，用于管理您的数字环境。
 
-## 🚀 Features
+## 🚀 功能特性
 
-### 1. Cluster Task Manager
-- **Unified Interface**: Manage tasks across multiple devices (local and remote) from a single dashboard.
-- **Process Management**: Start, stop, and monitor processes based on PID with authoritative status tracking.
-- **Task Scheduling**: Support for Cron-based scheduling to automate routine tasks.
-- **Real-time Logs**: View live logs for running tasks to debug and monitor performance.
-- **Drag-and-Drop Sorting**: Easily organize your task list with drag-and-drop functionality.
+### 1. 集群任务管理器 (Cluster Task Manager)
+- **统一界面**：从单一仪表板管理多个设备（本地和远程）上的任务。
+- **进程管理**：基于 PID 启动、停止和监控进程，并提供权威的状态跟踪。
+- **任务调度**：支持基于 Cron 的调度，以自动化日常任务。
+- **实时日志**：查看正在运行任务的实时日志，以调试和监控性能。
+- **拖放排序**：通过拖放功能轻松组织您的任务列表。
 
-### 2. Multi-Device Agent System
-- **Agent Mode**: Every CodeYun backend instance can function as an Agent, allowing you to build a cluster of managed devices.
-- **Remote Control**: Add remote devices via URL and control their tasks and file systems seamlessly.
-- **Device Discovery**: (Planned) Auto-discovery of devices on the local network.
+### 2. 多设备 Agent 系统 (Multi-Device Agent System)
+- **Agent 模式**：每个 CodeYun 后端实例都可以作为一个 Agent 运行，允许您构建受管设备集群。
+- **远程控制**：通过 URL 添加远程设备，并无缝控制其任务和文件系统。
+- **设备发现**：（计划中）自动发现本地网络上的设备。
 
-### 3. File System Explorer
-- **Remote Access**: Browse and manipulate files and directories on connected remote devices.
-- **File Operations**: Support for basic file operations (view, edit, delete).
+### 3. 文件系统资源管理器 (File System Explorer)
+- **远程访问**：浏览和操作已连接远程设备上的文件和目录。
+- **文件操作**：支持基本的文件操作（查看、编辑、删除）。
 
-## 🛠️ Tech Stack
+## 🛠️ 技术栈
 
-### Backend
-- **Language**: Python 3.10+
-- **Framework**: FastAPI (High-performance web framework)
-- **Server**: Uvicorn (ASGI server)
-- **Key Libraries**:
-  - `psutil`: For system and process monitoring.
-  - `apscheduler`: For advanced task scheduling.
-  - `pydantic`: For data validation and settings management.
+### 后端 (Backend)
+- **语言**：Python 3.10+
+- **框架**：FastAPI (高性能 Web 框架)
+- **服务器**：Uvicorn (ASGI 服务器)
+- **核心库**：
+  - `psutil`：用于系统和进程监控。
+  - `apscheduler`：用于高级任务调度。
+  - `pydantic`：用于数据验证和设置管理。
 
-### Frontend
-- **Framework**: Vue 3 (Composition API)
-- **Build Tool**: Vite (Next-generation frontend tooling)
-- **Language**: TypeScript
-- **UI Library**: Element Plus
-- **State Management**: Pinia (implied by store usage)
-- **HTTP Client**: Axios
+### 前端 (Frontend)
+- **框架**：Vue 3 (Composition API)
+- **构建工具**：Vite (下一代前端工具)
+- **语言**：TypeScript
+- **UI 库**：Element Plus
+- **状态管理**：Pinia
+- **HTTP 客户端**：Axios
 
-## 📦 Installation & Setup
+## 📦 安装与设置
 
-### Prerequisites
-- Python 3.10 or higher
-- Node.js & npm (A local version is included in `tools/node` for convenience)
+###先决条件
+- Python 3.10 或更高版本
+- Node.js & npm (为了方便，`tools/node` 中包含了一个本地版本)
 
-### Quick Start
+### 快速开始
 
-The project includes a helper script `dev.py` to start both the backend and frontend services automatically.
+本项目包含一个辅助脚本 `dev.py`，用于自动启动后端和前端服务。
 
-1. **Clone the repository**:
+1. **克隆仓库**：
    ```bash
    git clone <repository-url>
    cd codeyun
    ```
 
-2. **Install Backend Dependencies**:
-   It is recommended to use a virtual environment.
+2. **安装后端依赖**：
+   建议使用虚拟环境。
    ```bash
-   # Create virtual environment
+   # 创建虚拟环境
    python -m venv .venv
    
-   # Activate virtual environment
+   # 激活虚拟环境
    # Windows:
    .venv\Scripts\activate
    # Linux/Mac:
    source .venv/bin/activate
 
-   # Install dependencies
+   # 安装依赖
    pip install -r backend/requirements.txt
-   # OR if using pyproject.toml
+   # 或者如果使用 pyproject.toml
    pip install -e backend
    ```
 
-3. **Start Development Server**:
-   Run the `dev.py` script from the root directory. This script will:
-   - Check for a local Node.js environment.
-   - Start the FastAPI backend on `http://localhost:8000`.
-   - Install frontend dependencies (if missing) and start the Vite dev server on `http://localhost:5173`.
+3. **启动开发服务器**：
+   从根目录运行 `dev.py` 脚本。该脚本将：
+   - 检查本地 Node.js 环境。
+   - 在 `http://localhost:8000` 启动 FastAPI 后端。
+   - 安装前端依赖（如果缺失）并在 `http://localhost:5173` 启动 Vite 开发服务器。
 
    ```bash
    python dev.py
    ```
 
-4. **Access the Application**:
-   Open your browser and navigate to:
-   - **Frontend**: [http://localhost:5173](http://localhost:5173)
-   - **Backend API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+4. **访问应用**：
+   打开浏览器并访问：
+   - **前端**：[http://localhost:5173](http://localhost:5173)
+   - **后端 API 文档**：[http://localhost:8000/docs](http://localhost:8000/docs)
 
-## 📂 Project Structure
+## 📂 项目结构
 
 ```
 codeyun/
-├── backend/                # Python FastAPI Backend
-│   ├── api/                # API Endpoints
-│   ├── core/               # Core logic and utilities
-│   ├── data/               # Data storage (JSON files, logs)
-│   ├── tests/              # Backend tests
-│   └── app.py              # Application entry point
-├── frontend/               # Vue 3 + TypeScript Frontend
+├── backend/                # Python FastAPI 后端
+│   ├── api/                # API 端点
+│   ├── core/               # 核心逻辑和工具
+│   ├── data/               # 数据存储 (JSON 文件, 日志)
+│   ├── tests/              # 后端测试
+│   └── app.py              # 应用程序入口点
+├── frontend/               # Vue 3 + TypeScript 前端
 │   ├── src/
-│   │   ├── api/            # API client wrappers
-│   │   ├── components/     # Reusable Vue components
-│   │   ├── views/          # Page views (TaskManager, etc.)
-│   │   └── store/          # State management
-│   └── vite.config.ts      # Vite configuration
-├── tools/                  # Helper tools (e.g., local Node.js)
-├── AGENTS.md               # Agent documentation and project status
-├── TODO.md                 # Project roadmap and todo list
-├── dev.py                  # Development startup script
-└── start.ps1               # PowerShell startup script
+│   │   ├── api/            # API 客户端封装
+│   │   ├── components/     # 可复用 Vue 组件
+│   │   ├── views/          # 页面视图 (任务管理器等)
+│   │   └── store/          # 状态管理
+│   └── vite.config.ts      # Vite 配置
+├── tools/                  # 辅助工具 (例如本地 Node.js)
+├── AGENTS.md               # Agent 文档和项目状态
+├── TODO.md                 # 项目路线图和待办事项
+├── dev.py                  # 开发启动脚本
+└── start.ps1               # PowerShell 启动脚本
 ```
 
-## 📝 Configuration
+## 📝 配置
 
-- **Backend Config**: Configuration is managed via environment variables and local JSON files in `backend/data/`.
-- **Frontend Config**: Vite configuration in `frontend/vite.config.ts`.
+- **后端配置**：通过环境变量和 `backend/data/` 中的本地 JSON 文件进行管理。
+- **前端配置**：`frontend/vite.config.ts` 中的 Vite 配置。
 
-## 🤝 Contributing
+## 🤝 贡献
 
-1. Fork the repository.
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`).
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4. Push to the branch (`git push origin feature/AmazingFeature`).
-5. Open a Pull Request.
+1. Fork 本仓库。
+2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)。
+3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)。
+4. 推送到分支 (`git push origin feature/AmazingFeature`)。
+5. 开启一个 Pull Request。
 
-## 📄 License
+## 📄 许可证
 
-[MIT License](LICENSE) (Assuming MIT, please update if different)
+[Apache License 2.0](LICENSE)

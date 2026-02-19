@@ -7,18 +7,12 @@ import socket
 from typing import Optional, List, Dict
 import platform
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from backend.core.auth import verify_api_token
+from backend.core.device import match_cmdline, TaskStatus, get_system_id, device_manager, LocalDevice
 
-
-try:
-    from ..core.device import match_cmdline, TaskStatus, get_system_id, device_manager, LocalDevice
-except ImportError:
-    # Fallback for direct execution or different path structure
-    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from core.device import match_cmdline, TaskStatus, get_system_id, device_manager, LocalDevice
-
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(verify_api_token)])
 
 
 class MatchProcessItem(BaseModel):
@@ -197,14 +191,26 @@ def rename_agent(req: RenameRequest):
     # to avoid potential ImportError with relative imports inside function
     
     system_id = get_system_id()
-    local_dev = device_manager.get_device(system_id)
     
-    if not local_dev:
-        # Should not happen if loaded correctly
-        return {"status": "error", "message": "Local device not found"}
-        
-    # Update local name
-    local_dev.name = req.name
-    device_manager.save()
+    # Use the manager's method which handles DB persistence
+    success = device_manager.rename_device(system_id, req.name)
+    
+    if not success:
+        return {"status": "error", "message": "Failed to rename local device"}
     
     return {"status": "renamed", "name": req.name}
+
+class ConfigRequest(BaseModel):
+    python_exec: Optional[str] = None
+
+@router.post("/config")
+def update_config(req: ConfigRequest):
+    system_id = get_system_id()
+    
+    # Update local configuration
+    success = device_manager.update_device(system_id, python_exec=req.python_exec)
+    
+    if not success:
+        return {"status": "error", "message": "Failed to update config"}
+        
+    return {"status": "updated", "python_exec": req.python_exec}

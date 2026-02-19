@@ -1,11 +1,14 @@
 # AI Context: CodeYun
 
-> **Last Updated**: 2026-02-17
+> **Last Updated**: 2026-02-18
 > **Purpose**: 本文档旨在为AI提供CodeYun项目的全局上下文、架构设计与核心逻辑，以便快速理解代码并进行准确的修改。
 
 ## 1. 项目概览 (Project Overview)
 
-**CodeYun** 是一个个人超级工具集成平台，核心定位是**跨设备的后台任务管理与远程控制系统**。
+**CodeYun** 是一个**完全独立**的个人超级工具集成平台，与其他项目（如 `pyxllib`, `xlproject` 等）**无任何依赖关系**。
+
+> **CRITICAL**: 在进行代码搜索、分析或修改时，**严格限制在 `c:\home\chenkunze\slns\codeyun` 目录下**。严禁搜索或引用项目根目录之外的任何文件。
+
 
 *   **核心能力**:
     *   **集群任务管理**: 统一管理本地及远程设备上的常驻服务（如 Python 脚本、Nginx、Syncthing）。
@@ -27,7 +30,11 @@
 
 ### 2.2 数据流 (Data Flow)
 1.  **任务状态**: `psutil` 实时监控 -> `DeviceManager` 聚合 -> API 轮询/WebSocket (规划中) -> 前端 Store。
-2.  **配置存储**: JSON 文件持久化 (`backend/data/tasks.json`, `devices.json`)。
+2.  **配置存储**: **SQLite 数据库** (`backend/data/codeyun.db`)。
+    *   `Device`: 存储设备信息及 API Token。
+    *   `Task`: 存储任务配置。
+    *   `User`: 用户信息。
+    *   *注：`tasks.json`, `devices.json` 为旧版或备份文件，核心数据已迁移至 SQLite。*
 3.  **日志流**: 实时读取本地日志文件 -> API 分页返回。
 
 ## 3. 目录映射 (Directory Map)
@@ -38,7 +45,8 @@
 | `app.py` | **入口** | FastAPI 应用实例，CORS 配置，路由挂载。 |
 | `api/` | **接口层** | `task_manager.py` (核心任务逻辑), `agent.py` (节点发现), `filesystem.py` (文件操作)。 |
 | `core/` | **业务逻辑** | `device.py`: 封装设备抽象 (Local/Remote) 和底层进程操作。 |
-| `data/` | **持久化** | 存放 `tasks.json`, `devices.json` 及任务日志。 |
+| `data/` | **持久化** | **`codeyun.db` (SQLite 数据源)**。`config.json` 存储本机唯一ID和API Token。 |
+| `scripts/` | **工具脚本** | `get_machine_token.py`: **获取本机 API Token**。 |
 | `tests/` | **测试** | 单元测试和集成测试。 |
 
 ### Frontend (`c:\home\chenkunze\slns\codeyun\frontend`)
@@ -68,14 +76,19 @@
 *   **LocalDevice**: 直接调用 `psutil` 和 `subprocess`。
 *   **RemoteDevice**: 实现了与 `LocalDevice` 相同的接口，但通过 `requests` 调用远程 API。
 *   **同步机制**: 前端轮询 `/api/task/list`，后端会触发 `device_manager` 同步所有注册设备的状态。
+*   **身份标识**: 本机通过 `backend/data/config.json` 持久化唯一 ID (UUID)。若文件丢失，重启后会生成新 ID，可能导致旧数据失效或重复注册（Phantom Devices）。
 
 ## 5. 开发规约 (Conventions)
 
 *   **端口**: Backend `:8000`, Frontend `:5173`。
 *   **路径**: 所有文件路径应使用绝对路径，或基于 `root_dir` 动态计算。
 *   **环境**: 优先使用项目内的 `.venv`，其次是系统 Python。
+*   **依赖管理**: 本项目使用 **uv** 进行依赖和虚拟环境管理。
+    *   **添加依赖**: 使用 `uv add <package>`，严禁直接使用 `pip install`。
+    *   **同步环境**: 使用 `uv sync` 确保环境与 `pyproject.toml` 一致。
 *   **启动**: 统一使用根目录 `dev.py` 启动双端。
 *   **测试**: 测试代码必须存放在 `backend/tests/`。禁止创建根目录临时脚本，测试应规范化并持久保留。
+*   **UI展示**: 敏感信息（如 Token）在所有视图中均应完全隐藏。仅在编辑模式下提供“覆盖/重置”功能（即输入框默认为空，不回显旧值，输入新值则更新，留空则保持不变）。
 
 ## 6. 测试策略 (Testing Strategy)
 
@@ -83,6 +96,11 @@
 *   **位置**: 统一存放在 `backend/tests/` 目录下。
 *   **形式**: 编写为标准的 `unittest` 用例或独立的测试模块，避免随手写的 `print` 脚本。
 *   **持久性**: 测试脚本应作为项目资产保留，不应在验证完成后删除，以便通过 CI/CD 或手动运行进行回归测试。
+
+### 6.1 测试环境注意事项
+*   **数据库隔离**: 单元测试 (`test_cluster_api.py`) 使用内存数据库 (`sqlite://`) 和 Mock 对象，避免污染生产数据。
+*   **集成测试**: 部分测试脚本 (`test_backend.py`) 会直接调用运行中的 Backend API (`localhost:8000`)。此类测试**必须**包含清理逻辑 (`try...finally`)，确保运行后删除创建的临时资源（如测试设备、任务），防止垃圾数据堆积。
+*   **单例状态**: `DeviceManager` 为单例模式。测试若修改其内部状态（如 Patch 数据库引擎），务必在 `tearDown` 中还原，防止状态泄漏影响后续测试或同一进程中的应用逻辑。
 
 ## 7. 重要开发提示 (Crucial Development Notes)
 
