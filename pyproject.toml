@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "CodeYun Monorepo"
 requires-python = ">=3.10"
 dependencies = [
+    "bcrypt==4.0.1",
     "codeyun-backend",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose>=3.5.0",
+    "sqlmodel>=0.0.34",
 ]
 
 [tool.uv.workspace]
@@ -12,3 +16,9 @@ members = ["backend"]
 
 [tool.uv.sources]
 codeyun-backend = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.0.2",
+]

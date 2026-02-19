@@ -1,22 +1,15 @@
-import sys
-import os
-import json
+from backend.core.device import device_manager
 
-# Add backend directory to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from core.device import DeviceManager
-
-def test_device_manager():
-    dm = DeviceManager()
-    print("Devices loaded:", dm.get_all_devices())
+def test_device_manager_load(test_device):
+    # test_device fixture ensures device_manager is loaded with mock DB
+    
+    devices = device_manager.get_all_devices()
+    print("Devices loaded:", devices)
+    
+    assert len(devices) > 0
     
     # Check if local exists
-    local = dm.get_device('local')
-    if local:
-        print("Local device found")
-    else:
-        print("Local device NOT found")
-
-if __name__ == "__main__":
-    test_device_manager()
+    # The test_device fixture creates a device with id="test-device-local"
+    local = device_manager.get_device('test-device-local')
+    assert local is not None
+    assert local.device_id == 'test-device-local'

@@ -5,6 +5,7 @@ import DocPage from '@/components/DocPage.vue';
 import api, { getDeviceApi } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Edit, VideoPlay, VideoPause, Search, Delete, Connection } from '@element-plus/icons-vue';
+import { taskStore } from '@/store/taskStore';
 
 interface TaskStatus {
   id: string;
@@ -37,6 +38,7 @@ const targetDeviceId = Array.isArray(route.query.device_id)
   ? (route.query.device_id[0] || '') 
   : ((route.query.device_id as string) || '');
 const currentDeviceUrl = ref('');
+const currentDeviceToken = ref('');
 const deviceName = ref('');
 
 const logs = ref<string[]>([]);
@@ -66,8 +68,13 @@ const connectWsLogs = () => {
     wsUrl = wsUrl.replace(/^http/, 'ws');
     wsUrl = `${wsUrl}/api/task/ws/logs/${taskId}`;
     
+    const protocols = [];
+    if (currentDeviceToken.value) {
+        protocols.push(currentDeviceToken.value);
+    }
+
     try {
-        ws = new WebSocket(wsUrl);
+        ws = new WebSocket(wsUrl, protocols);
         ws.onopen = () => {
             console.log('WS Logs connected');
             // We might want to clear logs or fetch history first?
@@ -114,8 +121,13 @@ const connectWsStatus = () => {
     wsUrl = wsUrl.replace(/^http/, 'ws');
     wsUrl = `${wsUrl}/api/task/ws/tasks`;
     
+    const protocols = [];
+    if (currentDeviceToken.value) {
+        protocols.push(currentDeviceToken.value);
+    }
+
     try {
-        wsStatus = new WebSocket(wsUrl);
+        wsStatus = new WebSocket(wsUrl, protocols);
         wsStatus.onmessage = (event) => {
              try {
                 const data = JSON.parse(event.data);
@@ -159,17 +171,31 @@ const scanLoading = ref(false);
 const relatedProcesses = ref<any[]>([]);
 
 const resolveDevice = async () => {
-  if (!targetDeviceId) return;
-  try {
-    const res = await api.get('/task/devices');
-    const devices = res.data;
-    const device = devices.find((d: any) => d.id === targetDeviceId);
-    if (device) {
-      currentDeviceUrl.value = device.url || '';
-      deviceName.value = device.name || device.id;
+  if (!targetDeviceId) return true; // No device ID, assume local or handled elsewhere
+  
+  // Ensure store is loaded
+  if (taskStore.devices.length === 0) {
+      await taskStore.fetchDevices();
+  }
+  
+  const device = taskStore.devices.find(d => d.id === targetDeviceId);
+  if (device) {
+    currentDeviceUrl.value = device.url || '';
+    currentDeviceToken.value = device.access_token || '';
+    deviceName.value = device.name || device.id;
+    return true;
+  } else {
+    // Fallback: try global list if user list fails?
+    // But user list is definitive.
+    // If not found, maybe show error.
+    ElMessage.error('无法找到设备或无权访问');
+    // If we can't find the device, we probably shouldn't default to local blindly if a device_id was requested.
+    // But existing logic falls through.
+    if (targetDeviceId && targetDeviceId !== 'local') {
+         console.warn(`Device ${targetDeviceId} not found in store. Store devices:`, taskStore.devices);
+         return false;
     }
-  } catch (err) {
-    console.error('Failed to resolve device URL', err);
+    return true; // Fallback to allow local if somehow targetDeviceId is something else
   }
 };
 
@@ -178,7 +204,7 @@ const handleStatusClick = async () => {
   
   task.value.actionLoading = true;
   try {
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     if (task.value.status.running) {
       // Stop
       await client.post(`/task/${task.value.id}/stop`);
@@ -286,7 +312,7 @@ const cancelEditing = () => {
 
 const saveEditing = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     await client.post(`/task/${taskId}/update`, editForm.value);
     ElMessage.success('Task updated');
     isEditing.value = false;
@@ -357,7 +383,7 @@ const dynamicDuration = useDuration(task);
 
 const fetchTask = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     const res = await client.get(`/task/${taskId}`);
     task.value = res.data;
   } catch (err) {
@@ -367,7 +393,7 @@ const fetchTask = async () => {
 
 const fetchLogs = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     const res = await client.get(`/task/${taskId}/logs?n=500`);
     logs.value = res.data.logs;
     if (autoScroll.value) {
@@ -416,7 +442,7 @@ const handleScanProcesses = async () => {
   scanDialogVisible.value = true;
   scanLoading.value = true;
   try {
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     const res = await client.get(`/task/${taskId}/related_processes`);
     relatedProcesses.value = res.data;
   } catch (err: any) {
@@ -434,7 +460,7 @@ const killProcess = async (pid: number) => {
       confirmButtonClass: 'el-button--danger',
     });
     
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     await client.post('/task/process/kill', { pid });
     ElMessage.success(`Process ${pid} killed`);
     
@@ -456,7 +482,7 @@ const associateProcess = async (pid: number) => {
       cancelButtonText: '取消'
     });
     
-    const client = getDeviceApi(currentDeviceUrl.value);
+    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     await client.post(`/task/${taskId}/associate`, { pid });
     ElMessage.success(`已关联到进程 PID ${pid}`);
     
@@ -471,8 +497,10 @@ const associateProcess = async (pid: number) => {
 };
 
 onMounted(async () => {
-  await resolveDevice();
-  refreshAll(); // Initial fetch, polling logic is inside refreshAll
+  const success = await resolveDevice();
+  if (success) {
+      refreshAll(); // Initial fetch, polling logic is inside refreshAll
+  }
 });
 
 onUnmounted(() => {

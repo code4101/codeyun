@@ -1,3 +1,4 @@
+import shutil
 import os
 import sys
 import socket
@@ -15,14 +16,15 @@ from typing import Dict, List, Optional, Any, Callable
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
 import asyncio
+import secrets
 
 import uuid
 
 # --- Shared Constants (Consider moving to a config file) ---
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
-DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
-SYSTEM_ID_FILE = os.path.join(DATA_DIR, "system_id.json")
+SYSTEM_ID_FILE = os.path.join(DATA_DIR, "system_id.json") # Deprecated
+CONFIG_FILE = os.path.join(DATA_DIR, "config.json") # Unified config file
 PIDS_FILE = os.path.join(DATA_DIR, "pids.json")
 
 if not os.path.exists(DATA_DIR):
@@ -31,24 +33,67 @@ if not os.path.exists(DATA_DIR):
 if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
+def get_local_config():
+    """Load local configuration (python_exec, etc.) from config.json"""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_local_config(config: Dict):
+    try:
+        # Read existing config to preserve other fields if we are doing partial update
+        # But wait, usually we pass the full config. 
+        # To be safe, let's read and merge if the passed config is partial?
+        # The current usage seems to be passing the full config object obtained from get_local_config.
+        # So overwrite is fine.
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        print(f"Failed to save local config: {e}")
+
 def get_system_id():
     """Get or generate a persistent unique ID for this machine"""
+    config = get_local_config()
+    
+    # 1. Check if ID is already in config
+    if config.get('system_id'):
+        return config['system_id']
+
+    # 2. Migration: Check old system_id.json
     if os.path.exists(SYSTEM_ID_FILE):
         try:
             with open(SYSTEM_ID_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if data.get('id'):
-                    return data['id']
+                    sys_id = data['id']
+                    created_at = data.get('created_at')
+                    
+                    # Merge into config
+                    config['system_id'] = sys_id
+                    if created_at:
+                        config['created_at'] = created_at
+                    
+                    save_local_config(config)
+                    
+                    # Remove old file
+                    try:
+                        os.remove(SYSTEM_ID_FILE)
+                    except:
+                        pass
+                        
+                    return sys_id
         except Exception:
             pass
     
-    # Generate new ID
+    # 3. Generate new ID
     new_id = str(uuid.uuid4())
-    try:
-        with open(SYSTEM_ID_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'id': new_id, 'created_at': time.time()}, f)
-    except Exception as e:
-        print(f"Failed to save system ID: {e}")
+    config['system_id'] = new_id
+    config['created_at'] = time.time()
+    save_local_config(config)
         
     return new_id
 
@@ -123,11 +168,17 @@ def parse_cmdline(cmdline: str) -> List[str]:
         return shlex.split(cmdline, posix=False)
 
 class BaseDevice(ABC):
-    def __init__(self, device_id: str, name: str, python_exec: Optional[str] = None):
+    def __init__(self, device_id: str, name: str, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
         self.device_id = device_id
         self.name = name
         self.python_exec = python_exec
+        self.api_token = api_token
+        self.order_index = order_index
         self.log_callback: Optional[Callable[[str, str], None]] = None # task_id, line
+
+    @property
+    def id(self):
+        return self.device_id
 
     def set_log_callback(self, callback: Callable[[str, str], None]):
         self.log_callback = callback
@@ -173,16 +224,169 @@ class BaseDevice(ABC):
             "id": self.device_id,
             "name": self.name,
             "type": type(self).__name__,
-            "python_exec": self.python_exec
+            "python_exec": self.python_exec,
+            "order_index": self.order_index
         }
 
+class CommandResolver(ABC):
+    @abstractmethod
+    def resolve(self, command: str) -> List[str]:
+        pass
+
+    @staticmethod
+    def for_platform(platform: str) -> 'CommandResolver':
+        if platform == 'win32':
+            return WindowsCommandResolver()
+        return PosixCommandResolver()
+
+class WindowsCommandResolver(CommandResolver):
+    def resolve(self, command: str) -> List[str]:
+        try:
+            return parse_cmdline(command)
+        except Exception:
+            return command.split()
+
+class PosixCommandResolver(CommandResolver):
+    def resolve(self, command: str) -> List[str]:
+        try:
+            return parse_cmdline(command)
+        except:
+            return command.split()
+
+class LogManager:
+    @staticmethod
+    def prepare_log_path(device_id: str, task_id: str) -> str:
+        log_dir = os.path.join(DATA_DIR, device_id, "logs")
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        log_file_path = os.path.join(log_dir, f"{task_id}.log")
+        
+        # Rotation logic
+        try:
+            if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
+                backup_path = log_file_path + ".old"
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+                os.rename(log_file_path, backup_path)
+        except Exception as e:
+            print(f"Log rotation failed: {e}")
+            
+        return log_file_path
+
+    @staticmethod
+    def start_stream(task_id: str, process: subprocess.Popen, log_file_path: str, callback: Optional[Callable[[str, str], None]]):
+        def _stream():
+            try:
+                # Open with 'a' (append) or 'w' (write)? 
+                # Original code used 'a'.
+                # But wait, we are creating a new file or appending?
+                # Usually we want to append if we rotated.
+                # But if it's a new run, we might want to truncate?
+                # The rotation logic handles keeping old logs.
+                # So 'a' is correct.
+                with open(log_file_path, 'a', encoding='utf-8') as f:
+                    # Write header
+                    # Actually header writing is done separately in original code.
+                    # I'll add a separate method for header writing if needed, or just let caller do it.
+                    # But wait, the original code writes header before starting process.
+                    # And then stream logs writes stdout.
+                    
+                    # We need to make sure process.stdout is not None
+                    if not process.stdout:
+                        return
+
+                    for line in iter(process.stdout.readline, b''):
+                        decoded_line = ''
+                        try:
+                            decoded_line = line.decode('utf-8')
+                        except UnicodeDecodeError:
+                            try:
+                                decoded_line = line.decode('gbk')
+                            except:
+                                decoded_line = line.decode('utf-8', errors='replace')
+                        
+                        # Write to file
+                        f.write(decoded_line)
+                        f.flush()
+                        
+                        # Callback
+                        if callback:
+                            try:
+                                callback(task_id, decoded_line)
+                            except Exception as e:
+                                print(f"Log callback error: {e}")
+            except Exception as e:
+                print(f"Log streamer error for pid {process.pid}: {e}")
+            finally:
+                if process.stdout:
+                    process.stdout.close()
+
+        t = threading.Thread(target=_stream, daemon=True)
+        t.start()
+
+class TimeoutWatchdog:
+    @staticmethod
+    def start(process: subprocess.Popen, timeout: Optional[int], task_id: str, stop_callback: Callable[[str], None]):
+        if not timeout or timeout <= 0:
+            return
+
+        def _watch():
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                print(f"Task {task_id} (PID {process.pid}) timed out after {timeout}s. Killing...")
+                try:
+                    stop_callback(task_id)
+                except Exception as e:
+                    print(f"Error killing timed out task {task_id}: {e}")
+        
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
+
+class ErrorMapper:
+    @staticmethod
+    def map_start_error(e: Exception, cmd_args: List[str], cwd: Optional[str]) -> str:
+        error_msg = str(e)
+        
+        # Common system errors for "Command not found" or "Exec format error"
+        is_not_found = "FileNotFoundError" in error_msg or "The system cannot find the file specified" in error_msg or "[WinError 2]" in error_msg or "系统找不到指定的文件" in error_msg
+        is_exec_format_error = "[WinError 193]" in error_msg or "is not a valid Win32 application" in error_msg or "不是有效的 Win32 应用程序" in error_msg
+        
+        if is_not_found or is_exec_format_error:
+            cmd_name = cmd_args[0] if cmd_args else "command"
+            cmd_lower = cmd_name.lower()
+            
+            error_msg += f"\\n[Hint] Command '{cmd_name}' failed to start."
+            
+            # Specific hints for common script types
+            if cmd_lower.endswith(".py"):
+                 error_msg += f"\\n[Hint] Python scripts should be run with the python interpreter: 'python {cmd_name}'"
+            elif cmd_lower.endswith(".ps1"):
+                 error_msg += f"\\n[Hint] PowerShell scripts should be run with powershell: 'powershell -File {cmd_name}' or 'pwsh -File {cmd_name}'"
+            elif cmd_lower.endswith(".vbs"):
+                 error_msg += f"\\n[Hint] VBScript files should be run with cscript: 'cscript {cmd_name}'"
+            elif cmd_lower.endswith(".sh"):
+                 error_msg += f"\\n[Hint] Shell scripts cannot be run directly on Windows (unless via WSL/Git Bash)."
+            elif cmd_lower.startswith("./") or cmd_lower.startswith(".\\"):
+                 error_msg += f"\\n[Hint] If this is a script, ensure you are invoking the correct interpreter (e.g., python, powershell, node)."
+            elif is_not_found:
+                 error_msg += f"\\n[Hint] Please use absolute path or ensure '{cmd_name}' is in system PATH."
+                 
+        return f"Failed to start task: {error_msg}"
+
 class LocalDevice(BaseDevice):
-    def __init__(self, device_id: str = None, name: str = None, python_exec: Optional[str] = None):
+    def __init__(self, device_id: str = None, name: str = None, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
         if device_id is None:
             device_id = get_system_id()
         if name is None:
             name = socket.gethostname()
-        super().__init__(device_id, name, python_exec)
+            
+        # Load local config to override python_exec
+        local_config = get_local_config()
+        if not python_exec:
+             python_exec = local_config.get("python_exec")
+             
+        super().__init__(device_id, name, python_exec, api_token, order_index)
         self.processes: Dict[str, psutil.Process] = {}
         self.saved_pids: Dict[str, int] = {}
         self.last_run_info: Dict[str, Dict[str, Any]] = {} # Store finished_at, started_at for ended tasks
@@ -319,10 +523,8 @@ class LocalDevice(BaseDevice):
 
         target_exe = target_args[0] # Keep original case for path checking
         
-        # 1. 自动补全 python 路径：如果目标是 'python' 且配置了 python_exec，则使用具体路径
-        if target_exe.lower() in ['python', 'python.exe'] and self.python_exec:
-             target_exe = self.python_exec
-
+        # Removed python auto-complete logic
+        
         # Check if target executable has path component
         target_has_path = os.path.dirname(target_exe) != ''
         target_exe_lower = target_exe.lower()
@@ -453,184 +655,99 @@ class LocalDevice(BaseDevice):
             except Exception as e:
                 return {"status": "error", "message": str(e)}
 
-    def _watch_timeout(self, process, timeout_sec, task_id):
-        """Watcher thread to enforce timeout"""
+    def _ensure_not_running(self, task_id: str, command: str) -> Optional[Dict[str, Any]]:
+        # Check internal cache first
+        if task_id in self.processes:
+            proc = self.processes[task_id]
+            if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
+                 return {"status": "already_running", "pid": proc.pid}
+            else:
+                del self.processes[task_id]
+
+        # Double check: Scan actual processes just in case cache is stale (Lazy Loading scenario)
         try:
-            process.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            print(f"Task {task_id} (PID {process.pid}) timed out after {timeout_sec}s. Killing...")
-            try:
-                # Use stop_task logic for clean termination
-                self.stop_task(task_id)
-            except Exception as e:
-                print(f"Error killing timed out task {task_id}: {e}")
+            for proc in psutil.process_iter(['pid', 'cmdline']):
+                try:
+                    cmdline = proc.info['cmdline']
+                    if not cmdline:
+                        continue
+                    if match_cmdline(command, cmdline):
+                         self.processes[task_id] = proc
+                         return {"status": "already_running", "pid": proc.pid}
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
+        except Exception:
+            pass
+        return None
 
     def start_task(self, task_id: str, command: str, cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None, timeout: Optional[int] = None) -> Dict[str, Any]:
         with self.lock:
-            # Check internal cache first
-            if task_id in self.processes:
-                proc = self.processes[task_id]
-                if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
-                     return {"status": "already_running", "pid": proc.pid}
-                else:
-                    del self.processes[task_id]
+            # Check if running
+            existing = self._ensure_not_running(task_id, command)
+            if existing:
+                return existing
 
-            # Double check: Scan actual processes just in case cache is stale (Lazy Loading scenario)
-            # This is a quick scan for a single command
-            try:
-                for proc in psutil.process_iter(['pid', 'cmdline']):
-                    try:
-                        cmdline = proc.info['cmdline']
-                        if not cmdline:
-                            continue
-                        if match_cmdline(command, cmdline):
-                             self.processes[task_id] = proc
-                             return {"status": "already_running", "pid": proc.pid}
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except Exception:
-                pass
-
-            log_dir = os.path.join(DATA_DIR, self.device_id, "logs")
-            if not os.path.exists(log_dir):
-                os.makedirs(log_dir)
-            log_file_path = os.path.join(log_dir, f"{task_id}.log")
-            
-            run_env = os.environ.copy()
-            if env:
-                run_env.update(env)
-            run_env["PYTHONIOENCODING"] = "utf-8"
-            run_env["PYTHONUTF8"] = "1"
-            run_env["PYTHONUNBUFFERED"] = "1"
-            
-            try:
-                cmd_args = parse_cmdline(command)
-            except:
-                cmd_args = command.split()
-
-            ps_executable = "powershell"
-            import shutil
-            if shutil.which("pwsh"):
-                ps_executable = "pwsh"
-
-            if cmd_args and cmd_args[0] == '.' and sys.platform == 'win32':
-                cmd_args = [ps_executable, "-Command", command]
-            elif cmd_args and len(cmd_args) > 0 and cmd_args[0].lower().endswith('.ps1') and sys.platform == 'win32':
-                 cmd_args.insert(0, ps_executable)
-
-            # Add support for .vbs scripts
-            elif cmd_args and len(cmd_args) > 0 and cmd_args[0].lower().endswith('.vbs') and sys.platform == 'win32':
-                 cmd_args.insert(0, "cscript")
-                 cmd_args.insert(1, "//Nologo")
-            
-            # Determine python executable
-            # Priority: Device Config > Env Var > Default Fallback
-            default_python = self.python_exec
-            
-            if not default_python:
-                default_python = os.environ.get("XLWEB_PYTHON_EXEC")
-            
-            if not default_python:
-                 # Default to local .venv if available
-                 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                 possible_venv = os.path.join(project_root, ".venv", "Scripts", "python.exe")
-                 if os.path.exists(possible_venv):
-                     default_python = possible_venv
-
-            if default_python and cmd_args and (cmd_args[0] == 'python' or cmd_args[0] == 'python.exe'):
-                cmd_args[0] = default_python
-
-            actual_cwd = cwd if cwd and os.path.exists(cwd) else None
-
-            try:
-                if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
-                    backup_path = log_file_path + ".old"
-                    if os.path.exists(backup_path):
-                        os.remove(backup_path)
-                    os.rename(log_file_path, backup_path)
-            except Exception as e:
-                print(f"Log rotation failed: {e}")
-
-            try:
-                with open(log_file_path, 'a', encoding='utf-8') as log_f:
-                    log_f.write(f"\n--- Starting task at {datetime.datetime.now()} ---\n")
-                    log_f.write(f"Command: {cmd_args}\n")
-                    log_f.write(f"CWD: {actual_cwd}\n")
-                    log_f.write(f"Env PYTHONIOENCODING: {run_env.get('PYTHONIOENCODING')}\n")
-                
-                creationflags = 0
-                if sys.platform == 'win32':
-                    creationflags = 0x08000000
-                
-                proc = subprocess.Popen(
-                    cmd_args,
-                    cwd=actual_cwd,
-                    env=run_env,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
-                    creationflags=creationflags,
-                    close_fds=True
-                )
-                
-                self.processes[task_id] = psutil.Process(proc.pid)
-                
-                # Save PID persistence
-                self.saved_pids[task_id] = proc.pid
-                self.save_pids()
-                
-                t = threading.Thread(target=self._stream_logs, args=(task_id, proc, log_file_path))
-                t.daemon = True
-                t.start()
-                
-                pid = proc.pid
-                
-                # Start timeout watcher if configured
-                if timeout and timeout > 0:
-                    watcher = threading.Thread(
-                        target=self._watch_timeout, 
-                        args=(proc, timeout, task_id)
-                    )
-                    watcher.daemon = True
-                    watcher.start()
-
-                return {"status": "started", "pid": pid}
-
-            except Exception as e:
-                raise Exception(f"Failed to start task: {e}")
-
-    def _stream_logs(self, task_id, process, log_file_path):
+        # Log setup
         try:
-            with open(log_file_path, 'a', encoding='utf-8') as f:
-                for line in iter(process.stdout.readline, b''):
-                    decoded_line = ''
-                    try:
-                        decoded_line = line.decode('utf-8')
-                    except UnicodeDecodeError:
-                        try:
-                            decoded_line = line.decode('gbk')
-                        except:
-                            decoded_line = line.decode('utf-8', errors='replace')
-                    
-                    # Write to file
-                    f.write(decoded_line)
-                    f.flush()
-                    
-                    # Callback for WebSocket
-                    if self.log_callback:
-                        try:
-                            # Callback might be async or sync? 
-                            # If it's async (which it likely is for WS), we need to run it in loop?
-                            # But we are in a thread here.
-                            # So we should call a thread-safe wrapper.
-                            self.log_callback(task_id, decoded_line)
-                        except Exception as e:
-                            print(f"Log callback error: {e}")
+            log_file_path = LogManager.prepare_log_path(self.device_id, task_id)
+        except Exception as e:
+            # If log preparation fails (e.g. invalid chars in task_id), we should still try to return a meaningful error
+            # But wait, if we can't create log file, we can't stream logs.
+            # We should probably fail the task start.
+             raise Exception(f"Failed to prepare log file: {e}")
+            
+        # Env setup
+        run_env = os.environ.copy()
+        if env:
+            run_env.update(env)
+        run_env["PYTHONIOENCODING"] = "utf-8"
+        run_env["PYTHONUTF8"] = "1"
+        run_env["PYTHONUNBUFFERED"] = "1"
+        
+        # Command resolution
+        resolver = CommandResolver.for_platform(sys.platform)
+        cmd_args = resolver.resolve(command)
+        
+        actual_cwd = cwd if cwd and os.path.exists(cwd) else None
+
+        try:
+            # Write header
+            with open(log_file_path, 'a', encoding='utf-8') as log_f:
+                log_f.write(f"\n--- Starting task at {datetime.datetime.now()} ---\n")
+                log_f.write(f"Command: {cmd_args}\n")
+                log_f.write(f"CWD: {actual_cwd}\n")
+                log_f.write(f"Env PYTHONIOENCODING: {run_env.get('PYTHONIOENCODING')}\n")
+            
+            creationflags = 0
+            if sys.platform == 'win32':
+                creationflags = 0x08000000
+            
+            proc = subprocess.Popen(
+                cmd_args,
+                cwd=actual_cwd,
+                env=run_env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+                close_fds=True
+            )
+            
+            self.processes[task_id] = psutil.Process(proc.pid)
+            
+            # Save PID persistence
+            self.saved_pids[task_id] = proc.pid
+            self.save_pids()
+            
+            # Start background threads
+            LogManager.start_stream(task_id, proc, log_file_path, self.log_callback)
+            TimeoutWatchdog.start(proc, timeout, task_id, self.stop_task)
+
+            return {"status": "started", "pid": proc.pid}
 
         except Exception as e:
-            print(f"Log streamer error for pid {process.pid}: {e}")
-        finally:
-            process.stdout.close()
+            error_msg = ErrorMapper.map_start_error(e, cmd_args, actual_cwd)
+            raise Exception(error_msg)
 
     def stop_task(self, task_id: str) -> Dict[str, Any]:
         with self.lock:
@@ -745,24 +862,26 @@ class LocalDevice(BaseDevice):
         """For local device, we just update our name locally"""
         with self.lock:
             self.name = new_name
-            # Persistence is handled by DeviceManager calling save()
-            # But DeviceManager.rename_device already updates self.name?
-            # Yes, DeviceManager.rename_device does: device.name = new_name.
-            # So this method might be redundant for LocalDevice if called from DeviceManager.
             pass
         return True
 
 class RemoteDevice(BaseDevice):
-    def __init__(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None):
-        super().__init__(device_id, name, python_exec)
+    def __init__(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
+        super().__init__(device_id, name, python_exec, api_token, order_index)
         self.url = url.rstrip('/')
         self.task_statuses: Dict[str, TaskStatus] = {}
         self.lock = threading.RLock()
 
+    def _get_headers(self):
+        headers = {}
+        if self.api_token:
+            headers["X-Device-Token"] = self.api_token
+        return headers
+
     def sync_config(self) -> bool:
         """Fetch latest configuration from remote device and update local cache"""
         try:
-            resp = requests.get(f"{self.url}/api/agent/status", timeout=2)
+            resp = requests.get(f"{self.url}/api/agent/status", headers=self._get_headers(), timeout=2)
             if resp.status_code == 200:
                 data = resp.json()
                 changed = False
@@ -788,7 +907,7 @@ class RemoteDevice(BaseDevice):
         try:
             # We need an API on the remote agent to update its own name.
             # POST /api/agent/rename { "name": "new_name" }
-            resp = requests.post(f"{self.url}/api/agent/rename", json={"name": new_name}, timeout=5)
+            resp = requests.post(f"{self.url}/api/agent/rename", json={"name": new_name}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 200:
                 self.name = new_name # Update local cache of the name
                 return True
@@ -802,39 +921,34 @@ class RemoteDevice(BaseDevice):
                     pass
             return False
 
+    def push_config(self) -> bool:
+        """Push local configuration (like python_exec) to remote device"""
+        try:
+            payload = {}
+            if self.python_exec:
+                payload["python_exec"] = self.python_exec
+            
+            if not payload:
+                return True
+                
+            resp = requests.post(f"{self.url}/api/agent/config", json=payload, headers=self._get_headers(), timeout=5)
+            if resp.status_code == 200:
+                return True
+            return False
+        except Exception as e:
+            print(f"Failed to push config to remote device {self.device_id}: {e}")
+            return False
+
     def start_task(self, task_id: str, command: str, cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         try:
-            # We assume remote task ID is same as local?
-            # Actually, remote API expects us to tell it the ID?
-            # If we are starting an existing task, we use /task/<id>/start
-            # But wait, RemoteDevice.start_task signature is generic.
-            # Here, it seems we are just running a command?
-            # The previous implementation was using /api/agent/exec_cmd which is raw command execution.
-            # But if we want full task management, we should use /api/task/...
-            
-            # If the task already exists on remote, we call start.
-            # If not, we call create?
-            # The caller (TaskManager) already knows if task exists or not.
-            # If task exists in our local cache (fetched from remote), we call start.
-            
-            # However, start_task here takes command/cwd/env.
-            # This implies we might be starting a new process or re-starting.
-            
             # Let's try calling the high-level API first.
-            resp = requests.post(f"{self.url}/api/task/{task_id}/start", params={"device_id": self.device_id}, timeout=5)
+            resp = requests.post(f"{self.url}/api/task/{task_id}/start", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 404:
-                 # Task might not exist on remote (maybe we only have it in our cache but remote restarted?)
-                 # Or maybe we need to create it first?
-                 # But start_task implies "run this".
-                 # Let's fallback to creating it if needed, or just fail.
-                 # For now, let's assume if it's 404, we can't start it.
                  pass
             
             if resp.status_code == 200:
                  return resp.json()
                  
-            # Fallback to raw execution if needed?
-            # No, keep it consistent.
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -842,7 +956,7 @@ class RemoteDevice(BaseDevice):
 
     def stop_task(self, task_id: str) -> Dict[str, Any]:
         try:
-            resp = requests.post(f"{self.url}/api/task/{task_id}/stop", params={"device_id": self.device_id}, timeout=5)
+            resp = requests.post(f"{self.url}/api/task/{task_id}/stop", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -855,7 +969,7 @@ class RemoteDevice(BaseDevice):
 
     def get_logs(self, task_id: str, lines: int = 50) -> List[str]:
         try:
-            resp = requests.get(f"{self.url}/api/task/{task_id}/logs", params={"n": lines, "device_id": self.device_id}, timeout=5)
+            resp = requests.get(f"{self.url}/api/task/{task_id}/logs", params={"n": lines, "device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 200:
                 return resp.json().get("logs", [])
             return [f"Error fetching logs: {resp.status_code}"]
@@ -866,7 +980,7 @@ class RemoteDevice(BaseDevice):
         # Fetch ALL tasks from remote to sync status
         try:
             # We use /api/task/list to get full status
-            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, timeout=5)
+            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 200:
                 remote_tasks = resp.json()
                 with self.lock:
@@ -886,7 +1000,7 @@ class RemoteDevice(BaseDevice):
 
     def kill_process_by_pid(self, pid: int) -> bool:
         try:
-            resp = requests.post(f"{self.url}/api/task/process/kill", json={"pid": pid}, timeout=5)
+            resp = requests.post(f"{self.url}/api/task/process/kill", json={"pid": pid}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 200:
                 return True
             return False
@@ -896,7 +1010,7 @@ class RemoteDevice(BaseDevice):
 
     def associate_process(self, task_id: str, pid: int) -> Dict[str, Any]:
         try:
-            resp = requests.post(f"{self.url}/api/task/{task_id}/associate", json={"pid": pid}, params={"device_id": self.device_id}, timeout=5)
+            resp = requests.post(f"{self.url}/api/task/{task_id}/associate", json={"pid": pid}, params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             resp.raise_for_status()
             return resp.json()
         except Exception as e:
@@ -905,7 +1019,7 @@ class RemoteDevice(BaseDevice):
     # New methods for full CRUD proxy
     def list_tasks(self) -> List[Dict]:
         try:
-            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, timeout=5)
+            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, headers=self._get_headers(), timeout=5)
             if resp.status_code == 200:
                 tasks = resp.json()
                 # Ensure device_id is correct
@@ -919,21 +1033,21 @@ class RemoteDevice(BaseDevice):
     def create_task(self, task_data: Dict) -> Dict:
         # Proxy create
         # We need to make sure we send the right data
-        resp = requests.post(f"{self.url}/api/task/create", json=task_data, timeout=5)
+        resp = requests.post(f"{self.url}/api/task/create", json=task_data, headers=self._get_headers(), timeout=5)
         resp.raise_for_status()
         t = resp.json()
         t['device_id'] = self.device_id
         return t
 
     def update_task(self, task_id: str, task_data: Dict) -> Dict:
-        resp = requests.post(f"{self.url}/api/task/{task_id}/update", json=task_data, params={"device_id": self.device_id}, timeout=5)
+        resp = requests.post(f"{self.url}/api/task/{task_id}/update", json=task_data, params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
         resp.raise_for_status()
         t = resp.json()
         t['device_id'] = self.device_id
         return t
 
     def delete_task(self, task_id: str) -> Dict:
-        resp = requests.delete(f"{self.url}/api/task/{task_id}", params={"device_id": self.device_id}, timeout=5)
+        resp = requests.delete(f"{self.url}/api/task/{task_id}", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
         resp.raise_for_status()
         return resp.json()
     
@@ -942,12 +1056,23 @@ class RemoteDevice(BaseDevice):
         d['url'] = self.url
         return d
 
+from backend.db import engine, init_db
+# from backend.models import Device as DeviceModel
+
+from sqlmodel import Session, select
+
 class DeviceManager:
     _instance = None
     
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(DeviceManager, cls).__new__(cls)
+            # Initialize DB
+            try:
+                init_db()
+            except Exception as e:
+                print(f"Failed to init DB: {e}")
+                
             # Initialize devices dictionary FIRST
             cls._instance.devices: Dict[str, BaseDevice] = {}
             # Then load
@@ -955,142 +1080,139 @@ class DeviceManager:
         return cls._instance
 
     def load(self):
-        # Local device logic first
+        # Ensure schema
+        try:
+            from sqlalchemy import text
+            with Session(engine) as session:
+                try:
+                    session.exec(text("ALTER TABLE device ADD COLUMN order_index INTEGER DEFAULT 0"))
+                    session.commit()
+                except Exception:
+                    pass
+                try:
+                    session.exec(text("ALTER TABLE userdevice ADD COLUMN order_index INTEGER DEFAULT 0"))
+                    session.commit()
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"Schema update warning: {e}")
+
+        # Initialize Local Device from file/system info
         system_id = get_system_id()
         hostname = socket.gethostname()
+        local_config = get_local_config()
         
-        # Load existing config
-        loaded_devices = {}
-        if os.path.exists(DEVICES_FILE):
-            try:
-                with open(DEVICES_FILE, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    for item in data:
-                        # Use dict temporary to avoid abstract class instantiation issues during partial load
-                        loaded_devices[item['id']] = item
-            except Exception as e:
-                print(f"Error loading devices file: {e}")
+        # We don't load 'Device' table anymore for the manager state
+        # The manager state is now:
+        # 1. Local Device (always present)
+        # 2. Remote Devices (dynamic, loaded on demand or cached? 
+        #    Actually, for "Cluster Management", we might want to keep track of known remotes in memory?
+        #    But per new design, remotes are User-Specific.
+        #    So the DeviceManager (singleton) should primarily manage the LOCAL device.
+        #    Remote devices are instantiated per-request based on UserDevice info?
+        
+        # However, for background sync tasks, we might need a list of active remotes.
+        # If we remove Device table, where do we get the list of ALL remotes to sync?
+        # Maybe we don't need to sync globally anymore?
+        # Syncing should be done when User requests status, or via a background task iterating UserDevices?
+        
+        # Let's keep it simple: DeviceManager manages the LOCAL device resource.
+        # RemoteDevice objects are just temporary proxies created when needed by API.
+        
+        # BUT: For backward compatibility and keeping existing logic working,
+        # we can still load from Device table if we haven't deleted it yet.
+        # OR, we switch to fully stateless RemoteDevice management.
+        
+        # Let's go with: DeviceManager holds LocalDevice.
+        # RemoteDevices are not held in global memory anymore, they are instantiated ad-hoc.
+        
+        token = local_config.get("api_token")
+        if not token:
+             token = secrets.token_urlsafe(32)
+             local_config["api_token"] = token
+             save_local_config(local_config)
+             
+        python_exec = local_config.get("python_exec")
+        
+        self.devices[system_id] = LocalDevice(system_id, hostname, python_exec, api_token=token)
 
-        # Instantiate devices
-        for dev_id, item in loaded_devices.items():
-            try:
-                if item['type'] == 'LocalDevice':
-                    name = item.get('name', item['id'])
-                    self.devices[dev_id] = LocalDevice(dev_id, name, item.get('python_exec'))
-                elif item['type'] == 'RemoteDevice':
-                    name = item.get('name', item['id'])
-                    # RemoteDevice MUST implement all abstract methods now
-                    self.devices[dev_id] = RemoteDevice(dev_id, name, item['url'], item.get('python_exec'))
-            except TypeError as e:
-                print(f"Error instantiating device {dev_id} ({item.get('type')}): {e}")
-                # Skip invalid devices to prevent crash
-                continue
-
-        # Ensure local device exists (if not loaded)
-        if system_id not in self.devices:
-             # Check for legacy hostname migration
-             pass 
-             # For simplicity in this fix, just create if missing
-             if not any(isinstance(d, LocalDevice) for d in self.devices.values()):
-                 self.devices[system_id] = LocalDevice(system_id, hostname)
-                 self.save()
+    def _save_device_to_db(self, device: BaseDevice):
+        # Deprecated: We don't save to Device table anymore.
+        # For LocalDevice, we save to config.json
+        if isinstance(device, LocalDevice):
+            conf = get_local_config()
+            conf["python_exec"] = device.python_exec
+            conf["api_token"] = device.api_token
+            # Name is hostname, usually not changeable via config unless we add a field
+            save_local_config(conf)
 
     def save(self):
-        try:
-            with open(DEVICES_FILE, 'w', encoding='utf-8') as f:
-                json.dump([d.to_dict() for d in self.devices.values()], f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving devices: {e}")
+        # Deprecated: Individual updates should write to DB immediately.
+        # But for compatibility, we can iterate and save all?
+        # Let's keep it empty or log warning.
+        pass
 
     def get_device(self, device_id: str) -> Optional[BaseDevice]:
-        # 1. Try direct ID lookup
-        device = self.devices.get(device_id)
-        if device:
-            return device
+        # 1. Check local device
+        system_id = get_system_id()
+        if device_id == system_id or device_id == "local":
+            return self.devices.get(system_id)
             
-        # 2. Try lookup by name (fallback for legacy tasks using hostname)
-        for d in self.devices.values():
-            if d.name == device_id:
-                return d
-                
-        # 3. Special case: if device_id matches current hostname, return the LocalDevice
-        # (This handles cases where tasks were saved with hostname but LocalDevice has a UUID)
-        if device_id == socket.gethostname():
-            for d in self.devices.values():
-                if isinstance(d, LocalDevice):
-                    return d
-                    
-        return None
+        # 2. Remote devices are now ephemeral/user-specific.
+        # This method should generally NOT be used for remote devices unless we pass context.
+        # But for compatibility, if we have it in memory (we don't load them anymore), return it.
+        # OR, we can try to look up from UserDevice table? 
+        # But we don't have user_id here.
+        
+        # So this method is strictly for LocalDevice now?
+        # Or we can return None for remote, and let the caller handle instantiation from UserDevice.
+        
+        return self.devices.get(device_id)
 
-    def add_remote_device(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None):
-        self.devices[device_id] = RemoteDevice(device_id, name, url, python_exec)
-        self.save()
+    def add_remote_device(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None, api_token: Optional[str] = None):
+        # No-op in new architecture for global manager
+        pass
 
     def update_device(self, device_id: str, python_exec: Optional[str] = None):
         if device_id in self.devices:
-            self.devices[device_id].python_exec = python_exec
-            self.save()
+            dev = self.devices[device_id]
+            dev.python_exec = python_exec
+            self._save_device_to_db(dev)
+            
+            # Local device config is saved to file.
+            # No push needed for local device itself.
             return True
         return False
 
     def rename_device(self, device_id: str, new_name: str) -> bool:
-        if device_id not in self.devices:
-            return False
-            
-        # 1. Update remote machine (if remote) or local machine name
-        device = self.devices[device_id]
-        success = device.rename_remote_device(new_name)
+        # Only support renaming local device hostname via this method
+        # Remote renaming is now handled by updating UserDevice name, or calling remote API directly
+        # But for LocalDevice, we don't really rename hostname.
+        # We just update config?
+        # Actually, hostname is system property.
         
-        # 2. Update local registry if remote update succeeded (or if local)
-        # Note: rename_remote_device already updates self.name on the device object.
-        # But we need to save the change in devices.json.
-        if success:
-            device.name = new_name # Redundant but safe
-            self.save()
-            return True
-        
-        return False
+        # If we want to support "alias" for local device, we can store it in config.json
+        if device_id in self.devices:
+             # Just update in memory?
+             # Or do nothing.
+             # UserDevice table holds the name used by clients.
+             pass
+        return True
 
     def remove_device(self, device_id: str) -> bool:
-        if device_id not in self.devices:
-            return False
-        # Prevent removing local device?
-        # if isinstance(self.devices[device_id], LocalDevice):
-        #    return False
-        
-        del self.devices[device_id]
-        self.save()
+        # No-op
         return True
 
     def sync_remote_devices(self):
-        """Sync configuration for all remote devices"""
-        any_changed = False
+        # No global sync
+        pass
         
-        # Use a list to avoid runtime error if dict changes (though we only modify values)
-        # Use threading to speed up? For now, sequential with short timeout (2s)
-        # If we have many devices, we should use threading.
-        
-        threads = []
-        
-        def sync_worker(dev):
-            if dev.sync_config():
-                nonlocal any_changed
-                any_changed = True
-
-        for device in self.devices.values():
-            if isinstance(device, RemoteDevice):
-                t = threading.Thread(target=sync_worker, args=(device,))
-                t.daemon = True
-                t.start()
-                threads.append(t)
-        
-        for t in threads:
-            t.join(timeout=3)
-            
-        if any_changed:
-            self.save()
-
     def get_all_devices(self) -> List[Dict[str, Any]]:
+        # Only returns local device
         return [d.to_dict() for d in self.devices.values()]
+    
+    def reorder_devices(self, device_ids: List[str]):
+        # No-op
+        return True
 
 device_manager = DeviceManager()

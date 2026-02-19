@@ -64,10 +64,15 @@ def main():
              print(f"   Warning: .venv not found at {venv_scripts}, using default python")
         
         # 使用 shell=True 确保能找到 python 命令，但最好直接调用
-        backend_cmd = [python_executable, "-m", "uvicorn", "app:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+        # Run as a package from root dir to support relative imports correctly
+        backend_cmd = [python_executable, "-m", "uvicorn", "backend.app:app", "--reload", "--host", "0.0.0.0", "--port", "8000"]
+        
+        # Ensure root_dir is in PYTHONPATH
+        env["PYTHONPATH"] = root_dir + os.pathsep + env.get("PYTHONPATH", "")
+        
         backend_proc = subprocess.Popen(
             backend_cmd, 
-            cwd=backend_dir,
+            cwd=root_dir, # Run from root
             shell=False,
             env=env
         )

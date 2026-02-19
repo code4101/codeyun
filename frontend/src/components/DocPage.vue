@@ -32,6 +32,7 @@ defineProps<{
 .description {
   color: #666;
   font-size: 14px;
+  white-space: pre-wrap;
 }
 .doc-content {
   margin-top: 20px;
