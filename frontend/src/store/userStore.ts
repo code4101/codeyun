@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import api from '@/api';
-import { jwtDecode } from 'jwt-decode';
+// import { jwtDecode } from 'jwt-decode';
 
 interface User {
   id: number;

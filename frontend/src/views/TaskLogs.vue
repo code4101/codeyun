@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
-import api, { getDeviceApi } from '@/api';
+import { getDeviceApi } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Edit, VideoPlay, VideoPause, Search, Delete, Connection } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
@@ -60,7 +60,7 @@ let wsStatus: WebSocket | null = null; // Separate WS for status? No, maybe sing
 const connectWsLogs = () => {
     if (ws) return;
     
-    const device = { url: currentDeviceUrl.value }; // Simple mock, assuming currentDeviceUrl is set
+    // const device = { url: currentDeviceUrl.value }; // Simple mock, assuming currentDeviceUrl is set
     // Actually we need to handle if currentDeviceUrl is empty or not resolved yet.
     if (!currentDeviceUrl.value) return;
 
@@ -419,13 +419,9 @@ const refreshAll = async () => {
   connectWsStatus();
 };
 
-const checkStatusOnly = async () => {
-    await fetchTask();
-    if (task.value && task.value.status.running) {
-        // Task started! Switch to full refresh immediately
-        refreshAll(); 
-    }
-};
+// const checkStatusOnly = async () => {
+//     // ... implementation
+// };
 
 const scrollToBottom = async () => {
   await nextTick();

@@ -3,17 +3,23 @@ import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
 import {
-  Document,
+  // Document,
   Menu as IconMenu,
-  Location,
+  // Location,
   Monitor,
   User,
   SwitchButton,
-  Cellphone,
+  // Cellphone,
   MagicStick,
   Star,
-  Tools,
-  Box
+  // Tools,
+  Box,
+  Expand,
+  Fold,
+  Lightning,
+  Sunny,
+  VideoPlay,
+  Connection
 } from '@element-plus/icons-vue';
 
 const route = useRoute();

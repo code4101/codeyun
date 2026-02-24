@@ -2,9 +2,9 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
-import api, { getDeviceApi } from '@/api';
+import { getDeviceApi } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, VideoPlay, VideoPause, Delete, Document, Monitor, Connection, Setting, Refresh, Edit, Rank, Lock, Clock } from '@element-plus/icons-vue';
+import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Rank, Clock } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import Sortable from 'sortablejs';
 
@@ -26,8 +26,6 @@ const isEditingDevice = ref(false);
 const isEditingTask = ref(false);
 const currentTaskId = ref<string>('');
 const addDeviceLoading = ref(false);
-const pairingLoading = ref(false);
-
 const form = ref({
   name: '',
   command: '',
@@ -112,7 +110,6 @@ const updateDeviceConfig = async () => {
   }
 };
 
-let pollInterval: number | null = null;
 let ws: WebSocket | null = null;
 
 const connectWebSocket = () => {
@@ -148,7 +145,7 @@ const connectWebSocket = () => {
 
     try {
         if (ws) {
-            ws.close();
+            (ws as WebSocket).close();
             ws = null;
         }
         
@@ -208,7 +205,7 @@ const connectWebSocket = () => {
         };
         ws.onerror = (err) => {
             console.error('WS error', err);
-            if (ws) ws.close();
+            if (ws) (ws as WebSocket).close();
         };
     } catch (e) {
         console.error("WS connection failed", e);
@@ -240,7 +237,7 @@ watch(currentDeviceId, async (newId, oldId) => {
 
     // Disconnect old WS
     if (ws) {
-        ws.close();
+        (ws as WebSocket).close();
         ws = null;
     }
     
@@ -455,13 +452,6 @@ const handleSubmitTask = async () => {
     } catch (err: any) {
         ElMessage.error(err.response?.data?.detail || '创建失败');
     }
-};
-
-// ... (rest of the file)
-
-const requestPairingToken = async () => {
-    // Deprecated
-    ElMessage.warning('请直接在目标设备上获取 Token');
 };
 
 const handleAddDevice = async () => {
@@ -706,31 +696,15 @@ onMounted(async () => {
     initDeviceSortable();
   });
   
-  // Use WS instead of polling for updates
-  // But keep polling as fallback or just remove?
-  // User asked to replace polling with WS.
-  // So we remove the interval.
-  
-  /*
-  pollInterval = setInterval(() => {
-      if (currentDeviceId.value) {
-          fetchTasks(currentDeviceId.value, true);
-      }
-  }, 5000) as unknown as number;
-  */
 });
 
 onUnmounted(() => {
   if (ws) {
-      ws.close();
+      (ws as WebSocket).close();
       ws = null;
   }
   if (sortableInstance) sortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
-  
-  if (pollInterval) {
-    clearInterval(pollInterval);
-  }
 });
 </script>
 
