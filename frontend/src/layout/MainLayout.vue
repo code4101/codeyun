@@ -6,16 +6,27 @@ import {
   Document,
   Menu as IconMenu,
   Location,
-  Setting,
+  Monitor,
   User,
   SwitchButton,
-  Cellphone
+  Cellphone,
+  MagicStick
 } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 const isCollapse = ref(false);
+
+const activeMenu = computed(() => {
+  if (route.path.startsWith('/cluster/logs/')) return '/cluster';
+  return route.path;
+});
+
+const defaultOpeneds = computed(() => {
+  if (route.path.startsWith('/fanxiu/')) return ['game-tools', 'fanxiu'];
+  return [];
+});
 
 const handleOpen = (key: string, keyPath: string[]) => {
   console.log(key, keyPath);
@@ -39,7 +50,8 @@ const handleLogin = () => {
     <el-container>
       <el-aside width="200px">
         <el-menu
-          default-active="2"
+          :default-active="activeMenu"
+          :default-openeds="defaultOpeneds"
           class="el-menu-vertical-demo"
           :collapse="isCollapse"
           @open="handleOpen"
@@ -51,16 +63,22 @@ const handleLogin = () => {
             <template #title>首页</template>
           </el-menu-item>
           
-          <el-sub-menu index="fanxiu">
+          <el-sub-menu index="game-tools">
             <template #title>
-              <el-icon><Cellphone /></el-icon>
-              <span>凡修手游</span>
+              <el-icon><MagicStick /></el-icon>
+              <span>游戏工具</span>
             </template>
-            <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
+            <el-sub-menu index="fanxiu">
+              <template #title>
+                <el-icon><Cellphone /></el-icon>
+                <span>凡修手游</span>
+              </template>
+              <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
+            </el-sub-menu>
           </el-sub-menu>
 
           <el-menu-item index="/cluster" v-if="userStore.isAuthenticated">
-            <el-icon><setting /></el-icon>
+            <el-icon><Monitor /></el-icon>
             <template #title>集群管理</template>
           </el-menu-item>
         </el-menu>

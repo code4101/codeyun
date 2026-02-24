@@ -1,4 +1,4 @@
-# CodeYun (代码云)
+# CodeYun (代号云)
 
 CodeYun 是一个个人超级工具集成平台，旨在为跨设备后台任务管理、远程控制和系统监控提供全面的解决方案。它作为一个中心枢纽，用于管理您的数字环境。
 
@@ -41,52 +41,37 @@ CodeYun 是一个个人超级工具集成平台，旨在为跨设备后台任务
 
 ## 📦 安装与设置
 
-###先决条件
-- Python 3.10 或更高版本
-- Node.js & npm (为了方便，`tools/node` 中包含了一个本地版本)
-
 ### 快速开始
 
-本项目包含一个辅助脚本 `dev.py`，用于自动启动后端和前端服务。
-
-1. **克隆仓库**：
+1. **安装工具**：
+   - **uv** (Python管理)：[安装指南](https://github.com/astral-sh/uv)
+   - **Node.js** (前端依赖)：
+     - **Ubuntu**: `sudo apt update && sudo apt install -y nodejs npm`
+     - **Windows**: 推荐安装 [LTS 版本](https://nodejs.org/)，并确保 `npm` 已添加到环境变量 `PATH` 中。
+     - **Mac**: 推荐使用 `brew install node`。
+2. **初始化环境**：
    ```bash
-   git clone <repository-url>
-   cd codeyun
-   ```
-
-2. **安装后端依赖**：
-   建议使用虚拟环境。
-   ```bash
-   # 创建虚拟环境
-   python -m venv .venv
+   # 1. 同步后端环境
+   uv sync
    
-   # 激活虚拟环境
-   # Windows:
-   .venv\Scripts\activate
-   # Linux/Mac:
-   source .venv/bin/activate
-
-   # 安装依赖
-   pip install -r backend/requirements.txt
-   # 或者如果使用 pyproject.toml
-   pip install -e backend
+   # 2. 安装前端依赖
+   # Windows 用户如果遇到 npm 找不到的问题，请尝试以管理员身份运行终端，或检查 PATH 环境变量
+   npm install --prefix frontend
    ```
-
-3. **启动开发服务器**：
-   从根目录运行 `dev.py` 脚本。该脚本将：
-   - 检查本地 Node.js 环境。
-   - 在 `http://localhost:8000` 启动 FastAPI 后端。
-   - 安装前端依赖（如果缺失）并在 `http://localhost:5173` 启动 Vite 开发服务器。
-
+3. **启动服务**：
+   运行启动脚本：
    ```bash
-   python dev.py
+   uv run dev.py
    ```
+   > **注意 (Windows)**: 如果 `dev.py` 启动前端失败，你可以手动在另一个终端窗口启动前端：
+   > ```bash
+   > cd frontend
+   > npm run dev
+   > ```
 
-4. **访问应用**：
-   打开浏览器并访问：
-   - **前端**：[http://localhost:5173](http://localhost:5173)
-   - **后端 API 文档**：[http://localhost:8000/docs](http://localhost:8000/docs)
+服务启动后访问：
+- **前端**：[http://localhost:5173](http://localhost:5173)
+- **后端 API**：[http://localhost:8000/docs](http://localhost:8000/docs)
 
 ## 📂 项目结构
 
@@ -108,22 +93,13 @@ codeyun/
 ├── tools/                  # 辅助工具 (例如本地 Node.js)
 ├── AGENTS.md               # Agent 文档和项目状态
 ├── TODO.md                 # 项目路线图和待办事项
-├── dev.py                  # 开发启动脚本
-└── start.ps1               # PowerShell 启动脚本
+└── dev.py                  # 开发启动脚本
 ```
 
 ## 📝 配置
 
 - **后端配置**：通过环境变量和 `backend/data/` 中的本地 JSON 文件进行管理。
 - **前端配置**：`frontend/vite.config.ts` 中的 Vite 配置。
-
-## 🤝 贡献
-
-1. Fork 本仓库。
-2. 创建您的特性分支 (`git checkout -b feature/AmazingFeature`)。
-3. 提交您的更改 (`git commit -m 'Add some AmazingFeature'`)。
-4. 推送到分支 (`git push origin feature/AmazingFeature`)。
-5. 开启一个 Pull Request。
 
 ## 📄 许可证
 

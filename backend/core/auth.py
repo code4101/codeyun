@@ -13,8 +13,8 @@ import secrets
 # Configuration (TODO: Move to env/config)
 SECRET_KEY = "codeyun-insecure-secret-key-change-me" 
 ALGORITHM = "HS256"
-# Access token now only valid for 1 day to encourage refresh flow usage
-ACCESS_TOKEN_EXPIRE_MINUTES = 24 * 60
+# Access token validity set to 30 days for user convenience
+ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")

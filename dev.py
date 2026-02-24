@@ -4,6 +4,8 @@ import time
 import os
 import signal
 
+import shutil
+
 def main():
     print("Starting CodeYun services...")
     
@@ -21,21 +23,41 @@ def main():
         # Prepare environment with local projects
         env = os.environ.copy()
 
-        # Check for local Node.js in tools/node
-        local_node_dir = os.path.join(root_dir, "tools", "node")
+        # Resolve npm executable path explicitly
+        # This is more robust than relying on PATH in subprocess, especially on Windows
         npm_exec = "npm"
-        
-        # Verify local node installation integrity
-        # npm.cmd on windows usually points to node_modules/npm/bin/npm-cli.js
-        npm_cli_js = os.path.join(local_node_dir, "node_modules", "npm", "bin", "npm-cli.js")
-        
-        if os.path.exists(local_node_dir) and os.path.exists(npm_cli_js):
-            print(f"   Using local Node.js: {local_node_dir}")
-            env["PATH"] = local_node_dir + os.pathsep + env.get("PATH", "")
-            if os.name == 'nt':
-                npm_exec = os.path.join(local_node_dir, "npm.cmd")
-        elif os.path.exists(local_node_dir):
-            print(f"   ⚠️  Local Node.js found at {local_node_dir} but seems incomplete (missing npm-cli.js). Falling back to system Node.js.")
+        if os.name == 'nt':
+            npm_path = shutil.which("npm.cmd")
+            if not npm_path:
+                npm_path = shutil.which("npm")
+            
+            # Fallback: try to find node and look for npm relative to it
+            if not npm_path:
+                node_path = shutil.which("node") or shutil.which("node.exe")
+                if node_path:
+                    # Look for npm.cmd in the same directory as node.exe
+                    npm_candidate = os.path.join(os.path.dirname(node_path), "npm.cmd")
+                    if os.path.exists(npm_candidate):
+                        npm_path = npm_candidate
+
+            # Fallback 2: Check Trae managed Node.js path
+            if not npm_path:
+                trae_npm = os.path.expanduser(r"~/.trae/sdks/versions/node/current/npm.cmd")
+                if os.path.exists(trae_npm):
+                    npm_path = trae_npm
+            
+            if npm_path:
+                npm_exec = npm_path
+                print(f"   Resolved npm path: {npm_exec}")
+                # Ensure the directory of npm is in PATH so it can find node during execution
+                npm_dir = os.path.dirname(npm_path)
+                if npm_dir not in env["PATH"]:
+                     env["PATH"] = npm_dir + os.pathsep + env.get("PATH", "")
+            else:
+                npm_exec = "npm.cmd"
+                print("   ⚠️  Could not resolve npm path, falling back to 'npm.cmd'")
+                # Try to print helpful debug info
+                print(f"   DEBUG: PATH={os.environ.get('PATH')}")
 
         pythonpath = env.get("PYTHONPATH", "")
         
@@ -83,32 +105,27 @@ def main():
         
         # Check if node_modules exists and is valid (has .bin/vite)
         node_modules_path = os.path.join(frontend_dir, "node_modules")
-        vite_bin = os.path.join(node_modules_path, ".bin", "vite.cmd" if os.name == 'nt' else "vite")
         
-        if not os.path.exists(node_modules_path) or not os.path.exists(vite_bin):
+        # Use simple command structure
+        npm_install_cmd = [npm_exec, "install"]
+        npm_run_cmd = [npm_exec, "run", "dev"]
+        
+        # Debugging info
+        print(f"   Command: {' '.join(npm_run_cmd)}")
+        print(f"   CWD: {frontend_dir}")
+        
+        if not os.path.exists(node_modules_path):
              print("   Installing dependencies (missing or incomplete)... this may take a while")
              try:
-                 # Use determined npm executable
-                 npm_install_cmd = [npm_exec, "install"]
-                 # If using system npm on windows, ensure it's npm.cmd
-                 if npm_exec == "npm" and os.name == 'nt':
-                     npm_install_cmd[0] = "npm.cmd"
-                 
                  subprocess.check_call(npm_install_cmd, cwd=frontend_dir, shell=True, env=env)
              except subprocess.CalledProcessError as e:
                  print(f"⚠️  npm install failed: {e}")
 
-        # npm 需要 shell=True 在 windows 上才能运行，或者用 npm.cmd
-        npm_run_cmd = [npm_exec, "run", "dev"]
-        # 在 Windows 上通常需要 shell=True 或者指定 npm.cmd
-        if npm_exec == "npm" and os.name == 'nt':
-            npm_run_cmd[0] = "npm.cmd"
-            
         try:
             frontend_proc = subprocess.Popen(
                 npm_run_cmd, 
                 cwd=frontend_dir,
-                shell=False,
+                shell=(os.name == 'nt'),
                 env=env
             )
             processes.append(frontend_proc)
