@@ -1,6 +1,12 @@
 
 import os
 import sys
+
+# Add project root to sys.path
+# Current: backend/tests/manual/test_device_refactor.py
+# Root:    ../../..
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+
 import time
 import shutil
 from backend.core.device import LocalDevice, DATA_DIR

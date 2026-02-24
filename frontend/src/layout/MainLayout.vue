@@ -25,6 +25,7 @@ const activeMenu = computed(() => {
 
 const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/fanxiu/')) return ['game-tools', 'fanxiu'];
+  if (route.path.startsWith('/dsp/')) return ['game-tools'];
   return [];
 });
 
@@ -70,11 +71,15 @@ const handleLogin = () => {
             </template>
             <el-sub-menu index="fanxiu">
               <template #title>
-                <el-icon><Cellphone /></el-icon>
+                <el-icon><Lightning /></el-icon>
                 <span>凡修手游</span>
               </template>
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
             </el-sub-menu>
+            <el-menu-item index="/dsp/calculator">
+              <el-icon><Sunny /></el-icon>
+              <span>戴森球计划</span>
+            </el-menu-item>
           </el-sub-menu>
 
           <el-menu-item index="/cluster" v-if="userStore.isAuthenticated">

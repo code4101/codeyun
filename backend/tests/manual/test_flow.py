@@ -1,6 +1,11 @@
 import requests
 import json
 import os
+import sys
+
+# Add project root to sys.path if needed for relative imports (though this script mainly uses requests)
+# Current: backend/tests/manual/test_flow.py
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 BASE_URL = "http://localhost:8000"
 

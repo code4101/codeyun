@@ -33,6 +33,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false }, // Public access
       },
       {
+        path: 'dsp/calculator',
+        name: 'DspCalculator',
+        component: () => import('@/views/dsp/DspStatic.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'cluster',
         name: 'ClusterManager',
         component: () => import('@/views/TaskManager.vue'),
