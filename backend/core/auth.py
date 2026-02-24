@@ -8,13 +8,15 @@ from sqlmodel import Session, select
 from backend.db import get_session
 from backend.models import User
 import secrets
+import os
 # import backend.core.device as device_module # deferred to avoid cycle
 
-# Configuration (TODO: Move to env/config)
-SECRET_KEY = "codeyun-insecure-secret-key-change-me" 
-ALGORITHM = "HS256"
-# Access token validity set to 30 days for user convenience
-ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
+SECRET_KEY = (os.getenv("CODEYUN_SECRET_KEY") or os.getenv("SECRET_KEY") or "").strip() or "codeyun-insecure-secret-key-change-me"
+ALGORITHM = (os.getenv("CODEYUN_JWT_ALGORITHM") or "HS256").strip() or "HS256"
+try:
+    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("CODEYUN_ACCESS_TOKEN_EXPIRE_MINUTES") or (30 * 24 * 60))
+except ValueError:
+    ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")

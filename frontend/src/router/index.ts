@@ -33,9 +33,21 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false }, // Public access
       },
       {
+        path: 'fanxiu/recharge',
+        name: 'FanxiuRecharge',
+        component: () => import('@/views/fanxiu/Recharge.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'dsp/calculator',
         name: 'DspCalculator',
         component: () => import('@/views/dsp/DspStatic.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'magic-craft/xor-matrix',
+        name: 'XorMatrix',
+        component: () => import('@/views/magic-craft/XorMatrix.vue'),
         meta: { requiresAuth: false },
       },
       {
@@ -43,6 +55,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'ClusterManager',
         component: () => import('@/views/TaskManager.vue'),
         meta: { requiresAuth: true }, // Cluster management requires login
+      },
+      {
+        path: 'tools/password-generator',
+        name: 'PasswordGenerator',
+        component: () => import('@/views/tools/PasswordGenerator.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'tools/infinite-canvas',
+        name: 'InfiniteCanvas',
+        component: () => import('@/views/tools/InfiniteCanvas.vue'),
+        meta: { requiresAuth: false },
       },
       {
         path: 'cluster/logs/:id',

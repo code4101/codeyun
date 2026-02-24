@@ -1,0 +1,19 @@
+[Unit]
+Description=CodeYun Backend (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+# 确保工作目录正确
+WorkingDirectory=%h/codeyun
+Environment=PYTHONUNBUFFERED=1
+# 从 .env 文件读取环境变量（如 CODEYUN_SECRET_KEY）
+EnvironmentFile=%h/codeyun/.env
+# 使用 uv run 直接启动，自动管理虚拟环境
+# 假设 uv 已安装在 PATH 中，或者使用绝对路径（如 /home/username/.local/bin/uv）
+ExecStart=/usr/bin/env uv run uvicorn backend.app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

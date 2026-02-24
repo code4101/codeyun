@@ -10,13 +10,20 @@ import {
   User,
   SwitchButton,
   Cellphone,
-  MagicStick
+  MagicStick,
+  Star,
+  Tools,
+  Box
 } from '@element-plus/icons-vue';
 
 const route = useRoute();
 const router = useRouter();
 const userStore = useUserStore();
 const isCollapse = ref(false);
+
+const toggleCollapse = () => {
+  isCollapse.value = !isCollapse.value;
+};
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/cluster/logs/')) return '/cluster';
@@ -25,6 +32,7 @@ const activeMenu = computed(() => {
 
 const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/fanxiu/')) return ['game-tools', 'fanxiu'];
+  if (route.path.startsWith('/magic-craft/')) return ['game-tools', 'magic-craft'];
   if (route.path.startsWith('/dsp/')) return ['game-tools'];
   return [];
 });
@@ -49,7 +57,11 @@ const handleLogin = () => {
 <template>
   <div class="common-layout">
     <el-container>
-      <el-aside width="200px">
+      <el-aside :width="isCollapse ? '64px' : '200px'" class="main-aside">
+        <div class="toggle-button" :class="{ 'collapsed': isCollapse }" @click="toggleCollapse">
+          <el-icon v-if="isCollapse"><Expand /></el-icon>
+          <el-icon v-else><Fold /></el-icon>
+        </div>
         <el-menu
           :default-active="activeMenu"
           :default-openeds="defaultOpeneds"
@@ -63,6 +75,15 @@ const handleLogin = () => {
             <el-icon><icon-menu /></el-icon>
             <template #title>首页</template>
           </el-menu-item>
+
+          <el-sub-menu index="tools">
+            <template #title>
+              <el-icon><Box /></el-icon>
+              <span>综合工具</span>
+            </template>
+            <el-menu-item index="/tools/password-generator">随机密码</el-menu-item>
+            <el-menu-item index="/tools/infinite-canvas">无限画布</el-menu-item>
+          </el-sub-menu>
           
           <el-sub-menu index="game-tools">
             <template #title>
@@ -75,11 +96,19 @@ const handleLogin = () => {
                 <span>凡修手游</span>
               </template>
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
+              <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/dsp/calculator">
               <el-icon><Sunny /></el-icon>
               <span>戴森球计划</span>
             </el-menu-item>
+            <el-sub-menu index="magic-craft">
+              <template #title>
+                <el-icon><Star /></el-icon>
+                <span>魔法工艺</span>
+              </template>
+              <el-menu-item index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
+            </el-sub-menu>
           </el-sub-menu>
 
           <el-menu-item index="/cluster" v-if="userStore.isAuthenticated">
@@ -132,7 +161,29 @@ const handleLogin = () => {
 .el-aside {
   background-color: #f5f7fa;
   border-right: 1px solid #e6e6e6;
+  transition: width 0.3s;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
+
+.toggle-button {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 20px;
+  cursor: pointer;
+  font-size: 20px;
+  color: #606266;
+  border-bottom: 1px solid #e6e6e6;
+}
+
+.toggle-button.collapsed {
+  justify-content: center;
+  padding-right: 0;
+}
+
 .el-header {
   background-color: #fff;
   border-bottom: 1px solid #e6e6e6;
@@ -159,5 +210,8 @@ const handleLogin = () => {
 }
 .el-menu {
   border-right: none;
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 </style>
