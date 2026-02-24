@@ -30,12 +30,22 @@ if ! command -v npm &> /dev/null; then
 fi
 
 # 3. Setup Project Environment
-PROJECT_DIR="$HOME/codeyun"
-if [ ! -d "$PROJECT_DIR" ]; then
-    echo ">>> Cloning project to $PROJECT_DIR..."
-    # Assuming user has access or repo is public, otherwise might need SSH key setup
-    # If this fails, user should manually clone first
-    git clone https://github.com/your-username/codeyun.git "$PROJECT_DIR"
+# We assume the user is already in the project directory or has cloned it
+# If the script is run from inside the project, PROJECT_DIR should be PWD
+# But we need to handle cases where user runs it from outside
+
+# Detect if we are inside the project (check for pyproject.toml or similar)
+if [ -f "pyproject.toml" ]; then
+    PROJECT_DIR=$(pwd)
+    echo ">>> Running inside project directory: $PROJECT_DIR"
+else
+    # Fallback to home/codeyun if not inside
+    PROJECT_DIR="$HOME/codeyun"
+    if [ ! -d "$PROJECT_DIR" ]; then
+        echo ">>> Project directory not found at $PROJECT_DIR and not in current directory."
+        echo ">>> Please run this script from inside the project root."
+        exit 1
+    fi
 fi
 
 echo ">>> Syncing backend dependencies with uv..."
@@ -46,6 +56,23 @@ echo ">>> Building frontend..."
 cd "$PROJECT_DIR/frontend"
 npm install
 npm run build
+
+echo ">>> Checking environment configuration..."
+if [ ! -f .env ]; then
+    echo ">>> Creating .env from example..."
+    cp .env.example .env
+    
+    # Generate a random secret key
+    RANDOM_KEY=$(openssl rand -hex 32)
+    
+    # Replace the placeholder with the random key
+    # Use different delimiter for sed to avoid issues with special chars
+    sed -i "s|CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string|CODEYUN_SECRET_KEY=$RANDOM_KEY|g" .env
+    
+    echo "✅ Generated new CODEYUN_SECRET_KEY in .env"
+else
+    echo "✅ .env file already exists."
+fi
 
 # 4. Setup Systemd Service (User Level)
 echo ">>> Setting up systemd service..."

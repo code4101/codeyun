@@ -160,7 +160,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted, nextTick, computed } from 'vue';
+import { ref, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import Sortable from 'sortablejs';
 
@@ -296,6 +296,7 @@ const drawShapeOnCanvas = (index: number, code: string) => {
   // We can force update by key or watch?
   // Actually, the ref callback is called on mount/update.
   // Let's just ensure we trigger reactivity.
+  console.log('drawShapeOnCanvas', index, code);
 };
 
 // Data Management
@@ -536,7 +537,6 @@ const runCalc = () => {
         }
         
         let it = calcItems[idx];
-        let placed = false;
         
         // Try to place
         for (let r = 0; r <= R - it.p.h; r++) {

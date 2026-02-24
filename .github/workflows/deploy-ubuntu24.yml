@@ -40,11 +40,34 @@ jobs:
           port: ${{ secrets.DEPLOY_SSH_PORT }}
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
           script: |
+            # 确保目标目录存在
+            if [ ! -d "${{ secrets.DEPLOY_APP_DIR }}" ]; then
+                echo ">>> Target directory not found. Creating..."
+                mkdir -p ${{ secrets.DEPLOY_APP_DIR }}
+            fi
+            
             # 进入项目目录
             cd ${{ secrets.DEPLOY_APP_DIR }}
             
-            # 确保脚本有执行权限
-            chmod +x deploy/update.sh
+            # 检查是否是 Git 仓库
+            if [ ! -d ".git" ]; then
+              echo ">>> Git repository not found. Please clone the repo manually first!"
+              echo ">>> Run on server: git clone https://github.com/${{ github.repository }}.git ${{ secrets.DEPLOY_APP_DIR }}"
+              exit 1
+            fi
             
-            # 执行更新脚本（使用 uv sync 和 systemd 重启）
-            ./deploy/update.sh
+            # 强制拉取最新代码（防止 update.sh 本身是旧的或不存在）
+            echo ">>> Fetching latest code..."
+            git fetch --all
+            git reset --hard origin/main
+            
+            # 确保脚本有执行权限
+            if [ -f "deploy/update.sh" ]; then
+                chmod +x deploy/update.sh
+                # 执行更新脚本
+                ./deploy/update.sh
+            else
+                echo "❌ Error: deploy/update.sh not found after git pull."
+                ls -R deploy
+                exit 1
+            fi

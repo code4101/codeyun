@@ -542,26 +542,6 @@ const handleAddDevice = async () => {
   }
 };
 
-const handleAddLocalDevice = async () => {
-    try {
-        // Add localhost
-        await taskStore.addDevice({
-            id: 'local-device-' + Math.floor(Math.random() * 10000), // Should ideally get system ID
-            name: 'Local Device',
-            type: 'LocalDevice',
-            // url is optional for local
-        });
-        ElMessage.success('Local device added');
-        deviceDialogVisible.value = false;
-        // Select it
-        if (taskStore.devices.length > 0) {
-            currentDeviceId.value = taskStore.devices[taskStore.devices.length - 1].id;
-        }
-    } catch (err: any) {
-        ElMessage.error(err.response?.data?.detail || 'Failed to add local device');
-    }
-};
-
 const handleDeleteDevice = async (device: Device) => {
   try {
     await ElMessageBox.confirm(`确定要移除设备 "${device.name}" 的关联吗? (不会影响设备本身运行)`, '警告', {
@@ -611,11 +591,6 @@ const handleDelete = async (task: Task) => {
 
 const viewLogs = (task: Task) => {
   router.push({ name: 'TaskLogs', params: { id: task.id }, query: { device_id: task.device_id } });
-};
-
-const getDeviceName = (id?: string) => {
-  if (!id) return 'Unknown';
-  return id;
 };
 
 const formatDuration = (seconds: number | undefined | null) => {

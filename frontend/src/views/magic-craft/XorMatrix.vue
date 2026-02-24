@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue';
+import { ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 
 const rows = ref(3);
@@ -44,7 +44,7 @@ const solve = () => {
   
   for (let r = 0; r < R; r++) {
     for (let c = 0; c < C; c++) {
-      const i = r * C + c; // Current cell index (equation index)
+      // const i = r * C + c; // Current cell index (equation index) - Unused
       const rowArr = new Array(N + 1).fill(0);
       
       // Fill A part (columns represent presses)
