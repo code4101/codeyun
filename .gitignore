@@ -46,7 +46,8 @@ backend/data/
 *.log
 .DS_Store
 /.trae
-tools/
+# tools/
+
 
 # Environment Variables
 .env

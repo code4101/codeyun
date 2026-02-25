@@ -29,6 +29,16 @@ if ! command -v npm &> /dev/null; then
     exit 1
 fi
 
+# Check Node version (v20+ required for Vite 6+)
+NODE_VERSION=$(node -v | cut -d. -f1 | tr -d 'v')
+if [ "$NODE_VERSION" -lt 20 ]; then
+    echo "⚠️ Node.js version $NODE_VERSION is too old. Upgrading to v20..."
+    # Install NodeSource repo and upgrade
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+    echo "✅ Node.js upgraded to $(node -v)"
+fi
+
 # 3. Setup Project Environment
 # We assume the user is already in the project directory or has cloned it
 # If the script is run from inside the project, PROJECT_DIR should be PWD
