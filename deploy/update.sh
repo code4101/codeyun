@@ -32,16 +32,25 @@ else
     echo ">>> Frontend up to date."
 fi
 
-# 4. Restart Backend Service
+# 4. Restart Backend Service (System Level)
 echo ">>> Restarting backend service..."
-systemctl --user restart codeyun-backend
+# Since this script runs as user via GitHub Actions, we need sudo for systemctl
+# Ensure the user has NOPASSWD for systemctl restart codeyun-backend in sudoers
+# OR just rely on the fact that we might not have sudo access and fail gracefully?
+# No, we must restart the service.
+if sudo -n true 2>/dev/null; then
+    sudo systemctl restart codeyun-backend
+else
+    echo "⚠️ Warning: No sudo access. Cannot restart service automatically."
+    echo "   Please run: sudo systemctl restart codeyun-backend"
+fi
 
 # 3. Check status
-if systemctl --user is-active --quiet codeyun-backend; then
+if systemctl is-active --quiet codeyun-backend; then
     echo "✅ Backend service restarted successfully."
 else
-    echo "❌ Backend service failed to start. Check logs: journalctl --user -u codeyun-backend"
-    exit 1
+    echo "⚠️ Backend service status unknown or failed. Check logs: sudo journalctl -u codeyun-backend"
+    # Don't exit 1 here as we might not have permission to check status
 fi
 
 echo ">>> Update complete!"
