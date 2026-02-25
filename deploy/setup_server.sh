@@ -89,29 +89,44 @@ else
     echo "✅ .env file already exists."
 fi
 
-# 4. Setup Systemd Service (User Level)
+# 4. Setup Systemd Service (System Level)
 echo ">>> Setting up systemd service..."
-mkdir -p "$HOME/.config/systemd/user"
 
-# Replace %h with actual home if needed, but systemd supports %h natively
-# However, we need to ensure the service file uses dynamic paths if not using %h
-cp "$PROJECT_DIR/deploy/systemd/codeyun-backend.service" "$HOME/.config/systemd/user/"
+SERVICE_FILE="/etc/systemd/system/codeyun-backend.service"
 
-# Reload systemd and enable service
-systemctl --user daemon-reload
-systemctl --user enable codeyun-backend
-systemctl --user restart codeyun-backend
+# Generate service file content dynamically to fix paths
+# Use the detected PROJECT_DIR and current USER (who invoked sudo)
+REAL_USER=${SUDO_USER:-$USER}
+USER_HOME=$(eval echo ~$REAL_USER)
 
-echo ">>> Enabling Linger for $CURRENT_USER (requires sudo)..."
-# This ensures user services keep running after logout
-if ! loginctl show-user "$CURRENT_USER" --property=Linger | grep -q "yes"; then
-    sudo loginctl enable-linger "$CURRENT_USER" || echo "⚠️ Warning: Could not enable linger. Service might stop after logout."
-else
-    echo "✅ Linger already enabled."
-fi
+# Override PROJECT_DIR if needed (e.g. if script ran as root but project is in user home)
+# But we already set PROJECT_DIR above. Let's ensure it's absolute.
+# And ensure uv path is correct
 
-echo "✅ Backend service restarted via systemd."
-echo "   Status: systemctl --user status codeyun-backend"
+cat <<EOF | sudo tee "$SERVICE_FILE"
+[Unit]
+Description=CodeYun Backend Service
+After=network.target
+
+[Service]
+User=$REAL_USER
+Group=$REAL_USER
+WorkingDirectory=$PROJECT_DIR
+# Use uv to run the app directly
+ExecStart=$USER_HOME/.local/bin/uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
+Restart=always
+EnvironmentFile=$PROJECT_DIR/.env
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd and restart service
+sudo systemctl daemon-reload
+sudo systemctl enable codeyun-backend
+sudo systemctl restart codeyun-backend
+
+echo "✅ Systemd service installed and started."
 
 # 5. Setup Nginx (Requires Sudo)
 NGINX_CONF="/etc/nginx/sites-available/code4101.com"

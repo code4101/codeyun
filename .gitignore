@@ -51,5 +51,6 @@ backend/data/
 
 # Environment Variables
 .env
+# .env.example - should be committed
 .env.local
 .env.*.local
