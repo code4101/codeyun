@@ -70,7 +70,12 @@ npm run build
 echo ">>> Checking environment configuration..."
 if [ ! -f .env ]; then
     echo ">>> Creating .env from example..."
-    cp .env.example .env
+    if [ -f .env.example ]; then
+        cp .env.example .env
+    else
+        echo "⚠️ .env.example not found, creating a minimal .env..."
+        echo "CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string" > .env
+    fi
     
     # Generate a random secret key
     RANDOM_KEY=$(openssl rand -hex 32)
