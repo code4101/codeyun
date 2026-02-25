@@ -3,9 +3,9 @@ set -e
 
 # CodeYun Update Script (Run by GitHub Actions)
 
-PROJECT_DIR="$HOME/codeyun"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-echo ">>> Starting update process..."
+echo ">>> Starting update process in $PROJECT_DIR..."
 cd "$PROJECT_DIR"
 
 # 1. Update Code
