@@ -51,6 +51,18 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'notes/star-map',
+        name: 'StarMapNotes',
+        component: () => import('@/views/notes/TaskManager.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'notes/infinite-canvas',
+        name: 'InfiniteCanvas',
+        component: () => import('@/views/tools/InfiniteCanvas.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'cluster',
         name: 'ClusterManager',
         component: () => import('@/views/TaskManager.vue'),
@@ -60,12 +72,6 @@ const routes: Array<RouteRecordRaw> = [
         path: 'tools/password-generator',
         name: 'PasswordGenerator',
         component: () => import('@/views/tools/PasswordGenerator.vue'),
-        meta: { requiresAuth: false },
-      },
-      {
-        path: 'tools/infinite-canvas',
-        name: 'InfiniteCanvas',
-        component: () => import('@/views/tools/InfiniteCanvas.vue'),
         meta: { requiresAuth: false },
       },
       {

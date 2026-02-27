@@ -54,3 +54,4 @@ backend/data/
 # .env.example - should be committed
 .env.local
 .env.*.local
+/backend/static

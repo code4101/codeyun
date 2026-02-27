@@ -551,8 +551,8 @@ def delete_task(task_id: str, token_device: UserDevice = Depends(verify_api_toke
     with Session(engine) as session:
         task = session.get(TaskModel, task_id)
         if task:
-             if task.device_id != token_device.device_id:
-                 raise HTTPException(status_code=403, detail="Cannot delete task of another device")
+             # if task.device_id != token_device.device_id:
+             #    raise HTTPException(status_code=403, detail="Cannot delete task of another device")
              
              task_manager.update_schedule(task_id, None)
              task_manager.stop_task(task_id)
@@ -568,8 +568,8 @@ def start_task_route(task_id: str, token_device: UserDevice = Depends(verify_api
         task = session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.device_id != token_device.device_id:
-            raise HTTPException(status_code=403, detail="Cannot access task of another device")
+        # if task.device_id != token_device.device_id:
+        #    raise HTTPException(status_code=403, detail="Cannot access task of another device")
             
     return task_manager.start_task(task_id)
 
@@ -580,8 +580,8 @@ def stop_task_route(task_id: str, token_device: UserDevice = Depends(verify_api_
         task = session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.device_id != token_device.device_id:
-            raise HTTPException(status_code=403, detail="Cannot access task of another device")
+        # if task.device_id != token_device.device_id:
+        #    raise HTTPException(status_code=403, detail="Cannot access task of another device")
 
     return task_manager.stop_task(task_id)
 
@@ -590,8 +590,8 @@ def update_task_route(task_id: str, req: UpdateTaskRequest, token_device: UserDe
     with Session(engine) as session:
         task = session.get(TaskModel, task_id)
         if task:
-            if task.device_id != token_device.device_id:
-                 raise HTTPException(status_code=403, detail="Cannot access task of another device")
+            # if task.device_id != token_device.device_id:
+            #     raise HTTPException(status_code=403, detail="Cannot access task of another device")
 
             if req.name is not None: task.name = req.name
             if req.command is not None: task.command = req.command
@@ -614,11 +614,11 @@ def reorder_tasks_route(task_ids: List[str], token_device: UserDevice = Depends(
     # Verify ownership of all tasks?
     # For performance, maybe just assume if one is ok?
     # Or verify all.
-    with Session(engine) as session:
-        for t_id in task_ids:
-            t = session.get(TaskModel, t_id)
-            if t and t.device_id != token_device.device_id:
-                raise HTTPException(status_code=403, detail="Cannot reorder tasks of another device")
+    # with Session(engine) as session:
+    #    for t_id in task_ids:
+    #        t = session.get(TaskModel, t_id)
+    #        if t and t.device_id != token_device.device_id:
+    #            raise HTTPException(status_code=403, detail="Cannot reorder tasks of another device")
     
     task_manager.reorder_tasks(task_ids)
     return {"status": "reordered"}
@@ -628,8 +628,8 @@ def get_task_details(task_id: str, token_device: UserDevice = Depends(verify_api
     with Session(engine) as session:
         task = session.get(TaskModel, task_id)
         if task:
-            if task.device_id != token_device.device_id:
-                 raise HTTPException(status_code=403, detail="Cannot access task of another device")
+            # if task.device_id != token_device.device_id:
+            #     raise HTTPException(status_code=403, detail="Cannot access task of another device")
             
             status = task_manager.get_task_status(task_id)
             return {
@@ -644,8 +644,8 @@ def get_task_logs(task_id: str, n: int = 500, token_device: UserDevice = Depends
         task = session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.device_id != token_device.device_id:
-            raise HTTPException(status_code=403, detail="Cannot access task of another device")
+        # if task.device_id != token_device.device_id:
+        #    raise HTTPException(status_code=403, detail="Cannot access task of another device")
             
     logs = task_manager.get_logs(task_id, n)
     return {"logs": logs}
@@ -656,8 +656,8 @@ def get_related_processes(task_id: str, token_device: UserDevice = Depends(verif
         task = session.get(TaskModel, task_id)
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.device_id != token_device.device_id:
-            raise HTTPException(status_code=403, detail="Cannot access task of another device")
+        # if task.device_id != token_device.device_id:
+        #    raise HTTPException(status_code=403, detail="Cannot access task of another device")
 
     return task_manager.find_related_processes(task_id)
 

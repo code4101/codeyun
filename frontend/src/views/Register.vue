@@ -72,6 +72,10 @@
         <div class="auth-links">
           <router-link to="/login">已有账号？去登录</router-link>
         </div>
+        
+        <div class="disclaimer">
+          <p>友情提示：本项目仅为个人实验性质，不对个人数据隐私及数据备份安全负责。请勿存储敏感信息，并定期自行备份重要数据。</p>
+        </div>
       </el-form>
     </el-card>
   </div>
@@ -162,5 +166,15 @@ const handleRegister = async () => {
 
 .auth-links a:hover {
   text-decoration: underline;
+}
+
+.disclaimer {
+  margin-top: 30px;
+  padding-top: 15px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+  text-align: justify;
 }
 </style>

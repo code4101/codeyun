@@ -86,3 +86,59 @@ class UserDeviceUpdate(BaseModel):
     alias: Optional[str] = None
     is_active: Optional[bool] = None
     name: Optional[str] = None # For device renaming
+
+# Note Schemas
+class NoteCreate(BaseModel):
+    title: str = "Untitled"
+    content: str = ""
+    weight: int = 100
+    start_at: Optional[float] = None
+    task_status: Optional[str] = None
+
+class NoteUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    weight: Optional[int] = None
+    start_at: Optional[float] = None
+    task_status: Optional[str] = None
+
+class NoteRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    user_id: int
+    title: str
+    content: str
+    weight: int = 100
+    task_status: Optional[str] = None
+    # parent_id: Optional[str] # Deprecated
+    # Position removed
+    created_at: float
+    updated_at: float
+    start_at: float
+
+class NoteListRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    user_id: int
+    title: str
+    # content is excluded here
+    weight: int = 100
+    task_status: Optional[str] = None
+    created_at: float
+    updated_at: float
+    start_at: float
+
+# Edge Schemas
+class EdgeCreate(BaseModel):
+    source_id: str
+    target_id: str
+    label: Optional[str] = None
+
+class EdgeRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    user_id: int
+    source_id: str
+    target_id: str
+    label: Optional[str]
+    created_at: float

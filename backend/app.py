@@ -5,10 +5,13 @@ from backend.api.agent import router as agent_router
 from backend.api.filesystem import router as filesystem_router
 from backend.api.device import router as device_router
 from backend.api.auth import router as auth_router
+from backend.api.notes import router as notes_router
+from backend.api.upload import router as upload_router
 from backend.core.auth import verify_api_token
 from backend.core.device import device_manager
 import uvicorn
 import os
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="CodeYun Backend", description="Local backend for CodeYun tools")
 
@@ -35,6 +38,14 @@ app.include_router(device_router, prefix="/api/devices", tags=["devices"]) # Use
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
 app.include_router(task_router, prefix="/api/task", tags=["task"])
 app.include_router(agent_router, prefix="/api/agent", tags=["agent"]) # Remove global dependency, handle inside
+app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
+app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+
+# Mount static files
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+if not os.path.exists(static_dir):
+    os.makedirs(static_dir)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")
 def read_root():

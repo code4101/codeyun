@@ -3,6 +3,10 @@ import os
 import subprocess
 import shutil
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 """
 ================================================================================
@@ -29,7 +33,15 @@ import sys
 
 # 配置路径
 # DSP 计算器源码目录 (独立仓库路径)
-DSP_SOURCE_DIR = r"D:\home\chenkunze\slns+\dsp-calc"
+# 优先从环境变量读取，否则使用默认值（仅供参考，建议在 .env 中配置）
+DEFAULT_DSP_DIR = r"D:\home\chenkunze\slns+\dsp-calc"
+DSP_SOURCE_DIR = os.getenv("DSP_SOURCE_DIR", DEFAULT_DSP_DIR)
+
+if not os.path.exists(DSP_SOURCE_DIR):
+    print(f"警告: DSP 源码目录不存在: {DSP_SOURCE_DIR}")
+    print("请在 .env 文件中配置 DSP_SOURCE_DIR 或检查路径。")
+    # 不立即退出，让后续检查决定
+
 # CodeYun 前端静态资源目录
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CODEYUN_PUBLIC_DIR = os.path.join(PROJECT_ROOT, "frontend", "public")

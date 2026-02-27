@@ -21,4 +21,6 @@ codeyun-backend = { workspace = true }
 dev = [
     "httpx>=0.28.1",
     "pytest>=9.0.2",
+    "python-dotenv>=1.0.0",
+    "paramiko>=3.4.0",
 ]

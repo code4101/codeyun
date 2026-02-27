@@ -54,6 +54,10 @@
         <div class="auth-links">
           <router-link to="/register">没有账号？去注册</router-link>
         </div>
+        
+        <div class="disclaimer">
+          <p>友情提示：本项目仅为个人实验性质，不对个人数据隐私及数据备份安全负责。请勿存储敏感信息，并定期自行备份重要数据。</p>
+        </div>
       </el-form>
     </el-card>
   </div>
@@ -86,7 +90,8 @@ const handleLogin = async () => {
     if (valid) {
       const success = await userStore.login(form.username, form.password);
       if (success) {
-        router.push('/');
+        const redirect = router.currentRoute.value.query.redirect as string;
+        router.push(redirect || '/');
       }
     }
   });
@@ -130,5 +135,15 @@ const handleLogin = async () => {
 
 .auth-links a:hover {
   text-decoration: underline;
+}
+
+.disclaimer {
+  margin-top: 30px;
+  padding-top: 15px;
+  border-top: 1px solid #f0f0f0;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.6;
+  text-align: justify;
 }
 </style>

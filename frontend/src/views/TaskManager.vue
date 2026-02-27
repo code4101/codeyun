@@ -709,7 +709,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <DocPage title="集群管理" :description="`管理集群节点及其后台任务。\n\n注意：每台设备的配置（名称、Python路径）及任务列表是全平台共享的，即对这台机器的统一状态管理。所有用户操作的都是同一份任务列表，请谨慎修改，以免影响他人使用。`">
+  <DocPage title="集群管理" :description="`管理集群节点及其后台任务。\n\n注意：每台设备的任务列表是全平台共享的，即对这台机器的统一状态管理。所有用户操作的都是同一份任务列表，请谨慎修改，以免影响他人使用。`">
     <!-- Device Tabs -->
     <el-tabs v-model="currentDeviceId" type="card" class="device-tabs" ref="tabsRef">
       <el-tab-pane

@@ -60,5 +60,42 @@ class Task(SQLModel, table=True):
     order: Optional[int] = Field(default=0)
     created_at: float = Field(default_factory=time.time)
 
+# --- Note Models ---
+
+class NoteNode(SQLModel, table=True):
+    __table_args__ = {'extend_existing': True}
+    id: Optional[str] = Field(default=None, primary_key=True) # Using UUID string usually, or int? Frontend used string timestamp. Let's use string for flexibility.
+    user_id: int = Field(foreign_key="user.id", index=True)
+    title: Optional[str] = Field(default="Untitled")
+    content: str = Field(default="") # HTML content
+    
+    # Weight for node size scaling (area based). Default 100.
+    weight: int = Field(default=100)
+    
+    # Task status: null (normal), 'todo', 'done'
+    task_status: Optional[str] = Field(default=None, index=True)
+    
+    # Visual coordinates for graph are dynamically calculated by frontend layout algorithm
+    # No persistent storage for position in backend as requested.
+    
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    start_at: float = Field(default_factory=time.time)
+
+class NoteEdge(SQLModel, table=True):
+    """
+    Directed edge between two NoteNodes.
+    """
+    __table_args__ = {'extend_existing': True}
+    id: Optional[str] = Field(default=None, primary_key=True) # UUID
+    user_id: int = Field(foreign_key="user.id", index=True)
+    
+    source_id: str = Field(foreign_key="notenode.id", index=True)
+    target_id: str = Field(foreign_key="notenode.id", index=True)
+    
+    label: Optional[str] = None # Edge label (optional)
+    
+    created_at: float = Field(default_factory=time.time)
+
 # --- Pydantic Models for API (Optional, if we want strict separation) ---
 # For simplicity, we can reuse SQLModel classes as Pydantic models in FastAPI

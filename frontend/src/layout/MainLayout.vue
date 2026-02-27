@@ -3,7 +3,7 @@ import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
 import {
-  // Document,
+  Document,
   Menu as IconMenu,
   // Location,
   Monitor,
@@ -11,15 +11,10 @@ import {
   SwitchButton,
   // Cellphone,
   MagicStick,
-  Star,
-  // Tools,
   Box,
   Expand,
   Fold,
-  Lightning,
-  Sunny,
-  VideoPlay,
-  Connection
+  InfoFilled
 } from '@element-plus/icons-vue';
 
 const route = useRoute();
@@ -88,7 +83,6 @@ const handleLogin = () => {
               <span>综合工具</span>
             </template>
             <el-menu-item index="/tools/password-generator">随机密码</el-menu-item>
-            <el-menu-item index="/tools/infinite-canvas">无限画布</el-menu-item>
           </el-sub-menu>
           
           <el-sub-menu index="game-tools">
@@ -98,23 +92,29 @@ const handleLogin = () => {
             </template>
             <el-sub-menu index="fanxiu">
               <template #title>
-                <el-icon><Lightning /></el-icon>
                 <span>凡修手游</span>
               </template>
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
               <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/dsp/calculator">
-              <el-icon><Sunny /></el-icon>
               <span>戴森球计划</span>
             </el-menu-item>
             <el-sub-menu index="magic-craft">
               <template #title>
-                <el-icon><Star /></el-icon>
                 <span>魔法工艺</span>
               </template>
               <el-menu-item index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
             </el-sub-menu>
+          </el-sub-menu>
+
+          <el-sub-menu index="note-tools">
+            <template #title>
+              <el-icon><Document /></el-icon>
+              <span>笔记工具</span>
+            </template>
+            <el-menu-item index="/notes/star-map">星图笔记</el-menu-item>
+            <el-menu-item index="/notes/infinite-canvas">无限画布</el-menu-item>
           </el-sub-menu>
 
           <el-menu-item index="/cluster" v-if="userStore.isAuthenticated">
@@ -122,6 +122,20 @@ const handleLogin = () => {
             <template #title>集群管理</template>
           </el-menu-item>
         </el-menu>
+        
+        <div class="aside-disclaimer" :class="{ 'collapsed': isCollapse }">
+          <el-tooltip
+            effect="dark"
+            content="个人实验项目：不对数据隐私及备份安全负责，请勿存储敏感信息并定期备份数据。"
+            placement="right"
+            :disabled="!isCollapse"
+          >
+            <div class="disclaimer-content">
+              <el-icon><InfoFilled /></el-icon>
+              <span v-if="!isCollapse">免责：实验项目，勿存私密敏感信息，请自行备份。</span>
+            </div>
+          </el-tooltip>
+        </div>
       </el-aside>
       <el-container>
         <el-header>
@@ -219,5 +233,32 @@ const handleLogin = () => {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.aside-disclaimer {
+  padding: 15px;
+  border-top: 1px solid #e6e6e6;
+  background-color: #f9fafc;
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.4;
+}
+
+.aside-disclaimer.collapsed {
+  padding: 10px;
+  display: flex;
+  justify-content: center;
+}
+
+.disclaimer-content {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.disclaimer-content .el-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 </style>
