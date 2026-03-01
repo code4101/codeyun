@@ -9,6 +9,7 @@ from backend.api.notes import router as notes_router
 from backend.api.upload import router as upload_router
 from backend.core.auth import verify_api_token
 from backend.core.device import device_manager
+from backend.db import init_db
 import uvicorn
 import os
 from fastapi.staticfiles import StaticFiles
@@ -26,10 +27,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    # Initialize and migrate database
+    init_db()
     # Ensure device manager is loaded and local token exists
-    # This is redundant if device_manager is instantiated at module level, 
-    # but good for explicit initialization order if needed.
-    # device_manager.load() is called in __new__, so it's already loaded when imported.
     pass
 
 # Include routers with global authentication
