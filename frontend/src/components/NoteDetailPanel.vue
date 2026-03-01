@@ -188,7 +188,7 @@ watch(() => props.noteId, async (newId) => {
     await loadNote(newId);
 }, { immediate: true });
 
-const loadNote = async (id: string) => {
+async function loadNote(id: string) {
     saveStatus.value = 'saved';
     showHistory.value = false;
 
@@ -214,7 +214,7 @@ const loadNote = async (id: string) => {
         start_at: detailed.start_at,
         node_type: detailed.node_type || null
     };
-};
+}
 
 const checkAndSave = () => {
     if (!isReady.value || !currentNote.value || !originalData.value) return;

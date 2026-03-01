@@ -27,8 +27,5 @@
 
 ## 脚本说明
 
-*   **`check_yun_server.py`**: 检查服务器上的 Nginx 状态、端口占用情况及关键日志。
-*   **`check_nginx_conf.py`**: 验证 Nginx 配置文件及站点设置是否正确。
-*   **`fix_nginx_final.py`**: 执行 Nginx 配置修复操作（如路径修正、权限调整、重启服务）。
-*   **`fix_yun_server.py`**: 综合修复服务器常见问题。
 *   **`build_dsp_static.py`**: 自动化构建 DSP 计算器前端并部署到静态资源目录。
+*   *(其他运维脚本已归档或移除，请使用 `skills/yun-server` 技能或手动维护)*
