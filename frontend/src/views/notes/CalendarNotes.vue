@@ -22,7 +22,7 @@
     </div>
 
     <!-- Calendar Grid -->
-    <div class="calendar-container">
+    <div class="calendar-container" :style="{ height: calendarHeight + 'px' }">
       <!-- Weekday Headers -->
       <div class="weekday-header">
         <div v-for="day in weekDays" :key="day" class="weekday-cell">{{ day }}</div>
@@ -55,7 +55,7 @@
               :key="note.id" 
               class="note-item"
               :style="getNoteStyle(note)"
-              @click="openNote(note)"
+              @click.stop="openNote(note)"
             >
               <span class="note-title" :style="getNoteTitleStyle(note)">{{ note.title }}</span>
             </div>
@@ -65,259 +65,101 @@
         <!-- Empty cells for padding at end (optional, to fill row) -->
         <div v-for="n in endPadding" :key="'end-pad-' + n" class="day-cell padding-cell"></div>
       </div>
+
+      <!-- Height Resizer Handle -->
+      <div class="calendar-resizer" @mousedown="startResizing">
+          <div class="resizer-indicator"></div>
+      </div>
+    </div>
+
+    <!-- Bottom: Editor -->
+    <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
+      <NoteDetailPanel 
+        v-if="currentNoteId" 
+        :noteId="currentNoteId" 
+        class="editor-wrapper"
+        @update="handleNoteUpdate"
+        @delete="handleNoteDelete"
+      />
+      <div v-else class="empty-state">
+        <el-empty description="请在日历中选择一个节点" />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { Back, Refresh, ArrowLeft, ArrowRight } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
+import { getNodeConfig } from '@/utils/nodeConfig';
+import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 
 const router = useRouter();
 const noteStore = useNoteStore();
 
 const currentMonth = ref(new Date());
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+const currentNoteId = ref('');
 
-const daysInMonth = computed(() => {
-  const year = currentMonth.value.getFullYear();
-  const month = currentMonth.value.getMonth();
-  const date = new Date(year, month, 1);
-  const days = [];
-  
-  while (date.getMonth() === month) {
-    const solar = Solar.fromDate(date);
-    const lunar = solar.getLunar();
-    const festivals = [...lunar.getFestivals(), ...solar.getFestivals()];
-    const jieQi = lunar.getJieQi();
-    const holiday = HolidayUtil.getHoliday(year, month + 1, date.getDate());
-    
-    // Determine if it's a rest day: 
-    // 1. If holiday exists, use holiday's work/rest status
-    // 2. If no holiday, use weekend status (Sat/Sun)
-    let isRest = false;
-    if (holiday) {
-      isRest = !holiday.isWork();
-    } else {
-      const dayOfWeek = date.getDay();
-      isRest = dayOfWeek === 0 || dayOfWeek === 6;
+// Layout state
+const calendarHeight = ref(600);
+const isResizing = ref(false);
+const isManualResized = ref(false);
+const startY = ref(0);
+const startHeight = ref(0);
+
+const calculateOptimalHeight = () => {
+    const vh = window.innerHeight;
+    const reservedHeight = 100; // Header ~60px + margins
+    // Default to 60% height for calendar
+    return Math.max(400, Math.floor((vh - reservedHeight) * 0.6));
+};
+
+const updateAdaptiveHeight = () => {
+    if (!isManualResized.value) {
+        calendarHeight.value = calculateOptimalHeight();
     }
-
-    days.push({
-      date: new Date(date),
-      dayNum: date.getDate(),
-      dateStr: date.toISOString().split('T')[0],
-      lunarDay: lunar.getDayInChinese(),
-      lunarMonth: lunar.getMonthInChinese(),
-      festival: festivals.length > 0 ? festivals[0] : null,
-      jieQi: jieQi || null,
-      isRest: isRest,
-      holidayName: holiday ? holiday.getName() : null
-    });
-    date.setDate(date.getDate() + 1);
-  }
-  return days;
-});
-
-const startPadding = computed(() => {
-  const year = currentMonth.value.getFullYear();
-  const month = currentMonth.value.getMonth();
-  const firstDay = new Date(year, month, 1).getDay();
-  // Monday is 1, Sunday is 0. We want Monday as start (0 padding if Mon, 6 padding if Sun)
-  // map: 1->0, 2->1, ... 6->5, 0->6
-  return firstDay === 0 ? 6 : firstDay - 1;
-});
-
-const endPadding = computed(() => {
-  const totalCells = startPadding.value + daysInMonth.value.length;
-  const remainder = totalCells % 7;
-  return remainder === 0 ? 0 : 7 - remainder;
-});
-
-const formatMonthLabel = (date: Date) => {
-  return `${date.getFullYear()}年 ${date.getMonth() + 1}月`;
 };
 
-const onMonthChange = () => {
-  // Logic to maybe fetch data for specific range if backend supports it
-  // For now we rely on store having data or fetch all
-  refreshData();
-};
-
-const prevMonth = () => {
-  const d = new Date(currentMonth.value);
-  d.setMonth(d.getMonth() - 1);
-  currentMonth.value = d;
-  onMonthChange();
-};
-
-const nextMonth = () => {
-  const d = new Date(currentMonth.value);
-  d.setMonth(d.getMonth() + 1);
-  currentMonth.value = d;
-  onMonthChange();
-};
-
-const goToToday = () => {
-  currentMonth.value = new Date();
-  onMonthChange();
-};
-
-const isToday = (date: Date) => {
-  const today = new Date();
-  return date.getDate() === today.getDate() &&
-         date.getMonth() === today.getMonth() &&
-         date.getFullYear() === today.getFullYear();
-};
-
-const getNotesForDay = (date: Date) => {
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-  
-  const startTs = startOfDay.getTime();
-  const endTs = endOfDay.getTime();
-  
-  return noteStore.notes.filter(n => n.start_at >= startTs && n.start_at <= endTs)
-    .sort((a, b) => a.start_at - b.start_at);
-};
-
-const refreshData = async () => {
-  // Ideally we should fetch by range, but existing API might be all or nothing
-  // For now, reuse the fetch logic.
-  // We can construct a range for the current month view
-  const year = currentMonth.value.getFullYear();
-  const month = currentMonth.value.getMonth();
-  
-  // Get start of view (including padding)
-  const startView = new Date(year, month, 1);
-  startView.setDate(startView.getDate() - startPadding.value);
-  startView.setHours(0,0,0,0);
-  
-  // Get end of view
-  const endView = new Date(year, month + 1, 0); // last day of month
-  endView.setDate(endView.getDate() + endPadding.value);
-  endView.setHours(23,59,59,999);
-  
-  await noteStore.fetchNotes({
-    created_start: startView.getTime(),
-    created_end: endView.getTime()
-  });
-};
-
-// Styling Logic extracted from CustomNode.vue
-const getNoteStyle = (note: NoteNode) => {
-    const style: any = {
-        borderWidth: '1px',
-        borderStyle: 'solid',
-        borderRadius: '4px',
-        marginBottom: '4px',
-        padding: '2px 4px',
-        cursor: 'pointer',
-        fontSize: '12px',
-        backgroundColor: '#fff',
-        borderColor: '#dcdfe6'
-    };
-
-    const type = note.node_type;
-
-    if (type === 'project') {
-        style.borderColor = '#9c27b0';
-        style.borderWidth = '2px';
-        style.backgroundColor = '#f3e5f5';
-    } else if (type === 'module') {
-        style.borderColor = '#ba68c8';
-        style.borderWidth = '2px';
-        style.backgroundColor = '#faf4fb';
-    } else if (type === 'todo') {
-        style.borderColor = '#409eff';
-        style.borderWidth = '1px';
-    } else if (type === 'doing') {
-        style.borderColor = '#e6a23c';
-        style.borderWidth = '1px';
-        style.backgroundColor = '#fdf6ec';
-    } else if (type === 'pre-done') {
-        style.borderColor = '#67c23a';
-        style.borderWidth = '1px';
-        style.borderStyle = 'dashed';
-        style.backgroundColor = '#f0f9eb';
-    } else if (type === 'done') {
-        style.borderColor = '#e6e6e6';
-        style.backgroundColor = '#fafafa';
-    } else if (type === 'delete') {
-        style.borderColor = '#dcdfe6';
-        style.backgroundColor = '#f5f7fa';
-        style.opacity = '0.6';
-    } else if (type === 'bug') {
-        style.borderColor = '#f56c6c';
-        style.backgroundColor = '#fef0f0';
-        style.borderWidth = '1px';
-    } else if (type === 'memo') {
-        style.borderColor = '#303133';
-        style.borderWidth = '1px';
-    }
+const startResizing = (e: MouseEvent) => {
+    isResizing.value = true;
+    isManualResized.value = true;
+    startY.value = e.clientY;
+    startHeight.value = calendarHeight.value;
     
-    return style;
+    window.addEventListener('mousemove', handleResizing);
+    window.addEventListener('mouseup', stopResizing);
+    document.body.style.userSelect = 'none';
 };
 
-const getNoteTitleStyle = (note: NoteNode) => {
-    const style: any = {
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-        display: 'block'
-    };
-    
-    const type = note.node_type;
-
-    if (type === 'project') {
-        style.color = '#7b1fa2';
-        style.fontWeight = 'bold';
-    } else if (type === 'module') {
-        style.color = '#9c27b0';
-        style.fontWeight = 'bold';
-    } else if (type === 'todo') {
-        style.color = '#409eff';
-    } else if (type === 'doing') {
-        style.color = '#e6a23c';
-        style.fontWeight = 'bold';
-    } else if (type === 'pre-done') {
-        style.color = '#67c23a';
-    } else if (type === 'done') {
-        style.color = '#909399';
-    } else if (type === 'delete') {
-        style.color = '#c0c4cc';
-        style.textDecoration = 'line-through';
-    } else if (type === 'bug') {
-        style.color = '#f56c6c';
-        style.fontWeight = 'bold';
-    } else if (type === 'memo') {
-        style.color = '#000000';
-        style.fontWeight = 'bold';
-    }
-    
-    return style;
+const handleResizing = (e: MouseEvent) => {
+    if (!isResizing.value) return;
+    const delta = e.clientY - startY.value;
+    const newHeight = Math.max(300, startHeight.value + delta);
+    calendarHeight.value = newHeight;
 };
 
-const openNote = (note: NoteNode) => {
-    // Navigate back to star map and focus/select this note?
-    // Or just show details?
-    // For now, let's navigate back to star map with query param to select it
-    // But StarNotes might not support query param selection yet. 
-    // Let's just stay here or maybe show a dialog. 
-    // Requirement says "display node list", doesn't specify interaction.
-    // I'll leave it as just visual for now, or maybe simple toast.
-    ElMessage.info(`节点: ${note.title}`);
+const stopResizing = () => {
+    isResizing.value = false;
+    window.removeEventListener('mousemove', handleResizing);
+    window.removeEventListener('mouseup', stopResizing);
+    document.body.style.userSelect = '';
 };
 
 onMounted(() => {
-  refreshData();
+    updateAdaptiveHeight();
+    window.addEventListener('resize', updateAdaptiveHeight);
+    refreshData();
 });
+
+onUnmounted(() => {
+    window.removeEventListener('resize', updateAdaptiveHeight);
+});
+
 </script>
 
 <style scoped>
@@ -479,4 +321,61 @@ onMounted(() => {
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
+  /* New styles for resizer and layout */
+  .calendar-container {
+    height: 600px; /* Default, overridden by style */
+    flex: none; /* Don't flex, use fixed height */
+    position: relative;
+  }
+
+  .calendar-resizer {
+    height: 8px;
+    width: 100%;
+    background-color: #f5f7fa;
+    cursor: ns-resize;
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 10;
+    transition: background-color 0.2s;
+    border-top: 1px solid #e6e6e6;
+  }
+
+  .calendar-resizer:hover {
+    background-color: #ecf5ff;
+  }
+
+  .resizer-indicator {
+    width: 40px;
+    height: 4px;
+    border-top: 1px solid #dcdfe6;
+    border-bottom: 1px solid #dcdfe6;
+  }
+
+  .editor-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background-color: #fff;
+    min-height: 400px;
+    border-top: 1px solid #ebeef5;
+  }
+
+  .editor-wrapper {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    padding: 20px;
+  }
+
+  .empty-state {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100%;
+    color: #909399;
+  }
 </style>

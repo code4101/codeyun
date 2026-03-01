@@ -26,6 +26,7 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
 import { computed } from 'vue'
+import { getNodeConfig } from '@/utils/nodeConfig'
 
 const props = defineProps<{
   data: {
@@ -43,46 +44,17 @@ const nodeStyle = computed(() => {
     const safeWeight = Math.max(10, weight);
     const scale = Math.sqrt(safeWeight / 100);
     
+    const config = getNodeConfig(props.data.node_type);
+    
     const style: any = {
         width: `${Math.round(BASE_WIDTH * scale)}px`,
         height: `${Math.round(BASE_HEIGHT * scale)}px`,
+        borderColor: config.borderColor,
+        borderWidth: config.borderWidth,
+        borderStyle: config.borderStyle,
+        background: config.backgroundColor,
+        opacity: config.opacity,
     };
-
-    if (props.data.node_type === 'project') {
-        style.borderColor = '#9c27b0'; // Purple for projects
-        style.borderWidth = '3px'; // Thicker border for project containers
-        style.background = '#f3e5f5'; // Very light purple background
-    } else if (props.data.node_type === 'module') {
-        style.borderColor = '#ba68c8'; // Lighter purple for modules
-        style.borderWidth = '2px';
-        style.background = '#faf4fb'; // Even lighter purple background
-    } else if (props.data.node_type === 'todo') {
-        style.borderColor = '#409eff';
-        style.borderWidth = '2px';
-    } else if (props.data.node_type === 'doing') {
-        style.borderColor = '#e6a23c'; // Warning orange
-        style.borderWidth = '2px';
-        style.background = '#fdf6ec'; // Light orange background
-    } else if (props.data.node_type === 'pre-done') {
-        style.borderColor = '#67c23a'; // Success green
-        style.borderWidth = '2px';
-        style.borderStyle = 'dashed'; // Dashed to indicate "pre" done
-        style.background = '#f0f9eb'; // Light green background
-    } else if (props.data.node_type === 'done') {
-        style.borderColor = '#e6e6e6';
-        style.background = '#fafafa';
-    } else if (props.data.node_type === 'delete') {
-        style.borderColor = '#dcdfe6';
-        style.background = '#f5f7fa';
-        style.opacity = '0.6';
-    } else if (props.data.node_type === 'bug') {
-        style.borderColor = '#f56c6c'; // Danger red
-        style.background = '#fef0f0'; // Light red background
-        style.borderWidth = '2px';
-    } else if (props.data.node_type === 'memo') {
-        style.borderColor = '#303133'; // Black/Dark gray
-        style.borderWidth = '2px';
-    }
     
     return style;
 });
@@ -95,37 +67,14 @@ const titleStyle = computed(() => {
     // Base font 14px, max 24px, min 10px
     const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
     
+    const config = getNodeConfig(props.data.node_type);
+    
     const style: any = {
-        fontSize: `${fontSize}px`
+        fontSize: `${fontSize}px`,
+        color: config.color,
+        fontWeight: config.fontWeight,
+        textDecoration: config.textDecoration,
     };
-
-    if (props.data.node_type === 'project') {
-        style.color = '#7b1fa2'; // Deep purple for project title
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'module') {
-        style.color = '#9c27b0'; // Purple for module title
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'todo') {
-        style.color = '#409eff'; // Blue for todo
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'doing') {
-        style.color = '#e6a23c'; // Warning orange
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'pre-done') {
-        style.color = '#67c23a'; // Success green
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'done') {
-        style.color = '#909399'; // Gray for done
-    } else if (props.data.node_type === 'delete') {
-        style.color = '#c0c4cc'; // Lighter gray for deleted
-        style.textDecoration = 'line-through';
-    } else if (props.data.node_type === 'bug') {
-        style.color = '#f56c6c'; // Red for bug
-        style.fontWeight = 'bold';
-    } else if (props.data.node_type === 'memo') {
-        style.color = '#000000'; // Pure black for memo
-        style.fontWeight = 'bold';
-    }
     
     return style;
 });

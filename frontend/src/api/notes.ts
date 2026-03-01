@@ -55,6 +55,7 @@ export const useNoteStore = defineStore('notes', () => {
       const response = await api.get('/notes/', { params: queryParams });
       notes.value = response.data.map((n: any) => ({
         ...n,
+        id: String(n.id),
         created_at: n.created_at * 1000,
         updated_at: n.updated_at * 1000,
         start_at: n.start_at * 1000
@@ -62,10 +63,16 @@ export const useNoteStore = defineStore('notes', () => {
       
       // Fetch edges
       const edgesResponse = await api.get('/notes/edges/');
-      edges.value = edgesResponse.data.map((e: any) => ({
-        ...e,
-        created_at: e.created_at * 1000
-      }));
+      const nodeIds = new Set(notes.value.map(n => n.id));
+      edges.value = edgesResponse.data
+        .map((e: any) => ({
+          ...e,
+          id: String(e.id),
+          source_id: String(e.source_id),
+          target_id: String(e.target_id),
+          created_at: e.created_at * 1000
+        }))
+        .filter((e: any) => nodeIds.has(e.source_id) && nodeIds.has(e.target_id));
       
     } catch (error) {
       console.error('Failed to fetch notes or edges:', error);
@@ -167,6 +174,9 @@ export const useNoteStore = defineStore('notes', () => {
           if (!edges.value.find(e => e.id === newEdge.id)) {
               edges.value.push({
                   ...newEdge,
+                  id: String(newEdge.id),
+                  source_id: String(newEdge.source_id),
+                  target_id: String(newEdge.target_id),
                   created_at: newEdge.created_at * 1000
               });
           }

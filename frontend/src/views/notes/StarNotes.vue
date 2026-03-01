@@ -165,134 +165,14 @@
     </div>
     
     <!-- Bottom: Editor -->
-    <div class="editor-section" :class="{ 'is-collapsed': !currentNote }">
-      <div v-if="currentNote" class="editor-wrapper" v-loading="isFetchingContent">
-        <div v-if="!isFetchingContent">
-          <div class="editor-header">
-            <!-- Row 1: Title and Delete -->
-            <div class="header-row-primary">
-                <el-input 
-                  v-model="currentNote.title" 
-                  placeholder="节点标题" 
-                  class="title-input" 
-                  @input="onTitleChange" 
-                />
-                <el-button type="danger" plain text circle :icon="Delete" @click="deleteCurrentNote" title="删除节点"></el-button>
-            </div>
-            
-            <!-- Row 2: Meta Info and Save Status -->
-            <div class="header-row-secondary">
-                <div class="meta-group">
-                    <span class="time-tag">
-                      <el-icon><Calendar /></el-icon> 起始: 
-                      <el-date-picker
-                          v-model="currentNote.start_at"
-                          type="datetime"
-                          placeholder="选择起始时间"
-                          size="small"
-                          :clearable="false"
-                          format="YYYY/MM/DD HH:mm:ss"
-                          value-format="x"
-                          @change="onStartTimeChange"
-                          style="width: 180px; margin-left: 5px;"
-                      />
-                    </span>
-                    <span class="time-tag">
-                      <el-icon><Clock /></el-icon> 更新: {{ formatDateDetailed(currentNote.updated_at) }}
-                    </span>
-                </div>
-                <div class="save-status">
-                    <span v-if="saveStatus === 'saved'" class="status-saved"><el-icon><Check /></el-icon> 已保存</span>
-                    <span v-else-if="saveStatus === 'saving'" class="status-saving"><el-icon class="is-loading"><Loading /></el-icon> 保存中...</span>
-                    <span v-else class="status-unsaved">未保存</span>
-                </div>
-            </div>
-
-            <!-- Row 3: Weight and Node Type Configuration -->
-            <div class="header-row-tertiary">
-                <div class="weight-control">
-                  <span class="label">权重:</span>
-                  <el-input-number 
-                      v-model="currentNote.weight" 
-                      :min="1" 
-                      :max="10000" 
-                      :step="10" 
-                      size="small"
-                      :controls="false"
-                      @change="onWeightChange"
-                      @blur="onWeightBlur"
-                  />
-                </div>
-                <div class="status-control">
-                  <span class="label">节点类型:</span>
-                  <el-select 
-                    v-model="currentNote.node_type" 
-                    size="small" 
-                    placeholder="选择类型"
-                    clearable
-                    @change="onNodeTypeChange"
-                    style="width: 120px;"
-                  >
-                    <el-option label="普通 (None)" :value="null" />
-                    <el-option label="项目 (Project)" value="project" />
-                    <el-option label="模块 (Module)" value="module" />
-                    <el-option label="备忘 (Memo)" value="memo" />
-                    <el-option label="待办 (Todo)" value="todo" />
-                    <el-option label="进行中 (Doing)" value="doing" />
-                    <el-option label="预完成 (Pre-done)" value="pre-done" />
-                    <el-option label="完成 (Done)" value="done" />
-                    <el-option label="删除/放弃 (Delete)" value="delete" />
-                    <el-option label="缺陷 (Bug)" value="bug" />
-                  </el-select>
-                  <el-tooltip effect="light" placement="top">
-                    <template #content>
-                      <div style="line-height: 1.6; max-width: 300px;">
-                        <b>节点类型说明:</b><br/>
-                        - <b>项目</b>: 长期性工作，非具体任务容器。<br/>
-                        - <b>模块</b>: 项目的组成部分，中间层级。<br/>
-                        - <b>待办</b>: 计划要做的具体事项。<br/>
-                        - <b>进行中</b>: 正在处理的任务。<br/>
-                        - <b>预完成</b>: 已初步完成，待验证或确认。<br/>
-                        - <b>完成</b>: 任务正式结束。<br/>
-                        - <b>删除/放弃</b>: 原定计划取消或放弃，加删除线。<br/>
-                        - <b>缺陷</b>: 需要修复的问题。<br/>
-                        - <b>备忘</b>: 记录信息，非任务。
-                      </div>
-                    </template>
-                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </div>
-                <div class="history-toggle">
-                  <el-button 
-                    size="small" 
-                    :type="showHistory ? 'primary' : ''" 
-                    :icon="List" 
-                    @click="showHistory = !showHistory"
-                  >
-                    操作日志
-                  </el-button>
-                </div>
-            </div>
-            
-            <!-- History Section -->
-            <div v-if="showHistory" class="history-panel">
-              <div v-if="!currentNote.history || currentNote.history.length === 0" class="history-empty">
-                暂无操作记录
-              </div>
-              <div v-else class="history-list">
-                <div v-for="(entry, index) in sortedHistory" :key="index" class="history-item">
-                  <span class="history-time">{{ formatDateDetailed(entry.ts * 1000) }}</span>
-                  <span class="history-content">
-                    <el-tag size="small" :type="getFieldTagType(entry.f)" class="field-tag">{{ getFieldName(entry.f) }}</el-tag>
-                    <span class="history-value">{{ formatHistoryValue(entry.f, entry.v) }}</span>
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <NoteEditor :key="currentNote.id" v-model="currentNote.content" @change="onContentChange" />
-        </div>
-      </div>
+    <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
+      <NoteDetailPanel 
+        v-if="currentNoteId" 
+        :noteId="currentNoteId" 
+        class="editor-wrapper"
+        @update="handleNoteUpdate"
+        @delete="handleNoteDelete"
+      />
       <div v-else class="empty-state">
         <el-empty description="请在上方图表中选择一个节点" />
       </div>
@@ -303,9 +183,9 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
-import { markRaw, ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { Plus, Clock, Check, Loading, Refresh, Delete, Calendar, Filter, QuestionFilled, List } from '@element-plus/icons-vue';
-import NoteEditor from '@/components/NoteEditor.vue';
+import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { VueFlow, useVueFlow, Connection, MarkerType } from '@vue-flow/core';
@@ -314,6 +194,7 @@ import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
 import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
+import { getNodeConfig, getOrderedNodeConfigs } from '@/utils/nodeConfig';
 
 const nodeTypes = {
   custom: markRaw(CustomNode),
@@ -329,6 +210,8 @@ import '@vue-flow/controls/dist/style.css';
 const router = useRouter();
 const userStore = useUserStore();
 const noteStore = useNoteStore();
+
+const orderedNodeConfigs = computed(() => getOrderedNodeConfigs());
 
 // Graph layout state
 const graphHeight = ref(600);
@@ -404,46 +287,8 @@ const selectedEdgeId = ref<string | null>(null);
 
 // Editor state
 const currentNoteId = ref<string>('');
-// 存储原始内容基准值（包含 title 和 content）
-const originalData = ref(new Map<string, { title: string, content: string, weight: number, start_at: number, node_type: string | null }>());
-const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
-const isFetchingContent = ref(false);
-const showHistory = ref(false);
-let saveTimeout: any = null;
-
-const sortedHistory = computed(() => {
-    if (!currentNote.value || !currentNote.value.history) return [];
-    // Sort by timestamp descending (newest first)
-    return [...currentNote.value.history].sort((a, b) => b.ts - a.ts);
-});
-
-const getFieldName = (f: string) => {
-    const map: Record<string, string> = {
-        'n': '类型',
-        's': '类型', // Backward compatibility
-        't': '标题',
-        'w': '权重',
-        'c': '内容'
-    };
-    return map[f] || f;
-};
-
-const getFieldTagType = (f: string) => {
-    const map: Record<string, string> = {
-        'n': 'warning',
-        's': 'warning', // Backward compatibility
-        't': '',
-        'w': 'success',
-        'c': 'info'
-    };
-    return map[f] || '';
-};
-
-const formatHistoryValue = (f: string, v: any) => {
-    if (f === 'n' || f === 's') return getNodeTypeLabel(v);
-    if (f === 'c') return `${v} 字`;
-    return v;
-};
+const isRefreshing = ref(false);
+const isGraphUpdating = ref(false);
 
 // Applied Filters (The "Scope")
 const filters = ref({
@@ -761,6 +606,9 @@ watch(sliderFilters, () => {
 }, { deep: true });
 
 const applyFilters = async () => {
+    if (isRefreshing.value || isGraphUpdating.value) return;
+    isGraphUpdating.value = true;
+    try {
     // Filter nodes based on SLIDERS
     const filteredNotes = noteStore.notes.filter(note => {
         let pass = true;
@@ -819,34 +667,48 @@ const applyFilters = async () => {
     // Re-run Layout
     const layouted = await useLayout(graphNodes, graphEdges);
    
+    edges.value = [];
     nodes.value = layouted.nodes;
-    edges.value = layouted.edges;
+    await nextTick();
+    const finalNodeIds = new Set(nodes.value.map(n => String(n.id)));
+    edges.value = layouted.edges.filter(e => finalNodeIds.has(String(e.source)) && finalNodeIds.has(String(e.target)));
     
     // Deselect if current note is hidden
     if (currentNoteId.value && !visibleNodeIds.has(currentNoteId.value)) {
         currentNoteId.value = '';
     }
+    } finally {
+        isGraphUpdating.value = false;
+    }
 };
 
-const currentNote = computed(() => {
-  // Find note from store (single source of truth for content)
-  return noteStore.notes.find(t => t.id === currentNoteId.value);
-});
+const selectNote = async (noteId: string) => {
+  currentNoteId.value = noteId;
+};
+
+const handleNoteUpdate = (note: NoteNode) => {
+    // Update graph node data
+    const node = nodes.value.find(n => n.id === note.id);
+    if (node) {
+        node.label = note.title;
+        if (!node.data) node.data = {};
+        node.data.title = note.title;
+        node.data.weight = note.weight;
+        node.data.start_at = note.start_at;
+        node.data.node_type = note.node_type;
+    }
+};
+
+const handleNoteDelete = (noteId: string) => {
+    nodes.value = nodes.value.filter(n => n.id !== noteId);
+    if (currentNoteId.value === noteId) {
+        currentNoteId.value = '';
+    }
+};
 
 // Sync store changes back to local edges (e.g. after createEdge returns real ID)
-watch(() => noteStore.edges, (newStoreEdges) => {
-    // Check if lengths are different or if we have temporary IDs
-    const hasTempIds = edges.value.some(e => e.id.startsWith('e-'));
-    if (newStoreEdges.length !== edges.value.length || hasTempIds) {
-        edges.value = newStoreEdges.map(e => ({
-            id: e.id,
-            source: e.source_id,
-            target: e.target_id,
-            label: e.label,
-            type: 'elk',
-            markerEnd: MarkerType.ArrowClosed,
-        }));
-    }
+watch(() => noteStore.edges, async () => {
+    await applyFilters();
 }, { deep: true });
 
 onMounted(async () => {
@@ -860,6 +722,7 @@ onUnmounted(() => {
 });
 
 const refreshGraph = async () => {
+  if (isRefreshing.value) return;
   if (!userStore.isAuthenticated) {
     // Clear graph if not authenticated
     noteStore.notes = [];
@@ -868,6 +731,8 @@ const refreshGraph = async () => {
     edges.value = [];
     return;
   }
+  isRefreshing.value = true;
+  try {
   
   // Default Filter Initialization (if none set)
   // Ensure we start with a sane default scope: Updated in last 7 days + future 7 days
@@ -899,55 +764,16 @@ const refreshGraph = async () => {
   }
 
   await noteStore.fetchNotes(queryParams);
-  
-  // Initialize original contents (only metadata at first)
-  noteStore.notes.forEach(task => {
-      originalData.value.set(task.id, { 
-          title: task.title, 
-          content: task.content || '', 
-          weight: task.weight,
-          start_at: task.start_at,
-          node_type: task.node_type || null
-      });
-  });
-  
-  // Map Edges
-  edges.value = noteStore.edges.map(e => ({
-      id: e.id,
-      source: e.source_id,
-      target: e.target_id,
-      label: e.label,
-      type: 'elk',
-      markerEnd: MarkerType.ArrowClosed,
-  }));
-  
-  // Map Nodes (Initial)
-  const initialNodes = noteStore.notes.map(note => ({
-       id: note.id,
-       label: note.title || 'Untitled',
-       position: { x: 0, y: 0 }, // Initial position
-       data: { 
-           title: note.title,
-           weight: note.weight,
-           created_at: note.created_at,
-           start_at: note.start_at
-       },
-       type: 'custom',
-   }));
-   
-   // Apply Layout
-  const layouted = await useLayout(initialNodes, edges.value);
-   
-  nodes.value = layouted.nodes;
-  edges.value = layouted.edges;
-   
-  // Initialize filters (The Data Loading Scope)
-  // Logic: Default load "updated" within last 7 days and future 7 days (active window)
-  // "Created/Start" filter is left empty to include all tasks active in that window regardless of when they started.
-  // Logic moved to start of refreshGraph to ensure first fetch respects this.
-  
-  // Re-run frontend filtering logic on newly fetched data
-  applyFilters();
+  if (startTimeBounds.value.max > startTimeBounds.value.min) {
+      sliderFilters.value.created = [startTimeBounds.value.min, startTimeBounds.value.max];
+  }
+  if (updatedTimeBounds.value.max > updatedTimeBounds.value.min) {
+      sliderFilters.value.updated = [updatedTimeBounds.value.min, updatedTimeBounds.value.max];
+  }
+  await applyFilters();
+  } finally {
+      isRefreshing.value = false;
+  }
 };
 
 const formatDateSimple = (timestamp: number) => {
@@ -1064,14 +890,6 @@ const createNewNote = async () => {
   // Calculate center position or random
   const newNote = await noteStore.createNote(defaultTitle, '');
   if (newNote) {
-    originalData.value.set(newNote.id, { 
-        title: defaultTitle, 
-        content: '', 
-        weight: newNote.weight,
-        start_at: newNote.start_at,
-        node_type: null
-    });
-    
     // Add to graph
     const newNode = {
       id: newNote.id,
@@ -1092,295 +910,6 @@ const createNewNote = async () => {
   }
 };
 
-const selectNote = async (noteId: string) => {
-  // 1. Check unsaved changes on current note
-  if (currentNoteId.value && (saveStatus.value === 'unsaved' || saveStatus.value === 'saving')) {
-      if (saveTimeout) {
-          clearTimeout(saveTimeout);
-          saveTimeout = null;
-      }
-      if (currentNote.value) {
-          await saveNote(currentNote.value);
-      }
-  }
-
-  // 2. Fetch detail if content is missing
-  const note = noteStore.notes.find(n => n.id === noteId);
-  if (note && note.content === undefined) {
-      isFetchingContent.value = true;
-      const detailed = await noteStore.fetchNoteDetail(noteId);
-      if (detailed) {
-          originalData.value.set(noteId, { 
-              title: detailed.title, 
-              content: detailed.content, 
-              weight: detailed.weight,
-              start_at: detailed.start_at,
-              node_type: detailed.node_type || null
-          });
-      }
-      isFetchingContent.value = false;
-  }
-
-  // 3. Switch
-  currentNoteId.value = noteId;
-  
-  // 4. Reset status
-  saveStatus.value = 'saved';
-  if (saveTimeout) {
-      clearTimeout(saveTimeout);
-      saveTimeout = null;
-  }
-};
-
-const onContentChange = (html: string) => {
-  if (currentNote.value) {
-    // 实时更新 store 中的 content，保证 v-model 同步
-    currentNote.value.content = html;
-    checkAndSave();
-  }
-};
-
-const onTitleChange = () => {
-    if (currentNote.value) {
-        // 实时更新图上的节点标题
-        const node = nodes.value.find(n => n.id === currentNote.value.id);
-        if (node) {
-            if (!node.data) node.data = {};
-            node.data.title = currentNote.value.title;
-        }
-        checkAndSave();
-    }
-};
-
-const onStartTimeChange = (value: number | string | Date | undefined) => {
-    if (!currentNote.value) return;
-    
-    // Ensure value is valid timestamp number
-    let newTime: number;
-    if (typeof value === 'number') {
-        newTime = value;
-    } else if (typeof value === 'string') {
-        newTime = parseInt(value, 10);
-    } else if (value instanceof Date) {
-        newTime = value.getTime();
-    } else {
-        return;
-    }
-    
-    if (isNaN(newTime)) return;
-    
-    currentNote.value.start_at = newTime;
-    
-    // Update Graph Immediately
-    const node = nodes.value.find(n => n.id === currentNote.value!.id);
-    if (node && node.data) {
-        node.data.start_at = newTime;
-    }
-    
-    checkAndSave();
-};
-
-const onWeightChange = (value: number | undefined) => {
-    if (!currentNote.value) return;
-    
-    // Validate Input
-    if (value === undefined || value === null || isNaN(value)) {
-        // Restore original value if invalid
-        const original = originalData.value.get(currentNote.value.id);
-        if (original) {
-            currentNote.value.weight = original.weight; // You need to store weight in originalData first
-        } else {
-             currentNote.value.weight = 100; // Fallback default
-        }
-        ElMessage.warning('权重必须是有效数字');
-        return;
-    }
-    
-    // Round to integer
-    const rounded = Math.round(value);
-    if (rounded !== value) {
-        currentNote.value.weight = rounded;
-    }
-    
-    // Check range (ElInputNumber handles min/max, but double check)
-    if (rounded < 1) {
-        currentNote.value.weight = 1;
-    }
-    
-    // Update Graph Immediately for feedback
-    const node = nodes.value.find(n => n.id === currentNote.value.id);
-    if (node && node.data) {
-        node.data.weight = currentNote.value.weight;
-    }
-    
-    // Trigger Save
-    checkAndSave();
-};
-
-const onWeightBlur = (event: any) => {
-    // Ensure validation runs on blur too if needed, though change covers most
-    if (currentNote.value) {
-        onWeightChange(currentNote.value.weight);
-    }
-};
-
-const onNodeTypeChange = (value: string | null) => {
-    if (!currentNote.value) return;
-    
-    // Update graph immediately
-    const node = nodes.value.find(n => n.id === currentNote.value!.id);
-    if (node && node.data) {
-        node.data.node_type = value;
-    }
-    
-    checkAndSave();
-};
-
-const getNodeTypeLabel = (type: string | null | undefined) => {
-    if (type === 'project') return '项目 (Project)';
-    if (type === 'module') return '模块 (Module)';
-    if (type === 'todo') return '待办 (Todo)';
-    if (type === 'doing') return '进行中 (Doing)';
-    if (type === 'pre-done') return '预完成 (Pre-done)';
-    if (type === 'done') return '完成 (Done)';
-    if (type === 'delete') return '删除/放弃 (Delete)';
-    if (type === 'bug') return '缺陷 (Bug)';
-    if (type === 'memo') return '备忘 (Memo)';
-    return '普通 (None)';
-};
-
-const getNodeTypeButtonType = (type: string | null | undefined) => {
-    if (type === 'project') return 'primary';
-    if (type === 'module') return 'primary';
-    if (type === 'todo') return 'primary';
-    if (type === 'doing') return 'warning';
-    if (type === 'pre-done') return 'success';
-    if (type === 'done') return 'info';
-    if (type === 'delete') return 'info';
-    if (type === 'bug') return 'danger';
-    if (type === 'memo') return 'success'; // Greenish or neutral
-    return '';
-};
-
-const checkAndSave = () => {
-    if (!currentNote.value) return;
-    
-    const original = originalData.value.get(currentNote.value.id);
-    if (!original) return;
-    
-    const isContentChanged = currentNote.value.content !== original.content;
-    const isTitleChanged = currentNote.value.title !== original.title;
-    const isWeightChanged = currentNote.value.weight !== original.weight;
-    const isStartAtChanged = currentNote.value.start_at !== original.start_at;
-    const isNodeTypeChanged = currentNote.value.node_type !== original.node_type;
-    
-    if (!isContentChanged && !isTitleChanged && !isWeightChanged && !isStartAtChanged && !isNodeTypeChanged) {
-        if (saveStatus.value === 'unsaved') {
-            saveStatus.value = 'saved';
-        }
-        return;
-    }
-    
-    saveStatus.value = 'unsaved';
-    
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => {
-        saveNote(currentNote.value);
-    }, 2000);
-};
-
-const saveNote = async (noteToSave: NoteNode | undefined = undefined) => {
-  const target = noteToSave || currentNote.value;
-  if (!target) return;
-  
-  saveStatus.value = 'saving';
-  
-  // Find node in graph to update position if needed (later)
-  // For now just update content/title
-  
-  await noteStore.updateNote(target.id, {
-    title: target.title,
-    content: target.content,
-    weight: target.weight,
-    start_at: target.start_at,
-    node_type: target.node_type
-  });
-  
-  // Update graph label and weight
-  const node = nodes.value.find(n => n.id === target.id);
-  if (node) {
-      node.label = target.title;
-      // 必须同时更新 data.title，因为 CustomNode 是从 data.title 读取显示的
-      if (node.data) {
-          node.data.title = target.title;
-          node.data.weight = target.weight;
-          node.data.start_at = target.start_at;
-          node.data.node_type = target.node_type;
-      } else {
-          node.data = { 
-              title: target.title, 
-              weight: target.weight, 
-              start_at: target.start_at,
-              node_type: target.node_type 
-          };
-      }
-  }
-  
-  originalData.value.set(target.id, { 
-      title: target.title, 
-      content: target.content, 
-      weight: target.weight,
-      start_at: target.start_at,
-      node_type: target.node_type 
-  });
-  
-  if (currentNoteId.value === target.id) {
-      saveStatus.value = 'saved';
-  }
-};
-
-const deleteCurrentNote = async () => {
-    if (!currentNote.value) return;
-    if (!checkAuth()) return;
-    
-    try {
-        await ElMessageBox.confirm('确定要删除这个节点吗？', '警告', {
-            confirmButtonText: '删除',
-            cancelButtonText: '取消',
-            type: 'warning'
-        });
-        
-        await noteStore.deleteNote(currentNote.value.id);
-        
-        // Remove from graph
-        nodes.value = nodes.value.filter(n => n.id !== currentNoteId.value);
-        currentNoteId.value = '';
-        
-    } catch (e) {
-        // Cancelled
-    }
-};
-
-const formatDateDetailed = (timestamp: number) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const isCurrentYear = date.getFullYear() === now.getFullYear();
-    
-    const options: Intl.DateTimeFormatOptions = {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    };
-    
-    if (!isCurrentYear) {
-        options.year = 'numeric';
-    }
-    
-    return date.toLocaleString('zh-CN', options).replace(/-/g, '/');
-};
 </script>
 
 <style scoped>
