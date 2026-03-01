@@ -93,14 +93,14 @@ class NoteCreate(BaseModel):
     content: str = ""
     weight: int = 100
     start_at: Optional[float] = None
-    task_status: Optional[str] = None
+    node_type: Optional[str] = None
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
     weight: Optional[int] = None
     start_at: Optional[float] = None
-    task_status: Optional[str] = None
+    node_type: Optional[str] = None
 
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -109,12 +109,13 @@ class NoteRead(BaseModel):
     title: str
     content: str
     weight: int = 100
-    task_status: Optional[str] = None
+    node_type: Optional[str] = None
     # parent_id: Optional[str] # Deprecated
     # Position removed
     created_at: float
     updated_at: float
     start_at: float
+    history: List[dict] = []
 
 class NoteListRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -123,10 +124,11 @@ class NoteListRead(BaseModel):
     title: str
     # content is excluded here
     weight: int = 100
-    task_status: Optional[str] = None
+    node_type: Optional[str] = None
     created_at: float
     updated_at: float
     start_at: float
+    history: List[dict] = []
 
 # Edge Schemas
 class EdgeCreate(BaseModel):

@@ -1,5 +1,5 @@
 <template>
-  <div class="editor-container">
+  <div class="editor-container" @click="handleContainerClick">
     <Toolbar
       style="border-bottom: 1px solid #ccc"
       :editor="editorRef"
@@ -7,7 +7,8 @@
       :mode="mode"
     />
     <Editor
-      style="height: auto; min-height: 300px; overflow: visible;"
+      class="editor-content-area"
+      style="height: auto; min-height: 500px; overflow: visible;"
       v-model="valueHtml"
       :defaultConfig="editorConfig"
       :mode="mode"
@@ -81,6 +82,35 @@ onBeforeUnmount(() => {
 
 const handleCreated = (editor: any) => {
     editorRef.value = editor // 记录 editor 实例，重要！
+    
+    // Auto focus on creation if it's an empty note to improve UX
+    if (!valueHtml.value || valueHtml.value === '<p><br></p>') {
+        setTimeout(() => {
+            if (editorRef.value) {
+                editorRef.value.focus()
+            }
+        }, 100)
+    }
+}
+
+const handleContainerClick = (e: MouseEvent) => {
+    const editor = editorRef.value
+    if (editor == null) return
+    
+    // Only focus if the editor isn't already focused and we're clicking the container/empty area
+    const target = e.target as HTMLElement
+    // Check if we're clicking on the container itself or the editor's empty space
+    if (!editor.isFocused()) {
+        const isContainer = target.classList.contains('editor-container')
+        const isTextContainer = target.closest('.w-e-text-container')
+        const isEditableArea = target.closest('.w-e-text')
+        
+        // If we click the outer container or the text container background (but not the editable text itself)
+        // force focus. Note: if we click the editable text itself, wangEditor handles it.
+        if (isContainer || isTextContainer) {
+            editor.focus()
+        }
+    }
 }
 
 const handleChange = (editor: any) => {
@@ -94,5 +124,16 @@ const handleChange = (editor: any) => {
     border: 1px solid #ccc;
     z-index: 100; /* 按需调整 */
     height: auto; /* Ensure it grows */
+    cursor: text; /* 提示可编辑 */
+}
+
+/* 确保编辑器区域填满容器，点击空白处也能触发编辑器焦点 */
+:deep(.w-e-text-container) {
+    min-height: inherit;
+    background-color: transparent !important;
+}
+
+:deep(.w-e-scroll) {
+    overflow-y: hidden !important; /* 让外部容器滚动，或者编辑器自适应高度 */
 }
 </style>

@@ -53,7 +53,13 @@ const routes: Array<RouteRecordRaw> = [
       {
         path: 'notes/star-map',
         name: 'StarMapNotes',
-        component: () => import('@/views/notes/TaskManager.vue'),
+        component: () => import('@/views/notes/StarNotes.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'notes/calendar',
+        name: 'CalendarNotes',
+        component: () => import('@/views/notes/CalendarNotes.vue'),
         meta: { requiresAuth: false },
       },
       {

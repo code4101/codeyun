@@ -16,6 +16,7 @@
       </div>
       
       <div class="actions">
+          <el-button :icon="Calendar" @click="router.push('/notes/calendar')">日历视图</el-button>
           <el-button type="primary" :icon="Filter" @click="openFilterDialog">筛选加载范围</el-button>
           <el-button :icon="Refresh" @click="refreshGraph">刷新</el-button>
       </div>
@@ -100,6 +101,11 @@
                     :step="startSliderStep" 
                     :format-tooltip="formatDateSimple"
                 />
+                <div class="time-axis">
+                    <div v-for="tick in startTimeTicks" :key="tick.label" class="tick" :style="{ left: tick.percent + '%' }">
+                        <span class="tick-label">{{ tick.label }}</span>
+                    </div>
+                </div>
             </div>
         </div>
         <div class="slider-item">
@@ -119,16 +125,22 @@
                     :step="updatedSliderStep"
                     :format-tooltip="formatDateSimple"
                 />
+                <div class="time-axis">
+                    <div v-for="tick in updatedTimeTicks" :key="tick.label" class="tick" :style="{ left: tick.percent + '%' }">
+                        <span class="tick-label">{{ tick.label }}</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- Middle: Graph -->
-    <div class="graph-section">
+    <div class="graph-section" :style="{ height: graphHeight + 'px' }">
       <VueFlow
         v-model="nodes"
         :edges="edges"
         :node-types="nodeTypes"
+        :edge-types="edgeTypes"
         class="vue-flow-basic"
         :default-viewport="{ zoom: 1 }"
         :min-zoom="0.2"
@@ -144,6 +156,11 @@
       <div class="graph-toolbar">
         <el-button v-if="selectedEdgeId" type="danger" size="small" @click="deleteSelectedEdge">删除选中边</el-button>
         <el-button type="primary" size="small" :icon="Plus" @click="createNewNote">新建节点</el-button>
+      </div>
+
+      <!-- Height Resizer Handle -->
+      <div class="graph-resizer" @mousedown="startResizing">
+          <div class="resizer-indicator"></div>
       </div>
     </div>
     
@@ -191,7 +208,7 @@
                 </div>
             </div>
 
-            <!-- Row 3: Weight and Task Status Configuration -->
+            <!-- Row 3: Weight and Node Type Configuration -->
             <div class="header-row-tertiary">
                 <div class="weight-control">
                   <span class="label">权重:</span>
@@ -207,15 +224,70 @@
                   />
                 </div>
                 <div class="status-control">
-                  <span class="label">任务状态:</span>
+                  <span class="label">节点类型:</span>
+                  <el-select 
+                    v-model="currentNote.node_type" 
+                    size="small" 
+                    placeholder="选择类型"
+                    clearable
+                    @change="onNodeTypeChange"
+                    style="width: 120px;"
+                  >
+                    <el-option label="普通 (None)" :value="null" />
+                    <el-option label="项目 (Project)" value="project" />
+                    <el-option label="模块 (Module)" value="module" />
+                    <el-option label="备忘 (Memo)" value="memo" />
+                    <el-option label="待办 (Todo)" value="todo" />
+                    <el-option label="进行中 (Doing)" value="doing" />
+                    <el-option label="预完成 (Pre-done)" value="pre-done" />
+                    <el-option label="完成 (Done)" value="done" />
+                    <el-option label="删除/放弃 (Delete)" value="delete" />
+                    <el-option label="缺陷 (Bug)" value="bug" />
+                  </el-select>
+                  <el-tooltip effect="light" placement="top">
+                    <template #content>
+                      <div style="line-height: 1.6; max-width: 300px;">
+                        <b>节点类型说明:</b><br/>
+                        - <b>项目</b>: 长期性工作，非具体任务容器。<br/>
+                        - <b>模块</b>: 项目的组成部分，中间层级。<br/>
+                        - <b>待办</b>: 计划要做的具体事项。<br/>
+                        - <b>进行中</b>: 正在处理的任务。<br/>
+                        - <b>预完成</b>: 已初步完成，待验证或确认。<br/>
+                        - <b>完成</b>: 任务正式结束。<br/>
+                        - <b>删除/放弃</b>: 原定计划取消或放弃，加删除线。<br/>
+                        - <b>缺陷</b>: 需要修复的问题。<br/>
+                        - <b>备忘</b>: 记录信息，非任务。
+                      </div>
+                    </template>
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </div>
+                <div class="history-toggle">
                   <el-button 
                     size="small" 
-                    :type="getStatusButtonType(currentNote.task_status)"
-                    @click="cycleTaskStatus"
+                    :type="showHistory ? 'primary' : ''" 
+                    :icon="List" 
+                    @click="showHistory = !showHistory"
                   >
-                    {{ getStatusLabel(currentNote.task_status) }}
+                    操作日志
                   </el-button>
                 </div>
+            </div>
+            
+            <!-- History Section -->
+            <div v-if="showHistory" class="history-panel">
+              <div v-if="!currentNote.history || currentNote.history.length === 0" class="history-empty">
+                暂无操作记录
+              </div>
+              <div v-else class="history-list">
+                <div v-for="(entry, index) in sortedHistory" :key="index" class="history-item">
+                  <span class="history-time">{{ formatDateDetailed(entry.ts * 1000) }}</span>
+                  <span class="history-content">
+                    <el-tag size="small" :type="getFieldTagType(entry.f)" class="field-tag">{{ getFieldName(entry.f) }}</el-tag>
+                    <span class="history-value">{{ formatHistoryValue(entry.f, entry.v) }}</span>
+                  </span>
+                </div>
+              </div>
             </div>
           </div>
           <NoteEditor :key="currentNote.id" v-model="currentNote.content" @change="onContentChange" />
@@ -231,8 +303,8 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
-import { markRaw, ref, computed, onMounted, watch } from 'vue';
-import { Plus, Clock, Check, Loading, Refresh, Delete, Calendar, Filter, QuestionFilled } from '@element-plus/icons-vue';
+import { markRaw, ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { Plus, Clock, Check, Loading, Refresh, Delete, Calendar, Filter, QuestionFilled, List } from '@element-plus/icons-vue';
 import NoteEditor from '@/components/NoteEditor.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useNoteStore, type NoteNode } from '@/api/notes';
@@ -240,10 +312,15 @@ import { VueFlow, useVueFlow, Connection, MarkerType } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
+import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
 
 const nodeTypes = {
   custom: markRaw(CustomNode),
+};
+
+const edgeTypes = {
+  elk: markRaw(ElkEdge),
 };
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
@@ -252,6 +329,67 @@ import '@vue-flow/controls/dist/style.css';
 const router = useRouter();
 const userStore = useUserStore();
 const noteStore = useNoteStore();
+
+// Graph layout state
+const graphHeight = ref(600);
+const isResizing = ref(false);
+const isManualResized = ref(false); // Track if user manually adjusted height
+const startY = ref(0);
+const startHeight = ref(0);
+
+const calculateOptimalHeight = () => {
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    const isPortrait = vh > vw;
+    
+    // Total estimated height of fixed headers/sliders
+    // filter-section: 60px, slider-section: ~120px, margins/others: ~40px
+    const reservedHeight = 220; 
+    const availableHeight = vh - reservedHeight;
+
+    if (isPortrait) {
+        // Vertical screen: give more space to canvas (e.g. 70% of available)
+        return Math.max(400, Math.floor(availableHeight * 0.7));
+    } else {
+        // Horizontal screen: 50%
+        return Math.max(300, Math.floor(availableHeight * 0.5));
+    }
+};
+
+const updateAdaptiveHeight = () => {
+    if (!isManualResized.value) {
+        graphHeight.value = calculateOptimalHeight();
+    }
+};
+
+const startResizing = (e: MouseEvent) => {
+    isResizing.value = true;
+    isManualResized.value = true; // User manual resize overrides adaptive logic
+    startY.value = e.clientY;
+    startHeight.value = graphHeight.value;
+    
+    // Add temporary event listeners
+    window.addEventListener('mousemove', handleResizing);
+    window.addEventListener('mouseup', stopResizing);
+    
+    // Prevent text selection during drag
+    document.body.style.userSelect = 'none';
+};
+
+const handleResizing = (e: MouseEvent) => {
+    if (!isResizing.value) return;
+    const delta = e.clientY - startY.value;
+    const newHeight = Math.max(200, startHeight.value + delta); // Min 200px
+    graphHeight.value = newHeight;
+};
+
+const stopResizing = () => {
+    isResizing.value = false;
+    window.removeEventListener('mousemove', handleResizing);
+    window.removeEventListener('mouseup', stopResizing);
+    document.body.style.userSelect = '';
+};
+
 // Graph state
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
@@ -267,10 +405,45 @@ const selectedEdgeId = ref<string | null>(null);
 // Editor state
 const currentNoteId = ref<string>('');
 // 存储原始内容基准值（包含 title 和 content）
-const originalData = ref(new Map<string, { title: string, content: string, weight: number, start_at: number, task_status: string | null }>());
+const originalData = ref(new Map<string, { title: string, content: string, weight: number, start_at: number, node_type: string | null }>());
 const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const isFetchingContent = ref(false);
+const showHistory = ref(false);
 let saveTimeout: any = null;
+
+const sortedHistory = computed(() => {
+    if (!currentNote.value || !currentNote.value.history) return [];
+    // Sort by timestamp descending (newest first)
+    return [...currentNote.value.history].sort((a, b) => b.ts - a.ts);
+});
+
+const getFieldName = (f: string) => {
+    const map: Record<string, string> = {
+        'n': '类型',
+        's': '类型', // Backward compatibility
+        't': '标题',
+        'w': '权重',
+        'c': '内容'
+    };
+    return map[f] || f;
+};
+
+const getFieldTagType = (f: string) => {
+    const map: Record<string, string> = {
+        'n': 'warning',
+        's': 'warning', // Backward compatibility
+        't': '',
+        'w': 'success',
+        'c': 'info'
+    };
+    return map[f] || '';
+};
+
+const formatHistoryValue = (f: string, v: any) => {
+    if (f === 'n' || f === 's') return getNodeTypeLabel(v);
+    if (f === 'c') return `${v} 字`;
+    return v;
+};
 
 // Applied Filters (The "Scope")
 const filters = ref({
@@ -411,6 +584,106 @@ const futureBinIndex = computed(() => {
     return Math.floor(progress * 100);
 });
 
+// Time axis labels logic
+const getTimeAxisTicks = (min: number, max: number) => {
+    if (min >= max) return [];
+    
+    const range = max - min;
+    const ticks: { percent: number, label: string }[] = [];
+    
+    // Choose appropriate interval based on range
+    let interval: number;
+    let type: 'time' | 'date' | 'month' | 'year';
+    
+    const hour = 3600 * 1000;
+    const day = 24 * hour;
+    const month = 30 * day;
+    const year = 365 * day;
+    
+    if (range < 24 * hour) {
+        // Less than 24h, show every 2-4 hours
+        interval = range < 6 * hour ? hour : 4 * hour;
+        type = 'time';
+    } else if (range < 14 * day) {
+        // Less than 2 weeks, show every day
+        interval = day;
+        type = 'date';
+    } else if (range < 3 * month) {
+        // Less than 3 months, show every week
+        interval = 7 * day;
+        type = 'date';
+    } else if (range < 2 * year) {
+        // Less than 2 years, show every month
+        interval = month;
+        type = 'month';
+    } else {
+        interval = year;
+        type = 'year';
+    }
+    
+    const formatTick = (date: Date, type: string) => {
+        const y = date.getFullYear();
+        const m = date.getMonth() + 1;
+        const d = date.getDate();
+        const hh = String(date.getHours()).padStart(2, '0');
+        const mm = String(date.getMinutes()).padStart(2, '0');
+        const dayOfWeek = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][date.getDay()];
+        
+        if (type === 'time') return `${hh}:${mm}`;
+        if (type === 'date') return `${m}/${d}${dayOfWeek}`;
+        if (type === 'month') return `${y}/${m}`;
+        return `${y}`;
+    };
+    
+    // Adjust start of ticks to be a nice round number (e.g., start of day)
+    const startDate = new Date(min);
+    if (interval >= month) {
+        startDate.setDate(1);
+        startDate.setHours(0, 0, 0, 0);
+    } else if (interval === 7 * day) {
+        // Align to Monday
+        const day = startDate.getDay();
+        const diff = startDate.getDate() - day + (day === 0 ? -6 : 1);
+        startDate.setDate(diff);
+        startDate.setHours(0, 0, 0, 0);
+    } else if (interval >= day) {
+        startDate.setHours(0, 0, 0, 0);
+    } else if (interval >= hour) {
+        startDate.setMinutes(0, 0, 0);
+    }
+    
+    let current = startDate.getTime();
+    let safetyCounter = 0;
+    while (current <= max && safetyCounter < 50) {
+        if (current >= min) {
+            const percent = ((current - min) / range) * 100;
+            ticks.push({
+                percent,
+                label: formatTick(new Date(current), type)
+            });
+        }
+        
+        // Month/Year intervals need special handling for uneven lengths
+        if (type === 'month') {
+            const d = new Date(current);
+            d.setMonth(d.getMonth() + 1);
+            current = d.getTime();
+        } else if (type === 'year') {
+            const d = new Date(current);
+            d.setFullYear(d.getFullYear() + 1);
+            current = d.getTime();
+        } else {
+            current += interval;
+        }
+        safetyCounter++;
+    }
+    
+    return ticks;
+};
+
+const startTimeTicks = computed(() => getTimeAxisTicks(startTimeBounds.value.min, startTimeBounds.value.max));
+const updatedTimeTicks = computed(() => getTimeAxisTicks(updatedTimeBounds.value.min, updatedTimeBounds.value.max));
+
 const shortcuts = [
     { text: '最近一周', value: () => { const end = new Date(); const start = new Date(); start.setTime(start.getTime() - 3600 * 1000 * 24 * 7); return [start, end]; } },
     { text: '最近一月', value: () => { const end = new Date(); const start = new Date(); start.setTime(start.getTime() - 3600 * 1000 * 24 * 30); return [start, end]; } },
@@ -527,7 +800,7 @@ const applyFilters = async () => {
        data: { 
            title: note.title,
            weight: note.weight,
-           task_status: note.task_status,
+           node_type: note.node_type,
            created_at: note.created_at, // Keep for debug/info if needed
            start_at: note.start_at
        },
@@ -539,7 +812,7 @@ const applyFilters = async () => {
         source: e.source_id,
         target: e.target_id,
         label: e.label,
-        type: 'default',
+        type: 'elk',
         markerEnd: MarkerType.ArrowClosed,
     }));
     
@@ -570,14 +843,20 @@ watch(() => noteStore.edges, (newStoreEdges) => {
             source: e.source_id,
             target: e.target_id,
             label: e.label,
-            type: 'default',
+            type: 'elk',
             markerEnd: MarkerType.ArrowClosed,
         }));
     }
 }, { deep: true });
 
 onMounted(async () => {
-  await refreshGraph();
+    updateAdaptiveHeight(); // Initial adaptive height
+    window.addEventListener('resize', updateAdaptiveHeight);
+    await refreshGraph();
+});
+
+onUnmounted(() => {
+    window.removeEventListener('resize', updateAdaptiveHeight);
 });
 
 const refreshGraph = async () => {
@@ -628,7 +907,7 @@ const refreshGraph = async () => {
           content: task.content || '', 
           weight: task.weight,
           start_at: task.start_at,
-          task_status: task.task_status || null
+          node_type: task.node_type || null
       });
   });
   
@@ -638,7 +917,7 @@ const refreshGraph = async () => {
       source: e.source_id,
       target: e.target_id,
       label: e.label,
-      type: 'default',
+      type: 'elk',
       markerEnd: MarkerType.ArrowClosed,
   }));
   
@@ -687,7 +966,7 @@ const onConnect = (params: Connection) => {
     const edgeParams = {
         ...params,
         id: `e-${params.source}-${params.target}-${Date.now()}`,
-        type: 'default',
+        type: 'elk',
         markerEnd: MarkerType.ArrowClosed,
         // 保留 handle 信息以支持当前会话的自定义连线
         sourceHandle: params.sourceHandle,
@@ -790,7 +1069,7 @@ const createNewNote = async () => {
         content: '', 
         weight: newNote.weight,
         start_at: newNote.start_at,
-        task_status: null
+        node_type: null
     });
     
     // Add to graph
@@ -801,7 +1080,7 @@ const createNewNote = async () => {
       data: { 
           title: newNote.title,
           weight: newNote.weight,
-          task_status: null,
+          node_type: null,
           created_at: newNote.created_at,
           start_at: newNote.start_at
       },
@@ -836,7 +1115,7 @@ const selectNote = async (noteId: string) => {
               content: detailed.content, 
               weight: detailed.weight,
               start_at: detailed.start_at,
-              task_status: detailed.task_status || null
+              node_type: detailed.node_type || null
           });
       }
       isFetchingContent.value = false;
@@ -945,32 +1224,41 @@ const onWeightBlur = (event: any) => {
     }
 };
 
-const cycleTaskStatus = () => {
+const onNodeTypeChange = (value: string | null) => {
     if (!currentNote.value) return;
-    
-    const statuses = [null, 'todo', 'done'];
-    const currentIdx = statuses.indexOf(currentNote.value.task_status as any);
-    const nextIdx = (currentIdx + 1) % statuses.length;
-    currentNote.value.task_status = statuses[nextIdx];
     
     // Update graph immediately
     const node = nodes.value.find(n => n.id === currentNote.value!.id);
     if (node && node.data) {
-        node.data.task_status = currentNote.value.task_status;
+        node.data.node_type = value;
     }
     
     checkAndSave();
 };
 
-const getStatusLabel = (status: string | null | undefined) => {
-    if (status === 'todo') return '待办 (Todo)';
-    if (status === 'done') return '完成 (Done)';
+const getNodeTypeLabel = (type: string | null | undefined) => {
+    if (type === 'project') return '项目 (Project)';
+    if (type === 'module') return '模块 (Module)';
+    if (type === 'todo') return '待办 (Todo)';
+    if (type === 'doing') return '进行中 (Doing)';
+    if (type === 'pre-done') return '预完成 (Pre-done)';
+    if (type === 'done') return '完成 (Done)';
+    if (type === 'delete') return '删除/放弃 (Delete)';
+    if (type === 'bug') return '缺陷 (Bug)';
+    if (type === 'memo') return '备忘 (Memo)';
     return '普通 (None)';
 };
 
-const getStatusButtonType = (status: string | null | undefined) => {
-    if (status === 'todo') return 'primary';
-    if (status === 'done') return 'info';
+const getNodeTypeButtonType = (type: string | null | undefined) => {
+    if (type === 'project') return 'primary';
+    if (type === 'module') return 'primary';
+    if (type === 'todo') return 'primary';
+    if (type === 'doing') return 'warning';
+    if (type === 'pre-done') return 'success';
+    if (type === 'done') return 'info';
+    if (type === 'delete') return 'info';
+    if (type === 'bug') return 'danger';
+    if (type === 'memo') return 'success'; // Greenish or neutral
     return '';
 };
 
@@ -984,9 +1272,9 @@ const checkAndSave = () => {
     const isTitleChanged = currentNote.value.title !== original.title;
     const isWeightChanged = currentNote.value.weight !== original.weight;
     const isStartAtChanged = currentNote.value.start_at !== original.start_at;
-    const isStatusChanged = currentNote.value.task_status !== original.task_status;
+    const isNodeTypeChanged = currentNote.value.node_type !== original.node_type;
     
-    if (!isContentChanged && !isTitleChanged && !isWeightChanged && !isStartAtChanged && !isStatusChanged) {
+    if (!isContentChanged && !isTitleChanged && !isWeightChanged && !isStartAtChanged && !isNodeTypeChanged) {
         if (saveStatus.value === 'unsaved') {
             saveStatus.value = 'saved';
         }
@@ -1015,7 +1303,7 @@ const saveNote = async (noteToSave: NoteNode | undefined = undefined) => {
     content: target.content,
     weight: target.weight,
     start_at: target.start_at,
-    task_status: target.task_status
+    node_type: target.node_type
   });
   
   // Update graph label and weight
@@ -1027,13 +1315,13 @@ const saveNote = async (noteToSave: NoteNode | undefined = undefined) => {
           node.data.title = target.title;
           node.data.weight = target.weight;
           node.data.start_at = target.start_at;
-          node.data.task_status = target.task_status;
+          node.data.node_type = target.node_type;
       } else {
           node.data = { 
               title: target.title, 
               weight: target.weight, 
               start_at: target.start_at,
-              task_status: target.task_status 
+              node_type: target.node_type 
           };
       }
   }
@@ -1043,7 +1331,7 @@ const saveNote = async (noteToSave: NoteNode | undefined = undefined) => {
       content: target.content, 
       weight: target.weight,
       start_at: target.start_at,
-      task_status: target.task_status 
+      node_type: target.node_type 
   });
   
   if (currentNoteId.value === target.id) {
@@ -1160,19 +1448,19 @@ const formatDateDetailed = (timestamp: number) => {
 /* 确保滑块和密度条完美重叠 */
 .slider-container {
     position: relative;
-    height: 32px; /* 给滑块留出高度 */
+    height: 54px; /* 增加高度以容纳刻度轴 */
     flex: 1;
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    justify-content: center;
 }
 
 .density-bar {
     position: absolute;
-    top: 50%; /* 垂直居中 */
+    top: 14px; /* 与滑块轨道对齐 */
     left: 0;
     right: 0;
     height: 12px; /* 比滑块轨道(6px)高，使其溢出可见 */
-    transform: translateY(-50%); /* 精确居中 */
     display: flex;
     pointer-events: none; /* 让鼠标事件穿透给 Slider */
     z-index: 0; /* 在滑块下方 */
@@ -1189,10 +1477,9 @@ const formatDateDetailed = (timestamp: number) => {
 
 .slider-item .el-slider {
     position: absolute; /* 覆盖在密度条上 */
-    top: 0;
+    top: 4px;
     left: 0;
     width: 100%;
-    height: 100%;
     z-index: 1;
 }
 
@@ -1200,6 +1487,7 @@ const formatDateDetailed = (timestamp: number) => {
 .slider-item :deep(.el-slider__runway) {
     background-color: transparent !important;
     height: 6px; /* 显式设置轨道高度 */
+    margin: 16px 0; /* 给手柄留出空间 */
 }
 
 /* 让选中的 Bar 变为半透明，从而透出下方的密度条 */
@@ -1208,10 +1496,55 @@ const formatDateDetailed = (timestamp: number) => {
     height: 6px;
 }
 
-/* 按钮保持原样，甚至可以稍微大一点 */
+/* 将手柄改为垂直细线样式 */
 .slider-item :deep(.el-slider__button) {
-    border-color: #409eff;
-    background-color: #fff;
+    width: 2px;
+    height: 20px;
+    border-radius: 0;
+    background-color: #409eff;
+    border: none;
+}
+
+/* 增加手柄的可点击区域，但不影响视觉 */
+.slider-item :deep(.el-slider__button-wrapper) {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+/* 刻度轴样式 */
+.time-axis {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 16px;
+    pointer-events: none;
+}
+
+.tick {
+    position: absolute;
+    bottom: 0;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+.tick::before {
+    content: '';
+    width: 1px;
+    height: 4px;
+    background-color: #dcdfe6;
+    margin-bottom: 2px;
+}
+
+.tick-label {
+    font-size: 10px;
+    color: #909399;
+    white-space: nowrap;
 }
 
 .scope-info {
@@ -1258,7 +1591,7 @@ const formatDateDetailed = (timestamp: number) => {
 }
 
 .now-marker::after {
-    content: '今日';
+    content: '当前';
     position: absolute;
     top: -15px;
     left: 50%;
@@ -1269,10 +1602,43 @@ const formatDateDetailed = (timestamp: number) => {
 }
 
 .graph-section {
-  height: 600px; /* Fixed height for graph to keep it stable */
+  height: 600px; /* Default, overridden by :style */
   border-bottom: 1px solid #e6e6e6;
   position: relative;
   flex-shrink: 0; /* Don't let graph collapse */
+  display: flex;
+  flex-direction: column;
+}
+
+.vue-flow-basic {
+  flex: 1;
+}
+
+.graph-resizer {
+  height: 8px;
+  width: 100%;
+  background-color: #f5f7fa;
+  cursor: ns-resize;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 10;
+  transition: background-color 0.2s;
+  border-top: 1px solid #e6e6e6;
+}
+
+.graph-resizer:hover {
+  background-color: #ecf5ff;
+}
+
+.resizer-indicator {
+  width: 40px;
+  height: 4px;
+  border-top: 1px solid #dcdfe6;
+  border-bottom: 1px solid #dcdfe6;
 }
 
 .graph-toolbar {
@@ -1294,7 +1660,7 @@ const formatDateDetailed = (timestamp: number) => {
   display: flex;
   flex-direction: column;
   background-color: #fff;
-  min-height: 400px;
+  min-height: 600px; /* Increased from 400px */
 }
 
 .editor-section.is-collapsed {
@@ -1381,6 +1747,69 @@ const formatDateDetailed = (timestamp: number) => {
     font-size: 12px;
     color: #606266;
     white-space: nowrap;
+}
+
+.help-icon {
+    margin-left: 5px;
+    font-size: 14px;
+    color: #909399;
+    cursor: help;
+}
+
+.history-toggle {
+    margin-left: auto;
+}
+
+.history-panel {
+    margin-top: 15px;
+    padding: 10px;
+    background: #f8f9fb;
+    border-radius: 4px;
+    max-height: 200px;
+    overflow-y: auto;
+    font-size: 13px;
+    border: 1px solid #ebeef5;
+}
+
+.history-empty {
+    text-align: center;
+    color: #909399;
+    padding: 10px;
+}
+
+.history-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 15px;
+    padding: 6px 0;
+    border-bottom: 1px dashed #ebeef5;
+}
+
+.history-item:last-child {
+    border-bottom: none;
+}
+
+.history-time {
+    color: #909399;
+    white-space: nowrap;
+    font-family: monospace;
+}
+
+.history-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.field-tag {
+    min-width: 40px;
+    text-align: center;
+}
+
+.history-value {
+    color: #303133;
+    word-break: break-all;
 }
 
 .save-status {

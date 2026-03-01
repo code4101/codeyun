@@ -125,9 +125,68 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
             return node;
         });
         
-        // 4. Smart Connection Optimization
-        // Calculate the shortest path handles for each edge
-        const layoutedEdges = optimizeSmartConnections(layoutedNodes, edges);
+        // 4. Extract edge routing from ELK (Scheme A)
+        // If ELK returns edge routing, use it. Otherwise fall back to smart connections.
+        let layoutedEdges: Edge[] = [];
+
+        // Check if ELK returned routed edges
+        // Note: elkjs types might not fully reflect the runtime object, so we cast to any for safety accessing 'sections'
+        const elkEdgesResult = layoutedGraph.edges as any[];
+
+        if (elkEdgesResult && elkEdgesResult.length > 0) {
+             layoutedEdges = edges.map((edge) => {
+                const elkEdge = elkEdgesResult.find((e) => e.id === edge.id);
+                
+                if (elkEdge && elkEdge.sections && elkEdge.sections.length > 0) {
+                    // ELK successfully routed this edge
+                    const section = elkEdge.sections[0]; // Usually one section for simple edges
+                    
+                    // Helper to map ELK ports back to Vue Flow handles
+                    const getHandleFromPort = (portId: string | undefined, type: 'source' | 'target') => {
+                        if (!portId) return undefined;
+                        // North -> t, South -> b, West -> l, East -> r
+                        if (portId.includes('-p-north')) return type === 'source' ? 't-s' : 't-t';
+                        if (portId.includes('-p-south')) return type === 'source' ? 'b-s' : 'b-t';
+                        if (portId.includes('-p-west')) return type === 'source' ? 'l-s' : 'l-t';
+                        if (portId.includes('-p-east')) return type === 'source' ? 'r-s' : 'r-t';
+                        return undefined;
+                    };
+
+                    const sourceHandle = getHandleFromPort(section.startPoint?.incomingShape, 'source') || getHandleFromPort(elkEdge.sourcePort, 'source'); 
+                    // Note: elkjs structure varies. Usually ports are on the node, but edge references them.
+                    // Actually, ELK returns `sourcePort` and `targetPort` on the edge object if ports were used.
+                    // But wait, the `sections` startPoint/endPoint might NOT have port info directly in all versions.
+                    // Let's rely on generic heuristic or check if we can get it from the edge object.
+                    
+                    // Let's try to parse from the edge object first if available
+                    // The section start/end points represent the absolute coordinates.
+                    
+                    // Correction: We defined ports on nodes. ELK should return which port was used.
+                    // In elkjs, edge object often has `sourcePort` and `targetPort` properties matching the port IDs we defined.
+                    
+                    const srcPortId = elkEdge.sourcePort || (section.startPoint ? section.startPoint.port : undefined);
+                    const tgtPortId = elkEdge.targetPort || (section.endPoint ? section.endPoint.port : undefined);
+
+                    return {
+                        ...edge,
+                        // Update handles based on ELK's choice
+                        sourceHandle: getHandleFromPort(srcPortId, 'source') || edge.sourceHandle,
+                        targetHandle: getHandleFromPort(tgtPortId, 'target') || edge.targetHandle,
+                        
+                        // Pass routing points to custom edge component
+                        data: {
+                            ...edge.data,
+                            elkSections: elkEdge.sections
+                        }
+                    };
+                }
+                
+                return edge;
+            });
+        } else {
+            // Fallback to old logic if no edges returned (should not happen if graph has edges)
+            layoutedEdges = optimizeSmartConnections(layoutedNodes, edges);
+        }
 
         return { nodes: layoutedNodes, edges: layoutedEdges };
         

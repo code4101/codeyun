@@ -1,6 +1,7 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
+from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
 from backend.models import NoteNode, NoteEdge, User
 from backend.schemas import NoteCreate, NoteRead, NoteUpdate, EdgeCreate, EdgeRead, NoteListRead
@@ -65,11 +66,22 @@ def create_note(
         title=note.title,
         content=note.content,
         weight=note.weight,
+        node_type=note.node_type,
         # parent_id=note.parent_id, # Deprecated
         created_at=current_time,
         updated_at=current_time,
-        start_at=note.start_at if note.start_at is not None else current_time
+        start_at=note.start_at if note.start_at is not None else current_time,
+        history=[]
     )
+    
+    # Initialize history if node type is provided
+    if note.node_type:
+        db_note.history.append({
+            "ts": int(current_time),
+            "f": "n",
+            "v": note.node_type
+        })
+        
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
@@ -106,6 +118,63 @@ def update_note(
         raise HTTPException(status_code=404, detail="Note not found")
     
     note_data = note_in.model_dump(exclude_unset=True)
+    
+    # --- History Logging Logic ---
+    now_ts = int(time.time())
+    one_hour = 3600
+    field_map = {"node_type": "n", "title": "t", "weight": "w", "content": "c"}
+    
+    if db_note.history is None:
+        db_note.history = []
+    
+    for field, new_val in note_data.items():
+        if field not in field_map:
+            continue
+            
+        old_val = getattr(db_note, field)
+        if old_val == new_val:
+            continue
+            
+        f_code = field_map[field]
+        # Find last entry for this field to check for merging
+        last_entry = None
+        for entry in reversed(db_note.history):
+            if entry.get("f") == f_code:
+                last_entry = entry
+                break
+        
+        is_mergeable = False
+        if last_entry and (now_ts - last_entry["ts"]) < one_hour:
+            # Type/Status changes are always logged separately
+            if field != "node_type":
+                is_mergeable = True
+        
+        if is_mergeable:
+            if field == "content":
+                old_len = len(old_val) if old_val else 0
+                new_len = len(new_val) if new_val else 0
+                diff = new_len - old_len
+                try:
+                    current_delta = int(last_entry["v"].replace("+", ""))
+                except:
+                    current_delta = 0
+                last_entry["v"] = f"{current_delta + diff:+d}"
+            else:
+                last_entry["v"] = new_val
+            last_entry["ts"] = now_ts
+        else:
+            v_to_log = new_val
+            if field == "content":
+                old_len = len(old_val) if old_val else 0
+                new_len = len(new_val) if new_val else 0
+                v_to_log = f"{new_len - old_len:+d}"
+            
+            db_note.history.append({"ts": now_ts, "f": f_code, "v": v_to_log})
+    
+    # Trigger SQLAlchemy change detection for JSON
+    flag_modified(db_note, "history")
+    # --- End History Logging ---
+
     for key, value in note_data.items():
         setattr(db_note, key, value)
     

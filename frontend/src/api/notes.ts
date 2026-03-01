@@ -9,10 +9,11 @@ export interface NoteNode {
   title: string;
   content?: string; // Optional because of on-demand loading
   weight: number; // Default 100
-  task_status?: string | null;
+  node_type?: string | null;
   created_at: number;
   updated_at: number;
   start_at: number;
+  history?: { ts: number; f: string; v: any }[];
 }
 
 // Convert backend snake_case to frontend if needed, but here we can just use snake_case
@@ -115,7 +116,7 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; task_status?: string | null }) => {
+  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; node_type?: string | null }) => {
     try {
       const updateData: any = { ...data };
       if (data.start_at) updateData.start_at = data.start_at / 1000;

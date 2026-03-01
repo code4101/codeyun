@@ -1,5 +1,6 @@
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
+from sqlalchemy import Column, JSON
 import time
 import socket
 
@@ -72,8 +73,8 @@ class NoteNode(SQLModel, table=True):
     # Weight for node size scaling (area based). Default 100.
     weight: int = Field(default=100)
     
-    # Task status: null (normal), 'todo', 'done'
-    task_status: Optional[str] = Field(default=None, index=True)
+    # Node type: null (normal), 'project', 'module', 'todo', 'done', etc.
+    node_type: Optional[str] = Field(default=None, index=True)
     
     # Visual coordinates for graph are dynamically calculated by frontend layout algorithm
     # No persistent storage for position in backend as requested.
@@ -81,6 +82,9 @@ class NoteNode(SQLModel, table=True):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     start_at: float = Field(default_factory=time.time)
+    
+    # Operation logs: list of {"ts": int, "f": str, "v": any}
+    history: List[dict] = Field(default=[], sa_column=Column(JSON))
 
 class NoteEdge(SQLModel, table=True):
     """
