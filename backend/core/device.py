@@ -1099,8 +1099,8 @@ class DeviceManager:
 
         # Initialize Local Device from file/system info
         system_id = get_system_id()
-        hostname = socket.gethostname()
         local_config = get_local_config()
+        hostname = local_config.get("name") or socket.gethostname()
         
         # We don't load 'Device' table anymore for the manager state
         # The manager state is now:
@@ -1141,6 +1141,7 @@ class DeviceManager:
         # For LocalDevice, we save to config.json
         if isinstance(device, LocalDevice):
             conf = get_local_config()
+            conf["name"] = device.name
             conf["python_exec"] = device.python_exec
             conf["api_token"] = device.api_token
             # Name is hostname, usually not changeable via config unless we add a field
@@ -1179,25 +1180,20 @@ class DeviceManager:
             dev.python_exec = python_exec
             self._save_device_to_db(dev)
             
-            # Local device config is saved to file.
-            # No push needed for local device itself.
+            if isinstance(dev, RemoteDevice):
+                threading.Thread(target=dev.push_config, daemon=True).start()
             return True
         return False
 
     def rename_device(self, device_id: str, new_name: str) -> bool:
-        # Only support renaming local device hostname via this method
-        # Remote renaming is now handled by updating UserDevice name, or calling remote API directly
-        # But for LocalDevice, we don't really rename hostname.
-        # We just update config?
-        # Actually, hostname is system property.
-        
-        # If we want to support "alias" for local device, we can store it in config.json
-        if device_id in self.devices:
-             # Just update in memory?
-             # Or do nothing.
-             # UserDevice table holds the name used by clients.
-             pass
-        return True
+        dev = self.devices.get(device_id)
+        if not dev:
+            return False
+
+        ok = dev.rename_remote_device(new_name)
+        if isinstance(dev, LocalDevice):
+            self._save_device_to_db(dev)
+        return ok
 
     def remove_device(self, device_id: str) -> bool:
         # No-op

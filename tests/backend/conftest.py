@@ -52,7 +52,7 @@ def fixture_test_device(session):
     token = "test-token-123"
     
     # Mock config instead of DB
-    with patch("backend.core.device.get_local_config", return_value={"api_token": token, "python_exec": "python"}), \
+    with patch("backend.core.device.get_local_config", return_value={"api_token": token, "python_exec": "python", "name": "Test Local Device"}), \
          patch("backend.core.device.get_system_id", return_value=device_id), \
          patch("backend.api.agent.get_system_id", return_value=device_id):
         

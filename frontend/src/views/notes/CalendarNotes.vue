@@ -29,12 +29,8 @@
       </div>
 
       <!-- Days Grid -->
-      <div class="days-grid">
-        <!-- Empty cells for padding at start -->
-        <div v-for="n in startPadding" :key="'pad-' + n" class="day-cell padding-cell"></div>
-
-        <!-- Actual Days -->
-        <div v-for="day in daysInMonth" :key="day.dateStr" class="day-cell">
+      <div class="days-grid" :style="{ gridTemplateRows }">
+        <div v-for="day in gridDays" :key="day.dateStr" class="day-cell" :class="{ 'is-outside': !day.isCurrentMonth }">
           <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
             <div class="day-left">
               <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
@@ -42,6 +38,7 @@
               <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
                 {{ day.isRest === true ? '休' : '班' }}
               </span>
+              <el-button class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
             </div>
             <div class="day-right">
               <span class="lunar-info" :class="{ 'is-festival': day.festival || day.jieQi }">
@@ -61,9 +58,6 @@
             </div>
           </div>
         </div>
-        
-        <!-- Empty cells for padding at end (optional, to fill row) -->
-        <div v-for="n in endPadding" :key="'end-pad-' + n" class="day-cell padding-cell"></div>
       </div>
 
       <!-- Height Resizer Handle -->
@@ -92,18 +86,303 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useNoteStore, type NoteNode } from '@/api/notes';
-import { Back, Refresh, ArrowLeft, ArrowRight } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { useUserStore } from '@/store/userStore';
+import { Back, Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeConfig } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 
 const router = useRouter();
 const noteStore = useNoteStore();
+const userStore = useUserStore();
 
-const currentMonth = ref(new Date());
+const currentMonth = ref<Date>(new Date());
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const currentNoteId = ref('');
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+const toDateStr = (d: Date) => {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
+
+const monthAnchor = computed(() => {
+  const d = currentMonth.value instanceof Date ? currentMonth.value : new Date();
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+});
+
+const monthStartTs = computed(() => monthAnchor.value.getTime());
+const monthEndTs = computed(() => new Date(monthAnchor.value.getFullYear(), monthAnchor.value.getMonth() + 1, 1).getTime());
+
+const formatMonthLabel = (d: Date) => {
+  const year = d.getFullYear();
+  const month = pad2(d.getMonth() + 1);
+  return `${year}年${month}月`;
+};
+
+const checkAuth = () => {
+  if (!userStore.isAuthenticated) {
+    ElMessageBox.confirm('该功能需要登录账号后才可用。是否前往登录？', '提示', {
+      confirmButtonText: '前往登录',
+      cancelButtonText: '取消',
+      type: 'info'
+    }).then(() => {
+      router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } });
+    }).catch(() => {});
+    return false;
+  }
+  return true;
+};
+
+const createNoteForDay = async (date: Date) => {
+  if (!checkAuth()) return;
+  const now = new Date();
+  const isTargetToday = isToday(date);
+  
+  const yy = String(date.getFullYear()).slice(-2);
+  const mm = pad2(date.getMonth() + 1);
+  const dd = pad2(date.getDate());
+  
+  let hh = '00';
+  let min = '00';
+  let startAt: number;
+
+  if (isTargetToday) {
+    hh = pad2(now.getHours());
+    min = pad2(now.getMinutes());
+    // 如果是今天，保留当前时分秒
+    startAt = new Date(date.getFullYear(), date.getMonth(), date.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()).getTime();
+  } else {
+    // 非今天，时分秒归零
+    startAt = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0, 0).getTime();
+  }
+  
+  const defaultTitle = `${yy}${mm}${dd}_${hh}${min}`;
+
+  const newNote = await noteStore.createNote(defaultTitle, '', 100, startAt);
+  if (newNote) {
+    currentNoteId.value = newNote.id;
+    ElMessage.success('已创建节点');
+  }
+};
+
+const onMonthChange = (value: Date | string | number | undefined) => {
+  const d = value instanceof Date ? value : value ? new Date(value) : new Date();
+  if (Number.isNaN(d.getTime())) return;
+  currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
+  refreshData();
+};
+
+const prevMonth = () => {
+  const d = monthAnchor.value;
+  currentMonth.value = new Date(d.getFullYear(), d.getMonth() - 1, 1);
+  refreshData();
+};
+
+const nextMonth = () => {
+  const d = monthAnchor.value;
+  currentMonth.value = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+  refreshData();
+};
+
+const goToToday = () => {
+  const d = new Date();
+  currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
+  refreshData();
+};
+
+const isToday = (d: Date) => {
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+};
+
+type CalendarDay = {
+  date: Date;
+  dateStr: string;
+  dayNum: number;
+  isCurrentMonth: boolean;
+  lunarDay: string;
+  festival?: string;
+  jieQi?: string;
+  holidayName?: string;
+  isRest?: boolean | null;
+};
+
+const buildDayMeta = (date: Date) => {
+  let lunarDay = '';
+  let festival: string | undefined;
+  let jieQi: string | undefined;
+  let holidayName: string | undefined;
+  let isRest: boolean | null | undefined;
+
+  try {
+    const solar = Solar.fromDate(date as any);
+    const lunar = solar.getLunar?.();
+    const dayInChinese = lunar?.getDayInChinese?.();
+    const monthInChinese = lunar?.getMonthInChinese?.();
+    lunarDay = dayInChinese === '初一' && monthInChinese ? `${monthInChinese}月` : (dayInChinese || '');
+
+    const lunarFestivals: string[] = lunar?.getFestivals?.() || [];
+    const solarFestivals: string[] = solar.getFestivals?.() || [];
+    festival = [...lunarFestivals, ...solarFestivals][0];
+    jieQi = lunar?.getJieQi?.() || undefined;
+
+    const h = HolidayUtil.getHoliday?.(date.getFullYear(), date.getMonth() + 1, date.getDate());
+    if (h) {
+      holidayName = h.getName?.() || h.getName || undefined;
+      if (typeof h.isWork === 'function') isRest = !h.isWork();
+      else if (typeof h.isRest === 'function') isRest = h.isRest();
+      else if (typeof h.getWork === 'function') isRest = h.getWork() !== 1;
+      else isRest = true;
+    }
+  } catch (e) {
+    lunarDay = '';
+  }
+
+  return { lunarDay, festival, jieQi, holidayName, isRest: isRest ?? null };
+};
+
+const startPadding = computed(() => {
+  const first = new Date(monthAnchor.value.getFullYear(), monthAnchor.value.getMonth(), 1);
+  const day = first.getDay();
+  return (day + 6) % 7;
+});
+
+const gridDays = computed<CalendarDay[]>(() => {
+  const d = monthAnchor.value;
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const dayCount = new Date(year, month + 1, 0).getDate();
+
+  const totalCells = Math.ceil((startPadding.value + dayCount) / 7) * 7;
+  const gridStart = new Date(year, month, 1 - startPadding.value);
+
+  const list: CalendarDay[] = [];
+  for (let i = 0; i < totalCells; i += 1) {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + i);
+    const meta = buildDayMeta(date);
+    list.push({
+      date,
+      dateStr: toDateStr(date),
+      dayNum: date.getDate(),
+      isCurrentMonth: date.getFullYear() === year && date.getMonth() === month,
+      lunarDay: meta.lunarDay,
+      festival: meta.festival,
+      jieQi: meta.jieQi,
+      holidayName: meta.holidayName,
+      isRest: meta.isRest
+    });
+  }
+  return list;
+});
+
+const gridTemplateRows = computed(() => {
+  const days = gridDays.value;
+  if (!days.length) return '';
+  
+  const rowsCount = days.length / 7;
+  const weights: number[] = [];
+  
+  for (let i = 0; i < rowsCount; i++) {
+    let maxNodesInWeek = 0;
+    // 检查这一周的每一天
+    for (let j = 0; j < 7; j++) {
+      const dayIndex = i * 7 + j;
+      const dayNotes = getNotesForDay(days[dayIndex].date);
+      if (dayNotes.length > maxNodesInWeek) {
+        maxNodesInWeek = dayNotes.length;
+      }
+    }
+    // 权重 = 1 + 该周单日最大节点数
+    weights.push(1 + maxNodesInWeek);
+  }
+  
+  return weights.map(w => `${w}fr`).join(' ');
+});
+
+const gridStartTs = computed(() => gridDays.value[0]?.date.getTime() ?? monthStartTs.value);
+const gridEndTs = computed(() => {
+  const last = gridDays.value[gridDays.value.length - 1]?.date;
+  if (!last) return monthEndTs.value;
+  return new Date(last.getFullYear(), last.getMonth(), last.getDate() + 1).getTime();
+});
+
+const notesByDay = computed(() => {
+  const map = new Map<string, NoteNode[]>();
+  const start = gridStartTs.value;
+  const end = gridEndTs.value;
+
+  for (const note of noteStore.notes) {
+    const ts = note.start_at || note.created_at;
+    if (!ts || ts < start || ts >= end) continue;
+    const key = toDateStr(new Date(ts));
+    const arr = map.get(key) || [];
+    arr.push(note);
+    map.set(key, arr);
+  }
+
+  for (const arr of map.values()) {
+    // 优先按时间（start_at 或 created_at）升序排序，时间相同时按权重降序
+    arr.sort((a, b) => {
+      const timeA = a.start_at || a.created_at;
+      const timeB = b.start_at || b.created_at;
+      if (timeA !== timeB) return timeA - timeB;
+      return (b.weight || 0) - (a.weight || 0);
+    });
+  }
+
+  return map;
+});
+
+const getNotesForDay = (date: Date) => {
+  return notesByDay.value.get(toDateStr(date)) || [];
+};
+
+const openNote = (note: NoteNode) => {
+  currentNoteId.value = note.id;
+};
+
+const getNoteStyle = (note: NoteNode) => {
+  const config = getNodeConfig(note.node_type);
+  return {
+    marginBottom: '4px',
+    padding: '2px 6px',
+    borderRadius: '4px',
+    borderColor: config.borderColor,
+    borderWidth: config.borderWidth,
+    borderStyle: config.borderStyle,
+    backgroundColor: config.backgroundColor,
+    opacity: config.opacity,
+    cursor: 'pointer',
+    overflow: 'hidden'
+  } as any;
+};
+
+const getNoteTitleStyle = (note: NoteNode) => {
+  const config = getNodeConfig(note.node_type);
+  const safeWeight = Math.max(10, note.weight || 100);
+  const scale = Math.sqrt(safeWeight / 100);
+  const fontSize = Math.min(14, Math.max(10, Math.round(12 * scale)));
+  return {
+    color: config.color,
+    fontWeight: config.fontWeight,
+    textDecoration: config.textDecoration,
+    fontSize: `${fontSize}px`
+  } as any;
+};
+
+const refreshData = async () => {
+  await noteStore.fetchNotes({ limit: 5000 });
+  ElMessage.success('已刷新');
+};
+
+const handleNoteUpdate = () => {};
+
+const handleNoteDelete = (noteId: string) => {
+  if (currentNoteId.value === noteId) currentNoteId.value = '';
+};
 
 // Layout state
 const calendarHeight = ref(600);
@@ -166,10 +445,12 @@ onUnmounted(() => {
 .calendar-notes-layout {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  min-height: 100vh;
   background-color: #fff;
   padding: 20px;
   box-sizing: border-box;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .header-section {
@@ -192,12 +473,14 @@ onUnmounted(() => {
 }
 
 .calendar-container {
-  flex: 1;
   display: flex;
   flex-direction: column;
   border: 1px solid #ebeef5;
   border-radius: 4px;
   overflow: hidden;
+  flex: none; /* Fixed height managed by JS resizer */
+  position: relative;
+  margin-bottom: 20px;
 }
 
 .weekday-header {
@@ -220,11 +503,11 @@ onUnmounted(() => {
 }
 
 .days-grid {
-  flex: 1;
+  flex: 1; /* This is crucial: the grid should fill the container's height */
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  grid-auto-rows: minmax(100px, 1fr); /* Ensure cells have height */
-  overflow-y: auto;
+  grid-auto-rows: 1fr; /* All rows get equal height based on the container */
+  overflow: hidden; /* Grid itself doesn't scroll, cells do */
 }
 
 .day-cell {
@@ -233,7 +516,7 @@ onUnmounted(() => {
   padding: 5px;
   display: flex;
   flex-direction: column;
-  min-height: 120px;
+  overflow: hidden; /* Each cell contains its scrollable content */
 }
 
 .day-cell:nth-child(7n) {
@@ -242,6 +525,27 @@ onUnmounted(() => {
 
 .padding-cell {
   background-color: #fcfcfc;
+}
+
+.day-cell.is-outside {
+  background-color: #fcfcfc;
+}
+
+.day-cell.is-outside .solar-day {
+  color: #909399;
+}
+
+.day-cell.is-outside .lunar-info {
+  color: #c0c4cc;
+}
+
+.create-note-btn {
+  margin-left: 4px;
+  opacity: 0;
+}
+
+.day-cell:hover .create-note-btn {
+  opacity: 1;
 }
 
 .day-number {
@@ -313,6 +617,18 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
+/* 隐藏日历格内部的滚动条以保持简洁，仅在需要时显示 */
+.day-content::-webkit-scrollbar {
+  width: 4px;
+}
+.day-content::-webkit-scrollbar-thumb {
+  background: #eee;
+  border-radius: 2px;
+}
+.day-content:hover::-webkit-scrollbar-thumb {
+  background: #ccc;
+}
+
 .note-item {
   transition: all 0.2s;
 }
@@ -322,12 +638,6 @@ onUnmounted(() => {
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
   /* New styles for resizer and layout */
-  .calendar-container {
-    height: 600px; /* Default, overridden by style */
-    flex: none; /* Don't flex, use fixed height */
-    position: relative;
-  }
-
   .calendar-resizer {
     height: 8px;
     width: 100%;
@@ -356,12 +666,13 @@ onUnmounted(() => {
   }
 
   .editor-section {
-    flex: 1;
+    flex: none; /* Don't flex, just follow the flow */
     display: flex;
     flex-direction: column;
     background-color: #fff;
     min-height: 400px;
     border-top: 1px solid #ebeef5;
+    overflow: visible; /* Let parent scroll */
   }
 
   .editor-wrapper {

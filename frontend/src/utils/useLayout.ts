@@ -49,11 +49,11 @@ function getNodeDimensions(weight: number = 100) {
  */
 export const useLayout = async (nodes: Node[], edges: Edge[]) => {
     
-    // 0. Pre-sort nodes by creation time
+    // 0. Pre-sort nodes by start time (user controlled order)
     // This gives ELK a hint for the "model order"
     const sortedNodes = [...nodes].sort((a, b) => {
-        const timeA = a.data?.created_at || 0;
-        const timeB = b.data?.created_at || 0;
+        const timeA = a.data?.start_at || 0;
+        const timeB = b.data?.start_at || 0;
         return timeA - timeB;
     });
 

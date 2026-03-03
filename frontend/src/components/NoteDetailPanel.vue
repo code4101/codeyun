@@ -26,16 +26,36 @@
                 <span class="time-tag">
                   <el-icon><Calendar /></el-icon> 起始: 
                   <el-date-picker
-                      v-model="currentNote.start_at"
-                      type="datetime"
-                      placeholder="选择起始时间"
+                      v-model="startDateProxy"
+                      type="date"
+                      placeholder="日期"
                       size="small"
                       :clearable="false"
-                      format="YYYY/MM/DD HH:mm:ss"
-                      value-format="x"
-                      @change="onStartTimeChange"
-                      style="width: 180px; margin-left: 5px;"
+                      format="YYYY/MM/DD"
+                      style="width: 130px; margin-left: 5px;"
                   />
+                  <el-input
+                      v-model="timeInputString"
+                      placeholder="时间"
+                      size="small"
+                      style="width: 100px; margin-left: 5px;"
+                      @blur="handleTimeInputCommit"
+                      @keydown.enter="handleTimeInputCommit"
+                  />
+                  <el-tooltip effect="light" placement="top">
+                    <template #content>
+                      <div style="line-height: 1.6; max-width: 200px;">
+                        <b>快捷时间输入:</b><br/>
+                        支持简写格式，自动补全:<br/>
+                        - <b>14</b> &rarr; 14:00:00<br/>
+                        - <b>1430</b> &rarr; 14:30:00<br/>
+                        - <b>143015</b> &rarr; 14:30:15<br/>
+                        - <b>930</b> &rarr; 09:30:00<br/>
+                        (输入回车或焦点离开生效)
+                      </div>
+                    </template>
+                    <el-icon class="help-icon" style="margin-left: 2px;"><QuestionFilled /></el-icon>
+                  </el-tooltip>
                 </span>
                 <span class="time-tag">
                   <el-icon><Clock /></el-icon> 更新: {{ formatDateDetailed(currentNote.updated_at) }}
@@ -65,22 +85,34 @@
             </div>
             <div class="status-control">
               <span class="label">节点类型:</span>
-              <el-select 
-                v-model="currentNote.node_type" 
-                size="small" 
-                placeholder="选择类型"
-                clearable
-                @change="onNodeTypeChange"
-                style="width: 120px;"
-              >
-                <el-option label="普通 (None)" :value="null" />
-                <el-option 
-                  v-for="config in orderedNodeConfigs" 
-                  :key="config.id" 
-                  :label="config.label" 
-                  :value="config.id" 
-                />
-              </el-select>
+              <el-popover placement="bottom" :width="350" trigger="click" popper-class="node-type-popper">
+                <template #reference>
+                  <div class="node-type-trigger" :style="getNodeTypeStyle(nodeTypeProxy)">
+                     <span class="trigger-label">{{ getNodeTypeLabel(nodeTypeProxy) }}</span>
+                     <el-icon><ArrowDown /></el-icon>
+                  </div>
+                </template>
+                <div class="node-type-grid">
+                  <div 
+                    class="type-grid-item" 
+                    :class="{ active: !nodeTypeProxy }"
+                    @click="onNodeTypeChange('')"
+                    :style="getNodeTypeStyle('')"
+                  >
+                    普通 (None)
+                  </div>
+                  <div 
+                    v-for="config in orderedNodeConfigs" 
+                    :key="config.id"
+                    class="type-grid-item"
+                    :class="{ active: nodeTypeProxy === config.id }"
+                    @click="onNodeTypeChange(config.id)"
+                    :style="getNodeTypeStyle(config.id)"
+                  >
+                    {{ config.label }}
+                  </div>
+                </div>
+              </el-popover>
               <el-tooltip effect="light" placement="top">
                 <template #content>
                   <div style="line-height: 1.6; max-width: 300px;">
@@ -127,8 +159,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount } from 'vue';
-import { Delete, Calendar, Clock, Check, Loading, QuestionFilled, List } from '@element-plus/icons-vue';
+import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue';
+import { Delete, Calendar, Clock, Check, Loading, QuestionFilled, List, ArrowDown } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import NoteEditor from './NoteEditor.vue';
 import { useNoteStore, type NoteNode } from '@/api/notes';
@@ -152,6 +184,17 @@ let saveTimeout: any = null;
 
 const isReady = computed(() => {
     return !!currentNote.value && !isFetchingContent.value && !!originalData.value && currentNote.value.content !== undefined;
+});
+
+const nodeTypeProxy = computed<string>({
+    get: () => {
+        if (!currentNote.value) return '';
+        return currentNote.value.node_type ?? '';
+    },
+    set: (value) => {
+        if (!currentNote.value) return;
+        currentNote.value.node_type = value === '' ? null : value;
+    }
 });
 
 // Track original values for change detection
@@ -285,14 +328,140 @@ const onTitleChange = () => {
     checkAndSave();
 };
 
-const onStartTimeChange = (value: number | string | Date | undefined) => {
-    if (!currentNote.value) return;
-    // value-format="x" means timestamp number
-    if (typeof value === 'number') {
-        currentNote.value.start_at = value;
+const startDateProxy = computed<Date | undefined>({
+    get: () => {
+        if (!currentNote.value) return undefined;
+        return new Date(currentNote.value.start_at);
+    },
+    set: (val) => {
+        if (!currentNote.value || !val) return;
+        const original = new Date(currentNote.value.start_at);
+        // Update Year/Month/Day
+        original.setFullYear(val.getFullYear());
+        original.setMonth(val.getMonth());
+        original.setDate(val.getDate());
+        
+        currentNote.value.start_at = original.getTime();
         checkAndSave();
     }
+});
+
+const timeInputString = ref('');
+
+// Watch currentNote change to update timeInputString
+watch(() => currentNote.value?.start_at, (val) => {
+    if (val) {
+        const d = new Date(val);
+        const h = String(d.getHours()).padStart(2, '0');
+        const m = String(d.getMinutes()).padStart(2, '0');
+        const s = String(d.getSeconds()).padStart(2, '0');
+        timeInputString.value = `${h}:${m}:${s}`;
+    }
+}, { immediate: true });
+
+const handleTimeInputCommit = () => {
+    const val = timeInputString.value;
+    if (!val) return;
+    
+    // Use smartTimeExpand to get HH:mm:ss string
+    const expandedTime = smartTimeExpand(val);
+    
+    if (expandedTime) {
+        // Update input display
+        timeInputString.value = expandedTime;
+        
+        if (currentNote.value) {
+            const original = new Date(currentNote.value.start_at);
+            const [h, m, s] = expandedTime.split(':').map(Number);
+            
+            // Only update if changed
+            if (original.getHours() !== h || original.getMinutes() !== m || original.getSeconds() !== s) {
+                original.setHours(h);
+                original.setMinutes(m);
+                original.setSeconds(s);
+                
+                currentNote.value.start_at = original.getTime();
+                checkAndSave();
+            }
+        }
+    } else {
+        // If invalid, revert to current stored time
+        if (currentNote.value) {
+             const d = new Date(currentNote.value.start_at);
+             const h = String(d.getHours()).padStart(2, '0');
+             const m = String(d.getMinutes()).padStart(2, '0');
+             const s = String(d.getSeconds()).padStart(2, '0');
+             timeInputString.value = `${h}:${m}:${s}`;
+        }
+    }
 };
+
+const smartTimeExpand = (input: string): string | null => {
+    input = input.trim();
+    if (!input) return null;
+    
+    // Replace Chinese colon
+    let s = input.replace(/：/g, ':');
+    
+    // Check if it's standard HH:mm or HH:mm:ss
+    if (s.includes(':')) {
+        const parts = s.split(':');
+        if (parts.length === 2) {
+             // 14:30 -> 14:30:00
+             const h = parseInt(parts[0]);
+             const m = parseInt(parts[1]);
+             if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+                 return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00`;
+             }
+        } else if (parts.length === 3) {
+             // 14:30:15 -> 14:30:15 (Normalization)
+             const h = parseInt(parts[0]);
+             const m = parseInt(parts[1]);
+             const sec = parseInt(parts[2]);
+             if (h >= 0 && h <= 23 && m >= 0 && m <= 59 && sec >= 0 && sec <= 59) {
+                 return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+             }
+        }
+        return null; // Invalid colon format or just return null to let element handle
+    }
+    
+    // Pure numbers
+    if (/^\d+$/.test(s)) {
+        const len = s.length;
+        let h = -1, m = 0, sec = 0;
+        
+        if (len >= 1 && len <= 2) {
+            // H or HH -> HH:00:00
+            h = parseInt(s);
+        } else if (len === 3) {
+            // Hmm -> H:mm:00 (e.g. 930 -> 09:30:00)
+            h = parseInt(s.substring(0, 1));
+            m = parseInt(s.substring(1));
+        } else if (len === 4) {
+            // HHmm -> HH:mm:00
+            h = parseInt(s.substring(0, 2));
+            m = parseInt(s.substring(2));
+        } else if (len === 5) {
+            // Hmmss -> H:mm:ss
+            h = parseInt(s.substring(0, 1));
+            m = parseInt(s.substring(1, 3));
+            sec = parseInt(s.substring(3));
+        } else if (len === 6) {
+            // HHmmss -> HH:mm:ss
+            h = parseInt(s.substring(0, 2));
+            m = parseInt(s.substring(2, 4));
+            sec = parseInt(s.substring(4));
+        }
+        
+        if (h >= 0 && h <= 23 && m >= 0 && m <= 59 && sec >= 0 && sec <= 59) {
+            return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+        }
+    }
+
+    return null;
+};
+
+
 
 const onWeightChange = (value: number | undefined) => {
     if (!currentNote.value) return;
@@ -309,9 +478,9 @@ const onWeightBlur = () => {
     if (currentNote.value) onWeightChange(currentNote.value.weight);
 };
 
-const onNodeTypeChange = (value: string | null) => {
+const onNodeTypeChange = (value: string) => {
     if (!currentNote.value) return;
-    currentNote.value.node_type = value;
+    currentNote.value.node_type = value === '' ? null : value;
     checkAndSave();
 };
 
@@ -384,6 +553,23 @@ const formatHistoryValue = (f: string, v: any) => {
     return v;
 };
 
+const getNodeTypeStyle = (type: string | null) => {
+    const config = getNodeConfig(type);
+    return {
+        borderColor: config.borderColor,
+        backgroundColor: config.backgroundColor,
+        color: config.color,
+        borderStyle: config.borderStyle,
+        fontWeight: config.fontWeight,
+        textDecoration: config.textDecoration,
+        opacity: config.opacity
+    };
+};
+
+const getNodeTypeLabel = (type: string | null) => {
+    return getNodeConfig(type).label;
+};
+
 // Cleanup
 onBeforeUnmount(() => {
     if (saveTimeout) clearTimeout(saveTimeout);
@@ -397,7 +583,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .note-detail-panel {
-    height: 100%;
+    min-height: 320px;
     display: flex;
     flex-direction: column;
 }
@@ -405,7 +591,7 @@ onBeforeUnmount(() => {
 .panel-content {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    min-height: 320px;
 }
 
 .editor-header {
@@ -479,6 +665,10 @@ onBeforeUnmount(() => {
     white-space: nowrap;
 }
 
+.history-toggle {
+    margin-left: auto;
+}
+
 .help-icon {
     margin-left: 5px;
     font-size: 14px;
@@ -486,8 +676,74 @@ onBeforeUnmount(() => {
     cursor: help;
 }
 
-.history-toggle {
-    margin-left: auto;
+/* Node Type Grid Styles */
+.node-type-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    height: 24px;
+    border: 1px solid #dcdfe6; /* Fallback border */
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    width: 120px;
+    transition: all 0.2s;
+    user-select: none;
+    background-color: #fff; /* Fallback bg */
+    color: #606266;
+    overflow: hidden;
+}
+
+.node-type-trigger:hover {
+    filter: brightness(0.95);
+}
+
+.trigger-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: 5px;
+    flex: 1;
+    text-align: center;
+}
+
+.node-type-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+    padding: 5px;
+}
+
+.type-grid-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    border-width: 1px;
+    border-style: solid;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.1s;
+    text-align: center;
+    user-select: none;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0 4px;
+}
+
+.type-grid-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    opacity: 1 !important; /* Ensure visibility on hover */
+    filter: brightness(0.95);
+}
+
+.type-grid-item.active {
+    box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.4);
+    transform: scale(1.02);
 }
 
 .history-panel {
@@ -574,17 +830,6 @@ onBeforeUnmount(() => {
     height: 100%;
     color: #909399;
 }
-
-.loading-placeholder {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    color: #909399;
-    gap: 8px;
-    font-size: 14px;
-}
-
 
 .loading-placeholder {
     display: flex;

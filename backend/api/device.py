@@ -232,7 +232,6 @@ def remove_user_device(
 ):
     """
     Remove a device from the user's list.
-    Does NOT delete the Device record itself.
     """
     link = session.get(UserDevice, (current_user.id, device_id))
     if not link:

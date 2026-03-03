@@ -100,6 +100,7 @@
                     :max="startTimeBounds.max"
                     :step="startSliderStep" 
                     :format-tooltip="formatDateSimple"
+                    @change="onSliderChange"
                 />
                 <div class="time-axis">
                     <div v-for="tick in startTimeTicks" :key="tick.label" class="tick" :style="{ left: tick.percent + '%' }">
@@ -124,6 +125,7 @@
                     :max="updatedTimeBounds.max"
                     :step="updatedSliderStep"
                     :format-tooltip="formatDateSimple"
+                    @change="onSliderChange"
                 />
                 <div class="time-axis">
                     <div v-for="tick in updatedTimeTicks" :key="tick.label" class="tick" :style="{ left: tick.percent + '%' }">
@@ -135,7 +137,7 @@
     </div>
 
     <!-- Middle: Graph -->
-    <div class="graph-section" :style="{ height: graphHeight + 'px' }">
+    <div class="graph-section" :style="{ height: graphHeight + 'px' }" ref="vueFlowWrapper">
       <VueFlow
         v-model="nodes"
         :edges="edges"
@@ -146,7 +148,9 @@
         :min-zoom="0.2"
         :max-zoom="4"
         :delete-key-code="['Backspace', 'Delete']"
+        :zoom-on-double-click="false"
         @node-click="onNodeClick"
+        @dblclick="onNativeDblClick"
         @connect="onConnect"
       >
         <Background />
@@ -229,13 +233,15 @@ const calculateOptimalHeight = () => {
     // filter-section: 60px, slider-section: ~120px, margins/others: ~40px
     const reservedHeight = 220; 
     const availableHeight = vh - reservedHeight;
+    const minEditorHeight = 340;
+    const maxGraphHeight = Math.max(200, availableHeight - minEditorHeight);
 
     if (isPortrait) {
         // Vertical screen: give more space to canvas (e.g. 70% of available)
-        return Math.max(400, Math.floor(availableHeight * 0.7));
+        return Math.min(maxGraphHeight, Math.max(400, Math.floor(availableHeight * 0.7)));
     } else {
         // Horizontal screen: 50%
-        return Math.max(300, Math.floor(availableHeight * 0.5));
+        return Math.min(maxGraphHeight, Math.max(300, Math.floor(availableHeight * 0.5)));
     }
 };
 
@@ -262,7 +268,12 @@ const startResizing = (e: MouseEvent) => {
 const handleResizing = (e: MouseEvent) => {
     if (!isResizing.value) return;
     const delta = e.clientY - startY.value;
-    const newHeight = Math.max(200, startHeight.value + delta); // Min 200px
+    const vh = window.innerHeight;
+    const reservedHeight = 220;
+    const availableHeight = vh - reservedHeight;
+    const minEditorHeight = 340;
+    const maxGraphHeight = Math.max(200, availableHeight - minEditorHeight);
+    const newHeight = Math.max(200, Math.min(maxGraphHeight, startHeight.value + delta));
     graphHeight.value = newHeight;
 };
 
@@ -276,11 +287,13 @@ const stopResizing = () => {
 // Graph state
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
+const vueFlowWrapper = ref<HTMLElement | null>(null);
 const { 
   onEdgesChange, 
   applyEdgeChanges, 
   onEdgeClick, 
   onPaneClick,
+  project
 } = useVueFlow();
 
 const selectedEdgeId = ref<string | null>(null);
@@ -600,13 +613,8 @@ watch(updatedTimeBounds, (newBounds, oldBounds) => {
     }
 }, { immediate: true });
 
-// React to slider changes (both user interaction via v-model and programmatic updates from bounds watchers)
-watch(sliderFilters, () => {
-    onSliderChange();
-}, { deep: true });
-
-const applyFilters = async () => {
-    if (isRefreshing.value || isGraphUpdating.value) return;
+const applyFilters = async (force: boolean = false) => {
+    if (!force && (isRefreshing.value || isGraphUpdating.value)) return;
     isGraphUpdating.value = true;
     try {
     // Filter nodes based on SLIDERS
@@ -682,6 +690,27 @@ const applyFilters = async () => {
     }
 };
 
+const syncEdgesFromStore = async () => {
+    if (isRefreshing.value) return;
+    if (isGraphUpdating.value) {
+        await nextTick();
+        if (isGraphUpdating.value) return;
+    }
+    const nodeIds = new Set(nodes.value.map(n => String(n.id)));
+    edges.value = noteStore.edges
+        .filter(e => nodeIds.has(e.source_id) && nodeIds.has(e.target_id))
+        .map(e => ({
+            id: e.id,
+            source: e.source_id,
+            target: e.target_id,
+            label: e.label,
+            type: 'elk',
+            markerEnd: MarkerType.ArrowClosed,
+            sourceHandle: e.source_handle,
+            targetHandle: e.target_handle,
+        }));
+};
+
 const selectNote = async (noteId: string) => {
   currentNoteId.value = noteId;
 };
@@ -706,9 +735,8 @@ const handleNoteDelete = (noteId: string) => {
     }
 };
 
-// Sync store changes back to local edges (e.g. after createEdge returns real ID)
 watch(() => noteStore.edges, async () => {
-    await applyFilters();
+    await syncEdgesFromStore();
 }, { deep: true });
 
 onMounted(async () => {
@@ -770,7 +798,7 @@ const refreshGraph = async () => {
   if (updatedTimeBounds.value.max > updatedTimeBounds.value.min) {
       sliderFilters.value.updated = [updatedTimeBounds.value.min, updatedTimeBounds.value.max];
   }
-  await applyFilters();
+  await applyFilters(true);
   } finally {
       isRefreshing.value = false;
   }
@@ -802,8 +830,7 @@ const onConnect = (params: Connection) => {
     // UI 乐观更新
     edges.value.push(edgeParams);
     
-    // 同步到后端 (后端只存拓扑，不存 Handle)
-    noteStore.createEdge(params.source, params.target);
+    noteStore.createEdge(params.source, params.target, params.sourceHandle, params.targetHandle);
 };
 
 // Handle Edge Click
@@ -884,8 +911,35 @@ const checkAuth = () => {
   return true;
 };
 
-const createNewNote = async () => {
+const onNativeDblClick = (event: MouseEvent) => {
+  // If clicked on a node or edge, do not create a new note
+  const target = event.target as HTMLElement;
+  if (target.closest('.vue-flow__node') || target.closest('.vue-flow__edge')) {
+      return;
+  }
+  
+  // Project screen coordinates to flow coordinates
+  // Note: project() converts screen pixel coordinates to internal flow coordinates
+  const bounds = vueFlowWrapper.value?.getBoundingClientRect();
+  const projected = bounds
+    ? project({ x: event.clientX - bounds.left, y: event.clientY - bounds.top })
+    : project({ x: event.clientX, y: event.clientY });
+  createNewNote(projected);
+};
+
+const createNewNote = async (targetPosition?: { x: number, y: number }) => {
   if (!checkAuth()) return;
+  
+  // If called from button click, targetPosition is MouseEvent
+  let pos = targetPosition;
+  if (pos && ((pos as any).preventDefault || (pos as any).type)) {
+      pos = undefined;
+  }
+  
+  if (!pos) {
+       pos = { x: Math.random() * 500, y: Math.random() * 300 };
+  }
+
   const defaultTitle = generateDefaultTitle();
   // Calculate center position or random
   const newNote = await noteStore.createNote(defaultTitle, '');
@@ -894,7 +948,7 @@ const createNewNote = async () => {
     const newNode = {
       id: newNote.id,
       label: newNote.title,
-      position: { x: Math.random() * 500, y: Math.random() * 300 },
+      position: pos,
       data: { 
           title: newNote.title,
           weight: newNote.weight,
@@ -1190,6 +1244,7 @@ const createNewNote = async () => {
   flex-direction: column;
   background-color: #fff;
   min-height: 600px; /* Increased from 400px */
+  overflow-y: auto; /* Allow content to grow and scroll */
 }
 
 .editor-section.is-collapsed {

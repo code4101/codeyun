@@ -38,13 +38,6 @@ const defaultOpeneds = computed(() => {
   return [];
 });
 
-const handleOpen = (key: string, keyPath: string[]) => {
-  console.log(key, keyPath);
-};
-const handleClose = (key: string, keyPath: string[]) => {
-  console.log(key, keyPath);
-};
-
 const handleLogout = () => {
   userStore.logout();
   router.push('/login');
@@ -68,8 +61,6 @@ const handleLogin = () => {
           :default-openeds="defaultOpeneds"
           class="el-menu-vertical-demo"
           :collapse="isCollapse"
-          @open="handleOpen"
-          @close="handleClose"
           router
         >
           <el-menu-item index="/">
@@ -95,7 +86,9 @@ const handleLogin = () => {
                 <span>凡修手游</span>
               </template>
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
+              <el-menu-item index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
               <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
+              <el-menu-item index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/dsp/calculator">
               <span>戴森球计划</span>

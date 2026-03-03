@@ -2,6 +2,10 @@ import requests
 import json
 import os
 import sys
+import pytest
+
+if os.getenv("RUN_MANUAL_FLOW_TESTS") != "1":
+    pytest.skip("Manual-only flow script. Set RUN_MANUAL_FLOW_TESTS=1 to enable.", allow_module_level=True)
 
 # Add project root to sys.path if needed for relative imports (though this script mainly uses requests)
 # Current: backend/tests/manual/test_flow.py

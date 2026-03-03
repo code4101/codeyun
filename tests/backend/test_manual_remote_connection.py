@@ -4,30 +4,32 @@ import requests
 import json
 import pytest
 
+if os.getenv("RUN_MANUAL_REMOTE_TESTS") != "1":
+    pytest.skip("Manual-only test. Set RUN_MANUAL_REMOTE_TESTS=1 to enable.", allow_module_level=True)
+
 # Add project root to path for imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from sqlmodel import Session, select, create_engine
-from backend.models import Device, Task
+from backend.models import UserDevice
 
 # This test file is intended for manual execution or integration testing
 # against a live environment. It requires the backend server to be running.
 
 # Use absolute path to ensure correct DB location
-DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../backend/data/codeyun.db'))
+DB_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../backend/database.db'))
 ENGINE = create_engine(f'sqlite:///{DB_PATH}')
 
 def get_device_info(device_name="codepc-mi15"):
     with Session(ENGINE) as session:
-        dev = session.exec(select(Device).where(Device.name == device_name)).first()
+        dev = session.exec(select(UserDevice).where(UserDevice.name == device_name)).first()
         if not dev:
-            # Try finding by partial ID if name fails (fallback)
-            dev = session.exec(select(Device).where(Device.id.like("3e13046f%"))).first()
+            dev = session.exec(select(UserDevice).where(UserDevice.device_id.like("3e13046f%"))).first()
         return dev
 
 def get_local_device():
     with Session(ENGINE) as session:
-        return session.exec(select(Device).where(Device.type == "LocalDevice")).first()
+        return session.exec(select(UserDevice).where(UserDevice.type == "LocalDevice")).first()
 
 def test_remote_connection_mi15():
     """
@@ -38,7 +40,7 @@ def test_remote_connection_mi15():
         pytest.skip("Device 'codepc-mi15' not found in local DB")
 
     url = mi15.url.rstrip('/') + "/api/task/"
-    token = mi15.api_token
+    token = mi15.token
     
     print(f"\n--- Testing Remote Connection to {mi15.name} ---")
     print(f"URL: {url}")
@@ -82,7 +84,7 @@ def test_remote_connection_with_local_token():
         pytest.skip("Devices not found")
 
     url = mi15.url.rstrip('/') + "/api/task/"
-    local_token = local.api_token
+    local_token = local.token
     
     print(f"\n--- Testing Connection with LOCAL Token (Confused Identity Check) ---")
     print(f"Using Token of: {local.name}")

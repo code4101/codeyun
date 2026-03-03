@@ -1,20 +1,29 @@
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from backend.api.task_manager import router as task_router
+from backend.api.task_manager import router as task_router, start_task_manager_services, stop_task_manager_services
 from backend.api.agent import router as agent_router
 from backend.api.filesystem import router as filesystem_router
 from backend.api.device import router as device_router
 from backend.api.auth import router as auth_router
 from backend.api.notes import router as notes_router
 from backend.api.upload import router as upload_router
+from backend.api.fanxiu import router as fanxiu_router
 from backend.core.auth import verify_api_token
 from backend.core.device import device_manager
 from backend.db import init_db
 import uvicorn
 import os
 from fastapi.staticfiles import StaticFiles
+from contextlib import asynccontextmanager
 
-app = FastAPI(title="CodeYun Backend", description="Local backend for CodeYun tools")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    await start_task_manager_services()
+    yield
+    await stop_task_manager_services()
+
+app = FastAPI(title="CodeYun Backend", description="Local backend for CodeYun tools", lifespan=lifespan)
 
 # Allow CORS for frontend development
 app.add_middleware(
@@ -25,13 +34,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    # Initialize and migrate database
-    init_db()
-    # Ensure device manager is loaded and local token exists
-    pass
-
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
 app.include_router(device_router, prefix="/api/devices", tags=["devices"]) # User protected inside
@@ -40,6 +42,7 @@ app.include_router(task_router, prefix="/api/task", tags=["task"])
 app.include_router(agent_router, prefix="/api/agent", tags=["agent"]) # Remove global dependency, handle inside
 app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
+app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
 
 # Mount static files
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")

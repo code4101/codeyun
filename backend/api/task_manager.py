@@ -28,25 +28,38 @@ import asyncio
 
 router = APIRouter()
 
-@router.on_event("startup")
-async def startup_event():
-    # We need to capture the loop here
+_status_broadcaster_task: Optional[asyncio.Task] = None
+
+async def start_task_manager_services():
+    global _status_broadcaster_task
+
+    if _status_broadcaster_task and not _status_broadcaster_task.done():
+        return
+
     loop = asyncio.get_running_loop()
 
     def thread_safe_log_callback(task_id, line):
         try:
-             asyncio.run_coroutine_threadsafe(ws_manager.broadcast_log(task_id, line), loop)
-        except Exception as e:
+            asyncio.run_coroutine_threadsafe(ws_manager.broadcast_log(task_id, line), loop)
+        except Exception:
             pass
 
-    # Register callback on local device
-    local_id = task_manager._get_local_device_id()
-    device = device_manager.get_device(local_id)
-    if device:
-        device.set_log_callback(thread_safe_log_callback)
+    try:
+        local_id = task_manager._get_local_device_id()
+        device = device_manager.get_device(local_id)
+        if device:
+            device.set_log_callback(thread_safe_log_callback)
+    except Exception:
+        pass
 
-    # Start a background task to broadcast status periodically
-    asyncio.create_task(status_broadcaster())
+    _status_broadcaster_task = asyncio.create_task(status_broadcaster())
+
+async def stop_task_manager_services():
+    global _status_broadcaster_task
+
+    if _status_broadcaster_task:
+        _status_broadcaster_task.cancel()
+        _status_broadcaster_task = None
 
 async def status_broadcaster():
     while True:

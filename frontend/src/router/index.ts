@@ -33,9 +33,21 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false }, // Public access
       },
       {
+        path: 'fanxiu/draw-calc',
+        name: 'DrawCalculator',
+        component: () => import('@/views/fanxiu/DrawCalculator.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'fanxiu/recharge',
         name: 'FanxiuRecharge',
         component: () => import('@/views/fanxiu/Recharge.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'fanxiu/xianzhou-race',
+        name: 'XianzhouRace',
+        component: () => import('@/views/fanxiu/XianzhouRace.vue'),
         meta: { requiresAuth: false },
       },
       {
