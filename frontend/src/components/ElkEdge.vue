@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { BaseEdge, getBezierPath, type EdgeProps } from '@vue-flow/core';
-import { computed } from 'vue';
+import { computed, toRefs } from 'vue';
 
 const props = defineProps<EdgeProps>();
+const { markerEnd, style } = toRefs(props);
 
 const path = computed(() => {
   // 1. 如果有 ELK 计算的路由信息，使用它绘制折线

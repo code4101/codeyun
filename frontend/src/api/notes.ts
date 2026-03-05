@@ -11,10 +11,17 @@ export interface NoteNode {
   weight: number; // Default 100
   node_type?: string | null;
   node_status?: string | null;
+  custom_fields?: any[]; // List format: [["k","t","v"], ...]
+  inherited_fields?: {
+    direct?: any[];
+    ancestors?: any[];
+  };
   created_at: number;
   updated_at: number;
   start_at: number;
   history?: { ts: number; f: string; v: any }[];
+  edge_count?: number; // Added from backend
+  out_degree?: number; // Added from backend
 }
 
 // Convert backend snake_case to frontend if needed, but here we can just use snake_case
@@ -31,10 +38,63 @@ export interface NoteEdge {
   created_at: number;
 }
 
+export interface TabState {
+  id: string;
+  label: string;
+  type: 'galaxy' | 'calendar' | 'list' | 'planet';
+  data?: { noteId: string; mode?: 'planetary' | 'satellite' };
+  closable: boolean;
+}
+
 export const useNoteStore = defineStore('notes', () => {
   const notes = ref<NoteNode[]>([]);
   const edges = ref<NoteEdge[]>([]); // Store edges
   const loading = ref(false);
+
+  // Tab State Management
+  const tabs = ref<TabState[]>([
+      { id: 'galaxy', label: '星系', type: 'galaxy', closable: false },
+      { id: 'calendar', label: '日历', type: 'calendar', closable: false },
+      { id: 'list', label: '列表', type: 'list', closable: false }
+  ]);
+  const activeTabId = ref('galaxy');
+
+  const addTab = (tab: TabState) => {
+      const existing = tabs.value.find(t => t.id === tab.id);
+      if (existing) {
+          activeTabId.value = existing.id;
+          if (tab.data) {
+              existing.data = tab.data;
+          }
+      } else {
+          tabs.value.push(tab);
+          activeTabId.value = tab.id;
+      }
+  };
+
+  const removeTab = (tabId: string) => {
+      const index = tabs.value.findIndex(t => t.id === tabId);
+      if (index === -1) return;
+      
+      const tabToRemove = tabs.value[index];
+      if (!tabToRemove.closable) return;
+
+      tabs.value.splice(index, 1);
+      
+      // If closing active tab, switch to the first tab (usually Galaxy)
+      if (activeTabId.value === tabId) {
+          const firstTab = tabs.value[0];
+          if (firstTab) {
+              activeTabId.value = firstTab.id;
+          }
+      }
+  };
+
+  const setActiveTab = (tabId: string) => {
+      if (tabs.value.find(t => t.id === tabId)) {
+          activeTabId.value = tabId;
+      }
+  };
 
   const fetchNotes = async (params: { 
     created_start?: number; 
@@ -104,10 +164,37 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const createNote = async (title: string, content: string, weight: number = 100, start_at?: number, node_type: string | null = 'note', node_status: string | null = 'idea') => {
+  const fetchConnectedComponent = async (id: string, mode: 'planetary' | 'satellite' = 'planetary') => {
+    try {
+      const response = await api.get(`/notes/${id}/connected-component`, { params: { mode } });
+      const data = response.data;
+      // Convert timestamps
+      data.nodes = data.nodes.map((n: any) => ({
+        ...n,
+        id: String(n.id),
+        created_at: n.created_at * 1000,
+        updated_at: n.updated_at * 1000,
+        start_at: n.start_at * 1000
+      }));
+      data.edges = data.edges.map((e: any) => ({
+        ...e,
+        id: String(e.id),
+        source_id: String(e.source_id),
+        target_id: String(e.target_id),
+        created_at: e.created_at * 1000
+      }));
+      return data;
+    } catch (error) {
+      console.error('Failed to fetch connected component:', error);
+      ElMessage.error('获取连通图失败');
+      return null;
+    }
+  };
+
+  const createNote = async (title: string, content: string, weight: number = 100, start_at?: number, node_type: string | null = 'note', node_status: string | null = 'idea', custom_fields: any[] = []) => {
     try {
       // Backend expects seconds
-      const data: any = { title, content, weight, node_type, node_status };
+      const data: any = { title, content, weight, node_type, node_status, custom_fields };
       if (start_at) data.start_at = start_at / 1000;
       
       const response = await api.post('/notes/', data);
@@ -124,7 +211,7 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; node_type?: string | null; node_status?: string | null }) => {
+  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; node_type?: string | null; node_status?: string | null; custom_fields?: any[] }) => {
     try {
       const updateData: any = { ...data };
       if (data.start_at) updateData.start_at = data.start_at / 1000;
@@ -205,8 +292,14 @@ export const useNoteStore = defineStore('notes', () => {
     notes,
     edges,
     loading,
+    tabs,
+    activeTabId,
+    addTab,
+    removeTab,
+    setActiveTab,
     fetchNotes,
     fetchNoteDetail,
+    fetchConnectedComponent,
     createNote,
     updateNote,
     deleteNote,

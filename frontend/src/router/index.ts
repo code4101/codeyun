@@ -63,16 +63,18 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
-        path: 'notes/star-map',
-        name: 'StarMapNotes',
-        component: () => import('@/views/notes/StarNotes.vue'),
+        path: 'notes/center',
+        name: 'NotesCenter',
+        component: () => import('@/views/notes/NotesCenter.vue'),
         meta: { requiresAuth: false },
       },
       {
+        path: 'notes/star-map',
+        redirect: '/notes/center'
+      },
+      {
         path: 'notes/calendar',
-        name: 'CalendarNotes',
-        component: () => import('@/views/notes/CalendarNotes.vue'),
-        meta: { requiresAuth: false },
+        redirect: '/notes/center?tab=calendar'
       },
       {
         path: 'notes/infinite-canvas',

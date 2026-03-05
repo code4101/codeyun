@@ -1,7 +1,7 @@
 <template>
   <div class="task-manager-layout">
     <!-- Top: Filter Panel -->
-    <div class="filter-section">
+    <div class="filter-section" v-if="!props.graphMode || props.graphMode === 'global'">
       <div class="scope-info">
         <span class="label">当前数据范围:</span>
         <div v-if="hasActiveFilter" class="scope-tags">
@@ -16,7 +16,6 @@
       </div>
       
       <div class="actions">
-          <el-button :icon="Calendar" @click="router.push('/notes/calendar')">日历视图</el-button>
           <el-button type="primary" :icon="Filter" @click="openFilterDialog">筛选加载范围</el-button>
           <el-button :icon="Refresh" @click="refreshGraph">刷新</el-button>
       </div>
@@ -77,7 +76,7 @@
     </el-dialog>
 
     <!-- Sub-Filter: Range Sliders -->
-    <div class="slider-section" v-if="nodes.length > 0">
+    <div class="slider-section" v-if="nodes.length > 0 && (!props.graphMode || props.graphMode === 'global')">
         <div class="slider-header">
             <span class="title">视图实时聚焦 (View Filtering)</span>
             <el-tooltip content="仅在已加载的任务中快速切换可见性，不请求后端" placement="top">
@@ -163,10 +162,17 @@
       </div>
 
       <!-- Height Resizer Handle -->
-      <div class="graph-resizer" @mousedown="startResizing">
-          <div class="resizer-indicator"></div>
-      </div>
+    <div class="graph-resizer" @mousedown="startResizing">
+        <div class="resizer-indicator"></div>
     </div>
+    
+    <div class="mode-indicator" v-if="props.graphMode && props.graphMode !== 'global'">
+        <el-tag effect="dark" :type="props.graphMode === 'satellite' ? 'success' : 'primary'">
+            {{ props.graphMode === 'satellite' ? '卫星图 (Satellite View)' : '行星图 (Planetary View)' }}
+        </el-tag>
+        <el-button link :icon="Refresh" @click="refreshGraph" style="margin-left: 10px; color: #fff;">刷新</el-button>
+    </div>
+  </div>
     
     <!-- Bottom: Editor -->
     <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
@@ -189,7 +195,7 @@
 import { useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
 import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import { Plus, Clock, Check, Loading, Refresh, Delete, Calendar, Filter, QuestionFilled, List } from '@element-plus/icons-vue';
+import { Plus, Clock, Check, Loading, Refresh, Delete, Filter, QuestionFilled, List } from '@element-plus/icons-vue';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useNoteStore, type NoteNode } from '@/api/notes';
@@ -211,9 +217,27 @@ import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
 import '@vue-flow/controls/dist/style.css';
 
+const props = defineProps<{
+    targetNoteId?: string;
+    graphMode?: 'global' | 'planetary' | 'satellite';
+}>();
+
 const router = useRouter();
 const userStore = useUserStore();
 const noteStore = useNoteStore();
+
+// Local state for non-global modes
+const localNotes = ref<NoteNode[]>([]);
+const localEdges = ref<any[]>([]);
+
+// Computed source of truth for graph data
+const sourceNotes = computed(() => {
+    return (props.graphMode === 'global' || !props.graphMode) ? noteStore.notes : localNotes.value;
+});
+
+const sourceEdges = computed(() => {
+    return (props.graphMode === 'global' || !props.graphMode) ? noteStore.edges : localEdges.value;
+});
 
 // Graph layout state
 const graphHeight = ref(600);
@@ -343,8 +367,8 @@ const clearUpdatedFilter = () => {
 
 // Slider States
 const startTimeBounds = computed(() => {
-    if (noteStore.notes.length === 0) return { min: 0, max: 0 };
-    const times = noteStore.notes.map(n => n.start_at);
+    if (sourceNotes.value.length === 0) return { min: 0, max: 0 };
+    const times = sourceNotes.value.map(n => n.start_at);
     return {
         min: Math.min(...times),
         max: Math.max(...times)
@@ -352,8 +376,8 @@ const startTimeBounds = computed(() => {
 });
 
 const updatedTimeBounds = computed(() => {
-    if (noteStore.notes.length === 0) return { min: 0, max: 0 };
-    const times = noteStore.notes.map(n => n.updated_at);
+    if (sourceNotes.value.length === 0) return { min: 0, max: 0 };
+    const times = sourceNotes.value.map(n => n.updated_at);
     return {
         min: Math.min(...times),
         max: Math.max(...times)
@@ -382,7 +406,7 @@ const densityData = computed(() => {
     
     if (sRange > 0) {
         const cCounts = new Array(bins).fill(0);
-        noteStore.notes.forEach(note => {
+        sourceNotes.value.forEach(note => {
             const progress = (note.start_at - sMin) / sRange;
             const idx = Math.min(bins - 1, Math.floor(progress * bins));
             if (idx >= 0 && idx < bins) cCounts[idx]++;
@@ -398,7 +422,7 @@ const densityData = computed(() => {
 
     if (uRange > 0) {
         const uCounts = new Array(bins).fill(0);
-        noteStore.notes.forEach(note => {
+        sourceNotes.value.forEach(note => {
             const progress = (note.updated_at - uMin) / uRange;
             const idx = Math.min(bins - 1, Math.floor(progress * bins));
             if (idx >= 0 && idx < bins) uCounts[idx]++;
@@ -616,7 +640,7 @@ const applyFilters = async (force: boolean = false) => {
     isGraphUpdating.value = true;
     try {
     // Filter nodes based on SLIDERS
-    const filteredNotes = noteStore.notes.filter(note => {
+    const filteredNotes = sourceNotes.value.filter(note => {
         let pass = true;
         
         // Check Slider Created Range (mapped to start_at)
@@ -642,7 +666,7 @@ const applyFilters = async (force: boolean = false) => {
     const visibleNodeIds = new Set(filteredNotes.map(n => n.id));
     
     // Filter Edges: Only show edges where BOTH source and target are visible
-    const filteredEdges = noteStore.edges.filter(edge => {
+    const filteredEdges = sourceEdges.value.filter(edge => {
         return visibleNodeIds.has(edge.source_id) && visibleNodeIds.has(edge.target_id);
     });
     
@@ -668,7 +692,13 @@ const applyFilters = async (force: boolean = false) => {
         target: e.target_id,
         label: e.label,
         type: 'elk',
-        markerEnd: MarkerType.ArrowClosed,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 20,
+          height: 20,
+          color: '#909399',
+        },
+        style: { stroke: '#909399', strokeWidth: 1.5 },
     }));
     
     // Re-run Layout
@@ -696,7 +726,7 @@ const syncEdgesFromStore = async () => {
         if (isGraphUpdating.value) return;
     }
     const nodeIds = new Set(nodes.value.map(n => String(n.id)));
-    edges.value = noteStore.edges
+    edges.value = sourceEdges.value
         .filter(e => nodeIds.has(e.source_id) && nodeIds.has(e.target_id))
         .map(e => ({
             id: e.id,
@@ -704,7 +734,13 @@ const syncEdgesFromStore = async () => {
             target: e.target_id,
             label: e.label,
             type: 'elk',
-            markerEnd: MarkerType.ArrowClosed,
+            markerEnd: {
+              type: MarkerType.ArrowClosed,
+              width: 20,
+              height: 20,
+              color: '#909399',
+            },
+            style: { stroke: '#909399', strokeWidth: 1.5 },
             sourceHandle: e.source_handle,
             targetHandle: e.target_handle,
         }));
@@ -785,8 +821,13 @@ const refreshGraph = async () => {
   if (isRefreshing.value) return;
   if (!userStore.isAuthenticated) {
     // Clear graph if not authenticated
-    noteStore.notes = [];
-    noteStore.edges = [];
+    if (props.graphMode === 'global' || !props.graphMode) {
+        noteStore.notes = [];
+        noteStore.edges = [];
+    } else {
+        localNotes.value = [];
+        localEdges.value = [];
+    }
     nodes.value = [];
     edges.value = [];
     return;
@@ -794,36 +835,46 @@ const refreshGraph = async () => {
   isRefreshing.value = true;
   try {
   
-  // Default Filter Initialization (if none set)
-  // Ensure we start with a sane default scope: Updated in last 7 days + future 7 days
-  if (filters.value.createdRange.length === 0 && filters.value.updatedRange.length === 0) {
-      const now = new Date();
+  if (props.graphMode === 'global' || !props.graphMode) {
+      // Default Filter Initialization (if none set)
+      // Ensure we start with a sane default scope: Updated in last 7 days + future 7 days
+      if (filters.value.createdRange.length === 0 && filters.value.updatedRange.length === 0) {
+          const now = new Date();
+          
+          const start = new Date(now);
+          start.setDate(start.getDate() - 7);
+          start.setHours(0, 0, 0, 0);
+          
+          const end = new Date(now);
+          end.setDate(end.getDate() + 7);
+          end.setHours(23, 59, 59, 999);
+          
+          filters.value.updatedRange = [start.getTime(), end.getTime()];
+      }
+
+      const queryParams: any = {};
       
-      const start = new Date(now);
-      start.setDate(start.getDate() - 7);
-      start.setHours(0, 0, 0, 0);
+      // Backend Date Picker Filters
+      if (filters.value.createdRange && filters.value.createdRange.length === 2) {
+          queryParams.created_start = filters.value.createdRange[0];
+          queryParams.created_end = filters.value.createdRange[1];
+      }
       
-      const end = new Date(now);
-      end.setDate(end.getDate() + 7);
-      end.setHours(23, 59, 59, 999);
-      
-      filters.value.updatedRange = [start.getTime(), end.getTime()];
+      if (filters.value.updatedRange && filters.value.updatedRange.length === 2) {
+          queryParams.updated_start = filters.value.updatedRange[0];
+          queryParams.updated_end = filters.value.updatedRange[1];
+      }
+
+      await noteStore.fetchNotes(queryParams);
+  } else if (props.targetNoteId) {
+      // Planetary/Satellite Mode
+      const data = await noteStore.fetchConnectedComponent(props.targetNoteId, props.graphMode === 'satellite' ? 'satellite' : 'planetary');
+      if (data) {
+          localNotes.value = data.nodes;
+          localEdges.value = data.edges;
+      }
   }
 
-  const queryParams: any = {};
-  
-  // Backend Date Picker Filters
-  if (filters.value.createdRange && filters.value.createdRange.length === 2) {
-      queryParams.created_start = filters.value.createdRange[0];
-      queryParams.created_end = filters.value.createdRange[1];
-  }
-  
-  if (filters.value.updatedRange && filters.value.updatedRange.length === 2) {
-      queryParams.updated_start = filters.value.updatedRange[0];
-      queryParams.updated_end = filters.value.updatedRange[1];
-  }
-
-  await noteStore.fetchNotes(queryParams);
   if (startTimeBounds.value.max > startTimeBounds.value.min) {
       sliderFilters.value.created = [startTimeBounds.value.min, startTimeBounds.value.max];
   }
@@ -853,7 +904,13 @@ const onConnect = (params: Connection) => {
         ...params,
         id: `e-${params.source}-${params.target}-${Date.now()}`,
         type: 'elk',
-        markerEnd: MarkerType.ArrowClosed,
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          width: 20,
+          height: 20,
+          color: '#909399',
+        },
+        style: { stroke: '#909399', strokeWidth: 1.5 },
         // 保留 handle 信息以支持当前会话的自定义连线
         sourceHandle: params.sourceHandle,
         targetHandle: params.targetHandle,
@@ -1003,9 +1060,8 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 .task-manager-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100vh; /* Changed from height: 100% to allow growth */
-  overflow-x: hidden;
-  overflow-y: auto; /* Allow the whole page to scroll if editor is long */
+  height: 100%; /* Changed from min-height: 100vh */
+  overflow: hidden; /* Let internal sections handle scrolling */
 }
 
 .filter-section {
@@ -1267,6 +1323,18 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
   background: rgba(255, 255, 255, 0.8);
   padding: 5px;
   border-radius: 4px;
+}
+
+.mode-indicator {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 5;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 5px 10px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
 }
 
 /* Remove old filter panel styles */

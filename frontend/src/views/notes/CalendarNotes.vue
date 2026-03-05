@@ -3,7 +3,6 @@
     <!-- Header: Controls -->
     <div class="header-section">
       <div class="left-controls">
-        <el-button @click="router.push('/notes/star-map')" :icon="Back">返回星图</el-button>
         <el-date-picker
           v-model="currentMonth"
           type="month"
@@ -87,7 +86,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue';
 import { useRouter } from 'vue-router';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
-import { Back, Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
+import { Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeStyle } from '@/utils/nodeConfig';
@@ -482,12 +481,11 @@ onUnmounted(() => {
 .calendar-notes-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100%;
   background-color: #fff;
   padding: 20px;
   box-sizing: border-box;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .header-section {

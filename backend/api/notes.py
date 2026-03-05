@@ -1,10 +1,10 @@
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlmodel import Session, select
+from sqlmodel import Session, select, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
 from backend.models import NoteNode, NoteEdge, User
-from backend.schemas import NoteCreate, NoteRead, NoteUpdate, EdgeCreate, EdgeRead, NoteListRead
+from backend.schemas import NoteCreate, NoteRead, NoteUpdate, EdgeCreate, EdgeRead, NoteListRead, GraphData
 from backend.core.auth import get_current_active_user
 import time
 import uuid
@@ -68,6 +68,7 @@ def create_note(
         weight=note.weight,
         node_type=note.node_type,
         node_status=note.node_status,
+        custom_fields=note.custom_fields,
         # parent_id=note.parent_id, # Deprecated
         created_at=current_time,
         updated_at=current_time,
@@ -75,20 +76,6 @@ def create_note(
         history=[]
     )
     
-    # Initialize history if node type/status is provided
-    if note.node_type:
-        db_note.history.append({
-            "ts": int(current_time),
-            "f": "n",
-            "v": note.node_type
-        })
-    if note.node_status:
-        db_note.history.append({
-            "ts": int(current_time),
-            "f": "s",
-            "v": note.node_status
-        })
-        
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
@@ -107,7 +94,213 @@ def read_note(
     note = session.exec(statement).first()
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    return note
+    
+    # Calculate edge count
+    edge_count = session.exec(
+        select(func.count()).select_from(NoteEdge).where(
+            NoteEdge.user_id == current_user.id,
+            or_(NoteEdge.source_id == note_id, NoteEdge.target_id == note_id)
+        )
+    ).one()
+    
+    # Calculate out_degree (for Satellite mode)
+    out_degree = session.exec(
+        select(func.count()).select_from(NoteEdge).where(
+            NoteEdge.user_id == current_user.id,
+            NoteEdge.source_id == note_id
+        )
+    ).one()
+
+    # --- Inherited Custom Fields Logic ---
+    # 1. Fetch direct parents (incoming edges)
+    direct_parent_edges = session.exec(
+        select(NoteEdge).where(
+            NoteEdge.user_id == current_user.id,
+            NoteEdge.target_id == note_id
+        )
+    ).all()
+    
+    parent_ids = [e.source_id for e in direct_parent_edges]
+    
+    # 2. Fetch parent nodes
+    parent_nodes = []
+    if parent_ids:
+        parent_nodes = session.exec(
+            select(NoteNode).where(
+                NoteNode.id.in_(parent_ids),
+                NoteNode.user_id == current_user.id
+            )
+        ).all()
+
+    # 3. Ancestors (Simplified: just one level up for now or BFS for full ancestors?)
+    # User asked for "Direct Parent" and "Other Indirect Ancestors".
+    # For performance, let's go up 2-3 levels or fetch all reachable ancestors?
+    # Fetching all ancestors in a graph can be heavy.
+    # Let's implement a limited BFS upstream (e.g., max depth 3) to find ancestors.
+    
+    ancestor_fields = {} # Key -> [Key, Type, Value]
+    direct_parent_fields = {} # Key -> [Key, Type, Value]
+    
+    # Process Direct Parents first
+    for p_node in parent_nodes:
+        if p_node.custom_fields:
+            if isinstance(p_node.custom_fields, list):
+                for field_item in p_node.custom_fields:
+                    # field_item is [key, type, value] or {"key":...} (if old format lingers?)
+                    # We migrated, so assume list [k, t, v]
+                    if isinstance(field_item, list) and len(field_item) >= 3:
+                        k, t, v = field_item[0], field_item[1], field_item[2]
+                        direct_parent_fields[k] = [k, t, v]
+            elif isinstance(p_node.custom_fields, dict):
+                # Fallback for unmigrated (shouldn't happen if migration ran)
+                for k, v in p_node.custom_fields.items():
+                    direct_parent_fields[k] = [k, "string", v]
+    
+    # Process Ancestors (BFS Upstream)
+    # We already have parents. Let's find their parents.
+    visited_ancestors = set(parent_ids)
+    queue = list(parent_ids)
+    max_depth = 3 # Limit depth to prevent performance issues
+    current_depth = 0
+    
+    while queue and current_depth < max_depth:
+        # Get next level parents
+        next_level_ids = []
+        if queue:
+            # Find edges where target is in queue (incoming to current level)
+            upstream_edges = session.exec(
+                select(NoteEdge).where(
+                    NoteEdge.user_id == current_user.id,
+                    NoteEdge.target_id.in_(queue)
+                )
+            ).all()
+            
+            new_ancestor_ids = []
+            for edge in upstream_edges:
+                if edge.source_id not in visited_ancestors and edge.source_id != note_id:
+                    visited_ancestors.add(edge.source_id)
+                    new_ancestor_ids.append(edge.source_id)
+            
+            if new_ancestor_ids:
+                # Fetch these ancestor nodes
+                ancestor_nodes = session.exec(
+                    select(NoteNode).where(
+                        NoteNode.id.in_(new_ancestor_ids),
+                        NoteNode.user_id == current_user.id
+                    )
+                ).all()
+                
+                for anc_node in ancestor_nodes:
+                    if anc_node.custom_fields:
+                        if isinstance(anc_node.custom_fields, list):
+                            for field_item in anc_node.custom_fields:
+                                if isinstance(field_item, list) and len(field_item) >= 3:
+                                    k, t, v = field_item[0], field_item[1], field_item[2]
+                                    ancestor_fields[k] = [k, t, v]
+                        elif isinstance(anc_node.custom_fields, dict):
+                            for k, v in anc_node.custom_fields.items():
+                                ancestor_fields[k] = [k, "string", v]
+                
+                queue = new_ancestor_ids
+            else:
+                queue = []
+        current_depth += 1
+
+    # Remove keys from ancestor_fields that are already in direct_parent_fields
+    # User wants: 1. Own, 2. Direct Parent (but not own), 3. Indirect (but not own or direct)
+    
+    # We will return these as separate Lists (of Lists) in the response.
+    # We need to filter out duplicates.
+    
+    # Direct fields are prioritized over Ancestor fields
+    final_direct_fields = []
+    final_ancestor_fields = []
+    
+    # But wait, frontend also checks against "Own" fields.
+    # The API just returns parents/ancestors. Frontend does the "Own" check?
+    # No, API should probably filter? Or return raw context?
+    # Previous implementation returned raw context for parents/ancestors, frontend filtered against own.
+    # Let's keep that.
+    
+    # Convert dicts back to lists
+    final_direct_fields = list(direct_parent_fields.values())
+    
+    # Filter ancestors: if in direct, remove from ancestor
+    for k in list(ancestor_fields.keys()):
+        if k in direct_parent_fields:
+            del ancestor_fields[k]
+            
+    final_ancestor_fields = list(ancestor_fields.values())
+    
+    note_dict = note.model_dump()
+    note_dict['edge_count'] = edge_count
+    note_dict['out_degree'] = out_degree
+    note_dict['inherited_fields'] = {
+        "direct": final_direct_fields,
+        "ancestors": final_ancestor_fields
+    }
+    return note_dict
+
+@router.get("/{note_id}/connected-component", response_model=GraphData)
+def get_connected_component(
+    note_id: str,
+    mode: str = Query("planetary", description="Mode: 'planetary' (default) or 'satellite'"),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Get the weakly connected component containing the given note.
+    mode='satellite': Ignore incoming edges to the center note (only outgoing).
+    """
+    # 1. Check if note exists
+    statement = select(NoteNode).where(NoteNode.id == note_id, NoteNode.user_id == current_user.id)
+    start_note = session.exec(statement).first()
+    if not start_note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    # 2. Fetch all edges for the user
+    # For small to medium graphs, this is acceptable.
+    edges = session.exec(select(NoteEdge).where(NoteEdge.user_id == current_user.id)).all()
+    
+    # Filter edges based on mode
+    if mode == 'satellite':
+        # Filter out edges where target is the center note (incoming edges)
+        # We want to see where this note leads, and subsequent connections.
+        edges = [e for e in edges if e.target_id != note_id]
+
+    # 3. Build Adjacency List
+    adj = {}
+    for edge in edges:
+        u, v = edge.source_id, edge.target_id
+        if u not in adj: adj[u] = []
+        if v not in adj: adj[v] = []
+        adj[u].append(v)
+        adj[v].append(u)
+
+    # 4. BFS to find component
+    visited = set()
+    queue = [note_id]
+    visited.add(note_id)
+    
+    while queue:
+        curr = queue.pop(0)
+        if curr in adj:
+            for neighbor in adj[curr]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+
+    # 5. Fetch all nodes in component
+    # Use IDs to fetch node details
+    nodes = session.exec(select(NoteNode).where(NoteNode.id.in_(visited))).all()
+    
+    # 6. Filter edges that are part of the component (both ends in component)
+    component_edges = []
+    for edge in edges:
+        if edge.source_id in visited and edge.target_id in visited:
+            component_edges.append(edge)
+            
+    return {"nodes": nodes, "edges": component_edges}
 
 @router.put("/{note_id}", response_model=NoteRead)
 def update_note(

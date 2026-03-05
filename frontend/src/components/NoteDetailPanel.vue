@@ -45,6 +45,25 @@
                 <span class="time-tag">
                   <el-icon><Clock /></el-icon> 更新: {{ formatDateDetailed(currentNote.updated_at) }}
                 </span>
+                <el-tooltip content="全景图：展示该节点所在的完整关联网络" placement="top">
+                    <el-button 
+                        size="small" 
+                        :disabled="!hasConnections"
+                        @click="openPlanetaryGraph('planetary')"
+                        style="margin-left: 10px;"
+                    >
+                        行星图
+                    </el-button>
+                </el-tooltip>
+                <el-tooltip content="衍生图：仅展示该节点向下延伸的发展网络（忽略来源）" placement="top">
+                    <el-button 
+                        size="small" 
+                        :disabled="!hasOutConnections"
+                        @click="openPlanetaryGraph('satellite')"
+                    >
+                        卫星图
+                    </el-button>
+                </el-tooltip>
             </div>
             <div class="save-status">
                 <span v-if="saveStatus === 'saved'" class="status-saved"><el-icon><Check /></el-icon> 已保存</span>
@@ -107,6 +126,129 @@
               </el-button>
             </div>
         </div>
+
+        <!-- Row 4: Custom Fields -->
+        <div class="header-row-custom">
+            <div class="custom-fields-label">
+                <span class="label">自定义属性:</span>
+                <el-button link type="primary" size="small" @click="addCustomField" title="添加自定义属性">
+                    <el-icon><Plus /></el-icon>
+                </el-button>
+            </div>
+            
+            <div class="custom-fields-container">
+                <!-- Group 1: Own Fields (Editable) -->
+                <div v-for="(item, index) in customFieldsList" :key="'own-'+index" class="custom-field-item own-field">
+                    <div class="indicator-placeholder"></div>
+                    <el-input 
+                        v-model="item.key" 
+                        size="small" 
+                        placeholder="Key" 
+                        class="field-key"
+                        @input="handleCustomFieldChange"
+                    />
+                    <el-select 
+                        v-model="item.type" 
+                        size="small" 
+                        class="field-type-select" 
+                        @change="handleCustomFieldTypeChange(item)"
+                        placeholder="类型"
+                    >
+                        <el-option label="文本" value="string" />
+                        <el-option label="数值" value="number" />
+                        <el-option label="布尔" value="boolean" />
+                    </el-select>
+                    
+                    <div class="field-value-container">
+                        <!-- String Input -->
+                        <el-input 
+                            v-if="item.type === 'string'"
+                            v-model="item.value" 
+                            size="small" 
+                            type="textarea"
+                            autosize
+                            placeholder="Value" 
+                            class="field-value"
+                            @input="handleCustomFieldChange"
+                        />
+                        
+                        <!-- Number Input (String storage, Number UI) -->
+                        <div v-else-if="item.type === 'number'" class="number-input-wrapper">
+                            <el-input 
+                                v-model="item.value" 
+                                size="small" 
+                                placeholder="0" 
+                                class="field-value"
+                                @input="value => {
+                                    const val = String(value);
+                                    if (/^-?\d*\.?\d*$/.test(val)) {
+                                        item.value = val;
+                                        handleCustomFieldChange();
+                                    }
+                                }"
+                            />
+                        </div>
+                        
+                        <!-- Boolean Input -->
+                        <div v-else-if="item.type === 'boolean'" class="boolean-input-wrapper">
+                            <el-switch 
+                                v-model="item.value" 
+                                size="small" 
+                                @change="handleCustomFieldChange"
+                            />
+                        </div>
+                    </div>
+
+                    <div class="action-col">
+                        <el-button link type="danger" size="small" @click="removeCustomField(index)" title="移除" class="remove-btn">
+                            <el-icon><Close /></el-icon>
+                        </el-button>
+                    </div>
+                </div>
+
+                <!-- Group 2: Direct Parent Inherited (Read-only, Addable) -->
+                <div v-for="(item, key) in inheritedDirectFields" :key="'direct-'+key" class="custom-field-item inherited-field direct">
+                    <div class="indicator-col">
+                        <el-tooltip content="来自直接父节点" placement="top" :show-after="500">
+                            <div class="inherited-indicator">父</div>
+                        </el-tooltip>
+                    </div>
+                    <span class="field-key-read">{{ key }}</span>
+                    <span class="field-type-read">{{ getFieldTypeLabel(item.value) }}</span>
+                    <div class="field-value-container">
+                        <span class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
+                    </div>
+                    <div class="action-col">
+                        <el-tooltip content="添加此属性到当前节点" placement="top">
+                            <el-button link type="primary" size="small" @click="addInheritedField(String(key), item.value, item.type)" class="add-btn">
+                                <el-icon><Plus /></el-icon>
+                            </el-button>
+                        </el-tooltip>
+                    </div>
+                </div>
+
+                <!-- Group 3: Ancestor Inherited (Read-only, Addable) -->
+                <div v-for="(item, key) in inheritedAncestorFields" :key="'ancestor-'+key" class="custom-field-item inherited-field ancestor">
+                    <div class="indicator-col">
+                        <el-tooltip content="来自间接祖先节点" placement="top" :show-after="500">
+                            <div class="inherited-indicator ancestor">祖</div>
+                        </el-tooltip>
+                    </div>
+                    <span class="field-key-read">{{ key }}</span>
+                    <span class="field-type-read">{{ getFieldTypeLabel(item.value) }}</span>
+                    <div class="field-value-container">
+                        <span class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
+                    </div>
+                    <div class="action-col">
+                        <el-tooltip content="添加此属性到当前节点" placement="top">
+                            <el-button link type="primary" size="small" @click="addInheritedField(String(key), item.value, item.type)" class="add-btn">
+                                <el-icon><Plus /></el-icon>
+                            </el-button>
+                        </el-tooltip>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <!-- History Section -->
         <div v-if="showHistory" class="history-panel">
@@ -139,7 +281,8 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue';
-import { Delete, Calendar, Clock, Check, Loading, List, ArrowDown, CopyDocument } from '@element-plus/icons-vue';
+import { useRouter } from 'vue-router';
+import { Delete, Calendar, Clock, Check, Loading, List, ArrowDown, CopyDocument, Connection, Plus, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import NoteEditor from './NoteEditor.vue';
 import NodeSelector from './NodeSelector.vue';
@@ -165,12 +308,42 @@ const emit = defineEmits<{
 }>();
 
 const noteStore = useNoteStore();
+const router = useRouter();
 const currentNote = ref<NoteNode | undefined>(undefined);
 const isFetchingContent = ref(false);
+
+const hasConnections = computed(() => {
+    return (currentNote.value?.edge_count || 0) > 0;
+});
+
+const hasOutConnections = computed(() => {
+    return (currentNote.value?.out_degree || 0) > 0;
+});
+
+const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
+    if (!currentNote.value) return;
+    const suffix = mode === 'satellite' ? '卫星图' : '行星图';
+    noteStore.addTab({
+        id: `planet-${currentNote.value.id}-${mode}`,
+        label: `${currentNote.value.title ? currentNote.value.title.slice(0, 8) : 'Untitled'} - ${suffix}`,
+        type: 'planet',
+        data: { noteId: currentNote.value.id, mode },
+        closable: true
+    });
+};
 const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
 const showHelpDialog = ref(false);
 const showCopyDialog = ref(false);
+interface CustomFieldItem {
+    key: string;
+    value: string | number | boolean;
+    type: 'string' | 'number' | 'boolean';
+}
+const customFieldsList = ref<CustomFieldItem[]>([]);
+const inheritedDirectFields = ref<Record<string, any>>({});
+const inheritedAncestorFields = ref<Record<string, any>>({});
+
 let saveTimeout: any = null;
 
 const isReady = computed(() => {
@@ -207,6 +380,7 @@ const originalData = ref<{
     start_at: number;
     node_type: string | null;
     node_status: string | null;
+    custom_fields: string; // JSON string for easy comparison
 } | null>(null);
 
 const orderedNodeTypes = computed(() => getOrderedNodeTypes());
@@ -254,13 +428,88 @@ async function loadNote(id: string) {
     const note = noteStore.notes.find(n => n.id === id) || detailed;
     currentNote.value = note;
     currentNote.value.content = detailed.content;
+    
+    // Initialize Custom Fields List
+    if (note.custom_fields) {
+        if (Array.isArray(note.custom_fields)) {
+            // New List Format: [["key", "type", "value"], ...] or [{"key":...}]
+            customFieldsList.value = note.custom_fields.map((item: any) => {
+                if (Array.isArray(item) && item.length >= 3) {
+                    return { key: item[0], type: item[1], value: item[2] };
+                } else if (typeof item === 'object') {
+                    return { key: item.key, type: item.type || 'string', value: item.value };
+                }
+                return { key: '', type: 'string', value: '' }; // Fallback
+            });
+        } else if (typeof note.custom_fields === 'object') {
+            // Legacy Dict Format support
+            customFieldsList.value = Object.entries(note.custom_fields).map(([k, v]) => {
+                let type: 'string' | 'number' | 'boolean' = 'string';
+                if (typeof v === 'boolean') {
+                    type = 'boolean';
+                } else if (typeof v === 'number') {
+                    type = 'number';
+                    v = String(v);
+                } else {
+                    const vStr = String(v);
+                    if (!isNaN(Number(vStr)) && vStr.trim() !== '') {
+                        type = 'string';
+                    }
+                }
+                return { key: k, value: v as string | number | boolean, type };
+            });
+        }
+    } else {
+        customFieldsList.value = [];
+    }
+
+    // Process Inherited Fields (Deduplicate against own fields)
+    const ownKeys = new Set(customFieldsList.value.map(i => i.key));
+    inheritedDirectFields.value = {};
+    inheritedAncestorFields.value = {};
+
+    if (note.inherited_fields) {
+        // 1. Direct Parent
+        if (note.inherited_fields.direct) {
+             // Now it's a List of Lists: [["k", "t", "v"], ...]
+             const list = note.inherited_fields.direct as any[];
+             list.forEach((item: any) => {
+                 if (Array.isArray(item) && item.length >= 3) {
+                     const [k, t, v] = item;
+                     if (!ownKeys.has(k)) {
+                         inheritedDirectFields.value[k] = v; // Store value only? Or object?
+                         // We need type to display correctly.
+                         // Let's store full object in our local map: key -> {type, value}
+                         inheritedDirectFields.value[k] = { type: t, value: v };
+                         ownKeys.add(k);
+                     }
+                 }
+             });
+        }
+        
+        // 2. Ancestors
+        if (note.inherited_fields.ancestors) {
+             const list = note.inherited_fields.ancestors as any[];
+             list.forEach((item: any) => {
+                 if (Array.isArray(item) && item.length >= 3) {
+                     const [k, t, v] = item;
+                     if (!ownKeys.has(k)) {
+                         inheritedAncestorFields.value[k] = { type: t, value: v };
+                         ownKeys.add(k);
+                     }
+                 }
+             });
+        }
+    }
+
     originalData.value = {
         title: detailed.title,
         content: detailed.content || '',
         weight: detailed.weight,
         start_at: detailed.start_at,
         node_type: detailed.node_type || 'note',
-        node_status: detailed.node_status || 'idea'
+        node_status: detailed.node_status || 'idea',
+        custom_fields: JSON.stringify(detailed.custom_fields || {})
     };
 }
 
@@ -270,13 +519,29 @@ const checkAndSave = () => {
     const curr = currentNote.value;
     const orig = originalData.value;
     
+    // Construct current custom fields list
+    const currentFieldsList: any[] = [];
+    customFieldsList.value.forEach(item => {
+        if (item.key && item.key.trim()) {
+            let val: any = item.value;
+            // Type is already selected by user, trust it or validate?
+            // User selected type in UI.
+            
+            // Format for List: [key, type, value]
+            currentFieldsList.push([item.key.trim(), item.type, val]);
+        }
+    });
+    // Update the object in currentNote so it's ready to be saved
+    curr.custom_fields = currentFieldsList;
+
     const isChanged = 
         curr.content !== orig.content ||
         curr.title !== orig.title ||
         curr.weight !== orig.weight ||
         curr.start_at !== orig.start_at ||
         curr.node_type !== orig.node_type ||
-        curr.node_status !== orig.node_status;
+        curr.node_status !== orig.node_status ||
+        JSON.stringify(curr.custom_fields) !== orig.custom_fields;
     
     if (!isChanged) {
         if (saveStatus.value === 'unsaved') saveStatus.value = 'saved';
@@ -302,7 +567,8 @@ const saveNote = async (note: NoteNode) => {
             weight: note.weight,
             start_at: note.start_at,
             node_type: note.node_type,
-            node_status: note.node_status
+            node_status: note.node_status,
+            custom_fields: note.custom_fields
         });
         
         // Update original data to current
@@ -312,7 +578,8 @@ const saveNote = async (note: NoteNode) => {
             weight: note.weight,
             start_at: note.start_at,
             node_type: note.node_type || 'note',
-            node_status: note.node_status || 'idea'
+            node_status: note.node_status || 'idea',
+            custom_fields: JSON.stringify(note.custom_fields || {})
         };
         
         saveStatus.value = 'saved';
@@ -417,6 +684,66 @@ const onNodeStatusChange = (value: string) => {
     checkAndSave();
 };
 
+const addCustomField = () => {
+    customFieldsList.value.push({ key: '', value: '', type: 'string' });
+};
+
+const addInheritedField = (key: string, val: any, typeFromInheritance?: string) => {
+    // Determine type from parent value or use explicit type if available
+    let type: 'string' | 'number' | 'boolean' = 'string';
+    
+    if (typeFromInheritance && ['string', 'number', 'boolean'].includes(typeFromInheritance)) {
+        type = typeFromInheritance as any;
+    } else {
+        // Fallback inference
+        if (typeof val === 'boolean') type = 'boolean';
+        else if (typeof val === 'number') type = 'number';
+        else if (!isNaN(Number(val)) && String(val).trim() !== '') {
+            // Looks like number, but stored as string? Default to string to be safe.
+        }
+    }
+
+    // Add to own fields with empty value (but correct type)
+    customFieldsList.value.push({ 
+        key: key, 
+        value: type === 'boolean' ? false : (type === 'number' ? "0" : ""), 
+        type: type 
+    });
+    
+    // Remove from inherited display lists
+    if (inheritedDirectFields.value[key]) delete inheritedDirectFields.value[key];
+    if (inheritedAncestorFields.value[key]) delete inheritedAncestorFields.value[key];
+    
+    checkAndSave();
+};
+
+const formatInheritedValue = (val: any) => {
+    if (typeof val === 'boolean') return val ? 'True' : 'False';
+    return String(val);
+};
+
+const removeCustomField = (index: number) => {
+    customFieldsList.value.splice(index, 1);
+    checkAndSave();
+};
+
+const handleCustomFieldChange = () => {
+    checkAndSave();
+};
+
+const handleCustomFieldTypeChange = (item: CustomFieldItem) => {
+    // Reset value when type changes to avoid type mismatch confusion
+    if (item.type === 'boolean') {
+        item.value = false;
+    } else if (item.type === 'number') {
+        // Default to "0" string for number type
+        item.value = "0";
+    } else {
+        item.value = '';
+    }
+    checkAndSave();
+};
+
 const deleteCurrentNote = async () => {
     if (!currentNote.value) return;
     try {
@@ -508,6 +835,14 @@ const getNodeStatusLabel = (status: string | null) => {
     return getNodeStatusConfig(status || 'idea').label;
 };
 
+const getFieldTypeLabel = (val: any) => {
+    if (typeof val === 'boolean') return '布尔';
+    if (typeof val === 'number') return '数值';
+    const str = String(val);
+    if (!isNaN(Number(str)) && str.trim() !== '') return '数值'; // Treat numeric string as number type for display
+    return '文本';
+};
+
 // Cleanup
 onBeforeUnmount(() => {
     if (saveTimeout) clearTimeout(saveTimeout);
@@ -558,6 +893,233 @@ onBeforeUnmount(() => {
 .header-row-tertiary {
     display: flex;
     align-items: center;
+}
+
+/* Row 4: Custom Fields */
+.header-row-custom {
+    display: flex;
+    flex-direction: column; /* Stack label and container vertically if needed, or keep horizontal but ensure container is full width */
+    gap: 4px;
+    margin-top: 5px;
+}
+
+.custom-fields-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.custom-fields-container {
+    width: 100%; /* Ensure container takes full width */
+    display: flex;
+    flex-direction: column;
+    gap: 0; /* Removed gap between groups */
+}
+
+.custom-fields-label .label {
+    font-size: 12px;
+    color: #606266;
+    white-space: nowrap;
+}
+
+.custom-fields-list {
+    display: flex;
+    flex-direction: column; /* Change to column for table-like layout */
+    gap: 0; /* No gap between items */
+    flex: 1;
+}
+
+.custom-field-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px; /* Reduced from 10px */
+    background: transparent;
+    padding: 2px 0;
+    border-radius: 0;
+    border: none;
+    border-bottom: 1px solid #f2f2f2;
+}
+
+.custom-field-item:last-child {
+    border-bottom: none;
+}
+
+/* Specific styles for inherited fields to keep background but aligned */
+.custom-field-item.inherited-field {
+    background-color: #fdf6ec; 
+    border-radius: 0; /* Remove individual radius */
+    padding: 4px 8px;
+    border: none;
+    opacity: 0.8;
+}
+
+.custom-field-item.inherited-field.ancestor {
+    background-color: #f4f4f5;
+    opacity: 0.6;
+}
+
+/* Remove green border for own fields, use transparent background */
+.custom-field-item.own-field {
+    border: none;
+    background-color: #f0f9eb; /* Keep light green background */
+    box-shadow: none;
+    opacity: 1;
+    padding: 4px 8px; /* Consistent padding */
+    border-radius: 0; /* Remove individual radius */
+}
+
+/* Add radius to container instead */
+.custom-fields-container {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border-radius: 4px;
+    overflow: hidden; /* Clips children to radius */
+    border: 1px solid #f2f2f2;
+}
+
+/* Key Column */
+.indicator-col,
+.indicator-placeholder {
+    width: 20px;
+    flex: 0 0 20px;
+    display: flex;
+    align-items: center;
+}
+
+.custom-field-item .field-key,
+.custom-field-item .field-key-read {
+    width: 120px;
+    min-width: 120px;
+    flex: 0 0 120px;
+    margin-top: 1px;
+}
+
+/* Type Column */
+.field-type-select {
+    width: 65px; /* Increased to avoid truncation */
+    flex: 0 0 65px;
+    margin-top: 1px;
+}
+
+/* Override Element Plus input padding to be extremely tight */
+.field-type-select :deep(.el-input__wrapper) {
+    padding: 0 2px !important;
+}
+
+/* Ensure suffix icon (arrow) is extremely close to text */
+.field-type-select :deep(.el-input__suffix) {
+    position: absolute;
+    right: 2px;
+    margin: 0;
+}
+
+/* Center text and reduce its own padding */
+.field-type-select :deep(.el-input__inner) {
+    text-align: left;
+    padding-left: 4px;
+    padding-right: 0;
+    font-size: 12px;
+}
+
+.field-type-read {
+    font-size: 12px;
+    color: #909399;
+    width: 65px;
+    flex: 0 0 65px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    padding-left: 6px;
+}
+
+/* Value Column */
+.field-value-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+}
+
+.custom-field-item .field-value,
+.custom-field-item .field-value-read,
+.number-input-wrapper,
+.boolean-input-wrapper {
+    width: 100%;
+}
+
+/* Ensure el-input takes full width of its container */
+.custom-field-item .field-value :deep(.el-textarea__inner),
+.custom-field-item .field-value :deep(.el-input__wrapper) {
+    width: 100%;
+}
+
+/* Action Column */
+.action-col {
+    width: 32px;
+    flex: 0 0 32px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.remove-btn, .add-btn {
+    padding: 0;
+    margin: 0;
+}
+
+.custom-field-item .field-value-read {
+    padding-top: 2px;
+    color: #606266;
+}
+
+/* Hide separator */
+.custom-field-item .separator {
+    display: none;
+}
+
+.inherited-field {
+    /* Base style for inherited fields */
+}
+
+.inherited-field .field-key-read {
+    font-size: 12px;
+    color: #606266;
+    width: 80px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-left: 2px;
+}
+
+.inherited-field .field-value-read {
+    font-size: 12px;
+    color: #909399;
+    width: 180px;
+    min-width: 120px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.inherited-indicator {
+    font-size: 10px;
+    color: #fff;
+    background-color: #e6a23c; /* Direct parent: Warning/Orange */
+    padding: 1px 4px;
+    border-radius: 2px;
+    line-height: 1.2;
+    transform: scale(0.9);
+    cursor: help;
+}
+
+.inherited-indicator.ancestor {
+    background-color: #909399; /* Ancestor: Info/Grey */
+}
+
+.add-btn {
+    padding: 0 4px;
 }
 
 .meta-group {

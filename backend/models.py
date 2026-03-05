@@ -89,6 +89,9 @@ class NoteNode(SQLModel, table=True):
     # Operation logs: list of {"ts": int, "f": str, "v": any}
     history: List[dict] = Field(default=[], sa_column=Column(JSON))
 
+    # Custom attributes: dictionary of key-value pairs
+    custom_fields: dict = Field(default={}, sa_column=Column(JSON))
+
 class NoteEdge(SQLModel, table=True):
     """
     Directed edge between two NoteNodes.

@@ -66,7 +66,7 @@
             </div>
             
             <div class="status-control">
-               <span class="label">节点类型:</span>
+               <span class="label">类型:</span>
                <el-select 
                 v-model="nodeTypeProxy"
                 size="small" 
@@ -108,6 +108,40 @@
               </el-button>
             </div>
         </div>
+
+        <!-- Row 4: Custom Fields -->
+        <div class="header-row-custom">
+            <div class="custom-fields-label">
+                <span class="label">自定义属性:</span>
+                <el-button link type="primary" size="small" @click="addCustomField" :disabled="readonly">
+                    <el-icon><Plus /></el-icon>
+                </el-button>
+            </div>
+            <div class="custom-fields-list">
+                <div v-for="(item, index) in customFieldsList" :key="index" class="custom-field-item">
+                    <el-input 
+                        v-model="item.key" 
+                        size="small" 
+                        placeholder="Key" 
+                        class="field-key"
+                        @change="handleCustomFieldChange"
+                        :readonly="readonly"
+                    />
+                    <span class="separator">:</span>
+                    <el-input 
+                        v-model="item.value" 
+                        size="small" 
+                        placeholder="Value" 
+                        class="field-value"
+                        @change="handleCustomFieldChange"
+                        :readonly="readonly"
+                    />
+                    <el-button link type="danger" size="small" @click="removeCustomField(index)" :disabled="readonly">
+                        <el-icon><Close /></el-icon>
+                    </el-button>
+                </div>
+            </div>
+        </div>
         
         <!-- History Section -->
         <div v-if="showHistory" class="history-panel">
@@ -138,7 +172,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue';
-import { Calendar, Clock, Check, Loading, QuestionFilled, List } from '@element-plus/icons-vue';
+import { Calendar, Clock, Check, Loading, QuestionFilled, List, Plus, Close } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import NoteEditor from './NoteEditor.vue';
 import type { NoteNode } from '@/api/notes';
@@ -162,6 +196,12 @@ const emit = defineEmits<{
 const currentNote = ref<NoteNode | undefined>(undefined);
 const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
+
+interface CustomFieldItem {
+    key: string;
+    value: string;
+}
+const customFieldsList = ref<CustomFieldItem[]>([]);
 
 let saveTimeout: any = null;
 
@@ -199,6 +239,13 @@ watch(() => props.modelValue, (newVal) => {
             currentNote.value = note;
             saveStatus.value = 'saved';
             showHistory.value = false;
+
+            // Initialize custom fields list
+            if (note.custom_fields) {
+                customFieldsList.value = Object.entries(note.custom_fields).map(([k, v]) => ({ key: k, value: String(v) }));
+            } else {
+                customFieldsList.value = [];
+            }
         } 
     } else {
         currentNote.value = undefined;
@@ -218,6 +265,33 @@ const handleContentChange = (html: string) => {
     if (!currentNote.value) return;
     currentNote.value.content = html;
     handleChange();
+};
+
+const syncCustomFields = () => {
+    if (!currentNote.value) return;
+    
+    const fields: Record<string, any> = {};
+    customFieldsList.value.forEach(item => {
+        if (item.key && item.key.trim()) {
+            fields[item.key.trim()] = item.value;
+        }
+    });
+    
+    currentNote.value.custom_fields = fields;
+    handleChange(); // Trigger save
+};
+
+const addCustomField = () => {
+    customFieldsList.value.push({ key: '', value: '' });
+};
+
+const removeCustomField = (index: number) => {
+    customFieldsList.value.splice(index, 1);
+    syncCustomFields();
+};
+
+const handleCustomFieldChange = () => {
+    syncCustomFields();
 };
 
 const triggerSave = async () => {
@@ -342,6 +416,56 @@ const formatHistoryValue = (f: string, v: any) => {
 .header-row-tertiary {
     display: flex;
     align-items: center;
+}
+
+.header-row-custom {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.custom-fields-label {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding-top: 4px; /* Align with input */
+}
+
+.custom-fields-label .label {
+    font-size: 12px;
+    color: #606266;
+    white-space: nowrap;
+}
+
+.custom-fields-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    flex: 1;
+}
+
+.custom-field-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #f8f9fa;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid #ebeef5;
+}
+
+.custom-field-item .field-key {
+    width: 80px;
+}
+
+.custom-field-item .field-value {
+    width: 120px;
+}
+
+.custom-field-item .separator {
+    color: #909399;
+    font-weight: bold;
 }
 
 .meta-group {

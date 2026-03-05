@@ -1,5 +1,6 @@
-from typing import Optional, List
+from typing import Optional, List, Any, Dict
 from pydantic import BaseModel, ConfigDict
+
 
 class Token(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -95,6 +96,7 @@ class NoteCreate(BaseModel):
     start_at: Optional[float] = None
     node_type: Optional[str] = "note"
     node_status: Optional[str] = "idea"
+    custom_fields: Optional[List[List[Any]]] = []
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
@@ -103,6 +105,7 @@ class NoteUpdate(BaseModel):
     start_at: Optional[float] = None
     node_type: Optional[str] = None
     node_status: Optional[str] = None
+    custom_fields: Optional[List[List[Any]]] = None
 
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -111,24 +114,27 @@ class NoteRead(BaseModel):
     title: str
     content: str
     weight: int = 100
-    node_type: Optional[str] = None
-    node_status: Optional[str] = None
-    # parent_id: Optional[str] # Deprecated
-    # Position removed
+    start_at: float
     created_at: float
     updated_at: float
-    start_at: float
+    node_type: Optional[str] = None
+    node_status: Optional[str] = None
+    custom_fields: List[List[Any]] = []
+    
+    inherited_fields: Optional[Dict[str, List[List[Any]]]] = None 
     history: List[dict] = []
+    edge_count: int = 0
+    out_degree: int = 0
 
 class NoteListRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     user_id: int
     title: str
-    # content is excluded here
     weight: int = 100
     node_type: Optional[str] = None
     node_status: Optional[str] = None
+    custom_fields: List[List[Any]] = []
     created_at: float
     updated_at: float
     start_at: float
@@ -148,3 +154,7 @@ class EdgeRead(BaseModel):
     target_id: str
     label: Optional[str]
     created_at: float
+
+class GraphData(BaseModel):
+    nodes: List[NoteListRead]
+    edges: List[EdgeRead]
