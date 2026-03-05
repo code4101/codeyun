@@ -8,17 +8,7 @@
       :mode="mode"
     />
     <!-- Extra Toolbar Items Slot -->
-    <div v-if="!readOnly && ($slots.extra || enableImageMerge)" class="editor-toolbar-extra">
-      <el-button
-        v-if="enableImageMerge"
-        size="small"
-        type="success"
-        plain
-        :icon="Picture"
-        @click="openImageMergeDialog"
-      >
-        拼接图片
-      </el-button>
+    <div v-if="!readOnly && $slots.extra" class="editor-toolbar-extra">
       <slot name="extra"></slot>
     </div>
     <Editor
@@ -86,7 +76,6 @@ import '@wangeditor/editor/dist/css/style.css' // 引入 css
 import { onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } from 'vue'
 import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
 import { IEditorConfig, type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
-import { Picture } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { mergeImagesToPngDataUrl } from '@/utils/imageMerge'
 import { registerWangEditorPlugins } from '@/utils/wangEditorPlugins'
@@ -103,10 +92,6 @@ const props = defineProps({
     type: String,
     default: 'default' // 'default' or 'simple'
   },
-  enableImageMerge: {
-    type: Boolean,
-    default: true
-  },
   readOnly: {
     type: Boolean,
     default: false
@@ -121,7 +106,6 @@ const editorRef = shallowRef()
 // 内容 HTML，直接使用 props 初始化
 const valueHtml = ref(props.modelValue)
 
-const enableImageMerge = toRef(props, 'enableImageMerge')
 const readOnly = toRef(props, 'readOnly')
 const imageMergeVisible = ref(false)
 const mergeGap = ref(0)
@@ -179,6 +163,13 @@ const editorConfig: any = {
                 'editImage',
                 'viewImageLink',
                 'deleteImage'
+            ]
+        },
+        text: {
+            menuKeys: [
+                'image-merge-button',
+                '|',
+                'bold', 'underline', 'italic', 'through', 'color', 'bgColor', 'clearStyle'
             ]
         }
     }

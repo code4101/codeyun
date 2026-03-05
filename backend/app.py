@@ -8,6 +8,7 @@ from backend.api.auth import router as auth_router
 from backend.api.notes import router as notes_router
 from backend.api.upload import router as upload_router
 from backend.api.fanxiu import router as fanxiu_router
+from backend.api.admin import router as admin_router, init_storage_scheduler
 from backend.core.auth import verify_api_token
 from backend.core.device import device_manager
 from backend.db import init_db
@@ -20,6 +21,7 @@ from contextlib import asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     await start_task_manager_services()
+    init_storage_scheduler()
     yield
     await stop_task_manager_services()
 
@@ -43,6 +45,7 @@ app.include_router(agent_router, prefix="/api/agent", tags=["agent"]) # Remove g
 app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
+app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 
 # Mount static files
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")

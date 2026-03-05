@@ -36,6 +36,16 @@ def migrate_db():
                 session.commit()
                 print("Auto-migration: Completed successfully.")
             
+            # 2. Add node_status column
+            if "node_status" not in columns:
+                print("Auto-migration: Adding 'node_status' column to 'notenode' table...")
+                session.exec(text("ALTER TABLE notenode ADD COLUMN node_status VARCHAR DEFAULT 'idea'"))
+                session.commit()
+                # Run the python migration script separately or here?
+                # It's better to run the logic here if possible, but the python script has complex mapping.
+                # I'll rely on the manual script for data migration, or add a flag.
+                # But wait, if I add the column here, the manual script will work fine.
+            
         except Exception as e:
             print(f"Auto-migration failed: {e}")
 

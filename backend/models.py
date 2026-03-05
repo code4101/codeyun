@@ -73,8 +73,11 @@ class NoteNode(SQLModel, table=True):
     # Weight for node size scaling (area based). Default 100.
     weight: int = Field(default=100)
     
-    # Node type: null (normal), 'project', 'module', 'todo', 'done', etc.
-    node_type: Optional[str] = Field(default=None, index=True)
+    # Node type: project, module, task, bug, note, doc, memo
+    node_type: Optional[str] = Field(default="note", index=True)
+
+    # Node status: idea, todo, doing, predone, done, delete
+    node_status: Optional[str] = Field(default="idea", index=True)
     
     # Visual coordinates for graph are dynamically calculated by frontend layout algorithm
     # No persistent storage for position in backend as requested.

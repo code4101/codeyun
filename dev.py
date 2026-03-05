@@ -141,36 +141,9 @@ def main():
         print(f"   Backend: http://localhost:8000/docs")
         print("-" * 50)
 
-        # 监控循环：自动重启后端
+        # Keep main process running until Ctrl+C
         while True:
             time.sleep(1)
-            
-            # 1. 检查后端是否存活
-            if backend_proc.poll() is not None:
-                print(f"\n⚠️  Backend exited with code {backend_proc.returncode}. Restarting in 2 seconds...")
-                # 从进程列表中移除旧的 process 对象（如果有）
-                if backend_proc in processes:
-                    processes.remove(backend_proc)
-                
-                time.sleep(2)  # 等待一会避免疯狂重启
-                
-                try:
-                    backend_proc = subprocess.Popen(
-                        backend_cmd, 
-                        cwd=root_dir,
-                        shell=False,
-                        env=env
-                    )
-                    processes.append(backend_proc)
-                    print("🚀 Backend restarted.")
-                except Exception as e:
-                    print(f"❌ Failed to restart backend: {e}")
-
-            # 2. 检查前端是否存活 (前端挂了通常不需要自动重启，或者可以选择也重启)
-            if frontend_proc and frontend_proc.poll() is not None:
-                print("Frontend process exited. Press Ctrl+C to stop all services.")
-                # 前端退出通常意味着用户关闭了浏览器或者手动停止了，我们可以选择退出整个脚本
-                break
 
     except KeyboardInterrupt:
         print("\n\n🛑 Stopping services...")

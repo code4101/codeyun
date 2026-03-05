@@ -10,6 +10,7 @@ export interface NoteNode {
   content?: string; // Optional because of on-demand loading
   weight: number; // Default 100
   node_type?: string | null;
+  node_status?: string | null;
   created_at: number;
   updated_at: number;
   start_at: number;
@@ -103,10 +104,10 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const createNote = async (title: string, content: string, weight: number = 100, start_at?: number) => {
+  const createNote = async (title: string, content: string, weight: number = 100, start_at?: number, node_type: string | null = 'note', node_status: string | null = 'idea') => {
     try {
       // Backend expects seconds
-      const data: any = { title, content, weight };
+      const data: any = { title, content, weight, node_type, node_status };
       if (start_at) data.start_at = start_at / 1000;
       
       const response = await api.post('/notes/', data);
@@ -123,7 +124,7 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; node_type?: string | null }) => {
+  const updateNote = async (id: string, data: { title?: string; content?: string; weight?: number; start_at?: number; node_type?: string | null; node_status?: string | null }) => {
     try {
       const updateData: any = { ...data };
       if (data.start_at) updateData.start_at = data.start_at / 1000;

@@ -93,7 +93,8 @@ class NoteCreate(BaseModel):
     content: str = ""
     weight: int = 100
     start_at: Optional[float] = None
-    node_type: Optional[str] = None
+    node_type: Optional[str] = "note"
+    node_status: Optional[str] = "idea"
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
@@ -101,6 +102,7 @@ class NoteUpdate(BaseModel):
     weight: Optional[int] = None
     start_at: Optional[float] = None
     node_type: Optional[str] = None
+    node_status: Optional[str] = None
 
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -110,6 +112,7 @@ class NoteRead(BaseModel):
     content: str
     weight: int = 100
     node_type: Optional[str] = None
+    node_status: Optional[str] = None
     # parent_id: Optional[str] # Deprecated
     # Position removed
     created_at: float
@@ -125,6 +128,7 @@ class NoteListRead(BaseModel):
     # content is excluded here
     weight: int = 100
     node_type: Optional[str] = None
+    node_status: Optional[str] = None
     created_at: float
     updated_at: float
     start_at: float

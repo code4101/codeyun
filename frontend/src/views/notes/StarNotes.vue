@@ -176,6 +176,7 @@
         class="editor-wrapper"
         @update="handleNoteUpdate"
         @delete="handleNoteDelete"
+        @create="handleNoteCreate"
       />
       <div v-else class="empty-state">
         <el-empty description="请在上方图表中选择一个节点" />
@@ -198,7 +199,6 @@ import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
 import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
-import { getNodeConfig, getOrderedNodeConfigs } from '@/utils/nodeConfig';
 
 const nodeTypes = {
   custom: markRaw(CustomNode),
@@ -214,8 +214,6 @@ import '@vue-flow/controls/dist/style.css';
 const router = useRouter();
 const userStore = useUserStore();
 const noteStore = useNoteStore();
-
-const orderedNodeConfigs = computed(() => getOrderedNodeConfigs());
 
 // Graph layout state
 const graphHeight = ref(600);
@@ -657,6 +655,7 @@ const applyFilters = async (force: boolean = false) => {
            title: note.title,
            weight: note.weight,
            node_type: note.node_type,
+           node_status: note.node_status,
            created_at: note.created_at, // Keep for debug/info if needed
            start_at: note.start_at
        },
@@ -725,7 +724,40 @@ const handleNoteUpdate = (note: NoteNode) => {
         node.data.weight = note.weight;
         node.data.start_at = note.start_at;
         node.data.node_type = note.node_type;
+        node.data.node_status = note.node_status;
     }
+};
+
+const handleNoteCreate = (note: NoteNode) => {
+    let pos = { x: Math.random() * 500, y: Math.random() * 300 };
+    
+    // Try to place near source node if possible
+    if (currentNoteId.value) {
+        const sourceNode = nodes.value.find(n => n.id === currentNoteId.value);
+        if (sourceNode) {
+            pos = {
+                x: sourceNode.position.x + 50,
+                y: sourceNode.position.y + 50
+            };
+        }
+    }
+    
+    const newNode = {
+      id: note.id,
+      label: note.title,
+      position: pos,
+      data: { 
+          title: note.title,
+          weight: note.weight,
+          node_type: note.node_type,
+          node_status: note.node_status,
+          created_at: note.created_at,
+          start_at: note.start_at
+      },
+      type: 'custom'
+    };
+    nodes.value.push(newNode);
+    selectNote(note.id);
 };
 
 const handleNoteDelete = (noteId: string) => {
@@ -952,7 +984,8 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
       data: { 
           title: newNote.title,
           weight: newNote.weight,
-          node_type: null,
+          node_type: newNote.node_type,
+          node_status: newNote.node_status,
           created_at: newNote.created_at,
           start_at: newNote.start_at
       },

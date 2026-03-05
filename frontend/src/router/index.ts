@@ -98,6 +98,12 @@ const routes: Array<RouteRecordRaw> = [
         component: () => import('@/views/TaskLogs.vue'),
         meta: { requiresAuth: true }, // Logs require login
       },
+      {
+        path: 'admin/images',
+        name: 'StorageManager',
+        component: () => import('@/views/admin/StorageManager.vue'),
+        meta: { requiresAuth: true, requiresAdmin: true },
+      },
     ],
   },
 ];
@@ -107,7 +113,7 @@ const router = createRouter({
   routes,
 });
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const userStore = useUserStore();
   
   // Check if route requires auth
@@ -115,6 +121,19 @@ router.beforeEach((to, _from, next) => {
     if (!userStore.isAuthenticated) {
       next({ name: 'Login' });
     } else {
+      // Check for Admin requirement
+      if (to.matched.some(record => record.meta.requiresAdmin)) {
+        // Ensure user profile is loaded to check isAdmin
+        if (!userStore.user) {
+           await userStore.fetchUserProfile();
+        }
+        
+        if (!userStore.isAdmin) {
+          // Not authorized
+          next({ name: 'Home' });
+          return;
+        }
+      }
       next();
     }
   } else {

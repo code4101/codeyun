@@ -90,7 +90,7 @@ import { useUserStore } from '@/store/userStore';
 import { Back, Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
-import { getNodeConfig } from '@/utils/nodeConfig';
+import { getNodeStyle } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 
 const router = useRouter();
@@ -295,8 +295,8 @@ const gridTemplateRows = computed(() => {
         maxNodesInWeek = dayNotes.length;
       }
     }
-    // 权重 = 1 + 该周单日最大节点数
-    weights.push(1 + maxNodesInWeek);
+    // 权重 = 5 + 该周单日最大节点数
+    weights.push(5 + maxNodesInWeek);
   }
   
   return weights.map(w => `${w}fr`).join(' ');
@@ -345,31 +345,68 @@ const openNote = (note: NoteNode) => {
 };
 
 const getNoteStyle = (note: NoteNode) => {
-  const config = getNodeConfig(note.node_type);
+  const style = getNodeStyle(note.node_type, note.node_status);
+  
+  // Calculate height based on weight
+  // Default weight 100 -> height 24px (standard line height + padding)
+  // Scale similar to star map: sqrt(weight/100)
+  const safeWeight = Math.max(10, note.weight || 100);
+  const scale = Math.sqrt(safeWeight / 100);
+  // Base height ~26px (standard)
+  // For weight 100 (scale 1) -> 26px
+  // For weight 400 (scale 2) -> 52px
+  const baseHeight = 26;
+  const height = Math.round(baseHeight * scale);
+  
   return {
     marginBottom: '4px',
-    padding: '2px 6px',
+    padding: '0 6px',
     borderRadius: '4px',
-    borderColor: config.borderColor,
-    borderWidth: config.borderWidth,
-    borderStyle: config.borderStyle,
-    backgroundColor: config.backgroundColor,
-    opacity: config.opacity,
+    borderColor: style.borderColor,
+    borderWidth: style.borderWidth,
+    borderStyle: style.borderStyle,
+    backgroundColor: style.backgroundColor,
+    opacity: style.opacity,
     cursor: 'pointer',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    height: `${height}px`,
+    display: 'flex',
+    alignItems: 'center'
   } as any;
 };
 
 const getNoteTitleStyle = (note: NoteNode) => {
-  const config = getNodeConfig(note.node_type);
+  const style = getNodeStyle(note.node_type, note.node_status);
   const safeWeight = Math.max(10, note.weight || 100);
   const scale = Math.sqrt(safeWeight / 100);
-  const fontSize = Math.min(14, Math.max(10, Math.round(12 * scale)));
+  // Font size: Base 12px, grow slower to allow more text
+  // Default weight 100 (scale 1) -> 12px
+  // Weight 400 (scale 2) -> 14px
+  // Weight 900 (scale 3) -> 16px
+  const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
+  
+  // Recalculate height to determine max lines
+  const baseHeight = 26;
+  const height = Math.round(baseHeight * scale);
+  
+  const lineHeight = 1.25;
+  const lineHeightPx = fontSize * lineHeight;
+  // Calculate max lines based on height
+  const maxLines = Math.max(1, Math.floor(height / lineHeightPx));
+
   return {
-    color: config.color,
-    fontWeight: config.fontWeight,
-    textDecoration: config.textDecoration,
-    fontSize: `${fontSize}px`
+    color: style.color,
+    fontWeight: style.fontWeight,
+    textDecoration: style.textDecoration,
+    fontSize: `${fontSize}px`,
+    lineHeight: lineHeight,
+    width: '100%',
+    // Multi-line ellipsis
+    display: '-webkit-box',
+    WebkitBoxOrient: 'vertical',
+    WebkitLineClamp: maxLines,
+    overflow: 'hidden',
+    wordBreak: 'break-all'
   } as any;
 };
 

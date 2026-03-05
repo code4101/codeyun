@@ -223,11 +223,37 @@ const generatePasswords = () => {
 };
 
 const copyToClipboard = async (text: string) => {
+  // 优先尝试使用现代 Clipboard API
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      ElMessage.success('复制成功');
+      return;
+    } catch (err) {
+      console.warn('Clipboard API failed, falling back to execCommand', err);
+    }
+  }
+
+  // 降级方案：使用 document.execCommand
   try {
-    await navigator.clipboard.writeText(text);
-    ElMessage.success('复制成功');
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed'; // 避免滚动到底部
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    
+    const successful = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    
+    if (successful) {
+      ElMessage.success('复制成功');
+    } else {
+      throw new Error('execCommand failed');
+    }
   } catch (err) {
-    ElMessage.error('复制失败');
+    console.error('Copy failed:', err);
+    ElMessage.error('复制失败，请手动复制');
   }
 };
 

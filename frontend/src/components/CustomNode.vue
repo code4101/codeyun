@@ -26,37 +26,40 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
 import { computed } from 'vue'
-import { getNodeConfig } from '@/utils/nodeConfig'
+import { getNodeStyle } from '@/utils/nodeConfig'
 
 const props = defineProps<{
   data: {
     title: string,
     weight?: number,
-    node_type?: string | null
+    node_type?: string | null,
+    node_status?: string | null
   }
 }>()
 
 const BASE_WIDTH = 150;
 const BASE_HEIGHT = 50;
 
+const computedStyle = computed(() => {
+    return getNodeStyle(props.data.node_type, props.data.node_status);
+});
+
 const nodeStyle = computed(() => {
     const weight = props.data.weight || 100;
     const safeWeight = Math.max(10, weight);
     const scale = Math.sqrt(safeWeight / 100);
     
-    const config = getNodeConfig(props.data.node_type);
+    const style = computedStyle.value;
     
-    const style: any = {
+    return {
         width: `${Math.round(BASE_WIDTH * scale)}px`,
         height: `${Math.round(BASE_HEIGHT * scale)}px`,
-        borderColor: config.borderColor,
-        borderWidth: config.borderWidth,
-        borderStyle: config.borderStyle,
-        background: config.backgroundColor,
-        opacity: config.opacity,
+        borderColor: style.borderColor,
+        borderWidth: style.borderWidth,
+        borderStyle: style.borderStyle,
+        background: style.backgroundColor,
+        opacity: style.opacity,
     };
-    
-    return style;
 });
 
 const titleStyle = computed(() => {
@@ -67,16 +70,14 @@ const titleStyle = computed(() => {
     // Base font 14px, max 24px, min 10px
     const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
     
-    const config = getNodeConfig(props.data.node_type);
+    const style = computedStyle.value;
     
-    const style: any = {
+    return {
         fontSize: `${fontSize}px`,
-        color: config.color,
-        fontWeight: config.fontWeight,
-        textDecoration: config.textDecoration,
+        color: style.color,
+        fontWeight: style.fontWeight,
+        textDecoration: style.textDecoration,
     };
-    
-    return style;
 });
 </script>
 

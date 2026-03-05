@@ -67,6 +67,7 @@ def create_note(
         content=note.content,
         weight=note.weight,
         node_type=note.node_type,
+        node_status=note.node_status,
         # parent_id=note.parent_id, # Deprecated
         created_at=current_time,
         updated_at=current_time,
@@ -74,12 +75,18 @@ def create_note(
         history=[]
     )
     
-    # Initialize history if node type is provided
+    # Initialize history if node type/status is provided
     if note.node_type:
         db_note.history.append({
             "ts": int(current_time),
             "f": "n",
             "v": note.node_type
+        })
+    if note.node_status:
+        db_note.history.append({
+            "ts": int(current_time),
+            "f": "s",
+            "v": note.node_status
         })
         
     session.add(db_note)
@@ -122,7 +129,7 @@ def update_note(
     # --- History Logging Logic ---
     now_ts = int(time.time())
     one_hour = 3600
-    field_map = {"node_type": "n", "title": "t", "weight": "w", "content": "c"}
+    field_map = {"node_type": "n", "node_status": "s", "title": "t", "weight": "w", "content": "c"}
     
     if db_note.history is None:
         db_note.history = []
@@ -146,7 +153,7 @@ def update_note(
         is_mergeable = False
         if last_entry and (now_ts - last_entry["ts"]) < one_hour:
             # Type/Status changes are always logged separately
-            if field != "node_type":
+            if field != "node_type" and field != "node_status":
                 is_mergeable = True
         
         if is_mergeable:

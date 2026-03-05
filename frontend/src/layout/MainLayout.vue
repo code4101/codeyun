@@ -14,7 +14,9 @@ import {
   Box,
   Expand,
   Fold,
-  InfoFilled
+  InfoFilled,
+  Setting,
+  Delete
 } from '@element-plus/icons-vue';
 
 const route = useRoute();
@@ -114,6 +116,17 @@ const handleLogin = () => {
             <el-icon><Monitor /></el-icon>
             <template #title>集群管理</template>
           </el-menu-item>
+
+          <el-sub-menu index="admin-tools" v-if="userStore.isAdmin">
+            <template #title>
+              <el-icon><Setting /></el-icon>
+              <span>系统管理</span>
+            </template>
+            <el-menu-item index="/admin/images">
+              <el-icon><Delete /></el-icon>
+              <span>存储维护</span>
+            </el-menu-item>
+          </el-sub-menu>
         </el-menu>
         
         <div class="aside-disclaimer" :class="{ 'collapsed': isCollapse }">
