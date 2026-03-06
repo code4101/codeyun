@@ -28,7 +28,7 @@
           size="small"
           :model-value="getRuleTemplateValue(rule)"
           style="width: 150px"
-          @update:model-value="value => replaceRule(getActualRuleIndex(visibleIndex), createRuleFromTemplate(value))"
+          @update:model-value="value => replaceRuleTemplate(getActualRuleIndex(visibleIndex), value)"
         >
           <el-option
             v-for="item in ruleTemplates"
@@ -38,18 +38,7 @@
           />
         </el-select>
 
-        <template v-if="rule.matcher.kind === 'title_contains'">
-          <el-input
-            size="small"
-            :model-value="rule.matcher.value || ''"
-            placeholder="输入标题关键词"
-            clearable
-            style="width: 280px"
-            @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value || ''; })"
-          />
-        </template>
-
-        <template v-else-if="rule.matcher.kind === 'id'">
+        <template v-if="rule.matcher.kind === 'id'">
           <el-input
             size="small"
             :model-value="formatIdInput(rule)"
@@ -90,6 +79,17 @@
                 :value="option.value"
               />
             </el-select>
+          </template>
+
+          <template v-else-if="getFieldMode(getMatcherField(rule)) === 'text'">
+            <el-input
+              size="small"
+              :model-value="String(rule.matcher.value ?? '')"
+              :placeholder="getTextFieldPlaceholder(getMatcherField(rule))"
+              clearable
+              style="width: 280px"
+              @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value || ''; draft.matcher.values = []; })"
+            />
           </template>
 
           <template v-else-if="getFieldMode(getMatcherField(rule)) === 'time'">
@@ -293,7 +293,7 @@ import { getOrderedNodeStatuses, getOrderedNodeTypes } from '@/utils/nodeConfig'
 
 type RuleTemplateValue =
   | 'all'
-  | 'title_contains'
+  | 'title_match'
   | 'id'
   | 'node_type'
   | 'node_status'
@@ -357,7 +357,7 @@ const orderedNodeStatuses = computed(() => getOrderedNodeStatuses());
 const getActualRuleIndex = (visibleIndex: number) => visibleRuleStartIndex.value + visibleIndex;
 
 const ruleTemplates: Array<{ value: RuleTemplateValue; label: string }> = [
-  { value: 'title_contains', label: '标题包含' },
+  { value: 'title_match', label: '标题匹配' },
   { value: 'node_type', label: '类型匹配' },
   { value: 'node_status', label: '状态匹配' },
   { value: 'private_level', label: '私密值' },
@@ -402,13 +402,14 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
   switch (template) {
     case 'all':
       return createNoteProgramRule('include', 'all');
-    case 'title_contains':
+    case 'title_match':
       return {
         action: 'include',
         matcher: {
-          kind: 'title_contains',
-          value: '',
-          ignore_case: true
+          kind: 'field',
+          field: 'title',
+          op: 'eq',
+          value: ''
         }
       };
     case 'id':
@@ -483,10 +484,11 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
 };
 
 const getRuleTemplateValue = (rule: NoteProgramRule): RuleTemplateValue => {
-  if (rule.matcher.kind === 'title_contains') return 'title_contains';
+  if (rule.matcher.kind === 'title_contains') return 'title_match';
   if (rule.matcher.kind === 'id') return 'id';
   if (rule.matcher.kind === 'all') return 'all';
   if (rule.matcher.kind === 'field') {
+    if (rule.matcher.field === 'title') return 'title_match';
     if (rule.matcher.field === 'node_type') return 'node_type';
     if (rule.matcher.field === 'node_status') return 'node_status';
     if (rule.matcher.field === 'start_at') return 'start_at';
@@ -494,18 +496,21 @@ const getRuleTemplateValue = (rule: NoteProgramRule): RuleTemplateValue => {
     if (rule.matcher.field === 'private_level') return 'private_level';
     if (rule.matcher.field === 'weight') return 'weight';
   }
-  return 'title_contains';
+  return 'title_match';
 };
 
 const addRule = () => {
   updateChannel(draft => {
-    draft.rules.push(createRuleFromTemplate('title_contains'));
+    draft.rules.push(createRuleFromTemplate('title_match'));
   });
 };
 
-const replaceRule = (index: number, rule: NoteProgramRule) => {
+const replaceRuleTemplate = (index: number, template: RuleTemplateValue) => {
   updateChannel(draft => {
-    draft.rules[index] = rule;
+    const previousRule = draft.rules[index];
+    const nextRule = createRuleFromTemplate(template);
+    nextRule.action = previousRule?.action ?? nextRule.action;
+    draft.rules[index] = nextRule;
   });
 };
 
@@ -533,12 +538,21 @@ const removeRule = (index: number) => {
 const getMatcherField = (rule: NoteProgramRule) => rule.matcher.field || 'node_status';
 
 const getFieldMode = (field: string) => {
+  if (field === 'title') return 'text';
   if (field === 'start_at' || field === 'updated_at') return 'time';
   if (field === 'weight' || field === 'private_level') return 'number';
   return 'enum';
 };
 
 const getAllowedOps = (field: string) => {
+  if (field === 'title') {
+    return [
+      { value: 'eq', label: '等于' },
+      { value: 'contains', label: '包含' },
+      { value: 'not_contains', label: '不包含' },
+      { value: 'regex_search', label: '正则search' }
+    ];
+  }
   if (field === 'start_at' || field === 'updated_at') {
     return [
       { value: 'between', label: '介于' },
@@ -569,6 +583,7 @@ const getAllowedOps = (field: string) => {
 };
 
 const getDefaultOp = (field: string) => getAllowedOps(field)[0].value;
+const getTextFieldPlaceholder = (field: string) => field === 'title' ? '输入标题文本或正则模式' : '输入文本';
 
 const getLegacyTimeValue = (rawValue: unknown) => {
   if (typeof rawValue === 'number' && Number.isFinite(rawValue)) return rawValue;
@@ -689,7 +704,30 @@ const updateFieldOp = (index: number, op: string) => {
       return;
     }
 
-    draft.matcher.value = op === 'between' ? undefined : (draft.matcher.field === 'weight' ? 100 : '');
+    if (op === 'between') {
+      const fallbackValue = draft.matcher.field === 'weight'
+        ? 100
+        : draft.matcher.field === 'private_level'
+          ? 1
+          : 0;
+      const currentValue = typeof draft.matcher.value === 'number' && Number.isFinite(draft.matcher.value)
+        ? draft.matcher.value
+        : fallbackValue;
+      draft.matcher.value = undefined;
+      draft.matcher.values = [currentValue, currentValue];
+      return;
+    }
+
+    if (draft.matcher.field === 'weight' || draft.matcher.field === 'private_level') {
+      const fallbackValue = draft.matcher.field === 'weight' ? 100 : 1;
+      draft.matcher.value = typeof draft.matcher.value === 'number' && Number.isFinite(draft.matcher.value)
+        ? draft.matcher.value
+        : (getRangeValue(draft.matcher.values, 0) ?? fallbackValue);
+      draft.matcher.values = [];
+      return;
+    }
+
+    draft.matcher.value = typeof draft.matcher.value === 'string' ? draft.matcher.value : '';
     draft.matcher.values = [];
   });
 };

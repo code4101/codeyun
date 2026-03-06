@@ -1,4 +1,5 @@
 from typing import Any, List, Optional, Tuple
+import re
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select, func, or_
 from sqlalchemy.orm.attributes import flag_modified
@@ -17,6 +18,8 @@ from backend.schemas import (
     NoteQueryResponse,
     NoteProgramRequest,
     NoteProgramResponse,
+    NoteBatchUpdateRequest,
+    NoteBatchUpdateResponse,
 )
 from backend.core.auth import get_current_active_user
 from backend.core.note_walker import NoteGraphContext, NoteWalker
@@ -102,6 +105,17 @@ def _matches_rule(note: NoteNode, rule: NoteFilterRule) -> bool:
         if field_value is None:
             return False
         return str(rule.value or "").lower() in str(field_value).lower()
+    if op == "not_contains":
+        if field_value is None:
+            return True
+        return str(rule.value or "").lower() not in str(field_value).lower()
+    if op == "regex_search":
+        if field_value is None:
+            return False
+        try:
+            return re.search(str(rule.value or ""), str(field_value)) is not None
+        except re.error:
+            return False
     if op == "gte":
         return field_value is not None and field_value >= rule.value
     if op == "lte":
@@ -139,6 +153,8 @@ def _apply_sql_rule(query, rule: NoteFilterRule):
         return query.where(column >= rule.values[0]).where(column <= rule.values[1]), True
     if rule.op == "contains" and rule.field == "title" and rule.value is not None:
         return query.where(NoteNode.title.contains(str(rule.value))), True
+    if rule.op == "not_contains" and rule.field == "title" and rule.value is not None:
+        return query.where(~NoteNode.title.contains(str(rule.value))), True
 
     return query, False
 
@@ -386,6 +402,67 @@ def query_note_program(
     Execute a walker-style filtering program over the current user's note graph.
     """
     return _execute_note_program(request, user_id=current_user.id, session=session)
+
+
+@router.post("/batch-update", response_model=NoteBatchUpdateResponse)
+def batch_update_notes(
+    request: NoteBatchUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session)
+):
+    """
+    Batch update notes for the current user.
+    """
+    note_ids = [str(note_id).strip() for note_id in request.ids if str(note_id).strip()]
+    if not note_ids:
+        raise HTTPException(status_code=400, detail="ids is required")
+
+    patch = request.patch.model_dump(exclude_unset=True)
+    if not patch:
+        raise HTTPException(status_code=400, detail="patch is required")
+
+    notes = session.exec(
+        select(NoteNode).where(
+            NoteNode.user_id == current_user.id,
+            NoteNode.id.in_(note_ids)
+        )
+    ).all()
+
+    note_by_id = {str(note.id): note for note in notes}
+    ordered_notes = [note_by_id[note_id] for note_id in note_ids if note_id in note_by_id]
+
+    now_ts = int(time.time())
+    updated_notes: List[NoteNode] = []
+    touched_history = False
+
+    for note in ordered_notes:
+        changed = False
+
+        if "private_level" in patch and patch["private_level"] is not None:
+            next_private_level = int(patch["private_level"])
+            if note.private_level != next_private_level:
+                note.private_level = next_private_level
+                if note.history is None:
+                    note.history = []
+                note.history.append({"ts": now_ts, "f": "p", "v": next_private_level})
+                flag_modified(note, "history")
+                touched_history = True
+                changed = True
+
+        if changed:
+            note.updated_at = time.time()
+            session.add(note)
+            updated_notes.append(note)
+
+    if updated_notes or touched_history:
+        session.commit()
+        for note in updated_notes:
+            session.refresh(note)
+
+    return {
+        "updated_count": len(updated_notes),
+        "notes": updated_notes,
+    }
 
 @router.post("/", response_model=NoteRead)
 def create_note(

@@ -325,7 +325,7 @@ const hasConnections = computed(() => {
 const hasOutConnections = computed(() => {
     return (currentNote.value?.out_degree || 0) > 0;
 });
-const showPrivateToggle = computed(() => currentNote.value?.node_type === 'doc');
+const showPrivateToggle = computed(() => currentNote.value?.node_type === 'note');
 const isPrivateEnabled = computed(() => (currentNote.value?.private_level || 0) > 0);
 
 const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
@@ -363,6 +363,7 @@ const inheritedDirectFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 
 let saveTimeout: any = null;
+let loadRequestToken = 0;
 
 const isReady = computed(() => {
     return !!currentNote.value && !isFetchingContent.value && !!originalData.value && currentNote.value.content !== undefined;
@@ -425,6 +426,8 @@ const assignInheritedField = (
 
 // Watch noteId change to load data
 watch(() => props.noteId, async (newId) => {
+    const requestToken = ++loadRequestToken;
+
     if (!newId) {
         currentNote.value = undefined;
         originalData.value = null;
@@ -438,10 +441,10 @@ watch(() => props.noteId, async (newId) => {
         await saveNote(currentNote.value);
     }
 
-    await loadNote(newId);
+    await loadNote(newId, requestToken);
 }, { immediate: true });
 
-async function loadNote(id: string) {
+async function loadNote(id: string, requestToken: number) {
     saveStatus.value = 'saved';
     showHistory.value = false;
 
@@ -450,6 +453,10 @@ async function loadNote(id: string) {
     isFetchingContent.value = true;
 
     const detailed = await noteStore.fetchNoteDetail(id);
+    if (requestToken !== loadRequestToken || props.noteId !== id) {
+        return;
+    }
+
     isFetchingContent.value = false;
 
     if (!detailed) {

@@ -28,6 +28,14 @@
     </div>
 
     <div class="toolbar-section">
+      <div v-if="selectedCount > 0" class="bulk-actions">
+        <el-tag type="info">已选 {{ selectedCount }} 项</el-tag>
+        <el-button size="small" @click="selectAllVisible" :disabled="filteredNotes.length === 0 || allVisibleSelected">全选当前可见</el-button>
+        <el-button size="small" @click="clearSelection">清空选择</el-button>
+        <el-button size="small" type="danger" plain @click="applyPrivateLevelToSelection(1)">设为私密</el-button>
+        <el-button size="small" plain @click="applyPrivateLevelToSelection(0)">取消私密</el-button>
+      </div>
+
       <div class="toolbar-actions">
         <el-button type="primary" :icon="Plus" @click="createNewNote">新建节点</el-button>
         <el-button :icon="Refresh" @click="refreshData">重载工作集</el-button>
@@ -37,15 +45,19 @@
     <!-- Middle: Table List -->
     <div class="list-container" :style="{ height: listHeight + 'px' }">
       <el-table
+        ref="tableRef"
         v-loading="loading"
         :data="filteredNotes"
         style="width: 100%; height: 100%"
         highlight-current-row
         @current-change="handleCurrentChange"
+        @selection-change="handleSelectionChange"
         row-key="id"
         border
         size="small"
       >
+        <el-table-column type="selection" width="48" reserve-selection />
+
         <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
           <template #default="{ row }">
             <span class="note-title" :style="getTitleStyle(row.node_type)">{{ row.title || '无标题' }}</span>
@@ -75,6 +87,14 @@
         </el-table-column>
 
         <el-table-column prop="weight" label="权重" width="80" sortable />
+
+        <el-table-column prop="private_level" label="私密" width="88" sortable>
+          <template #default="{ row }">
+            <el-tag :type="row.private_level > 0 ? 'danger' : 'info'" size="small">
+              {{ row.private_level > 0 ? `开(${row.private_level})` : '关' }}
+            </el-tag>
+          </template>
+        </el-table-column>
 
         <el-table-column prop="start_at" label="起始时间" width="160" sortable>
           <template #default="{ row }">
@@ -121,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import {
   useNoteStore,
   type NoteNode,
@@ -133,7 +153,7 @@ import {
   normalizeNoteProgramChannel
 } from '@/api/notes';
 import { Plus, Refresh } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import { getNodeTypeConfig, getNodeStatusConfig, getNodeStyle } from '@/utils/nodeConfig';
@@ -160,6 +180,8 @@ const viewProgram = ref(normalizeNoteProgramChannel(
 ));
 const currentNoteId = ref('');
 const loading = ref(false);
+const tableRef = ref<any>(null);
+const selectedNoteIds = ref<string[]>([]);
 
 // Layout State
 const listHeight = ref(400);
@@ -172,6 +194,12 @@ const filteredNotes = computed(() => {
   const result = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
   return [...result].sort((a, b) => b.updated_at - a.updated_at);
 });
+const visibleNoteIds = computed(() => new Set(filteredNotes.value.map(note => note.id)));
+const selectedCount = computed(() => selectedNoteIds.value.length);
+const allVisibleSelected = computed(() => (
+  filteredNotes.value.length > 0
+  && filteredNotes.value.every(note => selectedNoteIds.value.includes(note.id))
+));
 
 // Actions
 const runDataProgram = async (program = getAppliedDataProgram(), persist: boolean = false) => {
@@ -231,6 +259,52 @@ const createNewNote = async () => {
 const handleCurrentChange = (val: NoteNode | undefined) => {
   if (val) {
     currentNoteId.value = val.id;
+  }
+};
+
+const handleSelectionChange = (rows: NoteNode[]) => {
+  selectedNoteIds.value = rows.map(row => row.id);
+};
+
+const selectAllVisible = async () => {
+  await nextTick();
+  filteredNotes.value.forEach(note => {
+    tableRef.value?.toggleRowSelection(note, true);
+  });
+};
+
+const clearSelection = () => {
+  tableRef.value?.clearSelection();
+  selectedNoteIds.value = [];
+};
+
+const applyPrivateLevelToSelection = async (privateLevel: number) => {
+  if (selectedNoteIds.value.length === 0) return;
+
+  const actionLabel = privateLevel > 0 ? '设为私密' : '取消私密';
+  const confirmed = await ElMessageBox.confirm(
+    `确定要将已选中的 ${selectedNoteIds.value.length} 个节点${actionLabel}吗？`,
+    '批量操作确认',
+    {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).catch(() => false);
+  if (!confirmed) return;
+
+  const result = await noteStore.batchUpdateNotes({
+    ids: [...selectedNoteIds.value],
+    patch: { private_level: privateLevel }
+  });
+
+  if (!result) return;
+
+  clearSelection();
+  if (result.updated_count > 0) {
+    ElMessage.success(`已更新 ${result.updated_count} 个节点`);
+  } else {
+    ElMessage.info('没有需要更新的节点');
   }
 };
 
@@ -350,6 +424,16 @@ watch(viewProgram, (value) => {
   });
 }, { deep: true });
 
+watch(filteredNotes, async () => {
+  const nextSelectedIds = selectedNoteIds.value.filter(id => visibleNoteIds.value.has(id));
+  if (nextSelectedIds.length === selectedNoteIds.value.length) return;
+  selectedNoteIds.value = nextSelectedIds;
+  await nextTick();
+  if (nextSelectedIds.length === 0) {
+    tableRef.value?.clearSelection();
+  }
+}, { deep: true });
+
 </script>
 
 <style scoped>
@@ -374,11 +458,21 @@ watch(viewProgram, (value) => {
 
 .toolbar-section {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
   padding: 0 20px 12px;
   background-color: #fff;
   border-bottom: 1px solid #ebeef5;
   flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.bulk-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .toolbar-actions {

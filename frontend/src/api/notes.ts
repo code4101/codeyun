@@ -53,7 +53,7 @@ export interface NoteQueryParams {
 
 export interface NoteFilterRule {
   field: string;
-  op: 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'gte' | 'lte' | 'between';
+  op: 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'not_contains' | 'regex_search' | 'gte' | 'lte' | 'between';
   value?: any;
   values?: any[];
 }
@@ -97,7 +97,7 @@ export interface NoteProgramMatcher {
   kind: NoteProgramMatcherKind;
   ids?: string[];
   field?: string | null;
-  op?: 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'gte' | 'lte' | 'between' | null;
+  op?: 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'not_contains' | 'regex_search' | 'gte' | 'lte' | 'between' | null;
   value?: any;
   values?: any[];
   ignore_case?: boolean;
@@ -146,6 +146,18 @@ export interface NoteProgramResponse {
   total_edges: number;
 }
 
+export interface NoteBatchUpdateRequest {
+  ids: string[];
+  patch: {
+    private_level?: number;
+  };
+}
+
+export interface NoteBatchUpdateResponse {
+  updated_count: number;
+  notes: NoteNode[];
+}
+
 export interface NoteScopeState {
   titleKeyword: string;
   nodeType: string;
@@ -159,6 +171,7 @@ export interface TabSession {
   noteIds: string[];
   edgeIds: string[];
   loading: boolean;
+  requestVersion: number;
   lastLoadedAt?: number;
   lastQuery?: NoteQueryRequest | NoteProgramRequest | null;
   viewState: Record<string, any>;
@@ -202,6 +215,16 @@ const normalizeEdge = (raw: any): NoteEdge => ({
   target_id: String(raw.target_id),
   created_at: raw.created_at * 1000
 });
+
+const patchNoteDetails = (detailMap: Record<string, NoteNode>, incomingNotes: NoteNode[]) => {
+  incomingNotes.forEach(note => {
+    if (!detailMap[note.id]) return;
+    detailMap[note.id] = {
+      ...detailMap[note.id],
+      ...note
+    };
+  });
+};
 
 const stripNoteDetail = (note: NoteNode): NoteNode => {
   const { content, history, inherited_fields, ...summary } = note;
@@ -330,6 +353,19 @@ export const normalizeNoteProgramMatcher = (value?: Partial<NoteProgramMatcher> 
     time_value: value?.time_value ? normalizeNoteTimePointExpr(value.time_value) : null,
     time_values: Array.isArray(value?.time_values) ? value.time_values.map(item => normalizeNoteTimePointExpr(item)) : []
   };
+
+  if (normalized.kind === 'title_contains') {
+    return {
+      ...normalized,
+      kind: 'field',
+      field: 'title',
+      op: 'contains',
+      value: typeof normalized.value === 'string' ? normalized.value : '',
+      values: [],
+      time_value: null,
+      time_values: []
+    };
+  }
 
   if (normalized.kind === 'relative_month_window') {
     return {
@@ -475,10 +511,6 @@ const normalizeMatcherForApi = (matcher: NoteProgramMatcher): NoteProgramMatcher
     normalized.ids = normalizeProgramIds(normalized.ids);
   }
 
-  if (normalized.kind === 'title_contains') {
-    normalized.value = typeof normalized.value === 'string' ? normalized.value.trim() : '';
-  }
-
   return normalized;
 };
 
@@ -565,6 +597,18 @@ const compareProgramValue = (
     if (fieldValue === undefined || fieldValue === null) return false;
     return String(fieldValue).toLowerCase().includes(String(value ?? '').toLowerCase());
   }
+  if (op === 'not_contains') {
+    if (fieldValue === undefined || fieldValue === null) return true;
+    return !String(fieldValue).toLowerCase().includes(String(value ?? '').toLowerCase());
+  }
+  if (op === 'regex_search') {
+    if (fieldValue === undefined || fieldValue === null) return false;
+    try {
+      return new RegExp(String(value ?? '')).test(String(fieldValue));
+    } catch {
+      return false;
+    }
+  }
   if (op === 'gte') return fieldValue !== undefined && fieldValue !== null && fieldValue >= value;
   if (op === 'lte') return fieldValue !== undefined && fieldValue !== null && fieldValue <= value;
   if (op === 'between') {
@@ -584,14 +628,6 @@ export const matchNoteProgramMatcherLocally = (
   if (normalized.kind === 'all') return true;
   if (normalized.kind === 'none') return false;
   if (normalized.kind === 'id') return normalizeProgramIds(normalized.ids).includes(note.id);
-  if (normalized.kind === 'title_contains') {
-    const keyword = String(normalized.value ?? '');
-    if (!keyword) return false;
-    const title = String(note.title ?? '');
-    return normalized.ignore_case === false
-      ? title.includes(keyword)
-      : title.toLowerCase().includes(keyword.toLowerCase());
-  }
   if (normalized.kind === 'field') {
     const field = normalized.field ?? '';
     const fieldValue = getNoteMatcherValue(note, field);
@@ -897,6 +933,7 @@ export const useNoteStore = defineStore('notes', () => {
       noteIds: [],
       edgeIds: [],
       loading: false,
+      requestVersion: 0,
       lastQuery: null,
       viewState
     };
@@ -1204,18 +1241,24 @@ export const useNoteStore = defineStore('notes', () => {
     const session = ensureTabSession(tabId);
     if (!session) return null;
 
+    const requestVersion = session.requestVersion + 1;
+    session.requestVersion = requestVersion;
     session.loading = true;
     bumpPending(1);
     try {
       const response = await api.post('/notes/query', request);
       const data = response.data as NoteQueryResponse;
+      if (session.requestVersion !== requestVersion) return null;
       return applyQueryResponseToTab(tabId, request, data);
     } catch (error) {
+      if (session.requestVersion !== requestVersion) return null;
       console.error('Failed to fetch notes or edges:', error);
       ElMessage.error('获取数据失败');
       return null;
     } finally {
-      session.loading = false;
+      if (session.requestVersion === requestVersion) {
+        session.loading = false;
+      }
       bumpPending(-1);
     }
   };
@@ -1224,18 +1267,24 @@ export const useNoteStore = defineStore('notes', () => {
     const session = ensureTabSession(tabId);
     if (!session) return null;
 
+    const requestVersion = session.requestVersion + 1;
+    session.requestVersion = requestVersion;
     session.loading = true;
     bumpPending(1);
     try {
       const response = await api.post('/notes/query-program', request);
       const data = response.data as NoteProgramResponse;
+      if (session.requestVersion !== requestVersion) return null;
       return applyQueryResponseToTab(tabId, request, data);
     } catch (error) {
+      if (session.requestVersion !== requestVersion) return null;
       console.error('Failed to run note program:', error);
       ElMessage.error('执行筛选程序失败');
       return null;
     } finally {
-      session.loading = false;
+      if (session.requestVersion === requestVersion) {
+        session.loading = false;
+      }
       bumpPending(-1);
     }
   };
@@ -1374,6 +1423,28 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
+  const batchUpdateNotes = async (request: NoteBatchUpdateRequest) => {
+    bumpPending(1);
+    try {
+      const response = await api.post('/notes/batch-update', request);
+      const data = response.data as NoteBatchUpdateResponse;
+      const updatedNotes = (data.notes || []).map((note: any) => normalizeNote(note));
+      mergeNoteSummaries(updatedNotes);
+      patchNoteDetails(noteDetailMap.value, updatedNotes);
+      pruneCaches();
+      return {
+        ...data,
+        notes: updatedNotes
+      };
+    } catch (error) {
+      console.error('Failed to batch update notes:', error);
+      ElMessage.error('批量更新失败');
+      return null;
+    } finally {
+      bumpPending(-1);
+    }
+  };
+
   const deleteNote = async (id: string) => {
     bumpPending(1);
     try {
@@ -1490,6 +1561,7 @@ export const useNoteStore = defineStore('notes', () => {
     fetchConnectedComponentForTab,
     createNote,
     updateNote,
+    batchUpdateNotes,
     deleteNote,
     createEdge,
     deleteEdge,

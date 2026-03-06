@@ -168,6 +168,51 @@ def test_query_notes_supports_private_level_rules(client, session, auth_user):
     assert [node["id"] for node in payload["nodes"]] == ["note-private"]
 
 
+def test_query_notes_supports_title_text_rules(client, session, auth_user):
+    session.add(make_note(auth_user, "note-dash", "-", start_at=100.0, updated_at=100.0))
+    session.add(make_note(auth_user, "note-double", "--", start_at=100.0, updated_at=200.0))
+    session.add(make_note(auth_user, "note-clean", "Task", start_at=100.0, updated_at=300.0))
+    session.commit()
+
+    regex_response = client.post(
+        "/api/notes/query",
+        json={
+            "scope": {"mode": "all"},
+            "rules": [
+                {"field": "title", "op": "regex_search", "value": "^-$"},
+            ],
+            "order_by": "updated_at",
+            "order_desc": False,
+            "limit": 10,
+            "include_edges": False,
+        },
+    )
+
+    assert regex_response.status_code == 200
+    regex_payload = regex_response.json()
+    assert regex_payload["total_nodes"] == 1
+    assert [node["id"] for node in regex_payload["nodes"]] == ["note-dash"]
+
+    not_contains_response = client.post(
+        "/api/notes/query",
+        json={
+            "scope": {"mode": "all"},
+            "rules": [
+                {"field": "title", "op": "not_contains", "value": "-"},
+            ],
+            "order_by": "updated_at",
+            "order_desc": False,
+            "limit": 10,
+            "include_edges": False,
+        },
+    )
+
+    assert not_contains_response.status_code == 200
+    not_contains_payload = not_contains_response.json()
+    assert not_contains_payload["total_nodes"] == 1
+    assert [node["id"] for node in not_contains_payload["nodes"]] == ["note-clean"]
+
+
 def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, session, auth_user):
     root = make_note(auth_user, "note-root", "Root", start_at=100.0, updated_at=100.0)
     parent = make_note(auth_user, "note-parent", "Parent", start_at=100.0, updated_at=200.0)
@@ -225,3 +270,35 @@ def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, s
     edge = satellite_payload["edges"][0]
     assert edge["source_id"] == "note-root"
     assert edge["target_id"] == "note-child"
+
+
+def test_batch_update_notes_sets_private_level(client, session, auth_user):
+    first = make_note(auth_user, "note-a", "A", start_at=100.0, updated_at=100.0)
+    second = make_note(auth_user, "note-b", "B", start_at=100.0, updated_at=200.0)
+    untouched = make_note(auth_user, "note-c", "C", start_at=100.0, updated_at=300.0)
+
+    session.add(first)
+    session.add(second)
+    session.add(untouched)
+    session.commit()
+
+    response = client.post(
+        "/api/notes/batch-update",
+        json={
+            "ids": ["note-a", "note-b"],
+            "patch": {"private_level": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["updated_count"] == 2
+    assert [note["id"] for note in payload["notes"]] == ["note-a", "note-b"]
+    assert [note["private_level"] for note in payload["notes"]] == [1, 1]
+
+    session.refresh(first)
+    session.refresh(second)
+    session.refresh(untouched)
+    assert first.private_level == 1
+    assert second.private_level == 1
+    assert untouched.private_level == 0

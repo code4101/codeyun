@@ -146,7 +146,7 @@ class NoteListRead(BaseModel):
 
 class NoteFilterRule(BaseModel):
     field: str
-    op: Literal["eq", "neq", "in", "not_in", "contains", "gte", "lte", "between"]
+    op: Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]
     value: Optional[Any] = None
     values: List[Any] = Field(default_factory=list)
 
@@ -201,7 +201,7 @@ class NoteProgramMatcher(BaseModel):
     kind: Literal["all", "none", "id", "field", "title_contains", "seed", "depth", "relative_month_window"]
     ids: List[str] = Field(default_factory=list)
     field: Optional[str] = None
-    op: Optional[Literal["eq", "neq", "in", "not_in", "contains", "gte", "lte", "between"]] = None
+    op: Optional[Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]] = None
     value: Optional[Any] = None
     values: List[Any] = Field(default_factory=list)
     ignore_case: bool = True
@@ -254,3 +254,17 @@ class NoteProgramResponse(BaseModel):
     edges: List[EdgeRead]
     total_nodes: int
     total_edges: int
+
+
+class NoteBatchPatch(BaseModel):
+    private_level: Optional[int] = None
+
+
+class NoteBatchUpdateRequest(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+    patch: NoteBatchPatch = Field(default_factory=NoteBatchPatch)
+
+
+class NoteBatchUpdateResponse(BaseModel):
+    updated_count: int
+    notes: List[NoteListRead]

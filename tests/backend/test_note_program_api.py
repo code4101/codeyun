@@ -342,3 +342,80 @@ def test_query_program_supports_private_level_field_matcher(client, session, aut
     assert response.status_code == 200
     payload = response.json()
     assert [node["id"] for node in payload["nodes"]] == ["note-private"]
+
+
+def test_query_program_supports_title_regex_and_not_contains_matchers(client, session, auth_user):
+    session.add(make_note(auth_user, "note-dash", "-", start_at=100.0, updated_at=100.0))
+    session.add(make_note(auth_user, "note-double", "--", start_at=100.0, updated_at=200.0))
+    session.add(make_note(auth_user, "note-clean", "Task", start_at=100.0, updated_at=300.0))
+    session.commit()
+
+    regex_response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "field",
+                                "field": "title",
+                                "op": "regex_search",
+                                "value": "^-$",
+                            },
+                        }
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "order_by": "updated_at",
+                "order_desc": False,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert regex_response.status_code == 200
+    regex_payload = regex_response.json()
+    assert [node["id"] for node in regex_payload["nodes"]] == ["note-dash"]
+
+    not_contains_response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "field",
+                                "field": "title",
+                                "op": "not_contains",
+                                "value": "-",
+                            },
+                        }
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "order_by": "updated_at",
+                "order_desc": False,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert not_contains_response.status_code == 200
+    not_contains_payload = not_contains_response.json()
+    assert [node["id"] for node in not_contains_payload["nodes"]] == ["note-clean"]

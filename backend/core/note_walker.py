@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 import inspect
+import re
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 from backend.models import NoteEdge, NoteNode
@@ -12,7 +13,7 @@ Predicate = Callable[["NoteVisit"], bool]
 TransitionFilter = Callable[["NoteVisit", NoteEdge, "NoteVisit"], bool]
 TraversalDirection = Literal["both", "incoming", "outgoing"]
 ComponentMode = Literal["planetary", "satellite"]
-CompareOp = Literal["eq", "neq", "in", "not_in", "contains", "gte", "lte", "between"]
+CompareOp = Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]
 
 
 def _to_list(values: str | Sequence[Any]) -> List[Any]:
@@ -56,6 +57,17 @@ def _matches_value(field_value: Any, op: CompareOp, value: Any = None, values: O
         if field_value is None:
             return False
         return _normalize_text(value, True) in _normalize_text(field_value, True)
+    if op == "not_contains":
+        if field_value is None:
+            return True
+        return _normalize_text(value, True) not in _normalize_text(field_value, True)
+    if op == "regex_search":
+        if field_value is None:
+            return False
+        try:
+            return re.search(str(value or ""), str(field_value)) is not None
+        except re.error:
+            return False
     if op == "gte":
         return field_value is not None and field_value >= value
     if op == "lte":
