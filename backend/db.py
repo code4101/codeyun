@@ -1,19 +1,20 @@
-from sqlmodel import SQLModel, create_engine, Session, text
 import os
 
-# Database file path
+from sqlmodel import SQLModel, Session, create_engine, text
+
+from backend.core.settings import DATA_DIR as SETTINGS_DATA_DIR, get_settings
+
+settings = get_settings()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# Data directory inside backend folder (legacy location to preserve data)
-DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.fspath(SETTINGS_DATA_DIR)
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-DB_FILE = os.path.join(DATA_DIR, "codeyun.db")
-DATABASE_URL = f"sqlite:///{DB_FILE}"
+DATABASE_URL = settings.database_url
 
-# check_same_thread=False is needed for SQLite when used with FastAPI (multi-threaded)
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
+engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 from backend.migrations.manager import run_migrations as migrate_db_manager
 

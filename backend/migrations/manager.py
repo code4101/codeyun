@@ -195,6 +195,20 @@ def v5_fix_custom_fields_format(session: Session):
     except Exception as e:
         print(f"  Migration V5 error: {e}")
 
+def v6_add_private_level(session: Session):
+    """
+    Migration V6: Add 'private_level' column.
+    """
+    print("Running System Upgrade V6: Add 'private_level'...")
+    res = session.exec(text("PRAGMA table_info(notenode)")).all()
+    columns = [row[1] for row in res]
+
+    if "private_level" not in columns:
+        session.exec(text("ALTER TABLE notenode ADD COLUMN private_level INTEGER DEFAULT 0"))
+        session.commit()
+    else:
+        print("  Column 'private_level' already exists, skipping.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -203,6 +217,7 @@ MIGRATIONS = [
     (3, "Add custom_fields column", v3_add_custom_fields),
     (4, "Convert custom_fields to List", v4_migrate_custom_fields_to_list),
     (5, "Fix custom_fields List format", v5_fix_custom_fields_format),
+    (6, "Add private_level column", v6_add_private_level),
 ]
 
 def get_current_version(session: Session) -> int:
@@ -257,6 +272,8 @@ def get_current_version(session: Session) -> int:
                 inferred_version = 2
             if "custom_fields" in columns:
                 inferred_version = 3
+            if "private_level" in columns:
+                inferred_version = 6
                 
             print(f"Inferred legacy System version: {inferred_version}")
             return inferred_version

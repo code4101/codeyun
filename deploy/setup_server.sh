@@ -68,13 +68,15 @@ npm install
 npm run build
 
 echo ">>> Checking environment configuration..."
-if [ ! -f .env ]; then
+ROOT_ENV_FILE="$PROJECT_DIR/.env"
+ROOT_ENV_EXAMPLE="$PROJECT_DIR/.env.example"
+if [ ! -f "$ROOT_ENV_FILE" ]; then
     echo ">>> Creating .env from example..."
-    if [ -f .env.example ]; then
-        cp .env.example .env
+    if [ -f "$ROOT_ENV_EXAMPLE" ]; then
+        cp "$ROOT_ENV_EXAMPLE" "$ROOT_ENV_FILE"
     else
         echo "⚠️ .env.example not found, creating a minimal .env..."
-        echo "CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string" > .env
+        echo "CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string" > "$ROOT_ENV_FILE"
     fi
     
     # Generate a random secret key
@@ -82,7 +84,7 @@ if [ ! -f .env ]; then
     
     # Replace the placeholder with the random key
     # Use different delimiter for sed to avoid issues with special chars
-    sed -i "s|CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string|CODEYUN_SECRET_KEY=$RANDOM_KEY|g" .env
+    sed -i "s|CODEYUN_SECRET_KEY=change-me-to-a-secure-random-string|CODEYUN_SECRET_KEY=$RANDOM_KEY|g" "$ROOT_ENV_FILE"
     
     echo "✅ Generated new CODEYUN_SECRET_KEY in .env"
 else
@@ -112,6 +114,7 @@ After=network.target
 User=$REAL_USER
 Group=$REAL_USER
 WorkingDirectory=$PROJECT_DIR
+Environment=CODEYUN_ENV=production
 # Use uv to run the app directly
 ExecStart=$USER_HOME/.local/bin/uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
 Restart=always
@@ -138,16 +141,9 @@ if [ -f "$PROJECT_DIR/deploy/nginx/codeyun.conf" ]; then
     TEMP_CONF=$(mktemp)
     cp "$PROJECT_DIR/deploy/nginx/codeyun.conf" "$TEMP_CONF"
     
-    # Replace placeholder or hardcoded paths with current user's home
-    # We assume the template might have /home/ubuntu or similar
-    # It's better if the template has a placeholder like %HOME% but we can try to replace known patterns
-    # Or just ensure we point to $PROJECT_DIR
-    
-    # Using sed to replace /home/ubuntu with $HOME (careful with slashes)
-    # Also replace /srv/codeyun just in case
-    ESCAPED_HOME=$(echo "$HOME" | sed 's/\//\\\//g')
-    sed -i "s/\/home\/ubuntu\/codeyun/$ESCAPED_HOME\/codeyun/g" "$TEMP_CONF"
-    sed -i "s/\/srv\/codeyun/$ESCAPED_HOME\/codeyun/g" "$TEMP_CONF"
+    # Replace template placeholder with the actual project directory.
+    ESCAPED_PROJECT_DIR=$(printf '%s\n' "$PROJECT_DIR" | sed 's/[\/&]/\\&/g')
+    sed -i "s|__CODEYUN_PROJECT_DIR__|$ESCAPED_PROJECT_DIR|g" "$TEMP_CONF"
     
     # Backup existing config if any
     if [ -f "$NGINX_CONF" ]; then

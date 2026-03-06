@@ -118,6 +118,19 @@
               />
             </div>
 
+            <div v-if="showPrivateToggle" class="private-control">
+              <span class="label">私密:</span>
+              <el-button
+                size="small"
+                plain
+                :type="isPrivateEnabled ? 'danger' : undefined"
+                @click="togglePrivateLevel"
+              >
+                {{ isPrivateEnabled ? '已开启' : '已关闭' }}
+              </el-button>
+              <span class="private-hint">值 {{ currentNote.private_level }}</span>
+            </div>
+
             <div class="history-toggle">
               <el-button 
                 size="small" 
@@ -312,6 +325,8 @@ const hasConnections = computed(() => {
 const hasOutConnections = computed(() => {
     return (currentNote.value?.out_degree || 0) > 0;
 });
+const showPrivateToggle = computed(() => currentNote.value?.node_type === 'doc');
+const isPrivateEnabled = computed(() => (currentNote.value?.private_level || 0) > 0);
 
 const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
     if (!currentNote.value) return;
@@ -361,6 +376,7 @@ const originalData = ref<{
     start_at: number;
     node_type: string | null;
     node_status: string | null;
+    private_level: number;
     custom_fields: string; // JSON string for easy comparison
 } | null>(null);
 
@@ -441,10 +457,11 @@ async function loadNote(id: string) {
         return;
     }
 
-    const note = noteStore.notes.find(n => n.id === id) || detailed;
+    const note = noteStore.getNoteById(id) || detailed;
     currentNote.value = {
         ...note,
-        content: detailed.content || ''
+        content: detailed.content || '',
+        private_level: detailed.private_level ?? note.private_level ?? 0
     };
     
     // Initialize Custom Fields List
@@ -511,6 +528,7 @@ async function loadNote(id: string) {
         start_at: detailed.start_at,
         node_type: detailed.node_type || 'note',
         node_status: detailed.node_status || 'idea',
+        private_level: detailed.private_level || 0,
         custom_fields: JSON.stringify(detailed.custom_fields || {})
     };
 }
@@ -543,6 +561,7 @@ const checkAndSave = () => {
         curr.start_at !== orig.start_at ||
         curr.node_type !== orig.node_type ||
         curr.node_status !== orig.node_status ||
+        curr.private_level !== orig.private_level ||
         JSON.stringify(curr.custom_fields) !== orig.custom_fields;
     
     if (!isChanged) {
@@ -570,6 +589,7 @@ const saveNote = async (note: NoteNode) => {
             start_at: note.start_at,
             node_type: note.node_type,
             node_status: note.node_status,
+            private_level: note.private_level,
             custom_fields: note.custom_fields
         });
         
@@ -581,6 +601,7 @@ const saveNote = async (note: NoteNode) => {
             start_at: note.start_at,
             node_type: note.node_type || 'note',
             node_status: note.node_status || 'idea',
+            private_level: note.private_level || 0,
             custom_fields: JSON.stringify(note.custom_fields || {})
         };
         
@@ -672,6 +693,12 @@ const onWeightChange = (value: number | undefined) => {
 
 const onWeightBlur = () => {
     if (currentNote.value) onWeightChange(currentNote.value.weight);
+};
+
+const togglePrivateLevel = () => {
+    if (!currentNote.value) return;
+    currentNote.value.private_level = currentNote.value.private_level > 0 ? 0 : 1;
+    checkAndSave();
 };
 
 const addCustomField = () => {
@@ -809,6 +836,7 @@ const getFieldName = (f: string) => {
         's': '状态',
         't': '标题',
         'w': '权重',
+        'p': '私密',
         'c': '内容'
     };
     return map[f] || f;
@@ -820,6 +848,7 @@ const getFieldTagType = (f: string): 'primary' | 'success' | 'info' | 'warning' 
         's': 'warning',
         't': undefined,
         'w': 'success',
+        'p': 'danger',
         'c': 'info'
     };
     return map[f];
@@ -828,6 +857,7 @@ const getFieldTagType = (f: string): 'primary' | 'success' | 'info' | 'warning' 
 const formatHistoryValue = (f: string, v: any) => {
     if (f === 'n') return getNodeTypeConfig(v).label;
     if (f === 's') return getNodeStatusConfig(v).label;
+    if (f === 'p') return Number(v) > 0 ? `开启 (${v})` : '关闭';
     if (f === 'c') return `${v} 字`;
     return v;
 };
@@ -1171,6 +1201,20 @@ onBeforeUnmount(() => {
     display: flex;
     align-items: center;
     gap: 10px;
+}
+
+.private-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-left: 15px;
+}
+
+.private-control .label,
+.private-hint {
+    font-size: 12px;
+    color: #606266;
+    white-space: nowrap;
 }
 
 .status-control .label {

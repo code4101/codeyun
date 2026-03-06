@@ -1,23 +1,46 @@
 <template>
   <div class="calendar-notes-layout">
-    <!-- Header: Controls -->
-    <div class="header-section">
-      <div class="left-controls">
-        <el-date-picker
-          v-model="currentMonth"
-          type="month"
-          placeholder="选择月份"
-          :clearable="false"
-          @change="onMonthChange"
-        />
-        <el-button @click="prevMonth" :icon="ArrowLeft" circle />
-        <el-button @click="nextMonth" :icon="ArrowRight" circle />
-        <el-button @click="goToToday">今天</el-button>
-        <span class="current-month-label">{{ formatMonthLabel(currentMonth) }}</span>
+    <div class="filter-section">
+      <div class="backend-filter-panel">
+        <div class="backend-filter-header">
+          <div class="backend-filter-title">后端筛选</div>
+          <div class="backend-filter-help">日历按当前月视图可见日期范围从后端加载节点；切换月份会立即重载并保存。</div>
+        </div>
+
+        <div class="backend-filter-toolbar">
+          <div class="backend-filter-controls">
+            <el-date-picker
+              v-model="currentMonth"
+              type="month"
+              placeholder="选择月份"
+              :clearable="false"
+              @change="onMonthChange"
+            />
+            <el-button @click="prevMonth" :icon="ArrowLeft" circle />
+            <el-button @click="nextMonth" :icon="ArrowRight" circle />
+            <el-button @click="goToToday">今天</el-button>
+            <el-button @click="refreshData" :icon="Refresh" :loading="loading">刷新</el-button>
+          </div>
+
+          <div class="backend-filter-tags">
+            <el-tag>{{ formatMonthLabel(currentMonth) }}</el-tag>
+            <el-tag type="success">加载: {{ formatDateShort(gridStartTs) }} - {{ formatDateShort(gridEndTs - 1) }}</el-tag>
+          </div>
+        </div>
       </div>
-      <div class="right-controls">
-        <el-button @click="refreshData" :icon="Refresh">刷新</el-button>
-      </div>
+    </div>
+
+    <div class="filter-section front-filter-section">
+      <NoteProgramBar
+        v-model="viewProgram"
+        title="前端筛选"
+        help-text="基于当前月份已加载的节点实时筛选并渲染日历，修改后立即生效并保存。"
+        hint-text=""
+        apply-text="即时生效"
+        reset-text="恢复默认"
+        @apply="applyViewProgram"
+        @reset="resetViewProgram"
+      />
     </div>
 
     <!-- Calendar Grid -->
@@ -29,7 +52,12 @@
 
       <!-- Days Grid -->
       <div class="days-grid" :style="{ gridTemplateRows }">
-        <div v-for="day in gridDays" :key="day.dateStr" class="day-cell" :class="{ 'is-outside': !day.isCurrentMonth }">
+        <div
+          v-for="day in gridDays"
+          :key="day.dateStr"
+          class="day-cell"
+          :class="{ 'is-outside': !day.isCurrentMonth }"
+        >
           <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
             <div class="day-left">
               <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
@@ -82,9 +110,19 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
-import { useNoteStore, type NoteNode } from '@/api/notes';
+import NoteProgramBar from '@/components/NoteProgramBar.vue';
+import {
+  useNoteStore,
+  type NoteNode,
+  applyNoteProgramChannelLocally,
+  buildScanNoteProgramRequest,
+  cloneNoteProgramChannel,
+  createFixedRangeProgram,
+  createIncludeAllProgram,
+  normalizeNoteProgramChannel
+} from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -95,10 +133,21 @@ import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 const router = useRouter();
 const noteStore = useNoteStore();
 const userStore = useUserStore();
+const props = defineProps<{
+  tabId: string;
+}>();
 
-const currentMonth = ref<Date>(new Date());
+const session = computed(() => noteStore.getTabSession(props.tabId));
+
+const currentMonth = ref<Date>(
+  session.value?.viewState.currentMonth ? new Date(session.value.viewState.currentMonth) : new Date()
+);
+const viewProgram = ref(normalizeNoteProgramChannel(
+  session.value?.viewState.viewProgram ?? createIncludeAllProgram()
+));
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const currentNoteId = ref('');
+const loading = ref(false);
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -118,6 +167,13 @@ const formatMonthLabel = (d: Date) => {
   const year = d.getFullYear();
   const month = pad2(d.getMonth() + 1);
   return `${year}年${month}月`;
+};
+
+const formatDateShort = (ts: number) => {
+  return new Date(ts).toLocaleDateString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit'
+  });
 };
 
 const checkAuth = () => {
@@ -161,6 +217,7 @@ const createNoteForDay = async (date: Date) => {
 
   const newNote = await noteStore.createNote(defaultTitle, '', 100, startAt);
   if (newNote) {
+    noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = newNote.id;
     ElMessage.success('已创建节点');
   }
@@ -170,25 +227,25 @@ const onMonthChange = (value: Date | string | number | undefined) => {
   const d = value instanceof Date ? value : value ? new Date(value) : new Date();
   if (Number.isNaN(d.getTime())) return;
   currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
-  refreshData();
+  refreshData({ silent: true });
 };
 
 const prevMonth = () => {
   const d = monthAnchor.value;
   currentMonth.value = new Date(d.getFullYear(), d.getMonth() - 1, 1);
-  refreshData();
+  refreshData({ silent: true });
 };
 
 const nextMonth = () => {
   const d = monthAnchor.value;
   currentMonth.value = new Date(d.getFullYear(), d.getMonth() + 1, 1);
-  refreshData();
+  refreshData({ silent: true });
 };
 
 const goToToday = () => {
   const d = new Date();
   currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
-  refreshData();
+  refreshData({ silent: true });
 };
 
 const isToday = (d: Date) => {
@@ -310,12 +367,11 @@ const gridEndTs = computed(() => {
 
 const notesByDay = computed(() => {
   const map = new Map<string, NoteNode[]>();
-  const start = gridStartTs.value;
-  const end = gridEndTs.value;
+  const visibleNotes = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
 
-  for (const note of noteStore.notes) {
+  for (const note of visibleNotes) {
     const ts = note.start_at || note.created_at;
-    if (!ts || ts < start || ts >= end) continue;
+    if (!ts) continue;
     const key = toDateStr(new Date(ts));
     const arr = map.get(key) || [];
     arr.push(note);
@@ -409,9 +465,29 @@ const getNoteTitleStyle = (note: NoteNode) => {
   } as any;
 };
 
-const refreshData = async () => {
-  await noteStore.fetchNotes({ limit: 5000 });
-  ElMessage.success('已刷新');
+const buildCalendarProgram = () => createFixedRangeProgram(gridStartTs.value, gridEndTs.value - 1, 'start_at');
+
+const refreshData = async (options: { silent?: boolean } = {}) => {
+  loading.value = true;
+  try {
+    await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(buildCalendarProgram(), {
+      limit: 5000,
+      include_edges: false
+    }));
+    if (!options.silent) {
+      ElMessage.success('已刷新');
+    }
+  } finally {
+    loading.value = false;
+  }
+};
+
+const applyViewProgram = () => {
+  viewProgram.value = cloneNoteProgramChannel(viewProgram.value);
+};
+
+const resetViewProgram = () => {
+  viewProgram.value = createIncludeAllProgram();
 };
 
 const handleNoteUpdate = () => {};
@@ -468,12 +544,24 @@ const stopResizing = () => {
 onMounted(() => {
     updateAdaptiveHeight();
     window.addEventListener('resize', updateAdaptiveHeight);
-    refreshData();
+    refreshData({ silent: true });
 });
 
 onUnmounted(() => {
     window.removeEventListener('resize', updateAdaptiveHeight);
 });
+
+watch(currentMonth, (value) => {
+  noteStore.updateTabViewState(props.tabId, {
+    currentMonth: value.toISOString()
+  });
+});
+
+watch(viewProgram, (value) => {
+  noteStore.updateTabViewState(props.tabId, {
+    viewProgram: normalizeNoteProgramChannel(value)
+  });
+}, { deep: true });
 
 </script>
 
@@ -489,23 +577,61 @@ onUnmounted(() => {
   overflow-y: auto;
 }
 
-.header-section {
+.filter-section {
+  margin-bottom: 12px;
+}
+
+.front-filter-section {
+  margin-bottom: 16px;
+}
+
+.backend-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid #ebeef5;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fcfdff 0%, #f7f9fc 100%);
+}
+
+.backend-filter-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.backend-filter-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.backend-filter-help {
+  font-size: 11px;
+  color: #909399;
+  line-height: 1.5;
+}
+
+.backend-filter-toolbar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.left-controls {
+.backend-filter-controls {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
-.current-month-label {
-  font-size: 18px;
-  font-weight: bold;
-  margin-left: 10px;
+.backend-filter-tags {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .calendar-container {

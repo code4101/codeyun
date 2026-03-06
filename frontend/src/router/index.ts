@@ -70,7 +70,7 @@ const routes: Array<RouteRecordRaw> = [
       },
       {
         path: 'notes/star-map',
-        redirect: '/notes/center'
+        redirect: '/notes/center?tab=calendar'
       },
       {
         path: 'notes/calendar',

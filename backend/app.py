@@ -1,21 +1,29 @@
-from fastapi import FastAPI, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from backend.api.task_manager import router as task_router, start_task_manager_services, stop_task_manager_services
-from backend.api.agent import router as agent_router
-from backend.api.filesystem import router as filesystem_router
-from backend.api.device import router as device_router
-from backend.api.auth import router as auth_router
-from backend.api.notes import router as notes_router
-from backend.api.upload import router as upload_router
-from backend.api.fanxiu import router as fanxiu_router
-from backend.api.admin import router as admin_router, init_storage_scheduler
-from backend.core.auth import verify_api_token
-from backend.core.device import device_manager
-from backend.db import init_db
-import uvicorn
-import os
-from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
+import os
+
+import uvicorn
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from backend.api.admin import init_storage_scheduler, router as admin_router
+from backend.api.agent import router as agent_router
+from backend.api.auth import router as auth_router
+from backend.api.device import router as device_router
+from backend.api.fanxiu import router as fanxiu_router
+from backend.api.filesystem import router as filesystem_router
+from backend.api.notes import router as notes_router
+from backend.api.task_manager import (
+    router as task_router,
+    start_task_manager_services,
+    stop_task_manager_services,
+)
+from backend.api.upload import router as upload_router
+from backend.core.auth import verify_api_token
+from backend.core.settings import get_settings
+from backend.db import init_db
+
+settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,16 +33,28 @@ async def lifespan(app: FastAPI):
     yield
     await stop_task_manager_services()
 
-app = FastAPI(title="CodeYun Backend", description="Local backend for CodeYun tools", lifespan=lifespan)
 
-# Allow CORS for frontend development
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # For local development, allow all
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+cors_kwargs = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+
+if settings.allow_all_cors:
+    cors_kwargs["allow_origin_regex"] = ".*"
+else:
+    cors_kwargs["allow_origins"] = list(settings.cors_origins)
+
+app = FastAPI(
+    title="CodeYun Backend",
+    description="Local backend for CodeYun tools",
+    lifespan=lifespan,
+    docs_url="/docs" if settings.docs_enabled else None,
+    openapi_url="/openapi.json" if settings.docs_enabled else None,
+    redoc_url=None,
 )
+
+app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
@@ -58,6 +78,13 @@ def read_root():
     return {"message": "CodeYun Backend is running"}
 
 if __name__ == "__main__":
-    print("Starting backend on 0.0.0.0:8000 (Accessible from other devices)")
-    # Run on port 8000, listen on all interfaces
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    print(
+        f"Starting backend in {settings.environment} mode on "
+        f"{settings.backend_host}:{settings.backend_port}"
+    )
+    uvicorn.run(
+        "backend.app:app",
+        host=settings.backend_host,
+        port=settings.backend_port,
+        reload=settings.is_development,
+    )

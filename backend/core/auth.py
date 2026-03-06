@@ -7,16 +7,14 @@ from typing import Optional
 from sqlmodel import Session, select
 from backend.db import get_session
 from backend.models import User
+from backend.core.settings import get_settings
 import secrets
-import os
 # import backend.core.device as device_module # deferred to avoid cycle
 
-SECRET_KEY = (os.getenv("CODEYUN_SECRET_KEY") or os.getenv("SECRET_KEY") or "").strip() or "codeyun-insecure-secret-key-change-me"
-ALGORITHM = (os.getenv("CODEYUN_JWT_ALGORITHM") or "HS256").strip() or "HS256"
-try:
-    ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("CODEYUN_ACCESS_TOKEN_EXPIRE_MINUTES") or (30 * 24 * 60))
-except ValueError:
-    ACCESS_TOKEN_EXPIRE_MINUTES = 30 * 24 * 60
+settings = get_settings()
+SECRET_KEY = settings.secret_key
+ALGORITHM = settings.jwt_algorithm
+ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")

@@ -1,46 +1,36 @@
 <template>
   <div class="list-notes-layout">
-    <!-- Top: Filter & Actions -->
     <div class="filter-section">
-      <div class="filters">
-        <el-input
-          v-model="searchKeyword"
-          placeholder="搜索标题..."
-          :prefix-icon="Search"
-          clearable
-          style="width: 200px"
-        />
-        
-        <el-select v-model="filterType" placeholder="所有类型" clearable style="width: 120px">
-          <el-option
-            v-for="type in orderedNodeTypes"
-            :key="type.id"
-            :label="type.label"
-            :value="type.id"
-          />
-        </el-select>
+      <NoteProgramBar
+        v-model="dataProgram"
+        title="后端筛选"
+        help-text="决定从后端加载哪些节点，点击“执行”后生效并保存；规则按顺序执行，后面的包含/排除可以覆盖前面的结果。"
+        hint-text=""
+        apply-text="执行"
+        reset-text="恢复默认"
+        :loading="loading"
+        @apply="applyDataProgram"
+        @reset="resetDataProgram"
+      />
+    </div>
 
-        <el-select v-model="filterStatus" placeholder="所有状态" clearable style="width: 120px">
-          <el-option
-            v-for="status in orderedNodeStatuses"
-            :key="status.id"
-            :label="status.label"
-            :value="status.id"
-          />
-        </el-select>
+    <div class="filter-section front-filter-section">
+      <NoteProgramBar
+        v-model="viewProgram"
+        title="前端筛选"
+        help-text="基于后端筛选的数据源实时筛选并渲染，修改后立即生效并保存。"
+        hint-text=""
+        apply-text="即时生效"
+        reset-text="恢复默认"
+        @apply="applyViewProgram"
+        @reset="resetViewProgram"
+      />
+    </div>
 
-        <el-input-number 
-          v-model="filterMinWeight" 
-          placeholder="最小权重" 
-          controls-position="right"
-          style="width: 100px"
-          :min="0"
-        />
-      </div>
-      
-      <div class="actions">
+    <div class="toolbar-section">
+      <div class="toolbar-actions">
         <el-button type="primary" :icon="Plus" @click="createNewNote">新建节点</el-button>
-        <el-button :icon="Refresh" @click="refreshData">刷新</el-button>
+        <el-button :icon="Refresh" @click="refreshData">重载工作集</el-button>
       </div>
     </div>
 
@@ -131,32 +121,45 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { useNoteStore, type NoteNode } from '@/api/notes';
-import { Search, Plus, Refresh, Delete } from '@element-plus/icons-vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import {
+  useNoteStore,
+  type NoteNode,
+  applyNoteProgramChannelLocally,
+  buildScanNoteProgramRequest,
+  cloneNoteProgramChannel,
+  createDefaultRecentMonthProgram,
+  createIncludeAllProgram,
+  normalizeNoteProgramChannel
+} from '@/api/notes';
+import { Plus, Refresh } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
-import { 
-    getNodeTypeConfig, 
-    getNodeStatusConfig,
-    getOrderedNodeTypes,
-    getOrderedNodeStatuses,
-    getNodeStyle
-} from '@/utils/nodeConfig';
+import NoteProgramBar from '@/components/NoteProgramBar.vue';
+import { getNodeTypeConfig, getNodeStatusConfig, getNodeStyle } from '@/utils/nodeConfig';
 
 const noteStore = useNoteStore();
+const props = defineProps<{
+  tabId: string;
+}>();
+
+const session = computed(() => noteStore.getTabSession(props.tabId));
+const getAppliedDataProgram = () => normalizeNoteProgramChannel(
+  session.value?.viewState.dataProgram ?? createDefaultRecentMonthProgram('start_at')
+);
+const getViewProgram = () => normalizeNoteProgramChannel(
+  session.value?.viewState.viewProgram ?? createIncludeAllProgram()
+);
 
 // State
-const searchKeyword = ref('');
-const filterType = ref('');
-const filterStatus = ref('');
-const filterMinWeight = ref<number | undefined>(undefined);
+const dataProgram = ref(normalizeNoteProgramChannel(
+  getAppliedDataProgram()
+));
+const viewProgram = ref(normalizeNoteProgramChannel(
+  getViewProgram()
+));
 const currentNoteId = ref('');
 const loading = ref(false);
-
-// Configs
-const orderedNodeTypes = computed(() => getOrderedNodeTypes());
-const orderedNodeStatuses = computed(() => getOrderedNodeStatuses());
 
 // Layout State
 const listHeight = ref(400);
@@ -166,38 +169,51 @@ const startHeight = ref(0);
 
 // Computed
 const filteredNotes = computed(() => {
-  let result = noteStore.notes;
-
-  if (searchKeyword.value) {
-    const k = searchKeyword.value.toLowerCase();
-    result = result.filter(n => n.title.toLowerCase().includes(k));
-  }
-
-  if (filterType.value) {
-    result = result.filter(n => (n.node_type || 'note') === filterType.value);
-  }
-
-  if (filterStatus.value) {
-    result = result.filter(n => (n.node_status || 'idea') === filterStatus.value);
-  }
-
-  if (filterMinWeight.value !== undefined && filterMinWeight.value !== null) {
-    result = result.filter(n => (n.weight || 0) >= filterMinWeight.value!);
-  }
-
-  // Default Sort by Updated At Desc if not handled by table sort
-  // Actually table sort handles it visually, but initial order matters
+  const result = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
   return [...result].sort((a, b) => b.updated_at - a.updated_at);
 });
 
 // Actions
-const refreshData = async () => {
+const runDataProgram = async (program = getAppliedDataProgram(), persist: boolean = false) => {
   loading.value = true;
   try {
-    await noteStore.fetchNotes({ limit: 1000 });
+    const normalizedProgram = normalizeNoteProgramChannel(program);
+    await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(normalizedProgram, {
+      limit: 1000,
+      include_edges: false
+    }));
+    if (persist) {
+      noteStore.updateTabViewState(props.tabId, {
+        dataProgram: normalizedProgram
+      });
+    }
   } finally {
     loading.value = false;
   }
+};
+
+const applyDataProgram = async () => {
+  await runDataProgram(dataProgram.value, true);
+};
+
+const refreshData = async () => {
+  await runDataProgram(getAppliedDataProgram(), false);
+};
+
+const resetDataProgram = () => {
+  dataProgram.value = createDefaultRecentMonthProgram('start_at');
+};
+
+const applyViewProgram = () => {
+  const normalizedProgram = cloneNoteProgramChannel(viewProgram.value);
+  viewProgram.value = normalizedProgram;
+  noteStore.updateTabViewState(props.tabId, {
+    viewProgram: normalizedProgram
+  });
+};
+
+const resetViewProgram = () => {
+  viewProgram.value = createIncludeAllProgram();
 };
 
 const createNewNote = async () => {
@@ -206,6 +222,7 @@ const createNewNote = async () => {
   
   const newNote = await noteStore.createNote(title, '');
   if (newNote) {
+    noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = newNote.id;
     ElMessage.success('创建成功');
   }
@@ -215,20 +232,6 @@ const handleCurrentChange = (val: NoteNode | undefined) => {
   if (val) {
     currentNoteId.value = val.id;
   }
-};
-
-const handleDelete = (note: NoteNode) => {
-  ElMessageBox.confirm(`确定要删除 "${note.title}" 吗？`, '警告', {
-    confirmButtonText: '删除',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    await noteStore.deleteNote(note.id);
-    if (currentNoteId.value === note.id) {
-      currentNoteId.value = '';
-    }
-    ElMessage.success('删除成功');
-  }).catch(() => {});
 };
 
 const handleNoteUpdate = (note: NoteNode) => {
@@ -287,7 +290,7 @@ const getStatusBadgeStyle = (status: string | null) => {
 // Layout Logic
 const calculateOptimalHeight = () => {
     const vh = window.innerHeight;
-    const reservedHeight = 160; // Header + Filters
+    const reservedHeight = 260;
     // Default split 50/50
     return Math.max(300, Math.floor((vh - reservedHeight) * 0.5));
 };
@@ -314,7 +317,7 @@ const handleResizing = (e: MouseEvent) => {
     if (!isResizing.value) return;
     const delta = e.clientY - startY.value;
     const vh = window.innerHeight;
-    const reservedHeight = 160;
+    const reservedHeight = 260;
     const availableHeight = vh - reservedHeight;
     const minEditorHeight = 200;
     
@@ -330,7 +333,7 @@ const stopResizing = () => {
 };
 
 onMounted(() => {
-  if (noteStore.notes.length === 0) {
+  if (noteStore.getTabNotes(props.tabId).length === 0) {
     refreshData();
   }
   updateAdaptiveHeight();
@@ -340,6 +343,12 @@ onMounted(() => {
 onUnmounted(() => {
     window.removeEventListener('resize', updateAdaptiveHeight);
 });
+
+watch(viewProgram, (value) => {
+  noteStore.updateTabViewState(props.tabId, {
+    viewProgram: normalizeNoteProgramChannel(value)
+  });
+}, { deep: true });
 
 </script>
 
@@ -353,23 +362,29 @@ onUnmounted(() => {
 }
 
 .filter-section {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 10px 20px;
-  background-color: #f5f7fa;
-  border-bottom: 1px solid #e6e6e6;
+  padding: 16px 20px 12px;
+  background-color: #fff;
+  border-bottom: 1px solid #ebeef5;
   flex-shrink: 0;
 }
 
-.filters {
-  display: flex;
-  gap: 10px;
+.front-filter-section {
+  padding-top: 0;
 }
 
-.actions {
+.toolbar-section {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 20px 12px;
+  background-color: #fff;
+  border-bottom: 1px solid #ebeef5;
+  flex-shrink: 0;
+}
+
+.toolbar-actions {
   display: flex;
   gap: 10px;
+  align-items: center;
 }
 
 .list-container {

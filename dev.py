@@ -30,6 +30,7 @@ def get_npm_path():
 def setup_env(root_dir):
     env = os.environ.copy()
     python_executable = sys.executable
+    env["CODEYUN_ENV"] = "development"
 
     venv_scripts = os.path.join(root_dir, ".venv", "Scripts" if os.name == "nt" else "bin")
     if os.path.isdir(venv_scripts):

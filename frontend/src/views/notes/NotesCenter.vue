@@ -52,13 +52,18 @@ const getTabComponent = (type: TabState['type']) => {
 };
 
 const getTabProps = (tab: TabState) => {
+  const baseProps = {
+    tabId: tab.id
+  };
+
   if (tab.type === 'planet') {
     return {
+      ...baseProps,
       targetNoteId: tab.data?.noteId,
       graphMode: tab.data?.mode || 'planetary',
     };
   }
-  return {};
+  return baseProps;
 };
 
 // Handle tab change
@@ -72,10 +77,8 @@ const handleTabRemove = (name: any) => {
 
 // Initialize based on route or other logic if needed
 onMounted(() => {
-  // If we want to support deep linking to calendar:
-  if (route.query.tab === 'calendar') {
-    noteStore.setActiveTab('calendar');
-  }
+  const requestedTab = typeof route.query.tab === 'string' ? route.query.tab : null;
+  noteStore.setActiveTab(requestedTab || 'calendar');
 });
 </script>
 

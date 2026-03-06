@@ -71,6 +71,8 @@ declare module 'vue' {
     NoteCopyDialog: typeof import('./components/NoteCopyDialog.vue')['default']
     NoteDetailPanel: typeof import('./components/NoteDetailPanel.vue')['default']
     NoteEditor: typeof import('./components/NoteEditor.vue')['default']
+    NoteProgramBar: typeof import('./components/NoteProgramBar.vue')['default']
+    NoteScopeBar: typeof import('./components/NoteScopeBar.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SmartTimeInput: typeof import('./components/SmartTimeInput.vue')['default']

@@ -6,6 +6,9 @@ import os
 root_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, root_dir)
 
+os.environ.setdefault("CODEYUN_ENV", "test")
+os.environ.setdefault("CODEYUN_LOAD_DOTENV", "0")
+
 try:
     from backend.app import app
     print("Successfully imported backend.app")

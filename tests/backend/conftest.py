@@ -12,6 +12,9 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+os.environ.setdefault("CODEYUN_ENV", "test")
+os.environ.setdefault("CODEYUN_LOAD_DOTENV", "0")
+
 from backend.app import app
 from backend.db import get_session
 from backend.models import User

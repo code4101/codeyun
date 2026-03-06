@@ -1,9 +1,26 @@
 import pytest
 import requests
 import time
-import socket
+import json
+from pathlib import Path
 
 BASE_URL = "http://localhost:8000"
+CONFIG_PATH = Path(__file__).resolve().parents[2] / "backend" / "data" / "config.json"
+
+
+def get_local_headers():
+    if not CONFIG_PATH.exists():
+        return None
+
+    try:
+        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    token = config.get("api_token")
+    if not token:
+        return None
+    return {"X-Device-Token": token}
 
 def is_server_running():
     try:
@@ -12,17 +29,39 @@ def is_server_running():
     except:
         return False
 
-@pytest.mark.skipif(not is_server_running(), reason="Backend server not running on localhost:8000")
+
+def has_valid_local_token(headers):
+    if not headers:
+        return False
+
+    try:
+        resp = requests.get(f"{BASE_URL}/api/agent/status", headers=headers, timeout=1)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+LOCAL_HEADERS = get_local_headers()
+VALID_LOCAL_HEADERS = LOCAL_HEADERS if has_valid_local_token(LOCAL_HEADERS) else None
+
+@pytest.mark.skipif(
+    not is_server_running() or not VALID_LOCAL_HEADERS,
+    reason="Backend server not running on localhost:8000 or local device token unavailable/invalid",
+)
 class TestIntegration:
     
     def test_local_task(self):
         print("Testing Local Task...")
         # Create task
-        resp = requests.post(f"{BASE_URL}/api/task/create", json={
-            "name": "Test Local",
-            "command": "python -c \"print('Hello Local')\"",
-            "device_id": "local"
-        })
+        resp = requests.post(
+            f"{BASE_URL}/api/task/create",
+            json={
+                "name": "Test Local",
+                "command": "python -c \"print('Hello Local')\"",
+                "device_id": "local"
+            },
+            headers=VALID_LOCAL_HEADERS,
+        )
         if resp.status_code != 200:
             print("Error creating task:", resp.text)
             pytest.fail(f"Failed to create task: {resp.text}")
@@ -31,13 +70,13 @@ class TestIntegration:
         task_id = resp.json()['id']
         
         # Start task
-        resp = requests.post(f"{BASE_URL}/api/task/{task_id}/start")
+        resp = requests.post(f"{BASE_URL}/api/task/{task_id}/start", headers=VALID_LOCAL_HEADERS)
         print("Start:", resp.status_code, resp.json())
         assert resp.status_code == 200
         
         # Wait and check logs
         time.sleep(2)
-        resp = requests.get(f"{BASE_URL}/api/task/{task_id}/logs")
+        resp = requests.get(f"{BASE_URL}/api/task/{task_id}/logs", headers=VALID_LOCAL_HEADERS)
         print("Logs:", resp.json())
         assert resp.status_code == 200
         assert len(resp.json().get('logs', [])) > 0

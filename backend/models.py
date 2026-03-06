@@ -78,6 +78,9 @@ class NoteNode(SQLModel, table=True):
 
     # Node status: idea, todo, doing, predone, done, delete
     node_status: Optional[str] = Field(default="idea", index=True)
+
+    # Private marker for doc-like notes. Kept as int to allow future levels.
+    private_level: int = Field(default=0, index=True)
     
     # Visual coordinates for graph are dynamically calculated by frontend layout algorithm
     # No persistent storage for position in backend as requested.

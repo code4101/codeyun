@@ -187,7 +187,9 @@ const handleCopy = async () => {
             form.weight,
             finalDate.getTime(),
             form.nodeType,
-            form.nodeStatus
+            form.nodeStatus,
+            [],
+            props.sourceNote.private_level ?? 0
         );
         
         if (newNote) {

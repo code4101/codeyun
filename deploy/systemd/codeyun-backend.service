@@ -7,6 +7,7 @@ Type=simple
 # 确保工作目录正确
 WorkingDirectory=%h/codeyun
 Environment=PYTHONUNBUFFERED=1
+Environment=CODEYUN_ENV=production
 # 从 .env 文件读取环境变量（如 CODEYUN_SECRET_KEY）
 EnvironmentFile=%h/codeyun/.env
 # 使用 uv run 直接启动，自动管理虚拟环境
