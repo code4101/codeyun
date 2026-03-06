@@ -481,11 +481,12 @@ onUnmounted(() => {
 .calendar-notes-layout {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  min-height: 100%;
   background-color: #fff;
   padding: 20px;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .header-section {

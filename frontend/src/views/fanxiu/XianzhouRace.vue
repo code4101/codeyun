@@ -36,7 +36,7 @@
                         size="small"
                         style="width: 120px"
                         @click.stop
-                        @change="(val: number) => handleCountChange(scope.row, val)"
+                        @change="(val: number | undefined) => handleCountChange(scope.row, val)"
                         :disabled="!canEdit"
                       />
                   </template>
@@ -70,7 +70,7 @@
                         size="small"
                         style="width: 120px"
                         @click.stop
-                        @change="(val: number) => handleCountChange(scope.row, val)"
+                        @change="(val: number | undefined) => handleCountChange(scope.row, val)"
                         :disabled="!canEdit"
                       />
                   </template>
@@ -204,20 +204,22 @@ const refreshData = async () => {
     }
 };
 
-const handleCountChange = async (row: CharItem, val: number) => {
+const handleCountChange = async (row: CharItem, val: number | undefined) => {
+    const nextValue = val ?? 0;
     // 1. Update localStorage immediately
+    row.count = nextValue;
     saveLocalCounts();
     
     // 2. Update editor if open
     if (currentEditingNote.value && currentEditingNote.value.title === row.name) {
-        currentEditingNote.value.weight = val;
+        currentEditingNote.value.weight = nextValue;
     }
 
     // 3. Try to sync to backend if we have a note (best effort)
     if (row.note) {
         try {
             const updatedNote = await updateFanxiuChar(row.name, {
-                weight: val
+                weight: nextValue
             });
             row.note = updatedNote;
             row.count = updatedNote.weight;

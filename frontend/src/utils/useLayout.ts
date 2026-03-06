@@ -1,8 +1,10 @@
-import ELK, { type ElkNode, type ElkPrimitiveEdge } from 'elkjs/lib/elk.bundled.js';
-import { type Node, type Edge, Position } from '@vue-flow/core';
+import ELK, { type ElkExtendedEdge, type ElkNode } from 'elkjs/lib/elk-api.js';
+import elkWorkerUrl from 'elkjs/lib/elk-worker.min.js?url';
+import { type Edge, type Node } from '@vue-flow/core';
 
-// Initialize ELK
-const elk = new ELK();
+// Use the worker build so the 1.5MB ELK runtime is emitted as a worker asset,
+// not bundled into the main graph chunk.
+const elk = new ELK({ workerUrl: elkWorkerUrl });
 
 // Handle Mapping
 // CustomNode.vue defined handles:
@@ -11,16 +13,18 @@ const elk = new ELK();
 // Left: l-t (target), l-s (source)
 // Right: r-t (target), r-s (source)
 
-const PORT_MAPPING: Record<string, string> = {
-    't-t': 'NORTH', 't-s': 'NORTH',
-    'b-t': 'SOUTH', 'b-s': 'SOUTH',
-    'l-t': 'WEST', 'l-s': 'WEST',
-    'r-t': 'EAST', 'r-s': 'EAST',
-};
-
 // Default node dimensions (should match CSS)
 const NODE_WIDTH = 150;
 const NODE_HEIGHT = 50;
+const HANDLE_SIDES = ['t', 'b', 'l', 'r'] as const;
+
+type HandleSide = (typeof HANDLE_SIDES)[number];
+
+interface HandleCombination {
+    sideA: HandleSide;
+    sideB: HandleSide;
+    dist: number;
+}
 
 /**
  * Calculate dimensions based on weight (area scaling)
@@ -77,11 +81,11 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
         };
     });
 
-    const elkEdges: ElkPrimitiveEdge[] = edges.map((edge) => {
+    const elkEdges: ElkExtendedEdge[] = edges.map((edge) => {
         return {
             id: edge.id,
-            source: edge.source,
-            target: edge.target,
+            sources: [edge.source],
+            targets: [edge.target],
         };
     });
 
@@ -152,18 +156,6 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
                         return undefined;
                     };
 
-                    const sourceHandle = getHandleFromPort(section.startPoint?.incomingShape, 'source') || getHandleFromPort(elkEdge.sourcePort, 'source'); 
-                    // Note: elkjs structure varies. Usually ports are on the node, but edge references them.
-                    // Actually, ELK returns `sourcePort` and `targetPort` on the edge object if ports were used.
-                    // But wait, the `sections` startPoint/endPoint might NOT have port info directly in all versions.
-                    // Let's rely on generic heuristic or check if we can get it from the edge object.
-                    
-                    // Let's try to parse from the edge object first if available
-                    // The section start/end points represent the absolute coordinates.
-                    
-                    // Correction: We defined ports on nodes. ELK should return which port was used.
-                    // In elkjs, edge object often has `sourcePort` and `targetPort` properties matching the port IDs we defined.
-                    
                     const srcPortId = elkEdge.sourcePort || (section.startPoint ? section.startPoint.port : undefined);
                     const tgtPortId = elkEdge.targetPort || (section.endPoint ? section.endPoint.port : undefined);
 
@@ -238,8 +230,6 @@ function optimizeSmartConnections(nodes: Node[], edges: Edge[]): Edge[] {
         pairMap.get(pairId)!.push(edge);
     });
 
-    const sides = ['t', 'b', 'l', 'r'];
-
     pairMap.forEach((groupEdges, pairId) => {
         const [idA, idB] = pairId.split('__');
         const nodeA = nodeMap.get(idA);
@@ -252,9 +242,9 @@ function optimizeSmartConnections(nodes: Node[], edges: Edge[]): Edge[] {
         }
 
         // Calculate all 16 distances between sides of A and B
-        const combinations = [];
-        for (const sideA of sides) {
-            for (const sideB of sides) {
+        const combinations: HandleCombination[] = [];
+        for (const sideA of HANDLE_SIDES) {
+            for (const sideB of HANDLE_SIDES) {
                 const posA = getHandlePosition(nodeA, sideA);
                 const posB = getHandlePosition(nodeB, sideB);
                 const dist = getDistance(posA, posB);

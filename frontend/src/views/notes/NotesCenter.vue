@@ -20,40 +20,46 @@
         :label="tab.label" 
         :name="tab.id"
         :closable="tab.closable"
+        lazy
       >
-        <template v-if="tab.type === 'galaxy'">
-           <StarNotes />
-        </template>
-        <template v-else-if="tab.type === 'calendar'">
-           <CalendarNotes />
-        </template>
-        <template v-else-if="tab.type === 'list'">
-           <ListNotes />
-        </template>
-        <template v-else-if="tab.type === 'planet'">
-           <StarNotes 
-             :targetNoteId="tab.data?.noteId" 
-             :graphMode="tab.data?.mode || 'planetary'"
-            />
-        </template>
+        <component
+          :is="getTabComponent(tab.type)"
+          v-bind="getTabProps(tab)"
+        />
       </el-tab-pane>
     </el-tabs>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue';
+import { defineAsyncComponent, onMounted } from 'vue';
 import { useRoute } from 'vue-router';
 import { storeToRefs } from 'pinia';
-import { useNoteStore } from '@/api/notes';
-import StarNotes from './StarNotes.vue';
-import CalendarNotes from './CalendarNotes.vue';
-import ListNotes from './ListNotes.vue';
-// import PlanetaryGraph from './PlanetaryGraph.vue'; // Deprecated
+import { useNoteStore, type TabState } from '@/api/notes';
+
+const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
+const CalendarNotes = defineAsyncComponent(() => import('./CalendarNotes.vue'));
+const ListNotes = defineAsyncComponent(() => import('./ListNotes.vue'));
 
 const route = useRoute();
 const noteStore = useNoteStore();
 const { tabs, activeTabId } = storeToRefs(noteStore);
+
+const getTabComponent = (type: TabState['type']) => {
+  if (type === 'calendar') return CalendarNotes;
+  if (type === 'list') return ListNotes;
+  return StarNotes;
+};
+
+const getTabProps = (tab: TabState) => {
+  if (tab.type === 'planet') {
+    return {
+      targetNoteId: tab.data?.noteId,
+      graphMode: tab.data?.mode || 'planetary',
+    };
+  }
+  return {};
+};
 
 // Handle tab change
 const handleTabChange = (name: any) => {

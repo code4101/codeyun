@@ -18,6 +18,9 @@ const currentDevice = computed(() => {
 const currentTasks = computed(() => {
   return taskStore.tasks[currentDeviceId.value] || [];
 });
+const getDeviceTypeTagType = (deviceType?: string): 'success' | undefined => {
+  return deviceType === 'LocalDevice' ? undefined : 'success';
+};
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
 const deviceDialogVisible = ref(false);
@@ -730,7 +733,7 @@ onUnmounted(() => {
       <div class="card-header">
         <div class="left">
           <span class="device-title">{{ currentDevice.name || currentDevice.id }}</span>
-          <el-tag size="small" :type="currentDevice.type === 'LocalDevice' ? '' : 'success'">{{ currentDevice.type }}</el-tag>
+          <el-tag size="small" :type="getDeviceTypeTagType(currentDevice.type)">{{ currentDevice.type }}</el-tag>
           <span class="device-url" v-if="currentDevice.url">({{ currentDevice.url }})</span>
           <span class="device-url" style="margin-left: 10px; font-size: 10px;">ID: {{ currentDevice.id }}</span>
         </div>

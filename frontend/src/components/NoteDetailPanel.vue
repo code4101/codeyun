@@ -6,6 +6,9 @@
     <div v-else-if="isFetchingContent || !isReady" class="loading-placeholder">
       <el-icon class="is-loading"><Loading /></el-icon> 加载内容中...
     </div>
+    <div v-else-if="!currentNote" class="empty-state">
+      <el-empty description="节点未就绪" />
+    </div>
     <div v-else class="panel-content">
       <div class="editor-header">
         <!-- Row 1: Title and Actions -->
@@ -118,7 +121,7 @@
             <div class="history-toggle">
               <el-button 
                 size="small" 
-                :type="showHistory ? 'primary' : ''" 
+                :type="historyButtonType" 
                 :icon="List" 
                 @click="showHistory = !showHistory"
               >
@@ -163,38 +166,32 @@
                         <!-- String Input -->
                         <el-input 
                             v-if="item.type === 'string'"
-                            v-model="item.value" 
+                            :model-value="getTextFieldValue(item)"
                             size="small" 
                             type="textarea"
                             autosize
                             placeholder="Value" 
                             class="field-value"
-                            @input="handleCustomFieldChange"
+                            @update:model-value="value => setTextFieldValue(item, value)"
                         />
                         
                         <!-- Number Input (String storage, Number UI) -->
                         <div v-else-if="item.type === 'number'" class="number-input-wrapper">
                             <el-input 
-                                v-model="item.value" 
+                                :model-value="getTextFieldValue(item)" 
                                 size="small" 
                                 placeholder="0" 
                                 class="field-value"
-                                @input="value => {
-                                    const val = String(value);
-                                    if (/^-?\d*\.?\d*$/.test(val)) {
-                                        item.value = val;
-                                        handleCustomFieldChange();
-                                    }
-                                }"
+                                @update:model-value="value => setNumberFieldValue(item, value)"
                             />
                         </div>
                         
                         <!-- Boolean Input -->
                         <div v-else-if="item.type === 'boolean'" class="boolean-input-wrapper">
                             <el-switch 
-                                v-model="item.value" 
+                                :model-value="getBooleanFieldValue(item)" 
                                 size="small" 
-                                @change="handleCustomFieldChange"
+                                @update:model-value="value => setBooleanFieldValue(item, value)"
                             />
                         </div>
                     </div>
@@ -280,11 +277,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue';
-import { useRouter } from 'vue-router';
-import { Delete, Calendar, Clock, Check, Loading, List, ArrowDown, CopyDocument, Connection, Plus, Close } from '@element-plus/icons-vue';
+import { ref, computed, watch, onBeforeUnmount, defineAsyncComponent } from 'vue';
+import { Delete, Calendar, Clock, Check, Loading, List, CopyDocument, Plus, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import NoteEditor from './NoteEditor.vue';
+const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 import NodeSelector from './NodeSelector.vue';
 import NodeHelpDialog from './NodeHelpDialog.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
@@ -292,9 +288,7 @@ import SmartTimeInput from './SmartTimeInput.vue';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { 
     getNodeTypeConfig, 
-    getNodeStatusConfig,
-    getOrderedNodeTypes,
-    getOrderedNodeStatuses
+    getNodeStatusConfig
 } from '@/utils/nodeConfig';
 
 const props = defineProps<{
@@ -308,7 +302,6 @@ const emit = defineEmits<{
 }>();
 
 const noteStore = useNoteStore();
-const router = useRouter();
 const currentNote = ref<NoteNode | undefined>(undefined);
 const isFetchingContent = ref(false);
 
@@ -335,41 +328,29 @@ const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
 const showHelpDialog = ref(false);
 const showCopyDialog = ref(false);
+const historyButtonType = computed<'primary' | undefined>(() => showHistory.value ? 'primary' : undefined);
+
+type CustomFieldType = 'string' | 'number' | 'boolean';
+
 interface CustomFieldItem {
     key: string;
-    value: string | number | boolean;
-    type: 'string' | 'number' | 'boolean';
+    value: string | boolean;
+    type: CustomFieldType;
 }
+
+interface InheritedFieldItem {
+    type: CustomFieldType;
+    value: string | number | boolean;
+}
+
 const customFieldsList = ref<CustomFieldItem[]>([]);
-const inheritedDirectFields = ref<Record<string, any>>({});
-const inheritedAncestorFields = ref<Record<string, any>>({});
+const inheritedDirectFields = ref<Record<string, InheritedFieldItem>>({});
+const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 
 let saveTimeout: any = null;
 
 const isReady = computed(() => {
     return !!currentNote.value && !isFetchingContent.value && !!originalData.value && currentNote.value.content !== undefined;
-});
-
-const nodeTypeProxy = computed<string>({
-    get: () => {
-        if (!currentNote.value) return 'note';
-        return currentNote.value.node_type || 'note';
-    },
-    set: (value) => {
-        if (!currentNote.value) return;
-        currentNote.value.node_type = value;
-    }
-});
-
-const nodeStatusProxy = computed<string>({
-    get: () => {
-        if (!currentNote.value) return 'idea';
-        return currentNote.value.node_status || 'idea';
-    },
-    set: (value) => {
-        if (!currentNote.value) return;
-        currentNote.value.node_status = value;
-    }
 });
 
 // Track original values for change detection
@@ -383,13 +364,48 @@ const originalData = ref<{
     custom_fields: string; // JSON string for easy comparison
 } | null>(null);
 
-const orderedNodeTypes = computed(() => getOrderedNodeTypes());
-const orderedNodeStatuses = computed(() => getOrderedNodeStatuses());
-
 const sortedHistory = computed(() => {
     if (!currentNote.value || !currentNote.value.history) return [];
     return [...currentNote.value.history].sort((a, b) => b.ts - a.ts);
 });
+
+const normalizeCustomFieldType = (type: unknown): CustomFieldType => {
+    if (type === 'number' || type === 'boolean') return type;
+    return 'string';
+};
+
+const createCustomFieldItem = (key: string, type: unknown, value: unknown): CustomFieldItem => {
+    const normalizedType = normalizeCustomFieldType(type);
+
+    if (normalizedType === 'boolean') {
+        return {
+            key,
+            type: 'boolean',
+            value: value === true || value === 'true'
+        };
+    }
+
+    return {
+        key,
+        type: normalizedType,
+        value: value == null ? '' : String(value)
+    };
+};
+
+const assignInheritedField = (
+    target: Record<string, InheritedFieldItem>,
+    ownKeys: Set<string>,
+    key: unknown,
+    type: unknown,
+    value: unknown
+) => {
+    if (typeof key !== 'string' || ownKeys.has(key)) return;
+    target[key] = {
+        type: normalizeCustomFieldType(type),
+        value: typeof value === 'boolean' || typeof value === 'number' ? value : String(value ?? '')
+    };
+    ownKeys.add(key);
+};
 
 // Watch noteId change to load data
 watch(() => props.noteId, async (newId) => {
@@ -426,8 +442,10 @@ async function loadNote(id: string) {
     }
 
     const note = noteStore.notes.find(n => n.id === id) || detailed;
-    currentNote.value = note;
-    currentNote.value.content = detailed.content;
+    currentNote.value = {
+        ...note,
+        content: detailed.content || ''
+    };
     
     // Initialize Custom Fields List
     if (note.custom_fields) {
@@ -435,28 +453,21 @@ async function loadNote(id: string) {
             // New List Format: [["key", "type", "value"], ...] or [{"key":...}]
             customFieldsList.value = note.custom_fields.map((item: any) => {
                 if (Array.isArray(item) && item.length >= 3) {
-                    return { key: item[0], type: item[1], value: item[2] };
+                    return createCustomFieldItem(item[0], item[1], item[2]);
                 } else if (typeof item === 'object') {
-                    return { key: item.key, type: item.type || 'string', value: item.value };
+                    return createCustomFieldItem(item.key, item.type, item.value);
                 }
-                return { key: '', type: 'string', value: '' }; // Fallback
-            });
+                return null;
+            }).filter((item: CustomFieldItem | null): item is CustomFieldItem => item !== null);
         } else if (typeof note.custom_fields === 'object') {
             // Legacy Dict Format support
             customFieldsList.value = Object.entries(note.custom_fields).map(([k, v]) => {
-                let type: 'string' | 'number' | 'boolean' = 'string';
-                if (typeof v === 'boolean') {
-                    type = 'boolean';
-                } else if (typeof v === 'number') {
-                    type = 'number';
-                    v = String(v);
-                } else {
-                    const vStr = String(v);
-                    if (!isNaN(Number(vStr)) && vStr.trim() !== '') {
-                        type = 'string';
-                    }
-                }
-                return { key: k, value: v as string | number | boolean, type };
+                const inferredType: CustomFieldType = typeof v === 'boolean'
+                    ? 'boolean'
+                    : typeof v === 'number'
+                        ? 'number'
+                        : 'string';
+                return createCustomFieldItem(k, inferredType, v);
             });
         }
     } else {
@@ -476,13 +487,7 @@ async function loadNote(id: string) {
              list.forEach((item: any) => {
                  if (Array.isArray(item) && item.length >= 3) {
                      const [k, t, v] = item;
-                     if (!ownKeys.has(k)) {
-                         inheritedDirectFields.value[k] = v; // Store value only? Or object?
-                         // We need type to display correctly.
-                         // Let's store full object in our local map: key -> {type, value}
-                         inheritedDirectFields.value[k] = { type: t, value: v };
-                         ownKeys.add(k);
-                     }
+                     assignInheritedField(inheritedDirectFields.value, ownKeys, k, t, v);
                  }
              });
         }
@@ -493,10 +498,7 @@ async function loadNote(id: string) {
              list.forEach((item: any) => {
                  if (Array.isArray(item) && item.length >= 3) {
                      const [k, t, v] = item;
-                     if (!ownKeys.has(k)) {
-                         inheritedAncestorFields.value[k] = { type: t, value: v };
-                         ownKeys.add(k);
-                     }
+                     assignInheritedField(inheritedAncestorFields.value, ownKeys, k, t, v);
                  }
              });
         }
@@ -672,28 +674,16 @@ const onWeightBlur = () => {
     if (currentNote.value) onWeightChange(currentNote.value.weight);
 };
 
-const onNodeTypeChange = (value: string) => {
-    if (!currentNote.value) return;
-    currentNote.value.node_type = value;
-    checkAndSave();
-};
-
-const onNodeStatusChange = (value: string) => {
-    if (!currentNote.value) return;
-    currentNote.value.node_status = value;
-    checkAndSave();
-};
-
 const addCustomField = () => {
     customFieldsList.value.push({ key: '', value: '', type: 'string' });
 };
 
-const addInheritedField = (key: string, val: any, typeFromInheritance?: string) => {
+const addInheritedField = (key: string, val: string | number | boolean, typeFromInheritance?: string) => {
     // Determine type from parent value or use explicit type if available
-    let type: 'string' | 'number' | 'boolean' = 'string';
+    let type: CustomFieldType = 'string';
     
     if (typeFromInheritance && ['string', 'number', 'boolean'].includes(typeFromInheritance)) {
-        type = typeFromInheritance as any;
+        type = typeFromInheritance as CustomFieldType;
     } else {
         // Fallback inference
         if (typeof val === 'boolean') type = 'boolean';
@@ -729,6 +719,30 @@ const removeCustomField = (index: number) => {
 
 const handleCustomFieldChange = () => {
     checkAndSave();
+};
+
+const getTextFieldValue = (item: CustomFieldItem) => item.type === 'boolean' ? '' : String(item.value);
+
+const setTextFieldValue = (item: CustomFieldItem, value: string | number) => {
+    if (item.type === 'boolean') return;
+    item.value = String(value ?? '');
+    handleCustomFieldChange();
+};
+
+const setNumberFieldValue = (item: CustomFieldItem, value: string | number) => {
+    if (item.type !== 'number') return;
+    const nextValue = String(value ?? '');
+    if (!/^-?\d*\.?\d*$/.test(nextValue)) return;
+    item.value = nextValue;
+    handleCustomFieldChange();
+};
+
+const getBooleanFieldValue = (item: CustomFieldItem) => item.type === 'boolean' ? Boolean(item.value) : false;
+
+const setBooleanFieldValue = (item: CustomFieldItem, value: string | number | boolean) => {
+    if (item.type !== 'boolean') return;
+    item.value = Boolean(value);
+    handleCustomFieldChange();
 };
 
 const handleCustomFieldTypeChange = (item: CustomFieldItem) => {
@@ -800,15 +814,15 @@ const getFieldName = (f: string) => {
     return map[f] || f;
 };
 
-const getFieldTagType = (f: string) => {
-    const map: Record<string, string> = {
+const getFieldTagType = (f: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined => {
+    const map: Record<string, 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined> = {
         'n': 'primary',
         's': 'warning',
-        't': '',
+        't': undefined,
         'w': 'success',
         'c': 'info'
     };
-    return map[f] || '';
+    return map[f];
 };
 
 const formatHistoryValue = (f: string, v: any) => {

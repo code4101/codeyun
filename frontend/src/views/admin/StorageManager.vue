@@ -294,10 +294,11 @@ const refreshData = () => {
   else if (activeTab.value === 'maintenance') loadMaintenance();
 };
 
-const handleTabChange = (tabName: string) => {
-  if (tabName === 'dashboard' && !dashboardStats.value) loadDashboard();
-  if (tabName === 'analysis' && !analysis.value) loadAnalysis();
-  if (tabName === 'maintenance' && !maintenanceStatus.value) loadMaintenance();
+const handleTabChange = (tabName: string | number) => {
+  const normalizedName = String(tabName);
+  if (normalizedName === 'dashboard' && !dashboardStats.value) loadDashboard();
+  if (normalizedName === 'analysis' && !analysis.value) loadAnalysis();
+  if (normalizedName === 'maintenance' && !maintenanceStatus.value) loadMaintenance();
 };
 
 // Actions

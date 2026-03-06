@@ -100,7 +100,7 @@
             <div class="history-toggle">
               <el-button 
                 size="small" 
-                :type="showHistory ? 'primary' : ''" 
+                :type="historyButtonType" 
                 :icon="List" 
                 @click="showHistory = !showHistory"
               >
@@ -171,12 +171,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, nextTick } from 'vue';
+import { ref, computed, watch, onBeforeUnmount, defineAsyncComponent } from 'vue';
 import { Calendar, Clock, Check, Loading, QuestionFilled, List, Plus, Close } from '@element-plus/icons-vue';
-import { ElMessage } from 'element-plus';
-import NoteEditor from './NoteEditor.vue';
 import type { NoteNode } from '@/api/notes';
-import { getNodeConfig, getOrderedNodeConfigs } from '@/utils/nodeConfig';
+import { getNodeTypeConfig, getNodeStatusConfig, getOrderedNodeTypes } from '@/utils/nodeConfig';
+
+const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
 // Props definition
 const props = defineProps<{
@@ -196,14 +196,68 @@ const emit = defineEmits<{
 const currentNote = ref<NoteNode | undefined>(undefined);
 const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
+const historyButtonType = computed<'primary' | undefined>(() => showHistory.value ? 'primary' : undefined);
 
 interface CustomFieldItem {
     key: string;
     value: string;
+    type: 'string' | 'number' | 'boolean';
 }
 const customFieldsList = ref<CustomFieldItem[]>([]);
 
 let saveTimeout: any = null;
+
+const normalizeFieldType = (type: unknown): 'string' | 'number' | 'boolean' => {
+    if (type === 'number' || type === 'boolean') return type;
+    return 'string';
+};
+
+const parseCustomFields = (fields: unknown): CustomFieldItem[] => {
+    if (!fields) return [];
+
+    // New format: [[key, type, value], ...]
+    if (Array.isArray(fields)) {
+        const parsed: CustomFieldItem[] = [];
+        for (const item of fields) {
+            if (Array.isArray(item) && item.length >= 3) {
+                const [key, type, value] = item;
+                if (typeof key === 'string' && key.trim()) {
+                    parsed.push({
+                        key,
+                        type: normalizeFieldType(type),
+                        value: value == null ? '' : String(value)
+                    });
+                }
+                continue;
+            }
+            // Backward compatibility: [{ key, type, value }, ...]
+            if (item && typeof item === 'object') {
+                const key = (item as any).key;
+                const type = (item as any).type;
+                const value = (item as any).value;
+                if (typeof key === 'string' && key.trim()) {
+                    parsed.push({
+                        key,
+                        type: normalizeFieldType(type),
+                        value: value == null ? '' : String(value)
+                    });
+                }
+            }
+        }
+        return parsed;
+    }
+
+    // Legacy format: { key: value, ... }
+    if (typeof fields === 'object') {
+        return Object.entries(fields as Record<string, any>).map(([k, v]) => ({
+            key: k,
+            type: 'string',
+            value: v == null ? '' : String(v)
+        }));
+    }
+
+    return [];
+};
 
 // Helper to handle null/empty node_type
 const nodeTypeProxy = computed<string>({
@@ -217,7 +271,7 @@ const nodeTypeProxy = computed<string>({
     }
 });
 
-const orderedNodeConfigs = computed(() => getOrderedNodeConfigs());
+const orderedNodeConfigs = computed(() => getOrderedNodeTypes());
 
 const sortedHistory = computed(() => {
     if (!currentNote.value || !currentNote.value.history) return [];
@@ -240,12 +294,7 @@ watch(() => props.modelValue, (newVal) => {
             saveStatus.value = 'saved';
             showHistory.value = false;
 
-            // Initialize custom fields list
-            if (note.custom_fields) {
-                customFieldsList.value = Object.entries(note.custom_fields).map(([k, v]) => ({ key: k, value: String(v) }));
-            } else {
-                customFieldsList.value = [];
-            }
+            customFieldsList.value = parseCustomFields(note.custom_fields);
         } 
     } else {
         currentNote.value = undefined;
@@ -270,10 +319,11 @@ const handleContentChange = (html: string) => {
 const syncCustomFields = () => {
     if (!currentNote.value) return;
     
-    const fields: Record<string, any> = {};
+    const fields: any[] = [];
     customFieldsList.value.forEach(item => {
-        if (item.key && item.key.trim()) {
-            fields[item.key.trim()] = item.value;
+        const key = item.key?.trim();
+        if (key) {
+            fields.push([key, item.type || 'string', item.value ?? '']);
         }
     });
     
@@ -282,7 +332,7 @@ const syncCustomFields = () => {
 };
 
 const addCustomField = () => {
-    customFieldsList.value.push({ key: '', value: '' });
+    customFieldsList.value.push({ key: '', value: '', type: 'string' });
 };
 
 const removeCustomField = (index: number) => {
@@ -350,7 +400,7 @@ const formatDateDetailed = (timestamp: number) => {
 const getFieldName = (f: string) => {
     const map: Record<string, string> = {
         'n': '类型',
-        's': '类型',
+        's': '状态',
         't': '标题',
         'w': '权重',
         'c': '内容'
@@ -358,19 +408,20 @@ const getFieldName = (f: string) => {
     return map[f] || f;
 };
 
-const getFieldTagType = (f: string) => {
-    const map: Record<string, string> = {
-        'n': 'warning',
+const getFieldTagType = (f: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined => {
+    const map: Record<string, 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined> = {
+        'n': 'primary',
         's': 'warning',
-        't': '',
+        't': undefined,
         'w': 'success',
         'c': 'info'
     };
-    return map[f] || '';
+    return map[f];
 };
 
 const formatHistoryValue = (f: string, v: any) => {
-    if (f === 'n' || f === 's') return getNodeConfig(v).label;
+    if (f === 'n') return getNodeTypeConfig(v).label;
+    if (f === 's') return getNodeStatusConfig(v).label;
     if (f === 'c') return `${v} 字`;
     return v;
 };

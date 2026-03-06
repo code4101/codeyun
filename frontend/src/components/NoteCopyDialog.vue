@@ -95,12 +95,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive } from 'vue';
+import { ref, computed, reactive, defineAsyncComponent } from 'vue';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { ElMessage } from 'element-plus';
-import NoteEditor from './NoteEditor.vue';
 import NodeSelector from './NodeSelector.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
+
+const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
 const props = defineProps<{
   modelValue: boolean;

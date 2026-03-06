@@ -329,7 +329,7 @@ const updateColorFromRGB = () => {
   viewState.backgroundColor = `rgba(${rgbState.r}, ${rgbState.g}, ${rgbState.b}, ${alpha})`;
 };
 
-const handleColorChange = (val: string) => {
+const handleColorChange = (val: string | null) => {
   if (val) {
     viewState.backgroundColor = val;
   }

@@ -111,6 +111,20 @@ const removeRound = (idx: number) => {
     });
 };
 
+const handleRoundsEdit = (targetName: string | number | undefined, action: 'add' | 'remove') => {
+    if (action === 'add') {
+        addRound();
+        return;
+    }
+
+    if (targetName === undefined) return;
+
+    const index = typeof targetName === 'number' ? targetName : parseInt(targetName, 10);
+    if (!Number.isNaN(index)) {
+        removeRound(index);
+    }
+};
+
 const addPack = (roundIdx: number) => {
     rounds.value[roundIdx].packs.push({
         name: "新礼包", price: 0, pulls: 0, limit: 1, purchased: 0
@@ -339,7 +353,7 @@ const calculateStrategy = () => {
 
     <!-- Rounds Config -->
     <div class="rounds-section mb-4">
-        <el-tabs v-model="activeTab" type="border-card" editable @edit="(targetName: string | null, action: 'add' | 'remove') => { if (action === 'add') addRound(); else if (targetName) removeRound(parseInt(targetName)); }">
+        <el-tabs v-model="activeTab" type="border-card" editable @edit="handleRoundsEdit">
             <el-tab-pane
                 v-for="(round, idx) in rounds"
                 :key="idx"

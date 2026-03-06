@@ -199,19 +199,19 @@ import { Plus, Clock, Check, Loading, Refresh, Delete, Filter, QuestionFilled, L
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useNoteStore, type NoteNode } from '@/api/notes';
-import { VueFlow, useVueFlow, Connection, MarkerType } from '@vue-flow/core';
+import { VueFlow, useVueFlow, Connection, MarkerType, type EdgeTypesObject, type NodeTypesObject } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
 import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
 
-const nodeTypes = {
-  custom: markRaw(CustomNode),
+const nodeTypes: NodeTypesObject = {
+  custom: markRaw(CustomNode) as NodeTypesObject[string],
 };
 
-const edgeTypes = {
-  elk: markRaw(ElkEdge),
+const edgeTypes: EdgeTypesObject = {
+  elk: markRaw(ElkEdge) as EdgeTypesObject[string],
 };
 import '@vue-flow/core/dist/style.css';
 import '@vue-flow/core/dist/theme-default.css';
@@ -919,7 +919,12 @@ const onConnect = (params: Connection) => {
     // UI 乐观更新
     edges.value.push(edgeParams);
     
-    noteStore.createEdge(params.source, params.target, params.sourceHandle, params.targetHandle);
+    noteStore.createEdge(
+        params.source,
+        params.target,
+        params.sourceHandle ?? undefined,
+        params.targetHandle ?? undefined
+    );
 };
 
 // Handle Edge Click
@@ -966,7 +971,7 @@ onEdgesChange((changes) => {
         }
     });
     // Apply changes to local state and update ref
-    edges.value = applyEdgeChanges(changes, edges.value);
+    edges.value = applyEdgeChanges(changes);
 });
 
 const onNodeClick = (event: any) => {
@@ -1060,8 +1065,9 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 .task-manager-layout {
   display: flex;
   flex-direction: column;
-  height: 100%; /* Changed from min-height: 100vh */
-  overflow: hidden; /* Let internal sections handle scrolling */
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .filter-section {

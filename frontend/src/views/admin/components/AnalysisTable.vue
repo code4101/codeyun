@@ -141,6 +141,13 @@ import { Right } from '@element-plus/icons-vue';
 import { ElMessage } from 'element-plus';
 import { previewOptimizedImage, confirmImageOptimization, OptimizedPreview } from '@/api/admin';
 
+type SortOrder = 'ascending' | 'descending';
+
+interface DefaultSortState {
+  prop: string;
+  order: SortOrder;
+}
+
 const props = defineProps<{
   data: any[];
   type: 'file' | 'node' | 'link';
@@ -168,7 +175,7 @@ const timeProp = computed(() => {
   return 'mtime';
 });
 
-const defaultSort = computed(() => {
+const defaultSort = computed<DefaultSortState>(() => {
   if (props.type === 'link') return { prop: 'note_title', order: 'ascending' };
   return { prop: 'size', order: 'descending' };
 });
@@ -186,7 +193,7 @@ const formatTime = (timestamp: number) => {
   return new Date(timestamp * 1000).toLocaleString();
 };
 
-const handleSortChange = ({ prop, order }: { prop: string, order: string }) => {
+const handleSortChange = ({ prop, order }: { prop: string; order: SortOrder | null }) => {
   if (!order) return;
   props.data.sort((a, b) => {
     let valA = a[prop];

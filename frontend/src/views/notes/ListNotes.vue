@@ -14,18 +14,18 @@
         <el-select v-model="filterType" placeholder="所有类型" clearable style="width: 120px">
           <el-option
             v-for="type in orderedNodeTypes"
-            :key="type.value"
+            :key="type.id"
             :label="type.label"
-            :value="type.value"
+            :value="type.id"
           />
         </el-select>
 
         <el-select v-model="filterStatus" placeholder="所有状态" clearable style="width: 120px">
           <el-option
             v-for="status in orderedNodeStatuses"
-            :key="status.value"
+            :key="status.id"
             :label="status.label"
-            :value="status.value"
+            :value="status.id"
           />
         </el-select>
 
