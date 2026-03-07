@@ -83,29 +83,19 @@ async def verify_api_token(
         )
     
     # Lazy import to avoid cycle
-    from backend.core.device import device_manager, get_system_id
-    
-    local_id = get_system_id()
+    from backend.core.device import device_manager, get_device_id
+
+    local_id = get_device_id()
     local_dev = device_manager.get_device(local_id)
-    
-    # Check if token matches local device token (Master Token)
-    if local_dev and local_dev.api_token and final_token == local_dev.api_token:
+
+    if not local_dev or not local_dev.api_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Device control is disabled on this node",
+        )
+
+    if final_token == local_dev.api_token:
         return local_dev
-    
-    # Check if it's a valid User JWT Token
-    try:
-        payload = jwt.decode(final_token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username:
-            user_stmt = select(User).where(User.username == username)
-            user = session.exec(user_stmt).first()
-            if user and user.is_active:
-                # User is valid. Return the Local Device of this machine.
-                # This allows the user to see all tasks on this machine.
-                return local_dev
-    except Exception:
-        # Not a valid JWT or other error
-        pass
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,

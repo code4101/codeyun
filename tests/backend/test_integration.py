@@ -1,23 +1,15 @@
 import pytest
 import requests
 import time
-import json
-from pathlib import Path
+
+from backend.core.settings import get_settings
 
 BASE_URL = "http://localhost:8000"
-CONFIG_PATH = Path(__file__).resolve().parents[2] / "backend" / "data" / "config.json"
+settings = get_settings()
 
 
 def get_local_headers():
-    if not CONFIG_PATH.exists():
-        return None
-
-    try:
-        config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-    token = config.get("api_token")
+    token = settings.device_token
     if not token:
         return None
     return {"X-Device-Token": token}
@@ -35,7 +27,7 @@ def has_valid_local_token(headers):
         return False
 
     try:
-        resp = requests.get(f"{BASE_URL}/api/agent/status", headers=headers, timeout=1)
+        resp = requests.get(f"{BASE_URL}/api/device-control/status", headers=headers, timeout=1)
         return resp.status_code == 200
     except Exception:
         return False
@@ -88,8 +80,8 @@ class TestIntegration:
             # Note: This might fail if the device ID matches local ID.
             # We use a fake ID but URL points to local.
             
-            # The backend/api/task_manager.py add_device logic:
-            # It calls remote /api/agent/status to get ID.
+            # The backend/api/device.py add_user_device logic:
+            # It calls remote /api/device-control/status to get ID.
             # If ID matches local ID, it fails with 409 Matches Local Device.
             # So adding self as remote is tricky if we don't mock the remote response ID.
             

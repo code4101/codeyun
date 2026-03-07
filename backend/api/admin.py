@@ -8,10 +8,19 @@ from sqlmodel import Session, select, func, text
 from pydantic import BaseModel
 
 from backend.db import get_session, engine
-from backend.models import User, NoteNode
+from backend.core.device import get_device_id
+from backend.models import AppSetting, User, NoteNode
 from backend.core.auth import get_current_active_superuser
+from backend.core.settings import get_settings
+from backend.core.storage import (
+    ATTACHMENT_URL_PATTERN,
+    build_attachment_url,
+    get_attachments_dir,
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+settings = get_settings()
 
 router = APIRouter(
     tags=["admin"],
@@ -19,28 +28,88 @@ router = APIRouter(
     responses={404: {"description": "Not found"}},
 )
 
-UPLOAD_DIR = os.path.join("backend", "static", "uploads")
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-UPLOAD_ABS_PATH = os.path.join(BASE_DIR, "backend", "static", "uploads")
-CONFIG_FILE = os.path.join(BASE_DIR, "backend", "data", "storage_config.json")
+ATTACHMENTS_ABS_PATH = os.fspath(get_attachments_dir())
+LEGACY_STORAGE_CONFIG_FILE = os.path.join(
+    os.fspath(settings.data_dir),
+    "storage_config.json",
+)
+STORAGE_SCHEDULE_SETTING_KEY = "storage.schedule"
+DEFAULT_STORAGE_SCHEDULE = {
+    "schedule_enabled": False,
+    "cron_expression": "0 3 * * *",
+}
 
 # --- Scheduler Setup ---
 storage_scheduler = BackgroundScheduler()
 storage_scheduler.start()
 
 def load_config():
-    if os.path.exists(CONFIG_FILE):
+    with Session(engine) as session:
+        row = session.get(AppSetting, STORAGE_SCHEDULE_SETTING_KEY)
+        if row and isinstance(row.value, dict):
+            enabled = row.value.get("schedule_enabled")
+            if enabled is None:
+                enabled = row.value.get("enabled")
+            return {
+                "schedule_enabled": bool(
+                    DEFAULT_STORAGE_SCHEDULE["schedule_enabled"]
+                    if enabled is None
+                    else enabled
+                ),
+                "cron_expression": row.value.get(
+                    "cron_expression",
+                    DEFAULT_STORAGE_SCHEDULE["cron_expression"],
+                ),
+            }
+
+    if os.path.exists(LEGACY_STORAGE_CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                return json.load(f)
+            with open(LEGACY_STORAGE_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                legacy = json.load(f)
+            enabled = legacy.get("schedule_enabled")
+            if enabled is None:
+                enabled = legacy.get("enabled")
+            config = {
+                "schedule_enabled": bool(
+                    DEFAULT_STORAGE_SCHEDULE["schedule_enabled"]
+                    if enabled is None
+                    else enabled
+                ),
+                "cron_expression": legacy.get(
+                    "cron_expression",
+                    DEFAULT_STORAGE_SCHEDULE["cron_expression"],
+                ),
+            }
+            save_config(config)
+            return config
         except Exception:
             pass
-    return {"schedule_enabled": False, "cron_expression": "0 3 * * *"} # Default 3 AM
+    return dict(DEFAULT_STORAGE_SCHEDULE)
 
 def save_config(config):
-    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+    schedule_enabled = config.get("schedule_enabled")
+    if schedule_enabled is None:
+        schedule_enabled = config.get("enabled")
+
+    payload = {
+        "schedule_enabled": bool(
+            DEFAULT_STORAGE_SCHEDULE["schedule_enabled"]
+            if schedule_enabled is None
+            else schedule_enabled
+        ),
+        "cron_expression": config.get(
+            "cron_expression",
+            DEFAULT_STORAGE_SCHEDULE["cron_expression"],
+        ),
+    }
+    with Session(engine) as session:
+        row = session.get(AppSetting, STORAGE_SCHEDULE_SETTING_KEY)
+        if row is None:
+            row = AppSetting(key=STORAGE_SCHEDULE_SETTING_KEY)
+        row.value = payload
+        row.updated_at = time.time()
+        session.add(row)
+        session.commit()
 
 def scheduled_analysis_job():
     """
@@ -130,6 +199,12 @@ class ScheduleConfig(BaseModel):
     enabled: bool
     cron_expression: str
 
+
+class DeviceControlIdentityResponse(BaseModel):
+    device_id: str
+    device_token_enabled: bool
+    data_dir: str
+
 # --- Endpoints ---
 
 @router.get("/storage/dashboard", response_model=StorageDashboardStats)
@@ -142,9 +217,9 @@ def get_storage_dashboard(session: Session = Depends(get_session)):
     total_size = 0
     file_count = 0
     
-    if os.path.exists(UPLOAD_ABS_PATH):
+    if os.path.exists(ATTACHMENTS_ABS_PATH):
         try:
-            with os.scandir(UPLOAD_ABS_PATH) as it:
+            with os.scandir(ATTACHMENTS_ABS_PATH) as it:
                 for entry in it:
                     if entry.is_file():
                         total_size += entry.stat().st_size
@@ -175,10 +250,10 @@ def get_storage_analysis(session: Session = Depends(get_session)):
     top_files = []
     file_types = {}
     
-    if os.path.exists(UPLOAD_ABS_PATH):
+    if os.path.exists(ATTACHMENTS_ABS_PATH):
         try:
             file_list = []
-            with os.scandir(UPLOAD_ABS_PATH) as it:
+            with os.scandir(ATTACHMENTS_ABS_PATH) as it:
                 for entry in it:
                     if entry.is_file():
                         stat = entry.stat()
@@ -198,7 +273,7 @@ def get_storage_analysis(session: Session = Depends(get_session)):
                     filename=f["filename"],
                     size=f["size"],
                     mtime=f["mtime"],
-                    url=f"/static/uploads/{f['filename']}"
+                    url=build_attachment_url(f["filename"])
                 ))
         except Exception as e:
             print(f"Error scanning files: {e}")
@@ -238,9 +313,9 @@ def get_maintenance_status(session: Session = Depends(get_session)):
     disk_files_by_stem = {}
     file_stats = {}
     
-    if os.path.exists(UPLOAD_ABS_PATH):
-        for filename in os.listdir(UPLOAD_ABS_PATH):
-            filepath = os.path.join(UPLOAD_ABS_PATH, filename)
+    if os.path.exists(ATTACHMENTS_ABS_PATH):
+        for filename in os.listdir(ATTACHMENTS_ABS_PATH):
+            filepath = os.path.join(ATTACHMENTS_ABS_PATH, filename)
             if os.path.isfile(filepath):
                 disk_files.add(filename)
                 stat = os.stat(filepath)
@@ -252,7 +327,6 @@ def get_maintenance_status(session: Session = Depends(get_session)):
                 disk_files_by_stem[stem].append(filename)
 
     # 2. Scan DB for references
-    img_pattern = re.compile(r'/static/uploads/([a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)')
     referenced_files = set()
     dead_links = []
     fixable_links = []
@@ -261,7 +335,7 @@ def get_maintenance_status(session: Session = Depends(get_session)):
     
     for note in notes:
         if note.content:
-            matches = img_pattern.findall(note.content)
+            matches = ATTACHMENT_URL_PATTERN.findall(note.content)
             for filename in matches:
                 referenced_files.add(filename)
                 
@@ -272,14 +346,14 @@ def get_maintenance_status(session: Session = Depends(get_session)):
                         fixable_links.append(FixableLink(
                             note_id=str(note.id),
                             note_title=note.title or "Untitled",
-                            original_url=f"/static/uploads/{filename}",
-                            suggested_url=f"/static/uploads/{candidates[0]}"
+                            original_url=build_attachment_url(filename),
+                            suggested_url=build_attachment_url(candidates[0])
                         ))
                     else:
                         dead_links.append({
                             "note_id": note.id,
                             "note_title": note.title,
-                            "link": f"/static/uploads/{filename}"
+                            "link": build_attachment_url(filename)
                         })
 
     # 3. Calculate Orphans
@@ -303,9 +377,9 @@ def get_orphan_images(session: Session = Depends(get_session)):
     all_files = set()
     file_stats = {}
     total_size = 0
-    if os.path.exists(UPLOAD_ABS_PATH):
-        for filename in os.listdir(UPLOAD_ABS_PATH):
-            fp = os.path.join(UPLOAD_ABS_PATH, filename)
+    if os.path.exists(ATTACHMENTS_ABS_PATH):
+        for filename in os.listdir(ATTACHMENTS_ABS_PATH):
+            fp = os.path.join(ATTACHMENTS_ABS_PATH, filename)
             if os.path.isfile(fp):
                 all_files.add(filename)
                 st = os.stat(fp)
@@ -313,11 +387,10 @@ def get_orphan_images(session: Session = Depends(get_session)):
                 total_size += st.st_size
 
     referenced = set()
-    img_pattern = re.compile(r'/static/uploads/([a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)')
     notes = session.exec(select(NoteNode)).all()
     for n in notes:
         if n.content:
-            for m in img_pattern.findall(n.content):
+            for m in ATTACHMENT_URL_PATTERN.findall(n.content):
                 referenced.add(m)
     
     orphans = []
@@ -330,7 +403,7 @@ def get_orphan_images(session: Session = Depends(get_session)):
             filename=f,
             size=s["size"],
             mtime=s["mtime"],
-            url=f"/static/uploads/{f}"
+            url=build_attachment_url(f)
         ))
     
     orphans.sort(key=lambda x: x.size, reverse=True)
@@ -373,6 +446,15 @@ def set_schedule_config(config: ScheduleConfig):
             
     return config
 
+
+@router.get("/device-control/identity", response_model=DeviceControlIdentityResponse)
+def get_device_control_identity():
+    return DeviceControlIdentityResponse(
+        device_id=get_device_id(),
+        device_token_enabled=bool(settings.device_token),
+        data_dir=os.fspath(settings.data_dir),
+    )
+
 @router.post("/storage/fix-links", response_model=dict)
 def fix_broken_links(session: Session = Depends(get_session)):
     """
@@ -380,19 +462,18 @@ def fix_broken_links(session: Session = Depends(get_session)):
     Handles dead links where a file with same UUID but different extension exists.
     Does NOT update 'updated_at' timestamp of notes.
     """
-    if not os.path.exists(UPLOAD_ABS_PATH):
-         return {"fixed_count": 0, "message": "Upload directory not found"}
+    if not os.path.exists(ATTACHMENTS_ABS_PATH):
+         return {"fixed_count": 0, "message": "Attachment directory not found"}
 
     disk_files_by_stem = {}
-    for filename in os.listdir(UPLOAD_ABS_PATH):
-        filepath = os.path.join(UPLOAD_ABS_PATH, filename)
+    for filename in os.listdir(ATTACHMENTS_ABS_PATH):
+        filepath = os.path.join(ATTACHMENTS_ABS_PATH, filename)
         if os.path.isfile(filepath):
             stem = os.path.splitext(filename)[0]
             if stem not in disk_files_by_stem:
                 disk_files_by_stem[stem] = []
             disk_files_by_stem[stem].append(filename)
 
-    img_pattern = re.compile(r'/static/uploads/([a-zA-Z0-9_-]+\.[a-zA-Z0-9]+)')
     notes = session.exec(select(NoteNode)).all()
     
     fixed_count = 0
@@ -406,23 +487,28 @@ def fix_broken_links(session: Session = Depends(get_session)):
         new_content = original_content
         note_modified = False
         
-        matches = list(set(img_pattern.findall(original_content)))
+        matches = list(set(ATTACHMENT_URL_PATTERN.findall(original_content)))
         
         for filename in matches:
-            filepath = os.path.join(UPLOAD_ABS_PATH, filename)
+            filepath = os.path.join(ATTACHMENTS_ABS_PATH, filename)
             if not os.path.exists(filepath):
                 stem = os.path.splitext(filename)[0]
                 candidates = disk_files_by_stem.get(stem)
                 
                 if candidates:
                     suggested_filename = candidates[0]
-                    old_link = f"/static/uploads/{filename}"
-                    new_link = f"/static/uploads/{suggested_filename}"
-                    
-                    if old_link in new_content:
-                        new_content = new_content.replace(old_link, new_link)
-                        fixed_count += 1
-                        note_modified = True
+                    new_link = build_attachment_url(suggested_filename)
+                    old_links = (
+                        f"/static/uploads/{filename}",
+                        build_attachment_url(filename),
+                    )
+
+                    for old_link in old_links:
+                        if old_link in new_content:
+                            new_content = new_content.replace(old_link, new_link)
+                            fixed_count += 1
+                            note_modified = True
+                            break
         
         if note_modified:
             # Manually update content without triggering updated_at change if possible
@@ -473,7 +559,7 @@ def preview_optimized_image(request: OptimizeImageRequest):
     if "/" in request.filename or "\\" in request.filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
         
-    file_path = os.path.join(UPLOAD_ABS_PATH, request.filename)
+    file_path = os.path.join(ATTACHMENTS_ABS_PATH, request.filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
@@ -518,7 +604,7 @@ def confirm_image_optimization(request: OptimizeImageRequest):
     if "/" in request.filename or "\\" in request.filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
         
-    file_path = os.path.join(UPLOAD_ABS_PATH, request.filename)
+    file_path = os.path.join(ATTACHMENTS_ABS_PATH, request.filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
@@ -535,7 +621,7 @@ def confirm_image_optimization(request: OptimizeImageRequest):
             if new_ext == ".jpeg": new_ext = ".jpg"
             
             new_filename = f"{stem}{new_ext}"
-            new_file_path = os.path.join(UPLOAD_ABS_PATH, new_filename)
+            new_file_path = os.path.join(ATTACHMENTS_ABS_PATH, new_filename)
             
             # Save to temp first to ensure success
             temp_path = new_file_path + ".tmp"
@@ -580,7 +666,7 @@ def confirm_image_optimization_with_db(request: OptimizeImageRequest):
     if "/" in request.filename or "\\" in request.filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
         
-    file_path = os.path.join(UPLOAD_ABS_PATH, request.filename)
+    file_path = os.path.join(ATTACHMENTS_ABS_PATH, request.filename)
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="File not found")
         
@@ -596,7 +682,7 @@ def confirm_image_optimization_with_db(request: OptimizeImageRequest):
             if new_ext == ".jpeg": new_ext = ".jpg"
             
             new_filename = f"{stem}{new_ext}"
-            new_file_path = os.path.join(UPLOAD_ABS_PATH, new_filename)
+            new_file_path = os.path.join(ATTACHMENTS_ABS_PATH, new_filename)
             
             temp_path = new_file_path + ".tmp"
             img.save(temp_path, format=request.target_format, quality=request.quality)
@@ -633,7 +719,7 @@ def delete_orphan_images(request: DeleteImagesRequest):
             errors.append(f"Invalid filename: {filename}")
             continue
             
-        file_path = os.path.join(UPLOAD_ABS_PATH, filename)
+        file_path = os.path.join(ATTACHMENTS_ABS_PATH, filename)
         if os.path.exists(file_path):
             try:
                 os.remove(file_path)

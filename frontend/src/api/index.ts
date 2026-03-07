@@ -1,6 +1,11 @@
 import axios from 'axios';
 import { useUserStore } from '@/store/userStore';
 
+export const getDeviceEntryPath = (entryId: string, path = '') => {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  return `/device-entries/${entryId}${normalizedPath}`;
+};
+
 // Default instance (Local Backend)
 const api = axios.create({
   baseURL: '/api', // Proxied to http://localhost:8000 via Vite proxy or similar
@@ -92,52 +97,4 @@ api.interceptors.response.use(
     return Promise.reject(error);
   }
 );
-
-// Helper to get API client for a specific device
-export const getDeviceApi = (deviceUrl?: string, accessToken?: string | null) => {
-  // If no URL provided, we target the local backend.
-  // BUT, if an accessToken is explicitly provided (e.g. Device Token), we must use it
-  // instead of the default User Token from localStorage.
-  
-  if (!deviceUrl && accessToken === undefined) {
-    // No URL and no specific token -> Use default User Token client
-    return api;
-  }
-  
-  // Determine Base URL
-  let baseURL = '/api';
-  if (deviceUrl) {
-    const cleanUrl = deviceUrl.replace(/\/+$/, '');
-    baseURL = `${cleanUrl}/api`;
-  }
-  
-  const instance = axios.create({
-    baseURL,
-    timeout: 10000,
-  });
-
-  // Add interceptor to inject token
-  instance.interceptors.request.use(
-    (config) => {
-      if (accessToken) {
-        // Use the specific Device Token provided
-        config.headers.Authorization = `Bearer ${accessToken}`;
-        // Also set X-Device-Token for compatibility if backend checks it
-        config.headers['X-Device-Token'] = accessToken;
-      } else if (accessToken === undefined) {
-        // Fallback to current user token ONLY if accessToken is undefined
-        // If accessToken is null, we intentionally send no auth header
-        const token = localStorage.getItem('token');
-        if (token) {
-          config.headers.Authorization = `Bearer ${token}`;
-        }
-      }
-      return config;
-    },
-    (error) => Promise.reject(error)
-  );
-
-  return instance;
-};
-
 export default api;

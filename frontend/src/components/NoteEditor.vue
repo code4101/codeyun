@@ -2,7 +2,7 @@
   <div class="editor-container" @click="handleContainerClick">
     <Toolbar
       v-if="!readOnly"
-      style="border-bottom: 1px solid #ccc"
+      class="editor-toolbar"
       :editor="editorRef"
       :defaultConfig="toolbarConfig"
       :mode="mode"
@@ -13,7 +13,6 @@
     </div>
     <Editor
       class="editor-content-area"
-      style="height: auto; min-height: 500px; overflow: visible;"
       v-model="valueHtml"
       :defaultConfig="editorConfig"
       :mode="mode"
@@ -35,13 +34,13 @@
         type="info"
         show-icon
         :closable="false"
-        style="margin-bottom: 15px;"
+        class="merge-alert"
       />
 
       <div class="merge-settings">
         <span class="label">垂直间隙 (px):</span>
         <el-input-number v-model="mergeGap" :min="0" :max="100" size="small" />
-        <el-button type="primary" size="small" @click="detectAndMergeImages" :loading="merging" style="margin-left: 15px;">
+        <el-button type="primary" size="small" class="merge-button" @click="detectAndMergeImages" :loading="merging">
           开始拼接
         </el-button>
       </div>
@@ -75,8 +74,9 @@
 import '@wangeditor/editor/dist/css/style.css' // 引入 css
 import { onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } from 'vue'
 import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
-import { IEditorConfig, type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
+import { type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
 import { ElMessage } from 'element-plus'
+import api from '@/api'
 import { mergeImagesToPngDataUrl } from '@/utils/imageMerge'
 import { registerWangEditorPlugins } from '@/utils/wangEditorPlugins'
 
@@ -138,18 +138,58 @@ watch(readOnly, (val) => {
 })
 
 const toolbarConfig = {}
+
+interface UploadedImageData {
+  url?: string
+  alt?: string
+  href?: string
+}
+
+interface UploadImageResponse {
+  errno?: number
+  message?: string
+  data?: UploadedImageData | UploadedImageData[]
+}
+
+const uploadEditorImage = async (
+  file: File,
+  insertFn: (src: string, alt: string, href: string) => void
+) => {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  try {
+    const response = await api.post<UploadImageResponse>('/upload/image', formData)
+    const { errno = 1, data, message } = response.data || {}
+
+    if (errno !== 0 || !data) {
+      throw new Error(message || '图片上传失败')
+    }
+
+    const uploadedImages = Array.isArray(data) ? data : [data]
+    for (const image of uploadedImages) {
+      if (!image?.url) continue
+      insertFn(image.url, image.alt || file.name, image.href || image.url)
+    }
+
+    if (!uploadedImages.some(image => image?.url)) {
+      throw new Error('图片上传成功，但未返回可用地址')
+    }
+  } catch (error: any) {
+    const message = error?.response?.data?.detail || error?.message || '图片上传失败'
+    ElMessage.error(message)
+    throw error
+  }
+}
+
 const editorConfig: any = {
     placeholder: '请输入内容...',
     readOnly: props.readOnly,
     MENU_CONF: {
         uploadImage: {
-            server: '/api/upload/image', // Upload API endpoint
-            fieldName: 'file',
             maxFileSize: 10 * 1024 * 1024, // 10M
             base64LimitSize: 5 * 1024, // Images smaller than 5kb insert as base64, larger upload
-            headers: {
-                Authorization: `Bearer ${localStorage.getItem('token')}` // Add token
-            }
+            customUpload: uploadEditorImage
         }
     },
     hoverbarKeys: {
@@ -296,6 +336,16 @@ const confirmInsertMergedImage = () => {
     cursor: text; /* 提示可编辑 */
 }
 
+.editor-toolbar {
+    border-bottom: 1px solid #ccc;
+}
+
+.editor-content-area {
+    height: auto;
+    min-height: 500px;
+    overflow: visible;
+}
+
 /* 确保编辑器区域填满容器，点击空白处也能触发编辑器焦点 */
 :deep(.w-e-text-container) {
     height: auto !important; /* 让它自适应内容高度 */
@@ -315,6 +365,14 @@ const confirmInsertMergedImage = () => {
 .merge-settings {
     display: flex;
     align-items: center;
+}
+
+.merge-alert {
+    margin-bottom: 15px;
+}
+
+.merge-button {
+    margin-left: 15px;
 }
 
 .merge-settings .label {

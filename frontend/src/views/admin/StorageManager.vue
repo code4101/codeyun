@@ -22,7 +22,7 @@
             <el-card shadow="hover" class="metric-card">
               <template #header><div class="card-header"><span>存储总占用</span></div></template>
               <div class="metric-value">{{ formatSize(dashboardStats?.total_size_bytes || 0) }}</div>
-              <div class="metric-desc">包含所有上传文件</div>
+              <div class="metric-desc">包含所有附件文件</div>
             </el-card>
             <el-card shadow="hover" class="metric-card">
               <template #header><div class="card-header"><span>文件总数</span></div></template>
@@ -73,7 +73,7 @@
           <div class="analysis-row">
             <!-- Top 50 Files -->
             <div class="analysis-section">
-              <div class="section-title">Top 50 大文件 (Static Uploads)</div>
+              <div class="section-title">Top 50 大文件 (Attachments)</div>
               <div class="analysis-table">
                 <AnalysisTable 
                   :data="analysis?.top_files || []" 

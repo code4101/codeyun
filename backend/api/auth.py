@@ -90,9 +90,7 @@ def register_user(
         username=user_in.username,
         hashed_password=hashed_password,
         email=user_in.email,
-        # First user is superuser? Or explicit flag?
-        # Let's make the first user superuser for convenience
-        is_superuser=not session.exec(select(User)).first()
+        is_superuser=False
     )
     
     session.add(db_user)

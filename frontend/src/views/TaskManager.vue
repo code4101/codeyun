@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
-import { getDeviceApi } from '@/api';
+import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Rank, Clock } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
@@ -21,10 +21,32 @@ const currentTasks = computed(() => {
 const getDeviceTypeTagType = (deviceType?: string): 'success' | undefined => {
   return deviceType === 'LocalDevice' ? undefined : 'success';
 };
+const getDeviceEntryMeta = (device: Device) => {
+  if (device.mode === 'local') {
+    return '本地入口';
+  }
+
+  if (!device.server_url) {
+    return '远程入口';
+  }
+  try {
+    return `远程 · ${new URL(device.server_url).host}`;
+  } catch {
+    return `远程 · ${device.server_url.replace(/^https?:\/\//, '')}`;
+  }
+};
+const isLoopbackHost = (host: string) => {
+  const normalized = host.trim().toLowerCase();
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '[::1]';
+};
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
 const deviceDialogVisible = ref(false);
-const currentDeviceId = ref<string>(Array.isArray(route.query.device_id) ? (route.query.device_id[0] || '') : ((route.query.device_id as string) || ''));
+const currentDeviceId = ref<string>(
+  Array.isArray(route.query.entry_id)
+    ? (route.query.entry_id[0] || '')
+    : ((route.query.entry_id as string) || (Array.isArray(route.query.device_id) ? (route.query.device_id[0] || '') : ((route.query.device_id as string) || '')))
+);
 const isEditingDevice = ref(false);
 const isEditingTask = ref(false);
 const currentTaskId = ref<string>('');
@@ -85,15 +107,17 @@ const parseNlp = () => {
 };
 
 const deviceForm = ref({
-  url: '',
-  name: '', // Added name
-  access_token: ''
+  mode: 'remote' as 'local' | 'remote',
+  device_id: '',
+  server_url: '',
+  name: '',
+  token: ''
 });
 
 const currentDeviceConfig = ref({
-  // python_exec removed
   new_name: '',
-  access_token: ''
+  server_url: '',
+  token: ''
 });
 
 const updateDeviceConfig = async () => {
@@ -103,8 +127,8 @@ const updateDeviceConfig = async () => {
   try {
     await taskStore.updateDevice(device.id, {
         name: currentDeviceConfig.value.new_name,
-        // python_exec removed
-        access_token: currentDeviceConfig.value.access_token
+        server_url: device.mode === 'remote' ? currentDeviceConfig.value.server_url : undefined,
+        token: currentDeviceConfig.value.token
     });
     ElMessage.success('设备配置已更新');
     isEditingDevice.value = false;
@@ -113,115 +137,32 @@ const updateDeviceConfig = async () => {
   }
 };
 
-let ws: WebSocket | null = null;
+let taskPollTimer: number | null = null;
 
-const connectWebSocket = () => {
-    if (ws) return;
-    
-    // Determine WS URL based on current device URL
-    // If local, use window.location.host
-    // But we need to connect to backend.
-    // If we are on dev server, backend is localhost:8000
-    // If we are on production, it's relative.
-    
-    // We only support WS for LOCAL device for now, or if we have a proxy.
-    // Actually, if we are viewing a remote device, we should connect to its WS?
-    // CORS might be an issue.
-    // But let's assume we connect to the backend we are talking to.
-    
-    // Get backend base URL
-    const device = devices.value.find(d => d.id === currentDeviceId.value);
-    if (!device) return;
-    
-    let wsUrl = device.url || 'http://localhost:8000';
-    wsUrl = wsUrl.replace(/^http/, 'ws');
-    wsUrl = `${wsUrl}/api/task/ws/tasks`;
-    
-    // Use Sub-Protocol to pass token securely, avoiding URL logging
-    const protocols = [];
-    if (device.access_token) {
-        protocols.push(device.access_token);
+const stopTaskPolling = () => {
+  if (taskPollTimer) {
+    window.clearInterval(taskPollTimer);
+    taskPollTimer = null;
+  }
+};
+
+const startTaskPolling = (entryId: string) => {
+  stopTaskPolling();
+  if (!entryId) return;
+  taskPollTimer = window.setInterval(() => {
+    if (currentDeviceId.value === entryId) {
+      fetchTasks(entryId, true);
     }
-    
-    // Capture the device ID for this connection to avoid race conditions
-    const connectionDeviceId = device.id;
-
-    try {
-        if (ws) {
-            (ws as WebSocket).close();
-            ws = null;
-        }
-        
-        ws = new WebSocket(wsUrl, protocols);
-        ws.onopen = () => {
-            console.log(`WS connected to ${connectionDeviceId}`);
-        };
-        ws.onmessage = (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                // Update tasks
-                // Data format: List of tasks with status
-                const newTasks = data;
-                
-                // Ensure device_id matches the connection target
-                newTasks.forEach((t: Task) => {
-                    if (!t.device_id) t.device_id = connectionDeviceId;
-                });
-
-                // Always update the store for the device this connection belongs to
-                if (!taskStore.tasks[connectionDeviceId] || taskStore.tasks[connectionDeviceId].length === 0) {
-                    taskStore.tasks[connectionDeviceId] = newTasks;
-                } else {
-                    const currentList = taskStore.tasks[connectionDeviceId];
-                    newTasks.forEach((nt: Task) => {
-                        const existing = currentList.find(t => t.id === nt.id);
-                        if (existing) {
-                            existing.status = nt.status;
-                            existing.name = nt.name;
-                            existing.command = nt.command;
-                            existing.description = nt.description;
-                            existing.schedule = nt.schedule;
-                            existing.timeout = nt.timeout;
-                        } else {
-                            currentList.push(nt);
-                        }
-                    });
-                    const newIds = new Set(newTasks.map((t: Task) => t.id));
-                    taskStore.tasks[connectionDeviceId] = currentList.filter(t => newIds.has(t.id));
-                }
-                
-                // Only turn off loading if this is still the current device
-                if (currentDeviceId.value === connectionDeviceId) {
-                    loading.value = false;
-                }
-            } catch (e) {
-                console.error("WS parse error", e);
-            }
-        };
-        ws.onclose = () => {
-            // Only retry if we are still on the same device
-            if (currentDeviceId.value === connectionDeviceId) {
-                console.log('WS closed, retrying in 3s...');
-                ws = null;
-                setTimeout(connectWebSocket, 3000);
-            }
-        };
-        ws.onerror = (err) => {
-            console.error('WS error', err);
-            if (ws) (ws as WebSocket).close();
-        };
-    } catch (e) {
-        console.error("WS connection failed", e);
-    }
+  }, 3000);
 };
 
 const syncDeviceConfig = () => {
   const device = devices.value.find(d => d.id === currentDeviceId.value);
   if (device) {
     currentDeviceConfig.value = {
-      // python_exec removed
-      new_name: device.name || device.id,
-      access_token: '' // Don't show existing token
+      new_name: device.name || device.device_id,
+      server_url: device.server_url || '',
+      token: ''
     };
   }
 };
@@ -231,22 +172,16 @@ const startEditingDevice = () => {
   isEditingDevice.value = true;
 };
 
-// Watch for device switching to reconnect WS and sync config
+// Watch for device switching to refresh tasks and restart polling
 watch(currentDeviceId, async (newId, oldId) => {
   if (newId && newId !== oldId) {
-    // Exit editing mode when switching devices
-    // No need to sync config here, it will be synced when "Config" button is clicked
     isEditingDevice.value = false;
-
-    // Disconnect old WS
-    if (ws) {
-        (ws as WebSocket).close();
-        ws = null;
-    }
-    
-    // Fetch new data and connect
+    deviceError.value = false;
+    stopTaskPolling();
     await fetchTasks(newId, false);
-    connectWebSocket();
+    startTaskPolling(newId);
+  } else if (!newId) {
+    stopTaskPolling();
   }
 });
 
@@ -260,10 +195,12 @@ const fetchDevices = async () => {
        if (!currentDeviceId.value) {
            currentDeviceId.value = taskStore.devices[0].id;
        } else {
-           // Verify current device still exists
            const exists = taskStore.devices.find(d => d.id === currentDeviceId.value);
-           if (!exists) {
-               currentDeviceId.value = taskStore.devices[0].id;
+           if (exists) {
+               currentDeviceId.value = exists.id;
+           } else {
+               const legacyDevice = taskStore.devices.find(d => d.device_id === currentDeviceId.value);
+               currentDeviceId.value = legacyDevice?.id || taskStore.devices[0].id;
            }
        }
     } else {
@@ -294,16 +231,16 @@ const fetchDevices = async () => {
 const deviceError = ref(false);
 const tokenDialogVisible = ref(false);
 const tokenForm = ref({
-    access_token: ''
+    token: ''
 });
 
 const openTokenDialog = () => {
-    tokenForm.value.access_token = '';
+    tokenForm.value.token = '';
     tokenDialogVisible.value = true;
 };
 
 const handleUpdateToken = async () => {
-    if (!tokenForm.value.access_token) {
+    if (!tokenForm.value.token) {
         ElMessage.warning('请输入新的 Token');
         return;
     }
@@ -313,7 +250,7 @@ const handleUpdateToken = async () => {
     
     try {
         await taskStore.updateDevice(device.id, {
-            access_token: tokenForm.value.access_token
+            token: tokenForm.value.token
         });
         ElMessage.success('Token 已更新');
         tokenDialogVisible.value = false;
@@ -342,16 +279,11 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     }
     
     try {
-        // Use device specific API client (with device token)
-        const client = getDeviceApi(device.url, device.access_token);
-        // Ensure trailing slash to avoid 307 redirect
-        const response = await client.get('/task/');
+        const response = await api.get(getDeviceEntryPath(deviceId, '/task/'));
         
         const tasks = response.data;
         tasks.forEach((t: Task) => {
-             // Force device_id to match the current view's device ID
-             // This ensures that when we navigate to details, we carry the correct context ID
-             t.device_id = deviceId;
+             t.entry_id = deviceId;
         });
 
         // Update store
@@ -360,17 +292,15 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
         
     } catch (err: any) {
         console.error('Failed to fetch tasks', err);
-        // Silent fail on polling, show error on manual refresh
         if (!isPolling) {
-            if (err.response?.status === 401 || err.code === 'ERR_NETWORK') {
+            if (err.response?.status === 401 || err.response?.status === 502 || err.code === 'ERR_NETWORK') {
                 deviceError.value = true;
                 if (!isPolling && !hasCache) {
-                   ElMessage.error('无法连接设备或认证失败，请更新 Token');
+                   ElMessage.error('无法通过平台代理连接设备，请检查后端地址或 Token');
                 }
             }
         } else {
-             // Polling fail
-             if (err.response?.status === 401) {
+             if (err.response?.status === 401 || err.response?.status === 502) {
                  deviceError.value = true;
              }
         }
@@ -380,14 +310,13 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
 };
 
 const handleStatusClick = async (task: Task) => {
-    const device = devices.value.find(d => d.id === task.device_id);
+    const device = devices.value.find(d => d.id === task.entry_id);
     if (!device) return;
     
     task.actionLoading = true;
     try {
-        const client = getDeviceApi(device.url, device.access_token);
         const action = task.status.running ? 'stop' : 'start';
-        await client.post(`/task/${task.id}/${action}`);
+        await api.post(getDeviceEntryPath(device.id, `/task/${task.id}/${action}`));
         
         // Optimistic update
         task.status.running = !task.status.running;
@@ -420,7 +349,7 @@ const openCreateDialog = () => {
         command: '',
         cwd: '',
         description: '',
-        device_id: currentDeviceId.value,
+        device_id: currentDevice.value?.device_id || '',
         run_as_admin: false,
         schedule: '',
         timeout: null
@@ -434,23 +363,21 @@ const handleSubmitTask = async () => {
         return;
     }
     
-    const deviceId = form.value.device_id;
-    const device = devices.value.find(d => d.id === deviceId);
+    const entryId = currentDeviceId.value;
+    const device = devices.value.find(d => d.id === entryId);
     if (!device) return;
     
     try {
-        const client = getDeviceApi(device.url, device.access_token);
-        
         if (isEditingTask.value) {
             // Update not implemented in UI yet, but API supports it
             // For now, assume create only or re-create
         } else {
-            await client.post('/task/create', form.value);
+            await api.post(getDeviceEntryPath(entryId, '/task/create'), form.value);
             ElMessage.success('任务创建成功');
         }
         
         dialogVisible.value = false;
-        fetchTasks(deviceId, false);
+        fetchTasks(entryId, false);
         
     } catch (err: any) {
         ElMessage.error(err.response?.data?.detail || '创建失败');
@@ -458,71 +385,61 @@ const handleSubmitTask = async () => {
 };
 
 const handleAddDevice = async () => {
-  let url = deviceForm.value.url.trim();
-  if (!url) {
-    ElMessage.warning('URL is required');
-    return;
-  }
-  
-  if (!deviceForm.value.access_token.trim()) {
+  if (!deviceForm.value.token.trim()) {
     ElMessage.warning('Token is required');
     return;
+  }
+
+  if (deviceForm.value.mode === 'remote') {
+    if (!deviceForm.value.device_id.trim()) {
+      ElMessage.warning('远程模式必须填写设备 ID');
+      return;
+    }
+
+    let serverUrl = deviceForm.value.server_url.trim();
+    if (!serverUrl) {
+      ElMessage.warning('远程模式必须填写后端地址');
+      return;
+    }
+
+    if (!serverUrl.startsWith('http://') && !serverUrl.startsWith('https://')) {
+      serverUrl = 'http://' + serverUrl;
+      deviceForm.value.server_url = serverUrl;
+    }
+
+    try {
+      const urlObj = new URL(serverUrl);
+      if (isLoopbackHost(urlObj.hostname)) {
+        ElMessage.warning('localhost、127.0.0.1、::1 不能作为远程设备后端地址，请改用本地设备模式');
+        return;
+      }
+      if (!urlObj.port) {
+        urlObj.port = '8000';
+        serverUrl = urlObj.toString();
+      }
+      if (serverUrl.endsWith('/')) {
+        serverUrl = serverUrl.slice(0, -1);
+      }
+      deviceForm.value.server_url = serverUrl;
+    } catch (e) {
+      console.warn('Server URL parse failed, using raw value', e);
+    }
   }
   
   addDeviceLoading.value = true;
   
-  // Auto-complete URL
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    url = 'http://' + url;
-    deviceForm.value.url = url;
-  }
-  
   try {
-    const urlObj = new URL(url);
-    if (!urlObj.port) {
-      urlObj.port = '8000';
-      url = urlObj.toString();
-    }
-    // Remove trailing slash
-    if (url.endsWith('/')) {
-      url = url.slice(0, -1);
-    }
-    deviceForm.value.url = url;
-  } catch (e) {
-    console.warn('URL parse failed, using raw value', e);
-  }
-  
-  try {
-    // 1. Direct Add - Pairing is no longer supported in frontend
-    // The user provides a Token that is already valid on the remote device.
-    
-    // 2. Add device with tokens
-    // Generate a shorter ID for display friendly
-    const deviceId = 'dev-' + Math.random().toString(36).substr(2, 9);
-    
-    // We assume the token is a long-lived API token provided by admin
-    const longLivedToken = deviceForm.value.access_token.trim();
-    
     const newDevice = await taskStore.addDevice({
-        id: deviceId, // This ID is used as the key in the database for the Device entry if new
-                      // However, the backend might ignore this if we are just linking an existing device?
-                      // No, backend creates a placeholder device if not exists using this ID.
-                      // Ideally, we should fetch the remote device's REAL ID first.
-                      
-        // For now, let's try to fetch the remote ID if possible, otherwise use random.
-        // But we can't easily fetch without auth or CORS issues sometimes.
-        // So we stick to random ID for now, effectively treating it as a "bookmark".
-        
-        name: deviceForm.value.name, // Let backend decide the name if empty
-        type: 'RemoteDevice',
-        url: deviceForm.value.url,
-        access_token: longLivedToken
-        // refresh_token is not used in new simple auth
+        mode: deviceForm.value.mode,
+        device_id: deviceForm.value.mode === 'remote' ? deviceForm.value.device_id.trim() : undefined,
+        name: deviceForm.value.name,
+        server_url: deviceForm.value.mode === 'remote' ? deviceForm.value.server_url : undefined,
+        token: deviceForm.value.token.trim()
     });
     
     ElMessage.success('Device added successfully');
     
-    deviceForm.value = { url: '', name: '', access_token: '' };
+    deviceForm.value = { mode: 'remote', device_id: '', server_url: '', name: '', token: '' };
     currentDeviceId.value = newDevice.id;
     deviceDialogVisible.value = false;
     
@@ -570,20 +487,19 @@ const handleDelete = async (task: Task) => {
       cancelButtonText: 'Cancel'
     });
     
-    const device = devices.value.find(d => d.id === task.device_id);
+    const device = devices.value.find(d => d.id === task.entry_id);
     if (!device) return;
-    const client = getDeviceApi(device.url, device.access_token);
     
-    await client.delete(`/task/${task.id}`);
+    await api.delete(getDeviceEntryPath(device.id, `/task/${task.id}`));
     ElMessage.success('Task deleted');
-    await fetchTasks(task.device_id || currentDeviceId.value, false);
+    await fetchTasks(task.entry_id || currentDeviceId.value, false);
   } catch (err) {
     // Cancelled
   }
 };
 
 const viewLogs = (task: Task) => {
-  router.push({ name: 'TaskLogs', params: { id: task.id }, query: { device_id: task.device_id } });
+  router.push({ name: 'TaskLogs', params: { id: task.id }, query: { entry_id: task.entry_id } });
 };
 
 const formatDuration = (seconds: number | undefined | null) => {
@@ -631,8 +547,7 @@ const initSortable = () => {
       if (!device) return;
       
       try {
-        const client = getDeviceApi(device.url, device.access_token);
-        await client.post('/task/reorder', currList.map(t => t.id));
+        await api.post(getDeviceEntryPath(device.id, '/task/reorder'), currList.map(t => t.id));
         ElMessage.success('顺序已更新');
       } catch (err) {
         ElMessage.error('排序保存失败');
@@ -691,7 +606,7 @@ onMounted(async () => {
 
   if (currentDeviceId.value) {
       await fetchTasks(currentDeviceId.value, false);
-      connectWebSocket();
+      startTaskPolling(currentDeviceId.value);
   }
   
   nextTick(() => {
@@ -702,10 +617,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (ws) {
-      (ws as WebSocket).close();
-      ws = null;
-  }
+  stopTaskPolling();
   if (sortableInstance) sortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
 });
@@ -718,9 +630,15 @@ onUnmounted(() => {
       <el-tab-pane
         v-for="dev in devices"
         :key="dev.id"
-        :label="dev.name || dev.id"
         :name="dev.id"
-      />
+      >
+        <template #label>
+          <div class="device-tab-label">
+            <span class="device-tab-name">{{ dev.name || dev.device_id }}</span>
+            <span class="device-tab-meta">{{ getDeviceEntryMeta(dev) }}</span>
+          </div>
+        </template>
+      </el-tab-pane>
       <el-tab-pane name="add_new" disabled>
         <template #label>
           <el-button link :icon="Plus" @click="deviceDialogVisible = true" class="add-device-btn">添加设备</el-button>
@@ -732,10 +650,9 @@ onUnmounted(() => {
     <div class="device-info-card" v-if="currentDevice">
       <div class="card-header">
         <div class="left">
-          <span class="device-title">{{ currentDevice.name || currentDevice.id }}</span>
+          <span class="device-title">{{ currentDevice.name || currentDevice.device_id }}</span>
           <el-tag size="small" :type="getDeviceTypeTagType(currentDevice.type)">{{ currentDevice.type }}</el-tag>
-          <span class="device-url" v-if="currentDevice.url">({{ currentDevice.url }})</span>
-          <span class="device-url" style="margin-left: 10px; font-size: 10px;">ID: {{ currentDevice.id }}</span>
+          <span v-if="currentDevice.mode === 'remote'" class="device-url">({{ currentDevice.server_url }})</span>
         </div>
         <div class="right">
           <el-button 
@@ -764,10 +681,17 @@ onUnmounted(() => {
                placeholder="设备显示名称" 
                style="width: 200px;"
              />
-             <span v-else class="readonly-text">{{ currentDevice.name || currentDevice.id }}</span>
+             <span v-else class="readonly-text">{{ currentDevice.name || currentDevice.device_id }}</span>
           </el-form-item>
-          <!-- Removed Name field -->
-          <!-- Removed Python Path field -->
+          <el-form-item v-if="currentDevice.mode === 'remote'" label="后端地址">
+             <el-input
+               v-if="isEditingDevice"
+               v-model="currentDeviceConfig.server_url"
+               placeholder="例如 http://192.168.1.5:8000"
+               style="width: 280px;"
+             />
+             <span v-else class="readonly-text">{{ currentDevice.server_url || '-' }}</span>
+          </el-form-item>
         </el-form>
       </div>
     </div>
@@ -839,14 +763,7 @@ onUnmounted(() => {
           <el-input v-model="form.name" placeholder="任务名称" />
         </el-form-item>
         <el-form-item label="设备">
-          <el-select v-model="form.device_id" placeholder="选择运行设备" style="width: 100%" disabled>
-            <el-option
-              v-for="item in devices"
-              :key="item.id"
-              :label="item.name || item.id"
-              :value="item.id"
-            />
-          </el-select>
+          <el-input v-model="form.device_id" disabled />
           <div class="form-tip">默认创建在当前选中的设备上</div>
         </el-form-item>
         <el-form-item label="命令" required>
@@ -889,9 +806,15 @@ onUnmounted(() => {
       <div style="margin-bottom: 20px;">
         <el-table :data="devices" border style="width: 100%">
           <el-table-column prop="name" label="名称" width="150" />
+          <el-table-column label="模式" width="100">
+            <template #default="{ row }">
+              {{ row.mode === 'local' ? '本地' : '远程' }}
+            </template>
+          </el-table-column>
+          <el-table-column prop="device_id" label="设备ID" width="260" />
           <el-table-column label="地址">
             <template #default="{ row }">
-              {{ row.url || 'http://localhost:8000' }}
+              {{ row.mode === 'local' ? '平台后端本地直达' : (row.server_url || '-') }}
             </template>
           </el-table-column>
           <el-table-column label="操作" width="120" align="center">
@@ -911,9 +834,22 @@ onUnmounted(() => {
       <el-divider>添加设备</el-divider>
       
       <el-form :model="deviceForm" label-width="80px">
-        <el-form-item label="设备地址" required>
-            <el-input v-model="deviceForm.url" placeholder="IP (例如 http://192.168.1.5:8000)" style="width: 100%;" />
-            <div class="form-tip">请输入目标设备的完整 URL</div>
+        <el-form-item label="接入模式" required>
+          <el-radio-group v-model="deviceForm.mode">
+            <el-radio-button label="local">本地设备</el-radio-button>
+            <el-radio-button label="remote">远程设备</el-radio-button>
+          </el-radio-group>
+          <div class="form-tip">本地设备由平台后端直接执行；远程设备由平台后端使用这条入口资产去代理访问。</div>
+        </el-form-item>
+
+        <el-form-item v-if="deviceForm.mode === 'remote'" label="设备ID" required>
+            <el-input v-model="deviceForm.device_id" placeholder="目标设备的 device_id" style="width: 100%;" />
+            <div class="form-tip">这是目标设备自身的稳定身份 ID，由对方管理员提供。</div>
+        </el-form-item>
+
+        <el-form-item v-if="deviceForm.mode === 'remote'" label="后端地址" required>
+            <el-input v-model="deviceForm.server_url" placeholder="例如 http://192.168.1.5:8000" style="width: 100%;" />
+            <div class="form-tip">这里填写的是平台后端可访问的目标设备后端地址；不允许填写 localhost、127.0.0.1、::1。</div>
         </el-form-item>
         
         <el-form-item label="别名">
@@ -921,8 +857,8 @@ onUnmounted(() => {
         </el-form-item>
         
         <el-form-item label="Token" required>
-          <el-input v-model="deviceForm.access_token" placeholder="请输入目标设备的 API Token" type="textarea" :rows="2" />
-          <div class="form-tip">Token 需从目标设备的数据库或管理员处获取</div>
+          <el-input v-model="deviceForm.token" placeholder="请输入目标设备的 API Token" type="textarea" :rows="2" />
+          <div class="form-tip">Token 属于用户自己的连接资产，填错会导致后续连接失败，但系统不会自动更正。</div>
         </el-form-item>
         
         <el-form-item>
@@ -938,7 +874,7 @@ onUnmounted(() => {
         </p>
         <el-form :model="tokenForm">
             <el-form-item label="Token">
-                <el-input v-model="tokenForm.access_token" placeholder="输入新的 API Token" type="textarea" :rows="3" />
+                <el-input v-model="tokenForm.token" placeholder="输入新的 API Token" type="textarea" :rows="3" />
             </el-form-item>
         </el-form>
         <template #footer>
@@ -960,6 +896,22 @@ onUnmounted(() => {
 
 .device-tabs {
   margin-bottom: 15px;
+}
+
+.device-tab-label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.device-tab-name {
+  font-weight: 500;
+}
+
+.device-tab-meta {
+  color: #909399;
+  font-size: 11px;
+  margin-top: 3px;
 }
 
 .device-info-card {

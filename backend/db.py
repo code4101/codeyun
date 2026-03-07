@@ -2,14 +2,14 @@ import os
 
 from sqlmodel import SQLModel, Session, create_engine, text
 
-from backend.core.settings import DATA_DIR as SETTINGS_DATA_DIR, get_settings
+from backend.core.settings import get_settings
+import backend.models  # Ensure table metadata is registered before create_all.
+from backend.db_cleanup import cleanup_legacy_sqlite_artifacts
+from backend.db_views import refresh_sqlite_readable_views
 
 settings = get_settings()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.fspath(SETTINGS_DATA_DIR)
-
-if not os.path.exists(DATA_DIR):
-    os.makedirs(DATA_DIR)
+DATA_DIR = os.fspath(settings.data_dir)
+settings.data_dir.mkdir(parents=True, exist_ok=True)
 
 DATABASE_URL = settings.database_url
 
@@ -29,6 +29,8 @@ def migrate_db():
 def init_db():
     SQLModel.metadata.create_all(engine)
     migrate_db()
+    cleanup_legacy_sqlite_artifacts(engine)
+    refresh_sqlite_readable_views(engine)
 
 def get_session():
     with Session(engine) as session:

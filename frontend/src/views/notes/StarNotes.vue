@@ -27,59 +27,57 @@
       />
     </div>
 
-    <!-- Middle: Graph -->
-    <div class="graph-section" :style="{ height: graphHeight + 'px' }" ref="vueFlowWrapper">
-      <VueFlow
-        v-model="nodes"
-        :edges="edges"
-        :node-types="nodeTypes"
-        :edge-types="edgeTypes"
-        class="vue-flow-basic"
-        :default-viewport="{ zoom: 1 }"
-        :min-zoom="0.2"
-        :max-zoom="4"
-        :delete-key-code="['Backspace', 'Delete']"
-        :zoom-on-double-click="false"
-        @node-click="onNodeClick"
-        @dblclick="onNativeDblClick"
-        @connect="onConnect"
-      >
-        <Background />
-        <Controls />
-      </VueFlow>
-      
-      <div class="graph-toolbar">
-        <el-button v-if="selectedEdgeId" type="danger" size="small" @click="deleteSelectedEdge">删除选中边</el-button>
-        <el-button type="primary" size="small" :icon="Plus" @click="createNewNote">新建节点</el-button>
-      </div>
+    <NoteSplitView
+      class="notes-workspace"
+      :top-height="graphHeight"
+      :show-editor="Boolean(currentNoteId)"
+      empty-description="请在上方图表中选择一个节点"
+      @resize-start="startResizing"
+    >
+      <template #main>
+        <div class="graph-section" ref="vueFlowWrapper">
+          <VueFlow
+            v-model="nodes"
+            :edges="edges"
+            :node-types="nodeTypes"
+            :edge-types="edgeTypes"
+            class="vue-flow-basic"
+            :default-viewport="{ zoom: 1 }"
+            :min-zoom="0.2"
+            :max-zoom="4"
+            :delete-key-code="['Backspace', 'Delete']"
+            :zoom-on-double-click="false"
+            @node-click="onNodeClick"
+            @dblclick="onNativeDblClick"
+            @connect="onConnect"
+          >
+            <Background />
+            <Controls />
+          </VueFlow>
 
-      <!-- Height Resizer Handle -->
-    <div class="graph-resizer" @mousedown="startResizing">
-        <div class="resizer-indicator"></div>
-    </div>
-    
-    <div class="mode-indicator" v-if="props.graphMode && props.graphMode !== 'global'">
-        <el-tag effect="dark" :type="props.graphMode === 'satellite' ? 'success' : 'primary'">
-            {{ props.graphMode === 'satellite' ? '卫星图 (Satellite View)' : '行星图 (Planetary View)' }}
-        </el-tag>
-        <el-button link :icon="Refresh" @click="refreshGraph" style="margin-left: 10px; color: #fff;">刷新</el-button>
-    </div>
-  </div>
-    
-    <!-- Bottom: Editor -->
-    <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
-      <NoteDetailPanel 
-        v-if="currentNoteId" 
-        :noteId="currentNoteId" 
-        class="editor-wrapper"
-        @update="handleNoteUpdate"
-        @delete="handleNoteDelete"
-        @create="handleNoteCreate"
-      />
-      <div v-else class="empty-state">
-        <el-empty description="请在上方图表中选择一个节点" />
-      </div>
-    </div>
+          <div class="graph-toolbar">
+            <el-button v-if="selectedEdgeId" type="danger" size="small" @click="deleteSelectedEdge">删除选中边</el-button>
+            <el-button type="primary" size="small" :icon="Plus" @click="createNewNote">新建节点</el-button>
+          </div>
+
+          <div class="mode-indicator" v-if="props.graphMode && props.graphMode !== 'global'">
+            <el-tag effect="dark" :type="props.graphMode === 'satellite' ? 'success' : 'primary'">
+              {{ props.graphMode === 'satellite' ? '卫星图 (Satellite View)' : '行星图 (Planetary View)' }}
+            </el-tag>
+            <el-button link :icon="Refresh" class="mode-refresh-button" @click="refreshGraph">刷新</el-button>
+          </div>
+        </div>
+      </template>
+
+      <template #editor>
+        <NoteDetailPanel
+          :noteId="currentNoteId"
+          @update="handleNoteUpdate"
+          @delete="handleNoteDelete"
+          @create="handleNoteCreate"
+        />
+      </template>
+    </NoteSplitView>
   </div>
 </template>
 
@@ -87,12 +85,14 @@
 import { useRouter } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
 import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
-import { Plus, Refresh, Delete } from '@element-plus/icons-vue';
+import { Plus, Refresh } from '@element-plus/icons-vue';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
+import NoteSplitView from '@/components/NoteSplitView.vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
+  type NoteEdge,
   type NoteNode,
   applyNoteProgramChannelLocally,
   buildScanNoteProgramRequest,
@@ -107,6 +107,7 @@ import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
 import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
+import { useResizablePane } from '@/utils/useResizablePane';
 
 const nodeTypes: NodeTypesObject = {
   custom: markRaw(CustomNode) as NodeTypesObject[string],
@@ -139,70 +140,35 @@ const sourceEdges = computed(() => {
     return noteStore.getTabEdges(props.tabId);
 });
 
-// Graph layout state
-const graphHeight = ref(600);
-const isResizing = ref(false);
-const isManualResized = ref(false); // Track if user manually adjusted height
-const startY = ref(0);
-const startHeight = ref(0);
-
-const calculateOptimalHeight = () => {
+const calculateGraphBounds = () => {
     const vh = window.innerHeight;
     const vw = window.innerWidth;
     const isPortrait = vh > vw;
     const reservedHeight = (!props.graphMode || props.graphMode === 'global') ? 320 : 220;
-    
     const availableHeight = vh - reservedHeight;
     const minEditorHeight = 340;
     const maxGraphHeight = Math.max(200, availableHeight - minEditorHeight);
+    const adaptiveHeight = isPortrait
+        ? Math.min(maxGraphHeight, Math.max(400, Math.floor(availableHeight * 0.7)))
+        : Math.min(maxGraphHeight, Math.max(300, Math.floor(availableHeight * 0.5)));
 
-    if (isPortrait) {
-        // Vertical screen: give more space to canvas (e.g. 70% of available)
-        return Math.min(maxGraphHeight, Math.max(400, Math.floor(availableHeight * 0.7)));
-    } else {
-        // Horizontal screen: 50%
-        return Math.min(maxGraphHeight, Math.max(300, Math.floor(availableHeight * 0.5)));
-    }
+    return {
+        adaptiveHeight,
+        maxGraphHeight,
+    };
 };
 
-const updateAdaptiveHeight = () => {
-    if (!isManualResized.value) {
-        graphHeight.value = calculateOptimalHeight();
-    }
-};
-
-const startResizing = (e: MouseEvent) => {
-    isResizing.value = true;
-    isManualResized.value = true; // User manual resize overrides adaptive logic
-    startY.value = e.clientY;
-    startHeight.value = graphHeight.value;
-    
-    // Add temporary event listeners
-    window.addEventListener('mousemove', handleResizing);
-    window.addEventListener('mouseup', stopResizing);
-    
-    // Prevent text selection during drag
-    document.body.style.userSelect = 'none';
-};
-
-const handleResizing = (e: MouseEvent) => {
-    if (!isResizing.value) return;
-    const delta = e.clientY - startY.value;
-    const vh = window.innerHeight;
-    const reservedHeight = (!props.graphMode || props.graphMode === 'global') ? 320 : 220;
-    const availableHeight = vh - reservedHeight;
-    const minEditorHeight = 340;
-    const maxGraphHeight = Math.max(200, availableHeight - minEditorHeight);
-    const newHeight = Math.max(200, Math.min(maxGraphHeight, startHeight.value + delta));
-    graphHeight.value = newHeight;
-};
-
-const stopResizing = () => {
-    isResizing.value = false;
-    window.removeEventListener('mousemove', handleResizing);
-    window.removeEventListener('mouseup', stopResizing);
-    document.body.style.userSelect = '';
-};
+const {
+    paneHeight: graphHeight,
+    startResizing,
+} = useResizablePane({
+    initialHeight: 600,
+    getAdaptiveHeight: () => calculateGraphBounds().adaptiveHeight,
+    getResizeBounds: () => ({
+        min: 200,
+        max: calculateGraphBounds().maxGraphHeight,
+    }),
+});
 
 // Graph state
 const nodes = ref<any[]>([]);
@@ -222,6 +188,8 @@ const selectedEdgeId = ref<string | null>(null);
 const currentNoteId = ref<string>('');
 const isRefreshing = ref(false);
 const isGraphUpdating = ref(false);
+let graphFilterQueued = false;
+let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
   session.value?.viewState.dataProgram ?? createDefaultRecentMonthProgram('start_at')
@@ -231,6 +199,25 @@ const getViewProgram = () => normalizeNoteProgramChannel(
 );
 const dataProgram = ref(normalizeNoteProgramChannel(getAppliedDataProgram()));
 const viewProgram = ref(normalizeNoteProgramChannel(getViewProgram()));
+
+const buildGraphEdge = (
+  edge: Pick<NoteEdge, 'id' | 'source_id' | 'target_id' | 'label' | 'source_handle' | 'target_handle'>
+) => ({
+  id: edge.id,
+  source: edge.source_id,
+  target: edge.target_id,
+  label: edge.label,
+  type: 'elk',
+  markerEnd: {
+    type: MarkerType.ArrowClosed,
+    width: 20,
+    height: 20,
+    color: '#909399'
+  },
+  style: { stroke: '#909399', strokeWidth: 1.5 },
+  sourceHandle: edge.source_handle,
+  targetHandle: edge.target_handle
+});
 
 const applyDataProgram = async () => {
   await refreshGraph(dataProgram.value, true);
@@ -248,8 +235,22 @@ const resetViewProgram = () => {
   viewProgram.value = createIncludeAllProgram();
 };
 
+const scheduleGraphFilterApply = (delay: number = 120) => {
+  if (graphFilterTimer) {
+    clearTimeout(graphFilterTimer);
+  }
+  graphFilterTimer = setTimeout(() => {
+    graphFilterTimer = null;
+    void applyGraphFilters();
+  }, delay);
+};
+
 const applyGraphFilters = async (force: boolean = false) => {
-  if (!force && (isRefreshing.value || isGraphUpdating.value)) return;
+  if (!force && isRefreshing.value) return;
+  if (isGraphUpdating.value) {
+    graphFilterQueued = true;
+    return;
+  }
   isGraphUpdating.value = true;
   try {
     const filteredNotes = isGlobalGraph.value
@@ -275,20 +276,7 @@ const applyGraphFilters = async (force: boolean = false) => {
       type: 'custom'
     }));
 
-    const graphEdges = filteredEdges.map(edge => ({
-      id: edge.id,
-      source: edge.source_id,
-      target: edge.target_id,
-      label: edge.label,
-      type: 'elk',
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        width: 20,
-        height: 20,
-        color: '#909399'
-      },
-      style: { stroke: '#909399', strokeWidth: 1.5 }
-    }));
+    const graphEdges = filteredEdges.map(edge => buildGraphEdge(edge));
 
     const layouted = await useLayout(graphNodes, graphEdges);
 
@@ -305,6 +293,10 @@ const applyGraphFilters = async (force: boolean = false) => {
     }
   } finally {
     isGraphUpdating.value = false;
+    if (graphFilterQueued) {
+      graphFilterQueued = false;
+      void applyGraphFilters(true);
+    }
   }
 };
 
@@ -317,22 +309,7 @@ const syncEdgesFromStore = async () => {
     const nodeIds = new Set(nodes.value.map(n => String(n.id)));
     edges.value = sourceEdges.value
         .filter(e => nodeIds.has(e.source_id) && nodeIds.has(e.target_id))
-        .map(e => ({
-            id: e.id,
-            source: e.source_id,
-            target: e.target_id,
-            label: e.label,
-            type: 'elk',
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              width: 20,
-              height: 20,
-              color: '#909399',
-            },
-            style: { stroke: '#909399', strokeWidth: 1.5 },
-            sourceHandle: e.source_handle,
-            targetHandle: e.target_handle,
-        }));
+        .map(e => buildGraphEdge(e));
 };
 
 const selectNote = async (noteId: string) => {
@@ -409,18 +386,19 @@ watch(viewProgram, async (value) => {
     });
 
     if (isGlobalGraph.value && !isRefreshing.value) {
-        await applyGraphFilters(true);
+        scheduleGraphFilterApply();
     }
 }, { deep: true });
 
 onMounted(async () => {
-    updateAdaptiveHeight(); // Initial adaptive height
-    window.addEventListener('resize', updateAdaptiveHeight);
     await refreshGraph();
 });
 
 onUnmounted(() => {
-    window.removeEventListener('resize', updateAdaptiveHeight);
+    if (graphFilterTimer) {
+        clearTimeout(graphFilterTimer);
+        graphFilterTimer = null;
+    }
 });
 
 const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean = false) => {
@@ -459,34 +437,36 @@ const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean 
 };
 
 // Handle Connection
-const onConnect = (params: Connection) => {
+const onConnect = async (params: Connection) => {
     if (!checkAuth()) return;
-    // 确保连接对象包含箭头样式和具体的句柄 ID
-    const edgeParams = {
-        ...params,
+    const tempEdge = buildGraphEdge({
         id: `e-${params.source}-${params.target}-${Date.now()}`,
-        type: 'elk',
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          width: 20,
-          height: 20,
-          color: '#909399',
-        },
-        style: { stroke: '#909399', strokeWidth: 1.5 },
-        // 保留 handle 信息以支持当前会话的自定义连线
-        sourceHandle: params.sourceHandle,
-        targetHandle: params.targetHandle,
-    };
-    
-    // UI 乐观更新
-    edges.value.push(edgeParams);
-    
-    noteStore.createEdge(
+        source_id: params.source,
+        target_id: params.target,
+        source_handle: params.sourceHandle ?? undefined,
+        target_handle: params.targetHandle ?? undefined,
+    });
+
+    edges.value.push(tempEdge);
+
+    const persistedEdge = await noteStore.createEdge(
         params.source,
         params.target,
         params.sourceHandle ?? undefined,
         params.targetHandle ?? undefined
     );
+
+    if (!persistedEdge) {
+        edges.value = edges.value.filter(edge => edge.id !== tempEdge.id);
+        ElMessage.error('创建边失败，已回滚');
+        return;
+    }
+
+    edges.value = edges.value.map(edge => (
+        edge.id === tempEdge.id
+            ? buildGraphEdge(persistedEdge)
+            : edge
+    ));
 };
 
 // Handle Edge Click
@@ -506,10 +486,16 @@ const deleteSelectedEdge = async () => {
     
     const edge = edges.value.find(e => e.id === selectedEdgeId.value);
     if (edge) {
-        // UI 更新
+        const previousEdge = { ...edge };
         edges.value = edges.value.filter(e => e.id !== selectedEdgeId.value);
-        // 后端同步
-        await noteStore.deleteEdge(edge.source, edge.target);
+        const success = await noteStore.deleteEdge(edge.source, edge.target);
+        if (!success) {
+            if (!edges.value.some(item => item.id === previousEdge.id)) {
+                edges.value = [...edges.value, previousEdge];
+            }
+            ElMessage.error('删除边失败，已恢复');
+            return;
+        }
         selectedEdgeId.value = null;
         ElMessage.success('边已删除');
     }
@@ -525,7 +511,14 @@ onEdgesChange((changes) => {
         if (change.type === 'remove') {
             const edge = edges.value.find(e => e.id === change.id);
             if (edge) {
-                noteStore.deleteEdge(edge.source, edge.target);
+                void noteStore.deleteEdge(edge.source, edge.target).then(success => {
+                    if (success) return;
+
+                    if (!edges.value.some(item => item.id === edge.id)) {
+                        edges.value = [...edges.value, edge];
+                    }
+                    ElMessage.error('删除边失败，已恢复');
+                });
             }
             if (change.id === selectedEdgeId.value) {
                 selectedEdgeId.value = null;
@@ -628,9 +621,10 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
 .task-manager-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   overflow-x: hidden;
-  overflow-y: auto;
+  overflow-y: hidden;
 }
 
 .filter-section {
@@ -638,50 +632,29 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
     background: #fff;
     border-bottom: 1px solid #ebeef5;
     box-sizing: border-box;
+    flex-shrink: 0;
 }
 
 .front-filter-section {
     padding-top: 0;
 }
 
+.notes-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
 .graph-section {
-  height: 600px; /* Default, overridden by :style */
+  height: 100%;
   border-bottom: 1px solid #e6e6e6;
   position: relative;
-  flex-shrink: 0; /* Don't let graph collapse */
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
 
 .vue-flow-basic {
   flex: 1;
-}
-
-.graph-resizer {
-  height: 8px;
-  width: 100%;
-  background-color: #f5f7fa;
-  cursor: ns-resize;
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 10;
-  transition: background-color 0.2s;
-  border-top: 1px solid #e6e6e6;
-}
-
-.graph-resizer:hover {
-  background-color: #ecf5ff;
-}
-
-.resizer-indicator {
-  width: 40px;
-  height: 4px;
-  border-top: 1px solid #dcdfe6;
-  border-bottom: 1px solid #dcdfe6;
 }
 
 .graph-toolbar {
@@ -708,196 +681,8 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
     align-items: center;
 }
 
-/* Remove old filter panel styles */
-
-.editor-section {
-  flex: 1; /* Take remaining space but can grow */
-  display: flex;
-  flex-direction: column;
-  background-color: #fff;
-  min-height: 600px; /* Increased from 400px */
-  overflow-y: auto; /* Allow content to grow and scroll */
-}
-
-.editor-section.is-collapsed {
-    /* Optional: shrink if no task selected? */
-}
-
-.editor-wrapper {
-  display: flex;
-  flex-direction: column;
-  height: auto; /* Changed from 100% to auto */
-  padding: 20px;
-}
-
-.editor-header {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 20px;
-  padding-bottom: 15px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.header-row-primary {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.header-row-secondary {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 12px;
-    color: #909399;
-}
-
-.header-row-tertiary {
-    display: flex;
-    align-items: center;
-}
-
-.meta-group {
-    display: flex;
-    gap: 15px;
-}
-
-.title-input {
-  flex: 1;
-  font-size: 18px;
-}
-
-.time-tag {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: default;
-}
-
-.weight-control {
-    width: 150px;
-    margin-right: 20px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.weight-control .label {
-    font-size: 12px;
-    color: #606266;
-    white-space: nowrap;
-}
-
-.weight-control .el-slider {
-    flex: 1;
-}
-
-.status-control {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-}
-
-.status-control .label {
-    font-size: 12px;
-    color: #606266;
-    white-space: nowrap;
-}
-
-.help-icon {
-    margin-left: 5px;
-    font-size: 14px;
-    color: #909399;
-    cursor: help;
-}
-
-.history-toggle {
-    margin-left: auto;
-}
-
-.history-panel {
-    margin-top: 15px;
-    padding: 10px;
-    background: #f8f9fb;
-    border-radius: 4px;
-    max-height: 200px;
-    overflow-y: auto;
-    font-size: 13px;
-    border: 1px solid #ebeef5;
-}
-
-.history-empty {
-    text-align: center;
-    color: #909399;
-    padding: 10px;
-}
-
-.history-item {
-    display: flex;
-    align-items: flex-start;
-    gap: 15px;
-    padding: 6px 0;
-    border-bottom: 1px dashed #ebeef5;
-}
-
-.history-item:last-child {
-    border-bottom: none;
-}
-
-.history-time {
-    color: #909399;
-    white-space: nowrap;
-    font-family: monospace;
-}
-
-.history-content {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.field-tag {
-    min-width: 40px;
-    text-align: center;
-}
-
-.history-value {
-    color: #303133;
-    word-break: break-all;
-}
-
-.save-status {
-    font-size: 12px;
-    margin-right: 15px;
-    display: flex;
-    align-items: center;
-}
-
-.status-saved {
-    color: #67c23a;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.status-saving {
-    color: #e6a23c;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-}
-
-.status-unsaved {
-    color: #909399;
-}
-
-.empty-state {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    color: #909399;
+.mode-refresh-button {
+  margin-left: 10px;
+  color: #fff;
 }
 </style>

@@ -17,7 +17,7 @@
         :model-value="scopeValue.titleKeyword"
         placeholder="标题包含..."
         clearable
-        style="width: 200px"
+        class="w-200"
         @update:model-value="updateScope({ titleKeyword: $event || '' })"
       />
 
@@ -26,7 +26,7 @@
         :model-value="scopeValue.nodeType"
         placeholder="所有类型"
         clearable
-        style="width: 120px"
+        class="w-120"
         @update:model-value="updateScope({ nodeType: $event || '' })"
       >
         <el-option
@@ -42,7 +42,7 @@
         :model-value="scopeValue.nodeStatus"
         placeholder="所有状态"
         clearable
-        style="width: 120px"
+        class="w-120"
         @update:model-value="updateScope({ nodeStatus: $event || '' })"
       >
         <el-option
@@ -61,7 +61,7 @@
         start-placeholder="起始时间开始"
         end-placeholder="起始时间结束"
         value-format="x"
-        style="width: 320px"
+        class="w-320"
         @update:model-value="updateScope({ startRange: $event })"
       />
 
@@ -73,7 +73,7 @@
         start-placeholder="更新时间开始"
         end-placeholder="更新时间结束"
         value-format="x"
-        style="width: 320px"
+        class="w-320"
         @update:model-value="updateScope({ updatedRange: $event })"
       />
     </div>
@@ -245,5 +245,17 @@ const updateScope = (patch: Partial<NoteScopeState>) => {
   font-size: 12px;
   color: #909399;
   line-height: 24px;
+}
+
+.w-120 {
+  width: 120px;
+}
+
+.w-200 {
+  width: 200px;
+}
+
+.w-320 {
+  width: 320px;
 }
 </style>

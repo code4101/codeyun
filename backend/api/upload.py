@@ -3,13 +3,13 @@ import shutil
 import os
 import uuid
 import time
-from backend.db import BASE_DIR
+from backend.core.storage import build_attachment_url, get_attachments_dir
 
 router = APIRouter()
 
-UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
-if not os.path.exists(UPLOAD_DIR):
-    os.makedirs(UPLOAD_DIR)
+ATTACHMENTS_DIR = os.fspath(get_attachments_dir())
+if not os.path.exists(ATTACHMENTS_DIR):
+    os.makedirs(ATTACHMENTS_DIR)
 
 @router.post("/image")
 async def upload_image(file: UploadFile = File(...)):
@@ -36,7 +36,7 @@ async def upload_image(file: UploadFile = File(...)):
             ext = ".png" # Default
             
         filename = f"{uuid.uuid4().hex}{ext}"
-        file_path = os.path.join(UPLOAD_DIR, filename)
+        file_path = os.path.join(ATTACHMENTS_DIR, filename)
         
         # Save file
         with open(file_path, "wb") as buffer:
@@ -44,10 +44,8 @@ async def upload_image(file: UploadFile = File(...)):
             
         # Construct URL (Relative path for frontend proxy to handle, or absolute if needed)
         # Frontend proxy: /api -> http://localhost:8000
-        # Static mount: /static -> backend/static
-        # So URL should be /static/uploads/filename
-        
-        url = f"/static/uploads/{filename}"
+        # Static mount exposes the data-dir attachments at /static/attachments.
+        url = build_attachment_url(filename)
         
         return {
             "errno": 0,

@@ -42,106 +42,102 @@
       </div>
     </div>
 
-    <!-- Middle: Table List -->
-    <div class="list-container" :style="{ height: listHeight + 'px' }">
-      <el-table
-        ref="tableRef"
-        v-loading="loading"
-        :data="filteredNotes"
-        style="width: 100%; height: 100%"
-        highlight-current-row
-        @current-change="handleCurrentChange"
-        @selection-change="handleSelectionChange"
-        row-key="id"
-        border
-        size="small"
-      >
-        <el-table-column type="selection" width="48" reserve-selection />
+    <NoteSplitView
+      class="notes-workspace"
+      :top-height="listHeight"
+      :show-editor="Boolean(currentNoteId)"
+      empty-description="请选择一个节点进行编辑"
+      @resize-start="startResizing"
+    >
+      <template #main>
+        <div class="list-container">
+          <el-table
+            ref="tableRef"
+            v-loading="loading"
+            :data="filteredNotes"
+            class="notes-table"
+            highlight-current-row
+            @current-change="handleCurrentChange"
+            @selection-change="handleSelectionChange"
+            row-key="id"
+            border
+            size="small"
+          >
+            <el-table-column type="selection" width="48" reserve-selection />
 
-        <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
-          <template #default="{ row }">
-            <span class="note-title" :style="getTitleStyle(row.node_type)">{{ row.title || '无标题' }}</span>
-          </template>
-        </el-table-column>
+            <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="note-title" :style="getTitleStyle(row.node_type)">{{ row.title || '无标题' }}</span>
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="node_type" label="类型" width="100" sortable>
-          <template #default="{ row }">
-            <span 
-              class="node-type-text"
-              :style="getTypeTagStyle(row.node_type)" 
-            >
-              {{ getTypeLabel(row.node_type) }}
-            </span>
-          </template>
-        </el-table-column>
+            <el-table-column prop="node_type" label="类型" width="100" sortable>
+              <template #default="{ row }">
+                <span
+                  class="node-type-text"
+                  :style="getTypeTagStyle(row.node_type)"
+                >
+                  {{ getTypeLabel(row.node_type) }}
+                </span>
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="node_status" label="状态" width="100" sortable>
-          <template #default="{ row }">
-             <span 
-               class="node-badge"
-               :style="getStatusBadgeStyle(row.node_status)"
-             >
-              {{ getStatusLabel(row.node_status) }}
-            </span>
-          </template>
-        </el-table-column>
+            <el-table-column prop="node_status" label="状态" width="100" sortable>
+              <template #default="{ row }">
+                <span
+                  class="node-badge"
+                  :style="getStatusBadgeStyle(row.node_status)"
+                >
+                  {{ getStatusLabel(row.node_status) }}
+                </span>
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="weight" label="权重" width="80" sortable />
+            <el-table-column prop="weight" label="权重" width="80" sortable />
 
-        <el-table-column prop="private_level" label="私密" width="88" sortable>
-          <template #default="{ row }">
-            <el-tag :type="row.private_level > 0 ? 'danger' : 'info'" size="small">
-              {{ row.private_level > 0 ? `开(${row.private_level})` : '关' }}
-            </el-tag>
-          </template>
-        </el-table-column>
+            <el-table-column prop="private_level" label="私密" width="88" sortable>
+              <template #default="{ row }">
+                <el-tag :type="row.private_level > 0 ? 'danger' : 'info'" size="small">
+                  {{ row.private_level > 0 ? `开(${row.private_level})` : '关' }}
+                </el-tag>
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="start_at" label="起始时间" width="160" sortable>
-          <template #default="{ row }">
-            {{ formatDate(row.start_at) }}
-          </template>
-        </el-table-column>
+            <el-table-column prop="start_at" label="起始时间" width="160" sortable>
+              <template #default="{ row }">
+                {{ formatDate(row.start_at) }}
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="updated_at" label="更新时间" width="160" sortable>
-          <template #default="{ row }">
-            {{ formatDate(row.updated_at) }}
-          </template>
-        </el-table-column>
+            <el-table-column prop="updated_at" label="更新时间" width="160" sortable>
+              <template #default="{ row }">
+                {{ formatDate(row.updated_at) }}
+              </template>
+            </el-table-column>
 
-        <el-table-column prop="created_at" label="创建时间" width="160" sortable>
-          <template #default="{ row }">
-            {{ formatDate(row.created_at) }}
-          </template>
-        </el-table-column>
+            <el-table-column prop="created_at" label="创建时间" width="160" sortable>
+              <template #default="{ row }">
+                {{ formatDate(row.created_at) }}
+              </template>
+            </el-table-column>
+          </el-table>
+        </div>
+      </template>
 
-
-      </el-table>
-
-      <!-- Resizer -->
-      <div class="list-resizer" @mousedown="startResizing">
-          <div class="resizer-indicator"></div>
-      </div>
-    </div>
-
-    <!-- Bottom: Editor -->
-    <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
-      <NoteDetailPanel 
-        v-if="currentNoteId" 
-        :noteId="currentNoteId" 
-        class="editor-wrapper"
-        @update="handleNoteUpdate"
-        @delete="handleNoteDelete"
-        @create="handleNoteCreate"
-      />
-      <div v-else class="empty-state">
-        <el-empty description="请选择一个节点进行编辑" />
-      </div>
-    </div>
+      <template #editor>
+        <NoteDetailPanel
+          :noteId="currentNoteId"
+          @update="handleNoteUpdate"
+          @delete="handleNoteDelete"
+          @create="handleNoteCreate"
+        />
+      </template>
+    </NoteSplitView>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import {
   useNoteStore,
   type NoteNode,
@@ -155,8 +151,11 @@ import {
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
+import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import { getNodeTypeConfig, getNodeStatusConfig, getNodeStyle } from '@/utils/nodeConfig';
+import { formatNoteDateTime } from '@/utils/noteDate';
+import { useResizablePane } from '@/utils/useResizablePane';
 
 const noteStore = useNoteStore();
 const props = defineProps<{
@@ -182,12 +181,6 @@ const currentNoteId = ref('');
 const loading = ref(false);
 const tableRef = ref<any>(null);
 const selectedNoteIds = ref<string[]>([]);
-
-// Layout State
-const listHeight = ref(400);
-const isResizing = ref(false);
-const startY = ref(0);
-const startHeight = ref(0);
 
 // Computed
 const filteredNotes = computed(() => {
@@ -324,14 +317,7 @@ const handleNoteCreate = (note: NoteNode) => {
 
 // Helpers
 const formatDate = (ts: number) => {
-  if (!ts) return '-';
-  return new Date(ts).toLocaleString('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
+  return formatNoteDateTime(ts);
 };
 
 const getTypeLabel = (type: string | null) => getNodeTypeConfig(type || 'note').label;
@@ -361,61 +347,34 @@ const getStatusBadgeStyle = (status: string | null) => {
     return getNodeStyle('note', status);
 };
 
-// Layout Logic
-const calculateOptimalHeight = () => {
-    const vh = window.innerHeight;
-    const reservedHeight = 260;
-    // Default split 50/50
-    return Math.max(300, Math.floor((vh - reservedHeight) * 0.5));
-};
-
-const updateAdaptiveHeight = () => {
-    // Only update if not manually resized? Or always responsive?
-    // Let's stick to initial responsive then manual override
-    if (!isResizing.value && startHeight.value === 0) {
-        listHeight.value = calculateOptimalHeight();
-    }
-};
-
-const startResizing = (e: MouseEvent) => {
-    isResizing.value = true;
-    startY.value = e.clientY;
-    startHeight.value = listHeight.value;
-    
-    window.addEventListener('mousemove', handleResizing);
-    window.addEventListener('mouseup', stopResizing);
-    document.body.style.userSelect = 'none';
-};
-
-const handleResizing = (e: MouseEvent) => {
-    if (!isResizing.value) return;
-    const delta = e.clientY - startY.value;
+const calculateListBounds = () => {
     const vh = window.innerHeight;
     const reservedHeight = 260;
     const availableHeight = vh - reservedHeight;
     const minEditorHeight = 200;
-    
-    const newHeight = Math.max(200, Math.min(availableHeight - minEditorHeight, startHeight.value + delta));
-    listHeight.value = newHeight;
+
+    return {
+        adaptiveHeight: Math.max(300, Math.floor(availableHeight * 0.5)),
+        maxHeight: Math.max(200, availableHeight - minEditorHeight),
+    };
 };
 
-const stopResizing = () => {
-    isResizing.value = false;
-    window.removeEventListener('mousemove', handleResizing);
-    window.removeEventListener('mouseup', stopResizing);
-    document.body.style.userSelect = '';
-};
+const {
+    paneHeight: listHeight,
+    startResizing,
+} = useResizablePane({
+    initialHeight: 400,
+    getAdaptiveHeight: () => calculateListBounds().adaptiveHeight,
+    getResizeBounds: () => ({
+        min: 200,
+        max: calculateListBounds().maxHeight,
+    }),
+});
 
 onMounted(() => {
   if (noteStore.getTabNotes(props.tabId).length === 0) {
     refreshData();
   }
-  updateAdaptiveHeight();
-  window.addEventListener('resize', updateAdaptiveHeight);
-});
-
-onUnmounted(() => {
-    window.removeEventListener('resize', updateAdaptiveHeight);
 });
 
 watch(viewProgram, (value) => {
@@ -441,6 +400,7 @@ watch(filteredNotes, async () => {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
   background-color: #fff;
   overflow: hidden;
 }
@@ -454,6 +414,11 @@ watch(filteredNotes, async () => {
 
 .front-filter-section {
   padding-top: 0;
+}
+
+.notes-workspace {
+  flex: 1;
+  min-height: 0;
 }
 
 .toolbar-section {
@@ -482,61 +447,15 @@ watch(filteredNotes, async () => {
 }
 
 .list-container {
-  position: relative;
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-}
-
-.list-resizer {
-  height: 8px;
-  width: 100%;
-  background-color: #f5f7fa;
-  cursor: ns-resize;
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 10;
-  border-top: 1px solid #e6e6e6;
-  transition: background-color 0.2s;
-}
-
-.list-resizer:hover {
-  background-color: #ecf5ff;
-}
-
-.resizer-indicator {
-  width: 40px;
-  height: 4px;
-  border-top: 1px solid #dcdfe6;
-  border-bottom: 1px solid #dcdfe6;
-}
-
-.editor-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background-color: #fff;
+  height: 100%;
   min-height: 0;
-  overflow: hidden;
 }
 
-.editor-wrapper {
-  padding: 20px;
+.notes-table {
+  width: 100%;
   height: 100%;
-  overflow-y: auto;
-  box-sizing: border-box;
-}
-
-.empty-state {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100%;
-  color: #909399;
 }
 
 .note-title {

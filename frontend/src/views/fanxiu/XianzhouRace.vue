@@ -87,6 +87,7 @@
         <UniversalNoteEditor
           :model-value="currentEditingNote"
           :on-save="handleSave"
+          :on-save-keepalive="handleSaveKeepalive"
           empty-text="数据加载中..."
           class="editor-instance"
           @change="onEditorNoteChange"
@@ -108,6 +109,7 @@ import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
 import { getFanxiuChars, updateFanxiuChar } from '@/api/fanxiu';
 import type { NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
+import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 
 const userStore = useUserStore();
 
@@ -262,9 +264,10 @@ const handleRowClick = async (row: CharItem) => {
     }, 100);
 };
 
-const handleSave = async (note: NoteNode) => {
+const handleSave = async (note: NoteNode, patch: Partial<NoteNode> = {}) => {
     try {
-        const updatedNote = await updateFanxiuChar(note.title, note);
+        const payload = Object.keys(patch).length ? patch : note;
+        const updatedNote = await updateFanxiuChar(note.title, payload);
         
         const updateList = (list: CharItem[]) => {
             const item = list.find(i => i.name === note.title);
@@ -280,10 +283,16 @@ const handleSave = async (note: NoteNode) => {
         if (currentEditingNote.value && !currentEditingNote.value.id) {
             currentEditingNote.value.id = updatedNote.id;
         }
-        
+
+        return updatedNote;
     } catch (e) {
         throw e;
     }
+};
+
+const handleSaveKeepalive = (note: NoteNode, patch: Partial<NoteNode> = {}) => {
+    const payload = Object.keys(patch).length ? patch : note;
+    putJsonKeepalive(`/api/fanxiu/chars/${encodeURIComponent(note.title)}`, payload);
 };
 
 const onEditorNoteChange = (note: NoteNode) => {

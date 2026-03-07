@@ -14,7 +14,7 @@
               v-model="currentNote.title" 
               placeholder="标题" 
               class="title-input" 
-              @input="handleChange" 
+              @input="handleMetaChange" 
               :readonly="readonly"
             />
             <slot name="actions"></slot>
@@ -33,8 +33,8 @@
                       :clearable="false"
                       format="YYYY/MM/DD HH:mm:ss"
                       value-format="x"
-                      @change="handleChange"
-                      style="width: 180px; margin-left: 5px;"
+                      @change="handleMetaChange"
+                      class="start-at-picker"
                       :readonly="readonly"
                   />
                 </span>
@@ -60,7 +60,7 @@
                   :step="10" 
                   size="small"
                   :controls="false"
-                  @change="handleChange"
+                  @change="handleMetaChange"
                   :disabled="readonly"
               />
             </div>
@@ -72,8 +72,8 @@
                 size="small" 
                 placeholder="选择类型"
                 clearable
-                @change="handleChange"
-                style="width: 120px;"
+                @change="handleMetaImmediateChange"
+                class="type-select"
                 :disabled="readonly"
               >
                 <el-option label="普通 (None)" value="" />
@@ -86,7 +86,7 @@
               </el-select>
               <el-tooltip effect="light" placement="top">
                 <template #content>
-                  <div style="line-height: 1.6; max-width: 300px;">
+                  <div class="help-tooltip-content">
                     <b>节点类型说明:</b><br/>
                     <div v-for="config in orderedNodeConfigs" :key="config.id">
                       - <b>{{ config.label.split(' ')[0] }}</b>: {{ config.description }}
@@ -124,7 +124,7 @@
                         size="small" 
                         placeholder="Key" 
                         class="field-key"
-                        @change="handleCustomFieldChange"
+                        @input="handleCustomFieldChange"
                         :readonly="readonly"
                     />
                     <span class="separator">:</span>
@@ -133,7 +133,7 @@
                         size="small" 
                         placeholder="Value" 
                         class="field-value"
-                        @change="handleCustomFieldChange"
+                        @input="handleCustomFieldChange"
                         :readonly="readonly"
                     />
                     <el-button link type="danger" size="small" @click="removeCustomField(index)" :disabled="readonly">
@@ -171,9 +171,25 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, defineAsyncComponent } from 'vue';
+import { ref, computed, watch, defineAsyncComponent } from 'vue';
 import { Calendar, Clock, Check, Loading, QuestionFilled, List, Plus, Close } from '@element-plus/icons-vue';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
+import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
+import {
+    applyEditableNoteSnapshot,
+    areEditableNoteSnapshotsEqual,
+    buildEditableNotePatch,
+    buildNoteDraftStorageKey,
+    createEditableNoteSnapshot,
+    noteCustomFieldsToItems,
+    noteCustomFieldItemsToList,
+    noteSnapshotToNode,
+    type EditableNotePatch,
+    type EditableNoteSnapshot,
+    type NoteCustomFieldItem
+} from '@/utils/noteAutoSave';
+import { useAutoSave } from '@/utils/useAutoSave';
 import { getNodeTypeConfig, getNodeStatusConfig, getOrderedNodeTypes } from '@/utils/nodeConfig';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
@@ -184,7 +200,8 @@ const props = defineProps<{
   loading?: boolean;
   readonly?: boolean;
   emptyText?: string;
-  onSave?: (note: NoteNode) => Promise<void>;
+  onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
+  onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();
 
 const emit = defineEmits<{
@@ -198,66 +215,11 @@ const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
 const historyButtonType = computed<'primary' | undefined>(() => showHistory.value ? 'primary' : undefined);
 
-interface CustomFieldItem {
-    key: string;
-    value: string;
-    type: 'string' | 'number' | 'boolean';
-}
-const customFieldsList = ref<CustomFieldItem[]>([]);
-
-let saveTimeout: any = null;
-
-const normalizeFieldType = (type: unknown): 'string' | 'number' | 'boolean' => {
-    if (type === 'number' || type === 'boolean') return type;
-    return 'string';
-};
-
-const parseCustomFields = (fields: unknown): CustomFieldItem[] => {
-    if (!fields) return [];
-
-    // New format: [[key, type, value], ...]
-    if (Array.isArray(fields)) {
-        const parsed: CustomFieldItem[] = [];
-        for (const item of fields) {
-            if (Array.isArray(item) && item.length >= 3) {
-                const [key, type, value] = item;
-                if (typeof key === 'string' && key.trim()) {
-                    parsed.push({
-                        key,
-                        type: normalizeFieldType(type),
-                        value: value == null ? '' : String(value)
-                    });
-                }
-                continue;
-            }
-            // Backward compatibility: [{ key, type, value }, ...]
-            if (item && typeof item === 'object') {
-                const key = (item as any).key;
-                const type = (item as any).type;
-                const value = (item as any).value;
-                if (typeof key === 'string' && key.trim()) {
-                    parsed.push({
-                        key,
-                        type: normalizeFieldType(type),
-                        value: value == null ? '' : String(value)
-                    });
-                }
-            }
-        }
-        return parsed;
-    }
-
-    // Legacy format: { key: value, ... }
-    if (typeof fields === 'object') {
-        return Object.entries(fields as Record<string, any>).map(([k, v]) => ({
-            key: k,
-            type: 'string',
-            value: v == null ? '' : String(v)
-        }));
-    }
-
-    return [];
-};
+const customFieldsList = ref<NoteCustomFieldItem[]>([]);
+const currentDraftKey = ref<string | null>(null);
+const CONTENT_SAVE_DELAY_MS = 1800;
+const META_SAVE_DELAY_MS = 450;
+let loadRequestToken = 0;
 
 // Helper to handle null/empty node_type
 const nodeTypeProxy = computed<string>({
@@ -278,57 +240,173 @@ const sortedHistory = computed(() => {
     return [...currentNote.value.history].sort((a, b) => b.ts - a.ts);
 });
 
-// Watch modelValue to sync local state
-watch(() => props.modelValue, (newVal) => {
-    if (newVal) {
-        // If switching notes or initial load, force update
-        if (!currentNote.value || currentNote.value.id !== newVal.id) {
-            const note = JSON.parse(JSON.stringify(newVal));
-            
-            // Normalize timestamps to milliseconds for frontend components (el-date-picker, etc)
-            if (note.start_at && note.start_at < 10000000000) note.start_at *= 1000;
-            if (note.updated_at && note.updated_at < 10000000000) note.updated_at *= 1000;
-            if (note.created_at && note.created_at < 10000000000) note.created_at *= 1000;
+const buildCurrentSnapshot = (): EditableNoteSnapshot | null => createEditableNoteSnapshot(
+    currentNote.value,
+    noteCustomFieldItemsToList(customFieldsList.value)
+);
 
-            currentNote.value = note;
-            saveStatus.value = 'saved';
-            showHistory.value = false;
+const normalizeIncomingNote = (note: NoteNode) => {
+    const cloned = JSON.parse(JSON.stringify(note)) as NoteNode;
+    if (cloned.start_at && cloned.start_at < 10000000000) cloned.start_at *= 1000;
+    if (cloned.updated_at && cloned.updated_at < 10000000000) cloned.updated_at *= 1000;
+    if (cloned.created_at && cloned.created_at < 10000000000) cloned.created_at *= 1000;
+    return cloned;
+};
 
-            customFieldsList.value = parseCustomFields(note.custom_fields);
-        } 
-    } else {
-        currentNote.value = undefined;
+const syncCurrentNoteFromSnapshot = (snapshot: EditableNoteSnapshot, source?: Partial<NoteNode> | null) => {
+    if (!currentNote.value && !source) return;
+    currentNote.value = applyEditableNoteSnapshot(
+        (source ? { ...(currentNote.value as NoteNode | undefined), ...source } : currentNote.value!) as NoteNode,
+        snapshot
+    );
+    customFieldsList.value = noteCustomFieldsToItems(snapshot.custom_fields);
+};
+
+const toOutgoingNote = (snapshot: EditableNoteSnapshot) => {
+    const outgoing = noteSnapshotToNode(currentNote.value, snapshot);
+    if (outgoing.start_at && outgoing.start_at > 10000000000) outgoing.start_at /= 1000;
+    if (outgoing.updated_at && outgoing.updated_at > 10000000000) outgoing.updated_at /= 1000;
+    if (outgoing.created_at && outgoing.created_at > 10000000000) outgoing.created_at /= 1000;
+    return outgoing;
+};
+
+const toOutgoingPatch = (patch: EditableNotePatch): EditableNotePatch => {
+    const outgoing = { ...patch };
+    if (typeof outgoing.start_at === 'number' && outgoing.start_at > 10000000000) {
+        outgoing.start_at /= 1000;
     }
+    return outgoing;
+};
+
+const autoSave = useAutoSave<EditableNoteSnapshot>({
+    debounceMs: 2000,
+    equals: areEditableNoteSnapshotsEqual,
+    storageKey: () => currentDraftKey.value,
+    save: async (snapshot) => {
+        if (!props.onSave) return snapshot;
+
+        const baseline = autoSave.getBaselineSnapshot();
+        const patch = buildEditableNotePatch(snapshot, baseline);
+        if (!Object.keys(patch).length) {
+            return snapshot;
+        }
+
+        const updatedNote = await props.onSave(toOutgoingNote(snapshot), toOutgoingPatch(patch));
+        const normalizedSavedNote = updatedNote ? normalizeIncomingNote(updatedNote) : null;
+        const canonicalSnapshot = createEditableNoteSnapshot(normalizedSavedNote || noteSnapshotToNode(currentNote.value, snapshot)) ?? snapshot;
+        if (currentNote.value?.id === snapshot.id) {
+            syncCurrentNoteFromSnapshot(canonicalSnapshot, normalizedSavedNote);
+            emit('change', currentNote.value);
+        }
+        return canonicalSnapshot;
+    },
+    onError: (error) => {
+        console.error(error);
+    },
+    saveOnPageHide: (snapshot, baselineSnapshot) => {
+        if (!props.onSaveKeepalive) return;
+        const patch = buildEditableNotePatch(snapshot, baselineSnapshot);
+        if (!Object.keys(patch).length) return;
+        props.onSaveKeepalive(toOutgoingNote(snapshot), toOutgoingPatch(patch));
+    }
+});
+
+watch(autoSave.saveStatus, value => {
+    saveStatus.value = value;
+});
+
+// Watch modelValue to sync local state
+watch(() => props.modelValue, async (newVal) => {
+    const requestToken = ++loadRequestToken;
+
+    if (currentNote.value && autoSave.hasUnsavedChanges.value) {
+        await autoSave.flush();
+    }
+
+    if (newVal) {
+        if (!currentNote.value || currentNote.value.id !== newVal.id) {
+            const note = normalizeIncomingNote(newVal);
+            const serverSnapshot = createEditableNoteSnapshot(note);
+            if (!serverSnapshot) return;
+
+            currentDraftKey.value = buildNoteDraftStorageKey(note.id, note.title);
+            const {
+                snapshot: loadedSnapshot,
+                pendingDraft,
+                expiredDraft
+            } = autoSave.loadSnapshot(serverSnapshot);
+            let activeSnapshot = loadedSnapshot ?? serverSnapshot;
+
+            if (expiredDraft) {
+                ElMessage.info('发现过期本地草稿，已忽略');
+            }
+
+            if (pendingDraft) {
+                const promptMessage = pendingDraft.hasConflict
+                    ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。是否恢复本地草稿？`
+                    : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。是否恢复继续编辑？`;
+
+                try {
+                    await ElMessageBox.confirm(promptMessage, '恢复本地草稿', {
+                        confirmButtonText: '恢复草稿',
+                        cancelButtonText: '使用服务器版本',
+                        type: pendingDraft.hasConflict ? 'warning' : 'info'
+                    });
+
+                    if (requestToken !== loadRequestToken || props.modelValue?.id !== note.id) {
+                        return;
+                    }
+
+                    autoSave.restoreDraft(pendingDraft.snapshot);
+                    activeSnapshot = pendingDraft.snapshot;
+                    ElMessage.warning(pendingDraft.hasConflict ? '已恢复本地草稿，请留意与服务器版本的差异' : '已恢复本地草稿');
+                } catch {
+                    if (requestToken !== loadRequestToken || props.modelValue?.id !== note.id) {
+                        return;
+                    }
+                    autoSave.clearDraft();
+                }
+            }
+
+            syncCurrentNoteFromSnapshot(activeSnapshot, note);
+            saveStatus.value = autoSave.saveStatus.value;
+            showHistory.value = false;
+        }
+        return;
+    }
+
+    currentDraftKey.value = null;
+    currentNote.value = undefined;
+    customFieldsList.value = [];
+    autoSave.loadSnapshot(null, { draftStrategy: 'discard' });
 }, { immediate: true });
 
-// Change Handlers
-const handleChange = () => {
+const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) => {
     if (!currentNote.value) return;
-    saveStatus.value = 'unsaved';
-    
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(triggerSave, 2000);
+    const snapshot = buildCurrentSnapshot();
+    if (!snapshot) return;
+    currentNote.value.custom_fields = snapshot.custom_fields;
+    autoSave.markDirty(snapshot, options);
+};
+
+const handleMetaChange = () => {
+    queueAutoSave({ delayMs: META_SAVE_DELAY_MS });
+};
+
+const handleMetaImmediateChange = () => {
+    queueAutoSave({ immediate: true, delayMs: 0 });
 };
 
 const handleContentChange = (html: string) => {
     if (!currentNote.value) return;
     currentNote.value.content = html;
-    handleChange();
+    queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
 const syncCustomFields = () => {
     if (!currentNote.value) return;
-    
-    const fields: any[] = [];
-    customFieldsList.value.forEach(item => {
-        const key = item.key?.trim();
-        if (key) {
-            fields.push([key, item.type || 'string', item.value ?? '']);
-        }
-    });
-    
-    currentNote.value.custom_fields = fields;
-    handleChange(); // Trigger save
+    currentNote.value.custom_fields = noteCustomFieldItemsToList(customFieldsList.value);
+    handleMetaChange();
 };
 
 const addCustomField = () => {
@@ -344,58 +422,8 @@ const handleCustomFieldChange = () => {
     syncCustomFields();
 };
 
-const triggerSave = async () => {
-    if (!currentNote.value || !props.onSave) return;
-    
-    const noteToSave = JSON.parse(JSON.stringify(currentNote.value));
-    if (noteToSave.start_at && noteToSave.start_at > 10000000000) noteToSave.start_at /= 1000;
-    if (noteToSave.updated_at && noteToSave.updated_at > 10000000000) noteToSave.updated_at /= 1000;
-    if (noteToSave.created_at && noteToSave.created_at > 10000000000) noteToSave.created_at /= 1000;
-
-    saveStatus.value = 'saving';
-    try {
-        await props.onSave(noteToSave);
-        saveStatus.value = 'saved';
-        emit('change', currentNote.value);
-    } catch (e) {
-        saveStatus.value = 'unsaved';
-        console.error(e);
-    }
-};
-
-// Cleanup
-onBeforeUnmount(() => {
-    if (saveTimeout) clearTimeout(saveTimeout);
-    if (saveStatus.value === 'unsaved' && currentNote.value && props.onSave) {
-        props.onSave(currentNote.value);
-    }
-});
-
 // Formatting Helpers (... same as before)
-const formatDateDetailed = (timestamp: number) => {
-    if (!timestamp) return '-';
-    let ts = timestamp;
-    if (ts < 10000000000) ts *= 1000;
-    
-    const dateObj = new Date(ts);
-    const now = new Date();
-    const isCurrentYear = dateObj.getFullYear() === now.getFullYear();
-    
-    const options: Intl.DateTimeFormatOptions = {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    };
-    
-    if (!isCurrentYear) {
-        options.year = 'numeric';
-    }
-    
-    return dateObj.toLocaleString('zh-CN', options).replace(/-/g, '/');
-};
+const formatDateDetailed = (timestamp: number) => formatNoteDateTimeDetailed(timestamp);
 
 const getFieldName = (f: string) => {
     const map: Record<string, string> = {
@@ -536,6 +564,10 @@ const formatHistoryValue = (f: string, v: any) => {
   cursor: default;
 }
 
+.start-at-picker {
+    width: 180px;
+}
+
 .weight-control {
     width: 150px;
     margin-right: 20px;
@@ -560,6 +592,15 @@ const formatHistoryValue = (f: string, v: any) => {
     font-size: 12px;
     color: #606266;
     white-space: nowrap;
+}
+
+.type-select {
+    width: 120px;
+}
+
+.help-tooltip-content {
+    line-height: 1.6;
+    max-width: 300px;
 }
 
 .help-icon {

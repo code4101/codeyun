@@ -1,259 +1,213 @@
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlmodel import Session, select
-import sys
-import os
-
-from backend.db import get_session
-from backend.models import UserDevice, User
-from backend.schemas import DeviceCreate, DeviceRead, DeviceUpdate, UserDeviceCreate, UserDeviceRead, UserDeviceUpdate
-from backend.core.auth import verify_api_token, get_current_user_from_token
-from backend.core.device import device_manager
-
-import uuid
+import ipaddress
+import socket
 import time
-import requests
+from typing import List, Optional
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlmodel import Session, select
+
+from backend.core.auth import get_current_user_from_token
+from backend.core.device import get_device_id
+from backend.db import get_session
+from backend.models import User, UserDevice
+from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceUpdate
 
 router = APIRouter()
+
+
+def _get_next_order_index(session: Session, user_id: int) -> int:
+    last_link = session.exec(
+        select(UserDevice)
+        .where(UserDevice.user_id == user_id)
+        .order_by(UserDevice.order_index.desc(), UserDevice.created_at.desc())
+    ).first()
+    if not last_link or last_link.order_index is None:
+        return 0
+    return last_link.order_index + 1
+
+
+def _entry_type(user_device: UserDevice) -> str:
+    return "LocalDevice" if user_device.mode == "local" else "RemoteDevice"
+
+
+def _client_visible_server_url(user_device: UserDevice) -> Optional[str]:
+    if user_device.mode == "local":
+        return None
+    return user_device.server_url
+
+
+def _device_read(user_device: UserDevice) -> DeviceRead:
+    return DeviceRead(
+        id=user_device.device_id,
+        name=user_device.name,
+        type=_entry_type(user_device),
+        server_url=_client_visible_server_url(user_device),
+        order_index=user_device.order_index,
+        created_at=user_device.created_at,
+        updated_at=user_device.updated_at,
+    )
+
+
+def _entry_read(user_device: UserDevice) -> UserDeviceRead:
+    return UserDeviceRead(
+        id=user_device.entry_id,
+        user_id=user_device.user_id,
+        device_id=user_device.device_id,
+        mode=user_device.mode,
+        alias=user_device.name,
+        name=user_device.name,
+        server_url=_client_visible_server_url(user_device),
+        token=user_device.token,
+        is_active=user_device.is_active,
+        created_at=user_device.created_at,
+        updated_at=user_device.updated_at,
+        device=_device_read(user_device),
+    )
+
+
+def _normalize_remote_server_url(raw_url: Optional[str]) -> str:
+    if not raw_url or not raw_url.strip():
+        raise HTTPException(status_code=400, detail="远程设备模式必须填写后端地址")
+
+    url = raw_url.strip()
+    if not url.startswith(("http://", "https://")):
+        url = "http://" + url
+
+    parsed = urlparse(url)
+    if not parsed.hostname:
+        raise HTTPException(status_code=400, detail="设备后端地址格式无效")
+
+    host = parsed.hostname.strip().lower()
+    if host == "localhost":
+        raise HTTPException(status_code=400, detail="localhost 无法作为远程设备后端地址，请改用本地设备模式")
+
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback:
+            raise HTTPException(status_code=400, detail="回环地址不可作为远程设备后端地址，请改用本地设备模式")
+    except ValueError:
+        pass
+
+    normalized = url.rstrip("/")
+    return normalized
+
 
 @router.get("/", response_model=List[UserDeviceRead])
 def read_user_devices(
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token)
+    current_user: User = Depends(get_current_user_from_token),
 ):
-    """
-    Get all devices configured for the current user.
-    """
-    statement = select(UserDevice).where(UserDevice.user_id == current_user.id).order_by(UserDevice.order_index)
+    statement = (
+        select(UserDevice)
+        .where(UserDevice.user_id == current_user.id)
+        .order_by(UserDevice.order_index, UserDevice.created_at)
+    )
     user_devices = session.exec(statement).all()
-    
-    # Enrich with Device info (Construct DeviceRead from UserDevice)
-    results = []
-    for ud in user_devices:
-        # Construct a virtual Device object from UserDevice data
-        # This maintains API compatibility without needing the Device table
-        
-        # Determine token: use stored token. 
-        # For local device, we might want to check config? 
-        # But UserDevice should be the source of truth for the client.
-        
-        # Compatibility mapping
-        device_read = DeviceRead(
-            id=ud.device_id,
-            name=ud.name, # Name is now in UserDevice
-            type=ud.type,
-            url=ud.url,
-            order_index=ud.order_index,
-            created_at=ud.created_at, # Fill from UserDevice
-            updated_at=ud.updated_at  # Fill from UserDevice
-        )
-        
-        ud_read = UserDeviceRead(
-            user_id=ud.user_id,
-            device_id=ud.device_id,
-            alias=ud.name, # Alias is now name
-            name=ud.name,  # New field in schema? UserDeviceRead might need update
-            is_active=ud.is_active,
-            token=ud.token,
-            created_at=ud.created_at,
-            updated_at=ud.updated_at,
-            device=device_read
-        )
-        results.append(ud_read)
-            
-    return results
+    return [_entry_read(entry) for entry in user_devices]
+
 
 @router.post("/add", response_model=UserDeviceRead)
 def add_user_device(
     device_in: UserDeviceCreate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token)
+    current_user: User = Depends(get_current_user_from_token),
 ):
-    """
-    Add a device to the user's list.
-    Verify connection and get real device ID from remote.
-    """
-    # 0. Validate URL
-    if not device_in.url:
-         raise HTTPException(status_code=400, detail="URL is required for adding a remote device")
-    
-    # 1. Verify Connection and Get Real ID
-    real_device_id = None
-    real_device_name = None
-    # real_python_exec removed
-    
-    try:
-        # Normalize URL
-        url = device_in.url.rstrip('/')
-        if not url.startswith('http'):
-            url = 'http://' + url
-            
-        # Call /api/agent/status
-        # We use the token provided by the user to authenticate against the remote device
-        headers = {}
-        if device_in.token:
-            headers["Authorization"] = f"Bearer {device_in.token}"
-            headers["X-Device-Token"] = device_in.token # Support both
-            
-        resp = requests.get(f"{url}/api/agent/status", headers=headers, timeout=5)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            real_device_id = data.get("id")
-            real_device_name = data.get("hostname")
-            # real_python_exec removed
-        elif resp.status_code == 401:
-             raise HTTPException(status_code=400, detail="Token rejected by remote device")
-        else:
-             raise HTTPException(status_code=400, detail=f"Remote device returned status {resp.status_code}")
-             
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Failed to connect to device: {str(e)}")
-        
-    if not real_device_id:
-        raise HTTPException(status_code=400, detail="Could not retrieve device ID from remote")
+    mode = device_in.mode
+    token = (device_in.token or "").strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Token 不能为空")
 
-    # 2. Create/Update UserDevice Association
-    existing_link = session.get(UserDevice, (current_user.id, real_device_id))
-    
-    # Prepare data
-    name = device_in.alias or real_device_name or "Unknown Device"
-    
-    if existing_link:
-        # Update existing link
-        existing_link.token = device_in.token
-        existing_link.name = name
-        existing_link.url = url
-        existing_link.type = "RemoteDevice" # Assume remote if adding via URL
-        # python_exec removed
-            
-        existing_link.updated_at = time.time()
-        existing_link.is_active = True
-        session.add(existing_link)
-        session.commit()
-        session.refresh(existing_link)
-        
-        device_read = DeviceRead(
-            id=existing_link.device_id,
-            name=existing_link.name,
-            type=existing_link.type,
-            url=existing_link.url,
-            order_index=existing_link.order_index,
-            created_at=existing_link.created_at,
-            updated_at=existing_link.updated_at
-        )
-        
-        return UserDeviceRead(
-            **existing_link.dict(),
-            alias=existing_link.name,
-            device=device_read
-        )
+    if mode == "local":
+        if device_in.server_url and device_in.server_url.strip():
+            raise HTTPException(status_code=400, detail="本地设备模式不支持后端地址")
+        if device_in.device_id and device_in.device_id.strip():
+            raise HTTPException(status_code=400, detail="本地设备模式无需填写设备 ID")
+        device_id = get_device_id()
+        local_name = socket.gethostname()
+        name = (device_in.name or device_in.alias or local_name).strip() or local_name
+        server_url = None
+    else:
+        device_id = (device_in.device_id or "").strip()
+        if not device_id:
+            raise HTTPException(status_code=400, detail="远程设备模式必须填写设备 ID")
+        name = (device_in.name or device_in.alias or device_id).strip() or device_id
+        server_url = _normalize_remote_server_url(device_in.server_url)
 
     new_link = UserDevice(
         user_id=current_user.id,
-        device_id=real_device_id,
-        token=device_in.token,
+        device_id=device_id,
+        mode=mode,
+        token=token,
         name=name,
-        url=url,
-        type="RemoteDevice",
-        # python_exec removed
-        is_active=True
+        server_url=server_url,
+        is_active=True,
+        order_index=_get_next_order_index(session, current_user.id),
     )
     session.add(new_link)
     session.commit()
     session.refresh(new_link)
-    
-    device_read = DeviceRead(
-        id=new_link.device_id,
-        name=new_link.name,
-        type=new_link.type,
-        url=new_link.url,
-        order_index=new_link.order_index,
-        created_at=new_link.created_at,
-        updated_at=new_link.updated_at
-    )
-    
-    return UserDeviceRead(
-        **new_link.dict(),
-        alias=new_link.name,
-        device=device_read
-    )
+    return _entry_read(new_link)
 
-@router.put("/{device_id}", response_model=UserDeviceRead)
+
+@router.put("/{entry_id}", response_model=UserDeviceRead)
 def update_user_device(
-    device_id: str,
+    entry_id: str,
     device_in: UserDeviceUpdate,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token)
+    current_user: User = Depends(get_current_user_from_token),
 ):
-    """
-    Update configuration for a user's device (e.g. rotate token, change alias).
-    """
-    link = session.get(UserDevice, (current_user.id, device_id))
-    if not link:
-        raise HTTPException(status_code=404, detail="Device not found in your list")
-        
+    link = session.get(UserDevice, entry_id)
+    if not link or link.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Device entry not found")
+
     if device_in.token is not None:
-        link.token = device_in.token
+        token = device_in.token.strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="Token 不能为空")
+        link.token = token
     if device_in.alias is not None:
-        link.name = device_in.alias # Alias is name now
+        link.name = device_in.alias.strip() or link.name
     if device_in.name is not None:
-        link.name = device_in.name
+        link.name = device_in.name.strip() or link.name
+    if device_in.server_url is not None:
+        if link.mode != "remote":
+            raise HTTPException(status_code=400, detail="本地设备入口不支持后端地址")
+        link.server_url = _normalize_remote_server_url(device_in.server_url)
     if device_in.is_active is not None:
         link.is_active = device_in.is_active
-    # python_exec removed
-          
+
     link.updated_at = time.time()
     session.add(link)
     session.commit()
     session.refresh(link)
+    return _entry_read(link)
 
-    device_read = DeviceRead(
-        id=link.device_id,
-        name=link.name,
-        type=link.type,
-        url=link.url,
-        order_index=link.order_index,
-        created_at=link.created_at,
-        updated_at=link.updated_at
-    )
-    
-    return UserDeviceRead(
-        **link.dict(),
-        alias=link.name,
-        device=device_read
-    )
 
-@router.delete("/{device_id}")
+@router.delete("/{entry_id}")
 def remove_user_device(
-    device_id: str,
+    entry_id: str,
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token)
+    current_user: User = Depends(get_current_user_from_token),
 ):
-    """
-    Remove a device from the user's list.
-    """
-    link = session.get(UserDevice, (current_user.id, device_id))
-    if not link:
-        raise HTTPException(status_code=404, detail="Device not found in your list")
-        
+    link = session.get(UserDevice, entry_id)
+    if not link or link.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Device entry not found")
+
     session.delete(link)
     session.commit()
-    
     return {"ok": True}
+
 
 @router.post("/reorder")
 def reorder_user_devices(
-    device_ids: List[str],
+    entry_ids: List[str],
     session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token)
+    current_user: User = Depends(get_current_user_from_token),
 ):
-    """
-    Reorder the user's devices.
-    """
-    for idx, dev_id in enumerate(device_ids):
-        link = session.get(UserDevice, (current_user.id, dev_id))
-        if link:
+    for idx, entry_id in enumerate(entry_ids):
+        link = session.get(UserDevice, entry_id)
+        if link and link.user_id == current_user.id:
             link.order_index = idx
             session.add(link)
     session.commit()

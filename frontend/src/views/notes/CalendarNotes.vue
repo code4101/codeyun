@@ -19,11 +19,9 @@
             <el-button @click="prevMonth" :icon="ArrowLeft" circle />
             <el-button @click="nextMonth" :icon="ArrowRight" circle />
             <el-button @click="goToToday">今天</el-button>
-            <el-button @click="refreshData" :icon="Refresh" :loading="loading">刷新</el-button>
           </div>
 
           <div class="backend-filter-tags">
-            <el-tag>{{ formatMonthLabel(currentMonth) }}</el-tag>
             <el-tag type="success">加载: {{ formatDateShort(gridStartTs) }} - {{ formatDateShort(gridEndTs - 1) }}</el-tag>
           </div>
         </div>
@@ -37,81 +35,80 @@
         help-text="基于当前月份已加载的节点实时筛选并渲染日历，修改后立即生效并保存。"
         hint-text=""
         apply-text="即时生效"
-        reset-text="恢复默认"
+        reset-text="默认配置"
         @apply="applyViewProgram"
         @reset="resetViewProgram"
       />
     </div>
 
-    <!-- Calendar Grid -->
-    <div class="calendar-container" :style="{ height: calendarHeight + 'px' }">
-      <!-- Weekday Headers -->
-      <div class="weekday-header">
-        <div v-for="day in weekDays" :key="day" class="weekday-cell">{{ day }}</div>
-      </div>
-
-      <!-- Days Grid -->
-      <div class="days-grid" :style="{ gridTemplateRows }">
-        <div
-          v-for="day in gridDays"
-          :key="day.dateStr"
-          class="day-cell"
-          :class="{ 'is-outside': !day.isCurrentMonth }"
-        >
-          <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
-            <div class="day-left">
-              <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
-              <span v-if="isToday(day.date)" class="today-tag">今天</span>
-              <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
-                {{ day.isRest === true ? '休' : '班' }}
-              </span>
-              <el-button class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
-            </div>
-            <div class="day-right">
-              <span class="lunar-info" :class="{ 'is-festival': day.festival || day.jieQi }">
-                {{ day.festival || day.jieQi || day.lunarDay }}
-              </span>
-            </div>
+    <NoteSplitView
+      class="calendar-workspace"
+      :top-height="calendarHeight"
+      :show-editor="Boolean(currentNoteId)"
+      empty-description="请在日历中选择一个节点"
+      editor-mode="flow"
+      :editor-min-height="400"
+      @resize-start="startResizing"
+    >
+      <template #main>
+        <div class="calendar-container">
+          <div class="weekday-header">
+            <div v-for="day in weekDays" :key="day" class="weekday-cell">{{ day }}</div>
           </div>
-          <div class="day-content">
-            <div 
-              v-for="note in getNotesForDay(day.date)" 
-              :key="note.id" 
-              class="note-item"
-              :style="getNoteStyle(note)"
-              @click.stop="openNote(note)"
+
+          <div class="days-grid" :style="{ gridTemplateRows }">
+            <div
+              v-for="day in gridDays"
+              :key="day.dateStr"
+              class="day-cell"
+              :class="{ 'is-outside': !day.isCurrentMonth }"
             >
-              <span class="note-title" :style="getNoteTitleStyle(note)">{{ note.title }}</span>
+              <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
+                <div class="day-left">
+                  <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
+                  <span v-if="isToday(day.date)" class="today-tag">今天</span>
+                  <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
+                    {{ day.isRest === true ? '休' : '班' }}
+                  </span>
+                  <el-button class="create-note-btn" size="small" text circle :icon="Plus" title="新建节点" @click.stop="createNoteForDay(day.date)" />
+                </div>
+                <div class="day-right">
+                  <span class="lunar-info" :class="{ 'is-festival': day.festival || day.jieQi }">
+                    {{ day.festival || day.jieQi || day.lunarDay }}
+                  </span>
+                </div>
+              </div>
+              <div class="day-content">
+                <div
+                  v-for="note in getNotesForDay(day.date)"
+                  :key="note.id"
+                  class="note-item"
+                  :style="getNoteStyle(note)"
+                  @click.stop="openNote(note)"
+                >
+                  <span class="note-title" :style="getNoteTitleStyle(note)">{{ note.title }}</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      </template>
 
-      <!-- Height Resizer Handle -->
-      <div class="calendar-resizer" @mousedown="startResizing">
-          <div class="resizer-indicator"></div>
-      </div>
-    </div>
-
-    <!-- Bottom: Editor -->
-    <div class="editor-section" :class="{ 'is-collapsed': !currentNoteId }">
-      <NoteDetailPanel 
-        v-if="currentNoteId" 
-        :noteId="currentNoteId" 
-        class="editor-wrapper"
-        @update="handleNoteUpdate"
-        @delete="handleNoteDelete"
-      />
-      <div v-else class="empty-state">
-        <el-empty description="请在日历中选择一个节点" />
-      </div>
-    </div>
+      <template #editor>
+        <NoteDetailPanel
+          :noteId="currentNoteId"
+          @update="handleNoteUpdate"
+          @delete="handleNoteDelete"
+        />
+      </template>
+    </NoteSplitView>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRouter } from 'vue-router';
+import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
@@ -124,11 +121,13 @@ import {
   normalizeNoteProgramChannel
 } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
-import { Refresh, ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeStyle } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
+import { formatNoteDateShort } from '@/utils/noteDate';
+import { useResizablePane } from '@/utils/useResizablePane';
 
 const router = useRouter();
 const noteStore = useNoteStore();
@@ -148,6 +147,7 @@ const viewProgram = ref(normalizeNoteProgramChannel(
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const currentNoteId = ref('');
 const loading = ref(false);
+const formatDateShort = (value: Date | string | number | null | undefined) => formatNoteDateShort(value);
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
@@ -162,19 +162,6 @@ const monthAnchor = computed(() => {
 
 const monthStartTs = computed(() => monthAnchor.value.getTime());
 const monthEndTs = computed(() => new Date(monthAnchor.value.getFullYear(), monthAnchor.value.getMonth() + 1, 1).getTime());
-
-const formatMonthLabel = (d: Date) => {
-  const year = d.getFullYear();
-  const month = pad2(d.getMonth() + 1);
-  return `${year}年${month}月`;
-};
-
-const formatDateShort = (ts: number) => {
-  return new Date(ts).toLocaleDateString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit'
-  });
-};
 
 const checkAuth = () => {
   if (!userStore.isAuthenticated) {
@@ -496,59 +483,23 @@ const handleNoteDelete = (noteId: string) => {
   if (currentNoteId.value === noteId) currentNoteId.value = '';
 };
 
-// Layout state
-const calendarHeight = ref(600);
-const isResizing = ref(false);
-const isManualResized = ref(false);
-const startY = ref(0);
-const startHeight = ref(0);
-
-const calculateOptimalHeight = () => {
-    const vh = window.innerHeight;
-    const reservedHeight = 100; // Header ~60px + margins
-    // Default to 60% height for calendar
-    return Math.max(400, Math.floor((vh - reservedHeight) * 0.6));
-};
-
-const updateAdaptiveHeight = () => {
-    if (!isManualResized.value) {
-        calendarHeight.value = calculateOptimalHeight();
-    }
-};
-
-const startResizing = (e: MouseEvent) => {
-    isResizing.value = true;
-    isManualResized.value = true;
-    startY.value = e.clientY;
-    startHeight.value = calendarHeight.value;
-    
-    window.addEventListener('mousemove', handleResizing);
-    window.addEventListener('mouseup', stopResizing);
-    document.body.style.userSelect = 'none';
-};
-
-const handleResizing = (e: MouseEvent) => {
-    if (!isResizing.value) return;
-    const delta = e.clientY - startY.value;
-    const newHeight = Math.max(300, startHeight.value + delta);
-    calendarHeight.value = newHeight;
-};
-
-const stopResizing = () => {
-    isResizing.value = false;
-    window.removeEventListener('mousemove', handleResizing);
-    window.removeEventListener('mouseup', stopResizing);
-    document.body.style.userSelect = '';
-};
-
-onMounted(() => {
-    updateAdaptiveHeight();
-    window.addEventListener('resize', updateAdaptiveHeight);
-    refreshData({ silent: true });
+const {
+    paneHeight: calendarHeight,
+    startResizing,
+} = useResizablePane({
+    initialHeight: 600,
+    getAdaptiveHeight: () => {
+        const vh = window.innerHeight;
+        const reservedHeight = 100;
+        return Math.max(400, Math.floor((vh - reservedHeight) * 0.6));
+    },
+    getResizeBounds: () => ({
+        min: 300,
+    }),
 });
 
-onUnmounted(() => {
-    window.removeEventListener('resize', updateAdaptiveHeight);
+onMounted(() => {
+    refreshData({ silent: true });
 });
 
 watch(currentMonth, (value) => {
@@ -569,7 +520,8 @@ watch(viewProgram, (value) => {
 .calendar-notes-layout {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  height: 100%;
+  min-height: 0;
   background-color: #fff;
   padding: 20px;
   box-sizing: border-box;
@@ -583,6 +535,10 @@ watch(viewProgram, (value) => {
 
 .front-filter-section {
   margin-bottom: 16px;
+}
+
+.calendar-workspace {
+  min-height: 0;
 }
 
 .backend-filter-panel {
@@ -635,14 +591,13 @@ watch(viewProgram, (value) => {
 }
 
 .calendar-container {
+  height: 100%;
   display: flex;
   flex-direction: column;
   border: 1px solid #ebeef5;
   border-radius: 4px;
   overflow: hidden;
-  flex: none; /* Fixed height managed by JS resizer */
-  position: relative;
-  margin-bottom: 20px;
+  min-height: 0;
 }
 
 .weekday-header {
@@ -799,56 +754,4 @@ watch(viewProgram, (value) => {
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
-  /* New styles for resizer and layout */
-  .calendar-resizer {
-    height: 8px;
-    width: 100%;
-    background-color: #f5f7fa;
-    cursor: ns-resize;
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    z-index: 10;
-    transition: background-color 0.2s;
-    border-top: 1px solid #e6e6e6;
-  }
-
-  .calendar-resizer:hover {
-    background-color: #ecf5ff;
-  }
-
-  .resizer-indicator {
-    width: 40px;
-    height: 4px;
-    border-top: 1px solid #dcdfe6;
-    border-bottom: 1px solid #dcdfe6;
-  }
-
-  .editor-section {
-    flex: none; /* Don't flex, just follow the flow */
-    display: flex;
-    flex-direction: column;
-    background-color: #fff;
-    min-height: 400px;
-    border-top: 1px solid #ebeef5;
-    overflow: visible; /* Let parent scroll */
-  }
-
-  .editor-wrapper {
-    display: flex;
-    flex-direction: column;
-    height: auto;
-    padding: 20px;
-  }
-
-  .empty-state {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 100%;
-    color: #909399;
-  }
 </style>

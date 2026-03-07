@@ -30,7 +30,7 @@ def test_start_task():
         time.sleep(1.5)
         
         # Check logs
-        log_path = os.path.join(DATA_DIR, "test_device", "logs", f"{task_id}.log")
+        log_path = os.path.join(DATA_DIR, "logs", f"{task_id}.log")
         if os.path.exists(log_path):
             with open(log_path, 'r', encoding='utf-8') as f:
                 content = f.read()

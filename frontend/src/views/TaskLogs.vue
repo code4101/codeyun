@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
-import { getDeviceApi } from '@/api';
+import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Edit, VideoPlay, VideoPause, Search, Delete, Connection } from '@element-plus/icons-vue';
 import { taskStore } from '@/store/taskStore';
@@ -25,6 +25,7 @@ interface Task {
   description?: string;
   cwd?: string;
   device_id?: string;
+  entry_id?: string;
   schedule?: string;
   timeout?: number;
   status: TaskStatus;
@@ -34,11 +35,12 @@ interface Task {
 const route = useRoute();
 const router = useRouter();
 const taskId = route.params.id as string;
-const targetDeviceId = Array.isArray(route.query.device_id) 
-  ? (route.query.device_id[0] || '') 
-  : ((route.query.device_id as string) || '');
-const currentDeviceUrl = ref('');
-const currentDeviceToken = ref('');
+const targetEntryId = Array.isArray(route.query.entry_id)
+  ? (route.query.entry_id[0] || '')
+  : ((route.query.entry_id as string) || (Array.isArray(route.query.device_id)
+      ? (route.query.device_id[0] || '')
+      : ((route.query.device_id as string) || '')));
+const resolvedEntryId = ref(targetEntryId);
 const deviceName = ref('');
 
 const logs = ref<string[]>([]);
@@ -46,112 +48,6 @@ const task = ref<Task | null>(null);
 const autoScroll = ref(true);
 const logContainer = ref<HTMLElement | null>(null);
 let pollInterval: number | null = null;
-let ws: WebSocket | null = null;
-let wsStatus: WebSocket | null = null; // Separate WS for status? No, maybe single one or separate.
-
-// We need two WS connections or one multiplexed?
-// Backend has /ws/logs/{task_id} and /ws/tasks
-// For logs page, we need logs stream AND task status updates (cpu/mem).
-// Actually, /ws/tasks broadcasts ALL tasks status.
-// /ws/logs/{task_id} broadcasts logs.
-
-// We can connect to both.
-
-const connectWsLogs = () => {
-    if (ws) return;
-    
-    // const device = { url: currentDeviceUrl.value }; // Simple mock, assuming currentDeviceUrl is set
-    // Actually we need to handle if currentDeviceUrl is empty or not resolved yet.
-    if (!currentDeviceUrl.value) return;
-
-    let wsUrl = currentDeviceUrl.value || 'http://localhost:8000';
-    wsUrl = wsUrl.replace(/^http/, 'ws');
-    wsUrl = `${wsUrl}/api/task/ws/logs/${taskId}`;
-    
-    const protocols = [];
-    if (currentDeviceToken.value) {
-        protocols.push(currentDeviceToken.value);
-    }
-
-    try {
-        ws = new WebSocket(wsUrl, protocols);
-        ws.onopen = () => {
-            console.log('WS Logs connected');
-            // We might want to clear logs or fetch history first?
-            // Current backend just streams new logs.
-            // So we still need fetchLogs() for history.
-        };
-        ws.onmessage = (event) => {
-            try {
-                const msg = JSON.parse(event.data);
-                if (msg.type === 'log') {
-                    // Append log
-                    logs.value.push(msg.data);
-                    // Trim logs if too many?
-                    if (logs.value.length > 2000) {
-                        logs.value = logs.value.slice(-2000);
-                    }
-                    if (autoScroll.value) {
-                        scrollToBottom();
-                    }
-                }
-            } catch (e) {
-                console.error("WS log parse error", e);
-            }
-        };
-        ws.onclose = () => {
-             console.log('WS Logs closed, retrying...');
-             ws = null;
-             setTimeout(connectWsLogs, 3000);
-        };
-    } catch (e) {
-        console.error("WS Logs connection failed", e);
-    }
-};
-
-const connectWsStatus = () => {
-    // For status, we can reuse /ws/tasks but filter for this task?
-    // Or just poll status?
-    // User wants "all polling replaced by WS".
-    // So we should connect to /ws/tasks and filter.
-    
-    if (wsStatus) return;
-    
-    let wsUrl = currentDeviceUrl.value || 'http://localhost:8000';
-    wsUrl = wsUrl.replace(/^http/, 'ws');
-    wsUrl = `${wsUrl}/api/task/ws/tasks`;
-    
-    const protocols = [];
-    if (currentDeviceToken.value) {
-        protocols.push(currentDeviceToken.value);
-    }
-
-    try {
-        wsStatus = new WebSocket(wsUrl, protocols);
-        wsStatus.onmessage = (event) => {
-             try {
-                const data = JSON.parse(event.data);
-                // data is list of tasks
-                const myTask = data.find((t: any) => t.id === taskId);
-                if (myTask) {
-                    // Update task info
-                    if (!task.value) task.value = myTask;
-                    else {
-                        Object.assign(task.value, myTask);
-                    }
-                }
-             } catch (e) {
-                 
-             }
-        };
-        wsStatus.onclose = () => {
-             wsStatus = null;
-             setTimeout(connectWsStatus, 3000);
-        };
-    } catch (e) {
-        
-    }
-};
 
 // Edit Mode
 const isEditing = ref(false);
@@ -171,32 +67,33 @@ const scanLoading = ref(false);
 const relatedProcesses = ref<any[]>([]);
 
 const resolveDevice = async () => {
-  if (!targetDeviceId) return true; // No device ID, assume local or handled elsewhere
+  if (!targetEntryId) {
+    ElMessage.error('缺少设备入口参数');
+    return false;
+  }
   
   // Ensure store is loaded
   if (taskStore.devices.length === 0) {
       await taskStore.fetchDevices();
   }
   
-  const device = taskStore.devices.find(d => d.id === targetDeviceId);
-  if (device) {
-    currentDeviceUrl.value = device.url || '';
-    currentDeviceToken.value = device.access_token || '';
-    deviceName.value = device.name || device.id;
-    return true;
-  } else {
-    // Fallback: try global list if user list fails?
-    // But user list is definitive.
-    // If not found, maybe show error.
-    ElMessage.error('无法找到设备或无权访问');
-    // If we can't find the device, we probably shouldn't default to local blindly if a device_id was requested.
-    // But existing logic falls through.
-    if (targetDeviceId && targetDeviceId !== 'local') {
-         console.warn(`Device ${targetDeviceId} not found in store. Store devices:`, taskStore.devices);
-         return false;
+  const device = taskStore.devices.find(d => d.id === targetEntryId);
+  const matchedDevice = device || taskStore.devices.find(d => d.device_id === targetEntryId);
+  if (matchedDevice) {
+    resolvedEntryId.value = matchedDevice.id;
+    deviceName.value = matchedDevice.name || matchedDevice.device_id;
+    if (matchedDevice.id !== targetEntryId) {
+      router.replace({ name: 'TaskLogs', params: { id: taskId }, query: { entry_id: matchedDevice.id } });
     }
-    return true; // Fallback to allow local if somehow targetDeviceId is something else
+    return true;
   }
+
+  ElMessage.error('无法找到设备或无权访问');
+  if (targetEntryId) {
+       console.warn(`Device entry ${targetEntryId} not found in store. Store devices:`, taskStore.devices);
+       return false;
+  }
+  return true;
 };
 
 const handleStatusClick = async () => {
@@ -204,15 +101,12 @@ const handleStatusClick = async () => {
   
   task.value.actionLoading = true;
   try {
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
     if (task.value.status.running) {
-      // Stop
-      await client.post(`/task/${task.value.id}/stop`);
+      await api.post(getDeviceEntryPath(resolvedEntryId.value, `/task/${task.value.id}/stop`));
       ElMessage.success(`Task "${task.value.name}" stopping...`);
     } else {
-      // Start check conflict
       try {
-        const relatedRes = await client.get(`/task/${task.value.id}/related_processes`);
+        const relatedRes = await api.get(getDeviceEntryPath(resolvedEntryId.value, `/task/${task.value.id}/related_processes`));
         const exactMatches = relatedRes.data.filter((p: any) => p.score >= 3);
         
         if (exactMatches.length > 0) {
@@ -235,11 +129,9 @@ const handleStatusClick = async () => {
         // Ignore scan error, proceed to start
       }
 
-      // Start
-      await client.post(`/task/${task.value.id}/start`);
+      await api.post(getDeviceEntryPath(resolvedEntryId.value, `/task/${task.value.id}/start`));
       ElMessage.success(`Task "${task.value.name}" started`);
     }
-    // Refresh immediately to ensure polling starts if running
     await refreshAll();
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || 'Operation failed');
@@ -299,7 +191,7 @@ const startEditing = () => {
     command: task.value.command,
     cwd: task.value.cwd || '',
     description: task.value.description || '',
-    device_id: task.value.device_id || 'local',
+    device_id: task.value.device_id || '',
     schedule: task.value.schedule || '',
     timeout: task.value.timeout || null
   };
@@ -312,8 +204,7 @@ const cancelEditing = () => {
 
 const saveEditing = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    await client.post(`/task/${taskId}/update`, editForm.value);
+    await api.post(getDeviceEntryPath(resolvedEntryId.value, `/task/${taskId}/update`), editForm.value);
     ElMessage.success('Task updated');
     isEditing.value = false;
     await fetchTask();
@@ -383,9 +274,8 @@ const dynamicDuration = useDuration(task);
 
 const fetchTask = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    const res = await client.get(`/task/${taskId}`);
-    task.value = res.data;
+    const res = await api.get(getDeviceEntryPath(resolvedEntryId.value, `/task/${taskId}`));
+    task.value = { ...res.data, entry_id: resolvedEntryId.value };
   } catch (err) {
     // console.error('Failed to fetch task details', err);
   }
@@ -393,8 +283,9 @@ const fetchTask = async () => {
 
 const fetchLogs = async () => {
   try {
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    const res = await client.get(`/task/${taskId}/logs?n=500`);
+    const res = await api.get(getDeviceEntryPath(resolvedEntryId.value, `/task/${taskId}/logs`), {
+      params: { n: 500 },
+    });
     logs.value = res.data.logs;
     if (autoScroll.value) {
       scrollToBottom();
@@ -405,18 +296,16 @@ const fetchLogs = async () => {
 };
 
 const refreshAll = async () => {
-  // If we already have an interval running, we might be inside it.
-  // But if this is called manually or initially, we need to decide strategy.
-  
-  if (pollInterval) clearInterval(pollInterval);
-  pollInterval = null;
-
-  // Fetch initial state
   await Promise.all([fetchTask(), fetchLogs()]);
-  
-  // Connect WS
-  connectWsLogs();
-  connectWsStatus();
+};
+
+const startPolling = () => {
+  if (pollInterval) {
+    window.clearInterval(pollInterval);
+  }
+  pollInterval = window.setInterval(() => {
+    refreshAll();
+  }, 3000);
 };
 
 // const checkStatusOnly = async () => {
@@ -431,15 +320,14 @@ const scrollToBottom = async () => {
 };
 
 const goBack = () => {
-  router.push({ name: 'ClusterManager', query: { device_id: route.query.device_id } });
+  router.push({ name: 'ClusterManager', query: { entry_id: resolvedEntryId.value || route.query.entry_id || route.query.device_id } });
 };
 
 const handleScanProcesses = async () => {
   scanDialogVisible.value = true;
   scanLoading.value = true;
   try {
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    const res = await client.get(`/task/${taskId}/related_processes`);
+    const res = await api.get(getDeviceEntryPath(resolvedEntryId.value, `/task/${taskId}/related_processes`));
     relatedProcesses.value = res.data;
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || 'Scan failed');
@@ -456,8 +344,7 @@ const killProcess = async (pid: number) => {
       confirmButtonClass: 'el-button--danger',
     });
     
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    await client.post('/task/process/kill', { pid });
+    await api.post(getDeviceEntryPath(resolvedEntryId.value, '/task/process/kill'), { pid });
     ElMessage.success(`Process ${pid} killed`);
     
     // Refresh list
@@ -478,8 +365,7 @@ const associateProcess = async (pid: number) => {
       cancelButtonText: '取消'
     });
     
-    const client = getDeviceApi(currentDeviceUrl.value, currentDeviceToken.value);
-    await client.post(`/task/${taskId}/associate`, { pid });
+    await api.post(getDeviceEntryPath(resolvedEntryId.value, `/task/${taskId}/associate`), { pid });
     ElMessage.success(`已关联到进程 PID ${pid}`);
     
     scanDialogVisible.value = false;
@@ -495,18 +381,15 @@ const associateProcess = async (pid: number) => {
 onMounted(async () => {
   const success = await resolveDevice();
   if (success) {
-      refreshAll(); // Initial fetch, polling logic is inside refreshAll
+      await refreshAll();
+      startPolling();
   }
 });
 
 onUnmounted(() => {
-  if (ws) {
-    ws.close();
-    ws = null;
-  }
-  if (wsStatus) {
-    wsStatus.close();
-    wsStatus = null;
+  if (pollInterval) {
+    window.clearInterval(pollInterval);
+    pollInterval = null;
   }
 });
 </script>

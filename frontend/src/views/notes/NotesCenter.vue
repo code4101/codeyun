@@ -85,7 +85,8 @@ onMounted(() => {
 <style scoped>
 .notes-center {
   padding: 20px;
-  height: 100vh; /* Full viewport height */
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -139,7 +140,8 @@ onMounted(() => {
 
 :deep(.el-tab-pane) {
   height: 100%;
-  overflow: auto; /* Allow internal scrolling */
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }

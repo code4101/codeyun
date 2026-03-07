@@ -36,12 +36,12 @@
                       size="small"
                       :clearable="false"
                       format="YYYY/MM/DD"
-                      style="width: 130px; margin-left: 5px;"
+                      class="start-date-picker"
                   />
                   <SmartTimeInput
                       v-model="timeInputString"
                       size="small"
-                      :input-style="{ width: '100px', marginLeft: '5px' }"
+                      :input-style="smartTimeInputStyle"
                       @change="handleTimeChange"
                   />
                 </span>
@@ -53,7 +53,7 @@
                         size="small" 
                         :disabled="!hasConnections"
                         @click="openPlanetaryGraph('planetary')"
-                        style="margin-left: 10px;"
+                        class="graph-link-button"
                     >
                         行星图
                     </el-button>
@@ -99,13 +99,13 @@
                 label="类型"
                 :show-label="true"
                 :show-help-icon="true"
-                @change="checkAndSave"
+                @change="queueMetaAutoSave({ immediate: true })"
                 @show-help="showHelpDialog = true"
               />
             </div>
 
             <!-- Node Status Selector -->
-            <div class="status-control" style="margin-left: 15px;">
+            <div class="status-control status-control-spaced">
               <NodeSelector 
                 mode="status" 
                 v-model="currentNote.node_status"
@@ -113,7 +113,7 @@
                 label="状态"
                 :show-label="true"
                 :show-help-icon="false"
-                @change="checkAndSave"
+                @change="queueMetaAutoSave({ immediate: true })"
                 @show-help="showHelpDialog = true"
               />
             </div>
@@ -290,7 +290,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onBeforeUnmount, defineAsyncComponent } from 'vue';
+import { ref, computed, watch, defineAsyncComponent } from 'vue';
 import { Delete, Calendar, Clock, Check, Loading, List, CopyDocument, Plus, Close } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
@@ -299,6 +299,24 @@ import NodeHelpDialog from './NodeHelpDialog.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
 import { useNoteStore, type NoteNode } from '@/api/notes';
+import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
+import {
+    applyEditableNoteSnapshot,
+    areEditableNoteSnapshotsEqual,
+    buildEditableNotePatch,
+    buildNoteDraftStorageKey,
+    createEditableNoteSnapshot,
+    noteCustomFieldsToItems,
+    noteCustomFieldItemsToList,
+    noteSnapshotToNode,
+    normalizeNoteCustomFieldType,
+    type EditableNotePatch,
+    type EditableNoteSnapshot,
+    type NoteCustomFieldItem,
+    type NoteCustomFieldType
+} from '@/utils/noteAutoSave';
+import { useAutoSave } from '@/utils/useAutoSave';
+import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import { 
     getNodeTypeConfig, 
     getNodeStatusConfig
@@ -339,75 +357,98 @@ const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
         closable: true
     });
 };
-const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
 const showHistory = ref(false);
 const showHelpDialog = ref(false);
 const showCopyDialog = ref(false);
 const historyButtonType = computed<'primary' | undefined>(() => showHistory.value ? 'primary' : undefined);
 
-type CustomFieldType = 'string' | 'number' | 'boolean';
-
-interface CustomFieldItem {
-    key: string;
-    value: string | boolean;
-    type: CustomFieldType;
-}
-
 interface InheritedFieldItem {
-    type: CustomFieldType;
+    type: NoteCustomFieldType;
     value: string | number | boolean;
 }
 
-const customFieldsList = ref<CustomFieldItem[]>([]);
+const customFieldsList = ref<NoteCustomFieldItem[]>([]);
 const inheritedDirectFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 
-let saveTimeout: any = null;
 let loadRequestToken = 0;
+const currentDraftKey = ref<string | null>(null);
+const CONTENT_SAVE_DELAY_MS = 1800;
+const META_SAVE_DELAY_MS = 450;
+const smartTimeInputStyle = {
+    width: '100px',
+    marginLeft: '5px',
+} as const;
 
 const isReady = computed(() => {
-    return !!currentNote.value && !isFetchingContent.value && !!originalData.value && currentNote.value.content !== undefined;
+    return !!currentNote.value && !isFetchingContent.value && currentNote.value.content !== undefined;
 });
-
-// Track original values for change detection
-const originalData = ref<{
-    title: string;
-    content: string;
-    weight: number;
-    start_at: number;
-    node_type: string | null;
-    node_status: string | null;
-    private_level: number;
-    custom_fields: string; // JSON string for easy comparison
-} | null>(null);
 
 const sortedHistory = computed(() => {
     if (!currentNote.value || !currentNote.value.history) return [];
     return [...currentNote.value.history].sort((a, b) => b.ts - a.ts);
 });
 
-const normalizeCustomFieldType = (type: unknown): CustomFieldType => {
-    if (type === 'number' || type === 'boolean') return type;
-    return 'string';
-};
+const buildCurrentSnapshot = (): EditableNoteSnapshot | null => createEditableNoteSnapshot(
+    currentNote.value,
+    noteCustomFieldItemsToList(customFieldsList.value)
+);
 
-const createCustomFieldItem = (key: string, type: unknown, value: unknown): CustomFieldItem => {
-    const normalizedType = normalizeCustomFieldType(type);
-
-    if (normalizedType === 'boolean') {
-        return {
-            key,
-            type: 'boolean',
-            value: value === true || value === 'true'
-        };
+const toApiPatch = (patch: EditableNotePatch): EditableNotePatch => {
+    const outgoing = { ...patch };
+    if (typeof outgoing.start_at === 'number' && outgoing.start_at > 10000000000) {
+        outgoing.start_at /= 1000;
     }
-
-    return {
-        key,
-        type: normalizedType,
-        value: value == null ? '' : String(value)
-    };
+    return outgoing;
 };
+
+const syncCurrentNoteFromSnapshot = (snapshot: EditableNoteSnapshot, source?: Partial<NoteNode> | null) => {
+    if (!currentNote.value && !source) return;
+    currentNote.value = applyEditableNoteSnapshot(
+        (source ? { ...(currentNote.value as NoteNode | undefined), ...source } : currentNote.value!) as NoteNode,
+        snapshot
+    );
+    customFieldsList.value = noteCustomFieldsToItems(snapshot.custom_fields);
+};
+
+const saveStatus = ref<'saved' | 'saving' | 'unsaved'>('saved');
+const autoSave = useAutoSave<EditableNoteSnapshot>({
+    debounceMs: 2000,
+    equals: areEditableNoteSnapshotsEqual,
+    storageKey: () => currentDraftKey.value,
+    save: async (snapshot) => {
+        const baseline = autoSave.getBaselineSnapshot();
+        const patch = buildEditableNotePatch(snapshot, baseline);
+        if (!Object.keys(patch).length) {
+            return snapshot;
+        }
+
+        const updatedNote = await noteStore.updateNote(snapshot.id, patch);
+        if (!updatedNote) {
+            throw new Error('保存失败');
+        }
+
+        const canonicalSnapshot = createEditableNoteSnapshot(updatedNote) ?? snapshot;
+        if (currentNote.value?.id === snapshot.id) {
+            syncCurrentNoteFromSnapshot(canonicalSnapshot, updatedNote);
+        }
+
+        emit('update', noteStore.getNoteById(snapshot.id) || noteSnapshotToNode(updatedNote, canonicalSnapshot));
+        return canonicalSnapshot;
+    },
+    onError: (error) => {
+        console.error(error);
+    },
+    saveOnPageHide: (snapshot, baselineSnapshot) => {
+        const patch = buildEditableNotePatch(snapshot, baselineSnapshot);
+        if (!Object.keys(patch).length) return;
+        putJsonKeepalive(`/api/notes/${encodeURIComponent(snapshot.id)}`, toApiPatch(patch));
+    }
+});
+
+watch(autoSave.saveStatus, value => {
+    saveStatus.value = value;
+});
 
 const assignInheritedField = (
     target: Record<string, InheritedFieldItem>,
@@ -418,10 +459,31 @@ const assignInheritedField = (
 ) => {
     if (typeof key !== 'string' || ownKeys.has(key)) return;
     target[key] = {
-        type: normalizeCustomFieldType(type),
+        type: normalizeNoteCustomFieldType(type),
         value: typeof value === 'boolean' || typeof value === 'number' ? value : String(value ?? '')
     };
     ownKeys.add(key);
+};
+
+const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) => {
+    if (!isReady.value) return;
+    const snapshot = buildCurrentSnapshot();
+    if (!snapshot) return;
+    if (currentNote.value) {
+        currentNote.value.custom_fields = snapshot.custom_fields;
+    }
+    autoSave.markDirty(snapshot, options);
+};
+
+const queueContentAutoSave = () => {
+    queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+};
+
+const queueMetaAutoSave = (options: { immediate?: boolean } = {}) => {
+    queueAutoSave({
+        immediate: options.immediate,
+        delayMs: options.immediate ? 0 : META_SAVE_DELAY_MS
+    });
 };
 
 // Watch noteId change to load data
@@ -429,28 +491,27 @@ watch(() => props.noteId, async (newId) => {
     const requestToken = ++loadRequestToken;
 
     if (!newId) {
+        await autoSave.flush();
+        currentDraftKey.value = null;
         currentNote.value = undefined;
-        originalData.value = null;
         isFetchingContent.value = false;
+        autoSave.loadSnapshot(null, { draftStrategy: 'discard' });
         return;
     }
     
-    // Check if we need to save previous note
-    if (currentNote.value && saveStatus.value === 'unsaved' && isReady.value) {
-        if (saveTimeout) clearTimeout(saveTimeout);
-        await saveNote(currentNote.value);
+    if (currentNote.value && autoSave.hasUnsavedChanges.value) {
+        await autoSave.flush();
     }
 
     await loadNote(newId, requestToken);
 }, { immediate: true });
 
 async function loadNote(id: string, requestToken: number) {
-    saveStatus.value = 'saved';
     showHistory.value = false;
 
     currentNote.value = undefined;
-    originalData.value = null;
     isFetchingContent.value = true;
+    currentDraftKey.value = buildNoteDraftStorageKey(id);
 
     const detailed = await noteStore.fetchNoteDetail(id);
     if (requestToken !== loadRequestToken || props.noteId !== id) {
@@ -465,38 +526,54 @@ async function loadNote(id: string, requestToken: number) {
     }
 
     const note = noteStore.getNoteById(id) || detailed;
-    currentNote.value = {
+    const sourceNote: NoteNode = {
         ...note,
         content: detailed.content || '',
         private_level: detailed.private_level ?? note.private_level ?? 0
     };
-    
-    // Initialize Custom Fields List
-    if (note.custom_fields) {
-        if (Array.isArray(note.custom_fields)) {
-            // New List Format: [["key", "type", "value"], ...] or [{"key":...}]
-            customFieldsList.value = note.custom_fields.map((item: any) => {
-                if (Array.isArray(item) && item.length >= 3) {
-                    return createCustomFieldItem(item[0], item[1], item[2]);
-                } else if (typeof item === 'object') {
-                    return createCustomFieldItem(item.key, item.type, item.value);
-                }
-                return null;
-            }).filter((item: CustomFieldItem | null): item is CustomFieldItem => item !== null);
-        } else if (typeof note.custom_fields === 'object') {
-            // Legacy Dict Format support
-            customFieldsList.value = Object.entries(note.custom_fields).map(([k, v]) => {
-                const inferredType: CustomFieldType = typeof v === 'boolean'
-                    ? 'boolean'
-                    : typeof v === 'number'
-                        ? 'number'
-                        : 'string';
-                return createCustomFieldItem(k, inferredType, v);
-            });
-        }
-    } else {
-        customFieldsList.value = [];
+    const serverSnapshot = createEditableNoteSnapshot(sourceNote);
+    if (!serverSnapshot) {
+        ElMessage.error('节点快照初始化失败');
+        return;
     }
+    currentDraftKey.value = buildNoteDraftStorageKey(sourceNote.id, sourceNote.title);
+    const {
+        snapshot: loadedSnapshot,
+        pendingDraft,
+        expiredDraft
+    } = autoSave.loadSnapshot(serverSnapshot);
+    let activeSnapshot = loadedSnapshot ?? serverSnapshot;
+    if (expiredDraft) {
+        ElMessage.info('发现过期本地草稿，已忽略');
+    }
+    if (pendingDraft) {
+        const promptMessage = pendingDraft.hasConflict
+            ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。是否恢复本地草稿？`
+            : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。是否恢复继续编辑？`;
+
+        try {
+            await ElMessageBox.confirm(promptMessage, '恢复本地草稿', {
+                confirmButtonText: '恢复草稿',
+                cancelButtonText: '使用服务器版本',
+                type: pendingDraft.hasConflict ? 'warning' : 'info'
+            });
+
+            if (requestToken !== loadRequestToken || props.noteId !== id) {
+                return;
+            }
+
+            autoSave.restoreDraft(pendingDraft.snapshot);
+            activeSnapshot = pendingDraft.snapshot;
+            ElMessage.warning(pendingDraft.hasConflict ? '已恢复本地草稿，请留意与服务器版本的差异' : '已恢复本地草稿');
+        } catch {
+            if (requestToken !== loadRequestToken || props.noteId !== id) {
+                return;
+            }
+            autoSave.clearDraft();
+        }
+    }
+
+    syncCurrentNoteFromSnapshot(activeSnapshot, sourceNote);
 
     // Process Inherited Fields (Deduplicate against own fields)
     const ownKeys = new Set(customFieldsList.value.map(i => i.key));
@@ -527,110 +604,18 @@ async function loadNote(id: string, requestToken: number) {
              });
         }
     }
-
-    originalData.value = {
-        title: detailed.title,
-        content: detailed.content || '',
-        weight: detailed.weight,
-        start_at: detailed.start_at,
-        node_type: detailed.node_type || 'note',
-        node_status: detailed.node_status || 'idea',
-        private_level: detailed.private_level || 0,
-        custom_fields: JSON.stringify(detailed.custom_fields || {})
-    };
-}
-
-const checkAndSave = () => {
-    if (!isReady.value || !currentNote.value || !originalData.value) return;
-    
-    const curr = currentNote.value;
-    const orig = originalData.value;
-    
-    // Construct current custom fields list
-    const currentFieldsList: any[] = [];
-    customFieldsList.value.forEach(item => {
-        if (item.key && item.key.trim()) {
-            let val: any = item.value;
-            // Type is already selected by user, trust it or validate?
-            // User selected type in UI.
-            
-            // Format for List: [key, type, value]
-            currentFieldsList.push([item.key.trim(), item.type, val]);
-        }
-    });
-    // Update the object in currentNote so it's ready to be saved
-    curr.custom_fields = currentFieldsList;
-
-    const isChanged = 
-        curr.content !== orig.content ||
-        curr.title !== orig.title ||
-        curr.weight !== orig.weight ||
-        curr.start_at !== orig.start_at ||
-        curr.node_type !== orig.node_type ||
-        curr.node_status !== orig.node_status ||
-        curr.private_level !== orig.private_level ||
-        JSON.stringify(curr.custom_fields) !== orig.custom_fields;
-    
-    if (!isChanged) {
-        if (saveStatus.value === 'unsaved') saveStatus.value = 'saved';
-        return;
-    }
-    
-    saveStatus.value = 'unsaved';
-    
-    if (saveTimeout) clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => {
-        saveNote(curr);
-    }, 2000);
-};
-
-const saveNote = async (note: NoteNode) => {
-    if (!note) return;
-    saveStatus.value = 'saving';
-    
-    try {
-        await noteStore.updateNote(note.id, {
-            title: note.title,
-            content: note.content,
-            weight: note.weight,
-            start_at: note.start_at,
-            node_type: note.node_type,
-            node_status: note.node_status,
-            private_level: note.private_level,
-            custom_fields: note.custom_fields
-        });
-        
-        // Update original data to current
-        originalData.value = {
-            title: note.title,
-            content: note.content || '',
-            weight: note.weight,
-            start_at: note.start_at,
-            node_type: note.node_type || 'note',
-            node_status: note.node_status || 'idea',
-            private_level: note.private_level || 0,
-            custom_fields: JSON.stringify(note.custom_fields || {})
-        };
-        
-        saveStatus.value = 'saved';
-        emit('update', note); // Notify parent
-    } catch (e) {
-        saveStatus.value = 'unsaved'; // Retry?
-        console.error(e);
-        ElMessage.error('保存失败');
-    }
 };
 
 // Field Change Handlers
 const onContentChange = (html: string) => {
     if (currentNote.value) {
         currentNote.value.content = html;
-        checkAndSave();
+        queueContentAutoSave();
     }
 };
 
 const onTitleChange = () => {
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
 const startDateProxy = computed<Date | undefined>({
@@ -647,7 +632,7 @@ const startDateProxy = computed<Date | undefined>({
         original.setDate(val.getDate());
         
         currentNote.value.start_at = original.getTime();
-        checkAndSave();
+        queueMetaAutoSave();
     }
 });
 
@@ -680,7 +665,7 @@ const handleTimeChange = (val: string) => {
             original.setSeconds(s);
             
             currentNote.value.start_at = original.getTime();
-            checkAndSave();
+            queueMetaAutoSave();
         }
     }
 };
@@ -690,12 +675,13 @@ const handleTimeChange = (val: string) => {
 const onWeightChange = (value: number | undefined) => {
     if (!currentNote.value) return;
     if (value === undefined || value === null || isNaN(value)) {
-         if (originalData.value) currentNote.value.weight = originalData.value.weight;
+         const baseline = autoSave.getBaselineSnapshot();
+         if (baseline) currentNote.value.weight = baseline.weight;
          return;
     }
     currentNote.value.weight = Math.round(value);
     if (currentNote.value.weight < 1) currentNote.value.weight = 1;
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
 const onWeightBlur = () => {
@@ -705,7 +691,7 @@ const onWeightBlur = () => {
 const togglePrivateLevel = () => {
     if (!currentNote.value) return;
     currentNote.value.private_level = currentNote.value.private_level > 0 ? 0 : 1;
-    checkAndSave();
+    queueMetaAutoSave({ immediate: true });
 };
 
 const addCustomField = () => {
@@ -714,10 +700,10 @@ const addCustomField = () => {
 
 const addInheritedField = (key: string, val: string | number | boolean, typeFromInheritance?: string) => {
     // Determine type from parent value or use explicit type if available
-    let type: CustomFieldType = 'string';
+    let type: NoteCustomFieldType = 'string';
     
     if (typeFromInheritance && ['string', 'number', 'boolean'].includes(typeFromInheritance)) {
-        type = typeFromInheritance as CustomFieldType;
+        type = typeFromInheritance as NoteCustomFieldType;
     } else {
         // Fallback inference
         if (typeof val === 'boolean') type = 'boolean';
@@ -726,7 +712,7 @@ const addInheritedField = (key: string, val: string | number | boolean, typeFrom
             // Looks like number, but stored as string? Default to string to be safe.
         }
     }
-
+    
     // Add to own fields with empty value (but correct type)
     customFieldsList.value.push({ 
         key: key, 
@@ -738,7 +724,7 @@ const addInheritedField = (key: string, val: string | number | boolean, typeFrom
     if (inheritedDirectFields.value[key]) delete inheritedDirectFields.value[key];
     if (inheritedAncestorFields.value[key]) delete inheritedAncestorFields.value[key];
     
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
 const formatInheritedValue = (val: any) => {
@@ -748,22 +734,22 @@ const formatInheritedValue = (val: any) => {
 
 const removeCustomField = (index: number) => {
     customFieldsList.value.splice(index, 1);
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
 const handleCustomFieldChange = () => {
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
-const getTextFieldValue = (item: CustomFieldItem) => item.type === 'boolean' ? '' : String(item.value);
+const getTextFieldValue = (item: NoteCustomFieldItem) => item.type === 'boolean' ? '' : String(item.value);
 
-const setTextFieldValue = (item: CustomFieldItem, value: string | number) => {
+const setTextFieldValue = (item: NoteCustomFieldItem, value: string | number) => {
     if (item.type === 'boolean') return;
     item.value = String(value ?? '');
     handleCustomFieldChange();
 };
 
-const setNumberFieldValue = (item: CustomFieldItem, value: string | number) => {
+const setNumberFieldValue = (item: NoteCustomFieldItem, value: string | number) => {
     if (item.type !== 'number') return;
     const nextValue = String(value ?? '');
     if (!/^-?\d*\.?\d*$/.test(nextValue)) return;
@@ -771,15 +757,15 @@ const setNumberFieldValue = (item: CustomFieldItem, value: string | number) => {
     handleCustomFieldChange();
 };
 
-const getBooleanFieldValue = (item: CustomFieldItem) => item.type === 'boolean' ? Boolean(item.value) : false;
+const getBooleanFieldValue = (item: NoteCustomFieldItem) => item.type === 'boolean' ? Boolean(item.value) : false;
 
-const setBooleanFieldValue = (item: CustomFieldItem, value: string | number | boolean) => {
+const setBooleanFieldValue = (item: NoteCustomFieldItem, value: string | number | boolean) => {
     if (item.type !== 'boolean') return;
     item.value = Boolean(value);
     handleCustomFieldChange();
 };
 
-const handleCustomFieldTypeChange = (item: CustomFieldItem) => {
+const handleCustomFieldTypeChange = (item: NoteCustomFieldItem) => {
     // Reset value when type changes to avoid type mismatch confusion
     if (item.type === 'boolean') {
         item.value = false;
@@ -789,7 +775,7 @@ const handleCustomFieldTypeChange = (item: CustomFieldItem) => {
     } else {
         item.value = '';
     }
-    checkAndSave();
+    queueMetaAutoSave();
 };
 
 const deleteCurrentNote = async () => {
@@ -802,6 +788,7 @@ const deleteCurrentNote = async () => {
         });
         
         const id = currentNote.value.id;
+        autoSave.clearDraft();
         await noteStore.deleteNote(id);
         emit('delete', id);
         
@@ -815,27 +802,7 @@ const handleCopySuccess = (newNote: NoteNode) => {
 };
 
 // Formatting Helpers
-const formatDateDetailed = (timestamp: number) => {
-    if (!timestamp) return '-';
-    const date = new Date(timestamp);
-    const now = new Date();
-    const isCurrentYear = date.getFullYear() === now.getFullYear();
-    
-    const options: Intl.DateTimeFormatOptions = {
-        month: '2-digit',
-        day: '2-digit',
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit',
-        hour12: false
-    };
-    
-    if (!isCurrentYear) {
-        options.year = 'numeric';
-    }
-    
-    return date.toLocaleString('zh-CN', options).replace(/-/g, '/');
-};
+const formatDateDetailed = (timestamp: number) => formatNoteDateTimeDetailed(timestamp);
 
 const getFieldName = (f: string) => {
     const map: Record<string, string> = {
@@ -893,16 +860,6 @@ const getFieldTypeLabel = (val: any) => {
     if (!isNaN(Number(str)) && str.trim() !== '') return '数值'; // Treat numeric string as number type for display
     return '文本';
 };
-
-// Cleanup
-onBeforeUnmount(() => {
-    if (saveTimeout) clearTimeout(saveTimeout);
-    // Ensure last save happens? 
-    // Async in unmount is tricky. Ideally we rely on the user not closing the tab immediately.
-    if (currentNote.value && saveStatus.value === 'unsaved') {
-        saveNote(currentNote.value);
-    }
-});
 </script>
 
 <style scoped>
@@ -1183,11 +1140,20 @@ onBeforeUnmount(() => {
   font-size: 18px;
 }
 
+.start-date-picker {
+    width: 130px;
+    margin-left: 5px;
+}
+
 .time-tag {
   display: flex;
   align-items: center;
   gap: 4px;
   cursor: default;
+}
+
+.graph-link-button {
+    margin-left: 10px;
 }
 
 .weight-control {
@@ -1208,6 +1174,10 @@ onBeforeUnmount(() => {
     display: flex;
     align-items: center;
     gap: 10px;
+}
+
+.status-control-spaced {
+    margin-left: 15px;
 }
 
 .private-control {

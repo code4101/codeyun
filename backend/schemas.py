@@ -35,7 +35,7 @@ class UserLogin(BaseModel):
 class DeviceBase(BaseModel):
     name: str
     type: str = "RemoteDevice"
-    url: Optional[str] = None
+    server_url: Optional[str] = None
     api_token: Optional[str] = None # Only for admin/local use
     order_index: int = 0
 
@@ -50,33 +50,33 @@ class DeviceRead(DeviceBase):
 class DeviceUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     name: Optional[str] = None
-    url: Optional[str] = None
+    server_url: Optional[str] = None
     api_token: Optional[str] = None
     order_index: Optional[int] = None
 
 # UserDevice Schemas
 class UserDeviceBase(BaseModel):
     model_config = ConfigDict(from_attributes=True)
+    id: str
     user_id: int
     device_id: str
+    mode: Literal["local", "remote"]
     alias: Optional[str] = None
+    name: Optional[str] = None
+    server_url: Optional[str] = None
     is_active: bool = True
     
 class UserDeviceCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    device_id: str
-    token: str # User provided token
-    alias: Optional[str] = None
-    url: Optional[str] = None # Allow passing URL when creating new device entry
-
-class UserDeviceRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-    user_id: int
-    device_id: str
+    mode: Literal["local", "remote"]
+    device_id: Optional[str] = None
     token: str
     alias: Optional[str] = None
-    name: Optional[str] = None # Added for compatibility
-    is_active: bool
+    name: Optional[str] = None
+    server_url: Optional[str] = None
+
+class UserDeviceRead(UserDeviceBase):
+    token: str
     created_at: float
     updated_at: float
     device: Optional[DeviceRead] = None
@@ -86,7 +86,8 @@ class UserDeviceUpdate(BaseModel):
     token: Optional[str] = None
     alias: Optional[str] = None
     is_active: Optional[bool] = None
-    name: Optional[str] = None # For device renaming
+    name: Optional[str] = None
+    server_url: Optional[str] = None
 
 # Note Schemas
 class NoteCreate(BaseModel):

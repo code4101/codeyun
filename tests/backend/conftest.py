@@ -1,6 +1,8 @@
 import pytest
 import sys
 import os
+import shutil
+import tempfile
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 from sqlmodel import SQLModel, create_engine, Session
@@ -14,6 +16,9 @@ if project_root not in sys.path:
 
 os.environ.setdefault("CODEYUN_ENV", "test")
 os.environ.setdefault("CODEYUN_LOAD_DOTENV", "0")
+TEST_DATA_DIR = tempfile.mkdtemp(prefix="codeyun-pytest-data-")
+os.environ.setdefault("CODEYUN_DATA_DIR", TEST_DATA_DIR)
+os.environ.setdefault("CODEYUN_MACHINE_STATE_DIR", os.path.join(TEST_DATA_DIR, "machine-state"))
 
 from backend.app import app
 from backend.db import get_session
@@ -55,9 +60,21 @@ def fixture_test_device(session):
     token = "test-token-123"
     
     # Mock config instead of DB
-    with patch("backend.core.device.get_local_config", return_value={"api_token": token, "python_exec": "python", "name": "Test Local Device"}), \
-         patch("backend.core.device.get_system_id", return_value=device_id), \
-         patch("backend.api.agent.get_system_id", return_value=device_id):
+    with patch("socket.gethostname", return_value="Test Local Device"), \
+         patch(
+             "backend.core.device._load_machine_identity",
+             return_value={
+                 "device_id": device_id,
+                 "device_identity_version": 2,
+                 "device_identity_source": "test",
+             },
+         ), \
+         patch("backend.core.device._save_machine_identity"), \
+         patch("backend.core.device.get_device_token", return_value=token), \
+         patch("backend.core.device.get_device_id", return_value=device_id), \
+         patch("backend.api.device.get_device_id", return_value=device_id), \
+         patch("backend.api.device_entries.get_device_id", return_value=device_id), \
+         patch("backend.api.device_control.get_device_id", return_value=device_id):
         
         # Reload device manager to pick up the test device from mocked config
         device_manager.devices = {}
@@ -91,3 +108,9 @@ def fixture_auth_user(session, client):
     # But since client fixture runs before/after this, we should clear it here too to be safe.
     if get_current_user_from_token in app.dependency_overrides:
         del app.dependency_overrides[get_current_user_from_token]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_data_dir():
+    yield
+    shutil.rmtree(TEST_DATA_DIR, ignore_errors=True)

@@ -70,9 +70,9 @@ def get_devices(user_token):
         return []
 
 def test_remote_agent(url, token):
-    # 3. Test Agent Status using Device Token
+    # 3. Test Node Status using Device Token
     print(f"      -> Testing connection to {url}...")
-    target_url = f"{url.rstrip('/')}/api/agent/status"
+    target_url = f"{url.rstrip('/')}/api/device-control/status"
     headers = {
         "Authorization": f"Bearer {token}",
         "X-Device-Token": token

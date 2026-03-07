@@ -1,79 +1,51 @@
 import unittest
-from unittest.mock import MagicMock, patch
-import sys
-import os
+from unittest.mock import patch
 
-# Add backend to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from backend.core.device import DeviceManager, LocalDevice
 
-from core.device import DeviceManager, RemoteDevice, LocalDevice
 
-class TestDeviceSync(unittest.TestCase):
+class TestDeviceManagerLocal(unittest.TestCase):
     def setUp(self):
         self.dm = DeviceManager()
-        # Mock the devices dict to avoid side effects
-        self.dm.devices = {}
+        self.local_id = "test-local-1"
+        self.local = LocalDevice(
+            device_id=self.local_id,
+            name="Old Name",
+            python_exec="python",
+            api_token="test-token",
+        )
+        self.dm.devices = {self.local_id: self.local}
         
-    def test_rename_remote_device_flow(self):
-        """Test that rename_device calls remote API"""
-        dev_id = "test-remote-1"
-        dev = RemoteDevice(dev_id, "OldName", "http://example.com")
-        self.dm.devices[dev_id] = dev
-        
-        # Mock requests
-        with patch('requests.post') as mock_post:
-            mock_post.return_value.status_code = 200
-            
-            # Action
-            result = self.dm.rename_device(dev_id, "NewName")
-            
-            # Verify
-            self.assertTrue(result)
-            self.assertEqual(dev.name, "NewName")
-            mock_post.assert_called_with(
-                "http://example.com/api/agent/rename",
-                json={"name": "NewName"},
-                headers={},
-                timeout=5
-            )
+    def test_rename_local_device_is_rejected(self):
+        with patch.object(self.dm, "_save_device_to_db") as mock_save:
+            result = self.dm.rename_device(self.local_id, "New Name")
 
-    def test_push_config_flow(self):
-        """Test that update_device triggers push_config"""
-        dev_id = "test-remote-2"
-        dev = RemoteDevice(dev_id, "Remote2", "http://example.com")
-        # Mock push_config to verify it's called
-        dev.push_config = MagicMock()
-        
-        self.dm.devices[dev_id] = dev
-        
-        # Patch save to db to avoid DB errors
-        with patch.object(self.dm, '_save_device_to_db'):
-            # Action
-            self.dm.update_device(dev_id, python_exec="/usr/bin/python3")
-            
-            # Verify local update
-            self.assertEqual(dev.python_exec, "/usr/bin/python3")
-            
-            # Verify push_config called (might need sleep if threaded)
-            import time
-            time.sleep(0.1) 
-            dev.push_config.assert_called_once()
+        self.assertFalse(result)
+        self.assertEqual(self.local.name, "Old Name")
+        mock_save.assert_not_called()
 
-    def test_push_config_implementation(self):
-        """Test that push_config sends correct payload"""
-        dev = RemoteDevice("test-remote-3", "Remote3", "http://example.com", python_exec="/bin/python")
-        
-        with patch('requests.post') as mock_post:
-            mock_post.return_value.status_code = 200
-            
-            dev.push_config()
-            
-            mock_post.assert_called_with(
-                "http://example.com/api/agent/config",
-                json={"python_exec": "/bin/python"},
-                headers={},
-                timeout=5
-            )
+    def test_update_local_device_is_rejected(self):
+        with patch.object(self.dm, "_save_device_to_db") as mock_save:
+            result = self.dm.update_device(self.local_id, python_exec="/usr/bin/python3")
+
+        self.assertFalse(result)
+        self.assertEqual(self.local.python_exec, "python")
+        mock_save.assert_not_called()
+
+    def test_unknown_device_update_is_rejected(self):
+        self.assertFalse(self.dm.rename_device("missing-device", "Nope"))
+        self.assertFalse(self.dm.update_device("missing-device", python_exec="python3"))
+
+    def test_load_uses_env_device_token(self):
+        with (
+            patch("backend.core.device.get_device_id", return_value=self.local_id),
+            patch("socket.gethostname", return_value="Host Name"),
+            patch("backend.core.device.get_device_token", return_value="env-token"),
+        ):
+            self.dm.load()
+
+        self.assertEqual(self.dm.devices[self.local_id].api_token, "env-token")
+        self.assertEqual(self.dm.devices[self.local_id].name, "Host Name")
 
 if __name__ == '__main__':
     unittest.main()

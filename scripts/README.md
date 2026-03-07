@@ -16,11 +16,12 @@
     ```
 
 2.  **环境变量配置**：
-    脚本会自动从项目根目录读取 `.env` 文件。请确保该文件存在并包含正确的 SSH 连接信息（请参考根目录的 `.env.example`）：
+    脚本会自动从项目根目录读取 `.env` 文件。请确保该文件存在并包含正确的服务器连接信息（请参考根目录的 `.env.example`）：
     ```ini
-    SSH_HOST=your_server_ip
-    SSH_USER=ubuntu
-    SSH_PASSWORD=your_password
+    YUN_SERVER_HOST=your_server_ip
+    YUN_SERVER_USER=deploy
+    YUN_SERVER_PASS=your_password
+    YUN_SERVER_PORT=22
     ```
 
     > **注意**：不要将 `.env` 文件提交到版本控制系统。

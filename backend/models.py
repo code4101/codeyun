@@ -1,8 +1,9 @@
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, String
 import time
 import socket
+import uuid
 
 # --- User Models ---
 
@@ -23,27 +24,28 @@ class User(SQLModel, table=True):
 
 class UserDevice(SQLModel, table=True):
     """
-    User's view of a device.
-    Now contains ALL connection info and personalization.
-    Replaces the global Device table concept for client-side usage.
+    User-owned connection entry to a device.
+    Multiple entries may point at the same physical device_id.
     """
+    __tablename__ = "userdeviceentry"
     __table_args__ = {'extend_existing': True}
-    user_id: int = Field(primary_key=True, foreign_key="user.id")
-    device_id: str = Field(primary_key=True) # Just a string ID, no FK to device table anymore
-    
-    name: str # Replaces 'alias', this is the user's name for the device
-    type: str = Field(default="RemoteDevice") # 'LocalDevice' or 'RemoteDevice'
-    url: Optional[str] = None # Connection URL
-    token: str # Access Token
-    
+
+    entry_id: str = Field(default_factory=lambda: str(uuid.uuid4()), primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    device_id: str = Field(index=True)
+
+    name: str
+    mode: str = Field(default="remote", index=True)  # 'local' or 'remote'
+    server_url: Optional[str] = Field(
+        default=None,
+        sa_column=Column("url", String, nullable=True),
+    )
+    token: str
+
     is_active: bool = Field(default=True)
     order_index: int = Field(default=0)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
-    
-    # Deprecated fields (kept for migration safety if needed, or remove now?)
-    # alias: Optional[str] = None 
-    # Let's remove alias as we migrated it to name.
 
 # --- Task Models ---
 
@@ -60,6 +62,23 @@ class Task(SQLModel, table=True):
     timeout: Optional[int] = None 
     order: Optional[int] = Field(default=0)
     created_at: float = Field(default_factory=time.time)
+
+
+class TaskRuntime(SQLModel, table=True):
+    __table_args__ = {'extend_existing': True}
+    task_id: str = Field(primary_key=True)
+    device_id: str = Field(index=True)
+    pid: Optional[int] = Field(default=None, index=True)
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AppSetting(SQLModel, table=True):
+    __table_args__ = {'extend_existing': True}
+    key: str = Field(primary_key=True)
+    value: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    updated_at: float = Field(default_factory=time.time)
 
 # --- Note Models ---
 

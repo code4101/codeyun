@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Link } from '@element-plus/icons-vue';
+
 // 首页不再需要复杂的逻辑和 API 调用
 </script>
 

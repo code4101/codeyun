@@ -25,6 +25,7 @@ def test_development_defaults(monkeypatch):
     assert settings.environment == "development"
     assert settings.docs_enabled is True
     assert "http://localhost:5173" in settings.cors_origins
+    assert settings.cors_origin_regex == r"^https?://[^/]+:(5173|4173)$"
     assert settings.allow_all_cors is False
 
 
@@ -39,6 +40,7 @@ def test_production_defaults(monkeypatch):
     assert settings.environment == "production"
     assert settings.docs_enabled is False
     assert settings.cors_origins == ()
+    assert settings.cors_origin_regex == ""
 
 
 def test_explicit_cors_and_docs_override(monkeypatch):
@@ -54,3 +56,4 @@ def test_explicit_cors_and_docs_override(monkeypatch):
         "https://code4101.com",
         "https://admin.code4101.com",
     )
+    assert settings.cors_origin_regex == ""

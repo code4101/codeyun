@@ -176,13 +176,17 @@ const handleLogin = () => {
 
 <style scoped>
 .common-layout {
-  height: 100vh;
+  height: 100dvh;
+  min-height: 100dvh;
   display: flex;
   width: 100%; /* Ensure full width */
+  overflow: hidden;
 }
 .el-container {
   height: 100%;
   width: 100%;
+  min-height: 0;
+  min-width: 0;
 }
 .el-aside {
   background-color: #f5f7fa;
@@ -191,6 +195,10 @@ const handleLogin = () => {
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.main-aside {
+  min-height: 0;
 }
 
 .toggle-button {
@@ -217,6 +225,7 @@ const handleLogin = () => {
   align-items: center;
   justify-content: space-between; /* Space out title and actions */
   padding: 0 20px; /* Adjust padding */
+  flex-shrink: 0;
 }
 .header-actions {
   display: flex;
@@ -233,6 +242,9 @@ const handleLogin = () => {
 .el-main {
   padding: 0; /* Remove default padding to allow children to control layout */
   width: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
 }
 .el-menu {
   border-right: none;

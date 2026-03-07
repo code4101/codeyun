@@ -17,7 +17,7 @@
         <el-select
           size="small"
           :model-value="rule.action"
-          style="width: 90px"
+          class="w-90"
           @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.action = value; })"
         >
           <el-option label="包含" value="include" />
@@ -27,7 +27,7 @@
         <el-select
           size="small"
           :model-value="getRuleTemplateValue(rule)"
-          style="width: 150px"
+          class="w-150"
           @update:model-value="value => replaceRuleTemplate(getActualRuleIndex(visibleIndex), value)"
         >
           <el-option
@@ -44,7 +44,7 @@
             :model-value="formatIdInput(rule)"
             placeholder="多个节点 ID 用逗号分隔"
             clearable
-            style="width: 320px"
+            class="w-320"
             @update:model-value="value => updateIdRule(getActualRuleIndex(visibleIndex), value)"
           />
         </template>
@@ -53,7 +53,7 @@
           <el-select
             size="small"
             :model-value="rule.matcher.op || getDefaultOp(getMatcherField(rule))"
-            style="width: 110px"
+            class="w-110"
             @update:model-value="value => updateFieldOp(getActualRuleIndex(visibleIndex), value)"
           >
             <el-option
@@ -69,7 +69,7 @@
               size="small"
               :model-value="String(rule.matcher.value ?? '')"
               clearable
-              style="width: 150px"
+              class="w-150"
               @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value || ''; })"
             >
               <el-option
@@ -87,7 +87,7 @@
               :model-value="String(rule.matcher.value ?? '')"
               :placeholder="getTextFieldPlaceholder(getMatcherField(rule))"
               clearable
-              style="width: 280px"
+              class="w-280"
               @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value || ''; draft.matcher.values = []; })"
             />
           </template>
@@ -101,7 +101,7 @@
                   <el-select
                     size="small"
                     :model-value="getTimePointEditorValue(rule, rangeIndex)"
-                    style="width: 140px"
+                    class="w-140"
                     @update:model-value="value => updateTimePointEditorValue(getActualRuleIndex(visibleIndex), value, rangeIndex)"
                   >
                     <el-option
@@ -119,7 +119,7 @@
                     type="datetime"
                     :placeholder="rangeIndex === 0 ? '开始时间' : '结束时间'"
                     value-format="x"
-                    style="width: 190px"
+                    class="w-190"
                     @update:model-value="value => updateTimeExprAbsoluteValue(getActualRuleIndex(visibleIndex), value, rangeIndex)"
                   />
 
@@ -127,7 +127,7 @@
                     <el-select
                       size="small"
                       :model-value="getTimeExprUnit(rule, rangeIndex)"
-                      style="width: 80px"
+                      class="w-80"
                       @update:model-value="value => updateTimeExprUnit(getActualRuleIndex(visibleIndex), value, rangeIndex)"
                     >
                       <el-option label="日" value="day" />
@@ -139,14 +139,14 @@
                       size="small"
                       :model-value="getTimeExprOffset(rule, rangeIndex)"
                       controls-position="right"
-                      style="width: 100px"
+                      class="w-100"
                       @update:model-value="value => updateTimeExprOffset(getActualRuleIndex(visibleIndex), value, rangeIndex)"
                     />
 
                     <el-select
                       size="small"
                       :model-value="getTimeExprBoundary(rule, rangeIndex)"
-                      style="width: 90px"
+                      class="w-90"
                       @update:model-value="value => updateTimeExprBoundary(getActualRuleIndex(visibleIndex), value, rangeIndex)"
                     >
                       <el-option label="起点" value="start" />
@@ -163,7 +163,7 @@
               <el-select
                 size="small"
                 :model-value="getTimePointEditorValue(rule)"
-                style="width: 150px"
+                class="w-150"
                 @update:model-value="value => updateTimePointEditorValue(getActualRuleIndex(visibleIndex), value)"
               >
                 <el-option
@@ -181,7 +181,7 @@
                 type="datetime"
                 placeholder="选择时间"
                 value-format="x"
-                style="width: 200px"
+                class="w-200"
                 @update:model-value="value => updateTimeExprAbsoluteValue(getActualRuleIndex(visibleIndex), value)"
               />
 
@@ -189,7 +189,7 @@
                 <el-select
                   size="small"
                   :model-value="getTimeExprUnit(rule)"
-                  style="width: 80px"
+                  class="w-80"
                   @update:model-value="value => updateTimeExprUnit(getActualRuleIndex(visibleIndex), value)"
                 >
                   <el-option label="日" value="day" />
@@ -201,14 +201,14 @@
                   size="small"
                   :model-value="getTimeExprOffset(rule)"
                   controls-position="right"
-                  style="width: 100px"
+                  class="w-100"
                   @update:model-value="value => updateTimeExprOffset(getActualRuleIndex(visibleIndex), value)"
                 />
 
                 <el-select
                   size="small"
                   :model-value="getTimeExprBoundary(rule)"
-                  style="width: 90px"
+                  class="w-90"
                   @update:model-value="value => updateTimeExprBoundary(getActualRuleIndex(visibleIndex), value)"
                 >
                   <el-option label="起点" value="start" />
@@ -224,7 +224,7 @@
                 size="small"
                 :model-value="getRangeValue(rule.matcher.values, 0)"
                 controls-position="right"
-                style="width: 130px"
+                class="w-130"
                 @update:model-value="value => updateNumberRange(getActualRuleIndex(visibleIndex), 0, value)"
               />
               <span class="range-separator">至</span>
@@ -232,7 +232,7 @@
                 size="small"
                 :model-value="getRangeValue(rule.matcher.values, 1)"
                 controls-position="right"
-                style="width: 130px"
+                class="w-130"
                 @update:model-value="value => updateNumberRange(getActualRuleIndex(visibleIndex), 1, value)"
               />
             </div>
@@ -241,7 +241,7 @@
               v-else
               :model-value="Number(rule.matcher.value ?? 0)"
               controls-position="right"
-              style="width: 150px"
+              class="w-150"
               @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value ?? 0; draft.matcher.values = []; })"
             />
           </template>
@@ -975,4 +975,16 @@ const updateTimeExprBoundary = (index: number, value: string, rangeIndex?: numbe
 .program-bar :deep(.el-date-editor .el-range-separator) {
   font-size: 12px;
 }
+
+.w-80 { width: 80px; }
+.w-90 { width: 90px; }
+.w-100 { width: 100px; }
+.w-110 { width: 110px; }
+.w-130 { width: 130px; }
+.w-140 { width: 140px; }
+.w-150 { width: 150px; }
+.w-190 { width: 190px; }
+.w-200 { width: 200px; }
+.w-280 { width: 280px; }
+.w-320 { width: 320px; }
 </style>

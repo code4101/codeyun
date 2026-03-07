@@ -8,24 +8,51 @@ import psutil
 import shlex
 import time
 import datetime
-import requests
 import json
 import ctypes
+import hashlib
 from ctypes import wintypes
 from typing import Dict, List, Optional, Any, Callable
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
 import asyncio
-import secrets
+from sqlalchemy import text
 
 import uuid
 
+from backend.core.settings import get_settings
+
 # --- Shared Constants (Consider moving to a config file) ---
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+settings = get_settings()
+DATA_DIR = os.fspath(settings.data_dir)
 LOGS_DIR = os.path.join(DATA_DIR, "logs")
 SYSTEM_ID_FILE = os.path.join(DATA_DIR, "system_id.json") # Deprecated
-CONFIG_FILE = os.path.join(DATA_DIR, "config.json") # Unified config file
+LEGACY_CONFIG_FILE = os.path.join(DATA_DIR, "config.json")
+LEGACY_DEVICE_STATE_FILE = os.path.join(DATA_DIR, "device_state.json")
+LEGACY_NODE_STATE_FILE = os.path.join(DATA_DIR, "node_state.json")
 PIDS_FILE = os.path.join(DATA_DIR, "pids.json")
+DEVICE_IDENTITY_VERSION = 2
+
+
+def _get_machine_state_dir() -> str:
+    explicit = (os.getenv("CODEYUN_MACHINE_STATE_DIR") or "").strip()
+    if explicit:
+        return os.path.abspath(os.path.expanduser(explicit))
+
+    if sys.platform == 'win32':
+        base = os.getenv("LOCALAPPDATA") or os.getenv("APPDATA")
+        if base:
+            return os.path.join(base, "CodeYun")
+
+    xdg_state_home = os.getenv("XDG_STATE_HOME") or os.getenv("XDG_CONFIG_HOME")
+    if xdg_state_home:
+        return os.path.join(xdg_state_home, "codeyun")
+
+    return os.path.join(os.path.expanduser("~"), ".codeyun")
+
+
+MACHINE_STATE_DIR = _get_machine_state_dir()
+MACHINE_IDENTITY_FILE = os.path.join(MACHINE_STATE_DIR, "device_identity.json")
 
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
@@ -33,69 +60,336 @@ if not os.path.exists(DATA_DIR):
 if not os.path.exists(LOGS_DIR):
     os.makedirs(LOGS_DIR)
 
-def get_local_config():
-    """Load local configuration (python_exec, etc.) from config.json"""
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except Exception:
-            return {}
+def _load_json_file(path: str) -> Dict[str, Any]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_json_file(path: str, payload: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+
+
+def _normalize_local_config(raw: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+
+    config = dict(raw)
+    device_id = config.get("device_id") or config.get("system_id")
+    if device_id:
+        config["device_id"] = str(device_id)
+    config.pop("system_id", None)
+    config.pop("api_token", None)
+    return config
+
+
+def _load_legacy_local_config() -> Dict[str, Any]:
+    if os.path.exists(LEGACY_DEVICE_STATE_FILE):
+        legacy = _load_json_file(LEGACY_DEVICE_STATE_FILE)
+        if legacy:
+            return _normalize_local_config(legacy)
+
+    if os.path.exists(LEGACY_NODE_STATE_FILE):
+        legacy = _load_json_file(LEGACY_NODE_STATE_FILE)
+        if legacy:
+            return _normalize_local_config(legacy)
+
+    if os.path.exists(LEGACY_CONFIG_FILE):
+        legacy = _load_json_file(LEGACY_CONFIG_FILE)
+        if legacy:
+            return _normalize_local_config({
+                "device_id": legacy.get("device_id") or legacy.get("system_id"),
+                "name": legacy.get("name"),
+                "python_exec": legacy.get("python_exec"),
+                "created_at": legacy.get("created_at"),
+            })
+
     return {}
 
+
+def get_local_config():
+    """Load legacy persisted local device state for migration compatibility."""
+    return _load_legacy_local_config()
+
+
 def save_local_config(config: Dict):
+    _ = config
+
+
+def _load_machine_identity() -> Dict[str, Any]:
+    return _load_json_file(MACHINE_IDENTITY_FILE)
+
+
+def _save_machine_identity(device_id: str, source: str, seed_value: Optional[str], created_at: Optional[float]) -> None:
+    existing = _load_machine_identity()
+    payload = {
+        "device_id": device_id,
+        "device_identity_version": DEVICE_IDENTITY_VERSION,
+        "device_identity_source": source,
+        "created_at": existing.get("created_at") or created_at or time.time(),
+        "updated_at": time.time(),
+    }
+    if seed_value:
+        payload["device_identity_seed_sha256"] = hashlib.sha256(
+            seed_value.encode("utf-8")
+        ).hexdigest()
+
     try:
-        # Read existing config to preserve other fields if we are doing partial update
-        # But wait, usually we pass the full config. 
-        # To be safe, let's read and merge if the passed config is partial?
-        # The current usage seems to be passing the full config object obtained from get_local_config.
-        # So overwrite is fine.
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2)
-    except Exception as e:
-        print(f"Failed to save local config: {e}")
+        _save_json_file(MACHINE_IDENTITY_FILE, payload)
+    except Exception as exc:
+        print(f"Failed to save machine identity: {exc}")
 
-def get_system_id():
-    """Get or generate a persistent unique ID for this machine"""
-    config = get_local_config()
-    
-    # 1. Check if ID is already in config
-    if config.get('system_id'):
-        return config['system_id']
 
-    # 2. Migration: Check old system_id.json
+def _read_windows_machine_guid() -> Optional[str]:
+    if sys.platform != 'win32':
+        return None
+
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Cryptography") as key:
+            value, _ = winreg.QueryValueEx(key, "MachineGuid")
+        return str(value).strip().lower() or None
+    except Exception:
+        return None
+
+
+def _read_linux_machine_id() -> Optional[str]:
+    for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                value = f.read().strip().lower()
+            if value:
+                return value
+        except Exception:
+            continue
+    return None
+
+
+def _machine_identity_seed() -> tuple[Optional[str], Optional[str]]:
+    windows_guid = _read_windows_machine_guid()
+    if windows_guid:
+        return "windows_machine_guid", windows_guid
+
+    linux_machine_id = _read_linux_machine_id()
+    if linux_machine_id:
+        return "linux_machine_id", linux_machine_id
+
+    mac = uuid.getnode()
+    if mac:
+        return "mac_address", f"{mac:012x}"
+
+    hostname = socket.gethostname().strip().lower()
+    if hostname:
+        return "hostname", hostname
+
+    return None, None
+
+
+def _stable_device_id_from_seed(source: str, seed_value: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"codeyun-device:{source}:{seed_value}"))
+
+
+def _current_device_id_from_state(config: Dict[str, Any]) -> Optional[str]:
+    current_id = config.get('device_id') or config.get('system_id')
+    if current_id:
+        return str(current_id)
+
     if os.path.exists(SYSTEM_ID_FILE):
         try:
             with open(SYSTEM_ID_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                if data.get('id'):
-                    sys_id = data['id']
-                    created_at = data.get('created_at')
-                    
-                    # Merge into config
-                    config['system_id'] = sys_id
-                    if created_at:
-                        config['created_at'] = created_at
-                    
-                    save_local_config(config)
-                    
-                    # Remove old file
-                    try:
-                        os.remove(SYSTEM_ID_FILE)
-                    except:
-                        pass
-                        
-                    return sys_id
+            if data.get('id'):
+                return str(data['id'])
         except Exception:
             pass
-    
-    # 3. Generate new ID
-    new_id = str(uuid.uuid4())
-    config['system_id'] = new_id
-    config['created_at'] = time.time()
-    save_local_config(config)
-        
-    return new_id
+
+    return None
+
+
+def _table_exists(session, table_name: str) -> bool:
+    row = session.exec(
+        text(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=:table_name"
+        ),
+        params={"table_name": table_name},
+    ).first()
+    return bool(row)
+
+
+def _backup_device_id_migration(old_id: str, new_id: str) -> None:
+    from backend.db import engine
+
+    backup_root = os.path.join(
+        DATA_DIR,
+        "backups",
+        f"device-id-migration-{int(time.time())}-{old_id[:8]}-to-{new_id[:8]}",
+    )
+    os.makedirs(backup_root, exist_ok=True)
+
+    for path in (
+        LEGACY_DEVICE_STATE_FILE,
+        LEGACY_NODE_STATE_FILE,
+        LEGACY_CONFIG_FILE,
+        SYSTEM_ID_FILE,
+        MACHINE_IDENTITY_FILE,
+    ):
+        if os.path.exists(path):
+            shutil.copy2(path, os.path.join(backup_root, os.path.basename(path)))
+
+    db_path = getattr(engine.url, "database", None)
+    if db_path and os.path.exists(db_path):
+        shutil.copy2(db_path, os.path.join(backup_root, os.path.basename(db_path)))
+
+
+def _merge_directory(src: str, dst: str) -> None:
+    if not os.path.exists(src):
+        return
+    os.makedirs(dst, exist_ok=True)
+
+    for name in os.listdir(src):
+        src_path = os.path.join(src, name)
+        dst_path = os.path.join(dst, name)
+        if os.path.isdir(src_path):
+            _merge_directory(src_path, dst_path)
+            if os.path.exists(src_path) and not os.listdir(src_path):
+                os.rmdir(src_path)
+        else:
+            if os.path.exists(dst_path):
+                base, ext = os.path.splitext(dst_path)
+                dst_path = f"{base}.migrated{ext}"
+            shutil.move(src_path, dst_path)
+
+    if os.path.exists(src) and not os.listdir(src):
+        os.rmdir(src)
+
+
+def _migrate_device_directories(old_id: str, new_id: str) -> None:
+    old_root = os.path.join(DATA_DIR, old_id)
+    _ = new_id
+    if not os.path.exists(old_root):
+        return
+
+    if os.path.exists(old_root):
+        shutil.rmtree(old_root, ignore_errors=True)
+
+
+def _migrate_device_references(old_id: str, new_id: str) -> None:
+    from backend.db import engine
+    from sqlmodel import Session
+
+    with Session(engine) as session:
+        if _table_exists(session, "task"):
+            session.exec(
+                text("UPDATE task SET device_id = :new_id WHERE device_id = :old_id"),
+                params={"old_id": old_id, "new_id": new_id},
+            )
+
+        if _table_exists(session, "userdeviceentry"):
+            session.exec(
+                text(
+                    "UPDATE userdeviceentry SET device_id = :new_id WHERE device_id = :old_id"
+                ),
+                params={"old_id": old_id, "new_id": new_id},
+            )
+
+        if _table_exists(session, "device"):
+            try:
+                session.exec(
+                    text("UPDATE device SET id = :new_id WHERE id = :old_id"),
+                    params={"old_id": old_id, "new_id": new_id},
+                )
+            except Exception:
+                pass
+
+        session.commit()
+
+
+def _persist_device_identity(
+    *,
+    device_id: str,
+    source: str,
+    seed_value: Optional[str],
+    created_at_hint: Optional[float],
+) -> None:
+    _save_machine_identity(
+        device_id=device_id,
+        source=source,
+        seed_value=seed_value,
+        created_at=created_at_hint,
+    )
+
+
+def get_device_token() -> Optional[str]:
+    token = get_settings().device_token.strip()
+    return token or None
+
+
+def get_device_id():
+    """Get the stable unique ID for this node and migrate legacy state if needed."""
+    config = get_local_config()
+    current_id = _current_device_id_from_state(config)
+    current_version = int(config.get("device_identity_version") or 0)
+
+    machine_identity = _load_machine_identity()
+    machine_identity_id = machine_identity.get("device_id")
+    if machine_identity_id:
+        target_id = str(machine_identity_id)
+        source = machine_identity.get("device_identity_source") or "machine_identity_file"
+        seed_value = None
+    elif current_id and current_version >= DEVICE_IDENTITY_VERSION:
+        target_id = current_id
+        source = config.get("device_identity_source") or "device_config"
+        seed_value = None
+    else:
+        seed_source, seed_value = _machine_identity_seed()
+        if seed_source and seed_value:
+            target_id = _stable_device_id_from_seed(seed_source, seed_value)
+            source = seed_source
+        elif current_id:
+            target_id = current_id
+            source = "legacy_device_config"
+            seed_value = None
+        else:
+            target_id = str(uuid.uuid4())
+            source = "generated_uuid"
+            seed_value = None
+
+    if (
+        current_id
+        and current_id != target_id
+        and current_version < DEVICE_IDENTITY_VERSION
+        and not machine_identity_id
+    ):
+        print(f"Migrating local device identity from {current_id} to {target_id}")
+        _backup_device_id_migration(current_id, target_id)
+        _migrate_device_references(current_id, target_id)
+        _migrate_device_directories(current_id, target_id)
+
+    _persist_device_identity(
+        device_id=target_id,
+        source=source,
+        seed_value=seed_value,
+        created_at_hint=config.get("created_at"),
+    )
+
+    if os.path.exists(SYSTEM_ID_FILE):
+        try:
+            os.remove(SYSTEM_ID_FILE)
+        except Exception:
+            pass
+
+    return target_id
+
+def get_system_id():
+    return get_device_id()
 
 class TaskStatus(BaseModel):
     id: str
@@ -212,7 +506,7 @@ class BaseDevice(ABC):
         pass
 
     @abstractmethod
-    def rename_remote_device(self, new_name: str) -> bool:
+    def rename_device(self, new_name: str) -> bool:
         pass
 
     @abstractmethod
@@ -256,7 +550,8 @@ class PosixCommandResolver(CommandResolver):
 class LogManager:
     @staticmethod
     def prepare_log_path(device_id: str, task_id: str) -> str:
-        log_dir = os.path.join(DATA_DIR, device_id, "logs")
+        _ = device_id
+        log_dir = LOGS_DIR
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         log_file_path = os.path.join(log_dir, f"{task_id}.log")
@@ -377,15 +672,10 @@ class ErrorMapper:
 class LocalDevice(BaseDevice):
     def __init__(self, device_id: str = None, name: str = None, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
         if device_id is None:
-            device_id = get_system_id()
+            device_id = get_device_id()
         if name is None:
             name = socket.gethostname()
-            
-        # Load local config to override python_exec
-        local_config = get_local_config()
-        if not python_exec:
-             python_exec = local_config.get("python_exec")
-             
+
         super().__init__(device_id, name, python_exec, api_token, order_index)
         self.processes: Dict[str, psutil.Process] = {}
         self.saved_pids: Dict[str, int] = {}
@@ -394,17 +684,87 @@ class LocalDevice(BaseDevice):
         self.load_pids()
         
     def load_pids(self):
-        if os.path.exists(PIDS_FILE):
-            try:
-                with open(PIDS_FILE, 'r', encoding='utf-8') as f:
-                    self.saved_pids = json.load(f)
-            except Exception:
-                self.saved_pids = {}
+        from backend.models import TaskRuntime
+
+        self.saved_pids = {}
+        self.last_run_info = {}
+
+        try:
+            with Session(engine) as session:
+                rows = session.exec(
+                    select(TaskRuntime).where(TaskRuntime.device_id == self.device_id)
+                ).all()
+        except Exception:
+            rows = []
+
+        if rows:
+            for row in rows:
+                if row.pid is not None:
+                    self.saved_pids[row.task_id] = int(row.pid)
+                if row.started_at or row.finished_at:
+                    self.last_run_info[row.task_id] = {
+                        "started_at": row.started_at,
+                        "finished_at": row.finished_at,
+                    }
+            return
+
+        if not os.path.exists(PIDS_FILE):
+            return
+
+        try:
+            with open(PIDS_FILE, 'r', encoding='utf-8') as f:
+                raw_pids = json.load(f)
+            self.saved_pids = {
+                str(task_id): int(pid)
+                for task_id, pid in raw_pids.items()
+                if pid is not None
+            }
+            if self.saved_pids:
+                self.save_pids()
+        except Exception:
+            self.saved_pids = {}
 
     def save_pids(self):
+        from backend.models import TaskRuntime
+
         try:
-            with open(PIDS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.saved_pids, f)
+            now = time.time()
+            task_ids = set(self.saved_pids) | set(self.last_run_info)
+
+            with Session(engine) as session:
+                existing_rows = session.exec(
+                    select(TaskRuntime).where(TaskRuntime.device_id == self.device_id)
+                ).all()
+                existing_by_task = {row.task_id: row for row in existing_rows}
+
+                for task_id in task_ids:
+                    row = existing_by_task.get(task_id)
+                    if row is None:
+                        row = TaskRuntime(task_id=task_id, device_id=self.device_id)
+
+                    row.device_id = self.device_id
+                    row.updated_at = now
+
+                    if task_id in self.saved_pids:
+                        row.pid = int(self.saved_pids[task_id])
+                        process = self.processes.get(task_id)
+                        started_at = self.last_run_info.get(task_id, {}).get("started_at")
+                        if process is not None:
+                            try:
+                                started_at = process.create_time()
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                pass
+                        row.started_at = started_at or row.started_at or now
+                        row.finished_at = None
+                    else:
+                        info = self.last_run_info.get(task_id, {})
+                        row.pid = None
+                        row.started_at = info.get("started_at") or row.started_at
+                        row.finished_at = info.get("finished_at") or row.finished_at or now
+
+                    session.add(row)
+
+                session.commit()
         except Exception as e:
             print(f"Failed to save PIDs: {e}")
     
@@ -841,15 +1201,9 @@ class LocalDevice(BaseDevice):
             )
 
     def get_logs(self, task_id: str, lines: int = 50) -> List[str]:
-        log_dir = os.path.join(DATA_DIR, self.device_id, "logs")
-        log_file_path = os.path.join(log_dir, f"{task_id}.log")
+        log_file_path = os.path.join(LOGS_DIR, f"{task_id}.log")
         if not os.path.exists(log_file_path):
-            # Fallback to old path for backward compatibility?
-            old_log_path = os.path.join(LOGS_DIR, f"{task_id}.log")
-            if os.path.exists(old_log_path):
-                log_file_path = old_log_path
-            else:
-                return []
+            return []
         
         try:
             from collections import deque
@@ -858,206 +1212,12 @@ class LocalDevice(BaseDevice):
         except Exception as e:
             return [f"Error reading logs: {e}"]
 
-    def rename_remote_device(self, new_name: str) -> bool:
-        """For local device, we just update our name locally"""
+    def rename_device(self, new_name: str) -> bool:
         with self.lock:
             self.name = new_name
-            pass
         return True
 
-class RemoteDevice(BaseDevice):
-    def __init__(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
-        super().__init__(device_id, name, python_exec, api_token, order_index)
-        self.url = url.rstrip('/')
-        self.task_statuses: Dict[str, TaskStatus] = {}
-        self.lock = threading.RLock()
-
-    def _get_headers(self):
-        headers = {}
-        if self.api_token:
-            headers["X-Device-Token"] = self.api_token
-        return headers
-
-    def sync_config(self) -> bool:
-        """Fetch latest configuration from remote device and update local cache"""
-        try:
-            resp = requests.get(f"{self.url}/api/agent/status", headers=self._get_headers(), timeout=2)
-            if resp.status_code == 200:
-                data = resp.json()
-                changed = False
-                
-                # Update python_exec
-                remote_exec = data.get("python_exec")
-                if remote_exec != self.python_exec:
-                    self.python_exec = remote_exec
-                    changed = True
-                
-                return changed
-        except Exception:
-            pass
-        return False
-    
-    def to_dict(self):
-        d = super().to_dict()
-        d['url'] = self.url
-        return d
-        
-    def rename_remote_device(self, new_name: str) -> bool:
-        """Call remote API to rename itself"""
-        try:
-            # We need an API on the remote agent to update its own name.
-            # POST /api/agent/rename { "name": "new_name" }
-            resp = requests.post(f"{self.url}/api/agent/rename", json={"name": new_name}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                self.name = new_name # Update local cache of the name
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to rename remote device {self.device_id} at {self.url}: {e}")
-            if 'resp' in locals():
-                try:
-                    print(f"Response code: {resp.status_code}, Body: {resp.text}")
-                except:
-                    pass
-            return False
-
-    def push_config(self) -> bool:
-        """Push local configuration (like python_exec) to remote device"""
-        try:
-            payload = {}
-            if self.python_exec:
-                payload["python_exec"] = self.python_exec
-            
-            if not payload:
-                return True
-                
-            resp = requests.post(f"{self.url}/api/agent/config", json=payload, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to push config to remote device {self.device_id}: {e}")
-            return False
-
-    def start_task(self, task_id: str, command: str, cwd: Optional[str] = None, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        try:
-            # Let's try calling the high-level API first.
-            resp = requests.post(f"{self.url}/api/task/{task_id}/start", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 404:
-                 pass
-            
-            if resp.status_code == 200:
-                 return resp.json()
-                 
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def stop_task(self, task_id: str) -> Dict[str, Any]:
-        try:
-            resp = requests.post(f"{self.url}/api/task/{task_id}/stop", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    def get_task_status(self, task_id: str) -> TaskStatus:
-        # Optimization: Use batched status from scan_running_tasks
-        with self.lock:
-             return self.task_statuses.get(task_id, TaskStatus(id=task_id, running=False))
-
-    def get_logs(self, task_id: str, lines: int = 50) -> List[str]:
-        try:
-            resp = requests.get(f"{self.url}/api/task/{task_id}/logs", params={"n": lines, "device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                return resp.json().get("logs", [])
-            return [f"Error fetching logs: {resp.status_code}"]
-        except Exception as e:
-            return [f"Connection error: {e}"]
-
-    def scan_running_tasks(self, tasks_to_check: List[Any]):
-        # Fetch ALL tasks from remote to sync status
-        try:
-            # We use /api/task/list to get full status
-            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                remote_tasks = resp.json()
-                with self.lock:
-                    self.task_statuses.clear()
-                    for t_data in remote_tasks:
-                        # Map remote status to local
-                        if "status" in t_data:
-                            self.task_statuses[t_data["id"]] = TaskStatus(**t_data["status"])
-        except Exception as e:
-            # print(f"Error scanning remote {self.device_id}: {e}")
-            pass
-    
-    def find_related_processes(self, command: str) -> List[Dict[str, Any]]:
-        # Remote API currently does not support finding processes by raw command string.
-        # It only supports finding by task_id via /api/task/{task_id}/related_processes
-        return []
-
-    def kill_process_by_pid(self, pid: int) -> bool:
-        try:
-            resp = requests.post(f"{self.url}/api/task/process/kill", json={"pid": pid}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to kill remote process {pid} on {self.device_id}: {e}")
-            return False
-
-    def associate_process(self, task_id: str, pid: int) -> Dict[str, Any]:
-        try:
-            resp = requests.post(f"{self.url}/api/task/{task_id}/associate", json={"pid": pid}, params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            return {"status": "error", "message": str(e)}
-
-    # New methods for full CRUD proxy
-    def list_tasks(self) -> List[Dict]:
-        try:
-            resp = requests.get(f"{self.url}/api/task/list", params={"refresh_device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-            if resp.status_code == 200:
-                tasks = resp.json()
-                # Ensure device_id is correct
-                for t in tasks:
-                    t['device_id'] = self.device_id
-                return tasks
-            return []
-        except Exception:
-            return []
-
-    def create_task(self, task_data: Dict) -> Dict:
-        # Proxy create
-        # We need to make sure we send the right data
-        resp = requests.post(f"{self.url}/api/task/create", json=task_data, headers=self._get_headers(), timeout=5)
-        resp.raise_for_status()
-        t = resp.json()
-        t['device_id'] = self.device_id
-        return t
-
-    def update_task(self, task_id: str, task_data: Dict) -> Dict:
-        resp = requests.post(f"{self.url}/api/task/{task_id}/update", json=task_data, params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-        resp.raise_for_status()
-        t = resp.json()
-        t['device_id'] = self.device_id
-        return t
-
-    def delete_task(self, task_id: str) -> Dict:
-        resp = requests.delete(f"{self.url}/api/task/{task_id}", params={"device_id": self.device_id}, headers=self._get_headers(), timeout=5)
-        resp.raise_for_status()
-        return resp.json()
-    
-    def to_dict(self):
-        d = super().to_dict()
-        d['url'] = self.url
-        return d
-
 from backend.db import engine, init_db
-# from backend.models import Device as DeviceModel
 
 from sqlmodel import Session, select
 
@@ -1080,135 +1240,44 @@ class DeviceManager:
         return cls._instance
 
     def load(self):
-        # Ensure schema
-        try:
-            from sqlalchemy import text
-            with Session(engine) as session:
-                try:
-                    session.exec(text("ALTER TABLE device ADD COLUMN order_index INTEGER DEFAULT 0"))
-                    session.commit()
-                except Exception:
-                    pass
-                try:
-                    session.exec(text("ALTER TABLE userdevice ADD COLUMN order_index INTEGER DEFAULT 0"))
-                    session.commit()
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"Schema update warning: {e}")
+        device_id = get_device_id()
+        hostname = socket.gethostname()
+        token = get_device_token()
 
-        # Initialize Local Device from file/system info
-        system_id = get_system_id()
-        local_config = get_local_config()
-        hostname = local_config.get("name") or socket.gethostname()
-        
-        # We don't load 'Device' table anymore for the manager state
-        # The manager state is now:
-        # 1. Local Device (always present)
-        # 2. Remote Devices (dynamic, loaded on demand or cached? 
-        #    Actually, for "Cluster Management", we might want to keep track of known remotes in memory?
-        #    But per new design, remotes are User-Specific.
-        #    So the DeviceManager (singleton) should primarily manage the LOCAL device.
-        #    Remote devices are instantiated per-request based on UserDevice info?
-        
-        # However, for background sync tasks, we might need a list of active remotes.
-        # If we remove Device table, where do we get the list of ALL remotes to sync?
-        # Maybe we don't need to sync globally anymore?
-        # Syncing should be done when User requests status, or via a background task iterating UserDevices?
-        
-        # Let's keep it simple: DeviceManager manages the LOCAL device resource.
-        # RemoteDevice objects are just temporary proxies created when needed by API.
-        
-        # BUT: For backward compatibility and keeping existing logic working,
-        # we can still load from Device table if we haven't deleted it yet.
-        # OR, we switch to fully stateless RemoteDevice management.
-        
-        # Let's go with: DeviceManager holds LocalDevice.
-        # RemoteDevices are not held in global memory anymore, they are instantiated ad-hoc.
-        
-        token = local_config.get("api_token")
-        if not token:
-             token = secrets.token_urlsafe(32)
-             local_config["api_token"] = token
-             save_local_config(local_config)
-             
-        python_exec = local_config.get("python_exec")
-        
-        self.devices[system_id] = LocalDevice(system_id, hostname, python_exec, api_token=token)
+        self.devices = {
+            device_id: LocalDevice(device_id, hostname, None, api_token=token)
+        }
 
     def _save_device_to_db(self, device: BaseDevice):
-        # Deprecated: We don't save to Device table anymore.
-        # For LocalDevice, we save to config.json
-        if isinstance(device, LocalDevice):
-            conf = get_local_config()
-            conf["name"] = device.name
-            conf["python_exec"] = device.python_exec
-            conf["api_token"] = device.api_token
-            # Name is hostname, usually not changeable via config unless we add a field
-            save_local_config(conf)
+        _ = device
 
     def save(self):
-        # Deprecated: Individual updates should write to DB immediately.
-        # But for compatibility, we can iterate and save all?
-        # Let's keep it empty or log warning.
         pass
+
+    def get_local_device_id(self) -> str:
+        return get_device_id()
 
     def get_device(self, device_id: str) -> Optional[BaseDevice]:
-        # 1. Check local device
-        system_id = get_system_id()
-        if device_id == system_id or device_id == "local":
-            return self.devices.get(system_id)
-            
-        # 2. Remote devices are now ephemeral/user-specific.
-        # This method should generally NOT be used for remote devices unless we pass context.
-        # But for compatibility, if we have it in memory (we don't load them anymore), return it.
-        # OR, we can try to look up from UserDevice table? 
-        # But we don't have user_id here.
-        
-        # So this method is strictly for LocalDevice now?
-        # Or we can return None for remote, and let the caller handle instantiation from UserDevice.
-        
+        local_device_id = get_device_id()
+        if device_id == local_device_id or device_id == "local":
+            return self.devices.get(local_device_id)
         return self.devices.get(device_id)
 
-    def add_remote_device(self, device_id: str, name: str, url: str, python_exec: Optional[str] = None, api_token: Optional[str] = None):
-        # No-op in new architecture for global manager
-        pass
-
     def update_device(self, device_id: str, python_exec: Optional[str] = None):
-        if device_id in self.devices:
-            dev = self.devices[device_id]
-            dev.python_exec = python_exec
-            self._save_device_to_db(dev)
-            
-            if isinstance(dev, RemoteDevice):
-                threading.Thread(target=dev.push_config, daemon=True).start()
-            return True
+        _ = python_exec
+        dev = self.devices.get(device_id)
+        if isinstance(dev, LocalDevice):
+            return False
         return False
 
     def rename_device(self, device_id: str, new_name: str) -> bool:
+        _ = new_name
         dev = self.devices.get(device_id)
-        if not dev:
+        if not isinstance(dev, LocalDevice):
             return False
-
-        ok = dev.rename_remote_device(new_name)
-        if isinstance(dev, LocalDevice):
-            self._save_device_to_db(dev)
-        return ok
-
-    def remove_device(self, device_id: str) -> bool:
-        # No-op
-        return True
-
-    def sync_remote_devices(self):
-        # No global sync
-        pass
+        return False
         
     def get_all_devices(self) -> List[Dict[str, Any]]:
-        # Only returns local device
         return [d.to_dict() for d in self.devices.values()]
-    
-    def reorder_devices(self, device_ids: List[str]):
-        # No-op
-        return True
 
 device_manager = DeviceManager()

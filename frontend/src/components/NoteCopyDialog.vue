@@ -17,12 +17,12 @@
               v-model="form.startDate"
               type="date"
               placeholder="选择日期"
-              style="width: 140px"
+              class="copy-date-picker"
               :clearable="false"
             />
             <SmartTimeInput
                 v-model="form.startTime"
-                :input-style="{ width: '120px', marginLeft: '10px' }"
+                :input-style="startTimeInputStyle"
             />
         </div>
         <div class="quick-actions">
@@ -43,7 +43,7 @@
                   :max="10000" 
                   :step="10" 
                   size="small"
-                  style="width: 100px;"
+                  class="weight-input"
                 />
             </div>
             <div class="prop-item">
@@ -132,6 +132,10 @@ const form = reactive({
   linkToNew: true,
   linkFromNew: false
 });
+
+const startTimeInputStyle = {
+  width: '120px'
+};
 
 const initForm = () => {
   if (!props.sourceNote) return;
@@ -225,6 +229,11 @@ const handleCopy = async () => {
 .date-row {
     display: flex;
     align-items: center;
+    gap: 10px;
+}
+
+.copy-date-picker {
+    width: 140px;
 }
 
 .quick-actions {
@@ -255,6 +264,10 @@ const handleCopy = async () => {
 .prop-item .label {
     font-size: 12px;
     color: #606266;
+}
+
+.weight-input {
+    width: 100px;
 }
 
 .link-checkboxes {

@@ -13,14 +13,14 @@ except ImportError:  # pragma: no cover - optional in production
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT_DIR / "backend"
-DATA_DIR = BACKEND_DIR / "data"
-DEFAULT_DB_FILE = DATA_DIR / "codeyun.db"
+DEFAULT_DATA_DIR = BACKEND_DIR / "data"
 DEFAULT_DEV_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:4173",
     "http://127.0.0.1:4173",
 )
+DEFAULT_DEV_CORS_ORIGIN_REGEX = r"^https?://[^/]+:(5173|4173)$"
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -47,6 +47,17 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _resolve_path(value: str | None, default: Path) -> Path:
+    raw = (value or "").strip()
+    if not raw:
+        return default
+
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        return path
+    return (ROOT_DIR / path).resolve()
+
+
 def _load_project_dotenv() -> None:
     if load_dotenv is None or not _env_flag("CODEYUN_LOAD_DOTENV", True):
         return
@@ -58,10 +69,12 @@ def _load_project_dotenv() -> None:
 
 @dataclass(frozen=True)
 class Settings:
+    data_dir: Path
     environment: str
     debug: bool
     docs_enabled: bool
     cors_origins: tuple[str, ...]
+    cors_origin_regex: str
     allow_all_cors: bool
     backend_host: str
     backend_port: int
@@ -69,10 +82,18 @@ class Settings:
     secret_key: str
     jwt_algorithm: str
     access_token_expire_minutes: int
+    device_token: str
+    bootstrap_admin_username: str
+    bootstrap_admin_password: str
+    bootstrap_admin_force_reset_password: bool
 
     @property
     def is_development(self) -> bool:
         return self.environment == "development"
+
+    @property
+    def attachments_dir(self) -> Path:
+        return self.data_dir / "attachments"
 
     @property
     def is_production(self) -> bool:
@@ -86,21 +107,25 @@ class Settings:
 def load_settings() -> Settings:
     _load_project_dotenv()
     environment = _normalize_environment(os.getenv("CODEYUN_ENV") or os.getenv("ENVIRONMENT"))
+    data_dir = _resolve_path(os.getenv("CODEYUN_DATA_DIR"), DEFAULT_DATA_DIR)
+    default_db_file = data_dir / "codeyun.db"
 
     debug = _env_flag("CODEYUN_DEBUG", environment == "development")
     docs_enabled = _env_flag("CODEYUN_ENABLE_DOCS", environment != "production")
 
     cors_value = os.getenv("CODEYUN_CORS_ORIGINS")
     cors_origins = _split_csv(cors_value)
+    cors_origin_regex = ""
     if not cors_origins and environment in {"development", "test"}:
         cors_origins = DEFAULT_DEV_CORS_ORIGINS
+        cors_origin_regex = DEFAULT_DEV_CORS_ORIGIN_REGEX
 
     allow_all_cors = cors_origins == ("*",)
 
     database_url = (
         os.getenv("CODEYUN_DATABASE_URL")
         or os.getenv("DATABASE_URL")
-        or f"sqlite:///{DEFAULT_DB_FILE}"
+        or f"sqlite:///{default_db_file}"
     )
 
     secret_key = (
@@ -124,10 +149,12 @@ def load_settings() -> Settings:
         backend_port = 8000
 
     return Settings(
+        data_dir=data_dir,
         environment=environment,
         debug=debug,
         docs_enabled=docs_enabled,
         cors_origins=cors_origins,
+        cors_origin_regex=cors_origin_regex,
         allow_all_cors=allow_all_cors,
         backend_host=(os.getenv("CODEYUN_BACKEND_HOST") or "0.0.0.0").strip() or "0.0.0.0",
         backend_port=backend_port,
@@ -135,6 +162,13 @@ def load_settings() -> Settings:
         secret_key=secret_key,
         jwt_algorithm=jwt_algorithm,
         access_token_expire_minutes=access_token_expire_minutes,
+        device_token=(os.getenv("CODEYUN_DEVICE_TOKEN") or "").strip(),
+        bootstrap_admin_username=(os.getenv("CODEYUN_BOOTSTRAP_ADMIN_USERNAME") or "").strip(),
+        bootstrap_admin_password=os.getenv("CODEYUN_BOOTSTRAP_ADMIN_PASSWORD") or "",
+        bootstrap_admin_force_reset_password=_env_flag(
+            "CODEYUN_BOOTSTRAP_ADMIN_FORCE_RESET_PASSWORD",
+            False,
+        ),
     )
 
 

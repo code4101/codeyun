@@ -57,7 +57,7 @@
           type="error"
           show-icon
           :closable="false"
-          style="margin-bottom: 20px"
+          class="form-alert"
         />
         
         <el-button 
@@ -134,13 +134,21 @@ const handleRegister = async () => {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100vh;
+  min-height: 100%;
+  min-height: 100dvh;
+  padding: 24px 16px;
+  box-sizing: border-box;
+  overflow: auto;
   background-color: #f5f7fa;
 }
 
 .auth-card {
   width: 100%;
   max-width: 400px;
+}
+
+.form-alert {
+  margin-bottom: 20px;
 }
 
 .card-header {

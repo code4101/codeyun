@@ -1,5 +1,6 @@
 
 import time
+import uuid
 from typing import Optional
 from sqlmodel import Field, SQLModel, Session, select, text
 from sqlalchemy import create_engine
@@ -209,6 +210,79 @@ def v6_add_private_level(session: Session):
     else:
         print("  Column 'private_level' already exists, skipping.")
 
+
+def v7_migrate_userdevice_entries(session: Session):
+    """
+    Migration V7: Move user device assets into userdeviceentry with entry_id primary key.
+    """
+    print("Running System Upgrade V7: Migrate user device assets...")
+
+    old_exists = session.exec(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='userdevice'")
+    ).first()
+    new_exists = session.exec(
+        text("SELECT name FROM sqlite_master WHERE type='table' AND name='userdeviceentry'")
+    ).first()
+
+    if not old_exists or not new_exists:
+        print("  Source or target table missing, skipping.")
+        return
+
+    new_count = session.exec(text("SELECT COUNT(*) FROM userdeviceentry")).one()
+    if new_count and new_count[0] > 0:
+        print("  userdeviceentry already populated, skipping.")
+        return
+
+    rows = session.exec(
+        text(
+            """
+            SELECT user_id, device_id, name, type, url, token, is_active,
+                   COALESCE(order_index, 0) AS order_index, created_at, updated_at
+            FROM userdevice
+            """
+        )
+    ).all()
+
+    for row in rows:
+        mode = "local" if row.type == "LocalDevice" else "remote"
+        session.exec(
+            text(
+                """
+                INSERT INTO userdeviceentry (
+                    entry_id, user_id, device_id, name, mode, url, token,
+                    is_active, order_index, created_at, updated_at
+                ) VALUES (
+                    :entry_id, :user_id, :device_id, :name, :mode, :url, :token,
+                    :is_active, :order_index, :created_at, :updated_at
+                )
+                """
+            ),
+            params={
+                "entry_id": str(uuid.uuid4()),
+                "user_id": row.user_id,
+                "device_id": row.device_id,
+                "name": row.name or row.device_id,
+                "mode": mode,
+                "url": row.url,
+                "token": row.token,
+                "is_active": row.is_active,
+                "order_index": row.order_index,
+                "created_at": row.created_at or time.time(),
+                "updated_at": row.updated_at or time.time(),
+            },
+        )
+    session.commit()
+    print(f"  Migrated {len(rows)} user device entries.")
+
+
+def v8_backfill_userdevice_entries(session: Session):
+    """
+    Migration V8: Re-run userdeviceentry backfill for instances that reached V7
+    before the new table was actually created.
+    """
+    print("Running System Upgrade V8: Backfill user device assets...")
+    v7_migrate_userdevice_entries(session)
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -218,6 +292,8 @@ MIGRATIONS = [
     (4, "Convert custom_fields to List", v4_migrate_custom_fields_to_list),
     (5, "Fix custom_fields List format", v5_fix_custom_fields_format),
     (6, "Add private_level column", v6_add_private_level),
+    (7, "Migrate user device assets to userdeviceentry", v7_migrate_userdevice_entries),
+    (8, "Backfill user device assets into userdeviceentry", v8_backfill_userdevice_entries),
 ]
 
 def get_current_version(session: Session) -> int:
