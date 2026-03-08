@@ -27,7 +27,7 @@ jobs:
           fingerprint: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
           command_timeout: 30m
           script: |
-            set -euo pipefail
+            set -e
 
             # 确保目标目录存在
             if [ ! -d "${{ secrets.DEPLOY_APP_DIR }}" ]; then
