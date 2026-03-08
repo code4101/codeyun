@@ -17,21 +17,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-
-      - name: Configure known_hosts
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-          printf "%s\n" "${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-
-      # 4. 执行远程部署脚本
       - name: Execute remote commands
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -39,7 +24,11 @@ jobs:
           username: ${{ secrets.DEPLOY_SSH_USER }}
           port: ${{ secrets.DEPLOY_SSH_PORT }}
           key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          fingerprint: ${{ secrets.DEPLOY_SSH_FINGERPRINT }}
+          command_timeout: 30m
           script: |
+            set -euo pipefail
+
             # 确保目标目录存在
             if [ ! -d "${{ secrets.DEPLOY_APP_DIR }}" ]; then
                 echo ">>> Target directory not found. Creating..."

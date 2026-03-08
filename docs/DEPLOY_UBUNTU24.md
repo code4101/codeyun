@@ -40,12 +40,12 @@ chmod +x deploy/setup_server.sh
 
 脚本会自动：
 1. 使用 `uv sync` 安装依赖。
-2. 配置并启动 `systemd --user` 服务 (`codeyun-backend`)。
+2. 配置并启动系统级 `systemd` 服务 (`codeyun-backend`)。
 3. (可选) 配置 Nginx 反向代理 (需要 sudo 密码)。
 
 **验证服务状态：**
 ```bash
-systemctl --user status codeyun-backend
+systemctl status codeyun-backend
 curl http://localhost:8000/docs
 ```
 
@@ -58,7 +58,8 @@ curl http://localhost:8000/docs
 | `DEPLOY_SSH_HOST` | 服务器 IP | `1.2.3.4` |
 | `DEPLOY_SSH_PORT` | SSH 端口 | `22` |
 | `DEPLOY_SSH_USER` | SSH 用户名 | `deploy` |
-| `DEPLOY_SSH_PRIVATE_KEY` | 私钥内容 | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `DEPLOY_SSH_PRIVATE_KEY` | 私钥内容（原样多行粘贴） | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
+| `DEPLOY_SSH_FINGERPRINT` | 服务器 SSH Host Key 指纹 | `SHA256:...` |
 | `DEPLOY_APP_DIR` | 项目路径 | `/home/deploy/codeyun` |
 
 ## 3. 自动更新流程
@@ -69,19 +70,23 @@ curl http://localhost:8000/docs
 3. 执行 `deploy/update.sh`：
    - `git pull` 拉取最新代码。
    - `uv sync` 更新依赖。
-   - `systemctl --user restart codeyun-backend` 重启服务。
+   - `sudo systemctl restart codeyun-backend` 重启服务。
+
+如果 Actions 日志在 SSH 阶段出现 `Error loading key "(stdin)": error in libcrypto`，通常说明
+`DEPLOY_SSH_PRIVATE_KEY` secret 里的私钥内容格式有问题。优先重新粘贴原始私钥全文；如果原私钥已丢失，
+请重新生成一对新的 `ed25519` 部署密钥，并同时更新服务器 `~/.ssh/authorized_keys` 与 GitHub secret。
 
 ## 4. 手动管理命令
 
 ```bash
 # 查看日志
-journalctl --user -u codeyun-backend -f
+journalctl -u codeyun-backend -f
 
 # 重启服务
-systemctl --user restart codeyun-backend
+sudo systemctl restart codeyun-backend
 
 # 停止服务
-systemctl --user stop codeyun-backend
+sudo systemctl stop codeyun-backend
 ```
 
 ## 5. Nginx HTTPS 配置 (如需手动调整)

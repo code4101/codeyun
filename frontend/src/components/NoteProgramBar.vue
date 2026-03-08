@@ -18,7 +18,7 @@
           size="small"
           :model-value="rule.action"
           class="w-90"
-          @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.action = value; })"
+          @update:model-value="value => updateRuleAction(getActualRuleIndex(visibleIndex), value)"
         >
           <el-option label="包含" value="include" />
           <el-option label="排除" value="exclude" />
@@ -398,6 +398,17 @@ const updateChannel = (mutator: (draft: NoteProgramChannel) => void) => {
   emitChannel(draft);
 };
 
+const isPrivateLevelRule = (rule: NoteProgramRule) => rule.matcher.kind === 'field' && rule.matcher.field === 'private_level';
+
+const applyPrivateLevelConveniencePreset = (rule: NoteProgramRule) => {
+  if (!isPrivateLevelRule(rule)) return;
+  rule.matcher.op = rule.action === 'exclude' ? 'gte' : 'lte';
+  rule.matcher.value = rule.action === 'exclude' ? 1 : 0;
+  rule.matcher.values = [];
+  rule.matcher.time_value = null;
+  rule.matcher.time_values = [];
+};
+
 const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule => {
   switch (template) {
     case 'all':
@@ -466,8 +477,8 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
         matcher: {
           kind: 'field',
           field: 'private_level',
-          op: 'gte',
-          value: 1
+          op: 'lte',
+          value: 0
         }
       };
     case 'weight':
@@ -510,7 +521,15 @@ const replaceRuleTemplate = (index: number, template: RuleTemplateValue) => {
     const previousRule = draft.rules[index];
     const nextRule = createRuleFromTemplate(template);
     nextRule.action = previousRule?.action ?? nextRule.action;
+    applyPrivateLevelConveniencePreset(nextRule);
     draft.rules[index] = nextRule;
+  });
+};
+
+const updateRuleAction = (index: number, action: string) => {
+  patchRule(index, draft => {
+    draft.action = action === 'exclude' ? 'exclude' : 'include';
+    applyPrivateLevelConveniencePreset(draft);
   });
 };
 
