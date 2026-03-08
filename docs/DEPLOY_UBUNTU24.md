@@ -59,7 +59,6 @@ curl http://localhost:8000/docs
 | `DEPLOY_SSH_PORT` | SSH 端口 | `22` |
 | `DEPLOY_SSH_USER` | SSH 用户名 | `deploy` |
 | `DEPLOY_SSH_PRIVATE_KEY` | 私钥内容（原样多行粘贴） | `-----BEGIN OPENSSH PRIVATE KEY-----...` |
-| `DEPLOY_SSH_FINGERPRINT` | 服务器 SSH Host Key 指纹 | `SHA256:...` |
 | `DEPLOY_APP_DIR` | 项目路径 | `/home/deploy/codeyun` |
 
 ## 3. 自动更新流程
@@ -75,6 +74,10 @@ curl http://localhost:8000/docs
 如果 Actions 日志在 SSH 阶段出现 `Error loading key "(stdin)": error in libcrypto`，通常说明
 `DEPLOY_SSH_PRIVATE_KEY` secret 里的私钥内容格式有问题。优先重新粘贴原始私钥全文；如果原私钥已丢失，
 请重新生成一对新的 `ed25519` 部署密钥，并同时更新服务器 `~/.ssh/authorized_keys` 与 GitHub secret。
+
+`DEPLOY_SSH_FINGERPRINT` 可作为额外校验项，但在部分 `appleboy/ssh-action` 组合下可能出现
+`host key fingerprint mismatch`。如果遇到该问题，先移除 workflow 里的 `fingerprint` 配置，
+优先恢复自动部署链路，再决定是否重新启用。
 
 ## 4. 手动管理命令
 
