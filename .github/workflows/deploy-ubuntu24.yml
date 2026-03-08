@@ -44,11 +44,6 @@ jobs:
               exit 1
             fi
             
-            # 强制拉取最新代码（防止 update.sh 本身是旧的或不存在）
-            echo ">>> Fetching latest code..."
-            git fetch --all
-            git reset --hard origin/main
-            
             # 确保脚本有执行权限
             if [ -f "deploy/update.sh" ]; then
                 chmod +x deploy/update.sh
