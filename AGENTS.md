@@ -19,6 +19,30 @@
 - 安装依赖：`npm install --prefix frontend`
 - 单独启动前端：`npm run dev --prefix frontend`
 
+## 部署运维约定（重要）
+
+- GitHub Actions 自动部署的真实入口是 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh`，排查部署问题时优先看这两处，不要只看文档描述。
+- 当前服务器使用的是系统级 `systemd` 服务：`codeyun-backend`，不是 `systemctl --user`。
+- 服务器运行时 `.env` 只负责应用配置，不负责存 SSH 登录信息。
+- SSH 部署相关信息应放在：
+  - 本地 `.env`：仅用于本地运维脚本/人工登录
+  - GitHub Actions Secrets：`DEPLOY_SSH_HOST / PORT / USER / PRIVATE_KEY / APP_DIR`
+- `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认回落到 `backend/data/`。
+- GitHub Action 绿勾不等于“前端一定是最新静态产物”。部署后如怀疑页面未更新，要同时核对：
+  - 服务器仓库 HEAD 是否已对齐最新提交
+  - `codeyun-backend` 是否刚重启成功
+  - `frontend/dist/` 的构建时间或 `dist/.codeyun-build-commit`
+- 更细的部署排障经验见：`docs/部署运维备忘.md`
+
+## DSP 静态同步约定
+
+- 戴森球静态资源统一使用：`uv run python scripts/build_dsp_static.py`
+- 该脚本现在是幂等的：
+  - 若 `dsp-calc` 源码内容未变化，则快速跳过，不重复 `npm install / build / copy`
+  - 若源码或依赖清单变化，则自动重新构建并替换 `frontend/public/dsp-calc`
+- 脚本本地状态存放在 `frontend/.codeyun-state/`，该目录已加入 `.gitignore`
+- 需要忽略缓存强制重建时，使用：`uv run python scripts/build_dsp_static.py --force`
+
 ## dev.py 调试策略（重要）
 
 - `dev.py` 是长驻进程，终端/工具超时不等于启动失败。

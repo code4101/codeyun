@@ -55,3 +55,4 @@ backend/data/
 .env.local
 .env.*.local
 /backend/static
+/frontend/.codeyun-state/

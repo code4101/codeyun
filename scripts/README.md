@@ -28,6 +28,6 @@
 
 ## 脚本说明
 
-*   **`build_dsp_static.py`**: 自动化构建 DSP 计算器前端并部署到静态资源目录。
+*   **`build_dsp_static.py`**: 自动化构建 DSP 计算器前端并部署到静态资源目录。脚本会把源码指纹写到 `frontend/.codeyun-state/`，重复执行时若源码未变则直接跳过，适合日常手动保底同步。
 *   **`check_prod.py`**: 本地生产式检查。会执行 Ubuntu 部署兼容性预检查、前端类型检查、`vite build`、后端 production smoke test、前端 preview smoke test。
 *   *(其他运维脚本已归档或移除，请使用 `skills/yun-server` 技能或手动维护)*
