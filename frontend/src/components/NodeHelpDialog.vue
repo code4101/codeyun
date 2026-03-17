@@ -8,7 +8,7 @@
     <div class="help-content">
       <el-tabs v-model="activeTab">
         <el-tab-pane label="节点类型 (Types)" name="type">
-          <p class="section-intro">类型决定了节点的<b>颜色主题</b>。</p>
+          <p class="section-intro">类型提供节点的<b>默认颜色主题</b>；单个节点也可以再覆盖自定义颜色。</p>
           <div class="legend-grid">
             <div class="legend-header">
               <span>样式示例</span>

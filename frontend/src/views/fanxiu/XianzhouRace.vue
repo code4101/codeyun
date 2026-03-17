@@ -37,7 +37,7 @@
                         style="width: 120px"
                         @click.stop
                         @change="(val: number | undefined) => handleCountChange(scope.row, val)"
-                        :disabled="!canEdit"
+                        :disabled="!canEditRow(scope.row)"
                       />
                   </template>
               </el-table-column>
@@ -71,7 +71,7 @@
                         style="width: 120px"
                         @click.stop
                         @change="(val: number | undefined) => handleCountChange(scope.row, val)"
-                        :disabled="!canEdit"
+                        :disabled="!canEditRow(scope.row)"
                       />
                   </template>
               </el-table-column>
@@ -91,7 +91,10 @@
           empty-text="数据加载中..."
           class="editor-instance"
           @change="onEditorNoteChange"
-          :readonly="!canEdit"
+          :readonly="currentEditingNote?.can_edit === false"
+          :show-private-toggle="false"
+          :lock-title="true"
+          :lock-node-type="true"
         >
         </UniversalNoteEditor>
       </div>
@@ -107,11 +110,12 @@ import { ref, onMounted, computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
 import { getFanxiuChars, updateFanxiuChar } from '@/api/fanxiu';
-import type { NoteNode } from '@/api/notes';
+import { useNoteStore, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 
 const userStore = useUserStore();
+const noteStore = useNoteStore();
 
 interface CharItem {
   name: string;
@@ -121,12 +125,22 @@ interface CharItem {
 
 const loading = ref(false);
 const currentEditingNote = ref<NoteNode | undefined>(undefined);
+const currentEditingCharName = ref('');
 
 const canEdit = computed(() => {
+    const notes = [...group1Data.value, ...group2Data.value]
+      .map(item => item.note)
+      .filter((note): note is NoteNode => Boolean(note));
+
+    if (notes.length > 0) {
+      return notes.some(note => note.can_edit !== false);
+    }
+
     if (!userStore.user) return false;
-    // Allow '凡修手游' user OR superusers (admins)
     return userStore.user.username === '凡修手游' || userStore.isAdmin;
 });
+
+const canEditRow = (row: CharItem) => row.note ? row.note.can_edit !== false : canEdit.value;
 
 // Raw lists
 const group1Names = ['天鹏祭司', '凌玉灵', '马良', '宝花'];
@@ -208,36 +222,35 @@ const refreshData = async () => {
 
 const handleCountChange = async (row: CharItem, val: number | undefined) => {
     const nextValue = val ?? 0;
-    // 1. Update localStorage immediately
     row.count = nextValue;
     saveLocalCounts();
-    
-    // 2. Update editor if open
-    if (currentEditingNote.value && currentEditingNote.value.title === row.name) {
+
+    if (currentEditingCharName.value === row.name && currentEditingNote.value) {
         currentEditingNote.value.weight = nextValue;
     }
 
-    // 3. Try to sync to backend if we have a note (best effort)
-    if (row.note) {
+    if (row.note?.id && canEditRow(row)) {
         try {
-            const updatedNote = await updateFanxiuChar(row.name, {
+            const updatedNote = await noteStore.updateNote(row.note.id, {
                 weight: nextValue
             });
+            if (!updatedNote) return;
             row.note = updatedNote;
             row.count = updatedNote.weight;
+            if (currentEditingNote.value?.id === updatedNote.id) {
+                currentEditingNote.value = JSON.parse(JSON.stringify(updatedNote));
+            }
         } catch (e) {
             console.error('Failed to sync count to backend:', e);
-            // We don't ElMessage.error here to keep it "pure frontend" feeling, 
-            // but the console will show it.
         }
     }
 };
 
 const handleRowClick = async (row: CharItem) => {
+    currentEditingCharName.value = row.name;
     if (row.note) {
         currentEditingNote.value = JSON.parse(JSON.stringify(row.note));
     } else {
-        // Auto create if not exists, to match StarNotes behavior
         try {
             const newNote = await updateFanxiuChar(row.name, {
                 title: row.name,
@@ -254,8 +267,7 @@ const handleRowClick = async (row: CharItem) => {
             return;
         }
     }
-    
-    // Auto scroll to editor
+
     setTimeout(() => {
         const editorEl = document.querySelector('.editor-section');
         if (editorEl) {
@@ -265,45 +277,74 @@ const handleRowClick = async (row: CharItem) => {
 };
 
 const handleSave = async (note: NoteNode, patch: Partial<NoteNode> = {}) => {
-    try {
-        const payload = Object.keys(patch).length ? patch : note;
-        const updatedNote = await updateFanxiuChar(note.title, payload);
-        
+    const charName = currentEditingCharName.value || note.title;
+    const syncRowNote = (updatedNote: NoteNode) => {
         const updateList = (list: CharItem[]) => {
-            const item = list.find(i => i.name === note.title);
+            const item = list.find(i => (updatedNote.id && i.note?.id === updatedNote.id) || i.name === charName);
             if (item) {
                 item.note = updatedNote;
                 item.count = updatedNote.weight;
             }
         };
-        
         updateList(group1Data.value);
         updateList(group2Data.value);
-        
-        if (currentEditingNote.value && !currentEditingNote.value.id) {
-            currentEditingNote.value.id = updatedNote.id;
-        }
+    };
 
+    if (note.id) {
+        const updatedNote = await noteStore.updateNote(note.id, {
+            ...(Object.keys(patch).length ? patch : note),
+            title: charName,
+            node_type: 'memo'
+        });
+        if (!updatedNote) throw new Error('保存失败');
+        syncRowNote(updatedNote);
         return updatedNote;
-    } catch (e) {
-        throw e;
     }
+
+    const createdNote = await updateFanxiuChar(charName, {
+        ...(Object.keys(patch).length ? patch : note),
+        title: charName,
+        node_type: 'memo'
+    });
+    syncRowNote(createdNote);
+    return createdNote;
 };
 
 const handleSaveKeepalive = (note: NoteNode, patch: Partial<NoteNode> = {}) => {
-    const payload = Object.keys(patch).length ? patch : note;
-    putJsonKeepalive(`/api/fanxiu/chars/${encodeURIComponent(note.title)}`, payload);
+    const charName = currentEditingCharName.value || note.title;
+    const payload = {
+        ...(Object.keys(patch).length ? patch : note),
+        title: charName,
+        node_type: 'memo'
+    };
+
+    if (note.id) {
+        const normalizedPayload: Record<string, any> = { ...payload };
+        if (typeof normalizedPayload.start_at === 'number' && normalizedPayload.start_at > 10000000000) {
+            normalizedPayload.start_at /= 1000;
+        }
+        putJsonKeepalive(`/api/notes/${encodeURIComponent(note.id)}`, normalizedPayload);
+        return;
+    }
+
+    const normalizedPayload: Record<string, any> = { ...payload };
+    if (typeof normalizedPayload.start_at === 'number' && normalizedPayload.start_at > 10000000000) {
+        normalizedPayload.start_at /= 1000;
+    }
+    putJsonKeepalive(`/api/fanxiu/chars/${encodeURIComponent(charName)}`, normalizedPayload);
 };
 
 const onEditorNoteChange = (note: NoteNode) => {
     const updateInList = (list: CharItem[]) => {
-        const item = list.find(i => i.name === note.title);
+        const item = list.find(i => (note.id && i.note?.id === note.id) || i.name === currentEditingCharName.value);
         if (item) {
+            item.note = note;
             item.count = note.weight;
         }
     };
     updateInList(group1Data.value);
     updateInList(group2Data.value);
+    currentEditingNote.value = JSON.parse(JSON.stringify(note));
 };
 
 onMounted(() => {

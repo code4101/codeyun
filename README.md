@@ -19,7 +19,13 @@ uv run dev.py
 - Frontend: http://localhost:5173
 - Backend API: http://localhost:8000/docs
 
-`dev.py` 仅用于开发调试：后端使用 `uvicorn --reload`，前端使用 `vite dev`。
+`dev.py` 仅用于开发调试：后端默认使用 `outer` 模式，由 `dev.py` 外层监督；默认每 `5` 秒检查一次前后端进程是否仍在，后端源码变化后会等待 `60` 秒静默期再重启，前端仍使用 `vite dev`。`dev.py` 只托管它自己拉起的前后端，集群管理里的 task 进程保持独立，不随 `dev.py` 一起被清理。
+这些默认值可通过环境变量覆盖：
+- `CODEYUN_DEV_CHECK_INTERVAL_SECONDS`
+- `CODEYUN_DEV_BACKEND_RELOAD_COOLDOWN_SECONDS`
+- `CODEYUN_DEV_BACKEND_RELOAD_MODE`
+
+如需切回 `uvicorn --reload`，可执行 `uv run dev.py --backend-reload-mode uvicorn`。
 生产部署使用 `deploy/` 下的 `systemd + nginx` 配置，不走 `dev.py`。
 
 ## Run Convention

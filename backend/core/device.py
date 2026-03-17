@@ -32,6 +32,27 @@ LEGACY_DEVICE_STATE_FILE = os.path.join(DATA_DIR, "device_state.json")
 LEGACY_NODE_STATE_FILE = os.path.join(DATA_DIR, "node_state.json")
 PIDS_FILE = os.path.join(DATA_DIR, "pids.json")
 DEVICE_IDENTITY_VERSION = 2
+LOG_FOLLOW_POLL_INTERVAL_SECONDS = 0.5
+WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
+WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+WINDOWS_CREATE_NO_WINDOW = 0x08000000
+
+
+def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "close_fds": True,
+    }
+
+    if sys.platform == "win32":
+        creationflags = WINDOWS_CREATE_NO_WINDOW
+        if independent:
+            creationflags |= WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
+        kwargs["creationflags"] = creationflags
+    elif independent:
+        kwargs["start_new_session"] = True
+
+    return kwargs
 
 
 def _get_machine_state_dir() -> str:
@@ -549,13 +570,17 @@ class PosixCommandResolver(CommandResolver):
 
 class LogManager:
     @staticmethod
-    def prepare_log_path(device_id: str, task_id: str) -> str:
-        _ = device_id
+    def get_log_path(task_id: str) -> str:
         log_dir = LOGS_DIR
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
-        log_file_path = os.path.join(log_dir, f"{task_id}.log")
-        
+        return os.path.join(log_dir, f"{task_id}.log")
+
+    @staticmethod
+    def prepare_log_path(device_id: str, task_id: str) -> str:
+        _ = device_id
+        log_file_path = LogManager.get_log_path(task_id)
+
         # Rotation logic
         try:
             if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > 10 * 1024 * 1024:
@@ -569,54 +594,67 @@ class LogManager:
         return log_file_path
 
     @staticmethod
-    def start_stream(task_id: str, process: subprocess.Popen, log_file_path: str, callback: Optional[Callable[[str, str], None]]):
-        def _stream():
+    def start_follow(
+        task_id: str,
+        log_file_path: str,
+        callback: Optional[Callable[[str, str], None]],
+        is_running: Callable[[], bool],
+        stop_event: threading.Event,
+        start_offset: Optional[int] = None,
+        on_exit: Optional[Callable[[], None]] = None,
+    ):
+        def _follow():
             try:
-                # Open with 'a' (append) or 'w' (write)? 
-                # Original code used 'a'.
-                # But wait, we are creating a new file or appending?
-                # Usually we want to append if we rotated.
-                # But if it's a new run, we might want to truncate?
-                # The rotation logic handles keeping old logs.
-                # So 'a' is correct.
-                with open(log_file_path, 'a', encoding='utf-8') as f:
-                    # Write header
-                    # Actually header writing is done separately in original code.
-                    # I'll add a separate method for header writing if needed, or just let caller do it.
-                    # But wait, the original code writes header before starting process.
-                    # And then stream logs writes stdout.
-                    
-                    # We need to make sure process.stdout is not None
-                    if not process.stdout:
-                        return
+                file_obj = None
+                while not stop_event.is_set():
+                    try:
+                        file_obj = open(log_file_path, 'r', encoding='utf-8', errors='replace')
+                        break
+                    except FileNotFoundError:
+                        if not is_running():
+                            return
+                        stop_event.wait(LOG_FOLLOW_POLL_INTERVAL_SECONDS)
 
-                    for line in iter(process.stdout.readline, b''):
-                        decoded_line = ''
-                        try:
-                            decoded_line = line.decode('utf-8')
-                        except UnicodeDecodeError:
-                            try:
-                                decoded_line = line.decode('gbk')
-                            except:
-                                decoded_line = line.decode('utf-8', errors='replace')
-                        
-                        # Write to file
-                        f.write(decoded_line)
-                        f.flush()
-                        
-                        # Callback
-                        if callback:
-                            try:
-                                callback(task_id, decoded_line)
-                            except Exception as e:
-                                print(f"Log callback error: {e}")
+                if file_obj is None:
+                    return
+
+                with file_obj as f:
+                    if start_offset is None:
+                        f.seek(0, os.SEEK_END)
+                    else:
+                        f.seek(start_offset)
+
+                    while not stop_event.is_set():
+                        line = f.readline()
+                        if line:
+                            if callback:
+                                try:
+                                    callback(task_id, line)
+                                except Exception as e:
+                                    print(f"Log callback error: {e}")
+                            continue
+
+                        if not is_running():
+                            tail = f.read()
+                            if tail and callback:
+                                for chunk in tail.splitlines(keepends=True):
+                                    try:
+                                        callback(task_id, chunk)
+                                    except Exception as e:
+                                        print(f"Log callback error: {e}")
+                            break
+
+                        stop_event.wait(LOG_FOLLOW_POLL_INTERVAL_SECONDS)
             except Exception as e:
-                print(f"Log streamer error for pid {process.pid}: {e}")
+                print(f"Log follower error for task {task_id}: {e}")
             finally:
-                if process.stdout:
-                    process.stdout.close()
+                if on_exit:
+                    try:
+                        on_exit()
+                    except Exception:
+                        pass
 
-        t = threading.Thread(target=_stream, daemon=True)
+        t = threading.Thread(target=_follow, daemon=True)
         t.start()
 
 class TimeoutWatchdog:
@@ -680,8 +718,65 @@ class LocalDevice(BaseDevice):
         self.processes: Dict[str, psutil.Process] = {}
         self.saved_pids: Dict[str, int] = {}
         self.last_run_info: Dict[str, Dict[str, Any]] = {} # Store finished_at, started_at for ended tasks
+        self.log_followers: Dict[str, threading.Event] = {}
         self.lock = threading.RLock()
         self.load_pids()
+
+    def set_log_callback(self, callback: Callable[[str, str], None]):
+        with self.lock:
+            super().set_log_callback(callback)
+            follower_ids = list(self.log_followers)
+            running_processes = list(self.processes.items())
+            for task_id in follower_ids:
+                self._stop_log_follower_locked(task_id)
+
+        if callback:
+            for task_id, proc in running_processes:
+                self._ensure_log_follower(task_id, proc)
+
+    def _stop_log_follower_locked(self, task_id: str):
+        stop_event = self.log_followers.pop(task_id, None)
+        if stop_event:
+            stop_event.set()
+
+    def _stop_log_follower(self, task_id: str):
+        with self.lock:
+            self._stop_log_follower_locked(task_id)
+
+    def _ensure_log_follower(self, task_id: str, process: Any, start_offset: Optional[int] = None):
+        callback = self.log_callback
+        if callback is None:
+            return
+
+        with self.lock:
+            if task_id in self.log_followers:
+                return
+            stop_event = threading.Event()
+            self.log_followers[task_id] = stop_event
+
+        def is_running() -> bool:
+            try:
+                if hasattr(process, "poll"):
+                    return process.poll() is None
+                return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return False
+
+        def on_exit():
+            with self.lock:
+                current = self.log_followers.get(task_id)
+                if current is stop_event:
+                    self.log_followers.pop(task_id, None)
+
+        LogManager.start_follow(
+            task_id,
+            LogManager.get_log_path(task_id),
+            callback,
+            is_running=is_running,
+            stop_event=stop_event,
+            start_offset=start_offset,
+            on_exit=on_exit,
+        )
         
     def load_pids(self):
         from backend.models import TaskRuntime
@@ -786,6 +881,7 @@ class LocalDevice(BaseDevice):
                             "started_at": create_time,
                             "finished_at": time.time()
                         }
+                        self._stop_log_follower_locked(tid)
                         del self.processes[tid]
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     # Process gone
@@ -795,6 +891,7 @@ class LocalDevice(BaseDevice):
                             "started_at": None, # Cannot retrieve
                             "finished_at": time.time()
                         }
+                        self._stop_log_follower_locked(tid)
                         del self.processes[tid]
             
             # 2. Try to restore from saved_pids
@@ -816,6 +913,7 @@ class LocalDevice(BaseDevice):
                                      p_cmd = proc.cmdline()
                                      if match_cmdline(cmd, p_cmd):
                                          self.processes[t_id] = proc
+                                         self._ensure_log_follower(t_id, proc)
                                          continue
                                  except (psutil.NoSuchProcess, psutil.AccessDenied):
                                      pass
@@ -861,6 +959,7 @@ class LocalDevice(BaseDevice):
                                 # Found a match!
                                 self.processes[t_id] = proc
                                 self.saved_pids[t_id] = proc.pid
+                                self._ensure_log_follower(t_id, proc)
                                 used_pids.add(proc.pid)
                                 pids_changed = True
                                 break
@@ -1022,6 +1121,7 @@ class LocalDevice(BaseDevice):
             if proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE:
                  return {"status": "already_running", "pid": proc.pid}
             else:
+                self._stop_log_follower_locked(task_id)
                 del self.processes[task_id]
 
         # Double check: Scan actual processes just in case cache is stale (Lazy Loading scenario)
@@ -1033,6 +1133,7 @@ class LocalDevice(BaseDevice):
                         continue
                     if match_cmdline(command, cmdline):
                          self.processes[task_id] = proc
+                         self._ensure_log_follower(task_id, proc)
                          return {"status": "already_running", "pid": proc.pid}
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     continue
@@ -1072,26 +1173,23 @@ class LocalDevice(BaseDevice):
 
         try:
             # Write header
-            with open(log_file_path, 'a', encoding='utf-8') as log_f:
+            with open(log_file_path, 'a+', encoding='utf-8') as log_f:
                 log_f.write(f"\n--- Starting task at {datetime.datetime.now()} ---\n")
                 log_f.write(f"Command: {cmd_args}\n")
                 log_f.write(f"CWD: {actual_cwd}\n")
                 log_f.write(f"Env PYTHONIOENCODING: {run_env.get('PYTHONIOENCODING')}\n")
-            
-            creationflags = 0
-            if sys.platform == 'win32':
-                creationflags = 0x08000000
-            
-            proc = subprocess.Popen(
-                cmd_args,
-                cwd=actual_cwd,
-                env=run_env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL,
-                creationflags=creationflags,
-                close_fds=True
-            )
+                log_f.flush()
+                follow_offset = log_f.tell()
+
+            with open(log_file_path, 'ab', buffering=0) as log_sink:
+                proc = subprocess.Popen(
+                    cmd_args,
+                    cwd=actual_cwd,
+                    env=run_env,
+                    stdout=log_sink,
+                    stderr=subprocess.STDOUT,
+                    **build_background_popen_kwargs(independent=True),
+                )
             
             self.processes[task_id] = psutil.Process(proc.pid)
             
@@ -1100,7 +1198,7 @@ class LocalDevice(BaseDevice):
             self.save_pids()
             
             # Start background threads
-            LogManager.start_stream(task_id, proc, log_file_path, self.log_callback)
+            self._ensure_log_follower(task_id, proc, start_offset=follow_offset)
             TimeoutWatchdog.start(proc, timeout, task_id, self.stop_task)
 
             return {"status": "started", "pid": proc.pid}
@@ -1116,6 +1214,7 @@ class LocalDevice(BaseDevice):
                 if task_id in self.saved_pids:
                     del self.saved_pids[task_id]
                     self.save_pids()
+                self._stop_log_follower_locked(task_id)
                 return {"status": "not_running"}
             
             proc = self.processes[task_id]
@@ -1137,13 +1236,15 @@ class LocalDevice(BaseDevice):
                     "started_at": create_time,
                     "finished_at": time.time()
                 }
-                
+
+                self._stop_log_follower_locked(task_id)
                 del self.processes[task_id]
                 if task_id in self.saved_pids:
                     del self.saved_pids[task_id]
                     self.save_pids()
                 return {"status": "stopped"}
             except psutil.NoSuchProcess:
+                self._stop_log_follower_locked(task_id)
                 del self.processes[task_id]
                 if task_id in self.saved_pids:
                     del self.saved_pids[task_id]

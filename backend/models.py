@@ -1,6 +1,6 @@
 from typing import Optional, List
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, JSON, String
+from sqlalchemy import Column, JSON, String, UniqueConstraint
 import time
 import socket
 import uuid
@@ -47,6 +47,42 @@ class UserDevice(SQLModel, table=True):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
+
+class DeviceFile(SQLModel, table=True):
+    """
+    Track a logical file on a device, even if it later moves, renames, or
+    temporarily loses a concrete path match.
+    """
+    __tablename__ = "devicefile"
+    __table_args__ = (
+        UniqueConstraint("device_id", "absolute_path", name="uq_devicefile_device_path"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    device_id: str = Field(index=True)
+    absolute_path: Optional[str] = Field(default=None, index=True)
+    last_known_path: Optional[str] = Field(default=None, index=True)
+    content_hash: Optional[str] = Field(default=None, index=True)
+    hash_algorithm: str = Field(default="sha256")
+    file_size: Optional[int] = Field(default=None, index=True)
+    modified_at_ms: Optional[int] = Field(default=None, index=True)
+    duration_ms: Optional[int] = Field(default=None, index=True)
+    width_px: Optional[int] = Field(default=None)
+    height_px: Optional[int] = Field(default=None)
+    media_kind: Optional[str] = Field(default=None, index=True)
+    mime_type: Optional[str] = Field(default=None)
+    match_status: str = Field(default="matched", index=True)
+    cover_path: Optional[str] = Field(default=None)
+    cover_mime_type: Optional[str] = Field(default=None)
+    cover_source: Optional[str] = Field(default=None, index=True)
+    cover_updated_at: Optional[float] = None
+    weight: int = Field(default=0)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    last_seen_at: Optional[float] = None
+    hash_updated_at: Optional[float] = None
+
 # --- Task Models ---
 
 class Task(SQLModel, table=True):
@@ -89,14 +125,17 @@ class NoteNode(SQLModel, table=True):
     title: Optional[str] = Field(default="Untitled")
     content: str = Field(default="") # HTML content
     
-    # Weight for node size scaling (area based). Default 100.
-    weight: int = Field(default=100)
+    # Visual weight level for notes. Non-memo nodes interpret this exponentially.
+    weight: int = Field(default=0)
     
     # Node type: project, module, task, bug, note, doc, memo
     node_type: Optional[str] = Field(default="note", index=True)
 
     # Node status: idea, todo, doing, predone, done, delete
     node_status: Optional[str] = Field(default="idea", index=True)
+
+    # Optional per-node color override. Falls back to the type theme when unset.
+    color: Optional[str] = Field(default=None)
 
     # Private marker for doc-like notes. Kept as int to allow future levels.
     private_level: int = Field(default=0, index=True)

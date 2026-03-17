@@ -353,6 +353,18 @@ const confirmInsertMergedImage = () => {
     background-color: transparent !important;
 }
 
+:deep(.w-e-text-container blockquote),
+:deep(.w-e-text-container li),
+:deep(.w-e-text-container p),
+:deep(.w-e-text-container td),
+:deep(.w-e-text-container th) {
+    line-height: 1 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] p) {
+    margin: 6px 0 !important;
+}
+
 .editor-toolbar-extra {
     padding: 8px 15px;
     background-color: #fcfcfc;

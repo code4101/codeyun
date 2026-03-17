@@ -10,7 +10,7 @@ def make_note(
     *,
     start_at: float,
     updated_at: float,
-    weight: int = 100,
+    weight: int = 0,
     node_type: str = "note",
     node_status: str = "idea",
     private_level: int = 0,

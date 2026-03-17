@@ -99,6 +99,7 @@
           :noteId="currentNoteId"
           @update="handleNoteUpdate"
           @delete="handleNoteDelete"
+          @create="handleNoteCreate"
         />
       </template>
     </NoteSplitView>
@@ -127,6 +128,7 @@ import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeStyle } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import { formatNoteDateShort } from '@/utils/noteDate';
+import { getNoteWeightScaleFactor, NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { useResizablePane } from '@/utils/useResizablePane';
 
 const router = useRouter();
@@ -202,7 +204,7 @@ const createNoteForDay = async (date: Date) => {
   
   const defaultTitle = `${yy}${mm}${dd}_${hh}${min}`;
 
-  const newNote = await noteStore.createNote(defaultTitle, '', 100, startAt);
+  const newNote = await noteStore.createNote(defaultTitle, '', NOTE_WEIGHT_DEFAULT, startAt);
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
     currentNoteId.value = newNote.id;
@@ -321,27 +323,34 @@ const gridDays = computed<CalendarDay[]>(() => {
   return list;
 });
 
+const WEEK_BASE_WEIGHT = 5;
+
+const getWeekLevelFromCount = (count: number) => {
+  if (count <= 0) return 0;
+  // 1, 3, 6, 10... 条对应 1, 2, 3, 4 级；中间数量平滑落在小数级别。
+  return (Math.sqrt(1 + 8 * count) - 1) / 2;
+};
+
+const isCurrentWeekRow = (week: CalendarDay[]) => week.some(day => isToday(day.date));
+
 const gridTemplateRows = computed(() => {
   const days = gridDays.value;
   if (!days.length) return '';
-  
+
   const rowsCount = days.length / 7;
+  const weekRows = Array.from({ length: rowsCount }, (_, i) => days.slice(i * 7, i * 7 + 7));
+  const weekNoteCounts = weekRows.map(week => week.reduce((sum, day) => sum + getNotesForDay(day.date).length, 0));
+  const maxWeekNoteCount = Math.max(...weekNoteCounts, 0);
   const weights: number[] = [];
-  
+
   for (let i = 0; i < rowsCount; i++) {
-    let maxNodesInWeek = 0;
-    // 检查这一周的每一天
-    for (let j = 0; j < 7; j++) {
-      const dayIndex = i * 7 + j;
-      const dayNotes = getNotesForDay(days[dayIndex].date);
-      if (dayNotes.length > maxNodesInWeek) {
-        maxNodesInWeek = dayNotes.length;
-      }
-    }
-    // 权重 = 5 + 该周单日最大节点数
-    weights.push(5 + maxNodesInWeek);
+    const week = weekRows[i];
+    const weekNoteCount = weekNoteCounts[i];
+    const effectiveCount = isCurrentWeekRow(week) ? Math.max(weekNoteCount, maxWeekNoteCount) : weekNoteCount;
+    const level = getWeekLevelFromCount(effectiveCount);
+    weights.push(Number((WEEK_BASE_WEIGHT + level).toFixed(3)));
   }
-  
+
   return weights.map(w => `${w}fr`).join(' ');
 });
 
@@ -387,16 +396,9 @@ const openNote = (note: NoteNode) => {
 };
 
 const getNoteStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.node_type, note.node_status);
-  
-  // Calculate height based on weight
-  // Default weight 100 -> height 24px (standard line height + padding)
-  // Scale similar to star map: sqrt(weight/100)
-  const safeWeight = Math.max(10, note.weight || 100);
-  const scale = Math.sqrt(safeWeight / 100);
-  // Base height ~26px (standard)
-  // For weight 100 (scale 1) -> 26px
-  // For weight 400 (scale 2) -> 52px
+  const style = getNodeStyle(note.node_type, note.node_status, note.color);
+
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type);
   const baseHeight = 26;
   const height = Math.round(baseHeight * scale);
   
@@ -418,16 +420,11 @@ const getNoteStyle = (note: NoteNode) => {
 };
 
 const getNoteTitleStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.node_type, note.node_status);
-  const safeWeight = Math.max(10, note.weight || 100);
-  const scale = Math.sqrt(safeWeight / 100);
+  const style = getNodeStyle(note.node_type, note.node_status, note.color);
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type);
   // Font size: Base 12px, grow slower to allow more text
-  // Default weight 100 (scale 1) -> 12px
-  // Weight 400 (scale 2) -> 14px
-  // Weight 900 (scale 3) -> 16px
   const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
-  
-  // Recalculate height to determine max lines
+
   const baseHeight = 26;
   const height = Math.round(baseHeight * scale);
   
@@ -481,6 +478,11 @@ const handleNoteUpdate = () => {};
 
 const handleNoteDelete = (noteId: string) => {
   if (currentNoteId.value === noteId) currentNoteId.value = '';
+};
+
+const handleNoteCreate = (note: NoteNode) => {
+  noteStore.addNoteToTab(props.tabId, note.id);
+  currentNoteId.value = note.id;
 };
 
 const {

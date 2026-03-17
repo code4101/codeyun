@@ -39,10 +39,10 @@
                 <span class="label">权重:</span>
                 <el-input-number 
                   v-model="form.weight" 
-                  :min="1" 
-                  :max="10000" 
-                  :step="10" 
+                  :min="0" 
+                  :step="1" 
                   size="small"
+                  controls-position="right"
                   class="weight-input"
                 />
             </div>
@@ -100,6 +100,7 @@ import { useNoteStore, type NoteNode } from '@/api/notes';
 import { ElMessage } from 'element-plus';
 import NodeSelector from './NodeSelector.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
+import { NOTE_WEIGHT_DEFAULT, normalizeNoteWeight } from '@/utils/noteWeight';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
@@ -126,7 +127,7 @@ const form = reactive({
   content: '',
   startDate: new Date(),
   startTime: '00:00:00',
-  weight: 100,
+  weight: NOTE_WEIGHT_DEFAULT,
   nodeType: 'note',
   nodeStatus: 'idea',
   linkToNew: true,
@@ -142,7 +143,7 @@ const initForm = () => {
   
   form.title = props.sourceNote.title;
   form.content = props.sourceNote.content || '';
-  form.weight = props.sourceNote.weight;
+  form.weight = normalizeNoteWeight(props.sourceNote.weight);
   form.nodeType = props.sourceNote.node_type || 'note';
   form.nodeStatus = props.sourceNote.node_status || 'idea';
   
@@ -193,7 +194,8 @@ const handleCopy = async () => {
             form.nodeType,
             form.nodeStatus,
             [],
-            props.sourceNote.private_level ?? 0
+            props.sourceNote.private_level ?? 0,
+            props.sourceNote.color ?? null
         );
         
         if (newNote) {

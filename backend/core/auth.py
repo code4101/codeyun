@@ -18,6 +18,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = settings.access_token_expire_minutes
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=False)
 
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
@@ -127,6 +128,26 @@ async def get_current_user_from_token(
     user = session.exec(statement).first()
     if user is None:
         raise credentials_exception
+    return user
+
+
+async def get_optional_current_user_from_token(
+    token: Optional[str] = Depends(oauth2_scheme_optional),
+    session: Session = Depends(get_session),
+):
+    if not token:
+        return None
+
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            return None
+    except JWTError:
+        return None
+
+    statement = select(User).where(User.username == username)
+    user = session.exec(statement).first()
     return user
 
 async def get_current_active_user(current_user: User = Depends(get_current_user_from_token)):

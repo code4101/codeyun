@@ -2,6 +2,7 @@ import api from '@/api';
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ElMessage } from 'element-plus';
+import { NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 
 export interface NoteNode {
   id: string;
@@ -11,6 +12,7 @@ export interface NoteNode {
   weight: number;
   node_type?: string | null;
   node_status?: string | null;
+  color?: string | null;
   private_level: number;
   custom_fields?: any[];
   inherited_fields?: {
@@ -23,6 +25,7 @@ export interface NoteNode {
   history?: { ts: number; f: string; v: any }[];
   edge_count?: number;
   out_degree?: number;
+  can_edit?: boolean;
 }
 
 export interface NoteEdge {
@@ -205,7 +208,8 @@ const normalizeNote = (raw: any): NoteNode => ({
   created_at: raw.created_at * 1000,
   updated_at: raw.updated_at * 1000,
   start_at: raw.start_at * 1000,
-  private_level: normalizeInteger(raw.private_level, 0)
+  private_level: normalizeInteger(raw.private_level, 0),
+  can_edit: Boolean(raw.can_edit)
 });
 
 const normalizeEdge = (raw: any): NoteEdge => ({
@@ -219,9 +223,11 @@ const normalizeEdge = (raw: any): NoteEdge => ({
 const patchNoteDetails = (detailMap: Record<string, NoteNode>, incomingNotes: NoteNode[]) => {
   incomingNotes.forEach(note => {
     if (!detailMap[note.id]) return;
+    const existing = detailMap[note.id];
     detailMap[note.id] = {
-      ...detailMap[note.id],
-      ...note
+      ...existing,
+      ...note,
+      inherited_fields: note.inherited_fields ?? existing.inherited_fields
     };
   });
 };
@@ -1050,7 +1056,12 @@ export const useNoteStore = defineStore('notes', () => {
   const mergeNoteDetails = (incomingNotes: NoteNode[]) => {
     const ids: string[] = [];
     incomingNotes.forEach(note => {
-      noteDetailMap.value[note.id] = note;
+      const existing = noteDetailMap.value[note.id];
+      noteDetailMap.value[note.id] = {
+        ...existing,
+        ...note,
+        inherited_fields: note.inherited_fields ?? existing?.inherited_fields
+      };
       ids.push(note.id);
     });
     touchNoteDetails(ids);
@@ -1157,8 +1168,19 @@ export const useNoteStore = defineStore('notes', () => {
       session.noteIds = [noteId, ...session.noteIds];
       session.lastLoadedAt = Date.now();
       touchNotes([noteId]);
-      pruneCaches();
     }
+
+    const visibleNoteIds = new Set(session.noteIds);
+    const missingEdgeIds = Object.values(edgeMap.value)
+      .filter(edge => visibleNoteIds.has(edge.source_id) && visibleNoteIds.has(edge.target_id))
+      .map(edge => edge.id)
+      .filter(edgeId => !session.edgeIds.includes(edgeId));
+
+    if (missingEdgeIds.length > 0) {
+      session.edgeIds = [...missingEdgeIds, ...session.edgeIds];
+    }
+
+    pruneCaches();
   };
 
   const getNoteSummaryById = (id: string) => {
@@ -1354,12 +1376,13 @@ export const useNoteStore = defineStore('notes', () => {
   const createNote = async (
     title: string,
     content: string,
-    weight: number = 100,
+    weight: number = NOTE_WEIGHT_DEFAULT,
     start_at?: number,
     node_type: string | null = 'note',
     node_status: string | null = 'idea',
     custom_fields: any[] = [],
-    private_level: number = 0
+    private_level: number = 0,
+    color: string | null = null
   ) => {
     bumpPending(1);
     try {
@@ -1369,6 +1392,7 @@ export const useNoteStore = defineStore('notes', () => {
         weight,
         node_type,
         node_status,
+        color,
         custom_fields,
         private_level: normalizeInteger(private_level, 0)
       };
@@ -1398,6 +1422,7 @@ export const useNoteStore = defineStore('notes', () => {
       start_at?: number;
       node_type?: string | null;
       node_status?: string | null;
+      color?: string | null;
       private_level?: number;
       custom_fields?: any[];
     }

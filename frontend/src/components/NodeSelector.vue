@@ -13,9 +13,10 @@
       trigger="click"
       popper-class="node-selector-popper"
       v-model:visible="popoverVisible"
+      :disabled="disabled"
     >
       <template #reference>
-        <div class="selector-trigger" :style="triggerStyle">
+        <div class="selector-trigger" :class="{ 'is-disabled': disabled }" :style="triggerStyle">
           <span class="trigger-text">{{ currentLabel }}</span>
           <el-icon><ArrowDown /></el-icon>
         </div>
@@ -55,9 +56,11 @@ const props = defineProps<{
   modelValue: string | null | undefined;
   mode: 'type' | 'status';
   relatedType?: string | null; // For status mode to know color context
+  customColor?: string | null;
   label?: string;
   showLabel?: boolean;
   showHelpIcon?: boolean;
+  disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -92,10 +95,7 @@ const triggerStyle = computed(() => {
   
   // If mode is type, we just show the color and a simple box
   if (props.mode === 'type') {
-    const config = getNodeTypeConfig(typeId);
-    // For type preview, we should use 'idea' style (default style) to avoid confusion
-    // So we use getNodeStyle with 'idea' status
-    const style = getNodeStyle(typeId, 'idea');
+    const style = getNodeStyle(typeId, 'idea', props.customColor);
     return {
       borderColor: style.borderColor,
       color: style.color,
@@ -106,7 +106,7 @@ const triggerStyle = computed(() => {
   } else {
     // If mode is status, we show the status style (border type etc)
     // We need to use getNodeStyle with the relatedType
-    const style = getNodeStyle(typeId, statusId);
+    const style = getNodeStyle(typeId, statusId, props.customColor);
     return {
       borderColor: style.borderColor,
       color: style.color, // Usually type color
@@ -136,7 +136,7 @@ const getItemStyle = (item: NodeTypeItem | NodeStatusItem) => {
     // Status Preview
     // Use relatedType if available, else use a default type (e.g. 'task' or 'note') for context
     const typeId = props.relatedType || 'note';
-    const style = getNodeStyle(typeId, item.id);
+    const style = getNodeStyle(typeId, item.id, props.customColor);
     return {
       borderColor: style.borderColor,
       color: style.color,
@@ -150,6 +150,7 @@ const getItemStyle = (item: NodeTypeItem | NodeStatusItem) => {
 };
 
 const selectItem = (id: string) => {
+  if (props.disabled) return;
   emit('update:modelValue', id);
   emit('change', id);
   popoverVisible.value = false;
@@ -197,6 +198,15 @@ const selectItem = (id: string) => {
 
 .selector-trigger:hover {
   filter: brightness(0.95);
+}
+
+.selector-trigger.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.selector-trigger.is-disabled:hover {
+  filter: none;
 }
 
 .trigger-text {

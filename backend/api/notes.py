@@ -22,6 +22,7 @@ from backend.schemas import (
     NoteBatchUpdateResponse,
 )
 from backend.core.auth import get_current_active_user
+from backend.core.note_access import note_to_response_dict
 from backend.core.note_walker import NoteGraphContext, NoteWalker
 import time
 import uuid
@@ -29,6 +30,25 @@ import uuid
 router = APIRouter()
 
 ALLOWED_ORDER_FIELDS = {"updated_at", "created_at", "start_at", "weight", "title", "private_level"}
+
+
+def _serialize_note_list(note: NoteNode, current_user: User) -> dict[str, Any]:
+    return note_to_response_dict(note, current_user)
+
+
+def _serialize_note_read(
+    note: NoteNode,
+    current_user: User,
+    **extra_fields: Any,
+) -> dict[str, Any]:
+    return note_to_response_dict(note, current_user, **extra_fields)
+
+
+def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
+    query = select(NoteNode).where(NoteNode.id == note_id)
+    if not current_user.is_superuser:
+        query = query.where(NoteNode.user_id == current_user.id)
+    return session.exec(query).first()
 
 
 def _get_filtered_edge_pool(
@@ -252,6 +272,7 @@ def _ensure_seed_ids_exist(context: NoteGraphContext, seed_ids: List[str]) -> No
 def _execute_note_program(
     request: NoteProgramRequest,
     *,
+    current_user: User,
     user_id: int,
     session: Session,
 ):
@@ -288,7 +309,7 @@ def _execute_note_program(
         visible_edges = []
 
     return {
-        "nodes": visible_nodes,
+        "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
         "edges": visible_edges,
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges),
@@ -331,7 +352,7 @@ def read_notes(
     
     statement = query.offset(skip).limit(limit)
     notes = session.exec(statement).all()
-    return notes
+    return [_serialize_note_list(note, current_user) for note in notes]
 
 
 @router.post("/query", response_model=NoteQueryResponse)
@@ -385,7 +406,7 @@ def query_notes(
         visible_edges = []
 
     return {
-        "nodes": visible_notes,
+        "nodes": [_serialize_note_list(note, current_user) for note in visible_notes],
         "edges": visible_edges,
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges)
@@ -401,7 +422,7 @@ def query_note_program(
     """
     Execute a walker-style filtering program over the current user's note graph.
     """
-    return _execute_note_program(request, user_id=current_user.id, session=session)
+    return _execute_note_program(request, current_user=current_user, user_id=current_user.id, session=session)
 
 
 @router.post("/batch-update", response_model=NoteBatchUpdateResponse)
@@ -461,7 +482,7 @@ def batch_update_notes(
 
     return {
         "updated_count": len(updated_notes),
-        "notes": updated_notes,
+        "notes": [_serialize_note_list(note, current_user) for note in updated_notes],
     }
 
 @router.post("/", response_model=NoteRead)
@@ -482,6 +503,7 @@ def create_note(
         weight=note.weight,
         node_type=note.node_type,
         node_status=note.node_status,
+        color=note.color,
         private_level=note.private_level,
         custom_fields=note.custom_fields,
         # parent_id=note.parent_id, # Deprecated
@@ -494,7 +516,7 @@ def create_note(
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
-    return db_note
+    return _serialize_note_read(db_note, current_user)
 
 @router.get("/{note_id}", response_model=NoteRead)
 def read_note(
@@ -505,15 +527,14 @@ def read_note(
     """
     Get a specific note.
     """
-    statement = select(NoteNode).where(NoteNode.id == note_id, NoteNode.user_id == current_user.id)
-    note = session.exec(statement).first()
+    note = _get_accessible_note(note_id, current_user, session)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
     
     # Calculate edge count
     edge_count = session.exec(
         select(func.count()).select_from(NoteEdge).where(
-            NoteEdge.user_id == current_user.id,
+            NoteEdge.user_id == note.user_id,
             or_(NoteEdge.source_id == note_id, NoteEdge.target_id == note_id)
         )
     ).one()
@@ -521,7 +542,7 @@ def read_note(
     # Calculate out_degree (for Satellite mode)
     out_degree = session.exec(
         select(func.count()).select_from(NoteEdge).where(
-            NoteEdge.user_id == current_user.id,
+            NoteEdge.user_id == note.user_id,
             NoteEdge.source_id == note_id
         )
     ).one()
@@ -530,7 +551,7 @@ def read_note(
     # 1. Fetch direct parents (incoming edges)
     direct_parent_edges = session.exec(
         select(NoteEdge).where(
-            NoteEdge.user_id == current_user.id,
+            NoteEdge.user_id == note.user_id,
             NoteEdge.target_id == note_id
         )
     ).all()
@@ -543,7 +564,7 @@ def read_note(
         parent_nodes = session.exec(
             select(NoteNode).where(
                 NoteNode.id.in_(parent_ids),
-                NoteNode.user_id == current_user.id
+                NoteNode.user_id == note.user_id
             )
         ).all()
 
@@ -585,7 +606,7 @@ def read_note(
             # Find edges where target is in queue (incoming to current level)
             upstream_edges = session.exec(
                 select(NoteEdge).where(
-                    NoteEdge.user_id == current_user.id,
+                    NoteEdge.user_id == note.user_id,
                     NoteEdge.target_id.in_(queue)
                 )
             ).all()
@@ -601,7 +622,7 @@ def read_note(
                 ancestor_nodes = session.exec(
                     select(NoteNode).where(
                         NoteNode.id.in_(new_ancestor_ids),
-                        NoteNode.user_id == current_user.id
+                        NoteNode.user_id == note.user_id
                     )
                 ).all()
                 
@@ -647,14 +668,16 @@ def read_note(
             
     final_ancestor_fields = list(ancestor_fields.values())
     
-    note_dict = note.model_dump()
-    note_dict['edge_count'] = edge_count
-    note_dict['out_degree'] = out_degree
-    note_dict['inherited_fields'] = {
-        "direct": final_direct_fields,
-        "ancestors": final_ancestor_fields
-    }
-    return note_dict
+    return _serialize_note_read(
+        note,
+        current_user,
+        edge_count=edge_count,
+        out_degree=out_degree,
+        inherited_fields={
+            "direct": final_direct_fields,
+            "ancestors": final_ancestor_fields,
+        },
+    )
 
 @router.get("/{note_id}/connected-component", response_model=GraphData)
 def get_connected_component(
@@ -675,7 +698,7 @@ def get_connected_component(
         )
     ).all()
     component_edges = [edge for edge in edges if edge.source_id in note_ids and edge.target_id in note_ids]
-    return {"nodes": nodes, "edges": component_edges}
+    return {"nodes": [_serialize_note_list(note, current_user) for note in nodes], "edges": component_edges}
 
 @router.put("/{note_id}", response_model=NoteRead)
 def update_note(
@@ -687,8 +710,7 @@ def update_note(
     """
     Update a note.
     """
-    statement = select(NoteNode).where(NoteNode.id == note_id, NoteNode.user_id == current_user.id)
-    db_note = session.exec(statement).first()
+    db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
     
@@ -697,7 +719,15 @@ def update_note(
     # --- History Logging Logic ---
     now_ts = int(time.time())
     one_hour = 3600
-    field_map = {"node_type": "n", "node_status": "s", "title": "t", "weight": "w", "content": "c", "private_level": "p"}
+    field_map = {
+        "node_type": "n",
+        "node_status": "s",
+        "title": "t",
+        "weight": "w",
+        "content": "c",
+        "private_level": "p",
+        "color": "cl",
+    }
     
     if db_note.history is None:
         db_note.history = []
@@ -757,7 +787,7 @@ def update_note(
     session.add(db_note)
     session.commit()
     session.refresh(db_note)
-    return db_note
+    return _serialize_note_read(db_note, current_user)
 
 @router.delete("/{note_id}")
 def delete_note(
@@ -768,8 +798,7 @@ def delete_note(
     """
     Delete a note.
     """
-    statement = select(NoteNode).where(NoteNode.id == note_id, NoteNode.user_id == current_user.id)
-    db_note = session.exec(statement).first()
+    db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
     

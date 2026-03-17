@@ -488,7 +488,7 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
           kind: 'field',
           field: 'weight',
           op: 'gte',
-          value: 100
+          value: 0
         }
       };
   }
@@ -725,7 +725,7 @@ const updateFieldOp = (index: number, op: string) => {
 
     if (op === 'between') {
       const fallbackValue = draft.matcher.field === 'weight'
-        ? 100
+        ? 0
         : draft.matcher.field === 'private_level'
           ? 1
           : 0;
@@ -738,7 +738,7 @@ const updateFieldOp = (index: number, op: string) => {
     }
 
     if (draft.matcher.field === 'weight' || draft.matcher.field === 'private_level') {
-      const fallbackValue = draft.matcher.field === 'weight' ? 100 : 1;
+      const fallbackValue = draft.matcher.field === 'weight' ? 0 : 1;
       draft.matcher.value = typeof draft.matcher.value === 'number' && Number.isFinite(draft.matcher.value)
         ? draft.matcher.value
         : (getRangeValue(draft.matcher.values, 0) ?? fallbackValue);

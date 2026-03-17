@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from backend.core.auth import verify_api_token
-from backend.core.device import device_manager, get_device_id, match_cmdline
+from backend.core.device import (
+    build_background_popen_kwargs,
+    device_manager,
+    get_device_id,
+    match_cmdline,
+)
 
 router = APIRouter(dependencies=[Depends(verify_api_token)])
 
@@ -90,10 +95,6 @@ def execute_command(req: ExecCmdRequest):
         if req.env:
             run_env.update(req.env)
 
-        creationflags = 0
-        if sys.platform == "win32":
-            creationflags = 0x08000000
-
         import shlex
 
         try:
@@ -105,11 +106,9 @@ def execute_command(req: ExecCmdRequest):
             cmd_args,
             cwd=req.cwd,
             env=run_env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-            close_fds=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **build_background_popen_kwargs(independent=True),
         )
 
         return {

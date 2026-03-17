@@ -57,6 +57,7 @@
 
           <div class="graph-toolbar">
             <el-button v-if="selectedEdgeId" type="danger" size="small" @click="deleteSelectedEdge">删除选中边</el-button>
+            <el-button size="small" :icon="Refresh" :loading="isGraphUpdating || isRefreshing" @click="relayoutGraph">重新排版</el-button>
             <el-button type="primary" size="small" :icon="Plus" @click="createNewNote">新建节点</el-button>
           </div>
 
@@ -101,12 +102,13 @@ import {
   createIncludeAllProgram,
   normalizeNoteProgramChannel
 } from '@/api/notes';
-import { VueFlow, useVueFlow, Connection, MarkerType, type EdgeTypesObject, type NodeTypesObject } from '@vue-flow/core';
+import { VueFlow, useVueFlow, useNodesInitialized, Connection, MarkerType, type EdgeTypesObject, type NodeTypesObject } from '@vue-flow/core';
 import { Background } from '@vue-flow/background';
 import { Controls } from '@vue-flow/controls';
 import CustomNode from '@/components/CustomNode.vue';
 import ElkEdge from '@/components/ElkEdge.vue';
 import { useLayout } from '@/utils/useLayout';
+import { buildOrthogonalSegments, routeOrthogonalEdge } from '@/utils/orthogonalEdgeRouter';
 import { useResizablePane } from '@/utils/useResizablePane';
 
 const nodeTypes: NodeTypesObject = {
@@ -174,21 +176,33 @@ const {
 const nodes = ref<any[]>([]);
 const edges = ref<any[]>([]);
 const vueFlowWrapper = ref<HTMLElement | null>(null);
+const nodesInitialized = useNodesInitialized();
 const { 
   onEdgesChange, 
+  onNodeDrag,
+  onNodeDragStop,
   applyEdgeChanges, 
   onEdgeClick, 
   onPaneClick,
-  project
+  project,
+  updateNodeInternals
 } = useVueFlow();
 
 const selectedEdgeId = ref<string | null>(null);
+const nodePositionCache = ref<Record<string, { x: number; y: number }>>({});
+const edgeHandleCache = ref<Record<string, { sourceHandle?: string; targetHandle?: string }>>({});
+const edgeRouteCache = ref<Record<string, any[]>>({});
+const edgeLocalRouteCache = ref<Record<string, Array<{ x: number; y: number }>>>({});
+let suppressNodePositionWatch = false;
+let dragRerouteFrame: number | null = null;
+let pendingDragEdgeIds = new Set<string>();
 
 // Editor state
 const currentNoteId = ref<string>('');
 const isRefreshing = ref(false);
 const isGraphUpdating = ref(false);
 let graphFilterQueued = false;
+let graphRelayoutQueued = false;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
 const isGlobalGraph = computed(() => !props.graphMode || props.graphMode === 'global');
 const getAppliedDataProgram = () => normalizeNoteProgramChannel(
@@ -199,24 +213,111 @@ const getViewProgram = () => normalizeNoteProgramChannel(
 );
 const dataProgram = ref(normalizeNoteProgramChannel(getAppliedDataProgram()));
 const viewProgram = ref(normalizeNoteProgramChannel(getViewProgram()));
+const VERTICAL_HANDLE_THRESHOLD = 60;
+const HORIZONTAL_HANDLE_THRESHOLD = 60;
+
+const resolveRelativeEdgeHandles = (
+  sourceNode?: { position?: { x?: number; y?: number } } | null,
+  targetNode?: { position?: { x?: number; y?: number } } | null
+) => {
+  if (!sourceNode || !targetNode) {
+    return {
+      sourceHandle: undefined,
+      targetHandle: undefined
+    };
+  }
+
+  const dx = (Number(targetNode.position?.x) || 0) - (Number(sourceNode.position?.x) || 0);
+  const dy = (Number(targetNode.position?.y) || 0) - (Number(sourceNode.position?.y) || 0);
+
+  if (dy >= VERTICAL_HANDLE_THRESHOLD) {
+    return { sourceHandle: 'b-s', targetHandle: 't-t' };
+  }
+
+  if (dy <= -VERTICAL_HANDLE_THRESHOLD) {
+    return { sourceHandle: 't-s', targetHandle: 'b-t' };
+  }
+
+  if (dx >= HORIZONTAL_HANDLE_THRESHOLD) {
+    return { sourceHandle: 'r-s', targetHandle: 'l-t' };
+  }
+
+  if (dx <= -HORIZONTAL_HANDLE_THRESHOLD) {
+    return { sourceHandle: 'l-s', targetHandle: 'r-t' };
+  }
+
+  if (Math.abs(dy) >= Math.abs(dx)) {
+    return dy >= 0
+      ? { sourceHandle: 'b-s', targetHandle: 't-t' }
+      : { sourceHandle: 't-s', targetHandle: 'b-t' };
+  }
+
+  return dx >= 0
+    ? { sourceHandle: 'r-s', targetHandle: 'l-t' }
+    : { sourceHandle: 'l-s', targetHandle: 'r-t' };
+};
+
+const resolveGraphEdgeHandles = (
+  edge: Pick<NoteEdge, 'id' | 'source_id' | 'target_id' | 'source_handle' | 'target_handle'>,
+  options?: {
+    nodeLookup?: Map<string, any>;
+    preferDynamicHandles?: boolean;
+  }
+) => {
+  let sourceHandle = edge.source_handle;
+  let targetHandle = edge.target_handle;
+
+  const relativeHandles = options?.nodeLookup
+    ? resolveRelativeEdgeHandles(
+        options.nodeLookup.get(edge.source_id),
+        options.nodeLookup.get(edge.target_id)
+      )
+    : { sourceHandle: undefined, targetHandle: undefined };
+
+  const cachedHandles = edgeHandleCache.value[edge.id];
+
+  if (options?.preferDynamicHandles) {
+    sourceHandle = sourceHandle ?? relativeHandles.sourceHandle ?? cachedHandles?.sourceHandle;
+    targetHandle = targetHandle ?? relativeHandles.targetHandle ?? cachedHandles?.targetHandle;
+  }
+
+  sourceHandle = sourceHandle ?? cachedHandles?.sourceHandle ?? relativeHandles.sourceHandle;
+  targetHandle = targetHandle ?? cachedHandles?.targetHandle ?? relativeHandles.targetHandle;
+
+  return {
+    sourceHandle,
+    targetHandle
+  };
+};
 
 const buildGraphEdge = (
-  edge: Pick<NoteEdge, 'id' | 'source_id' | 'target_id' | 'label' | 'source_handle' | 'target_handle'>
+  edge: Pick<NoteEdge, 'id' | 'source_id' | 'target_id' | 'label' | 'source_handle' | 'target_handle'>,
+  options?: {
+    nodeLookup?: Map<string, any>;
+    preferDynamicHandles?: boolean;
+    includeLocalRoute?: boolean;
+  }
 ) => ({
+  ...resolveGraphEdgeHandles(edge, options),
   id: edge.id,
   source: edge.source_id,
   target: edge.target_id,
   label: edge.label,
   type: 'elk',
+  data:
+    edgeRouteCache.value[edge.id] || edgeLocalRouteCache.value[edge.id]
+      ? {
+          elkSections: edgeRouteCache.value[edge.id],
+          routePoints: options?.includeLocalRoute === false ? undefined : edgeLocalRouteCache.value[edge.id]
+        }
+      : undefined,
   markerEnd: {
     type: MarkerType.ArrowClosed,
     width: 20,
     height: 20,
     color: '#909399'
   },
-  style: { stroke: '#909399', strokeWidth: 1.5 },
-  sourceHandle: edge.source_handle,
-  targetHandle: edge.target_handle
+  style: { stroke: '#909399', strokeWidth: 1.5 }
 });
 
 const applyDataProgram = async () => {
@@ -241,61 +342,613 @@ const scheduleGraphFilterApply = (delay: number = 120) => {
   }
   graphFilterTimer = setTimeout(() => {
     graphFilterTimer = null;
-    void applyGraphFilters();
+    void applyGraphFilters(false, false);
   }, delay);
 };
 
-const applyGraphFilters = async (force: boolean = false) => {
+const waitForAnimationFrame = () =>
+  new Promise<void>(resolve => {
+    window.requestAnimationFrame(() => resolve());
+  });
+
+const waitForNodesReady = async () => {
+  if (nodes.value.length === 0) {
+    return;
+  }
+
+  if (nodesInitialized.value) {
+    return;
+  }
+
+  await new Promise<void>(resolve => {
+    const stop = watch(
+      nodesInitialized,
+      value => {
+        if (value) {
+          stop();
+          resolve();
+        }
+      },
+      { immediate: true }
+    );
+
+    window.setTimeout(() => {
+      stop();
+      resolve();
+    }, 500);
+  });
+};
+
+const refreshNodeInternals = async (nodeIds?: string[]) => {
+  await nextTick();
+  await waitForAnimationFrame();
+  updateNodeInternals(nodeIds);
+  await nextTick();
+  await waitForNodesReady();
+};
+
+const refreshRenderedEdges = (graphEdges = edges.value) => {
+  edges.value = graphEdges.map(edge => ({
+    ...edge,
+    data: edge.data ? { ...edge.data } : edge.data
+  }));
+};
+
+const cacheNodePositions = (graphNodes = nodes.value) => {
+  const nextCache = { ...nodePositionCache.value };
+  graphNodes.forEach(node => {
+    const id = String(node.id);
+    nextCache[id] = {
+      x: Number(node.position?.x) || 0,
+      y: Number(node.position?.y) || 0
+    };
+  });
+  nodePositionCache.value = nextCache;
+};
+
+const cacheDraggedNodePositions = (graphNodes: Array<{ id: string; position?: { x?: number; y?: number } }> = []) => {
+  if (graphNodes.length === 0) return;
+
+  const nextCache = { ...nodePositionCache.value };
+  graphNodes.forEach(node => {
+    const id = String(node.id);
+    nextCache[id] = {
+      x: Number(node.position?.x) || 0,
+      y: Number(node.position?.y) || 0
+    };
+  });
+  nodePositionCache.value = nextCache;
+};
+
+const buildNodeLookup = (
+  graphNodes = nodes.value,
+  options: {
+    useCachedPositions?: boolean;
+  } = {}
+) => {
+  const useCachedPositions = options.useCachedPositions ?? false;
+
+  return new Map(graphNodes.map(node => {
+    const id = String(node.id);
+    const cachedPosition = useCachedPositions ? nodePositionCache.value[id] : null;
+
+    if (!cachedPosition) {
+      return [id, node];
+    }
+
+    return [id, {
+      ...node,
+      position: {
+        ...(node.position ?? {}),
+        x: cachedPosition.x,
+        y: cachedPosition.y
+      }
+    }];
+  }));
+};
+
+const cacheEdgeHandles = (graphEdges = edges.value) => {
+  const nextCache = { ...edgeHandleCache.value };
+  graphEdges.forEach(edge => {
+    nextCache[String(edge.id)] = {
+      sourceHandle: edge.sourceHandle,
+      targetHandle: edge.targetHandle
+    };
+  });
+  edgeHandleCache.value = nextCache;
+};
+
+const cacheEdgeRoutes = (graphEdges = edges.value) => {
+  const nextCache = { ...edgeRouteCache.value };
+  graphEdges.forEach(edge => {
+    if (Array.isArray(edge.data?.elkSections) && edge.data.elkSections.length > 0) {
+      nextCache[String(edge.id)] = edge.data.elkSections;
+    }
+  });
+  edgeRouteCache.value = nextCache;
+};
+
+const cacheLocalEdgeRoutes = (graphEdges = edges.value) => {
+  const nextCache = { ...edgeLocalRouteCache.value };
+  graphEdges.forEach(edge => {
+    if (Array.isArray(edge.data?.routePoints) && edge.data.routePoints.length > 1) {
+      nextCache[String(edge.id)] = edge.data.routePoints;
+    }
+  });
+  edgeLocalRouteCache.value = nextCache;
+};
+
+const clearLocalEdgeRoutes = (edgeIds: string[]) => {
+  if (edgeIds.length === 0) return;
+  const nextCache = { ...edgeLocalRouteCache.value };
+  edgeIds.forEach(edgeId => {
+    delete nextCache[edgeId];
+  });
+  edgeLocalRouteCache.value = nextCache;
+};
+
+const removeEdgeCaches = (edgeIds: string[]) => {
+  if (edgeIds.length === 0) return;
+
+  const nextHandleCache = { ...edgeHandleCache.value };
+  const nextElkRouteCache = { ...edgeRouteCache.value };
+  const nextLocalRouteCache = { ...edgeLocalRouteCache.value };
+
+  edgeIds.forEach(edgeId => {
+    delete nextHandleCache[edgeId];
+    delete nextElkRouteCache[edgeId];
+    delete nextLocalRouteCache[edgeId];
+  });
+
+  edgeHandleCache.value = nextHandleCache;
+  edgeRouteCache.value = nextElkRouteCache;
+  edgeLocalRouteCache.value = nextLocalRouteCache;
+};
+
+const extractHintPointsFromSections = (sections: any[] | undefined) => {
+  if (!Array.isArray(sections) || sections.length === 0) return [] as Array<{ x: number; y: number }>;
+
+  const points: Array<{ x: number; y: number }> = [];
+  sections.forEach(section => {
+    if (section?.startPoint) {
+      points.push({ x: section.startPoint.x, y: section.startPoint.y });
+    }
+    if (Array.isArray(section?.bendPoints)) {
+      section.bendPoints.forEach((point: any) => {
+        points.push({ x: point.x, y: point.y });
+      });
+    }
+    if (section?.endPoint) {
+      points.push({ x: section.endPoint.x, y: section.endPoint.y });
+    }
+  });
+  return points;
+};
+
+const getEdgeHintPoints = (edgeId: string) => {
+  const localRoute = edgeLocalRouteCache.value[edgeId];
+  if (Array.isArray(localRoute) && localRoute.length > 1) {
+    return localRoute;
+  }
+  return extractHintPointsFromSections(edgeRouteCache.value[edgeId]);
+};
+
+const withRoutePointsFromElk = (graphEdges: any[]) =>
+  graphEdges.map(edge => {
+    const routePoints = extractHintPointsFromSections(edge.data?.elkSections);
+    if (routePoints.length <= 1) {
+      return edge;
+    }
+
+    return {
+      ...edge,
+      data: {
+        ...(edge.data ?? {}),
+        routePoints
+      }
+    };
+  });
+
+const getStoredRoutePoints = (edge: any, routeCache: Record<string, Array<{ x: number; y: number }>>) => {
+  const edgeId = String(edge.id);
+  const cachedRoute = routeCache[edgeId];
+  if (Array.isArray(cachedRoute) && cachedRoute.length > 1) {
+    return cachedRoute;
+  }
+
+  const routePoints = edge.data?.routePoints;
+  if (Array.isArray(routePoints) && routePoints.length > 1) {
+    return routePoints;
+  }
+
+  const hintPoints = getEdgeHintPoints(edgeId);
+  return hintPoints.length > 1 ? hintPoints : null;
+};
+
+const getRenderedEdgeRoutePoints = (edge: any) => {
+  const routePoints = edge.data?.routePoints;
+  if (Array.isArray(routePoints) && routePoints.length > 1) {
+    return routePoints;
+  }
+
+  const elkRoutePoints = extractHintPointsFromSections(edge.data?.elkSections);
+  return elkRoutePoints.length > 1 ? elkRoutePoints : null;
+};
+
+const compareEdgesForRouting = (edgeA: any, edgeB: any, nodeLookup: Map<string, any>) => {
+  const sourceA = nodeLookup.get(String(edgeA.source));
+  const sourceB = nodeLookup.get(String(edgeB.source));
+  const targetA = nodeLookup.get(String(edgeA.target));
+  const targetB = nodeLookup.get(String(edgeB.target));
+
+  const sourceAY = Number(sourceA?.position?.y) || 0;
+  const sourceBY = Number(sourceB?.position?.y) || 0;
+  if (sourceAY !== sourceBY) return sourceAY - sourceBY;
+
+  const sourceAX = Number(sourceA?.position?.x) || 0;
+  const sourceBX = Number(sourceB?.position?.x) || 0;
+  if (sourceAX !== sourceBX) return sourceAX - sourceBX;
+
+  const targetAY = Number(targetA?.position?.y) || 0;
+  const targetBY = Number(targetB?.position?.y) || 0;
+  if (targetAY !== targetBY) return targetAY - targetBY;
+
+  const targetAX = Number(targetA?.position?.x) || 0;
+  const targetBX = Number(targetB?.position?.x) || 0;
+  if (targetAX !== targetBX) return targetAX - targetBX;
+
+  return String(edgeA.id).localeCompare(String(edgeB.id));
+};
+
+const routeGraphEdges = (
+  graphNodes: any[],
+  graphEdges: any[],
+  options: {
+    rerouteEdgeIds?: Set<string>;
+    rerouteAll?: boolean;
+  } = {}
+) => {
+  const visibleNodeLookup = new Map(graphNodes.map(node => [String(node.id), node]));
+  const nextLocalRouteCache = { ...edgeLocalRouteCache.value };
+  const edgeIdsToRoute = options.rerouteAll
+    ? new Set(graphEdges.map(edge => String(edge.id)))
+    : options.rerouteEdgeIds
+      ? options.rerouteEdgeIds
+      : new Set(
+          graphEdges
+            .filter(edge =>
+              (!Array.isArray(nextLocalRouteCache[String(edge.id)]) || nextLocalRouteCache[String(edge.id)].length <= 1) &&
+              !Array.isArray(edge.data?.elkSections)
+            )
+            .map(edge => String(edge.id))
+        );
+  const occupiedSegments: ReturnType<typeof buildOrthogonalSegments> = [];
+  const routedEdgeMap = new Map<string, any>();
+  const routingQueue = [...graphEdges].sort((edgeA, edgeB) => compareEdgesForRouting(edgeA, edgeB, visibleNodeLookup));
+
+  routingQueue.forEach(edge => {
+    const edgeId = String(edge.id);
+    if (!edgeIdsToRoute.has(edgeId)) {
+      const routePoints = getStoredRoutePoints(edge, nextLocalRouteCache);
+      if (routePoints) {
+        occupiedSegments.push(...buildOrthogonalSegments(routePoints));
+        routedEdgeMap.set(edgeId, {
+          ...edge,
+          data: {
+            ...(edge.data ?? {}),
+            routePoints
+          }
+        });
+        return;
+      }
+
+      routedEdgeMap.set(edgeId, edge);
+      return;
+    }
+
+    const routePoints = routeOrthogonalEdge(visibleNodeLookup, edge, {
+      hintPoints: getEdgeHintPoints(edgeId),
+      occupiedSegments
+    });
+
+    if (routePoints && routePoints.length > 1) {
+      nextLocalRouteCache[edgeId] = routePoints;
+      occupiedSegments.push(...buildOrthogonalSegments(routePoints));
+      routedEdgeMap.set(edgeId, {
+        ...edge,
+        data: {
+          ...(edge.data ?? {}),
+          routePoints
+        }
+      });
+      return;
+    }
+
+    delete nextLocalRouteCache[edgeId];
+    routedEdgeMap.set(edgeId, edge);
+  });
+
+  const routedEdges = graphEdges.map(edge => routedEdgeMap.get(String(edge.id)) ?? edge);
+
+  edgeLocalRouteCache.value = nextLocalRouteCache;
+  return routedEdges;
+};
+
+const rerouteVisibleEdgeSubset = (
+  rerouteEdgeIds: Set<string>
+) => {
+  if (rerouteEdgeIds.size === 0) {
+    return;
+  }
+
+  const nodeLookup = buildNodeLookup(nodes.value, {
+    useCachedPositions: true
+  });
+  const currentEdges = edges.value;
+  const currentEdgeIds = new Set(currentEdges.map(edge => String(edge.id)));
+  const nextLocalRouteCache = { ...edgeLocalRouteCache.value };
+  const occupiedSegments: ReturnType<typeof buildOrthogonalSegments> = [];
+  const edgeIndexMap = new Map(currentEdges.map((edge, index) => [String(edge.id), index]));
+
+  const affectedEdges = sourceEdges.value
+    .filter(edge =>
+      rerouteEdgeIds.has(String(edge.id)) &&
+      currentEdgeIds.has(String(edge.id)) &&
+      nodeLookup.has(edge.source_id) &&
+      nodeLookup.has(edge.target_id)
+    )
+    .map(edge => buildGraphEdge(edge, {
+      nodeLookup,
+      preferDynamicHandles: true
+    }))
+    .sort((edgeA, edgeB) => compareEdgesForRouting(edgeA, edgeB, nodeLookup));
+
+  const reroutedEdgeMap = new Map<string, any>();
+
+  affectedEdges.forEach(edge => {
+    const edgeId = String(edge.id);
+    const routePoints = routeOrthogonalEdge(nodeLookup, edge, {
+      hintPoints: getEdgeHintPoints(edgeId),
+      occupiedSegments,
+      includeOccupiedCoordinates: false
+    });
+
+    if (routePoints && routePoints.length > 1) {
+      nextLocalRouteCache[edgeId] = routePoints;
+      reroutedEdgeMap.set(edgeId, {
+        ...edge,
+        data: {
+          ...(edge.data ?? {}),
+          routePoints
+        }
+      });
+      return;
+    }
+
+    delete nextLocalRouteCache[edgeId];
+    reroutedEdgeMap.set(edgeId, edge);
+  });
+
+  if (reroutedEdgeMap.size === 0) {
+    return;
+  }
+
+  const nextEdges = currentEdges.slice();
+
+  reroutedEdgeMap.forEach((edge, edgeId) => {
+    const index = edgeIndexMap.get(edgeId);
+    if (index === undefined) {
+      return;
+    }
+    nextEdges[index] = edge;
+  });
+
+  edges.value = nextEdges;
+  edgeLocalRouteCache.value = nextLocalRouteCache;
+  cacheEdgeHandles(nextEdges);
+  cacheLocalEdgeRoutes(nextEdges);
+};
+
+const rebuildVisibleEdges = (rerouteEdgeIds?: Set<string>) => {
+  const nodeIds = new Set(nodes.value.map(node => String(node.id)));
+  const nodeLookup = new Map(nodes.value.map(node => [String(node.id), node]));
+  const graphEdges = sourceEdges.value
+    .filter(edge => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+    .map(edge => buildGraphEdge(edge, {
+      nodeLookup,
+      preferDynamicHandles: true
+    }));
+
+  const routedEdges = routeGraphEdges(nodes.value, graphEdges, {
+    rerouteEdgeIds
+  });
+  edges.value = routedEdges;
+  cacheEdgeHandles(routedEdges);
+  cacheLocalEdgeRoutes(routedEdges);
+};
+
+const rebuildVisibleEdgesWithOptions = (options: {
+  rerouteEdgeIds?: Set<string>;
+  rerouteAll?: boolean;
+} = {}) => {
+  const nodeIds = new Set(nodes.value.map(node => String(node.id)));
+  const nodeLookup = new Map(nodes.value.map(node => [String(node.id), node]));
+  const graphEdges = sourceEdges.value
+    .filter(edge => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+    .map(edge => buildGraphEdge(edge, {
+      nodeLookup,
+      preferDynamicHandles: true
+    }));
+
+  const routedEdges = routeGraphEdges(nodes.value, graphEdges, options);
+  edges.value = routedEdges;
+  cacheEdgeHandles(routedEdges);
+  cacheLocalEdgeRoutes(routedEdges);
+};
+
+const getAffectedEdgeIdsForNodes = (nodeIds: Iterable<string>) => {
+  const draggedNodeIds = new Set(Array.from(nodeIds, nodeId => String(nodeId)));
+  return new Set(
+    sourceEdges.value
+      .filter(edge => draggedNodeIds.has(edge.source_id) || draggedNodeIds.has(edge.target_id))
+      .map(edge => String(edge.id))
+  );
+};
+
+const flushScheduledDragReroute = () => {
+  if (dragRerouteFrame !== null) {
+    window.cancelAnimationFrame(dragRerouteFrame);
+    dragRerouteFrame = null;
+  }
+
+  if (isRefreshing.value || isGraphUpdating.value) {
+    pendingDragEdgeIds = new Set<string>();
+    return;
+  }
+
+  const rerouteEdgeIds = pendingDragEdgeIds;
+  pendingDragEdgeIds = new Set<string>();
+
+  if (rerouteEdgeIds.size === 0) {
+    return;
+  }
+
+  rerouteVisibleEdgeSubset(rerouteEdgeIds);
+};
+
+const scheduleDragReroute = (edgeIds?: Set<string>) => {
+  if (edgeIds) {
+    edgeIds.forEach(edgeId => pendingDragEdgeIds.add(edgeId));
+  }
+
+  if (dragRerouteFrame !== null) {
+    return;
+  }
+
+  dragRerouteFrame = window.requestAnimationFrame(() => {
+    flushScheduledDragReroute();
+  });
+};
+
+const getGraphDataForRender = () => {
+  const filteredNotes = isGlobalGraph.value
+    ? applyNoteProgramChannelLocally(sourceNotes.value, viewProgram.value)
+    : sourceNotes.value;
+  const visibleNodeIds = new Set(filteredNotes.map(note => note.id));
+  const filteredEdges = sourceEdges.value.filter(edge =>
+    visibleNodeIds.has(edge.source_id) && visibleNodeIds.has(edge.target_id)
+  );
+
+  return {
+    filteredNotes,
+    filteredEdges,
+    visibleNodeIds
+  };
+};
+
+const getFallbackNodePosition = (index: number) => {
+  const cachedPositions = Object.values(nodePositionCache.value);
+  if (cachedPositions.length > 0) {
+    const xs = cachedPositions.map(position => position.x);
+    const ys = cachedPositions.map(position => position.y);
+    return {
+      x: Math.max(...xs) + 180 + (index % 3) * 30,
+      y: Math.min(...ys) + (index % 4) * 70
+    };
+  }
+
+  return {
+    x: (index % 5) * 220,
+    y: Math.floor(index / 5) * 120
+  };
+};
+
+const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {
+  const cachedPosition = useCachedPosition ? nodePositionCache.value[note.id] : null;
+  return {
+    id: note.id,
+    label: note.title || 'Untitled',
+    position: cachedPosition ? { ...cachedPosition } : getFallbackNodePosition(index),
+    data: {
+      title: note.title,
+      weight: note.weight,
+      node_type: note.node_type,
+      node_status: note.node_status,
+      color: note.color,
+      created_at: note.created_at,
+      start_at: note.start_at
+    },
+    type: 'custom'
+  };
+};
+
+const applyGraphFilters = async (force: boolean = false, relayout: boolean = false) => {
   if (!force && isRefreshing.value) return;
   if (isGraphUpdating.value) {
     graphFilterQueued = true;
+    graphRelayoutQueued = graphRelayoutQueued || relayout;
     return;
   }
   isGraphUpdating.value = true;
+  suppressNodePositionWatch = true;
   try {
-    const filteredNotes = isGlobalGraph.value
-      ? applyNoteProgramChannelLocally(sourceNotes.value, viewProgram.value)
-      : sourceNotes.value;
-    const visibleNodeIds = new Set(filteredNotes.map(n => n.id));
-    const filteredEdges = sourceEdges.value.filter(edge =>
-      visibleNodeIds.has(edge.source_id) && visibleNodeIds.has(edge.target_id)
-    );
+    const { filteredNotes, filteredEdges, visibleNodeIds } = getGraphDataForRender();
 
-    const graphNodes = filteredNotes.map(note => ({
-      id: note.id,
-      label: note.title || 'Untitled',
-      position: { x: 0, y: 0 },
-      data: {
-        title: note.title,
-        weight: note.weight,
-        node_type: note.node_type,
-        node_status: note.node_status,
-        created_at: note.created_at,
-        start_at: note.start_at
-      },
-      type: 'custom'
-    }));
+    let nextNodes: any[] = [];
+    let nextEdges: any[] = [];
 
-    const graphEdges = filteredEdges.map(edge => buildGraphEdge(edge));
-
-    const layouted = await useLayout(graphNodes, graphEdges);
+    if (relayout) {
+      const graphEdges = filteredEdges.map(edge => buildGraphEdge(edge, {
+        includeLocalRoute: false
+      }));
+      const graphNodes = filteredNotes.map(note => buildGraphNode(note, 0, false));
+      const layoutSeedNodes = graphNodes.map(node => ({
+        ...node,
+        position: { x: 0, y: 0 }
+      }));
+      const layouted = await useLayout(layoutSeedNodes, graphEdges);
+      nextNodes = layouted.nodes;
+      const finalNodeIds = new Set(nextNodes.map(node => String(node.id)));
+      clearLocalEdgeRoutes(graphEdges.map(edge => String(edge.id)));
+      const layoutedEdges = layouted.edges.filter(edge =>
+        finalNodeIds.has(String(edge.source)) && finalNodeIds.has(String(edge.target))
+      );
+      nextEdges = withRoutePointsFromElk(layoutedEdges);
+    } else {
+      nextNodes = filteredNotes.map((note, index) => buildGraphNode(note, index, true));
+      const nodeLookup = new Map(nextNodes.map(node => [String(node.id), node]));
+      const graphEdges = filteredEdges.map(edge => buildGraphEdge(edge, {
+        nodeLookup,
+        preferDynamicHandles: true
+      }));
+      const finalNodeIds = new Set(nextNodes.map(node => String(node.id)));
+      nextEdges = routeGraphEdges(nextNodes, graphEdges.filter(edge =>
+        finalNodeIds.has(String(edge.source)) && finalNodeIds.has(String(edge.target))
+      ));
+    }
 
     edges.value = [];
-    nodes.value = layouted.nodes;
-    await nextTick();
-    const finalNodeIds = new Set(nodes.value.map(n => String(n.id)));
-    edges.value = layouted.edges.filter(edge =>
-      finalNodeIds.has(String(edge.source)) && finalNodeIds.has(String(edge.target))
-    );
+    nodes.value = nextNodes;
+    await refreshNodeInternals(nextNodes.map(node => String(node.id)));
+    edges.value = nextEdges;
+    await refreshNodeInternals(nextNodes.map(node => String(node.id)));
+    refreshRenderedEdges(nextEdges);
+    cacheNodePositions(nextNodes);
+    cacheEdgeHandles(nextEdges);
+    cacheEdgeRoutes(nextEdges);
+    cacheLocalEdgeRoutes(nextEdges);
 
     if (currentNoteId.value && !visibleNodeIds.has(currentNoteId.value)) {
       currentNoteId.value = '';
     }
   } finally {
+    suppressNodePositionWatch = false;
     isGraphUpdating.value = false;
     if (graphFilterQueued) {
+      const queuedRelayout = graphRelayoutQueued;
       graphFilterQueued = false;
-      void applyGraphFilters(true);
+      graphRelayoutQueued = false;
+      void applyGraphFilters(true, queuedRelayout);
     }
   }
 };
@@ -306,10 +959,7 @@ const syncEdgesFromStore = async () => {
         await nextTick();
         if (isGraphUpdating.value) return;
     }
-    const nodeIds = new Set(nodes.value.map(n => String(n.id)));
-    edges.value = sourceEdges.value
-        .filter(e => nodeIds.has(e.source_id) && nodeIds.has(e.target_id))
-        .map(e => buildGraphEdge(e));
+    rebuildVisibleEdges();
 };
 
 const selectNote = async (noteId: string) => {
@@ -327,11 +977,17 @@ const handleNoteUpdate = (note: NoteNode) => {
         node.data.start_at = note.start_at;
         node.data.node_type = note.node_type;
         node.data.node_status = note.node_status;
+        node.data.color = note.color;
+        void refreshNodeInternals([String(note.id)]).then(() => {
+          const affectedEdgeIds = getAffectedEdgeIdsForNodes([String(note.id)]);
+          if (affectedEdgeIds.size > 0) {
+            rebuildVisibleEdgesWithOptions({ rerouteEdgeIds: affectedEdgeIds });
+          }
+        });
     }
 };
 
 const handleNoteCreate = (note: NoteNode) => {
-    noteStore.addNoteToTab(props.tabId, note.id);
     let pos = { x: Math.random() * 500, y: Math.random() * 300 };
     
     // Try to place near source node if possible
@@ -354,17 +1010,25 @@ const handleNoteCreate = (note: NoteNode) => {
           weight: note.weight,
           node_type: note.node_type,
           node_status: note.node_status,
+          color: note.color,
           created_at: note.created_at,
           start_at: note.start_at
       },
       type: 'custom'
     };
+    nodePositionCache.value = {
+      ...nodePositionCache.value,
+      [note.id]: { ...pos }
+    };
     nodes.value.push(newNode);
+    noteStore.addNoteToTab(props.tabId, note.id);
     selectNote(note.id);
 };
 
 const handleNoteDelete = (noteId: string) => {
     nodes.value = nodes.value.filter(n => n.id !== noteId);
+    const { [noteId]: _removedNodePosition, ...restNodePositions } = nodePositionCache.value;
+    nodePositionCache.value = restNodePositions;
     if (currentNoteId.value === noteId) {
         currentNoteId.value = '';
     }
@@ -376,7 +1040,7 @@ watch(sourceEdges, async () => {
 
 watch(sourceNotes, async () => {
     if (!isRefreshing.value) {
-        await applyGraphFilters(true);
+        await applyGraphFilters(true, false);
     }
 }, { deep: true });
 
@@ -398,6 +1062,10 @@ onUnmounted(() => {
     if (graphFilterTimer) {
         clearTimeout(graphFilterTimer);
         graphFilterTimer = null;
+    }
+    if (dragRerouteFrame !== null) {
+        window.cancelAnimationFrame(dragRerouteFrame);
+        dragRerouteFrame = null;
     }
 });
 
@@ -430,11 +1098,33 @@ const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean 
       );
     }
 
-    await applyGraphFilters(true);
+    await applyGraphFilters(true, true);
   } finally {
       isRefreshing.value = false;
   }
 };
+
+const relayoutGraph = async () => {
+  await applyGraphFilters(true, true);
+};
+
+onNodeDrag(({ node, nodes: draggedNodes }) => {
+  cacheDraggedNodePositions(draggedNodes?.length ? draggedNodes : [node]);
+  const affectedEdgeIds = getAffectedEdgeIdsForNodes(
+    (draggedNodes?.length ? draggedNodes : [node]).map(item => String(item.id))
+  );
+  if (affectedEdgeIds.size === 0) return;
+  scheduleDragReroute(affectedEdgeIds);
+});
+
+onNodeDragStop(({ node, nodes: draggedNodes }) => {
+  cacheDraggedNodePositions(draggedNodes?.length ? draggedNodes : [node]);
+  const affectedEdgeIds = getAffectedEdgeIdsForNodes(
+    (draggedNodes?.length ? draggedNodes : [node]).map(item => String(item.id))
+  );
+  scheduleDragReroute(affectedEdgeIds);
+  flushScheduledDragReroute();
+});
 
 // Handle Connection
 const onConnect = async (params: Connection) => {
@@ -467,6 +1157,7 @@ const onConnect = async (params: Connection) => {
             ? buildGraphEdge(persistedEdge)
             : edge
     ));
+    rebuildVisibleEdges(new Set([String(persistedEdge.id)]));
 };
 
 // Handle Edge Click
@@ -496,6 +1187,7 @@ const deleteSelectedEdge = async () => {
             ElMessage.error('删除边失败，已恢复');
             return;
         }
+        removeEdgeCaches([String(previousEdge.id)]);
         selectedEdgeId.value = null;
         ElMessage.success('边已删除');
     }
@@ -512,7 +1204,10 @@ onEdgesChange((changes) => {
             const edge = edges.value.find(e => e.id === change.id);
             if (edge) {
                 void noteStore.deleteEdge(edge.source, edge.target).then(success => {
-                    if (success) return;
+                    if (success) {
+                        removeEdgeCaches([String(edge.id)]);
+                        return;
+                    }
 
                     if (!edges.value.some(item => item.id === edge.id)) {
                         edges.value = [...edges.value, edge];
@@ -593,7 +1288,6 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
   // Calculate center position or random
   const newNote = await noteStore.createNote(defaultTitle, '');
   if (newNote) {
-    noteStore.addNoteToTab(props.tabId, newNote.id);
     // Add to graph
     const newNode = {
       id: newNote.id,
@@ -604,16 +1298,30 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
           weight: newNote.weight,
           node_type: newNote.node_type,
           node_status: newNote.node_status,
+          color: newNote.color,
           created_at: newNote.created_at,
           start_at: newNote.start_at
       },
       type: 'custom'
     };
+    nodePositionCache.value = {
+      ...nodePositionCache.value,
+      [newNote.id]: { ...pos }
+    };
     nodes.value.push(newNode);
+    noteStore.addNoteToTab(props.tabId, newNote.id);
     
     selectNote(newNote.id);
   }
 };
+
+watch(
+  () => nodes.value.map(node => `${node.id}:${Math.round(node.position?.x ?? 0)}:${Math.round(node.position?.y ?? 0)}`).join('|'),
+  () => {
+    cacheNodePositions();
+  },
+  { flush: 'post' }
+);
 
 </script>
 

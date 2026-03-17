@@ -320,7 +320,7 @@ const scrollToBottom = async () => {
 };
 
 const goBack = () => {
-  router.push({ name: 'ClusterManager', query: { entry_id: resolvedEntryId.value || route.query.entry_id || route.query.device_id } });
+  router.push({ name: 'DeviceTasks', query: { entry_id: resolvedEntryId.value || route.query.entry_id || route.query.device_id } });
 };
 
 const handleScanProcesses = async () => {

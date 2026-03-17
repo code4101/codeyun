@@ -1,11 +1,15 @@
 import type { NoteNode } from '@/api/notes';
 
 export type NoteCustomFieldType = 'string' | 'number' | 'boolean';
+export type NoteCustomFieldStoredValue = string | number | boolean;
+export type NoteCustomFieldEditorValue = string | boolean;
+export type NoteCustomFieldTuple = [string, NoteCustomFieldType, NoteCustomFieldStoredValue];
 
 export interface NoteCustomFieldItem {
+  localId: string;
   key: string;
   type: NoteCustomFieldType;
-  value: string | boolean;
+  value: NoteCustomFieldEditorValue;
 }
 
 export interface EditableNoteSnapshot {
@@ -16,8 +20,9 @@ export interface EditableNoteSnapshot {
   start_at: number;
   node_type: string | null;
   node_status: string | null;
+  color: string | null;
   private_level: number;
-  custom_fields: Array<[string, NoteCustomFieldType, string | boolean]>;
+  custom_fields: NoteCustomFieldTuple[];
 }
 
 export interface EditableNotePatch {
@@ -27,11 +32,18 @@ export interface EditableNotePatch {
   start_at?: number;
   node_type?: string | null;
   node_status?: string | null;
+  color?: string | null;
   private_level?: number;
-  custom_fields?: Array<[string, NoteCustomFieldType, string | boolean]>;
+  custom_fields?: NoteCustomFieldTuple[];
 }
 
 const normalizeText = (value: unknown) => value == null ? '' : String(value);
+const STANDARD_NUMBER_PATTERN = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/;
+const BOOLEAN_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
+const BOOLEAN_FALSE_TOKENS = new Set(['false', '0', 'no', 'n', 'off', '']);
+let noteCustomFieldLocalIdSeed = 0;
+
+const createNoteCustomFieldLocalId = () => `note-custom-field-${noteCustomFieldLocalIdSeed++}`;
 const normalizeTimestamp = (value: unknown) => {
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   if (typeof value === 'string' && value.trim() !== '') {
@@ -46,12 +58,91 @@ export const normalizeNoteCustomFieldType = (type: unknown): NoteCustomFieldType
   return 'string';
 };
 
+export const parseNoteCustomFieldNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  if (!trimmed || !STANDARD_NUMBER_PATTERN.test(trimmed)) return null;
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+export const parseNoteCustomFieldBoolean = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') return value;
+
+  const parsedNumber = parseNoteCustomFieldNumber(value);
+  if (parsedNumber !== null) return parsedNumber !== 0;
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (BOOLEAN_TRUE_TOKENS.has(normalized)) return true;
+    if (BOOLEAN_FALSE_TOKENS.has(normalized)) return false;
+    return normalized.length > 0;
+  }
+
+  if (value == null) return false;
+  return Boolean(value);
+};
+
 export const normalizeNoteCustomFieldValue = (
   type: NoteCustomFieldType,
   value: unknown
-): string | boolean => {
-  if (type === 'boolean') return value === true || value === 'true';
+): NoteCustomFieldEditorValue => {
+  if (type === 'boolean') return parseNoteCustomFieldBoolean(value) ?? false;
+  if (type === 'number') {
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    if (typeof value === 'string') {
+      const parsed = parseNoteCustomFieldNumber(value);
+      return parsed === null ? value : value.trim();
+    }
+  }
   return normalizeText(value);
+};
+
+export const convertNoteCustomFieldValue = (
+  type: NoteCustomFieldType,
+  value: unknown
+): NoteCustomFieldEditorValue => {
+  if (type === 'string') {
+    return typeof value === 'boolean' ? (value ? 'true' : 'false') : normalizeText(value);
+  }
+  if (type === 'number') {
+    if (typeof value === 'boolean') return value ? '1' : '0';
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    const text = normalizeText(value);
+    const parsed = parseNoteCustomFieldNumber(text);
+    return parsed === null ? text : text.trim();
+  }
+  return parseNoteCustomFieldBoolean(value) ?? false;
+};
+
+export const serializeNoteCustomFieldValue = (
+  type: NoteCustomFieldType,
+  value: unknown
+): NoteCustomFieldStoredValue => {
+  if (type === 'boolean') return parseNoteCustomFieldBoolean(value) ?? false;
+  if (type === 'number') {
+    const parsed = parseNoteCustomFieldNumber(value);
+    return parsed ?? normalizeText(value);
+  }
+  return normalizeText(value);
+};
+
+export const createNoteCustomFieldItem = (
+  key: unknown = '',
+  type: unknown = 'string',
+  value: unknown = ''
+): NoteCustomFieldItem => {
+  const normalizedType = normalizeNoteCustomFieldType(type);
+  return {
+    localId: createNoteCustomFieldLocalId(),
+    key: typeof key === 'string' ? key : '',
+    type: normalizedType,
+    value: normalizeNoteCustomFieldValue(normalizedType, value)
+  };
 };
 
 export const noteCustomFieldsToItems = (fields: unknown): NoteCustomFieldItem[] => {
@@ -63,24 +154,14 @@ export const noteCustomFieldsToItems = (fields: unknown): NoteCustomFieldItem[] 
       if (Array.isArray(field) && field.length >= 3) {
         const [key, type, value] = field;
         if (typeof key !== 'string' || !key.trim()) continue;
-        const normalizedType = normalizeNoteCustomFieldType(type);
-        items.push({
-          key,
-          type: normalizedType,
-          value: normalizeNoteCustomFieldValue(normalizedType, value)
-        });
+        items.push(createNoteCustomFieldItem(key, type, value));
         continue;
       }
 
       if (field && typeof field === 'object') {
         const key = (field as any).key;
         if (typeof key !== 'string' || !key.trim()) continue;
-        const normalizedType = normalizeNoteCustomFieldType((field as any).type);
-        items.push({
-          key,
-          type: normalizedType,
-          value: normalizeNoteCustomFieldValue(normalizedType, (field as any).value)
-        });
+        items.push(createNoteCustomFieldItem(key, (field as any).type, (field as any).value));
       }
     }
     return items;
@@ -93,11 +174,7 @@ export const noteCustomFieldsToItems = (fields: unknown): NoteCustomFieldItem[] 
         : typeof value === 'number'
           ? 'number'
           : 'string';
-      return {
-        key,
-        type: inferredType,
-        value: normalizeNoteCustomFieldValue(inferredType, value)
-      };
+      return createNoteCustomFieldItem(key, inferredType, value);
     });
   }
 
@@ -109,9 +186,10 @@ export const noteCustomFieldItemsToList = (items: NoteCustomFieldItem[]) => (
     .map(item => {
       const key = item.key?.trim();
       if (!key) return null;
-      return [key, normalizeNoteCustomFieldType(item.type), normalizeNoteCustomFieldValue(normalizeNoteCustomFieldType(item.type), item.value)] as [string, NoteCustomFieldType, string | boolean];
+      const normalizedType = normalizeNoteCustomFieldType(item.type);
+      return [key, normalizedType, serializeNoteCustomFieldValue(normalizedType, item.value)] as NoteCustomFieldTuple;
     })
-    .filter((item): item is [string, NoteCustomFieldType, string | boolean] => Boolean(item))
+    .filter((item): item is NoteCustomFieldTuple => Boolean(item))
 );
 
 export const createEditableNoteSnapshot = (
@@ -128,6 +206,7 @@ export const createEditableNoteSnapshot = (
     start_at: normalizeTimestamp(note.start_at),
     node_type: note.node_type ?? null,
     node_status: note.node_status ?? null,
+    color: note.color ?? null,
     private_level: typeof note.private_level === 'number' && Number.isFinite(note.private_level) ? note.private_level : 0,
     custom_fields: noteCustomFieldItemsToList(noteCustomFieldsToItems(customFields ?? note.custom_fields ?? []))
   };
@@ -147,6 +226,7 @@ export const areEditableNoteSnapshotsEqual = (
   && left.start_at === right.start_at
   && left.node_type === right.node_type
   && left.node_status === right.node_status
+  && left.color === right.color
   && left.private_level === right.private_level
   && JSON.stringify(left.custom_fields) === JSON.stringify(right.custom_fields)
 );
@@ -163,6 +243,7 @@ export const buildEditableNotePatch = (
       start_at: snapshot.start_at,
       node_type: snapshot.node_type,
       node_status: snapshot.node_status,
+      color: snapshot.color,
       private_level: snapshot.private_level,
       custom_fields: snapshot.custom_fields
     };
@@ -176,6 +257,7 @@ export const buildEditableNotePatch = (
   if (snapshot.start_at !== baseline.start_at) patch.start_at = snapshot.start_at;
   if (snapshot.node_type !== baseline.node_type) patch.node_type = snapshot.node_type;
   if (snapshot.node_status !== baseline.node_status) patch.node_status = snapshot.node_status;
+  if (snapshot.color !== baseline.color) patch.color = snapshot.color;
   if (snapshot.private_level !== baseline.private_level) patch.private_level = snapshot.private_level;
   if (JSON.stringify(snapshot.custom_fields) !== JSON.stringify(baseline.custom_fields)) {
     patch.custom_fields = snapshot.custom_fields;
@@ -193,6 +275,7 @@ export const applyEditableNoteSnapshot = (note: NoteNode, snapshot: EditableNote
   start_at: snapshot.start_at,
   node_type: snapshot.node_type,
   node_status: snapshot.node_status,
+  color: snapshot.color,
   private_level: snapshot.private_level,
   custom_fields: cloneEditableNoteSnapshot(snapshot).custom_fields
 });
@@ -209,6 +292,7 @@ export const noteSnapshotToNode = (
   start_at: snapshot.start_at,
   node_type: snapshot.node_type,
   node_status: snapshot.node_status,
+  color: snapshot.color,
   private_level: snapshot.private_level,
   custom_fields: cloneEditableNoteSnapshot(snapshot).custom_fields
 });

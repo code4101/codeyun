@@ -3,7 +3,7 @@ import time
 import uuid
 from typing import Optional
 from sqlmodel import Field, SQLModel, Session, select, text
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 
 # --- System Version Model ---
 class SystemVersion(SQLModel, table=True):
@@ -283,6 +283,250 @@ def v8_backfill_userdevice_entries(session: Session):
     print("Running System Upgrade V8: Backfill user device assets...")
     v7_migrate_userdevice_entries(session)
 
+
+def v9_add_note_color(session: Session):
+    """
+    Migration V9: Add optional per-note color override.
+    """
+    print("Running System Upgrade V9: Add 'color'...")
+    res = session.exec(text("PRAGMA table_info(notenode)")).all()
+    columns = [row[1] for row in res]
+
+    if "color" not in columns:
+        session.exec(text("ALTER TABLE notenode ADD COLUMN color VARCHAR"))
+        session.commit()
+    else:
+        print("  Column 'color' already exists, skipping.")
+
+
+def v10_add_device_file_table(session: Session):
+    """
+    Migration V10: Add devicefile table for per-device file metadata.
+    """
+    print("Running System Upgrade V10: Add 'devicefile' table...")
+    bind = session.get_bind()
+    inspector = inspect(bind)
+
+    if "devicefile" in inspector.get_table_names():
+        print("  Table 'devicefile' already exists, skipping.")
+        return
+
+    from backend.models import DeviceFile
+
+    DeviceFile.__table__.create(bind, checkfirst=True)
+    session.commit()
+    print("  Table 'devicefile' created.")
+
+
+def v11_upgrade_device_file_identity_schema(session: Session):
+    """
+    Migration V11: Upgrade devicefile from path-only records to rematchable
+    file identity records.
+    """
+    print("Running System Upgrade V11: Upgrade 'devicefile' schema...")
+    bind = session.get_bind()
+    inspector = inspect(bind)
+
+    if "devicefile" not in inspector.get_table_names():
+        print("  Table 'devicefile' missing, skipping.")
+        return
+
+    columns = {column["name"] for column in inspector.get_columns("devicefile")}
+    expected_columns = {
+        "id",
+        "device_id",
+        "absolute_path",
+        "last_known_path",
+        "content_hash",
+        "hash_algorithm",
+        "file_size",
+        "match_status",
+        "cover_path",
+        "cover_mime_type",
+        "cover_source",
+        "cover_updated_at",
+        "weight",
+        "created_at",
+        "updated_at",
+        "last_seen_at",
+        "hash_updated_at",
+    }
+
+    if expected_columns.issubset(columns):
+        print("  'devicefile' already uses the new identity schema, skipping.")
+        return
+
+    legacy_table = "devicefile_legacy_v10"
+    session.exec(text(f"DROP TABLE IF EXISTS {legacy_table}"))
+    session.exec(text(f"ALTER TABLE devicefile RENAME TO {legacy_table}"))
+    session.commit()
+
+    from backend.models import DeviceFile
+
+    DeviceFile.__table__.create(bind, checkfirst=True)
+    session.exec(
+        text(
+            f"""
+            INSERT INTO devicefile (
+                id,
+                device_id,
+                absolute_path,
+                last_known_path,
+                content_hash,
+                hash_algorithm,
+                file_size,
+                match_status,
+                weight,
+                created_at,
+                updated_at,
+                last_seen_at,
+                hash_updated_at
+            )
+            SELECT
+                id,
+                device_id,
+                absolute_path,
+                absolute_path,
+                NULL,
+                'sha256',
+                NULL,
+                'matched',
+                COALESCE(weight, 0),
+                created_at,
+                updated_at,
+                updated_at,
+                NULL
+            FROM {legacy_table}
+            """
+        )
+    )
+    session.exec(text(f"DROP TABLE {legacy_table}"))
+    session.commit()
+    print("  'devicefile' upgraded to identity schema.")
+
+
+def v12_add_device_file_cover_fields(session: Session):
+    """
+    Migration V12: Add cover cache metadata columns to devicefile.
+    """
+    print("Running System Upgrade V12: Add devicefile cover fields...")
+    res = session.exec(text("PRAGMA table_info(devicefile)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "cover_path" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN cover_path VARCHAR")
+    if "cover_mime_type" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN cover_mime_type VARCHAR")
+    if "cover_source" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN cover_source VARCHAR")
+    if "cover_updated_at" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN cover_updated_at FLOAT")
+
+    if not statements:
+        print("  Devicefile cover fields already exist, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print(f"  Added {len(statements)} devicefile cover columns.")
+
+
+def v13_add_device_file_metadata_fields(session: Session):
+    """
+    Migration V13: Add media metadata columns to devicefile.
+    """
+    print("Running System Upgrade V13: Add devicefile media metadata fields...")
+    res = session.exec(text("PRAGMA table_info(devicefile)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "modified_at_ms" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN modified_at_ms INTEGER")
+    if "media_kind" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN media_kind VARCHAR")
+    if "mime_type" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN mime_type VARCHAR")
+
+    if not statements:
+        print("  Devicefile media metadata fields already exist, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print(f"  Added {len(statements)} devicefile media metadata columns.")
+
+
+def v14_add_device_file_duration_field(session: Session):
+    """
+    Migration V14: Add cached media duration column to devicefile.
+    """
+    print("Running System Upgrade V14: Add devicefile duration_ms field...")
+    res = session.exec(text("PRAGMA table_info(devicefile)")).all()
+    columns = [row[1] for row in res]
+
+    if "duration_ms" in columns:
+        print("  Devicefile duration_ms already exists, skipping.")
+        return
+
+    session.exec(text("ALTER TABLE devicefile ADD COLUMN duration_ms INTEGER"))
+    session.commit()
+    print("  Added devicefile duration_ms column.")
+
+
+def v15_add_device_file_dimensions_fields(session: Session):
+    """
+    Migration V15: Add cached media dimension columns to devicefile.
+    """
+    print("Running System Upgrade V15: Add devicefile width_px/height_px fields...")
+    res = session.exec(text("PRAGMA table_info(devicefile)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "width_px" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN width_px INTEGER")
+    if "height_px" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN height_px INTEGER")
+
+    if not statements:
+        print("  Devicefile width_px/height_px already exist, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print(f"  Added {len(statements)} devicefile dimension columns.")
+
+def v16_migrate_note_weight_levels(session: Session):
+    """
+    Migration V16: Convert legacy note weights from 100-based scale to integer levels.
+    Memo nodes keep their existing linear semantics because they are used as counts.
+    """
+    from backend.models import NoteNode
+
+    print("Running System Upgrade V16: Migrate note weight levels...")
+    notes = session.exec(select(NoteNode)).all()
+    updated_count = 0
+
+    for note in notes:
+        if (note.node_type or "").lower() == "memo":
+            continue
+
+        raw_weight = note.weight if isinstance(note.weight, (int, float)) else 0
+        normalized_weight = max(0, int(raw_weight // 100) - 1)
+        if note.weight == normalized_weight:
+            continue
+
+        note.weight = normalized_weight
+        session.add(note)
+        updated_count += 1
+
+    if updated_count > 0:
+        session.commit()
+    print(f"  Migrated {updated_count} note weights to integer levels.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -294,6 +538,14 @@ MIGRATIONS = [
     (6, "Add private_level column", v6_add_private_level),
     (7, "Migrate user device assets to userdeviceentry", v7_migrate_userdevice_entries),
     (8, "Backfill user device assets into userdeviceentry", v8_backfill_userdevice_entries),
+    (9, "Add note color override column", v9_add_note_color),
+    (10, "Add device file metadata table", v10_add_device_file_table),
+    (11, "Upgrade device file table for rematching", v11_upgrade_device_file_identity_schema),
+    (12, "Add device file cover cache columns", v12_add_device_file_cover_fields),
+    (13, "Add device file media metadata columns", v13_add_device_file_metadata_fields),
+    (14, "Add device file duration column", v14_add_device_file_duration_field),
+    (15, "Add device file dimension columns", v15_add_device_file_dimensions_fields),
+    (16, "Migrate note weights to integer levels", v16_migrate_note_weight_levels),
 ]
 
 def get_current_version(session: Session) -> int:
@@ -350,7 +602,9 @@ def get_current_version(session: Session) -> int:
                 inferred_version = 3
             if "private_level" in columns:
                 inferred_version = 6
-                
+            if "color" in columns:
+                inferred_version = 9
+
             print(f"Inferred legacy System version: {inferred_version}")
             return inferred_version
             

@@ -93,10 +93,11 @@ class UserDeviceUpdate(BaseModel):
 class NoteCreate(BaseModel):
     title: str = "Untitled"
     content: str = ""
-    weight: int = 100
+    weight: int = 0
     start_at: Optional[float] = None
     node_type: Optional[str] = "note"
     node_status: Optional[str] = "idea"
+    color: Optional[str] = None
     private_level: int = 0
     custom_fields: Optional[List[List[Any]]] = []
 
@@ -107,6 +108,7 @@ class NoteUpdate(BaseModel):
     start_at: Optional[float] = None
     node_type: Optional[str] = None
     node_status: Optional[str] = None
+    color: Optional[str] = None
     private_level: Optional[int] = None
     custom_fields: Optional[List[List[Any]]] = None
 
@@ -116,14 +118,16 @@ class NoteRead(BaseModel):
     user_id: int
     title: str
     content: str
-    weight: int = 100
+    weight: int = 0
     start_at: float
     created_at: float
     updated_at: float
     node_type: Optional[str] = None
     node_status: Optional[str] = None
+    color: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
+    can_edit: bool = False
     
     inherited_fields: Optional[Dict[str, List[List[Any]]]] = None 
     history: List[dict] = []
@@ -135,11 +139,13 @@ class NoteListRead(BaseModel):
     id: str
     user_id: int
     title: str
-    weight: int = 100
+    weight: int = 0
     node_type: Optional[str] = None
     node_status: Optional[str] = None
+    color: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
+    can_edit: bool = False
     created_at: float
     updated_at: float
     start_at: float

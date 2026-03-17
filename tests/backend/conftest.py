@@ -24,7 +24,7 @@ from backend.app import app
 from backend.db import get_session
 from backend.models import User
 from backend.core.device import device_manager
-from backend.core.auth import get_current_user_from_token
+from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
 
 # Use in-memory SQLite for tests
 @pytest.fixture(name="engine")
@@ -100,6 +100,7 @@ def fixture_auth_user(session, client):
     
     # Override dependency
     app.dependency_overrides[get_current_user_from_token] = lambda: user
+    app.dependency_overrides[get_optional_current_user_from_token] = lambda: user
     
     yield user
     
@@ -108,6 +109,8 @@ def fixture_auth_user(session, client):
     # But since client fixture runs before/after this, we should clear it here too to be safe.
     if get_current_user_from_token in app.dependency_overrides:
         del app.dependency_overrides[get_current_user_from_token]
+    if get_optional_current_user_from_token in app.dependency_overrides:
+        del app.dependency_overrides[get_optional_current_user_from_token]
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -5,6 +5,7 @@
       :placeholder="placeholder"
       :size="size"
       :style="inputStyle"
+      :disabled="disabled"
       @blur="handleCommit"
       @keydown.enter="handleCommit"
     />
@@ -45,6 +46,10 @@ const props = defineProps({
   inputStyle: {
     type: [Object, String],
     default: () => ({ width: '100px' })
+  },
+  disabled: {
+    type: Boolean,
+    default: false
   }
 });
 

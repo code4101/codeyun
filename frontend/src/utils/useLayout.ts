@@ -1,6 +1,7 @@
 import ELK, { type ElkExtendedEdge, type ElkNode } from 'elkjs/lib/elk-api.js';
 import elkWorkerUrl from 'elkjs/lib/elk-worker.min.js?url';
 import { type Edge, type Node } from '@vue-flow/core';
+import { getNoteWeightScaleFactor } from '@/utils/noteWeight';
 
 // Use the worker build so the 1.5MB ELK runtime is emitted as a worker asset,
 // not bundled into the main graph chunk.
@@ -27,18 +28,11 @@ interface HandleCombination {
 }
 
 /**
- * Calculate dimensions based on weight (area scaling)
- * @param weight default 100
+ * Calculate dimensions based on note weight semantics.
  */
-function getNodeDimensions(weight: number = 100) {
-    // Area = Width * Height
-    // New Area = Area * (weight / 100)
-    // Scale Factor = sqrt(weight / 100)
-    
-    // Ensure minimum weight to avoid tiny nodes
-    const safeWeight = Math.max(10, weight);
-    const scale = Math.sqrt(safeWeight / 100);
-    
+function getNodeDimensions(weight: number = 0, nodeType?: string | null) {
+    const scale = getNoteWeightScaleFactor(weight, nodeType);
+
     return {
         width: Math.round(NODE_WIDTH * scale),
         height: Math.round(NODE_HEIGHT * scale)
@@ -63,7 +57,7 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
 
     // 1. Transform to ELK Graph Structure
     const elkNodes: ElkNode[] = sortedNodes.map((node) => {
-        const dimensions = getNodeDimensions(node.data?.weight);
+        const dimensions = getNodeDimensions(node.data?.weight, node.data?.node_type);
         return {
             id: node.id,
             width: dimensions.width,
@@ -194,7 +188,7 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
 function getHandlePosition(node: Node, side: string) {
     const { x, y } = node.position;
     // Recalculate dimensions for handle positioning
-    const { width, height } = getNodeDimensions(node.data?.weight);
+    const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type);
     
     switch (side) {
         case 't': return { x: x + width / 2, y: y };      // Top

@@ -27,13 +27,15 @@
 import { Handle, Position } from '@vue-flow/core'
 import { computed } from 'vue'
 import { getNodeStyle } from '@/utils/nodeConfig'
+import { getNoteWeightScaleFactor } from '@/utils/noteWeight'
 
 const props = defineProps<{
   data: {
     title: string,
     weight?: number,
     node_type?: string | null,
-    node_status?: string | null
+    node_status?: string | null,
+    color?: string | null
   }
 }>()
 
@@ -41,13 +43,11 @@ const BASE_WIDTH = 150;
 const BASE_HEIGHT = 50;
 
 const computedStyle = computed(() => {
-    return getNodeStyle(props.data.node_type, props.data.node_status);
+    return getNodeStyle(props.data.node_type, props.data.node_status, props.data.color);
 });
 
 const nodeStyle = computed(() => {
-    const weight = props.data.weight || 100;
-    const safeWeight = Math.max(10, weight);
-    const scale = Math.sqrt(safeWeight / 100);
+    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type);
     
     const style = computedStyle.value;
     
@@ -63,10 +63,8 @@ const nodeStyle = computed(() => {
 });
 
 const titleStyle = computed(() => {
-    const weight = props.data.weight || 100;
+    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type);
     // Scale font size slightly less aggressively than dimensions
-    const safeWeight = Math.max(10, weight);
-    const scale = Math.sqrt(safeWeight / 100);
     // Base font 14px, max 24px, min 10px
     const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
     
@@ -90,11 +88,11 @@ const titleStyle = computed(() => {
   /* min-width removed to allow scaling down */
   text-align: center;
   box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.1);
-  transition: all 0.3s;
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: border-color 0.2s, box-shadow 0.2s, opacity 0.2s;
 }
 
 .node-content {

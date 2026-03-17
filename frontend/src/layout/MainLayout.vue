@@ -15,8 +15,7 @@ import {
   Expand,
   Fold,
   InfoFilled,
-  Setting,
-  Delete
+  Setting
 } from '@element-plus/icons-vue';
 
 const route = useRoute();
@@ -29,11 +28,17 @@ const toggleCollapse = () => {
 };
 
 const activeMenu = computed(() => {
-  if (route.path.startsWith('/cluster/logs/')) return '/cluster';
+  if (route.path === '/cluster') return '/cluster/tasks';
+  if (route.path.startsWith('/cluster/files') || route.path.startsWith('/cluster/media') || route.path.startsWith('/cluster/images')) {
+    return '/cluster/files';
+  }
+  if (route.path.startsWith('/cluster/')) return '/cluster/tasks';
   return route.path;
 });
 
 const defaultOpeneds = computed(() => {
+  if (route.path === '/cluster') return ['cluster-tools'];
+  if (route.path.startsWith('/cluster/')) return ['cluster-tools'];
   if (route.path.startsWith('/fanxiu/')) return ['game-tools', 'fanxiu'];
   if (route.path.startsWith('/magic-craft/')) return ['game-tools', 'magic-craft'];
   if (route.path.startsWith('/dsp/')) return ['game-tools'];
@@ -76,6 +81,7 @@ const handleLogin = () => {
               <span>综合工具</span>
             </template>
             <el-menu-item index="/tools/password-generator">随机密码</el-menu-item>
+            <el-menu-item index="/tools/image-browser">文件浏览</el-menu-item>
           </el-sub-menu>
           
           <el-sub-menu index="game-tools">
@@ -112,10 +118,14 @@ const handleLogin = () => {
             <el-menu-item index="/notes/infinite-canvas">无限画布</el-menu-item>
           </el-sub-menu>
 
-          <el-menu-item index="/cluster" v-if="userStore.isAuthenticated">
-            <el-icon><Monitor /></el-icon>
-            <template #title>集群管理</template>
-          </el-menu-item>
+          <el-sub-menu index="cluster-tools" v-if="userStore.isAuthenticated">
+            <template #title>
+              <el-icon><Monitor /></el-icon>
+              <span>集群管理</span>
+            </template>
+            <el-menu-item index="/cluster/tasks">设备任务</el-menu-item>
+            <el-menu-item index="/cluster/files">浏览文件</el-menu-item>
+          </el-sub-menu>
 
           <el-sub-menu index="admin-tools" v-if="userStore.isAdmin">
             <template #title>
@@ -123,7 +133,6 @@ const handleLogin = () => {
               <span>系统管理</span>
             </template>
             <el-menu-item index="/admin/images">
-              <el-icon><Delete /></el-icon>
               <span>存储维护</span>
             </el-menu-item>
           </el-sub-menu>

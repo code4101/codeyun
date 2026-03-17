@@ -85,13 +85,38 @@ const routes: Array<RouteRecordRaw> = [
       {
         path: 'cluster',
         name: 'ClusterManager',
-        component: () => import('@/views/TaskManager.vue'),
+        redirect: to => ({ path: '/cluster/tasks', query: to.query }),
         meta: { requiresAuth: true }, // Cluster management requires login
+      },
+      {
+        path: 'cluster/tasks',
+        name: 'DeviceTasks',
+        component: () => import('@/views/TaskManager.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'cluster/media',
+        alias: 'cluster/images',
+        name: 'DeviceMediaBrowser',
+        redirect: to => ({ path: '/cluster/files', query: to.query }),
+        meta: { requiresAuth: true },
+      },
+      {
+        path: 'cluster/files',
+        name: 'DeviceFileBrowser',
+        component: () => import('@/views/cluster/DeviceFileBrowser.vue'),
+        meta: { requiresAuth: true },
       },
       {
         path: 'tools/password-generator',
         name: 'PasswordGenerator',
         component: () => import('@/views/tools/PasswordGenerator.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'tools/image-browser',
+        name: 'ImageBrowser',
+        component: () => import('@/views/tools/ImageBrowser.vue'),
         meta: { requiresAuth: false },
       },
       {

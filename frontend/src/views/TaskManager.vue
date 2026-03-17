@@ -624,7 +624,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <DocPage title="集群管理" :description="`管理集群节点及其后台任务。\n\n注意：每台设备的任务列表是全平台共享的，即对这台机器的统一状态管理。所有用户操作的都是同一份任务列表，请谨慎修改，以免影响他人使用。`">
+  <DocPage title="设备任务" :description="`管理设备清单与设备任务。\n\n注意：每台设备的任务列表是全平台共享的，即对这台机器的统一状态管理。所有用户操作的都是同一份任务列表，请谨慎修改，以免影响他人使用。`">
     <!-- Device Tabs -->
     <el-tabs v-model="currentDeviceId" type="card" class="device-tabs" ref="tabsRef">
       <el-tab-pane
@@ -672,25 +672,21 @@ onUnmounted(() => {
         </div>
       </div>
       
-      <div class="card-content">
+      <div v-if="isEditingDevice" class="card-content">
         <el-form :inline="true" label-width="100px" size="small">
           <el-form-item label="设备名称">
              <el-input 
-               v-if="isEditingDevice" 
                v-model="currentDeviceConfig.new_name" 
                placeholder="设备显示名称" 
                style="width: 200px;"
              />
-             <span v-else class="readonly-text">{{ currentDevice.name || currentDevice.device_id }}</span>
           </el-form-item>
           <el-form-item v-if="currentDevice.mode === 'remote'" label="后端地址">
              <el-input
-               v-if="isEditingDevice"
                v-model="currentDeviceConfig.server_url"
                placeholder="例如 http://192.168.1.5:8000"
                style="width: 280px;"
              />
-             <span v-else class="readonly-text">{{ currentDevice.server_url || '-' }}</span>
           </el-form-item>
         </el-form>
       </div>
@@ -944,10 +940,6 @@ onUnmounted(() => {
 
 .card-content {
   padding: 15px;
-}
-
-.readonly-text {
-  color: #606266;
 }
 
 .task-name {

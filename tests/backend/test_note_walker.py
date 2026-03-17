@@ -10,7 +10,7 @@ def make_note(
     *,
     node_status: str = "idea",
     node_type: str = "note",
-    weight: int = 100,
+    weight: int = 0,
     start_at: float = 100.0,
     updated_at: float = 100.0,
     custom_fields=None,

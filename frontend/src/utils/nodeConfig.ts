@@ -93,12 +93,66 @@ export const NODE_STATUSES: Record<string, NodeStatusItem> = {
 
 export const NODE_TYPE_ORDER = ['project', 'module', 'task', 'bug', 'note', 'doc', 'memo'];
 export const NODE_STATUS_ORDER = ['idea', 'todo', 'doing', 'predone', 'done', 'delete'];
+export const NOTE_COLOR_PRESETS = [
+  '#409EFF',
+  '#67C23A',
+  '#E6A23C',
+  '#F56C6C',
+  '#1ABC9C',
+  '#2F86EB',
+  '#8E44AD',
+  '#34495E',
+  '#909399',
+];
+
+const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+export const normalizeNodeColor = (value: string | null | undefined) => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!HEX_COLOR_RE.test(trimmed)) return null;
+  if (trimmed.length === 4) {
+    const [hash, r, g, b] = trimmed;
+    return `${hash}${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  return trimmed.toUpperCase();
+};
+
+const mixWithWhite = (hex: string, ratio: number) => {
+  const normalized = normalizeNodeColor(hex);
+  if (!normalized) return '#FFFFFF';
+  const amount = Math.min(1, Math.max(0, ratio));
+  const r = Number.parseInt(normalized.slice(1, 3), 16);
+  const g = Number.parseInt(normalized.slice(3, 5), 16);
+  const b = Number.parseInt(normalized.slice(5, 7), 16);
+  const mix = (channel: number) => Math.round(channel * (1 - amount) + 255 * amount);
+  return `#${[mix(r), mix(g), mix(b)].map(channel => channel.toString(16).padStart(2, '0')).join('')}`.toUpperCase();
+};
+
+export const getNodeTheme = (
+  typeStr: string | null | undefined,
+  customColor?: string | null
+) => {
+  const type = NODE_TYPES[typeStr || 'note'] || NODE_TYPES.note;
+  const normalizedCustomColor = normalizeNodeColor(customColor);
+  if (!normalizedCustomColor) return type;
+
+  return {
+    ...type,
+    baseColor: normalizedCustomColor,
+    lightColor: mixWithWhite(normalizedCustomColor, 0.88)
+  };
+};
 
 /**
  * 计算最终视觉样式
  */
-export const getNodeStyle = (typeStr: string | null | undefined, statusStr: string | null | undefined) => {
-  const type = NODE_TYPES[typeStr || 'note'] || NODE_TYPES.note;
+export const getNodeStyle = (
+  typeStr: string | null | undefined,
+  statusStr: string | null | undefined,
+  customColor?: string | null
+) => {
+  const type = getNodeTheme(typeStr, customColor);
   const status = NODE_STATUSES[statusStr || 'idea'] || NODE_STATUSES.idea;
 
   // Default Style (Clean slate)

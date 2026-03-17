@@ -4,7 +4,8 @@ from sqlmodel import Session, select
 from backend.db import get_session
 from backend.models import NoteNode, User
 from backend.schemas import NoteRead, NoteUpdate
-from backend.core.auth import get_current_active_user
+from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.note_access import note_to_response_dict
 import uuid
 import time
 from passlib.context import CryptContext
@@ -50,6 +51,7 @@ def get_fanxiu_user(session: Session) -> User:
 
 @router.get("/chars", response_model=List[NoteRead])
 def read_chars(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
     session: Session = Depends(get_session)
 ):
     """
@@ -61,11 +63,13 @@ def read_chars(
         NoteNode.user_id == fanxiu_user.id,
         NoteNode.node_type == FANXIU_CHAR_TYPE
     )
-    return session.exec(statement).all()
+    notes = session.exec(statement).all()
+    return [note_to_response_dict(note, current_user) for note in notes]
 
 @router.get("/chars/{char_name}", response_model=NoteRead)
 def read_char(
     char_name: str,
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
     session: Session = Depends(get_session)
 ):
     """
@@ -83,7 +87,7 @@ def read_char(
     if not note:
         raise HTTPException(status_code=404, detail="Character not found")
         
-    return note
+    return note_to_response_dict(note, current_user)
 
 @router.put("/chars/{char_name}", response_model=NoteRead)
 def update_char(
@@ -100,13 +104,9 @@ def update_char(
     # Even 'code4101' cannot edit directly via this API unless logged in as 'fanxiu_official'.
     # This enforces data ownership isolation.
     
-    if current_user.username != FANXIU_USERNAME and not current_user.is_superuser:
-         raise HTTPException(status_code=403, detail="Only 'fanxiu_official' account or superuser can edit this data.")
-
-    if current_user.username == FANXIU_USERNAME:
-        fanxiu_user = current_user
-    else:
-        fanxiu_user = get_fanxiu_user(session)
+    fanxiu_user = get_fanxiu_user(session)
+    if current_user.id != fanxiu_user.id and not current_user.is_superuser:
+         raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
     
     statement = select(NoteNode).where(
         NoteNode.user_id == fanxiu_user.id,
@@ -126,6 +126,7 @@ def update_char(
             content=note_in.content or "",
             weight=note_in.weight if note_in.weight is not None else 0,
             node_type=FANXIU_CHAR_TYPE,
+            color=note_in.color,
             created_at=current_time,
             updated_at=current_time,
             start_at=note_in.start_at if note_in.start_at is not None else current_time,
@@ -140,10 +141,12 @@ def update_char(
             db_note.weight = note_in.weight
         if note_in.start_at is not None:
             db_note.start_at = note_in.start_at
-        
+        if "color" in note_in.model_fields_set:
+            db_note.color = note_in.color
+
         db_note.updated_at = current_time
         session.add(db_note)
         
     session.commit()
     session.refresh(db_note)
-    return db_note
+    return note_to_response_dict(db_note, current_user)

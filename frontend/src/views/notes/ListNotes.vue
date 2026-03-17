@@ -67,7 +67,7 @@
 
             <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="note-title" :style="getTitleStyle(row.node_type)">{{ row.title || '无标题' }}</span>
+                <span class="note-title" :style="getTitleStyle(row)">{{ row.title || '无标题' }}</span>
               </template>
             </el-table-column>
 
@@ -75,7 +75,7 @@
               <template #default="{ row }">
                 <span
                   class="node-type-text"
-                  :style="getTypeTagStyle(row.node_type)"
+                  :style="getTypeTagStyle(row)"
                 >
                   {{ getTypeLabel(row.node_type) }}
                 </span>
@@ -86,7 +86,7 @@
               <template #default="{ row }">
                 <span
                   class="node-badge"
-                  :style="getStatusBadgeStyle(row.node_status)"
+                  :style="getStatusBadgeStyle(row)"
                 >
                   {{ getStatusLabel(row.node_status) }}
                 </span>
@@ -312,7 +312,8 @@ const handleNoteDelete = (id: string) => {
 };
 
 const handleNoteCreate = (note: NoteNode) => {
-    // Handled by store
+  noteStore.addNoteToTab(props.tabId, note.id);
+  currentNoteId.value = note.id;
 };
 
 // Helpers
@@ -321,18 +322,18 @@ const formatDate = (ts: number) => {
 };
 
 const getTypeLabel = (type: string | null) => getNodeTypeConfig(type || 'note').label;
-const getTitleStyle = (type: string | null) => {
-    const config = getNodeTypeConfig(type || 'note');
+const getTitleStyle = (note: NoteNode) => {
+    const config = getNodeStyle(note.node_type, 'idea', note.color);
     return {
-        color: config.baseColor,
+        color: config.color,
         fontWeight: '500'
     };
 };
 
-const getTypeTagStyle = (type: string | null) => {
-    const config = getNodeTypeConfig(type || 'note');
+const getTypeTagStyle = (note: NoteNode) => {
+    const config = getNodeStyle(note.node_type, 'idea', note.color);
     return {
-        color: config.baseColor,
+        color: config.color,
         fontWeight: 'bold',
         backgroundColor: 'transparent',
         border: 'none',
@@ -341,10 +342,8 @@ const getTypeTagStyle = (type: string | null) => {
 };
 
 const getStatusLabel = (status: string | null) => getNodeStatusConfig(status || 'idea').label;
-const getStatusBadgeStyle = (status: string | null) => {
-    // Pass 'note' as type to ensure status style is orthogonal (independent of the actual node type)
-    // This will use the default gray/neutral color scheme for borders/backgrounds
-    return getNodeStyle('note', status);
+const getStatusBadgeStyle = (note: NoteNode) => {
+    return getNodeStyle(note.node_type, note.node_status, note.color);
 };
 
 const calculateListBounds = () => {
