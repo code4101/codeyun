@@ -1,7 +1,8 @@
 import uuid
 
 from backend.app import app
-from backend.api.fanxiu import FANXIU_CHAR_TYPE, get_fanxiu_user
+from backend.api.fanxiu import FANXIU_CHAR_KIND, FANXIU_CHAR_TYPE, get_fanxiu_user
+from backend.core.note_semantics import NOTE_WEIGHT_MODE_LINEAR
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
 from backend.models import NoteNode, User
 
@@ -99,7 +100,9 @@ def test_fanxiu_public_read_returns_can_edit_for_current_viewer(client, session)
         content="demo",
         weight=1,
         node_type=FANXIU_CHAR_TYPE,
+        note_kind=FANXIU_CHAR_KIND,
         node_status="idea",
+        weight_mode=NOTE_WEIGHT_MODE_LINEAR,
         private_level=0,
         custom_fields=[],
         created_at=100.0,

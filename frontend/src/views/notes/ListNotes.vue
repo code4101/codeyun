@@ -32,8 +32,7 @@
         <el-tag type="info">已选 {{ selectedCount }} 项</el-tag>
         <el-button size="small" @click="selectAllVisible" :disabled="filteredNotes.length === 0 || allVisibleSelected">全选当前可见</el-button>
         <el-button size="small" @click="clearSelection">清空选择</el-button>
-        <el-button size="small" type="danger" plain @click="applyPrivateLevelToSelection(1)">设为私密</el-button>
-        <el-button size="small" plain @click="applyPrivateLevelToSelection(0)">取消私密</el-button>
+        <el-button size="small" type="primary" plain @click="batchEditVisible = true">批量编辑</el-button>
       </div>
 
       <div class="toolbar-actions">
@@ -67,28 +66,39 @@
 
             <el-table-column prop="title" label="标题" min-width="200" sortable show-overflow-tooltip>
               <template #default="{ row }">
-                <span class="note-title" :style="getTitleStyle(row)">{{ row.title || '无标题' }}</span>
+                <span class="note-title" :style="getTitleStyle(row)">
+                  <NoteFormBadge :form="row.note_form" compact />
+                  <span class="note-title-text">{{ row.title || '无标题' }}</span>
+                </span>
               </template>
             </el-table-column>
 
-            <el-table-column prop="node_type" label="类型" width="100" sortable>
+            <el-table-column prop="primary_category" label="分类" width="100" sortable>
               <template #default="{ row }">
                 <span
                   class="node-type-text"
                   :style="getTypeTagStyle(row)"
                 >
-                  {{ getTypeLabel(row.node_type) }}
+                  {{ getCategoryLabel(row.primary_category) }}
                 </span>
               </template>
             </el-table-column>
 
-            <el-table-column prop="node_status" label="状态" width="100" sortable>
+            <el-table-column prop="note_form" label="形态" width="88" sortable>
+              <template #default="{ row }">
+                <span class="form-badge-wrap">
+                  <NoteFormBadge :form="row.note_form" :show-label="true" />
+                </span>
+              </template>
+            </el-table-column>
+
+            <el-table-column prop="lifecycle_stage" label="阶段" width="100" sortable>
               <template #default="{ row }">
                 <span
                   class="node-badge"
                   :style="getStatusBadgeStyle(row)"
                 >
-                  {{ getStatusLabel(row.node_status) }}
+                  {{ getLifecycleStageLabel(row.lifecycle_stage) }}
                 </span>
               </template>
             </el-table-column>
@@ -133,6 +143,12 @@
         />
       </template>
     </NoteSplitView>
+
+    <BatchNoteEditDialog
+      v-model="batchEditVisible"
+      :note-ids="selectedNoteIds"
+      @saved="handleBatchEditSaved"
+    />
   </div>
 </template>
 
@@ -149,10 +165,12 @@ import {
   normalizeNoteProgramChannel
 } from '@/api/notes';
 import { Plus, Refresh } from '@element-plus/icons-vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
+import NoteFormBadge from '@/components/NoteFormBadge.vue';
+import BatchNoteEditDialog from '@/components/BatchNoteEditDialog.vue';
 import { getNodeTypeConfig, getNodeStatusConfig, getNodeStyle } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
@@ -181,6 +199,7 @@ const currentNoteId = ref('');
 const loading = ref(false);
 const tableRef = ref<any>(null);
 const selectedNoteIds = ref<string[]>([]);
+const batchEditVisible = ref(false);
 
 // Computed
 const filteredNotes = computed(() => {
@@ -271,28 +290,7 @@ const clearSelection = () => {
   selectedNoteIds.value = [];
 };
 
-const applyPrivateLevelToSelection = async (privateLevel: number) => {
-  if (selectedNoteIds.value.length === 0) return;
-
-  const actionLabel = privateLevel > 0 ? '设为私密' : '取消私密';
-  const confirmed = await ElMessageBox.confirm(
-    `确定要将已选中的 ${selectedNoteIds.value.length} 个节点${actionLabel}吗？`,
-    '批量操作确认',
-    {
-      confirmButtonText: '确定',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).catch(() => false);
-  if (!confirmed) return;
-
-  const result = await noteStore.batchUpdateNotes({
-    ids: [...selectedNoteIds.value],
-    patch: { private_level: privateLevel }
-  });
-
-  if (!result) return;
-
+const handleBatchEditSaved = (result: { updated_count: number }) => {
   clearSelection();
   if (result.updated_count > 0) {
     ElMessage.success(`已更新 ${result.updated_count} 个节点`);
@@ -321,17 +319,21 @@ const formatDate = (ts: number) => {
   return formatNoteDateTime(ts);
 };
 
-const getTypeLabel = (type: string | null) => getNodeTypeConfig(type || 'note').label;
+const getCategoryLabel = (type: string | null) => getNodeTypeConfig(type || 'general').label;
 const getTitleStyle = (note: NoteNode) => {
-    const config = getNodeStyle(note.node_type, 'idea', note.color);
+    const config = getNodeStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
     return {
         color: config.color,
-        fontWeight: '500'
+        fontWeight: '500',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+        minWidth: 0
     };
 };
 
 const getTypeTagStyle = (note: NoteNode) => {
-    const config = getNodeStyle(note.node_type, 'idea', note.color);
+    const config = getNodeStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
     return {
         color: config.color,
         fontWeight: 'bold',
@@ -341,9 +343,9 @@ const getTypeTagStyle = (note: NoteNode) => {
     };
 };
 
-const getStatusLabel = (status: string | null) => getNodeStatusConfig(status || 'idea').label;
+const getLifecycleStageLabel = (status: string | null) => getNodeStatusConfig(status || 'idea').label;
 const getStatusBadgeStyle = (note: NoteNode) => {
-    return getNodeStyle(note.node_type, note.node_status, note.color);
+    return getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
 };
 
 const calculateListBounds = () => {
@@ -458,13 +460,29 @@ watch(filteredNotes, async () => {
 }
 
 .note-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
   font-weight: 500;
   color: #303133;
+}
+
+.note-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .node-type-text {
   font-size: 13px;
   /* No badge styling, just text */
+}
+
+.form-badge-wrap {
+  display: inline-flex;
+  align-items: center;
 }
 
 .node-badge {

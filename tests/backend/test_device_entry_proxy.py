@@ -551,6 +551,103 @@ def test_local_entry_proxy_lists_media_by_sort_program(client, auth_user, test_d
     ]
 
 
+def test_local_entry_proxy_lists_media_by_random_sort_program(client, auth_user, test_device, monkeypatch):
+    settings = get_settings()
+    attachments_dir = settings.attachments_dir
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    random_a = attachments_dir / "proxy-random-a.jpg"
+    random_b = attachments_dir / "proxy-random-b.jpg"
+    random_c = attachments_dir / "proxy-random-c.jpg"
+    for target_path in (random_a, random_b, random_c):
+        target_path.write_bytes(b"proxy-random")
+
+    def fake_populate_media_random_sort_values(entries, rules):
+        if not any(rule.field == "random" for rule in rules):
+            return
+        rank_by_name = {
+            "proxy-random-a.jpg": 30,
+            "proxy-random-b.jpg": 10,
+            "proxy-random-c.jpg": 20,
+        }
+        for entry in entries:
+            entry["_random_order"] = rank_by_name.get(entry["name"], 999)
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._populate_media_random_sort_values",
+        fake_populate_media_random_sort_values,
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    media_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/media/list",
+        json={
+            "root": "attachments",
+            "path": "",
+            "sort_program": {
+                "rules": [
+                    {"field": "random", "direction": "asc", "nulls": "last"},
+                ]
+            },
+        },
+    )
+    assert media_resp.status_code == 200
+    ordered_names = [
+        item["name"]
+        for item in media_resp.json()["media"]
+        if item["name"] in {
+            "proxy-random-a.jpg",
+            "proxy-random-b.jpg",
+            "proxy-random-c.jpg",
+        }
+    ]
+    assert ordered_names == [
+        "proxy-random-b.jpg",
+        "proxy-random-c.jpg",
+        "proxy-random-a.jpg",
+    ]
+
+
+def test_local_entry_proxy_lists_media_with_created_at(client, auth_user, test_device):
+    settings = get_settings()
+    attachments_dir = settings.attachments_dir
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+
+    image_path = attachments_dir / "proxy-created-at.jpg"
+    image_path.write_bytes(b"proxy-created-at")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    media_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/media/list",
+        json={"root": "attachments", "path": ""},
+    )
+    assert media_resp.status_code == 200
+
+    matched_image = next(item for item in media_resp.json()["media"] if item["name"] == "proxy-created-at.jpg")
+    assert isinstance(matched_image.get("created_at"), int)
+    assert matched_image["created_at"] > 0
+
+
 def test_local_entry_proxy_updates_device_media_weight(client, auth_user, test_device, session):
     settings = get_settings()
     attachments_dir = settings.attachments_dir
@@ -1026,6 +1123,52 @@ def test_remote_entry_proxy_forwards_media_request(client, session, auth_user, m
     assert captured["timeout"] == 10
 
 
+def test_local_entry_proxy_reveals_file_in_folder(client, auth_user, test_device, monkeypatch):
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    captured = {}
+
+    def fake_reveal_scoped_entry(root_key=None, rel_path="", *, absolute_path=""):
+        captured["root"] = root_key
+        captured["path"] = rel_path
+        captured["absolute_path"] = absolute_path
+        return {
+            "ok": True,
+            "supported": True,
+            "launched": True,
+            "method": "explorer",
+            "detail": "",
+            "root": root_key,
+            "path": rel_path,
+            "absolute_path": absolute_path,
+            "target_path": absolute_path,
+            "directory_path": r"C:\\demo",
+        }
+
+    monkeypatch.setattr("backend.api.device_entries.reveal_scoped_entry", fake_reveal_scoped_entry)
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/reveal",
+        json={"absolute_path": r"C:\\demo\\sample.jpg"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["launched"] is True
+    assert captured == {
+        "root": None,
+        "path": "",
+        "absolute_path": r"C:\\demo\\sample.jpg",
+    }
+
+
 def test_remote_entry_proxy_forwards_media_sort_mode(client, session, auth_user, monkeypatch):
     entry = UserDevice(
         user_id=auth_user.id,
@@ -1064,6 +1207,48 @@ def test_remote_entry_proxy_forwards_media_sort_mode(client, session, auth_user,
     )
     assert resp.status_code == 200
     assert captured["json"] == {"root": "attachments", "path": "", "sort_mode": "size-desc"}
+
+
+def test_remote_entry_proxy_forwards_reveal_file_request(client, session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-device-reveal",
+        mode="remote",
+        name="Remote Device",
+        server_url="http://remote-device:8000",
+        token="remote-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"ok": True, "supported": True, "launched": True}
+
+        @property
+        def content(self):
+            return b"{}"
+
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+        captured["json"] = json
+        captured["url"] = url
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
+
+    resp = client.post(
+        f"/api/device-entries/{entry.entry_id}/files/reveal",
+        json={"absolute_path": r"C:\\demo\\sample.jpg"},
+    )
+    assert resp.status_code == 200
+    assert captured["url"] == "http://remote-device:8000/api/fs/reveal"
+    assert captured["json"] == {"path": "", "absolute_path": r"C:\\demo\\sample.jpg"}
 
 
 def test_remote_entry_proxy_forwards_media_sort_program(client, session, auth_user, monkeypatch):
@@ -1105,7 +1290,7 @@ def test_remote_entry_proxy_forwards_media_sort_program(client, session, auth_us
             "path": "",
             "sort_program": {
                 "rules": [
-                    {"field": "weight", "direction": "desc", "nulls": "last"},
+                    {"field": "random", "direction": "asc", "nulls": "last"},
                     {"field": "modified_at", "direction": "desc", "nulls": "last"},
                 ]
             },
@@ -1117,7 +1302,7 @@ def test_remote_entry_proxy_forwards_media_sort_program(client, session, auth_us
         "path": "",
         "sort_program": {
             "rules": [
-                {"field": "weight", "direction": "desc", "nulls": "last"},
+                {"field": "random", "direction": "asc", "nulls": "last"},
                 {"field": "modified_at", "direction": "desc", "nulls": "last"},
             ]
         },

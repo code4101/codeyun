@@ -1,4 +1,11 @@
 import type { NoteNode } from '@/api/notes';
+import { normalizeNoteTypeAssignments, type NoteTypeAssignment } from './nodeConfig';
+import {
+  deriveLegacySemanticsFromTaxonomy,
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_DEFAULT,
+  NOTE_LIFECYCLE_STAGE_DEFAULT
+} from './noteSemantics';
 
 export type NoteCustomFieldType = 'string' | 'number' | 'boolean';
 export type NoteCustomFieldStoredValue = string | number | boolean;
@@ -18,8 +25,10 @@ export interface EditableNoteSnapshot {
   content: string;
   weight: number;
   start_at: number;
-  node_type: string | null;
-  node_status: string | null;
+  note_categories: NoteTypeAssignment[];
+  primary_category: string | null;
+  note_form: string | null;
+  lifecycle_stage: string | null;
   color: string | null;
   private_level: number;
   custom_fields: NoteCustomFieldTuple[];
@@ -30,8 +39,10 @@ export interface EditableNotePatch {
   content?: string;
   weight?: number;
   start_at?: number;
-  node_type?: string | null;
-  node_status?: string | null;
+  note_categories?: NoteTypeAssignment[];
+  primary_category?: string | null;
+  note_form?: string | null;
+  lifecycle_stage?: string | null;
   color?: string | null;
   private_level?: number;
   custom_fields?: NoteCustomFieldTuple[];
@@ -204,8 +215,10 @@ export const createEditableNoteSnapshot = (
     content: normalizeText(note.content),
     weight: typeof note.weight === 'number' && Number.isFinite(note.weight) ? note.weight : 0,
     start_at: normalizeTimestamp(note.start_at),
-    node_type: note.node_type ?? null,
-    node_status: note.node_status ?? null,
+    note_categories: normalizeNoteTypeAssignments(note.note_categories, note.primary_category ?? NOTE_CATEGORY_DEFAULT),
+    primary_category: note.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    note_form: note.note_form ?? NOTE_FORM_DEFAULT,
+    lifecycle_stage: note.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT,
     color: note.color ?? null,
     private_level: typeof note.private_level === 'number' && Number.isFinite(note.private_level) ? note.private_level : 0,
     custom_fields: noteCustomFieldItemsToList(noteCustomFieldsToItems(customFields ?? note.custom_fields ?? []))
@@ -224,8 +237,10 @@ export const areEditableNoteSnapshotsEqual = (
   && left.content === right.content
   && left.weight === right.weight
   && left.start_at === right.start_at
-  && left.node_type === right.node_type
-  && left.node_status === right.node_status
+  && left.primary_category === right.primary_category
+  && JSON.stringify(left.note_categories) === JSON.stringify(right.note_categories)
+  && left.note_form === right.note_form
+  && left.lifecycle_stage === right.lifecycle_stage
   && left.color === right.color
   && left.private_level === right.private_level
   && JSON.stringify(left.custom_fields) === JSON.stringify(right.custom_fields)
@@ -241,8 +256,10 @@ export const buildEditableNotePatch = (
       content: snapshot.content,
       weight: snapshot.weight,
       start_at: snapshot.start_at,
-      node_type: snapshot.node_type,
-      node_status: snapshot.node_status,
+      note_categories: snapshot.note_categories,
+      primary_category: snapshot.primary_category,
+      note_form: snapshot.note_form,
+      lifecycle_stage: snapshot.lifecycle_stage,
       color: snapshot.color,
       private_level: snapshot.private_level,
       custom_fields: snapshot.custom_fields
@@ -255,8 +272,10 @@ export const buildEditableNotePatch = (
   if (snapshot.content !== baseline.content) patch.content = snapshot.content;
   if (snapshot.weight !== baseline.weight) patch.weight = snapshot.weight;
   if (snapshot.start_at !== baseline.start_at) patch.start_at = snapshot.start_at;
-  if (snapshot.node_type !== baseline.node_type) patch.node_type = snapshot.node_type;
-  if (snapshot.node_status !== baseline.node_status) patch.node_status = snapshot.node_status;
+  if (snapshot.primary_category !== baseline.primary_category) patch.primary_category = snapshot.primary_category;
+  if (JSON.stringify(snapshot.note_categories) !== JSON.stringify(baseline.note_categories)) patch.note_categories = snapshot.note_categories;
+  if (snapshot.note_form !== baseline.note_form) patch.note_form = snapshot.note_form;
+  if (snapshot.lifecycle_stage !== baseline.lifecycle_stage) patch.lifecycle_stage = snapshot.lifecycle_stage;
   if (snapshot.color !== baseline.color) patch.color = snapshot.color;
   if (snapshot.private_level !== baseline.private_level) patch.private_level = snapshot.private_level;
   if (JSON.stringify(snapshot.custom_fields) !== JSON.stringify(baseline.custom_fields)) {
@@ -268,13 +287,22 @@ export const buildEditableNotePatch = (
 
 export const applyEditableNoteSnapshot = (note: NoteNode, snapshot: EditableNoteSnapshot) => ({
   ...note,
+  ...deriveLegacySemanticsFromTaxonomy(
+    snapshot.note_categories,
+    snapshot.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    snapshot.note_form ?? NOTE_FORM_DEFAULT,
+    note.note_scene ?? note.note_kind ?? 'note',
+    snapshot.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+  ),
   id: snapshot.id,
   title: snapshot.title,
   content: snapshot.content,
   weight: snapshot.weight,
   start_at: snapshot.start_at,
-  node_type: snapshot.node_type,
-  node_status: snapshot.node_status,
+  note_categories: cloneEditableNoteSnapshot(snapshot).note_categories,
+  primary_category: snapshot.primary_category,
+  note_form: snapshot.note_form,
+  lifecycle_stage: snapshot.lifecycle_stage,
   color: snapshot.color,
   private_level: snapshot.private_level,
   custom_fields: cloneEditableNoteSnapshot(snapshot).custom_fields
@@ -285,13 +313,22 @@ export const noteSnapshotToNode = (
   snapshot: EditableNoteSnapshot
 ): NoteNode => ({
   ...(source as NoteNode),
+  ...deriveLegacySemanticsFromTaxonomy(
+    snapshot.note_categories,
+    snapshot.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    snapshot.note_form ?? NOTE_FORM_DEFAULT,
+    source?.note_scene ?? source?.note_kind ?? 'note',
+    snapshot.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+  ),
   id: snapshot.id,
   title: snapshot.title,
   content: snapshot.content,
   weight: snapshot.weight,
   start_at: snapshot.start_at,
-  node_type: snapshot.node_type,
-  node_status: snapshot.node_status,
+  note_categories: cloneEditableNoteSnapshot(snapshot).note_categories,
+  primary_category: snapshot.primary_category,
+  note_form: snapshot.note_form,
+  lifecycle_stage: snapshot.lifecycle_stage,
   color: snapshot.color,
   private_level: snapshot.private_level,
   custom_fields: cloneEditableNoteSnapshot(snapshot).custom_fields

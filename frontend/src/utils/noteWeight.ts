@@ -1,6 +1,7 @@
-export const NOTE_WEIGHT_DEFAULT = 0;
+import { NOTE_WEIGHT_MODE_LINEAR } from './noteSemantics';
 
-const LEGACY_LINEAR_WEIGHT_NODE_TYPES = new Set(['memo']);
+export const NOTE_WEIGHT_DEFAULT = 0;
+export const NOTE_WEIGHT_MIN = Number.MIN_SAFE_INTEGER;
 
 const parseFiniteWeight = (weight: unknown) => {
   if (typeof weight === 'number' && Number.isFinite(weight)) return Math.trunc(weight);
@@ -11,18 +12,18 @@ const parseFiniteWeight = (weight: unknown) => {
   return NOTE_WEIGHT_DEFAULT;
 };
 
-export const usesLegacyLinearNoteWeight = (nodeType?: string | null) =>
-  LEGACY_LINEAR_WEIGHT_NODE_TYPES.has(String(nodeType ?? '').toLowerCase());
+export const usesLegacyLinearNoteWeight = (_nodeType?: string | null, weightMode?: string | null) =>
+  String(weightMode ?? '').toLowerCase() === NOTE_WEIGHT_MODE_LINEAR;
 
-export const normalizeNoteWeight = (weight: unknown) => Math.max(0, parseFiniteWeight(weight));
+export const normalizeNoteWeight = (weight: unknown) => parseFiniteWeight(weight);
 
-export const getNoteWeightAreaFactor = (weight: unknown, nodeType?: string | null) => {
+export const getNoteWeightAreaFactor = (weight: unknown, nodeType?: string | null, weightMode?: string | null) => {
   const normalizedWeight = normalizeNoteWeight(weight);
-  if (usesLegacyLinearNoteWeight(nodeType)) {
+  if (usesLegacyLinearNoteWeight(nodeType, weightMode)) {
     return Math.max(0.1, normalizedWeight / 100);
   }
   return Math.pow(2, normalizedWeight);
 };
 
-export const getNoteWeightScaleFactor = (weight: unknown, nodeType?: string | null) =>
-  Math.sqrt(getNoteWeightAreaFactor(weight, nodeType));
+export const getNoteWeightScaleFactor = (weight: unknown, nodeType?: string | null, weightMode?: string | null) =>
+  Math.sqrt(getNoteWeightAreaFactor(weight, nodeType, weightMode));

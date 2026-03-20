@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    BatchNoteEditDialog: typeof import('./components/BatchNoteEditDialog.vue')['default']
     CustomNode: typeof import('./components/CustomNode.vue')['default']
     DocPage: typeof import('./components/DocPage.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
@@ -19,6 +20,7 @@ declare module 'vue' {
     ElButtonGroup: typeof import('element-plus/es')['ElButtonGroup']
     ElCard: typeof import('element-plus/es')['ElCard']
     ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
+    ElCheckboxGroup: typeof import('element-plus/es')['ElCheckboxGroup']
     ElCol: typeof import('element-plus/es')['ElCol']
     ElCollapse: typeof import('element-plus/es')['ElCollapse']
     ElCollapseItem: typeof import('element-plus/es')['ElCollapseItem']
@@ -75,9 +77,12 @@ declare module 'vue' {
     NoteCopyDialog: typeof import('./components/NoteCopyDialog.vue')['default']
     NoteDetailPanel: typeof import('./components/NoteDetailPanel.vue')['default']
     NoteEditor: typeof import('./components/NoteEditor.vue')['default']
+    NoteFormBadge: typeof import('./components/NoteFormBadge.vue')['default']
     NoteProgramBar: typeof import('./components/NoteProgramBar.vue')['default']
     NoteScopeBar: typeof import('./components/NoteScopeBar.vue')['default']
     NoteSplitView: typeof import('./components/NoteSplitView.vue')['default']
+    NoteTypeManagerDialog: typeof import('./components/NoteTypeManagerDialog.vue')['default']
+    NoteTypeSelector: typeof import('./components/NoteTypeSelector.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
     SharedNoteEditor: typeof import('./components/SharedNoteEditor.vue')['default']

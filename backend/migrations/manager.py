@@ -527,6 +527,227 @@ def v16_migrate_note_weight_levels(session: Session):
         session.commit()
     print(f"  Migrated {updated_count} note weights to integer levels.")
 
+
+def v17_add_note_semantics_fields(session: Session):
+    """
+    Migration V17: Decouple historical note semantics from node_type.
+    Adds note_kind / weight_mode and backfills legacy memo behavior explicitly.
+    """
+    print("Running System Upgrade V17: Add note_kind / weight_mode...")
+    res = session.exec(text("PRAGMA table_info(notenode)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "note_kind" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN note_kind VARCHAR DEFAULT 'note'")
+    if "weight_mode" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN weight_mode VARCHAR")
+
+    for statement in statements:
+        session.exec(text(statement))
+
+    if statements:
+        session.commit()
+
+    session.exec(text("UPDATE notenode SET note_kind = 'note' WHERE note_kind IS NULL OR TRIM(note_kind) = ''"))
+    session.exec(text("UPDATE notenode SET weight_mode = 'linear' WHERE weight_mode IS NULL AND LOWER(COALESCE(node_type, '')) = 'memo'"))
+    session.exec(
+        text(
+            """
+            UPDATE notenode
+            SET note_kind = 'fanxiu_char',
+                weight_mode = COALESCE(weight_mode, 'linear')
+            WHERE user_id IN (
+                SELECT id FROM user WHERE username = '凡修手游'
+            )
+              AND LOWER(COALESCE(node_type, '')) = 'memo'
+            """
+        )
+    )
+    session.commit()
+    print("  note_kind / weight_mode ready.")
+
+
+def v18_add_note_types(session: Session):
+    """
+    Migration V18: Add weighted note_types and backfill from legacy node_type.
+    """
+    print("Running System Upgrade V18: Add note_types...")
+    res = session.exec(text("PRAGMA table_info(notenode)")).all()
+    columns = [row[1] for row in res]
+
+    if "note_types" not in columns:
+        try:
+            session.exec(text("ALTER TABLE notenode ADD COLUMN note_types JSON DEFAULT '[]'"))
+        except Exception:
+            session.exec(text("ALTER TABLE notenode ADD COLUMN note_types TEXT DEFAULT '[]'"))
+        session.commit()
+
+    from backend.models import NoteNode
+    from backend.core.note_semantics import NOTE_TYPE_DEFAULT, normalize_note_types
+
+    notes = session.exec(select(NoteNode)).all()
+    updated_count = 0
+    for note in notes:
+        if note.note_types:
+            continue
+        fallback_type = (note.node_type or NOTE_TYPE_DEFAULT or "").strip() or NOTE_TYPE_DEFAULT
+        note.note_types = normalize_note_types([], fallback_type=fallback_type)
+        session.add(note)
+        updated_count += 1
+
+    if updated_count > 0:
+        session.commit()
+    print(f"  Backfilled note_types for {updated_count} notes.")
+
+
+def v19_add_note_taxonomy_fields(session: Session):
+    """
+    Migration V19: Add naming-aligned taxonomy fields and backfill from legacy semantics.
+    """
+    print("Running System Upgrade V19: Add note_categories / primary_category / note_form / lifecycle_stage / note_scene...")
+    res = session.exec(text("PRAGMA table_info(notenode)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "note_categories" not in columns:
+        try:
+            statements.append("ALTER TABLE notenode ADD COLUMN note_categories JSON DEFAULT '[]'")
+        except Exception:
+            statements.append("ALTER TABLE notenode ADD COLUMN note_categories TEXT DEFAULT '[]'")
+    if "primary_category" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN primary_category VARCHAR DEFAULT 'general'")
+    if "note_form" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN note_form VARCHAR DEFAULT 'note'")
+    if "lifecycle_stage" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN lifecycle_stage VARCHAR DEFAULT 'idea'")
+    if "note_scene" not in columns:
+        statements.append("ALTER TABLE notenode ADD COLUMN note_scene VARCHAR DEFAULT 'note'")
+
+    for statement in statements:
+        session.exec(text(statement))
+
+    if statements:
+        session.commit()
+
+    from backend.models import NoteNode
+    from backend.core.note_semantics import derive_note_taxonomy_from_legacy
+
+    notes = session.exec(select(NoteNode)).all()
+    updated_count = 0
+    for note in notes:
+        taxonomy = derive_note_taxonomy_from_legacy(
+            note.note_types,
+            node_type=note.node_type,
+            note_kind=note.note_kind,
+            node_status=note.node_status,
+        )
+        changed = (
+            note.note_categories != taxonomy["note_categories"]
+            or (note.primary_category or "") != str(taxonomy["primary_category"])
+            or (note.note_form or "") != str(taxonomy["note_form"])
+            or (note.lifecycle_stage or "") != str(taxonomy["lifecycle_stage"])
+            or (note.note_scene or "") != str(taxonomy["note_scene"])
+        )
+
+        note.note_categories = taxonomy["note_categories"]
+        note.primary_category = str(taxonomy["primary_category"])
+        note.note_form = str(taxonomy["note_form"])
+        note.lifecycle_stage = str(taxonomy["lifecycle_stage"])
+        note.note_scene = str(taxonomy["note_scene"])
+
+        if changed:
+            session.add(note)
+            updated_count += 1
+
+    if updated_count > 0:
+        session.commit()
+    print(f"  Backfilled taxonomy fields for {updated_count} notes.")
+
+
+def v20_repair_note_category_drift(session: Session):
+    """
+    Migration V20: repair primary_category drift and old carried-over builtin labels.
+    """
+    print("Running System Upgrade V20: Repair note category drift...")
+
+    from backend.models import AppSetting, NoteNode
+    from backend.core.note_semantics import (
+        NOTE_CATEGORY_DEFAULT,
+        NOTE_FORM_DEFAULT,
+        NOTE_LIFECYCLE_STAGE_DEFAULT,
+        NOTE_SCENE_DEFAULT,
+        derive_legacy_semantics_from_taxonomy,
+        derive_note_taxonomy_from_legacy,
+    )
+
+    notes = session.exec(select(NoteNode)).all()
+    updated_note_count = 0
+    for note in notes:
+        if note.note_categories or note.primary_category or note.note_form or note.note_scene or note.lifecycle_stage:
+            repaired = derive_legacy_semantics_from_taxonomy(
+                note.note_categories,
+                primary_category=note.primary_category or NOTE_CATEGORY_DEFAULT,
+                note_form=note.note_form or NOTE_FORM_DEFAULT,
+                note_scene=note.note_scene or note.note_kind or NOTE_SCENE_DEFAULT,
+                lifecycle_stage=note.lifecycle_stage or note.node_status or NOTE_LIFECYCLE_STAGE_DEFAULT,
+            )
+        else:
+            repaired = derive_note_taxonomy_from_legacy(
+                note.note_types,
+                node_type=note.node_type,
+                note_kind=note.note_kind,
+                node_status=note.node_status,
+            )
+
+        changed = False
+        for field, value in repaired.items():
+            if getattr(note, field) != value:
+                setattr(note, field, value)
+                changed = True
+
+        if changed:
+            session.add(note)
+            updated_note_count += 1
+
+    palette_rows = session.exec(
+        select(AppSetting).where(
+            AppSetting.key.like("note.category_palette.user.%"),
+            AppSetting.value.is_not(None)
+        )
+    ).all()
+    updated_palette_count = 0
+    for row in palette_rows:
+        value = row.value if isinstance(row.value, dict) else {}
+        items = value.get("items")
+        if not isinstance(items, list):
+            continue
+
+        changed = False
+        normalized_items = []
+        for item in items:
+            if not isinstance(item, dict):
+                normalized_items.append(item)
+                continue
+            next_item = dict(item)
+            key = str(next_item.get("key") or "").strip()
+            label = str(next_item.get("label") or "").strip()
+            source = str(next_item.get("source") or "").strip()
+            if key == NOTE_CATEGORY_DEFAULT and label == "笔记" and source == "builtin":
+                next_item["label"] = "综合"
+                changed = True
+            normalized_items.append(next_item)
+
+        if changed:
+            row.value = {**value, "items": normalized_items}
+            row.updated_at = time.time()
+            session.add(row)
+            updated_palette_count += 1
+
+    if updated_note_count or updated_palette_count:
+        session.commit()
+    print(f"  Repaired {updated_note_count} notes and {updated_palette_count} category palettes.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -546,6 +767,10 @@ MIGRATIONS = [
     (14, "Add device file duration column", v14_add_device_file_duration_field),
     (15, "Add device file dimension columns", v15_add_device_file_dimensions_fields),
     (16, "Migrate note weights to integer levels", v16_migrate_note_weight_levels),
+    (17, "Decouple note semantics from node_type", v17_add_note_semantics_fields),
+    (18, "Add weighted note types", v18_add_note_types),
+    (19, "Add naming-aligned note taxonomy fields", v19_add_note_taxonomy_fields),
+    (20, "Repair note category drift", v20_repair_note_category_drift),
 ]
 
 def get_current_version(session: Session) -> int:
@@ -604,6 +829,10 @@ def get_current_version(session: Session) -> int:
                 inferred_version = 6
             if "color" in columns:
                 inferred_version = 9
+            if "note_kind" in columns and "weight_mode" in columns:
+                inferred_version = 17
+            if "note_types" in columns:
+                inferred_version = 18
 
             print(f"Inferred legacy System version: {inferred_version}")
             return inferred_version

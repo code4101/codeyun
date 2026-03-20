@@ -29,6 +29,7 @@ from backend.api.filesystem import (
     list_directory_items,
     list_image_entries,
     list_media_entries,
+    reveal_scoped_entry,
     resolve_request_path,
     scan_device_file_records,
     sync_device_file_records,
@@ -930,6 +931,23 @@ def delete_file_for_entry(
             recursive=req.recursive,
     )
     return _proxy_request(entry, "POST", "/fs/delete", json_body=_filesystem_payload(req))
+
+
+@router.post("/{entry_id}/files/reveal")
+def reveal_file_for_entry(
+    entry_id: str,
+    req: RootScopedRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return reveal_scoped_entry(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+        )
+    return _proxy_request(entry, "POST", "/fs/reveal", json_body=_filesystem_payload(req))
 
 
 @router.post("/{entry_id}/files/sync")

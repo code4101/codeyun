@@ -96,8 +96,16 @@ class NoteCreate(BaseModel):
     weight: int = 0
     start_at: Optional[float] = None
     node_type: Optional[str] = "note"
+    note_types: List[Dict[str, Any]] = Field(default_factory=list)
+    note_categories: List[Dict[str, Any]] = Field(default_factory=list)
+    primary_category: Optional[str] = "general"
+    note_form: Optional[str] = "note"
+    note_kind: Optional[str] = "note"
+    note_scene: Optional[str] = "note"
     node_status: Optional[str] = "idea"
+    lifecycle_stage: Optional[str] = "idea"
     color: Optional[str] = None
+    weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: Optional[List[List[Any]]] = []
 
@@ -107,8 +115,16 @@ class NoteUpdate(BaseModel):
     weight: Optional[int] = None
     start_at: Optional[float] = None
     node_type: Optional[str] = None
+    note_types: Optional[List[Dict[str, Any]]] = None
+    note_categories: Optional[List[Dict[str, Any]]] = None
+    primary_category: Optional[str] = None
+    note_form: Optional[str] = None
+    note_kind: Optional[str] = None
+    note_scene: Optional[str] = None
     node_status: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
     color: Optional[str] = None
+    weight_mode: Optional[str] = None
     private_level: Optional[int] = None
     custom_fields: Optional[List[List[Any]]] = None
 
@@ -123,8 +139,16 @@ class NoteRead(BaseModel):
     created_at: float
     updated_at: float
     node_type: Optional[str] = None
+    note_types: List[Dict[str, Any]] = Field(default_factory=list)
+    note_categories: List[Dict[str, Any]] = Field(default_factory=list)
+    primary_category: Optional[str] = None
+    note_form: Optional[str] = None
+    note_kind: Optional[str] = None
+    note_scene: Optional[str] = None
     node_status: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
     color: Optional[str] = None
+    weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
     can_edit: bool = False
@@ -141,8 +165,16 @@ class NoteListRead(BaseModel):
     title: str
     weight: int = 0
     node_type: Optional[str] = None
+    note_types: List[Dict[str, Any]] = Field(default_factory=list)
+    note_categories: List[Dict[str, Any]] = Field(default_factory=list)
+    primary_category: Optional[str] = None
+    note_form: Optional[str] = None
+    note_kind: Optional[str] = None
+    note_scene: Optional[str] = None
     node_status: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
     color: Optional[str] = None
+    weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
     can_edit: bool = False
@@ -150,6 +182,37 @@ class NoteListRead(BaseModel):
     updated_at: float
     start_at: float
     history: List[dict] = []
+
+
+class NoteCategoryPaletteItem(BaseModel):
+    key: str
+    label: str
+    color: str
+    order: int = 0
+    builtin: bool = False
+    source: Literal["builtin", "custom", "legacy"] = "custom"
+    generated_from_color: Optional[str] = None
+    usage_count: float = 0
+
+
+class NoteCategoryPaletteResponse(BaseModel):
+    items: List[NoteCategoryPaletteItem] = Field(default_factory=list)
+
+
+class NoteCategoryPaletteUpdateRequest(BaseModel):
+    items: List[NoteCategoryPaletteItem] = Field(default_factory=list)
+
+
+class NoteCategoryMergeRequest(BaseModel):
+    source_key: str
+    target_key: str
+
+
+# Backward-compatible aliases for historical naming.
+NoteTypePaletteItem = NoteCategoryPaletteItem
+NoteTypePaletteResponse = NoteCategoryPaletteResponse
+NoteTypePaletteUpdateRequest = NoteCategoryPaletteUpdateRequest
+NoteTypeMergeRequest = NoteCategoryMergeRequest
 
 class NoteFilterRule(BaseModel):
     field: str
@@ -265,6 +328,12 @@ class NoteProgramResponse(BaseModel):
 
 class NoteBatchPatch(BaseModel):
     private_level: Optional[int] = None
+    weight: Optional[int] = None
+    weight_delta: Optional[int] = None
+    note_categories: Optional[List[Dict[str, Any]]] = None
+    primary_category: Optional[str] = None
+    note_form: Optional[str] = None
+    lifecycle_stage: Optional[str] = None
 
 
 class NoteBatchUpdateRequest(BaseModel):

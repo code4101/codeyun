@@ -19,6 +19,7 @@ export interface DeviceImageRecord {
   relative_path: string;
   folder_path: string;
   size: number;
+  created_at?: number | null;
   modified_at: number;
   width?: number | null;
   height?: number | null;
@@ -95,6 +96,19 @@ export interface DeviceDirectoryListing {
   current_path: string;
   absolute_path: string;
   items: DeviceDirectoryItem[];
+}
+
+export interface DeviceRevealResult {
+  ok: boolean;
+  supported: boolean;
+  launched: boolean;
+  method: string;
+  detail: string;
+  root: string | null;
+  path: string;
+  absolute_path: string;
+  target_path: string;
+  directory_path: string;
 }
 
 export const fetchDeviceRoots = async (entryId: string): Promise<DeviceFilesystemRoot[]> => {
@@ -229,4 +243,23 @@ export const deleteDeviceEntry = async (
 ) => {
   const response = await api.post(getDeviceEntryPath(entryId, '/files/delete'), payload);
   return response.data;
+};
+
+export const revealDeviceEntryInFolder = async (
+  entryId: string,
+  payload: DeviceFileSelector
+): Promise<DeviceRevealResult> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/reveal'), payload);
+  return {
+    ok: Boolean(response.data.ok),
+    supported: Boolean(response.data.supported),
+    launched: Boolean(response.data.launched),
+    method: response.data.method ?? '',
+    detail: response.data.detail ?? '',
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    target_path: response.data.target_path ?? '',
+    directory_path: response.data.directory_path ?? '',
+  };
 };

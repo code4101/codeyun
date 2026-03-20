@@ -10,6 +10,7 @@ export interface GalleryItem {
   folderPath: string;
   folderDisplayPath?: string;
   size: number;
+  createdAt?: number | null;
   modifiedAt: number;
   url: string | null;
   width: number | null;
@@ -37,6 +38,7 @@ export interface FolderOption {
 
 type LegacyGallerySortMode = 'path' | 'modified-desc' | 'size-desc';
 export type GallerySortField =
+  | 'random'
   | 'weight'
   | 'modified_at'
   | 'size'
@@ -109,6 +111,8 @@ export const cloneGallerySortProgram = (value?: Partial<GallerySortProgram> | nu
 
 export const getGallerySortFieldLabel = (field: GallerySortField) => {
   switch (field) {
+    case 'random':
+      return '随机';
     case 'weight':
       return '权重';
     case 'modified_at':
@@ -147,7 +151,8 @@ export const formatGallerySortSummary = (program?: Partial<GallerySortProgram> |
 };
 
 const isGallerySortField = (value: unknown): value is GallerySortField =>
-  value === 'weight'
+  value === 'random'
+  || value === 'weight'
   || value === 'modified_at'
   || value === 'size'
   || value === 'duration'
@@ -159,8 +164,19 @@ const isGallerySortField = (value: unknown): value is GallerySortField =>
   || value === 'height'
   || value === 'resolution_area';
 
+const getStablePseudoRandomValue = (value: string) => {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
+
 const getGallerySortValue = (image: GalleryImage, field: GallerySortField): string | number | null => {
   switch (field) {
+    case 'random':
+      return getStablePseudoRandomValue(`${image.id}|${image.relativePath}|${image.name}`);
     case 'weight':
       return isFiniteNumber(image.weight) ? image.weight : 0;
     case 'modified_at':

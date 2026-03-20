@@ -107,7 +107,10 @@
             />
             
             <!-- 删除按钮 -->
-            <el-button type="danger" link icon="Close" @click="delRow(index)"></el-button>
+            <el-button class="btn-delete" type="danger" link @click="delRow(index)">
+              <el-icon><Delete /></el-icon>
+              删除
+            </el-button>
           </div>
         </div>
 
@@ -162,6 +165,7 @@
 <script setup lang="ts">
 import { ref, onMounted, nextTick, computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
+import { Delete } from '@element-plus/icons-vue';
 import Sortable from 'sortablejs';
 
 // --- Constants ---
@@ -679,7 +683,7 @@ const resultGrid = computed(() => {
 
 .row-grid {
   display: grid;
-  grid-template-columns: 70px 340px 120px 50px;
+  grid-template-columns: 70px 340px 120px 88px;
   align-items: center;
   gap: 10px;
 }
@@ -722,6 +726,11 @@ const resultGrid = computed(() => {
 
 .col-score, .col-action {
   text-align: center;
+}
+
+.btn-delete {
+  justify-self: center;
+  font-weight: 600;
 }
 
 .drag-handle {

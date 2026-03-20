@@ -302,3 +302,66 @@ def test_batch_update_notes_sets_private_level(client, session, auth_user):
     assert first.private_level == 1
     assert second.private_level == 1
     assert untouched.private_level == 0
+
+
+def test_batch_update_notes_supports_taxonomy_and_weight_delta(client, session, auth_user):
+    first = make_note(auth_user, "note-batch-a", "A", start_at=100.0, updated_at=100.0, weight=0, node_type="task", node_status="idea")
+    second = make_note(auth_user, "note-batch-b", "B", start_at=100.0, updated_at=200.0, weight=4, node_type="bug", node_status="todo")
+
+    first.note_types = [{"key": "task", "weight": 100}]
+    first.note_categories = [{"key": "task", "weight": 100}]
+    first.primary_category = "task"
+    first.note_form = "note"
+    first.note_scene = "note"
+    first.lifecycle_stage = "idea"
+
+    second.note_types = [{"key": "bug", "weight": 100}]
+    second.note_categories = [{"key": "bug", "weight": 100}]
+    second.primary_category = "bug"
+    second.note_form = "note"
+    second.note_scene = "note"
+    second.lifecycle_stage = "todo"
+
+    session.add(first)
+    session.add(second)
+    session.commit()
+
+    response = client.post(
+        "/api/notes/batch-update",
+        json={
+            "ids": ["note-batch-a", "note-batch-b"],
+            "patch": {
+                "note_categories": [{"key": "general", "weight": 100}],
+                "primary_category": "general",
+                "note_form": "document",
+                "lifecycle_stage": "doing",
+                "private_level": 2,
+                "weight_delta": 3,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["updated_count"] == 2
+    assert [note["id"] for note in payload["notes"]] == ["note-batch-a", "note-batch-b"]
+    assert [note["weight"] for note in payload["notes"]] == [3, 7]
+    for note in payload["notes"]:
+        assert note["note_categories"] == [{"key": "general", "weight": 100}]
+        assert note["primary_category"] == "general"
+        assert note["note_form"] == "document"
+        assert note["lifecycle_stage"] == "doing"
+        assert note["private_level"] == 2
+
+    session.refresh(first)
+    session.refresh(second)
+    for note in (first, second):
+        assert note.weight in {3, 7}
+        assert note.private_level == 2
+        assert note.note_categories == [{"key": "general", "weight": 100}]
+        assert note.primary_category == "general"
+        assert note.note_form == "document"
+        assert note.lifecycle_stage == "doing"
+        assert note.note_types == [{"key": "doc", "weight": 100}]
+        assert note.node_type == "doc"
+        assert note.node_status == "doing"

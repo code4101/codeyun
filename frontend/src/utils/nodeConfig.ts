@@ -1,111 +1,87 @@
+import { ref } from 'vue';
+import { fetchNoteCategoryPalette, updateNoteCategoryPalette } from '@/api/noteTypes';
 
-import { type NoteNode } from '@/api/notes';
-
-/**
- * 节点类型定义
- */
 export interface NodeTypeItem {
   id: string;
-  label: string; // 中文
-  labelEn: string; // 英文
+  label: string;
   description: string;
-  baseColor: string; // 主色调 (边框、文字)
-  lightColor: string; // 浅色背景 (用于 doing/highlight)
+  baseColor: string;
+  lightColor: string;
+  order?: number;
+  builtin?: boolean;
+  source?: 'builtin' | 'custom' | 'legacy';
+  generatedFromColor?: string | null;
 }
 
-/**
- * 节点状态定义
- */
 export interface NodeStatusItem {
   id: string;
-  label: string; // 中文
-  labelEn: string; // 英文
+  label: string;
   description: string;
+}
+
+export interface NoteFormItem {
+  id: string;
+  label: string;
+  description: string;
+}
+
+export interface NoteTypeAssignment {
+  key: string;
+  weight: number;
+}
+
+export interface NoteTypePaletteItem {
+  key: string;
+  label: string;
+  color: string;
+  order: number;
+  builtin: boolean;
+  source: 'builtin' | 'custom' | 'legacy';
+  generatedFromColor?: string | null;
+  usageCount?: number;
 }
 
 export const NODE_TYPES: Record<string, NodeTypeItem> = {
-  project: {
-    id: 'project',
-    label: '项目',
-    labelEn: 'Project',
-    description: '长期性工作，非具体任务容器',
-    baseColor: '#7b1fa2',
-    lightColor: '#f3e5f5'
-  },
-  module: {
-    id: 'module',
-    label: '模块',
-    labelEn: 'Module',
-    description: '项目的组成部分',
-    baseColor: '#ba68c8',
-    lightColor: '#faf4fb'
-  },
-  task: {
-    id: 'task',
-    label: '任务',
-    labelEn: 'Task',
-    description: '具体的执行事项',
-    baseColor: '#409eff',
-    lightColor: '#ecf5ff'
-  },
-  bug: {
-    id: 'bug',
-    label: '缺陷',
-    labelEn: 'Bug',
-    description: '需要修复的问题',
-    baseColor: '#f56c6c',
-    lightColor: '#fef0f0'
-  },
-  note: {
-    id: 'note',
-    label: '笔记',
-    labelEn: 'Note',
-    description: '一般性记录 (默认)',
-    baseColor: '#606266', // Dark gray
-    lightColor: '#f4f4f5'
-  },
-  doc: {
-    id: 'doc',
-    label: '文档',
-    labelEn: 'Doc',
-    description: '知识库、文档',
-    baseColor: '#26c6da',
-    lightColor: '#e0f7fa'
-  },
-  memo: {
-    id: 'memo',
-    label: '备忘',
-    labelEn: 'Memo',
-    description: '临时备忘、便签',
-    baseColor: '#e6a23c',
-    lightColor: '#fdf6ec'
-  }
+  general: { id: 'general', label: '综合', description: '默认综合分类', baseColor: '#606266', lightColor: '#F4F4F5', order: 0, builtin: true, source: 'builtin' },
+  project: { id: 'project', label: '项目', description: '长期性工作，非具体任务容器', baseColor: '#7B1FA2', lightColor: '#F3E5F5', order: 10, builtin: true, source: 'builtin' },
+  module: { id: 'module', label: '模块', description: '项目的组成部分', baseColor: '#BA68C8', lightColor: '#FAF4FB', order: 20, builtin: true, source: 'builtin' },
+  task: { id: 'task', label: '任务', description: '具体的执行事项', baseColor: '#409EFF', lightColor: '#ECF5FF', order: 30, builtin: true, source: 'builtin' },
+  bug: { id: 'bug', label: '缺陷', description: '需要修复的问题', baseColor: '#F56C6C', lightColor: '#FEF0F0', order: 40, builtin: true, source: 'builtin' }
 };
 
 export const NODE_STATUSES: Record<string, NodeStatusItem> = {
-  idea: { id: 'idea', label: '想法', labelEn: 'Idea', description: '初始状态' },
-  todo: { id: 'todo', label: '待办', labelEn: 'Todo', description: '计划中' },
-  doing: { id: 'doing', label: '进行中', labelEn: 'Doing', description: '正在处理' },
-  predone: { id: 'predone', label: '预完成', labelEn: 'Pre-done', description: '待验收' },
-  done: { id: 'done', label: '完成', labelEn: 'Done', description: '已结束' },
-  delete: { id: 'delete', label: '废弃', labelEn: 'Delete', description: '已取消' }
+  idea: { id: 'idea', label: '想法', description: '初始状态' },
+  todo: { id: 'todo', label: '待办', description: '计划中' },
+  doing: { id: 'doing', label: '进行中', description: '正在处理' },
+  predone: { id: 'predone', label: '预完成', description: '待验收' },
+  done: { id: 'done', label: '完成', description: '已结束' },
+  delete: { id: 'delete', label: '废弃', description: '已取消' }
 };
 
-export const NODE_TYPE_ORDER = ['project', 'module', 'task', 'bug', 'note', 'doc', 'memo'];
+export const NOTE_FORMS: Record<string, NoteFormItem> = {
+  note: { id: 'note', label: '笔记', description: '普通笔记形态' },
+  document: { id: 'document', label: '文档', description: '偏正文排版的文档形态' },
+  memo: { id: 'memo', label: '备忘', description: '更短平快的便签形态' },
+  music: { id: 'music', label: '音乐', description: '音乐作品、专辑或音频素材' },
+  video: { id: 'video', label: '影视', description: '电影、剧集、视频或影像资料' },
+  book: { id: 'book', label: '书籍', description: '书籍、电子书或长篇阅读材料' }
+};
+
+export const NODE_TYPE_ORDER = ['general', 'project', 'module', 'task', 'bug'];
 export const NODE_STATUS_ORDER = ['idea', 'todo', 'doing', 'predone', 'done', 'delete'];
-export const NOTE_COLOR_PRESETS = [
-  '#409EFF',
-  '#67C23A',
-  '#E6A23C',
-  '#F56C6C',
-  '#1ABC9C',
-  '#2F86EB',
-  '#8E44AD',
-  '#34495E',
-  '#909399',
-];
+export const NOTE_FORM_ORDER = ['note', 'document', 'memo', 'music', 'video', 'book'];
+
+export const NOTE_TYPE_WEIGHT_DEFAULT = 100;
+export const NOTE_TYPE_WEIGHT_MIN = 0;
+export const NOTE_TYPE_WEIGHT_MAX = 100;
 
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+const LEGACY_COLOR_TYPE_PREFIX = 'legacy_color_';
+const CUSTOM_NOTE_TYPE_PREFIX = 'custom_';
+
+const paletteItems = ref<Record<string, NoteTypePaletteItem>>({});
+const paletteLoaded = ref(false);
+let paletteLoadPromise: Promise<NoteTypePaletteItem[]> | null = null;
 
 export const normalizeNodeColor = (value: string | null | undefined) => {
   if (!value) return null;
@@ -129,37 +105,342 @@ const mixWithWhite = (hex: string, ratio: number) => {
   return `#${[mix(r), mix(g), mix(b)].map(channel => channel.toString(16).padStart(2, '0')).join('')}`.toUpperCase();
 };
 
-export const getNodeTheme = (
-  typeStr: string | null | undefined,
-  customColor?: string | null
-) => {
-  const type = NODE_TYPES[typeStr || 'note'] || NODE_TYPES.note;
-  const normalizedCustomColor = normalizeNodeColor(customColor);
-  if (!normalizedCustomColor) return type;
+export const buildLegacyColorTypeKey = (color: string | null | undefined) => {
+  const normalized = normalizeNodeColor(color);
+  if (!normalized) return null;
+  return `${LEGACY_COLOR_TYPE_PREFIX}${normalized.slice(1).toLowerCase()}`;
+};
 
+export const isLegacyColorTypeKey = (key: string | null | undefined) => typeof key === 'string' && key.startsWith(LEGACY_COLOR_TYPE_PREFIX);
+
+export const getLegacyColorFromTypeKey = (key: string | null | undefined) => {
+  if (!isLegacyColorTypeKey(key)) return null;
+  const suffix = String(key).slice(LEGACY_COLOR_TYPE_PREFIX.length).trim();
+  if (suffix.length !== 6 || /[^0-9a-f]/i.test(suffix)) return null;
+  return `#${suffix.toUpperCase()}`;
+};
+
+const getBuiltinType = (key: string | null | undefined) => {
+  let normalizedKey = typeof key === 'string' && key.trim() ? key.trim() : 'general';
+  if (normalizedKey === 'note' || normalizedKey === 'doc' || normalizedKey === 'memo') normalizedKey = 'general';
+  return NODE_TYPES[normalizedKey] ?? null;
+};
+
+const toPaletteItem = (
+  value: Partial<NoteTypePaletteItem> & { key: string },
+  fallbackOrder: number = 0
+): NoteTypePaletteItem | null => {
+  let key = String(value.key || '').trim();
+  if (!key) return null;
+  if (key === 'note') key = 'general';
+  if (key === 'doc' || key === 'memo') return null;
+  const builtin = Boolean(value.builtin) || Boolean(getBuiltinType(key));
+  const color = normalizeNodeColor(value.color) ?? getLegacyColorFromTypeKey(key) ?? getBuiltinType(key)?.baseColor ?? NODE_TYPES.general.baseColor;
+  const label = String(value.label || '').trim() || (isLegacyColorTypeKey(key) ? `旧色${(getLegacyColorFromTypeKey(key) || '#606266').slice(1)}` : getBuiltinType(key)?.label || key);
+  const source = builtin ? 'builtin' : isLegacyColorTypeKey(key) ? 'legacy' : (value.source ?? 'custom');
+  const generatedFromColor = normalizeNodeColor(value.generatedFromColor) ?? (source === 'legacy' ? getLegacyColorFromTypeKey(key) : null);
+  const numericOrder = Number.isFinite(Number(value.order)) ? Math.trunc(Number(value.order)) : fallbackOrder;
+  const usageCount = Number.isFinite(Number((value as any).usageCount)) ? Math.max(0, Number((value as any).usageCount)) : 0;
   return {
-    ...type,
-    baseColor: normalizedCustomColor,
-    lightColor: mixWithWhite(normalizedCustomColor, 0.88)
+    key,
+    label,
+    color,
+    order: numericOrder,
+    builtin,
+    source,
+    generatedFromColor,
+    usageCount
   };
 };
 
-/**
- * 计算最终视觉样式
- */
+export const normalizeNoteTypePaletteItems = (value: unknown) => {
+  const list = Array.isArray(value) ? value : [];
+  const normalized: NoteTypePaletteItem[] = [];
+  const seen = new Set<string>();
+  list.forEach((item, index) => {
+    if (!item || typeof item !== 'object') return;
+    const normalizedItem = toPaletteItem(item as Partial<NoteTypePaletteItem> & { key: string }, index * 10);
+    if (!normalizedItem || seen.has(normalizedItem.key)) return;
+    seen.add(normalizedItem.key);
+    normalized.push(normalizedItem);
+  });
+  return normalized;
+};
+
+const applyPaletteItems = (items: NoteTypePaletteItem[]) => {
+  paletteItems.value = items.reduce<Record<string, NoteTypePaletteItem>>((result, item) => {
+    result[item.key] = item;
+    return result;
+  }, {});
+  paletteLoaded.value = true;
+};
+
+export const resetNoteTypePaletteState = () => {
+  paletteItems.value = {};
+  paletteLoaded.value = false;
+  paletteLoadPromise = null;
+};
+
+export const ensureNoteTypePaletteLoaded = async (force: boolean = false) => {
+  if (!force && paletteLoaded.value) return Object.values(paletteItems.value);
+  if (!force && paletteLoadPromise) return paletteLoadPromise;
+  paletteLoadPromise = fetchNoteCategoryPalette()
+    .then(response => {
+      const normalized = normalizeNoteTypePaletteItems(response.items.map(item => ({
+        key: item.key,
+        label: item.label,
+        color: item.color,
+        order: item.order,
+        builtin: item.builtin,
+        source: item.source,
+        generatedFromColor: item.generated_from_color ?? null,
+        usageCount: item.usage_count ?? 0
+      })));
+      applyPaletteItems(normalized);
+      return normalized;
+    })
+    .finally(() => {
+      paletteLoadPromise = null;
+    });
+  return paletteLoadPromise;
+};
+
+export const saveNoteTypePalette = async (items: NoteTypePaletteItem[]) => {
+  const payload = normalizeNoteTypePaletteItems(items);
+  const response = await updateNoteCategoryPalette(payload.map(item => ({
+    key: item.key,
+    label: item.label,
+    color: item.color,
+    order: item.order,
+    builtin: item.builtin,
+      source: item.source,
+      generated_from_color: item.generatedFromColor ?? null,
+      usage_count: item.usageCount ?? 0
+    })));
+  const normalized = normalizeNoteTypePaletteItems(response.items.map(item => ({
+    key: item.key,
+    label: item.label,
+    color: item.color,
+    order: item.order,
+    builtin: item.builtin,
+    source: item.source,
+    generatedFromColor: item.generated_from_color ?? null,
+    usageCount: item.usage_count ?? 0
+  })));
+  applyPaletteItems(normalized);
+  return normalized;
+};
+
+export const normalizeNoteTypeWeight = (value: unknown, fallback: number = NOTE_TYPE_WEIGHT_DEFAULT) => {
+  const numeric = typeof value === 'number' ? value : Number(value);
+  const normalized = Number.isFinite(numeric) ? Math.round(numeric) : fallback;
+  return Math.min(NOTE_TYPE_WEIGHT_MAX, Math.max(NOTE_TYPE_WEIGHT_MIN, normalized));
+};
+
+export const normalizeNoteTypeAssignments = (
+  value: unknown,
+  fallbackType: string | null | undefined = 'general'
+): NoteTypeAssignment[] => {
+  const list = Array.isArray(value) ? value : [];
+  const normalized: NoteTypeAssignment[] = [];
+  const indexByKey = new Map<string, number>();
+
+  for (const item of list) {
+    let key = '';
+    let weight = NOTE_TYPE_WEIGHT_DEFAULT;
+
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      key = typeof (item as any).key === 'string' ? (item as any).key.trim() : '';
+      weight = normalizeNoteTypeWeight((item as any).weight);
+    } else if (Array.isArray(item) && item.length >= 2) {
+      key = typeof item[0] === 'string' ? item[0].trim() : '';
+      weight = normalizeNoteTypeWeight(item[1]);
+    }
+
+    if (!key) continue;
+    if (key === 'note' || key === 'doc' || key === 'memo') key = 'general';
+
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex !== undefined) {
+      normalized[existingIndex] = { key, weight };
+      continue;
+    }
+
+    indexByKey.set(key, normalized.length);
+    normalized.push({ key, weight });
+  }
+
+  if (normalized.length > 0) return normalized;
+
+  const fallback = typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
+  return [{ key: fallback, weight: NOTE_TYPE_WEIGHT_DEFAULT }];
+};
+
+export const createEffectiveNoteTypes = (
+  noteTypes: unknown,
+  fallbackType: string | null | undefined = 'general',
+  legacyColor?: string | null
+) => {
+  const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
+  const normalizedColor = normalizeNodeColor(legacyColor);
+  const fallback = typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
+  if (!normalizedColor) return normalized;
+  if (Array.isArray(noteTypes) && noteTypes.length > 0) {
+    if (!(normalized.length === 1 && normalized[0].key === fallback && normalized[0].weight === NOTE_TYPE_WEIGHT_DEFAULT)) {
+      return normalized;
+    }
+  }
+  const legacyKey = buildLegacyColorTypeKey(normalizedColor);
+  return legacyKey ? [{ key: legacyKey, weight: NOTE_TYPE_WEIGHT_DEFAULT }] : normalized;
+};
+
+export const derivePrimaryNodeType = (
+  noteTypes: unknown,
+  fallbackType: string | null | undefined = 'general'
+) => {
+  const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
+  if (!normalized.length) return typeof fallbackType === 'string' && fallbackType.trim() ? fallbackType.trim() : 'general';
+
+  let best = normalized[0];
+  for (const item of normalized.slice(1)) {
+    if (item.weight > best.weight) best = item;
+  }
+  return best.key;
+};
+
+const createDefaultTypeItem = (key: string): NodeTypeItem => {
+  const builtin = getBuiltinType(key);
+  if (builtin) return builtin;
+
+  const legacyColor = getLegacyColorFromTypeKey(key);
+  if (legacyColor) {
+    return {
+      id: key,
+      label: `旧色${legacyColor.slice(1)}`,
+      description: '从旧颜色字段兼容生成的类型',
+      baseColor: legacyColor,
+      lightColor: mixWithWhite(legacyColor, 0.88),
+      order: 2000,
+      builtin: false,
+      source: 'legacy',
+      generatedFromColor: legacyColor
+    };
+  }
+
+  return {
+    id: key,
+    label: key,
+    description: '自定义分类',
+    baseColor: NODE_TYPES.general.baseColor,
+    lightColor: NODE_TYPES.general.lightColor,
+    order: 1000,
+    builtin: false,
+    source: 'custom',
+    generatedFromColor: null
+  };
+};
+
+export const getDefaultNodeTypeConfig = (typeKey: string | null | undefined) => {
+  const normalizedKey = typeof typeKey === 'string' && typeKey.trim() ? typeKey.trim() : 'general';
+  return createDefaultTypeItem(normalizedKey);
+};
+
+const resolvePaletteType = (typeKey: string | null | undefined): NodeTypeItem => {
+  const normalizedKey = typeof typeKey === 'string' && typeKey.trim() ? typeKey.trim() : 'general';
+  const base = getDefaultNodeTypeConfig(normalizedKey);
+  const override = paletteItems.value[normalizedKey];
+  if (!override) return base;
+  const baseColor = normalizeNodeColor(override.color) ?? base.baseColor;
+    return {
+      ...base,
+      label: override.label || base.label,
+      baseColor,
+      lightColor: mixWithWhite(baseColor, 0.88),
+    order: override.order,
+    builtin: override.builtin,
+    source: override.source,
+    generatedFromColor: override.generatedFromColor ?? base.generatedFromColor
+  };
+};
+
+const hexToRgb = (hex: string) => {
+  const normalized = normalizeNodeColor(hex) ?? '#FFFFFF';
+  return {
+    r: Number.parseInt(normalized.slice(1, 3), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    b: Number.parseInt(normalized.slice(5, 7), 16)
+  };
+};
+
+const rgbToHex = (rgb: { r: number; g: number; b: number }) => (
+  `#${[rgb.r, rgb.g, rgb.b].map(channel => Math.round(channel).toString(16).padStart(2, '0')).join('')}`.toUpperCase()
+);
+
+export const resolveNoteTypesColor = (
+  noteTypes: unknown,
+  fallbackType: string | null | undefined = 'general'
+) => {
+  const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
+  if (!normalized.length) return null;
+
+  let totalWeight = 0;
+  let sumR = 0;
+  let sumG = 0;
+  let sumB = 0;
+
+  for (const item of normalized) {
+    const color = resolvePaletteType(item.key).baseColor;
+    const rgb = hexToRgb(color);
+    totalWeight += item.weight;
+    sumR += rgb.r * item.weight;
+    sumG += rgb.g * item.weight;
+    sumB += rgb.b * item.weight;
+  }
+
+  const whiteWeight = Math.max(100 - totalWeight, 0);
+  const denominator = totalWeight + whiteWeight;
+  if (denominator <= 0) return null;
+
+  return rgbToHex({
+    r: (sumR + 255 * whiteWeight) / denominator,
+    g: (sumG + 255 * whiteWeight) / denominator,
+    b: (sumB + 255 * whiteWeight) / denominator
+  });
+};
+
+export const getNodeTheme = (
+  typeStr: string | null | undefined,
+  customColor?: string | null,
+  noteTypes?: unknown
+) => {
+  const hasExplicitNoteTypes = Array.isArray(noteTypes) && noteTypes.length > 0;
+  const primaryType = hasExplicitNoteTypes ? derivePrimaryNodeType(noteTypes, typeStr || 'general') : (typeStr || 'general');
+  const type = resolvePaletteType(primaryType);
+  const resolvedTypeColor = hasExplicitNoteTypes ? resolveNoteTypesColor(noteTypes, primaryType) : null;
+  const normalizedCustomColor = normalizeNodeColor(customColor);
+  const baseColor = resolvedTypeColor ?? normalizedCustomColor;
+  if (!baseColor) return type;
+
+  return {
+    ...type,
+    baseColor,
+    lightColor: mixWithWhite(baseColor, 0.88)
+  };
+};
+
 export const getNodeStyle = (
   typeStr: string | null | undefined,
   statusStr: string | null | undefined,
-  customColor?: string | null
+  customColor?: string | null,
+  noteTypes?: unknown
 ) => {
-  const type = getNodeTheme(typeStr, customColor);
+  const type = getNodeTheme(typeStr, customColor, noteTypes);
   const status = NODE_STATUSES[statusStr || 'idea'] || NODE_STATUSES.idea;
 
-  // Default Style (Clean slate)
-  let style = {
-    borderColor: '#000000', // Default black border for status
-    backgroundColor: '#ffffff', // Default no background
-    color: type.baseColor, // Font color bound to Type
+  const style = {
+    borderColor: '#000000',
+    backgroundColor: '#ffffff',
+    color: type.baseColor,
     borderWidth: '1px',
     borderStyle: 'solid',
     fontWeight: 'normal',
@@ -169,63 +450,91 @@ export const getNodeStyle = (
 
   switch (status.id) {
     case 'idea':
-      // No border? Or maybe very light gray?
-      // User said "cleanest default style", maybe no border or very subtle.
-      // "idea可以无边框？" -> Let's try no border or very light gray border.
-      // But nodes usually need some boundary. Let's use a very light gray border.
-      style.borderStyle = 'none'; // Or 'solid' with #f0f0f0
-      // Actually 'none' might make it hard to see white on white. 
-      // Let's use a shadow or just a very subtle border.
-      // User said "idea可以无边框？", let's try border: none.
-      // Note: If background is white and canvas is white/gray, it might blend in.
-      // Let's add a subtle shadow in the component if needed, or just 1px solid #eee.
-      // Let's go with 1px solid #ebeef5 (very light gray) to define the area.
       style.borderStyle = 'solid';
-      style.borderColor = '#ebeef5'; 
+      style.borderColor = '#ebeef5';
       break;
     case 'todo':
-      // Dashed black border
       style.borderStyle = 'dashed';
-      style.borderColor = '#606266'; // Dark gray/Black-ish
+      style.borderColor = '#606266';
       break;
     case 'doing':
-      // Solid black border
       style.borderStyle = 'solid';
-      style.borderColor = '#303133'; // Black
+      style.borderColor = '#303133';
       break;
     case 'predone':
-      // Dashed Type-Color border
       style.borderStyle = 'dashed';
       style.borderColor = type.baseColor;
       style.backgroundColor = type.lightColor;
       break;
     case 'done':
-      // Solid Type-Color border
       style.borderStyle = 'solid';
       style.borderColor = type.baseColor;
       style.backgroundColor = type.lightColor;
       break;
     case 'delete':
-      // No border + Strike-through
-      // Idea style (solid very light gray) + Strike-through
       style.borderStyle = 'solid';
       style.borderColor = '#ebeef5';
       style.textDecoration = 'line-through';
-      // Do NOT change color, keep type color
-      // style.color = '#c0c4cc'; // Removed gray text override
       style.opacity = '0.6';
       break;
   }
-  
-  // Force background to empty (white) as requested
-  // style.backgroundColor = '#ffffff'; // Removed global override to allow done state background
 
   return style;
 };
 
-// Compatibility Helpers
-export const getOrderedNodeTypes = () => NODE_TYPE_ORDER.map(k => NODE_TYPES[k]);
-export const getOrderedNodeStatuses = () => NODE_STATUS_ORDER.map(k => NODE_STATUSES[k]);
+export const getOrderedNodeTypes = () => {
+  const keys = paletteLoaded.value
+    ? Object.keys(paletteItems.value)
+    : NODE_TYPE_ORDER;
+  const merged = new Map<string, NodeTypeItem>();
+  keys.forEach(key => merged.set(key, resolvePaletteType(key)));
+  return Array.from(merged.values()).sort((left, right) => {
+    const leftOrder = Number.isFinite(left.order) ? Number(left.order) : 1000;
+    const rightOrder = Number.isFinite(right.order) ? Number(right.order) : 1000;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.label.localeCompare(right.label, 'zh-Hans-CN');
+  });
+};
 
-export const getNodeTypeConfig = (type: string) => NODE_TYPES[type] || NODE_TYPES.note;
+export const getEditableNoteTypePaletteItems = () => {
+  if (paletteLoaded.value) {
+    return Object.values(paletteItems.value)
+      .map(item => ({ ...item }))
+      .sort((left, right) => {
+        if (left.order !== right.order) return left.order - right.order;
+        return left.label.localeCompare(right.label, 'zh-Hans-CN');
+      });
+  }
+  return getOrderedNodeTypes().map(type => ({
+    key: type.id,
+    label: type.label,
+    color: type.baseColor,
+    order: Number.isFinite(type.order) ? Number(type.order) : 1000,
+    builtin: Boolean(type.builtin),
+    source: type.source ?? (type.builtin ? 'builtin' : 'custom'),
+    generatedFromColor: type.generatedFromColor ?? null,
+    usageCount: 0
+  }));
+};
+
+export const createCustomNoteType = (label: string = '新类型') => {
+  const key = `${CUSTOM_NOTE_TYPE_PREFIX}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  const customTypes = getEditableNoteTypePaletteItems().filter(item => !item.builtin);
+  const highestOrder = customTypes.reduce((max, item) => Math.max(max, item.order), 900);
+  return {
+    key,
+    label,
+    color: '#409EFF',
+    order: highestOrder + 10,
+    builtin: false,
+    source: 'custom' as const,
+    generatedFromColor: null,
+    usageCount: 0
+  };
+};
+
+export const getOrderedNodeStatuses = () => NODE_STATUS_ORDER.map(k => NODE_STATUSES[k]);
+export const getOrderedNoteForms = () => NOTE_FORM_ORDER.map(k => NOTE_FORMS[k]).filter(Boolean);
+export const getNodeTypeConfig = (type: string) => resolvePaletteType(type);
 export const getNodeStatusConfig = (status: string) => NODE_STATUSES[status] || NODE_STATUSES.idea;
+export const getNoteFormConfig = (noteForm: string | null | undefined) => NOTE_FORMS[noteForm || 'note'] || NOTE_FORMS.note;

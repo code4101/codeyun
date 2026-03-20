@@ -99,6 +99,7 @@ class RootScopedRequest(BaseModel):
 
 MediaSortMode = Literal["path", "modified-desc", "size-desc", "weight-desc"]
 GallerySortField = Literal[
+    "random",
     "weight",
     "modified_at",
     "size",
@@ -145,6 +146,19 @@ class DeleteEntryRequest(BaseModel):
     path: str = ""
     absolute_path: str = ""
     recursive: bool = False
+
+
+class RevealEntryResponse(BaseModel):
+    ok: bool = False
+    supported: bool = False
+    launched: bool = False
+    method: str = ""
+    detail: str = ""
+    root: Optional[str] = None
+    path: str = ""
+    absolute_path: str = ""
+    target_path: str = ""
+    directory_path: str = ""
 
 
 class DeviceFileWeightUpdateRequest(BaseModel):
@@ -548,6 +562,21 @@ def _normalize_positive_dimension(value: object) -> int | None:
     return numeric if numeric > 0 else None
 
 
+def _resolve_created_at_ms(stat_result: os.stat_result) -> int | None:
+    raw_value = getattr(stat_result, "st_birthtime", None)
+    if raw_value in {None, 0}:
+        raw_value = getattr(stat_result, "st_ctime", None)
+
+    try:
+        created_at_seconds = float(raw_value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(created_at_seconds) or created_at_seconds <= 0:
+        return None
+    return int(created_at_seconds * 1000)
+
+
 def _probe_image_dimensions(path: Path) -> tuple[int | None, int | None]:
     try:
         with Image.open(path) as source_image:
@@ -732,7 +761,33 @@ def _normalize_media_sort_program(
     return [*base_program.rules, *GALLERY_SORT_FALLBACK_RULES]
 
 
+def _compute_media_random_order(seed: str, item: dict) -> int:
+    basis = str(
+        item.get("_absolute_identity_path")
+        or item.get("absolute_path")
+        or item.get("path")
+        or item.get("id")
+        or ""
+    )
+    digest = hashlib.blake2b(f"{seed}:{basis}".encode("utf-8", "ignore"), digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=False)
+
+
+def _populate_media_random_sort_values(entries: list[dict], rules: list[GallerySortRule]) -> None:
+    if not any(rule.field == "random" for rule in rules):
+        return
+
+    seed = uuid4().hex
+    for entry in entries:
+        entry["_random_order"] = _compute_media_random_order(seed, entry)
+
+
 def _get_media_sort_value(item: dict, field: GallerySortField) -> str | int | None:
+    if field == "random":
+        random_order = item.get("_random_order")
+        if isinstance(random_order, int):
+            return random_order
+        return _compute_media_random_order("stable-random", item)
     if field == "weight":
         return int(item.get("weight") or 0)
     if field == "modified_at":
@@ -816,7 +871,10 @@ def _sort_supported_media_entries(
     sort_program: GallerySortProgram | None,
 ) -> list[GallerySortRule]:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
+    _populate_media_random_sort_values(entries, normalized_rules)
     entries.sort(key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, normalized_rules)))
+    for entry in entries:
+        entry.pop("_random_order", None)
     return normalized_rules
 
 
@@ -1185,6 +1243,7 @@ def _list_supported_entries(
                 "relative_path": display_relative,
                 "folder_path": "" if folder_path == "." else folder_path,
                 "size": stat_result.st_size,
+                "created_at": _resolve_created_at_ms(stat_result),
                 "modified_at": int(stat_result.st_mtime * 1000),
                 "kind": kind,
                 "mime_type": mime_type,
@@ -1324,6 +1383,79 @@ def delete_scoped_entry(
         "path": resolved["path"],
         "absolute_path": resolved["absolute_path"],
     }
+
+
+def _has_desktop_session() -> bool:
+    if sys.platform in {"win32", "darwin"}:
+        return True
+    return bool(
+        os.environ.get("DISPLAY")
+        or os.environ.get("WAYLAND_DISPLAY")
+        or os.environ.get("DESKTOP_SESSION")
+        or os.environ.get("XDG_CURRENT_DESKTOP")
+    )
+
+
+def _launch_path_in_file_manager(target_path: Path) -> tuple[bool, bool, str, str]:
+    normalized_target_path = target_path.resolve(strict=False)
+
+    try:
+        if sys.platform == "win32":
+            command = (
+                ["explorer", os.fspath(normalized_target_path)]
+                if normalized_target_path.is_dir()
+                else ["explorer", "/select,", os.fspath(normalized_target_path)]
+            )
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, True, "explorer", ""
+
+        if sys.platform == "darwin":
+            command = (
+                ["open", os.fspath(normalized_target_path)]
+                if normalized_target_path.is_dir()
+                else ["open", "-R", os.fspath(normalized_target_path)]
+            )
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, True, "open", ""
+
+        if not _has_desktop_session():
+            return False, False, "", "当前设备没有可用的桌面文件管理器"
+
+        opener = shutil.which("xdg-open")
+        if not opener:
+            return False, False, "", "当前设备没有可用的桌面文件管理器"
+
+        open_path = normalized_target_path if normalized_target_path.is_dir() else normalized_target_path.parent
+        subprocess.Popen([opener, os.fspath(open_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True, True, "xdg-open", ""
+    except OSError as exc:
+        return False, False, "", str(exc)
+
+
+def reveal_scoped_entry(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+) -> dict:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    directory_path = target_path if target_path.is_dir() else target_path.parent
+    launched, supported, method, detail = _launch_path_in_file_manager(target_path)
+    return RevealEntryResponse(
+        ok=launched,
+        supported=supported,
+        launched=launched,
+        method=method,
+        detail=detail,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        target_path=os.fspath(target_path.resolve(strict=False)),
+        directory_path=os.fspath(directory_path.resolve(strict=False)),
+    ).model_dump()
 
 
 def build_file_response(root_key: Optional[str] = None, rel_path: str = "", *, absolute_path: str = "") -> FileResponse:
@@ -1814,6 +1946,15 @@ def delete_entry(req: DeleteEntryRequest):
         req.path,
         absolute_path=req.absolute_path,
         recursive=req.recursive,
+    )
+
+
+@router.post("/reveal")
+def reveal_entry(req: RootScopedRequest):
+    return reveal_scoped_entry(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
     )
 
 

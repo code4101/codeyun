@@ -42,6 +42,7 @@
           :set-video-cover="setVideoCover"
           :update-image-weight="updateImageWeight"
           :delete-image="deleteImage"
+          :reveal-image-in-folder="revealDeviceMediaInFolder"
           delete-button-text="删除文件"
           set-cover-button-text="设为封面"
           @update:show-sidebar="showSidebar = $event"
@@ -305,12 +306,28 @@
               <span class="meta-value">{{ formatFileSize(previewImage.size) }}</span>
             </div>
             <div class="meta-row">
+              <span class="meta-label">创建时间</span>
+              <span class="meta-value">
+                {{ typeof previewImage.createdAt === 'number' ? formatDate(previewImage.createdAt) : '--' }}
+              </span>
+            </div>
+            <div class="meta-row">
               <span class="meta-label">修改时间</span>
               <span class="meta-value">{{ formatDate(previewImage.modifiedAt) }}</span>
             </div>
             <div class="meta-row">
               <span class="meta-label">路径</span>
               <span class="meta-value meta-value-break">{{ previewImage.absolutePath }}</span>
+            </div>
+            <div class="meta-actions">
+              <el-button
+                plain
+                class="preview-reveal-button"
+                :loading="revealingPath === previewImage.absolutePath"
+                @click="revealPreviewInFolder"
+              >
+                打开所在目录
+              </el-button>
             </div>
           </div>
         </div>
@@ -333,6 +350,7 @@ import {
   fetchDeviceMedia,
   fetchDeviceMediaBlob,
   fetchDeviceThumbnailBlob,
+  revealDeviceEntryInFolder,
   setDeviceFileCover,
   setDeviceFileWeight,
   type DeviceDirectoryItem,
@@ -361,6 +379,7 @@ import {
 interface DeviceBrowserImage extends GalleryImage {
   filePath: string;
   absolutePath: string;
+  createdAt?: number | null;
   isFetchingUrl?: boolean;
 }
 
@@ -404,6 +423,7 @@ const isLoadingDevices = ref(false);
 const isLoadingListing = ref(false);
 const isLoadingMediaPage = ref(false);
 const downloadingPath = ref('');
+const revealingPath = ref('');
 const backendSortProgram = ref<GallerySortProgram>(createDefaultGallerySortProgram());
 const previewVisible = ref(false);
 const previewImageId = ref<string | null>(null);
@@ -731,6 +751,7 @@ const mapDeviceMediaRecord = (record: DeviceImageRecord): DeviceBrowserImage => 
     folderPath: record.folder_path || '',
     folderDisplayPath: getParentPath(absolutePath) || normalizedPathInput.value,
     size: record.size,
+    createdAt: typeof record.created_at === 'number' ? record.created_at : null,
     modifiedAt: record.modified_at,
     url: null,
     urlVariant: null,
@@ -1126,6 +1147,42 @@ const downloadPreviewFile = async () => {
     return;
   }
   await downloadFile(previewImage.value);
+};
+
+const revealDeviceMediaInFolder = async (image: GalleryImage) => {
+  if (!selectedEntryId.value) {
+    return false;
+  }
+
+  const targetImage = image as DeviceBrowserImage;
+  const targetPath = targetImage.absolutePath;
+  if (!targetPath) {
+    return false;
+  }
+
+  revealingPath.value = targetPath;
+  try {
+    const result = await revealDeviceEntryInFolder(selectedEntryId.value, buildImagePayload(targetImage));
+    if (!result.launched) {
+      ElMessage.info(result.detail || '当前设备不支持直接打开所在目录');
+    }
+    return result.launched;
+  } catch (error) {
+    console.error('Failed to reveal device media file in folder', error);
+    ElMessage.error('打开所在目录失败');
+    return false;
+  } finally {
+    if (revealingPath.value === targetPath) {
+      revealingPath.value = '';
+    }
+  }
+};
+
+const revealPreviewInFolder = async () => {
+  if (!previewImage.value) {
+    return;
+  }
+  await revealDeviceMediaInFolder(previewImage.value);
 };
 
 const setVideoCover = async (imageId: string, cover: Blob) => {
@@ -2290,6 +2347,16 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.meta-actions {
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.preview-reveal-button {
+  width: 100%;
 }
 
 .meta-label {

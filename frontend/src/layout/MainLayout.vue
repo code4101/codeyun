@@ -82,6 +82,7 @@ const handleLogin = () => {
             </template>
             <el-menu-item index="/tools/password-generator">随机密码</el-menu-item>
             <el-menu-item index="/tools/image-browser">文件浏览</el-menu-item>
+            <el-menu-item index="/tools/color-tools">颜色工具</el-menu-item>
           </el-sub-menu>
           
           <el-sub-menu index="game-tools">

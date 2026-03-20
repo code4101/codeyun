@@ -95,6 +95,7 @@
           :show-private-toggle="false"
           :lock-title="true"
           :lock-node-type="true"
+          :lock-note-form="true"
         >
         </UniversalNoteEditor>
       </div>
@@ -113,6 +114,14 @@ import { getFanxiuChars, updateFanxiuChar } from '@/api/fanxiu';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
+import {
+  deriveLegacySemanticsFromTaxonomy,
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_MEMO,
+  NOTE_KIND_FANXIU_CHAR,
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  NOTE_WEIGHT_MODE_LINEAR
+} from '@/utils/noteSemantics';
 
 const userStore = useUserStore();
 const noteStore = useNoteStore();
@@ -151,6 +160,35 @@ const group1Data = ref<CharItem[]>(group1Names.map(name => ({ name, count: 0 }))
 const group2Data = ref<CharItem[]>(group2Names.map(name => ({ name, count: 0 })));
 
 const LOCAL_STORAGE_KEY = 'fanxiu_xianzhou_counts';
+const FANXIU_NOTE_CATEGORIES = [{ key: NOTE_CATEGORY_DEFAULT, weight: 100 }];
+
+const buildFanxiuTaxonomyPayload = (source: Partial<NoteNode> = {}) => {
+    const taxonomy = deriveLegacySemanticsFromTaxonomy(
+        FANXIU_NOTE_CATEGORIES,
+        NOTE_CATEGORY_DEFAULT,
+        NOTE_FORM_MEMO,
+        NOTE_KIND_FANXIU_CHAR,
+        source.lifecycle_stage ?? source.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+    );
+
+    return {
+        note_categories: taxonomy.note_categories,
+        primary_category: taxonomy.primary_category,
+        note_form: taxonomy.note_form,
+        note_scene: taxonomy.note_scene,
+        lifecycle_stage: taxonomy.lifecycle_stage,
+        note_types: taxonomy.note_types,
+        node_type: taxonomy.node_type,
+        note_kind: taxonomy.note_kind,
+        node_status: taxonomy.node_status
+    };
+};
+
+const buildFanxiuNotePayload = (source: Partial<NoteNode> = {}) => ({
+    ...source,
+    ...buildFanxiuTaxonomyPayload(source),
+    weight_mode: NOTE_WEIGHT_MODE_LINEAR
+});
 
 const loadLocalCounts = () => {
     try {
@@ -252,13 +290,12 @@ const handleRowClick = async (row: CharItem) => {
         currentEditingNote.value = JSON.parse(JSON.stringify(row.note));
     } else {
         try {
-            const newNote = await updateFanxiuChar(row.name, {
+            const newNote = await updateFanxiuChar(row.name, buildFanxiuNotePayload({
                 title: row.name,
                 content: '',
                 weight: row.count,
-                node_type: 'memo',
-                start_at: Date.now() / 1000
-            });
+                start_at: Date.now()
+            }));
             row.note = newNote;
             currentEditingNote.value = JSON.parse(JSON.stringify(newNote));
         } catch (e) {
@@ -291,32 +328,29 @@ const handleSave = async (note: NoteNode, patch: Partial<NoteNode> = {}) => {
     };
 
     if (note.id) {
-        const updatedNote = await noteStore.updateNote(note.id, {
+        const updatedNote = await noteStore.updateNote(note.id, buildFanxiuNotePayload({
             ...(Object.keys(patch).length ? patch : note),
             title: charName,
-            node_type: 'memo'
-        });
+        }));
         if (!updatedNote) throw new Error('保存失败');
         syncRowNote(updatedNote);
         return updatedNote;
     }
 
-    const createdNote = await updateFanxiuChar(charName, {
+    const createdNote = await updateFanxiuChar(charName, buildFanxiuNotePayload({
         ...(Object.keys(patch).length ? patch : note),
-        title: charName,
-        node_type: 'memo'
-    });
+        title: charName
+    }));
     syncRowNote(createdNote);
     return createdNote;
 };
 
 const handleSaveKeepalive = (note: NoteNode, patch: Partial<NoteNode> = {}) => {
     const charName = currentEditingCharName.value || note.title;
-    const payload = {
+    const payload = buildFanxiuNotePayload({
         ...(Object.keys(patch).length ? patch : note),
-        title: charName,
-        node_type: 'memo'
-    };
+        title: charName
+    });
 
     if (note.id) {
         const normalizedPayload: Record<string, any> = { ...payload };

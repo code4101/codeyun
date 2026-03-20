@@ -85,8 +85,8 @@ export const buildOrthogonalSegments = (points: Point[]): OrthogonalSegment[] =>
   return segments;
 };
 
-const getNodeDimensions = (weight: number = 0, nodeType?: string | null) => {
-  const scale = getNoteWeightScaleFactor(weight, nodeType);
+const getNodeDimensions = (weight: number = 0, nodeType?: string | null, weightMode?: string | null) => {
+  const scale = getNoteWeightScaleFactor(weight, nodeType, weightMode);
 
   return {
     width: Math.round(NODE_WIDTH * scale),
@@ -113,7 +113,7 @@ const getSideFromHandle = (
 };
 
 const getHandleAnchorPoint = (node: Node, side: HandleSide): Point => {
-  const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type);
+  const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type, node.data?.weight_mode);
   const x = Number(node.position?.x) || 0;
   const y = Number(node.position?.y) || 0;
 
@@ -147,7 +147,7 @@ const offsetPoint = (point: Point, side: HandleSide, distance: number): Point =>
 };
 
 const buildObstacle = (node: Node, padding: number): Rect => {
-  const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type);
+  const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type, node.data?.weight_mode);
   const x = Number(node.position?.x) || 0;
   const y = Number(node.position?.y) || 0;
 

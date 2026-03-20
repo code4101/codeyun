@@ -114,6 +114,7 @@ const emit = defineEmits<{
 }>();
 
 const fieldSequence: GallerySortField[] = [
+  'random',
   'weight',
   'modified_at',
   'size',

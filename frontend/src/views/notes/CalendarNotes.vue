@@ -86,7 +86,10 @@
                   :style="getNoteStyle(note)"
                   @click.stop="openNote(note)"
                 >
-                  <span class="note-title" :style="getNoteTitleStyle(note)">{{ note.title }}</span>
+                  <span class="note-title" :style="getNoteTitleStyle(note)">
+                    <NoteFormBadge :form="note.note_form" compact />
+                    <span class="note-title-text" :style="getNoteTitleTextStyle(note)">{{ note.title }}</span>
+                  </span>
                 </div>
               </div>
             </div>
@@ -127,6 +130,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeStyle } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
+import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import { formatNoteDateShort } from '@/utils/noteDate';
 import { getNoteWeightScaleFactor, NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { useResizablePane } from '@/utils/useResizablePane';
@@ -396,9 +400,9 @@ const openNote = (note: NoteNode) => {
 };
 
 const getNoteStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.node_type, note.node_status, note.color);
+  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
 
-  const scale = getNoteWeightScaleFactor(note.weight, note.node_type);
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
   const baseHeight = 26;
   const height = Math.round(baseHeight * scale);
   
@@ -420,8 +424,26 @@ const getNoteStyle = (note: NoteNode) => {
 };
 
 const getNoteTitleStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.node_type, note.node_status, note.color);
-  const scale = getNoteWeightScaleFactor(note.weight, note.node_type);
+  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
+  const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
+
+  return {
+    color: style.color,
+    fontWeight: style.fontWeight,
+    textDecoration: style.textDecoration,
+    fontSize: `${fontSize}px`,
+    width: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '4px',
+    minWidth: 0
+  } as any;
+};
+
+const getNoteTitleTextStyle = (note: NoteNode) => {
+  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+  const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
   // Font size: Base 12px, grow slower to allow more text
   const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
 
@@ -439,7 +461,8 @@ const getNoteTitleStyle = (note: NoteNode) => {
     textDecoration: style.textDecoration,
     fontSize: `${fontSize}px`,
     lineHeight: lineHeight,
-    width: '100%',
+    minWidth: 0,
+    flex: 1,
     // Multi-line ellipsis
     display: '-webkit-box',
     WebkitBoxOrient: 'vertical',
@@ -755,5 +778,16 @@ watch(viewProgram, (value) => {
 .note-item:hover {
   transform: translateY(-1px);
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.note-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.note-title-text {
+  min-width: 0;
 }
 </style>

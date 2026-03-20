@@ -128,14 +128,32 @@ class NoteNode(SQLModel, table=True):
     # Visual weight level for notes. Non-memo nodes interpret this exponentially.
     weight: int = Field(default=0)
     
-    # Node type: project, module, task, bug, note, doc, memo
+    # Legacy primary type mirror kept for transition compatibility.
     node_type: Optional[str] = Field(default="note", index=True)
 
-    # Node status: idea, todo, doing, predone, done, delete
-    node_status: Optional[str] = Field(default="idea", index=True)
+    # Legacy weighted type system mirror. New code should prefer note_categories.
+    note_types: List[dict] = Field(default_factory=list, sa_column=Column(JSON))
 
-    # Optional per-node color override. Falls back to the type theme when unset.
+    # New naming-aligned category system. Derived from note_types during transition.
+    note_categories: List[dict] = Field(default_factory=list, sa_column=Column(JSON))
+    primary_category: Optional[str] = Field(default="general", index=True)
+
+    # Content form: note / document / memo.
+    note_form: Optional[str] = Field(default="note", index=True)
+
+    # Semantic kind for specialized note flows. Kept separate from visual type.
+    note_kind: Optional[str] = Field(default="note", index=True)
+    note_scene: Optional[str] = Field(default="note", index=True)
+
+    # Legacy lifecycle stage mirror kept for transition compatibility.
+    node_status: Optional[str] = Field(default="idea", index=True)
+    lifecycle_stage: Optional[str] = Field(default="idea", index=True)
+
+    # Legacy per-node color override retained for future migration into tags/types.
     color: Optional[str] = Field(default=None)
+
+    # Independent weight semantics so runtime behavior no longer depends on node_type.
+    weight_mode: Optional[str] = Field(default=None, index=True)
 
     # Private marker for doc-like notes. Kept as int to allow future levels.
     private_level: int = Field(default=0, index=True)

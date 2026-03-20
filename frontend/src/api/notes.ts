@@ -3,6 +3,15 @@ import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ElMessage } from 'element-plus';
 import { NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
+import { createEffectiveNoteTypes, type NoteTypeAssignment } from '@/utils/nodeConfig';
+import {
+  deriveLegacySemanticsFromTaxonomy,
+  deriveNoteTaxonomyFromLegacy,
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_DEFAULT,
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  NOTE_SCENE_DEFAULT
+} from '@/utils/noteSemantics';
 
 export interface NoteNode {
   id: string;
@@ -11,8 +20,16 @@ export interface NoteNode {
   content?: string;
   weight: number;
   node_type?: string | null;
+  note_types?: NoteTypeAssignment[];
+  note_categories?: NoteTypeAssignment[];
+  primary_category?: string | null;
+  note_form?: string | null;
+  note_kind?: string | null;
+  note_scene?: string | null;
   node_status?: string | null;
+  lifecycle_stage?: string | null;
   color?: string | null;
+  weight_mode?: string | null;
   private_level: number;
   custom_fields?: any[];
   inherited_fields?: {
@@ -153,6 +170,12 @@ export interface NoteBatchUpdateRequest {
   ids: string[];
   patch: {
     private_level?: number;
+    weight?: number;
+    weight_delta?: number;
+    note_categories?: NoteTypeAssignment[];
+    primary_category?: string;
+    note_form?: string;
+    lifecycle_stage?: string;
   };
 }
 
@@ -163,11 +186,16 @@ export interface NoteBatchUpdateResponse {
 
 export interface NoteScopeState {
   titleKeyword: string;
-  nodeType: string;
-  nodeStatus: string;
+  primaryCategory: string;
+  lifecycleStage: string;
   startRange: number[];
   updatedRange: number[];
 }
+
+type NoteScopeStateInput = Partial<NoteScopeState> & {
+  nodeType?: string;
+  nodeStatus?: string;
+};
 
 export interface TabSession {
   tabId: string;
@@ -204,12 +232,46 @@ const normalizeInteger = (value: unknown, fallback: number = 0) => {
 
 const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
-  id: String(raw.id),
-  created_at: raw.created_at * 1000,
-  updated_at: raw.updated_at * 1000,
-  start_at: raw.start_at * 1000,
-  private_level: normalizeInteger(raw.private_level, 0),
-  can_edit: Boolean(raw.can_edit)
+  ...(() => {
+    const taxonomy = Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
+      ? deriveLegacySemanticsFromTaxonomy(
+        raw.note_categories,
+        raw.primary_category ?? NOTE_CATEGORY_DEFAULT,
+        raw.note_form ?? NOTE_FORM_DEFAULT,
+        raw.note_scene ?? raw.note_kind ?? NOTE_SCENE_DEFAULT,
+        raw.lifecycle_stage ?? raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+      )
+      : {
+        ...deriveNoteTaxonomyFromLegacy(
+          raw.note_types,
+          raw.node_type ?? 'note',
+          raw.note_kind ?? NOTE_SCENE_DEFAULT,
+          raw.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+        ),
+        note_types: createEffectiveNoteTypes(raw.note_types, raw.node_type ?? 'note', raw.color ?? null),
+        node_type: raw.node_type ?? 'note',
+        note_kind: raw.note_kind ?? null,
+        node_status: raw.node_status ?? null
+      };
+
+    return {
+      id: String(raw.id),
+      created_at: raw.created_at * 1000,
+      updated_at: raw.updated_at * 1000,
+      start_at: raw.start_at * 1000,
+      note_types: createEffectiveNoteTypes(taxonomy.note_types ?? raw.note_types, taxonomy.node_type ?? raw.node_type ?? 'note', raw.color ?? null),
+      note_categories: taxonomy.note_categories,
+      primary_category: taxonomy.primary_category,
+      note_form: taxonomy.note_form,
+      note_kind: taxonomy.note_kind ?? raw.note_kind ?? null,
+      note_scene: taxonomy.note_scene,
+      node_status: taxonomy.node_status ?? raw.node_status ?? null,
+      lifecycle_stage: taxonomy.lifecycle_stage,
+      weight_mode: raw.weight_mode ?? null,
+      private_level: normalizeInteger(raw.private_level, 0),
+      can_edit: Boolean(raw.can_edit)
+    };
+  })()
 });
 
 const normalizeEdge = (raw: any): NoteEdge => ({
@@ -710,22 +772,30 @@ export const buildScanNoteProgramRequest = (
 
 export const createEmptyNoteScopeState = (): NoteScopeState => ({
   titleKeyword: '',
-  nodeType: '',
-  nodeStatus: '',
+  primaryCategory: '',
+  lifecycleStage: '',
   startRange: [],
   updatedRange: []
 });
 
-export const normalizeNoteScopeState = (value?: Partial<NoteScopeState> | null): NoteScopeState => ({
+export const normalizeNoteScopeState = (value?: NoteScopeStateInput | null): NoteScopeState => ({
   titleKeyword: typeof value?.titleKeyword === 'string' ? value.titleKeyword : '',
-  nodeType: typeof value?.nodeType === 'string' ? value.nodeType : '',
-  nodeStatus: typeof value?.nodeStatus === 'string' ? value.nodeStatus : '',
+  primaryCategory: typeof value?.primaryCategory === 'string'
+    ? value.primaryCategory
+    : typeof value?.nodeType === 'string'
+      ? value.nodeType
+      : '',
+  lifecycleStage: typeof value?.lifecycleStage === 'string'
+    ? value.lifecycleStage
+    : typeof value?.nodeStatus === 'string'
+      ? value.nodeStatus
+      : '',
   startRange: normalizeRangeInput(value?.startRange),
   updatedRange: normalizeRangeInput(value?.updatedRange)
 });
 
 export const buildNoteQueryFromScope = (
-  scope: NoteScopeState,
+  scope: NoteScopeStateInput,
   overrides: Partial<NoteQueryRequest> = {}
 ): NoteQueryRequest => {
   const normalizedScope = normalizeNoteScopeState(scope);
@@ -739,19 +809,19 @@ export const buildNoteQueryFromScope = (
     });
   }
 
-  if (normalizedScope.nodeType) {
+  if (normalizedScope.primaryCategory) {
     rules.push({
-      field: 'node_type',
+      field: 'primary_category',
       op: 'eq',
-      value: normalizedScope.nodeType
+      value: normalizedScope.primaryCategory
     });
   }
 
-  if (normalizedScope.nodeStatus) {
+  if (normalizedScope.lifecycleStage) {
     rules.push({
-      field: 'node_status',
+      field: 'lifecycle_stage',
       op: 'eq',
-      value: normalizedScope.nodeStatus
+      value: normalizedScope.lifecycleStage
     });
   }
 
@@ -1382,17 +1452,53 @@ export const useNoteStore = defineStore('notes', () => {
     node_status: string | null = 'idea',
     custom_fields: any[] = [],
     private_level: number = 0,
-    color: string | null = null
+    color: string | null = null,
+    weight_mode: string | null = null,
+    note_kind: string | null = 'note',
+    note_types: NoteTypeAssignment[] = [],
+    note_categories: NoteTypeAssignment[] = [],
+    primary_category: string | null = NOTE_CATEGORY_DEFAULT,
+    note_form: string | null = NOTE_FORM_DEFAULT,
+    note_scene: string | null = NOTE_SCENE_DEFAULT,
+    lifecycle_stage: string | null = NOTE_LIFECYCLE_STAGE_DEFAULT
   ) => {
     bumpPending(1);
     try {
+      const taxonomy = note_categories.length > 0 || primary_category !== NOTE_CATEGORY_DEFAULT || note_form !== NOTE_FORM_DEFAULT || note_scene !== (note_kind ?? NOTE_SCENE_DEFAULT) || lifecycle_stage !== (node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT)
+        ? deriveLegacySemanticsFromTaxonomy(
+          note_categories,
+          primary_category ?? NOTE_CATEGORY_DEFAULT,
+          note_form ?? NOTE_FORM_DEFAULT,
+          note_scene ?? note_kind ?? NOTE_SCENE_DEFAULT,
+          lifecycle_stage ?? node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+        )
+        : {
+          ...deriveNoteTaxonomyFromLegacy(
+            note_types,
+            node_type ?? 'note',
+            note_kind ?? NOTE_SCENE_DEFAULT,
+            node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+          ),
+          note_types,
+          node_type,
+          note_kind,
+          node_status
+        };
       const data: any = {
         title,
         content,
         weight,
-        node_type,
-        node_status,
+        node_type: taxonomy.node_type ?? node_type,
+        note_types: taxonomy.note_types ?? note_types,
+        note_categories: taxonomy.note_categories,
+        primary_category: taxonomy.primary_category,
+        note_form: taxonomy.note_form,
+        note_kind: taxonomy.note_kind ?? note_kind,
+        note_scene: taxonomy.note_scene,
+        node_status: taxonomy.node_status ?? node_status,
+        lifecycle_stage: taxonomy.lifecycle_stage,
         color,
+        weight_mode,
         custom_fields,
         private_level: normalizeInteger(private_level, 0)
       };
@@ -1421,8 +1527,16 @@ export const useNoteStore = defineStore('notes', () => {
       weight?: number;
       start_at?: number;
       node_type?: string | null;
+      note_types?: NoteTypeAssignment[];
+      note_categories?: NoteTypeAssignment[];
+      primary_category?: string | null;
+      note_form?: string | null;
+      note_kind?: string | null;
+      note_scene?: string | null;
       node_status?: string | null;
+      lifecycle_stage?: string | null;
       color?: string | null;
+      weight_mode?: string | null;
       private_level?: number;
       custom_fields?: any[];
     }

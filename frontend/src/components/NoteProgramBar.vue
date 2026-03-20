@@ -289,14 +289,15 @@ import {
   type NoteTimePointExpr,
   type NoteTimePointUnit
 } from '@/api/notes';
-import { getOrderedNodeStatuses, getOrderedNodeTypes } from '@/utils/nodeConfig';
+import { getOrderedNodeStatuses, getOrderedNodeTypes, getOrderedNoteForms } from '@/utils/nodeConfig';
 
 type RuleTemplateValue =
   | 'all'
   | 'title_match'
   | 'id'
-  | 'node_type'
-  | 'node_status'
+  | 'primary_category'
+  | 'note_form'
+  | 'lifecycle_stage'
   | 'start_at'
   | 'updated_at'
   | 'weight'
@@ -354,12 +355,14 @@ const emptyTextValue = computed(() => props.emptyText || (props.hiddenLeadingRul
   : '当前没有附加规则，筛选链会从空结果开始。'));
 const orderedNodeTypes = computed(() => getOrderedNodeTypes());
 const orderedNodeStatuses = computed(() => getOrderedNodeStatuses());
+const orderedNoteForms = computed(() => getOrderedNoteForms());
 const getActualRuleIndex = (visibleIndex: number) => visibleRuleStartIndex.value + visibleIndex;
 
 const ruleTemplates: Array<{ value: RuleTemplateValue; label: string }> = [
   { value: 'title_match', label: '标题匹配' },
-  { value: 'node_type', label: '类型匹配' },
-  { value: 'node_status', label: '状态匹配' },
+  { value: 'primary_category', label: '分类匹配' },
+  { value: 'note_form', label: '形态匹配' },
+  { value: 'lifecycle_stage', label: '阶段匹配' },
   { value: 'private_level', label: '私密值' },
   { value: 'start_at', label: '起始时间' },
   { value: 'updated_at', label: '更新时间' },
@@ -431,22 +434,32 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
           ids: []
         }
       };
-    case 'node_type':
+    case 'primary_category':
       return {
         action: 'include',
         matcher: {
           kind: 'field',
-          field: 'node_type',
+          field: 'primary_category',
           op: 'eq',
           value: ''
         }
       };
-    case 'node_status':
+    case 'note_form':
       return {
         action: 'include',
         matcher: {
           kind: 'field',
-          field: 'node_status',
+          field: 'note_form',
+          op: 'eq',
+          value: ''
+        }
+      };
+    case 'lifecycle_stage':
+      return {
+        action: 'include',
+        matcher: {
+          kind: 'field',
+          field: 'lifecycle_stage',
           op: 'eq',
           value: ''
         }
@@ -500,8 +513,9 @@ const getRuleTemplateValue = (rule: NoteProgramRule): RuleTemplateValue => {
   if (rule.matcher.kind === 'all') return 'all';
   if (rule.matcher.kind === 'field') {
     if (rule.matcher.field === 'title') return 'title_match';
-    if (rule.matcher.field === 'node_type') return 'node_type';
-    if (rule.matcher.field === 'node_status') return 'node_status';
+    if (rule.matcher.field === 'node_type' || rule.matcher.field === 'primary_category') return 'primary_category';
+    if (rule.matcher.field === 'note_form') return 'note_form';
+    if (rule.matcher.field === 'node_status' || rule.matcher.field === 'lifecycle_stage') return 'lifecycle_stage';
     if (rule.matcher.field === 'start_at') return 'start_at';
     if (rule.matcher.field === 'updated_at') return 'updated_at';
     if (rule.matcher.field === 'private_level') return 'private_level';
@@ -554,7 +568,13 @@ const removeRule = (index: number) => {
   });
 };
 
-const getMatcherField = (rule: NoteProgramRule) => rule.matcher.field || 'node_status';
+const normalizeMatcherField = (field: string | null | undefined) => {
+  if (field === 'node_type') return 'primary_category';
+  if (field === 'node_status') return 'lifecycle_stage';
+  return field || 'lifecycle_stage';
+};
+
+const getMatcherField = (rule: NoteProgramRule) => normalizeMatcherField(rule.matcher.field);
 
 const getFieldMode = (field: string) => {
   if (field === 'title') return 'text';
@@ -752,8 +772,11 @@ const updateFieldOp = (index: number, op: string) => {
 };
 
 const getFieldEnumOptions = (field: string) => {
-  if (field === 'node_type') {
+  if (field === 'primary_category') {
     return orderedNodeTypes.value.map(item => ({ value: item.id, label: item.label }));
+  }
+  if (field === 'note_form') {
+    return orderedNoteForms.value.map(item => ({ value: item.id, label: item.label }));
   }
   return orderedNodeStatuses.value.map(item => ({ value: item.id, label: item.label }));
 };

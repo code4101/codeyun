@@ -23,11 +23,11 @@
 
       <el-select
         v-if="showType"
-        :model-value="scopeValue.nodeType"
-        placeholder="所有类型"
+        :model-value="scopeValue.primaryCategory"
+        placeholder="所有分类"
         clearable
         class="w-120"
-        @update:model-value="updateScope({ nodeType: $event || '' })"
+        @update:model-value="updateScope({ primaryCategory: $event || '' })"
       >
         <el-option
           v-for="type in orderedNodeTypes"
@@ -39,11 +39,11 @@
 
       <el-select
         v-if="showStatus"
-        :model-value="scopeValue.nodeStatus"
-        placeholder="所有状态"
+        :model-value="scopeValue.lifecycleStage"
+        placeholder="所有阶段"
         clearable
         class="w-120"
-        @update:model-value="updateScope({ nodeStatus: $event || '' })"
+        @update:model-value="updateScope({ lifecycleStage: $event || '' })"
       >
         <el-option
           v-for="status in orderedNodeStatuses"
@@ -149,11 +149,11 @@ const activeTags = computed(() => {
   if (value.titleKeyword) {
     tags.push({ key: 'title', label: `标题含 "${value.titleKeyword}"` });
   }
-  if (value.nodeType) {
-    tags.push({ key: 'type', label: `类型: ${getNodeTypeConfig(value.nodeType).label}`, type: 'success' });
+  if (value.primaryCategory) {
+    tags.push({ key: 'type', label: `分类: ${getNodeTypeConfig(value.primaryCategory).label}`, type: 'success' });
   }
-  if (value.nodeStatus) {
-    tags.push({ key: 'status', label: `状态: ${getNodeStatusConfig(value.nodeStatus).label}`, type: 'warning' });
+  if (value.lifecycleStage) {
+    tags.push({ key: 'status', label: `阶段: ${getNodeStatusConfig(value.lifecycleStage).label}`, type: 'warning' });
   }
   if (value.startRange.length === 2) {
     tags.push({ key: 'start', label: `起始: ${formatRange(value.startRange)}`, type: 'info' });

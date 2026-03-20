@@ -9,7 +9,7 @@
     
     <el-popover
       placement="bottom-start"
-      :width="mode === 'type' ? 320 : 160"
+      :width="mode === 'type' ? 320 : mode === 'form' ? 200 : 160"
       trigger="click"
       popper-class="node-selector-popper"
       v-model:visible="popoverVisible"
@@ -17,12 +17,15 @@
     >
       <template #reference>
         <div class="selector-trigger" :class="{ 'is-disabled': disabled }" :style="triggerStyle">
-          <span class="trigger-text">{{ currentLabel }}</span>
+          <div v-if="mode === 'form'" class="trigger-form-content">
+            <NoteFormBadge :form="modelValue || 'note'" :show-label="true" />
+          </div>
+          <span v-else class="trigger-text">{{ currentLabel }}</span>
           <el-icon><ArrowDown /></el-icon>
         </div>
       </template>
       
-      <div class="selector-options" :class="{ 'is-grid': mode === 'type', 'is-list': mode === 'status' }">
+      <div class="selector-options" :class="{ 'is-grid': mode === 'type', 'is-list': mode !== 'type' }">
         <div 
           v-for="item in options" 
           :key="item.id"
@@ -31,7 +34,14 @@
           @click="selectItem(item.id)"
         >
           <div class="item-preview" :style="getItemStyle(item)">
-            {{ item.label }}
+            <NoteFormBadge
+              v-if="mode === 'form'"
+              :form="item.id"
+              :show-label="true"
+            />
+            <template v-else>
+              {{ item.label }}
+            </template>
           </div>
         </div>
       </div>
@@ -42,24 +52,31 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { QuestionFilled, ArrowDown } from '@element-plus/icons-vue';
+import NoteFormBadge from './NoteFormBadge.vue';
 import { 
   getOrderedNodeTypes, 
+  getOrderedNoteForms,
   getOrderedNodeStatuses, 
   getNodeStyle,
+  getNoteFormConfig,
   getNodeTypeConfig,
   getNodeStatusConfig,
+  type NoteTypeAssignment,
+  type NoteFormItem,
   type NodeTypeItem,
   type NodeStatusItem
 } from '@/utils/nodeConfig';
 
 const props = defineProps<{
   modelValue: string | null | undefined;
-  mode: 'type' | 'status';
+  mode: 'type' | 'status' | 'form';
   relatedType?: string | null; // For status mode to know color context
   customColor?: string | null;
+  noteTypes?: NoteTypeAssignment[] | null;
   label?: string;
   showLabel?: boolean;
   showHelpIcon?: boolean;
+  triggerMinWidth?: string | number | null;
   disabled?: boolean;
 }>();
 
@@ -74,6 +91,8 @@ const popoverVisible = ref(false);
 const options = computed(() => {
   if (props.mode === 'type') {
     return getOrderedNodeTypes();
+  } else if (props.mode === 'form') {
+    return getOrderedNoteForms();
   } else {
     return getOrderedNodeStatuses();
   }
@@ -81,7 +100,9 @@ const options = computed(() => {
 
 const currentLabel = computed(() => {
   if (props.mode === 'type') {
-    return getNodeTypeConfig(props.modelValue || 'note').label;
+    return getNodeTypeConfig(props.modelValue || 'general').label;
+  } else if (props.mode === 'form') {
+    return getNoteFormConfig(props.modelValue || 'note').label;
   } else {
     return getNodeStatusConfig(props.modelValue || 'idea').label;
   }
@@ -89,24 +110,38 @@ const currentLabel = computed(() => {
 
 // Trigger Style (The button itself)
 const triggerStyle = computed(() => {
+  const minWidth = props.triggerMinWidth == null
+    ? undefined
+    : (typeof props.triggerMinWidth === 'number' ? `${props.triggerMinWidth}px` : props.triggerMinWidth);
   // We want the trigger to look like the node
-  const typeId = props.mode === 'type' ? (props.modelValue || 'note') : (props.relatedType || 'note');
+  const typeId = props.mode === 'type' ? (props.modelValue || 'general') : (props.relatedType || 'general');
   const statusId = props.mode === 'status' ? (props.modelValue || 'idea') : 'idea'; // If type mode, use idea (default) style or just color?
   
   // If mode is type, we just show the color and a simple box
   if (props.mode === 'type') {
-    const style = getNodeStyle(typeId, 'idea', props.customColor);
+    const style = getNodeStyle(typeId, 'idea', props.customColor, props.noteTypes);
     return {
       borderColor: style.borderColor,
       color: style.color,
       backgroundColor: style.backgroundColor,
       borderWidth: style.borderWidth,
-      borderStyle: style.borderStyle
+      borderStyle: style.borderStyle,
+      minWidth
+    };
+  } else if (props.mode === 'form') {
+    const style = getNodeStyle(typeId, 'idea', props.customColor, props.noteTypes);
+    return {
+      borderColor: style.borderColor,
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      borderWidth: style.borderWidth,
+      borderStyle: style.borderStyle,
+      minWidth
     };
   } else {
     // If mode is status, we show the status style (border type etc)
     // We need to use getNodeStyle with the relatedType
-    const style = getNodeStyle(typeId, statusId, props.customColor);
+    const style = getNodeStyle(typeId, statusId, props.customColor, props.noteTypes);
     return {
       borderColor: style.borderColor,
       color: style.color, // Usually type color
@@ -114,13 +149,14 @@ const triggerStyle = computed(() => {
       borderWidth: style.borderWidth,
       borderStyle: style.borderStyle,
       textDecoration: style.textDecoration,
-      opacity: style.opacity
+      opacity: style.opacity,
+      minWidth
     };
   }
 });
 
 // Item Style (In the dropdown)
-const getItemStyle = (item: NodeTypeItem | NodeStatusItem) => {
+const getItemStyle = (item: NodeTypeItem | NodeStatusItem | NoteFormItem) => {
   if (props.mode === 'type') {
     const i = item as NodeTypeItem;
     // For type options, use 'idea' style (default)
@@ -132,11 +168,22 @@ const getItemStyle = (item: NodeTypeItem | NodeStatusItem) => {
       borderStyle: style.borderStyle,
       backgroundColor: style.backgroundColor
     };
+  } else if (props.mode === 'form') {
+    const typeId = props.relatedType || 'general';
+    const style = getNodeStyle(typeId, 'idea', props.customColor, props.noteTypes);
+    return {
+      borderColor: style.borderColor,
+      color: style.color,
+      backgroundColor: style.backgroundColor,
+      borderWidth: style.borderWidth,
+      borderStyle: style.borderStyle,
+      opacity: style.opacity
+    };
   } else {
     // Status Preview
     // Use relatedType if available, else use a default type (e.g. 'task' or 'note') for context
-    const typeId = props.relatedType || 'note';
-    const style = getNodeStyle(typeId, item.id, props.customColor);
+    const typeId = props.relatedType || 'general';
+    const style = getNodeStyle(typeId, item.id, props.customColor, props.noteTypes);
     return {
       borderColor: style.borderColor,
       color: style.color,
@@ -214,6 +261,13 @@ const selectItem = (id: string) => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.trigger-form-content {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-right: 5px;
 }
 
 /* Dropdown Options */

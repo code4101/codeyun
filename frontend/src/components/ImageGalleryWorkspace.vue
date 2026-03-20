@@ -393,9 +393,28 @@
             <span class="meta-label">大小</span>
             <span class="meta-value">{{ formatFileSize(previewImage.size) }}</span>
           </div>
+          <div
+            v-if="typeof previewImage.createdAt === 'number' || previewImage.createdAt === null"
+            class="meta-row"
+          >
+            <span class="meta-label">创建时间</span>
+            <span class="meta-value">
+              {{ typeof previewImage.createdAt === 'number' ? formatDate(previewImage.createdAt) : '--' }}
+            </span>
+          </div>
           <div class="meta-row">
             <span class="meta-label">修改时间</span>
             <span class="meta-value">{{ formatDate(previewImage.modifiedAt) }}</span>
+          </div>
+          <div v-if="revealImageInFolder" class="meta-actions">
+            <el-button
+              plain
+              class="preview-reveal-button"
+              :loading="revealingImageId === previewImage.id"
+              @click="handleRevealImageInFolder"
+            >
+              {{ revealButtonText }}
+            </el-button>
           </div>
         </div>
       </div>
@@ -450,8 +469,10 @@ const props = withDefaults(
     setVideoCover?: (imageId: string, cover: Blob) => Promise<boolean>;
     updateImageWeight?: (imageId: string, nextWeight: number) => Promise<boolean>;
     deleteImage?: (imageId: string) => Promise<boolean>;
+    revealImageInFolder?: (image: GalleryImage) => Promise<boolean | void>;
     deleteButtonText?: string;
     setCoverButtonText?: string;
+    revealButtonText?: string;
     deleteTip?: string;
     itemLabel?: string;
     itemCountLabel?: string;
@@ -476,6 +497,7 @@ const props = withDefaults(
     preserveOrder: false,
     deleteButtonText: '删除图片',
     setCoverButtonText: '设为封面',
+    revealButtonText: '打开所在目录',
     deleteTip: '',
     itemLabel: '图片',
     itemCountLabel: '张图片',
@@ -547,6 +569,7 @@ watch(
 );
 
 const deletingImageId = ref<string | null>(null);
+const revealingImageId = ref<string | null>(null);
 const settingCoverImageId = ref<string | null>(null);
 const updatingWeightById = ref<Record<string, boolean>>({});
 const mediaCardElements = new Map<string, Element>();
@@ -1102,6 +1125,22 @@ const handleDeleteImage = async (imageId: string) => {
     }
   } finally {
     deletingImageId.value = null;
+  }
+};
+
+const handleRevealImageInFolder = async () => {
+  if (!props.revealImageInFolder || !previewImage.value) {
+    return;
+  }
+
+  const targetImageId = previewImage.value.id;
+  revealingImageId.value = targetImageId;
+  try {
+    await props.revealImageInFolder(previewImage.value);
+  } finally {
+    if (revealingImageId.value === targetImageId) {
+      revealingImageId.value = null;
+    }
   }
 };
 
@@ -1921,10 +1960,20 @@ onBeforeUnmount(() => {
   border-top: 1px solid #e2e8f0;
 }
 
+.meta-actions {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
 .meta-value {
   color: #0f172a;
   text-align: right;
   word-break: break-all;
+}
+
+.preview-reveal-button {
+  width: 100%;
 }
 
 .preview-actions {

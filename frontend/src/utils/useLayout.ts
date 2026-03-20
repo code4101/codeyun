@@ -30,8 +30,8 @@ interface HandleCombination {
 /**
  * Calculate dimensions based on note weight semantics.
  */
-function getNodeDimensions(weight: number = 0, nodeType?: string | null) {
-    const scale = getNoteWeightScaleFactor(weight, nodeType);
+function getNodeDimensions(weight: number = 0, nodeType?: string | null, weightMode?: string | null) {
+    const scale = getNoteWeightScaleFactor(weight, nodeType, weightMode);
 
     return {
         width: Math.round(NODE_WIDTH * scale),
@@ -57,7 +57,7 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
 
     // 1. Transform to ELK Graph Structure
     const elkNodes: ElkNode[] = sortedNodes.map((node) => {
-        const dimensions = getNodeDimensions(node.data?.weight, node.data?.node_type);
+        const dimensions = getNodeDimensions(node.data?.weight, node.data?.node_type, node.data?.weight_mode);
         return {
             id: node.id,
             width: dimensions.width,
@@ -188,7 +188,7 @@ export const useLayout = async (nodes: Node[], edges: Edge[]) => {
 function getHandlePosition(node: Node, side: string) {
     const { x, y } = node.position;
     // Recalculate dimensions for handle positioning
-    const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type);
+    const { width, height } = getNodeDimensions(node.data?.weight, node.data?.node_type, node.data?.weight_mode);
     
     switch (side) {
         case 't': return { x: x + width / 2, y: y };      // Top

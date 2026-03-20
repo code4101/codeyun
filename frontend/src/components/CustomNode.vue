@@ -18,7 +18,10 @@
     <Handle id="r-s" type="source" :position="Position.Right" />
 
     <div class="node-content">
-      <div class="node-title" :style="titleStyle">{{ data.title || 'Untitled' }}</div>
+      <div class="node-title" :style="titleStyle">
+        <NoteFormBadge :form="data.note_form" compact />
+        <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
+      </div>
     </div>
   </div>
 </template>
@@ -28,13 +31,20 @@ import { Handle, Position } from '@vue-flow/core'
 import { computed } from 'vue'
 import { getNodeStyle } from '@/utils/nodeConfig'
 import { getNoteWeightScaleFactor } from '@/utils/noteWeight'
+import NoteFormBadge from './NoteFormBadge.vue'
 
 const props = defineProps<{
   data: {
     title: string,
     weight?: number,
     node_type?: string | null,
+    note_types?: { key: string; weight: number }[] | null,
+    primary_category?: string | null,
+    note_categories?: { key: string; weight: number }[] | null,
+    note_form?: string | null,
+    weight_mode?: string | null,
     node_status?: string | null,
+    lifecycle_stage?: string | null,
     color?: string | null
   }
 }>()
@@ -43,11 +53,16 @@ const BASE_WIDTH = 150;
 const BASE_HEIGHT = 50;
 
 const computedStyle = computed(() => {
-    return getNodeStyle(props.data.node_type, props.data.node_status, props.data.color);
+    return getNodeStyle(
+      props.data.primary_category ?? props.data.node_type,
+      props.data.lifecycle_stage ?? props.data.node_status,
+      props.data.color,
+      props.data.note_categories ?? props.data.note_types
+    );
 });
 
 const nodeStyle = computed(() => {
-    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type);
+    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type, props.data.weight_mode);
     
     const style = computedStyle.value;
     
@@ -63,7 +78,7 @@ const nodeStyle = computed(() => {
 });
 
 const titleStyle = computed(() => {
-    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type);
+    const scale = getNoteWeightScaleFactor(props.data.weight, props.data.node_type, props.data.weight_mode);
     // Scale font size slightly less aggressively than dimensions
     // Base font 14px, max 24px, min 10px
     const fontSize = Math.min(24, Math.max(10, Math.round(14 * scale)));
@@ -109,12 +124,20 @@ const titleStyle = computed(() => {
 }
 
 .node-title {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
   font-weight: 500;
   color: #303133;
+  pointer-events: none; /* 防止文字干扰拖拽 */
+}
+
+.node-title-text{
+  min-width:0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  pointer-events: none; /* 防止文字干扰拖拽 */
 }
 
 /* 默认隐藏句柄 */

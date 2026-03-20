@@ -39,7 +39,7 @@
                 <span class="label">权重:</span>
                 <el-input-number 
                   v-model="form.weight" 
-                  :min="0" 
+                  :min="NOTE_WEIGHT_MIN"
                   :step="1" 
                   size="small"
                   controls-position="right"
@@ -47,22 +47,39 @@
                 />
             </div>
             <div class="prop-item">
-                <NodeSelector 
-                  mode="type" 
-                  v-model="form.nodeType"
-                  label="类型"
+                <NoteTypeSelector
+                  :model-value="form.noteCategories"
+                  :legacy-type="form.primaryCategory"
+                  :legacy-color="props.sourceNote.color ?? null"
+                  label="分类"
                   :show-label="true"
                   :show-help-icon="false"
+                  @update:model-value="handleCategoryChange"
+                />
+            </div>
+            <div class="prop-item">
+                <NodeSelector 
+                  mode="form" 
+                  v-model="form.noteForm"
+                  :related-type="form.primaryCategory"
+                  :custom-color="props.sourceNote.color ?? null"
+                  :note-types="form.noteCategories"
+                  label="形态"
+                  :show-label="true"
+                  :show-help-icon="false"
+                  @change="handleFormChange"
                 />
             </div>
             <div class="prop-item">
                 <NodeSelector 
                   mode="status" 
-                  v-model="form.nodeStatus"
-                  :related-type="form.nodeType"
-                  label="状态"
+                  v-model="form.lifecycleStage"
+                  :related-type="form.primaryCategory"
+                  :note-types="form.noteCategories"
+                  label="阶段"
                   :show-label="true"
                   :show-help-icon="false"
+                  @change="handleLifecycleStageChange"
                 />
             </div>
         </div>
@@ -99,8 +116,17 @@ import { ref, computed, reactive, defineAsyncComponent } from 'vue';
 import { useNoteStore, type NoteNode } from '@/api/notes';
 import { ElMessage } from 'element-plus';
 import NodeSelector from './NodeSelector.vue';
+import NoteTypeSelector from './NoteTypeSelector.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
-import { NOTE_WEIGHT_DEFAULT, normalizeNoteWeight } from '@/utils/noteWeight';
+import { NOTE_WEIGHT_DEFAULT, NOTE_WEIGHT_MIN, normalizeNoteWeight } from '@/utils/noteWeight';
+import { derivePrimaryNodeType, normalizeNoteTypeAssignments, type NoteTypeAssignment } from '@/utils/nodeConfig';
+import {
+  deriveLegacySemanticsFromTaxonomy,
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_DEFAULT,
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  NOTE_SCENE_DEFAULT
+} from '@/utils/noteSemantics';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
@@ -129,7 +155,12 @@ const form = reactive({
   startTime: '00:00:00',
   weight: NOTE_WEIGHT_DEFAULT,
   nodeType: 'note',
-  nodeStatus: 'idea',
+  noteTypes: [] as NoteTypeAssignment[],
+  primaryCategory: NOTE_CATEGORY_DEFAULT,
+  noteCategories: [] as NoteTypeAssignment[],
+  noteForm: NOTE_FORM_DEFAULT,
+  lifecycleStage: NOTE_LIFECYCLE_STAGE_DEFAULT,
+  noteScene: NOTE_SCENE_DEFAULT,
   linkToNew: true,
   linkFromNew: false
 });
@@ -145,7 +176,12 @@ const initForm = () => {
   form.content = props.sourceNote.content || '';
   form.weight = normalizeNoteWeight(props.sourceNote.weight);
   form.nodeType = props.sourceNote.node_type || 'note';
-  form.nodeStatus = props.sourceNote.node_status || 'idea';
+  form.noteTypes = normalizeNoteTypeAssignments(props.sourceNote.note_types, form.nodeType);
+  form.primaryCategory = props.sourceNote.primary_category || NOTE_CATEGORY_DEFAULT;
+  form.noteCategories = normalizeNoteTypeAssignments(props.sourceNote.note_categories, form.primaryCategory);
+  form.noteForm = props.sourceNote.note_form || NOTE_FORM_DEFAULT;
+  form.lifecycleStage = props.sourceNote.lifecycle_stage || NOTE_LIFECYCLE_STAGE_DEFAULT;
+  form.noteScene = props.sourceNote.note_scene || props.sourceNote.note_kind || NOTE_SCENE_DEFAULT;
   
   const startAt = new Date(props.sourceNote.start_at);
   form.startDate = startAt;
@@ -176,6 +212,39 @@ const shiftTime = (amount: number, unit: 'month' | 'year') => {
     // 时间部分保持不变
 };
 
+const syncLegacyFieldsFromTaxonomy = () => {
+    const legacy = deriveLegacySemanticsFromTaxonomy(
+        form.noteCategories,
+        form.primaryCategory || NOTE_CATEGORY_DEFAULT,
+        form.noteForm || NOTE_FORM_DEFAULT,
+        form.noteScene || NOTE_SCENE_DEFAULT,
+        form.lifecycleStage || NOTE_LIFECYCLE_STAGE_DEFAULT
+    );
+    form.noteCategories = normalizeNoteTypeAssignments(legacy.note_categories, legacy.primary_category);
+    form.primaryCategory = legacy.primary_category;
+    form.noteForm = legacy.note_form;
+    form.lifecycleStage = legacy.lifecycle_stage;
+    form.noteScene = legacy.note_scene;
+    form.noteTypes = normalizeNoteTypeAssignments(legacy.note_types, legacy.node_type);
+    form.nodeType = legacy.node_type;
+};
+
+const handleCategoryChange = (value: NoteTypeAssignment[]) => {
+    form.noteCategories = normalizeNoteTypeAssignments(value, form.primaryCategory);
+    form.primaryCategory = derivePrimaryNodeType(form.noteCategories, form.primaryCategory);
+    syncLegacyFieldsFromTaxonomy();
+};
+
+const handleFormChange = (value: string) => {
+    form.noteForm = value || NOTE_FORM_DEFAULT;
+    syncLegacyFieldsFromTaxonomy();
+};
+
+const handleLifecycleStageChange = (value: string) => {
+    form.lifecycleStage = value || NOTE_LIFECYCLE_STAGE_DEFAULT;
+    syncLegacyFieldsFromTaxonomy();
+};
+
 const handleCopy = async () => {
     loading.value = true;
     try {
@@ -192,10 +261,18 @@ const handleCopy = async () => {
             form.weight,
             finalDate.getTime(),
             form.nodeType,
-            form.nodeStatus,
+            form.lifecycleStage,
             [],
             props.sourceNote.private_level ?? 0,
-            props.sourceNote.color ?? null
+            props.sourceNote.color ?? null,
+            props.sourceNote.weight_mode ?? null,
+            form.noteScene,
+            form.noteTypes,
+            form.noteCategories,
+            form.primaryCategory,
+            form.noteForm,
+            form.noteScene,
+            form.lifecycleStage
         );
         
         if (newNote) {

@@ -61,106 +61,70 @@
             <span class="label">权重:</span>
             <el-input-number
               v-model="currentNote.weight"
-              :min="0"
+              :min="NOTE_WEIGHT_MIN"
               :step="1"
               size="small"
               controls-position="right"
+              class="weight-value-input"
               :disabled="effectiveReadonly"
               @change="onWeightChange"
               @blur="onWeightBlur"
             />
           </div>
 
-          <NodeSelector
-            mode="type"
-            v-model="currentNote.node_type"
-            :custom-color="currentNote.color"
-            label="类型"
+          <NoteTypeSelector
+            :model-value="currentNote.note_categories"
+            :legacy-type="currentNote.primary_category"
+            :legacy-color="currentNote.color"
+            label="分类"
             :show-label="true"
             :show-help-icon="true"
             :disabled="nodeTypeReadonly"
-            @change="queueMetaAutoSave({ immediate: true })"
+            @update:model-value="handleNoteCategoriesChange"
             @show-help="showHelpDialog = true"
           />
 
           <NodeSelector
-            mode="status"
-            v-model="currentNote.node_status"
-            :related-type="currentNote.node_type"
+            mode="form"
+            v-model="currentNote.note_form"
+            :related-type="currentPrimaryType"
             :custom-color="currentNote.color"
-            label="状态"
+            :note-types="currentNote.note_categories"
+            label="形态"
             :show-label="true"
             :show-help-icon="false"
-            :disabled="effectiveReadonly"
-            @change="queueMetaAutoSave({ immediate: true })"
+            trigger-min-width="72px"
+            :disabled="formReadonly"
+            @change="handleNoteFormChange"
           />
 
-          <div class="inline-control">
-            <span class="label">颜色:</span>
-            <div class="color-control-body">
-              <el-popover
-                v-model:visible="colorPickerVisible"
-                trigger="click"
-                placement="bottom-start"
-                :width="320"
-                :disabled="effectiveReadonly"
-                popper-class="note-color-picker-popover"
-              >
-                <template #reference>
-                  <button
-                    type="button"
-                    class="note-color-trigger"
-                    :class="{ 'is-empty': !currentNote.color, 'is-disabled': effectiveReadonly }"
-                    :disabled="effectiveReadonly"
-                    aria-label="选择颜色"
-                  >
-                    <span class="note-color-trigger__swatch" :style="noteColorDisplayStyle">
-                      <el-icon v-if="!currentNote.color" class="note-color-trigger__empty-icon"><Close /></el-icon>
-                    </span>
-                  </button>
-                </template>
+          <NodeSelector
+            mode="status"
+            v-model="currentNote.lifecycle_stage"
+            :related-type="currentPrimaryType"
+            :custom-color="currentNote.color"
+            :note-types="currentNote.note_categories"
+            label="阶段"
+            :show-label="true"
+            :show-help-icon="false"
+            trigger-min-width="72px"
+            :disabled="effectiveReadonly"
+            @change="handleLifecycleStageChange"
+          />
 
-                <div class="note-color-panel-shell" @click="handleColorPanelClick">
-                  <ElColorPickerPanel
-                    :model-value="noteColorProxy"
-                    :predefine="noteColorPresets"
-                    color-format="hex"
-                    :border="false"
-                    :disabled="effectiveReadonly"
-                    :validate-event="false"
-                    @update:model-value="handleColorChange"
-                  >
-                    <template #footer>
-                      <el-button
-                        size="small"
-                        class="color-panel-auto-close-btn"
-                        :class="{ 'is-active': colorPickerAutoClose }"
-                        @click.stop="toggleColorPickerAutoClose"
-                      >
-                        自动关闭窗口
-                      </el-button>
-                    </template>
-                  </ElColorPickerPanel>
-                </div>
-              </el-popover>
-              <el-button size="small" plain :disabled="effectiveReadonly || !currentNote.color" @click="resetNoteColor">
-                默认
-              </el-button>
-            </div>
-          </div>
-
-          <div v-if="resolvedShowPrivateToggle" class="inline-control">
+          <div v-if="resolvedShowPrivateToggle" class="inline-control private-control">
             <span class="label">私密:</span>
-            <el-button
+            <el-input-number
+              v-model="currentNote.private_level"
+              :min="0"
+              :step="1"
               size="small"
-              plain
-              :type="isPrivateEnabled ? 'danger' : undefined"
+              controls-position="right"
+              class="private-level-control"
               :disabled="effectiveReadonly"
-              @click="togglePrivateLevel"
-            >
-              {{ isPrivateEnabled ? '已开启' : '已关闭' }}
-            </el-button>
-            <span class="private-hint">值 {{ currentNote.private_level }}</span>
+              @change="onPrivateLevelChange"
+              @blur="onPrivateLevelBlur"
+            />
           </div>
 
           <div class="history-toggle">
@@ -296,15 +260,14 @@
 </template>
 
 <script setup lang="ts">
-import 'element-plus/es/components/color-picker-panel/style/css';
 import { computed, defineAsyncComponent, nextTick, onUnmounted, ref, watch } from 'vue';
 import Sortable from 'sortablejs';
-import { Calendar, Check, Clock, Close, List, Loading, Plus, Rank } from '@element-plus/icons-vue';
-import { ElColorPickerPanel } from 'element-plus';
+import { Calendar, Check, Clock, List, Loading, Plus, Rank } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';
 import NodeSelector from './NodeSelector.vue';
+import NoteTypeSelector from './NoteTypeSelector.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
 import {
@@ -324,9 +287,17 @@ import {
   type NoteCustomFieldItem,
   type NoteCustomFieldType
 } from '@/utils/noteAutoSave';
-import { NOTE_WEIGHT_DEFAULT, normalizeNoteWeight } from '@/utils/noteWeight';
+import { NOTE_WEIGHT_DEFAULT, NOTE_WEIGHT_MIN, normalizeNoteWeight } from '@/utils/noteWeight';
 import { useAutoSave } from '@/utils/useAutoSave';
-import { getNodeStatusConfig, getNodeTypeConfig, normalizeNodeColor, NOTE_COLOR_PRESETS } from '@/utils/nodeConfig';
+import { derivePrimaryNodeType, getNodeStatusConfig, getNodeTypeConfig, normalizeNoteTypeAssignments } from '@/utils/nodeConfig';
+import {
+  deriveLegacySemanticsFromTaxonomy,
+  deriveNoteTaxonomyFromLegacy,
+  NOTE_CATEGORY_DEFAULT,
+  NOTE_FORM_DEFAULT,
+  NOTE_LIFECYCLE_STAGE_DEFAULT,
+  NOTE_SCENE_DEFAULT
+} from '@/utils/noteSemantics';
 
 const NoteEditor = defineAsyncComponent(() => import('./NoteEditor.vue'));
 
@@ -338,6 +309,7 @@ const props = defineProps<{
   showPrivateToggle?: boolean;
   lockTitle?: boolean;
   lockNodeType?: boolean;
+  lockNoteForm?: boolean;
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();
@@ -364,10 +336,10 @@ const historyButtonType = computed<'primary' | undefined>(() => showHistory.valu
 const effectiveReadonly = computed(() => Boolean(props.readonly) || currentNote.value?.can_edit === false);
 const titleReadonly = computed(() => effectiveReadonly.value || Boolean(props.lockTitle));
 const nodeTypeReadonly = computed(() => effectiveReadonly.value || Boolean(props.lockNodeType));
-const resolvedShowPrivateToggle = computed(() => typeof props.showPrivateToggle === 'boolean' ? props.showPrivateToggle : currentNote.value?.node_type === 'note');
-const isPrivateEnabled = computed(() => (currentNote.value?.private_level ?? 0) > 0);
+const formReadonly = computed(() => effectiveReadonly.value || Boolean(props.lockNoteForm));
+const resolvedShowPrivateToggle = computed(() => Boolean(props.showPrivateToggle));
 const isReady = computed(() => !!currentNote.value && currentNote.value.content !== undefined);
-const noteColorPresets = NOTE_COLOR_PRESETS;
+const currentPrimaryType = computed(() => derivePrimaryNodeType(currentNote.value?.note_categories, currentNote.value?.primary_category ?? NOTE_CATEGORY_DEFAULT));
 
 const customFieldsList = ref<NoteCustomFieldItem[]>([]);
 const ownCustomFieldsListRef = ref<HTMLElement | null>(null);
@@ -376,20 +348,8 @@ const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedFieldSource = ref<NoteNode['inherited_fields'] | null>(null);
 const timeInputString = ref('');
 const currentDraftKey = ref<string | null>(null);
-const colorPickerVisible = ref(false);
-const colorPickerAutoClose = ref(false);
 let loadRequestToken = 0;
 let customFieldsSortable: Sortable | null = null;
-
-const noteColorProxy = computed<string>({
-  get: () => currentNote.value?.color ?? '',
-  set: value => {
-    if (!currentNote.value) return;
-    currentNote.value.color = normalizeNodeColor(value) ?? null;
-  }
-});
-
-const noteColorDisplayStyle = computed(() => ({ backgroundColor: currentNote.value?.color ?? 'transparent' }));
 
 const sortedHistory = computed(() => currentNote.value?.history ? [...currentNote.value.history].sort((a, b) => b.ts - a.ts) : []);
 
@@ -413,6 +373,29 @@ const normalizeIncomingNote = (note: NoteNode) => {
   if (cloned.start_at && cloned.start_at < 10000000000) cloned.start_at *= 1000;
   if (cloned.updated_at && cloned.updated_at < 10000000000) cloned.updated_at *= 1000;
   if (cloned.created_at && cloned.created_at < 10000000000) cloned.created_at *= 1000;
+  const taxonomy = Array.isArray(cloned.note_categories) || cloned.primary_category || cloned.note_form || cloned.note_scene || cloned.lifecycle_stage
+    ? deriveLegacySemanticsFromTaxonomy(
+      cloned.note_categories,
+      cloned.primary_category ?? NOTE_CATEGORY_DEFAULT,
+      cloned.note_form ?? NOTE_FORM_DEFAULT,
+      cloned.note_scene ?? cloned.note_kind ?? NOTE_SCENE_DEFAULT,
+      cloned.lifecycle_stage ?? cloned.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+    )
+    : deriveNoteTaxonomyFromLegacy(
+      cloned.note_types,
+      cloned.node_type ?? 'note',
+      cloned.note_kind ?? NOTE_SCENE_DEFAULT,
+      cloned.node_status ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+    );
+  cloned.note_categories = taxonomy.note_categories;
+  cloned.primary_category = taxonomy.primary_category;
+  cloned.note_form = taxonomy.note_form;
+  cloned.note_scene = taxonomy.note_scene;
+  cloned.lifecycle_stage = taxonomy.lifecycle_stage;
+  cloned.note_types = taxonomy.note_types ?? cloned.note_types;
+  cloned.node_type = taxonomy.node_type ?? cloned.node_type;
+  cloned.note_kind = taxonomy.note_kind ?? cloned.note_kind;
+  cloned.node_status = taxonomy.node_status ?? cloned.node_status;
   cloned.can_edit = Boolean(cloned.can_edit);
   return cloned;
 };
@@ -611,7 +594,6 @@ watch(() => props.modelValue, async newVal => {
 }, { immediate: true });
 
 watch([() => currentNote.value?.id, () => effectiveReadonly.value], async ([noteId, readonly]) => {
-  colorPickerVisible.value = false;
   if (!noteId || readonly) {
     destroyCustomFieldSortable();
     return;
@@ -669,6 +651,21 @@ const onWeightChange = (value: number | undefined) => {
 
 const onWeightBlur = () => { if (currentNote.value) onWeightChange(currentNote.value.weight); };
 
+const normalizePrivateLevel = (value: number) => Math.max(0, Math.trunc(value));
+
+const onPrivateLevelChange = (value: number | undefined) => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  if (value == null || Number.isNaN(value)) {
+    const baseline = autoSave.getBaselineSnapshot();
+    currentNote.value.private_level = baseline ? normalizePrivateLevel(baseline.private_level) : 0;
+    return;
+  }
+  currentNote.value.private_level = normalizePrivateLevel(value);
+  queueMetaAutoSave();
+};
+
+const onPrivateLevelBlur = () => { if (currentNote.value) onPrivateLevelChange(currentNote.value.private_level); };
+
 const handleTimeChange = (value: string) => {
   if (!value || !currentNote.value || effectiveReadonly.value) return;
   const d = new Date(currentNote.value.start_at);
@@ -681,33 +678,46 @@ const handleTimeChange = (value: string) => {
   queueMetaAutoSave();
 };
 
-const handleColorChange = (value: string | null) => {
-  if (!currentNote.value || effectiveReadonly.value) return;
-  currentNote.value.color = normalizeNodeColor(value) ?? null;
-  queueMetaAutoSave();
+const syncLegacyFieldsFromTaxonomy = () => {
+  if (!currentNote.value) return;
+  const legacy = deriveLegacySemanticsFromTaxonomy(
+    currentNote.value.note_categories,
+    currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT,
+    currentNote.value.note_form ?? NOTE_FORM_DEFAULT,
+    currentNote.value.note_scene ?? currentNote.value.note_kind ?? NOTE_SCENE_DEFAULT,
+    currentNote.value.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT
+  );
+  currentNote.value.note_categories = legacy.note_categories;
+  currentNote.value.primary_category = legacy.primary_category;
+  currentNote.value.note_form = legacy.note_form;
+  currentNote.value.note_scene = legacy.note_scene;
+  currentNote.value.lifecycle_stage = legacy.lifecycle_stage;
+  currentNote.value.note_types = legacy.note_types;
+  currentNote.value.node_type = legacy.node_type;
+  currentNote.value.note_kind = legacy.note_kind;
+  currentNote.value.node_status = legacy.node_status;
 };
 
-const toggleColorPickerAutoClose = () => {
-  colorPickerAutoClose.value = !colorPickerAutoClose.value;
-};
-
-const handleColorPanelClick = (event: MouseEvent) => {
-  if (!colorPickerAutoClose.value) return;
-  const target = event.target as HTMLElement | null;
-  if (target?.closest('.el-color-predefine__color-selector')) {
-    colorPickerVisible.value = false;
-  }
-};
-
-const resetNoteColor = () => {
-  if (!currentNote.value || !currentNote.value.color || effectiveReadonly.value) return;
-  currentNote.value.color = null;
+const handleNoteCategoriesChange = (value: unknown) => {
+  if (!currentNote.value || nodeTypeReadonly.value) return;
+  const nextNoteCategories = normalizeNoteTypeAssignments(value, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
+  currentNote.value.note_categories = nextNoteCategories;
+  currentNote.value.primary_category = derivePrimaryNodeType(nextNoteCategories, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
+  syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };
 
-const togglePrivateLevel = () => {
+const handleNoteFormChange = (value: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
-  currentNote.value.private_level = currentNote.value.private_level > 0 ? 0 : 1;
+  currentNote.value.note_form = value || NOTE_FORM_DEFAULT;
+  syncLegacyFieldsFromTaxonomy();
+  queueMetaAutoSave({ immediate: true });
+};
+
+const handleLifecycleStageChange = (value: string) => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  currentNote.value.lifecycle_stage = value || NOTE_LIFECYCLE_STAGE_DEFAULT;
+  syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };
 
@@ -768,14 +778,15 @@ const setBooleanFieldValue = (item: NoteCustomFieldItem, value: string | number 
 };
 
 const formatDateDetailed = (timestamp: number) => formatNoteDateTimeDetailed(timestamp);
-const getFieldName = (field: string) => ({ n: '类型', s: '状态', t: '标题', w: '权重', cl: '颜色', p: '私密', c: '内容' }[field] || field);
-const getFieldTagType = (field: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined => (({ n: 'primary', s: 'warning', t: undefined, w: 'success', cl: 'success', p: 'danger', c: 'info' } as const)[field]);
+const getFieldName = (field: string) => ({ n: '主分类', nt: '分类组', s: '阶段', t: '标题', w: '权重', cl: '颜色', p: '私密', c: '内容' }[field] || field);
+const getFieldTagType = (field: string): 'primary' | 'success' | 'info' | 'warning' | 'danger' | undefined => (({ n: 'primary', nt: 'primary', s: 'warning', t: undefined, w: 'success', cl: 'success', p: 'danger', c: 'info' } as const)[field]);
 
 const formatHistoryValue = (field: string, value: any) => {
   if (field === 'n') return getNodeTypeConfig(value).label;
+  if (field === 'nt') return normalizeNoteTypeAssignments(value).map(item => `${getNodeTypeConfig(item.key).label}${item.weight >= 100 ? '' : `(${item.weight})`}`).join('，');
   if (field === 's') return getNodeStatusConfig(value).label;
   if (field === 'cl') return value ? String(value).toUpperCase() : '跟随类型';
-  if (field === 'p') return Number(value) > 0 ? `开启 (${value})` : '关闭';
+  if (field === 'p') return `值 ${normalizePrivateLevel(Number(value) || 0)}`;
   if (field === 'c') return `${value} 字`;
   return value;
 };
@@ -801,14 +812,9 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .header-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .primary-row{gap:10px}.secondary-row{justify-content:space-between;font-size:12px;color:#909399}
 .title-input{flex:1;font-size:18px}
-.meta-group,.meta-actions-slot,.inline-control,.color-control-body,.save-status,.time-tag{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.note-color-trigger{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:4px;border:1px solid var(--el-border-color);border-radius:4px;background:#fff;cursor:pointer;transition:border-color .2s ease,box-shadow .2s ease}
-.note-color-trigger:hover:not(:disabled){border-color:var(--el-border-color-hover)}.note-color-trigger:focus-visible{outline:2px solid var(--el-color-primary);outline-offset:1px}
-.note-color-trigger.is-disabled{cursor:not-allowed;background:var(--el-fill-color-light);opacity:.8}.note-color-trigger__swatch{display:inline-flex;align-items:center;justify-content:center;width:100%;height:100%;border:1px solid var(--el-text-color-secondary);border-radius:var(--el-border-radius-small);background-clip:padding-box}
-.note-color-trigger.is-empty .note-color-trigger__swatch{background-image:linear-gradient(45deg,#f2f3f5 25%,transparent 25%),linear-gradient(135deg,#f2f3f5 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#f2f3f5 75%),linear-gradient(135deg,transparent 75%,#f2f3f5 75%);background-position:0 0,6px 0,6px -6px,0 6px;background-size:12px 12px}
-.note-color-trigger__empty-icon{font-size:12px;color:var(--el-text-color-secondary)}
-.note-color-panel-shell{display:flex}
-.weight-control{width:150px}.label,.private-hint,.custom-fields-label .label{font-size:12px;color:#606266;white-space:nowrap}
+.meta-group,.meta-actions-slot,.inline-control,.save-status,.time-tag{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.weight-control,.private-control{flex-wrap:nowrap}
+.weight-value-input{width:68px}.private-level-control{width:58px}.label,.custom-fields-label .label{font-size:12px;color:#606266;white-space:nowrap}
 .history-toggle{margin-left:auto}.start-date-picker{width:130px;margin-left:5px}
 .custom-fields-row{display:flex;flex-direction:column;gap:4px;margin-top:5px}.custom-fields-label{display:flex;align-items:center;gap:5px}
 .custom-fields-container{width:100%;display:flex;flex-direction:column;border:1px solid #f2f2f2;border-radius:4px;overflow:hidden}
@@ -825,11 +831,4 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .history-time{color:#909399;white-space:nowrap;font-family:monospace}.history-content{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.field-tag{min-width:40px;text-align:center}.history-value{color:#303133;word-break:break-all}
 .status-saved{color:#67c23a}.status-saving{color:#e6a23c}.status-unsaved,.status-readonly{color:#909399}
 .state-line,.state-block{display:flex;justify-content:center;align-items:center;color:#909399}.state-line{gap:8px;font-size:14px}.state-block{height:100%}
-:deep(.note-color-picker-popover){padding:0;border:none !important;box-shadow:var(--el-box-shadow-light)}
-:deep(.note-color-picker-popover .el-popover__title){display:none}
-:deep(.note-color-picker-popover .el-color-picker-panel){width:300px;padding:12px}
-:deep(.note-color-picker-popover .el-color-picker-panel__footer){align-items:center;gap:8px}
-:deep(.note-color-picker-popover .el-color-picker-panel__footer .el-input){width:150px}
-.color-panel-auto-close-btn{border-color:var(--el-border-color);color:var(--el-text-color-secondary);background:var(--el-fill-color-light)}
-.color-panel-auto-close-btn.is-active{border-color:#0f766e;color:#fff;background:linear-gradient(135deg,#14b8a6,#0f766e)}
 </style>

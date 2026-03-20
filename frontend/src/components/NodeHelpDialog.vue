@@ -1,18 +1,18 @@
 <template>
   <el-dialog
     v-model="visible"
-    title="节点属性说明 (Node Properties)"
+    title="节点维度说明"
     width="600px"
     class="node-help-dialog"
   >
     <div class="help-content">
       <el-tabs v-model="activeTab">
-        <el-tab-pane label="节点类型 (Types)" name="type">
-          <p class="section-intro">类型提供节点的<b>默认颜色主题</b>；单个节点也可以再覆盖自定义颜色。</p>
+        <el-tab-pane label="分类" name="category">
+          <p class="section-intro">分类提供节点的<b>颜色主题</b>；多个分类会按各自权重自动混合。</p>
           <div class="legend-grid">
             <div class="legend-header">
               <span>样式示例</span>
-              <span>名称 (中/英)</span>
+              <span>名称</span>
               <span>含义说明</span>
             </div>
             <div v-for="type in orderedTypes" :key="type.id" class="legend-row">
@@ -23,19 +23,40 @@
               </div>
               <div class="legend-name">
                 <div class="zh">{{ type.label }}</div>
-                <div class="en">{{ type.labelEn }}</div>
               </div>
               <div class="legend-desc">{{ type.description }}</div>
             </div>
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="节点状态 (Statuses)" name="status">
-          <p class="section-intro">状态决定了节点的<b>边框线型</b>和<b>背景填充</b>。</p>
+        <el-tab-pane label="形态" name="form">
+          <p class="section-intro">形态提供节点的<b>内容载体</b>语义；笔记默认不加图标，其它形态会显示各自的专属图标。</p>
+          <div class="legend-grid">
+            <div class="legend-header">
+              <span>样式示例</span>
+              <span>名称</span>
+              <span>使用场景</span>
+            </div>
+            <div v-for="form in orderedForms" :key="form.id" class="legend-row">
+              <div class="legend-sample">
+                <div class="form-sample">
+                  <NoteFormBadge :form="form.id" :show-label="true" />
+                </div>
+              </div>
+              <div class="legend-name">
+                <div class="zh">{{ form.label }}</div>
+              </div>
+              <div class="legend-desc">{{ getFormRule(form) }}</div>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="阶段" name="stage">
+          <p class="section-intro">阶段决定了节点的<b>边框线型</b>和<b>背景填充</b>。</p>
           <div class="legend-grid status-grid">
             <div class="legend-header">
               <span>样式示例</span>
-              <span>名称 (中/英)</span>
+              <span>名称</span>
               <span>样式规则</span>
             </div>
             <div v-for="status in orderedStatuses" :key="status.id" class="legend-row">
@@ -46,7 +67,6 @@
               </div>
               <div class="legend-name">
                 <div class="zh">{{ status.label }}</div>
-                <div class="en">{{ status.labelEn }}</div>
               </div>
               <div class="legend-desc">{{ getStatusRule(status) }}</div>
             </div>
@@ -59,13 +79,16 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
-import { 
-  getOrderedNodeTypes, 
-  getOrderedNodeStatuses, 
-  type NodeTypeItem, 
+import {
+  getOrderedNodeTypes,
+  getOrderedNodeStatuses,
+  getOrderedNoteForms,
+  type NodeTypeItem,
+  type NoteFormItem,
   type NodeStatusItem,
   getNodeStyle 
 } from '@/utils/nodeConfig';
+import NoteFormBadge from './NoteFormBadge.vue';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -80,13 +103,13 @@ const visible = computed({
   set: (val) => emit('update:modelValue', val)
 });
 
-const activeTab = ref('type');
+const activeTab = ref('category');
 const orderedTypes = computed(() => getOrderedNodeTypes());
+const orderedForms = computed(() => getOrderedNoteForms());
 const orderedStatuses = computed(() => getOrderedNodeStatuses());
 
-// Helper for Type Preview
+// Helper for category preview
 const getTypeStyle = (type: NodeTypeItem) => {
-  // For type preview, use default 'idea' style (solid very light gray border)
   const style = getNodeStyle(type.id, 'idea');
   return {
     borderColor: style.borderColor,
@@ -104,9 +127,8 @@ const getTypeStyle = (type: NodeTypeItem) => {
   };
 };
 
-// Helper for Status Preview (Use 'Task' blue as base color context)
+// Helper for stage preview (use Task blue as base color context)
 const getStatusStyle = (status: NodeStatusItem) => {
-  // Mock context: Type = Task (Blue)
   const style = getNodeStyle('task', status.id);
   return {
     ...style,
@@ -120,13 +142,25 @@ const getStatusStyle = (status: NodeStatusItem) => {
   };
 };
 
+const getFormRule = (form: NoteFormItem) => {
+  const map: Record<string, string> = {
+    note: '默认通用形态，标题旁不额外显示图标。',
+    document: '适合正文排版和长内容，会显示文档图标。',
+    memo: '适合短平快记录和轻量便签，会显示备忘图标。',
+    music: '适合音乐作品、专辑和音频素材，会显示音乐图标。',
+    video: '适合电影、剧集和视频资料，会显示影视图标。',
+    book: '适合书籍、电子书和长篇阅读内容，会显示书籍图标。'
+  };
+  return map[form.id] || form.description;
+};
+
 const getStatusRule = (status: NodeStatusItem) => {
   const map: Record<string, string> = {
     idea: '实线超浅灰边框，无填充',
     todo: '虚线深灰边框，无填充',
     doing: '实线黑色边框，无填充',
-    predone: '虚线类型色边框，类型色浅色填充',
-    done: '实线类型色边框，类型色浅色填充',
+    predone: '虚线分类色边框，分类色浅色填充',
+    done: '实线分类色边框，分类色浅色填充',
     delete: '实线超浅灰边框，文字删除线，半透明'
   };
   return map[status.id] || status.description;
@@ -182,6 +216,17 @@ const getStatusRule = (status: NodeStatusItem) => {
 .legend-sample {
   display: flex;
   justify-content: center;
+}
+
+.form-sample {
+  width: 100%;
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed #dcdfe6;
+  border-radius: 4px;
+  background: #fafafa;
 }
 
 .sample-box {

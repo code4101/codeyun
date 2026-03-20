@@ -114,6 +114,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'tools/color-tools',
+        name: 'ColorTools',
+        component: () => import('@/views/tools/ColorTools.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'tools/image-browser',
         name: 'ImageBrowser',
         component: () => import('@/views/tools/ImageBrowser.vue'),
