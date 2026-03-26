@@ -139,6 +139,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'tools/ai-git-commit',
+        name: 'AiGitCommit',
+        component: () => import('@/views/tools/AiGitCommit.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
         path: 'cluster/logs/:id',
         name: 'TaskLogs',
         component: () => import('@/views/TaskLogs.vue'),

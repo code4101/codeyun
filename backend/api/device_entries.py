@@ -35,7 +35,22 @@ from backend.api.filesystem import (
     sync_device_file_records,
     update_device_file_weight_for_request,
 )
+from backend.api.git_tools import (
+    GitToolCommitResponse,
+    GitToolCommitRequest,
+    GitToolContextRequest,
+    GitToolContextResponse,
+    GitToolGenerateMessageRequest,
+    GitToolGenerateMessageResponse,
+    GitToolInspectRequest,
+    GitToolInspectResponse,
+)
 from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_manager
+from backend.core.ai_git_commit import (
+    AiGitCommitError,
+    generate_ai_git_commit_draft,
+    resolve_ai_runtime_config,
+)
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.device_file_cover import (
@@ -45,6 +60,7 @@ from backend.core.device_file_cover import (
     upsert_device_file_metadata_batch,
 )
 from backend.core.device_files import update_device_file_weight
+from backend.core.git_tools import GitToolError, collect_git_commit_context, create_git_commit, inspect_git_repository
 from backend.db import get_session
 from backend.models import DeviceFile
 from backend.models import Task as TaskModel
@@ -307,6 +323,24 @@ def _fetch_remote_json(
         return {}, resp
 
     return resp.json(), None
+
+
+def _raise_remote_json_error(resp: requests.Response) -> None:
+    detail = None
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        raw_detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if isinstance(raw_detail, str) and raw_detail.strip():
+            detail = raw_detail.strip()
+
+    if not detail:
+        detail = resp.text.strip() or f"Remote request failed with HTTP {resp.status_code}"
+
+    raise HTTPException(status_code=resp.status_code, detail=detail)
 
 
 def _proxy_request(
@@ -789,6 +823,130 @@ def associate_process_for_entry(
     if entry.mode == "local":
         return _associate_local_process(session, entry, task_id, pid)
     return _proxy_request(entry, "POST", f"/task/{task_id}/associate", json_body=req)
+
+
+@router.post("/{entry_id}/git/inspect", response_model=GitToolInspectResponse)
+def inspect_git_for_entry(
+    entry_id: str,
+    req: GitToolInspectRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    try:
+        if entry.mode == "local":
+            return inspect_git_repository(req.cwd)
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/git-tools/inspect",
+        json_body=req.model_dump(),
+        timeout=20,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    return GitToolInspectResponse.model_validate(payload)
+
+
+@router.post("/{entry_id}/git/generate-message", response_model=GitToolGenerateMessageResponse)
+def generate_git_message_for_entry(
+    entry_id: str,
+    req: GitToolGenerateMessageRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        if entry.mode == "local":
+            context_payload = collect_git_commit_context(req.cwd, max_files=req.max_files)
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/context",
+                json_body=GitToolContextRequest(
+                    cwd=req.cwd,
+                    max_files=req.max_files,
+                ).model_dump(),
+                timeout=30,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            context_payload = GitToolContextResponse.model_validate(payload).model_dump()
+
+        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+            session=session,
+            current_user=current_user,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+        )
+        draft = generate_ai_git_commit_draft(
+            context_text=str(context_payload["prompt_context"]),
+            provider_id=provider_id,
+            base_url=base_url,
+            api_key=api_key,
+            model=req.model,
+            style=req.style,
+            include_body=req.include_body,
+            extra_providers=extra_providers,
+        )
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AiGitCommitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    inspect_payload = GitToolInspectResponse.model_validate(
+        {
+            key: value
+            for key, value in context_payload.items()
+            if key in GitToolInspectResponse.model_fields
+        }
+    )
+    return GitToolGenerateMessageResponse(
+        inspect=inspect_payload,
+        **draft,
+    )
+
+
+@router.post("/{entry_id}/git/commit", response_model=GitToolCommitResponse)
+def commit_git_for_entry(
+    entry_id: str,
+    req: GitToolCommitRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        if entry.mode == "local":
+            return create_git_commit(
+                req.cwd,
+                subject=req.subject,
+                body=req.body,
+                add_all=req.add_all,
+            )
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/git-tools/commit",
+        json_body=req.model_dump(),
+        timeout=30,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    return GitToolCommitResponse.model_validate(payload)
 
 
 @router.get("/{entry_id}/files/roots")

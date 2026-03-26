@@ -14,6 +14,7 @@ from backend.api.device_entries import router as device_entries_router
 from backend.api.device_control import router as device_control_router
 from backend.api.fanxiu import router as fanxiu_router
 from backend.api.filesystem import router as filesystem_router
+from backend.api.git_tools import router as git_tools_router
 from backend.api.notes import router as notes_router
 from backend.api.task_manager import (
     router as task_router,
@@ -79,6 +80,11 @@ app.include_router(
     device_control_router,
     prefix="/api/device-control",
     tags=["device-control"],
+)
+app.include_router(
+    git_tools_router,
+    prefix="/api/git-tools",
+    tags=["git-tools"],
 )
 app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
