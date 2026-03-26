@@ -8,6 +8,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 from backend.models import NoteEdge, NoteNode
+from backend.core.note_semantics import NOTE_LIFECYCLE_STAGE_DEFAULT, normalize_lifecycle_stage
 
 Predicate = Callable[["NoteVisit"], bool]
 TransitionFilter = Callable[["NoteVisit", NoteEdge, "NoteVisit"], bool]
@@ -39,7 +40,10 @@ def _get_note_value(note: NoteNode, field_name: str) -> Any:
             return custom_fields.get(key)
         return None
 
-    return getattr(note, field_name, None)
+    value = getattr(note, field_name, None)
+    if field_name in {"lifecycle_stage", "node_status"}:
+        return normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+    return value
 
 
 def _matches_value(field_value: Any, op: CompareOp, value: Any = None, values: Optional[Sequence[Any]] = None) -> bool:
@@ -312,7 +316,20 @@ class NoteFilterFactory:
         value: Any = None,
         values: Optional[Sequence[Any]] = None,
     ) -> Predicate:
-        return lambda visit: _matches_value(_get_note_value(visit.node, field_name), op, value=value, values=values)
+        normalized_value = value
+        normalized_values = list(values or [])
+        if field_name in {"lifecycle_stage", "node_status"}:
+            normalized_value = normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT) if value is not None else None
+            normalized_values = [
+                normalize_lifecycle_stage(item, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+                for item in normalized_values
+            ]
+        return lambda visit: _matches_value(
+            _get_note_value(visit.node, field_name),
+            op,
+            value=normalized_value,
+            values=normalized_values,
+        )
 
     @classmethod
     def match_custom_field(

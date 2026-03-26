@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import {
+  findPrivateMenuIndex,
+  getDefaultPrivateOpeneds,
+  isPrivateMenuItemVisible,
+  privateMenuSections,
+} from '@/private';
 import { useUserStore } from '@/store/userStore';
 import {
   Document,
@@ -12,6 +18,7 @@ import {
   // Cellphone,
   MagicStick,
   Box,
+  ChatDotRound,
   Expand,
   Fold,
   InfoFilled,
@@ -33,16 +40,33 @@ const activeMenu = computed(() => {
     return '/cluster/files';
   }
   if (route.path.startsWith('/cluster/')) return '/cluster/tasks';
+  const privateMenuIndex = findPrivateMenuIndex(route.path);
+  if (privateMenuIndex) return privateMenuIndex;
   return route.path;
 });
 
+const visiblePrivateMenuSections = computed(() =>
+  privateMenuSections
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) =>
+        isPrivateMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin),
+      ),
+    }))
+    .filter((section) => section.items.length > 0),
+);
+
 const defaultOpeneds = computed(() => {
+  const openeds: string[] = [];
   if (route.path === '/cluster') return ['cluster-tools'];
-  if (route.path.startsWith('/cluster/')) return ['cluster-tools'];
-  if (route.path.startsWith('/fanxiu/')) return ['game-tools', 'fanxiu'];
-  if (route.path.startsWith('/magic-craft/')) return ['game-tools', 'magic-craft'];
-  if (route.path.startsWith('/dsp/')) return ['game-tools'];
-  return [];
+  if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
+  if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
+  if (route.path.startsWith('/tools/')) openeds.push('tools');
+  if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
+  if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
+  if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
+  openeds.push(...getDefaultPrivateOpeneds(route.path));
+  return Array.from(new Set(openeds));
 });
 
 const handleLogout = () => {
@@ -84,6 +108,15 @@ const handleLogin = () => {
             <el-menu-item index="/tools/image-browser">文件浏览</el-menu-item>
             <el-menu-item index="/tools/color-tools">颜色工具</el-menu-item>
           </el-sub-menu>
+
+          <el-sub-menu index="ai-tools">
+            <template #title>
+              <el-icon><ChatDotRound /></el-icon>
+              <span>AI工具</span>
+            </template>
+            <el-menu-item index="/tools/ai-config">配置</el-menu-item>
+            <el-menu-item index="/tools/ai-chat">AI聊天</el-menu-item>
+          </el-sub-menu>
           
           <el-sub-menu index="game-tools">
             <template #title>
@@ -117,6 +150,24 @@ const handleLogin = () => {
             </template>
             <el-menu-item index="/notes/star-map">星图笔记</el-menu-item>
             <el-menu-item index="/notes/infinite-canvas">无限画布</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu
+            v-for="section in visiblePrivateMenuSections"
+            :key="section.key"
+            :index="section.key"
+          >
+            <template #title>
+              <el-icon><Box /></el-icon>
+              <span>{{ section.title }}</span>
+            </template>
+            <el-menu-item
+              v-for="item in section.items"
+              :key="item.key"
+              :index="item.path"
+            >
+              {{ item.title }}
+            </el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu index="cluster-tools" v-if="userStore.isAuthenticated">

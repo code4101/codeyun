@@ -1,4 +1,4 @@
-from backend.migrations.manager import v16_migrate_note_weight_levels, v17_add_note_semantics_fields, v18_add_note_types, v19_add_note_taxonomy_fields, v20_repair_note_category_drift
+from backend.migrations.manager import v16_migrate_note_weight_levels, v17_add_note_semantics_fields, v18_add_note_types, v19_add_note_taxonomy_fields, v20_repair_note_category_drift, v21_merge_predone_into_done
 from backend.models import AppSetting, NoteNode
 
 
@@ -123,3 +123,18 @@ def test_v20_repairs_primary_category_drift_and_general_label(session):
     repaired_palette = session.get(AppSetting, "note.category_palette.user.1")
     assert repaired_palette is not None
     assert repaired_palette.value["items"][0]["label"] == "综合"
+
+
+def test_v21_merges_predone_into_done(session):
+    note = make_note("note-predone", 0, node_type="task")
+    note.node_status = "predone"
+    note.lifecycle_stage = "predone"
+    session.add(note)
+    session.commit()
+
+    v21_merge_predone_into_done(session)
+
+    migrated = session.get(NoteNode, note.id)
+    assert migrated is not None
+    assert migrated.node_status == "done"
+    assert migrated.lifecycle_stage == "done"

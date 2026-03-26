@@ -96,6 +96,7 @@ const editorPaneStyle = computed(() => (
   display: flex;
   flex-direction: column;
   background-color: #fff;
+  min-height: 0;
 }
 
 .note-editor-pane.is-fill {
@@ -114,6 +115,7 @@ const editorPaneStyle = computed(() => (
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  min-height: 0;
 }
 
 .note-editor-pane.is-fill .note-editor-content {
@@ -121,7 +123,7 @@ const editorPaneStyle = computed(() => (
   min-height: 0;
   height: 100%;
   padding: 20px;
-  overflow-y: auto;
+  overflow: hidden;
 }
 
 .note-editor-pane.is-flow .note-editor-content {

@@ -18,7 +18,17 @@
     <Handle id="r-s" type="source" :position="Position.Right" />
 
     <div class="node-content">
-      <div class="node-title" :style="titleStyle">
+      <div v-if="useSplitTitle" class="node-title node-title--split" :style="titleStyle">
+        <div class="node-title-layer" :style="filledTitleLayerStyle">
+          <NoteFormBadge :form="data.note_form" compact />
+          <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
+        </div>
+        <div class="node-title-layer" :style="emptyTitleLayerStyle">
+          <NoteFormBadge :form="data.note_form" compact />
+          <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
+        </div>
+      </div>
+      <div v-else class="node-title" :style="titleStyle">
         <NoteFormBadge :form="data.note_form" compact />
         <span class="node-title-text">{{ data.title || 'Untitled' }}</span>
       </div>
@@ -29,9 +39,10 @@
 <script setup lang="ts">
 import { Handle, Position } from '@vue-flow/core'
 import { computed } from 'vue'
-import { getNodeStyle } from '@/utils/nodeConfig'
+import { getNodeDisplayStyle } from '@/utils/nodeConfig'
 import { getNoteWeightScaleFactor } from '@/utils/noteWeight'
 import NoteFormBadge from './NoteFormBadge.vue'
+import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress'
 
 const props = defineProps<{
   data: {
@@ -45,7 +56,10 @@ const props = defineProps<{
     weight_mode?: string | null,
     node_status?: string | null,
     lifecycle_stage?: string | null,
-    color?: string | null
+    color?: string | null,
+    custom_fields?: unknown,
+    completion_progress_expr?: string | null,
+    completion_progress?: number | null
   }
 }>()
 
@@ -53,11 +67,18 @@ const BASE_WIDTH = 150;
 const BASE_HEIGHT = 50;
 
 const computedStyle = computed(() => {
-    return getNodeStyle(
+    const completionProgress = resolveCompletionProgressFillRatio({
+      lifecycleStage: props.data.lifecycle_stage ?? props.data.node_status,
+      completionProgress: props.data.completion_progress,
+      completionProgressExpr: props.data.completion_progress_expr,
+      customFields: props.data.custom_fields,
+    });
+    return getNodeDisplayStyle(
       props.data.primary_category ?? props.data.node_type,
       props.data.lifecycle_stage ?? props.data.node_status,
       props.data.color,
-      props.data.note_categories ?? props.data.note_types
+      props.data.note_categories ?? props.data.note_types,
+      completionProgress
     );
 });
 
@@ -72,7 +93,8 @@ const nodeStyle = computed(() => {
         borderColor: style.borderColor,
         borderWidth: style.borderWidth,
         borderStyle: style.borderStyle,
-        background: style.backgroundColor,
+        backgroundColor: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
         opacity: style.opacity,
     };
 });
@@ -90,6 +112,27 @@ const titleStyle = computed(() => {
         color: style.color,
         fontWeight: style.fontWeight,
         textDecoration: style.textDecoration,
+    };
+});
+
+const useSplitTitle = computed(() => {
+    const ratio = computedStyle.value.partialFillRatio;
+    return typeof ratio === 'number' && ratio > 0 && ratio < 1;
+});
+
+const filledTitleLayerStyle = computed(() => {
+    const ratio = computedStyle.value.partialFillRatio ?? 0;
+    return {
+        color: computedStyle.value.fillTextColor,
+        clipPath: `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`,
+    };
+});
+
+const emptyTitleLayerStyle = computed(() => {
+    const ratio = computedStyle.value.partialFillRatio ?? 0;
+    return {
+        color: computedStyle.value.emptyTextColor,
+        clipPath: `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`,
     };
 });
 </script>
@@ -133,7 +176,23 @@ const titleStyle = computed(() => {
   pointer-events: none; /* 防止文字干扰拖拽 */
 }
 
+.node-title--split {
+  display: grid;
+  width: 100%;
+}
+
+.node-title-layer {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .node-title-text{
+  flex: 1;
   min-width:0;
   white-space: nowrap;
   overflow: hidden;

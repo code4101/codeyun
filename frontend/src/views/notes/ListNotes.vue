@@ -95,6 +95,19 @@
             <el-table-column prop="lifecycle_stage" label="阶段" width="100" sortable>
               <template #default="{ row }">
                 <span
+                  v-if="useSplitStatusBadge(row)"
+                  class="node-badge node-badge--split"
+                  :style="getStatusBadgeStyle(row)"
+                >
+                  <span class="node-badge-layer" :style="getStatusBadgeSplitLayerStyle(row, 'fill')">
+                    {{ getLifecycleStageLabel(row.lifecycle_stage) }}
+                  </span>
+                  <span class="node-badge-layer" :style="getStatusBadgeSplitLayerStyle(row, 'empty')">
+                    {{ getLifecycleStageLabel(row.lifecycle_stage) }}
+                  </span>
+                </span>
+                <span
+                  v-else
                   class="node-badge"
                   :style="getStatusBadgeStyle(row)"
                 >
@@ -137,6 +150,7 @@
       <template #editor>
         <NoteDetailPanel
           :noteId="currentNoteId"
+          editor-layout="fill"
           @update="handleNoteUpdate"
           @delete="handleNoteDelete"
           @create="handleNoteCreate"
@@ -171,9 +185,10 @@ import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import BatchNoteEditDialog from '@/components/BatchNoteEditDialog.vue';
-import { getNodeTypeConfig, getNodeStatusConfig, getNodeStyle } from '@/utils/nodeConfig';
+import { getNodeDisplayStyle, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
+import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 
 const noteStore = useNoteStore();
 const props = defineProps<{
@@ -321,7 +336,7 @@ const formatDate = (ts: number) => {
 
 const getCategoryLabel = (type: string | null) => getNodeTypeConfig(type || 'general').label;
 const getTitleStyle = (note: NoteNode) => {
-    const config = getNodeStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
+    const config = getNodeDisplayStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
     return {
         color: config.color,
         fontWeight: '500',
@@ -333,7 +348,7 @@ const getTitleStyle = (note: NoteNode) => {
 };
 
 const getTypeTagStyle = (note: NoteNode) => {
-    const config = getNodeStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
+    const config = getNodeDisplayStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
     return {
         color: config.color,
         fontWeight: 'bold',
@@ -345,7 +360,34 @@ const getTypeTagStyle = (note: NoteNode) => {
 
 const getLifecycleStageLabel = (status: string | null) => getNodeStatusConfig(status || 'idea').label;
 const getStatusBadgeStyle = (note: NoteNode) => {
-    return getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+    return getNodeDisplayStyle(
+      note.primary_category ?? note.node_type,
+      note.lifecycle_stage ?? note.node_status,
+      note.color,
+      note.note_categories ?? note.note_types,
+      resolveCompletionProgressFillRatio({
+        lifecycleStage: note.lifecycle_stage ?? note.node_status,
+        completionProgress: note.completion_progress,
+        completionProgressExpr: note.completion_progress_expr,
+        customFields: note.custom_fields,
+      })
+    );
+};
+
+const useSplitStatusBadge = (note: NoteNode) => {
+  const ratio = getStatusBadgeStyle(note).partialFillRatio;
+  return typeof ratio === 'number' && ratio > 0 && ratio < 1;
+};
+
+const getStatusBadgeSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
+  const style = getStatusBadgeStyle(note);
+  const ratio = style.partialFillRatio ?? 0;
+  return {
+    color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
+    clipPath: mode === 'fill'
+      ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
+      : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
+  };
 };
 
 const calculateListBounds = () => {
@@ -496,5 +538,14 @@ watch(filteredNotes, async () => {
   transition: all 0.2s;
   text-align: center;
   min-width: 40px; /* Optional: ensures minimum width for very short labels */
+}
+
+.node-badge--split {
+  display: grid;
+  overflow: hidden;
+}
+
+.node-badge-layer {
+  grid-area: 1 / 1;
 }
 </style>

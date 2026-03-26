@@ -20,6 +20,10 @@
           <div v-if="mode === 'form'" class="trigger-form-content">
             <NoteFormBadge :form="modelValue || 'note'" :show-label="true" />
           </div>
+          <div v-else-if="mode === 'status' && useSplitCurrentPreview" class="trigger-status-content trigger-status-content--split">
+            <span class="trigger-status-layer" :style="getCurrentStatusLayerStyle('fill')">{{ currentLabel }}</span>
+            <span class="trigger-status-layer" :style="getCurrentStatusLayerStyle('empty')">{{ currentLabel }}</span>
+          </div>
           <span v-else class="trigger-text">{{ currentLabel }}</span>
           <el-icon><ArrowDown /></el-icon>
         </div>
@@ -33,12 +37,20 @@
           :class="{ active: modelValue === item.id }"
           @click="selectItem(item.id)"
         >
-          <div class="item-preview" :style="getItemStyle(item)">
+          <div class="item-preview" :class="{ 'item-preview--split': mode === 'status' && useSplitItemPreview(item) }" :style="getItemStyle(item)">
             <NoteFormBadge
               v-if="mode === 'form'"
               :form="item.id"
               :show-label="true"
             />
+            <template v-else-if="mode === 'status' && useSplitItemPreview(item)">
+              <span class="item-preview-layer" :style="getStatusItemLayerStyle(item, 'fill')">
+                {{ item.label }}
+              </span>
+              <span class="item-preview-layer" :style="getStatusItemLayerStyle(item, 'empty')">
+                {{ item.label }}
+              </span>
+            </template>
             <template v-else>
               {{ item.label }}
             </template>
@@ -58,6 +70,7 @@ import {
   getOrderedNoteForms,
   getOrderedNodeStatuses, 
   getNodeStyle,
+  getNodeDisplayStyle,
   getNoteFormConfig,
   getNodeTypeConfig,
   getNodeStatusConfig,
@@ -73,6 +86,7 @@ const props = defineProps<{
   relatedType?: string | null; // For status mode to know color context
   customColor?: string | null;
   noteTypes?: NoteTypeAssignment[] | null;
+  completionProgress?: number | null;
   label?: string;
   showLabel?: boolean;
   showHelpIcon?: boolean;
@@ -108,6 +122,61 @@ const currentLabel = computed(() => {
   }
 });
 
+const currentStatusPreviewStyle = computed(() => {
+  if (props.mode !== 'status') return null;
+  return getNodeDisplayStyle(
+    props.relatedType || 'general',
+    props.modelValue || 'idea',
+    props.customColor,
+    props.noteTypes,
+    props.completionProgress
+  );
+});
+
+const currentStatusPreviewRatio = computed(() => {
+  const ratio = currentStatusPreviewStyle.value?.partialFillRatio;
+  return typeof ratio === 'number' && ratio > 0 && ratio < 1 ? ratio : null;
+});
+
+const useSplitCurrentPreview = computed(() => currentStatusPreviewRatio.value !== null);
+
+const getCurrentStatusLayerStyle = (mode: 'fill' | 'empty') => {
+  const style = currentStatusPreviewStyle.value;
+  const ratio = currentStatusPreviewRatio.value ?? 0;
+  if (!style) return {};
+  return {
+    color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
+    clipPath: mode === 'fill'
+      ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
+      : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
+  };
+};
+
+const getStatusItemPreviewStyle = (statusId: string) => getNodeDisplayStyle(
+  props.relatedType || 'general',
+  statusId,
+  props.customColor,
+  props.noteTypes,
+  statusId === 'done' ? 0.58 : null
+);
+
+const useSplitItemPreview = (item: NodeTypeItem | NodeStatusItem | NoteFormItem) => {
+  if (props.mode !== 'status') return false;
+  const ratio = getStatusItemPreviewStyle(item.id).partialFillRatio;
+  return typeof ratio === 'number' && ratio > 0 && ratio < 1;
+};
+
+const getStatusItemLayerStyle = (item: NodeTypeItem | NodeStatusItem | NoteFormItem, mode: 'fill' | 'empty') => {
+  const style = getStatusItemPreviewStyle(item.id);
+  const ratio = style.partialFillRatio ?? 0;
+  return {
+    color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
+    clipPath: mode === 'fill'
+      ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
+      : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
+  };
+};
+
 // Trigger Style (The button itself)
 const triggerStyle = computed(() => {
   const minWidth = props.triggerMinWidth == null
@@ -141,11 +210,12 @@ const triggerStyle = computed(() => {
   } else {
     // If mode is status, we show the status style (border type etc)
     // We need to use getNodeStyle with the relatedType
-    const style = getNodeStyle(typeId, statusId, props.customColor, props.noteTypes);
+    const style = getNodeDisplayStyle(typeId, statusId, props.customColor, props.noteTypes, props.completionProgress);
     return {
       borderColor: style.borderColor,
       color: style.color, // Usually type color
       backgroundColor: style.backgroundColor, // White or light color
+      backgroundImage: style.backgroundImage,
       borderWidth: style.borderWidth,
       borderStyle: style.borderStyle,
       textDecoration: style.textDecoration,
@@ -182,12 +252,12 @@ const getItemStyle = (item: NodeTypeItem | NodeStatusItem | NoteFormItem) => {
   } else {
     // Status Preview
     // Use relatedType if available, else use a default type (e.g. 'task' or 'note') for context
-    const typeId = props.relatedType || 'general';
-    const style = getNodeStyle(typeId, item.id, props.customColor, props.noteTypes);
+    const style = getStatusItemPreviewStyle(item.id);
     return {
       borderColor: style.borderColor,
       color: style.color,
       backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
       borderWidth: style.borderWidth,
       borderStyle: style.borderStyle,
       textDecoration: style.textDecoration,
@@ -270,6 +340,27 @@ const selectItem = (id: string) => {
   margin-right: 5px;
 }
 
+.trigger-status-content {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-right: 5px;
+  flex: 1;
+  justify-content: center;
+}
+
+.trigger-status-content--split {
+  display: grid;
+  width: 100%;
+}
+
+.trigger-status-layer {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 /* Dropdown Options */
 .selector-options {
   padding: 5px;
@@ -300,6 +391,17 @@ const selectItem = (id: string) => {
   font-size: 12px;
   transition: all 0.1s;
   padding: 0 4px;
+}
+
+.item-preview--split {
+  display: grid;
+}
+
+.item-preview-layer {
+  grid-area: 1 / 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .item-preview:hover {

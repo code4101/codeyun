@@ -2,9 +2,10 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
+import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Rank, Clock } from '@element-plus/icons-vue';
+import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Clock } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import Sortable from 'sortablejs';
 
@@ -530,7 +531,7 @@ const initSortable = () => {
   if (!el) return;
 
   sortableInstance = Sortable.create(el, {
-    handle: '.drag-handle',
+    handle: '.sortable-order-handle',
     animation: 150,
     onEnd: async ({ newIndex, oldIndex }: any) => {
       if (newIndex === oldIndex) return;
@@ -699,8 +700,8 @@ onUnmounted(() => {
 
     <el-table ref="tableRef" :data="currentTasks" v-loading="loading" style="width: 100%" row-key="id">
       <el-table-column width="60" align="center" label="排序">
-        <template #default>
-          <el-icon class="drag-handle" style="cursor: move; font-size: 18px; color: #909399;"><Rank /></el-icon>
+        <template #default="scope">
+          <SortableOrderHandle :index="scope.$index" :total="currentTasks.length" size="sm" />
         </template>
       </el-table-column>
       <el-table-column prop="name" label="任务名称" width="200">

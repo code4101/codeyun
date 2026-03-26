@@ -97,6 +97,7 @@
             <NoteEditor
               v-model="form.content"
               mode="simple"
+              layout="flow"
             />
         </div>
       </el-form-item>
@@ -160,6 +161,7 @@ const form = reactive({
   noteCategories: [] as NoteTypeAssignment[],
   noteForm: NOTE_FORM_DEFAULT,
   lifecycleStage: NOTE_LIFECYCLE_STAGE_DEFAULT,
+  completionProgressExpr: '',
   noteScene: NOTE_SCENE_DEFAULT,
   linkToNew: true,
   linkFromNew: false
@@ -181,6 +183,7 @@ const initForm = () => {
   form.noteCategories = normalizeNoteTypeAssignments(props.sourceNote.note_categories, form.primaryCategory);
   form.noteForm = props.sourceNote.note_form || NOTE_FORM_DEFAULT;
   form.lifecycleStage = props.sourceNote.lifecycle_stage || NOTE_LIFECYCLE_STAGE_DEFAULT;
+  form.completionProgressExpr = props.sourceNote.completion_progress_expr || '';
   form.noteScene = props.sourceNote.note_scene || props.sourceNote.note_kind || NOTE_SCENE_DEFAULT;
   
   const startAt = new Date(props.sourceNote.start_at);
@@ -272,7 +275,8 @@ const handleCopy = async () => {
             form.primaryCategory,
             form.noteForm,
             form.noteScene,
-            form.lifecycleStage
+            form.lifecycleStage,
+            form.completionProgressExpr || null
         );
         
         if (newNote) {

@@ -362,6 +362,7 @@ source = { editable = "backend" }
 dependencies = [
     { name = "apscheduler" },
     { name = "chardet" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "pillow" },
     { name = "psutil" },
@@ -384,6 +385,7 @@ requires-dist = [
     { name = "apscheduler", specifier = ">=3.10.0,<4.0.0" },
     { name = "black", marker = "extra == 'dev'" },
     { name = "chardet", specifier = ">=5.2.0" },
+    { name = "cryptography", specifier = ">=46.0.0" },
     { name = "fastapi", specifier = ">=0.110.0" },
     { name = "isort", marker = "extra == 'dev'" },
     { name = "pillow", specifier = ">=10.0.0" },

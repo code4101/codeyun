@@ -12,6 +12,10 @@ import {
   NOTE_LIFECYCLE_STAGE_DEFAULT,
   NOTE_SCENE_DEFAULT
 } from '@/utils/noteSemantics';
+import {
+  evaluateCompletionProgressExpr,
+  getCompletionProgressExprFromCustomFields,
+} from '@/utils/noteProgress';
 
 export interface NoteNode {
   id: string;
@@ -32,6 +36,8 @@ export interface NoteNode {
   weight_mode?: string | null;
   private_level: number;
   custom_fields?: any[];
+  completion_progress_expr?: string | null;
+  completion_progress?: number | null;
   inherited_fields?: {
     direct?: any[];
     ancestors?: any[];
@@ -269,6 +275,19 @@ const normalizeNote = (raw: any): NoteNode => ({
       lifecycle_stage: taxonomy.lifecycle_stage,
       weight_mode: raw.weight_mode ?? null,
       private_level: normalizeInteger(raw.private_level, 0),
+      completion_progress_expr: (() => {
+        const expr = typeof raw.completion_progress_expr === 'string'
+          ? raw.completion_progress_expr
+          : getCompletionProgressExprFromCustomFields(raw.custom_fields);
+        return expr ? expr : null;
+      })(),
+      completion_progress: isFiniteNumber(raw.completion_progress)
+        ? Math.min(1, Math.max(0, Number(raw.completion_progress)))
+        : evaluateCompletionProgressExpr(
+          typeof raw.completion_progress_expr === 'string'
+            ? raw.completion_progress_expr
+            : getCompletionProgressExprFromCustomFields(raw.custom_fields)
+        ),
       can_edit: Boolean(raw.can_edit)
     };
   })()
@@ -1460,7 +1479,8 @@ export const useNoteStore = defineStore('notes', () => {
     primary_category: string | null = NOTE_CATEGORY_DEFAULT,
     note_form: string | null = NOTE_FORM_DEFAULT,
     note_scene: string | null = NOTE_SCENE_DEFAULT,
-    lifecycle_stage: string | null = NOTE_LIFECYCLE_STAGE_DEFAULT
+    lifecycle_stage: string | null = NOTE_LIFECYCLE_STAGE_DEFAULT,
+    completion_progress_expr: string | null = null
   ) => {
     bumpPending(1);
     try {
@@ -1500,6 +1520,7 @@ export const useNoteStore = defineStore('notes', () => {
         color,
         weight_mode,
         custom_fields,
+        completion_progress_expr,
         private_level: normalizeInteger(private_level, 0)
       };
       if (start_at !== undefined) data.start_at = start_at / 1000;
@@ -1539,6 +1560,7 @@ export const useNoteStore = defineStore('notes', () => {
       weight_mode?: string | null;
       private_level?: number;
       custom_fields?: any[];
+      completion_progress_expr?: string | null;
     }
   ) => {
     bumpPending(1);

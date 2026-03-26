@@ -86,6 +86,15 @@ class Settings:
     bootstrap_admin_username: str
     bootstrap_admin_password: str
     bootstrap_admin_force_reset_password: bool
+    ai_default_provider: str
+    ollama_base_url: str
+    ollama_default_model: str
+    ollama_timeout_seconds: float
+    deepseek_base_url: str
+    deepseek_api_key: str
+    deepseek_default_model: str
+    deepseek_timeout_seconds: float
+    deepseek_models: tuple[str, ...]
 
     @property
     def is_development(self) -> bool:
@@ -148,6 +157,27 @@ def load_settings() -> Settings:
     except ValueError:
         backend_port = 8000
 
+    try:
+        ollama_timeout_seconds = float(os.getenv("CODEYUN_OLLAMA_TIMEOUT_SECONDS") or 120)
+    except ValueError:
+        ollama_timeout_seconds = 120.0
+
+    try:
+        deepseek_timeout_seconds = float(os.getenv("CODEYUN_DEEPSEEK_TIMEOUT_SECONDS") or 120)
+    except ValueError:
+        deepseek_timeout_seconds = 120.0
+
+    ai_default_provider = (os.getenv("CODEYUN_AI_DEFAULT_PROVIDER") or "ollama").strip().lower() or "ollama"
+    ollama_base_url = (os.getenv("CODEYUN_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
+    ollama_default_model = (os.getenv("CODEYUN_OLLAMA_DEFAULT_MODEL") or "qwen3-vl:4b").strip()
+    deepseek_base_url = (os.getenv("CODEYUN_DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1").strip()
+    deepseek_api_key = (os.getenv("CODEYUN_DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or "").strip()
+    deepseek_default_model = (os.getenv("CODEYUN_DEEPSEEK_DEFAULT_MODEL") or "deepseek-chat").strip()
+    deepseek_models = _split_csv(os.getenv("CODEYUN_DEEPSEEK_MODELS")) or (
+        "deepseek-chat",
+        "deepseek-reasoner",
+    )
+
     return Settings(
         data_dir=data_dir,
         environment=environment,
@@ -169,6 +199,15 @@ def load_settings() -> Settings:
             "CODEYUN_BOOTSTRAP_ADMIN_FORCE_RESET_PASSWORD",
             False,
         ),
+        ai_default_provider=ai_default_provider,
+        ollama_base_url=ollama_base_url.rstrip("/"),
+        ollama_default_model=ollama_default_model or "qwen3-vl:4b",
+        ollama_timeout_seconds=max(1.0, ollama_timeout_seconds),
+        deepseek_base_url=deepseek_base_url.rstrip("/"),
+        deepseek_api_key=deepseek_api_key,
+        deepseek_default_model=deepseek_default_model or "deepseek-chat",
+        deepseek_timeout_seconds=max(1.0, deepseek_timeout_seconds),
+        deepseek_models=deepseek_models,
     )
 
 

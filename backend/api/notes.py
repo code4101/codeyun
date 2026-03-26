@@ -52,6 +52,12 @@ from backend.core.note_semantics import (
     normalize_note_scene,
     normalize_note_types,
 )
+from backend.core.note_progress import (
+    get_completion_progress_expr,
+    is_note_system_custom_field_key,
+    normalize_completion_progress_expr,
+    set_completion_progress_expr,
+)
 from backend.core.note_walker import NoteGraphContext, NoteWalker
 import time
 import uuid
@@ -445,6 +451,38 @@ def _build_legacy_fields_from_taxonomy(
     }
 
 
+def _merge_existing_progress_into_custom_fields(
+    custom_fields: Any,
+    existing_custom_fields: Any,
+) -> Any:
+    existing_expr = get_completion_progress_expr(existing_custom_fields)
+    if existing_expr is None:
+        return custom_fields
+    if get_completion_progress_expr(custom_fields) is not None:
+        return custom_fields
+    return set_completion_progress_expr(custom_fields, existing_expr)
+
+
+def _apply_completion_progress_expr_to_note_data(
+    note_data: dict[str, Any],
+    existing_custom_fields: Any,
+) -> dict[str, Any]:
+    next_data = dict(note_data)
+
+    if "custom_fields" in next_data:
+        next_data["custom_fields"] = _merge_existing_progress_into_custom_fields(
+            next_data.get("custom_fields"),
+            existing_custom_fields,
+        )
+
+    if "completion_progress_expr" in next_data:
+        expr = normalize_completion_progress_expr(next_data.pop("completion_progress_expr"))
+        target_custom_fields = next_data.get("custom_fields", existing_custom_fields)
+        next_data["custom_fields"] = set_completion_progress_expr(target_custom_fields, expr)
+
+    return next_data
+
+
 def _serialize_note_list(note: NoteNode, current_user: User) -> dict[str, Any]:
     return note_to_response_dict(note, current_user)
 
@@ -473,7 +511,7 @@ NOTE_HISTORY_NON_MERGEABLE_FIELDS = {"node_type", "note_types", "note_kind", "no
 
 
 def _prepare_note_update_data(db_note: NoteNode, raw_note_data: dict[str, Any]) -> dict[str, Any]:
-    note_data = dict(raw_note_data)
+    note_data = _apply_completion_progress_expr_to_note_data(raw_note_data, db_note.custom_fields)
     uses_new_taxonomy_input = bool({
         "note_categories",
         "primary_category",
@@ -665,44 +703,56 @@ def _get_rule_value(note: NoteNode, field: str):
             return custom_fields.get(key)
         return None
 
-    return getattr(note, field, None)
+    value = getattr(note, field, None)
+    if field in {"lifecycle_stage", "node_status"}:
+        return normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+    return value
 
 
 def _matches_rule(note: NoteNode, rule: NoteFilterRule) -> bool:
     field_value = _get_rule_value(note, rule.field)
     op = rule.op
+    rule_value = rule.value
+    rule_values = list(rule.values or [])
+
+    if rule.field in {"lifecycle_stage", "node_status"}:
+        rule_value = normalize_lifecycle_stage(rule.value, default=NOTE_LIFECYCLE_STAGE_DEFAULT) if rule.value is not None else None
+        rule_values = [
+            normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+            for value in rule_values
+        ]
 
     if op == "eq":
-        return field_value == rule.value
+        return field_value == rule_value
     if op == "neq":
-        return field_value != rule.value
+        return field_value != rule_value
     if op == "in":
-        return field_value in rule.values
+        return field_value in rule_values
     if op == "not_in":
-        return field_value not in rule.values
+        return field_value not in rule_values
     if op == "contains":
         if field_value is None:
             return False
-        return str(rule.value or "").lower() in str(field_value).lower()
+        return str(rule_value or "").lower() in str(field_value).lower()
     if op == "not_contains":
         if field_value is None:
             return True
-        return str(rule.value or "").lower() not in str(field_value).lower()
+        return str(rule_value or "").lower() not in str(field_value).lower()
     if op == "regex_search":
         if field_value is None:
             return False
         try:
-            return re.search(str(rule.value or ""), str(field_value)) is not None
+            return re.search(str(rule_value or ""), str(field_value)) is not None
         except re.error:
             return False
     if op == "gte":
-        return field_value is not None and field_value >= rule.value
+        return field_value is not None and field_value >= rule_value
     if op == "lte":
-        return field_value is not None and field_value <= rule.value
+        return field_value is not None and field_value <= rule_value
     if op == "between":
-        if len(rule.values) < 2 or field_value is None:
+        if len(rule_values) < 2 or field_value is None:
             return False
-        start, end = rule.values[0], rule.values[1]
+        start, end = rule_values[0], rule_values[1]
         return start <= field_value <= end
 
     return True
@@ -716,24 +766,44 @@ def _apply_sql_rule(query, rule: NoteFilterRule):
     if column is None:
         return query, False
 
+    normalized_value = rule.value
+    normalized_values = list(rule.values or [])
+    if rule.field in {"lifecycle_stage", "node_status"}:
+        normalized_value = normalize_lifecycle_stage(rule.value, default=NOTE_LIFECYCLE_STAGE_DEFAULT) if rule.value is not None else None
+        normalized_values = [
+            normalize_lifecycle_stage(value, default=NOTE_LIFECYCLE_STAGE_DEFAULT)
+            for value in normalized_values
+        ]
+        if normalized_value == "done":
+            normalized_values = list(dict.fromkeys([*normalized_values, "done", "predone"]))
+        elif normalized_values:
+            normalized_values = list(dict.fromkeys([
+                *normalized_values,
+                *(["predone"] if "done" in normalized_values else []),
+            ]))
+
     if rule.op == "eq":
-        return query.where(column == rule.value), True
+        if rule.field in {"lifecycle_stage", "node_status"} and normalized_value == "done":
+            return query.where(column.in_(["done", "predone"])), True
+        return query.where(column == normalized_value), True
     if rule.op == "neq":
-        return query.where(column != rule.value), True
-    if rule.op == "in" and rule.values:
-        return query.where(column.in_(rule.values)), True
-    if rule.op == "not_in" and rule.values:
-        return query.where(~column.in_(rule.values)), True
+        if rule.field in {"lifecycle_stage", "node_status"} and normalized_value == "done":
+            return query.where(~column.in_(["done", "predone"])), True
+        return query.where(column != normalized_value), True
+    if rule.op == "in" and normalized_values:
+        return query.where(column.in_(normalized_values)), True
+    if rule.op == "not_in" and normalized_values:
+        return query.where(~column.in_(normalized_values)), True
     if rule.op == "gte":
-        return query.where(column >= rule.value), True
+        return query.where(column >= normalized_value), True
     if rule.op == "lte":
-        return query.where(column <= rule.value), True
-    if rule.op == "between" and len(rule.values) >= 2:
-        return query.where(column >= rule.values[0]).where(column <= rule.values[1]), True
-    if rule.op == "contains" and rule.field == "title" and rule.value is not None:
-        return query.where(NoteNode.title.contains(str(rule.value))), True
-    if rule.op == "not_contains" and rule.field == "title" and rule.value is not None:
-        return query.where(~NoteNode.title.contains(str(rule.value))), True
+        return query.where(column <= normalized_value), True
+    if rule.op == "between" and len(normalized_values) >= 2:
+        return query.where(column >= normalized_values[0]).where(column <= normalized_values[1]), True
+    if rule.op == "contains" and rule.field == "title" and normalized_value is not None:
+        return query.where(NoteNode.title.contains(str(normalized_value))), True
+    if rule.op == "not_contains" and rule.field == "title" and normalized_value is not None:
+        return query.where(~NoteNode.title.contains(str(normalized_value))), True
 
     return query, False
 
@@ -1174,6 +1244,13 @@ def create_note(
     Create a new note.
     """
     normalized_note_color = normalize_note_color(note.color)
+    normalized_custom_fields = _apply_completion_progress_expr_to_note_data(
+        {
+            "custom_fields": note.custom_fields,
+            "completion_progress_expr": note.completion_progress_expr,
+        },
+        [],
+    ).get("custom_fields", note.custom_fields)
     uses_new_taxonomy_input = bool({
         "note_categories",
         "primary_category",
@@ -1236,7 +1313,7 @@ def create_note(
         color=normalized_note_color,
         weight_mode=note.weight_mode,
         private_level=note.private_level,
-        custom_fields=note.custom_fields,
+        custom_fields=normalized_custom_fields,
         # parent_id=note.parent_id, # Deprecated
         created_at=current_time,
         updated_at=current_time,
@@ -1317,10 +1394,14 @@ def read_note(
                     # We migrated, so assume list [k, t, v]
                     if isinstance(field_item, list) and len(field_item) >= 3:
                         k, t, v = field_item[0], field_item[1], field_item[2]
+                        if is_note_system_custom_field_key(k):
+                            continue
                         direct_parent_fields[k] = [k, t, v]
             elif isinstance(p_node.custom_fields, dict):
                 # Fallback for unmigrated (shouldn't happen if migration ran)
                 for k, v in p_node.custom_fields.items():
+                    if is_note_system_custom_field_key(k):
+                        continue
                     direct_parent_fields[k] = [k, "string", v]
     
     # Process Ancestors (BFS Upstream)
@@ -1363,9 +1444,13 @@ def read_note(
                             for field_item in anc_node.custom_fields:
                                 if isinstance(field_item, list) and len(field_item) >= 3:
                                     k, t, v = field_item[0], field_item[1], field_item[2]
+                                    if is_note_system_custom_field_key(k):
+                                        continue
                                     ancestor_fields[k] = [k, t, v]
                         elif isinstance(anc_node.custom_fields, dict):
                             for k, v in anc_node.custom_fields.items():
+                                if is_note_system_custom_field_key(k):
+                                    continue
                                 ancestor_fields[k] = [k, "string", v]
                 
                 queue = new_ancestor_ids

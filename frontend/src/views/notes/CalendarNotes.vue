@@ -86,7 +86,17 @@
                   :style="getNoteStyle(note)"
                   @click.stop="openNote(note)"
                 >
-                  <span class="note-title" :style="getNoteTitleStyle(note)">
+                  <span v-if="useSplitNoteTitle(note)" class="note-title note-title--split" :style="getNoteTitleStyle(note)">
+                    <span class="note-title-layer" :style="getNoteSplitLayerStyle(note, 'fill')">
+                      <NoteFormBadge :form="note.note_form" compact />
+                      <span class="note-title-text" :style="getNoteTitleTextStyle(note, true, true)">{{ note.title }}</span>
+                    </span>
+                    <span class="note-title-layer" :style="getNoteSplitLayerStyle(note, 'empty')">
+                      <NoteFormBadge :form="note.note_form" compact />
+                      <span class="note-title-text" :style="getNoteTitleTextStyle(note, true, true)">{{ note.title }}</span>
+                    </span>
+                  </span>
+                  <span v-else class="note-title" :style="getNoteTitleStyle(note)">
                     <NoteFormBadge :form="note.note_form" compact />
                     <span class="note-title-text" :style="getNoteTitleTextStyle(note)">{{ note.title }}</span>
                   </span>
@@ -100,6 +110,7 @@
       <template #editor>
         <NoteDetailPanel
           :noteId="currentNoteId"
+          editor-layout="flow"
           @update="handleNoteUpdate"
           @delete="handleNoteDelete"
           @create="handleNoteCreate"
@@ -128,12 +139,13 @@ import { useUserStore } from '@/store/userStore';
 import { ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
-import { getNodeStyle } from '@/utils/nodeConfig';
+import { getNodeDisplayStyle } from '@/utils/nodeConfig';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import { formatNoteDateShort } from '@/utils/noteDate';
 import { getNoteWeightScaleFactor, NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { useResizablePane } from '@/utils/useResizablePane';
+import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
 
 const router = useRouter();
 const noteStore = useNoteStore();
@@ -399,24 +411,38 @@ const openNote = (note: NoteNode) => {
   currentNoteId.value = note.id;
 };
 
+const getNoteDisplayTheme = (note: NoteNode) => getNodeDisplayStyle(
+  note.primary_category ?? note.node_type,
+  note.lifecycle_stage ?? note.node_status,
+  note.color,
+  note.note_categories ?? note.note_types,
+  resolveCompletionProgressFillRatio({
+    lifecycleStage: note.lifecycle_stage ?? note.node_status,
+    completionProgress: note.completion_progress,
+    completionProgressExpr: note.completion_progress_expr,
+    customFields: note.custom_fields,
+  })
+);
+
 const getNoteStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+  const style = getNoteDisplayTheme(note);
 
   const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
   const baseHeight = 26;
   const height = Math.round(baseHeight * scale);
   
-  return {
-    marginBottom: '4px',
-    padding: '0 6px',
-    borderRadius: '4px',
-    borderColor: style.borderColor,
-    borderWidth: style.borderWidth,
-    borderStyle: style.borderStyle,
-    backgroundColor: style.backgroundColor,
-    opacity: style.opacity,
-    cursor: 'pointer',
-    overflow: 'hidden',
+    return {
+      marginBottom: '4px',
+      padding: '0 6px',
+      borderRadius: '4px',
+      borderColor: style.borderColor,
+      borderWidth: style.borderWidth,
+      borderStyle: style.borderStyle,
+      backgroundColor: style.backgroundColor,
+      backgroundImage: style.backgroundImage,
+      opacity: style.opacity,
+      cursor: 'pointer',
+      overflow: 'hidden',
     height: `${height}px`,
     display: 'flex',
     alignItems: 'center'
@@ -424,7 +450,7 @@ const getNoteStyle = (note: NoteNode) => {
 };
 
 const getNoteTitleStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+  const style = getNoteDisplayTheme(note);
   const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
   const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
 
@@ -441,8 +467,8 @@ const getNoteTitleStyle = (note: NoteNode) => {
   } as any;
 };
 
-const getNoteTitleTextStyle = (note: NoteNode) => {
-  const style = getNodeStyle(note.primary_category ?? note.node_type, note.lifecycle_stage ?? note.node_status, note.color, note.note_categories ?? note.note_types);
+const getNoteTitleTextStyle = (note: NoteNode, singleLine: boolean = false, inheritColor: boolean = false) => {
+  const style = getNoteDisplayTheme(note);
   const scale = getNoteWeightScaleFactor(note.weight, note.node_type, note.weight_mode);
   // Font size: Base 12px, grow slower to allow more text
   const fontSize = Math.min(16, Math.max(12, Math.round(12 + (scale - 1) * 2)));
@@ -456,19 +482,42 @@ const getNoteTitleTextStyle = (note: NoteNode) => {
   const maxLines = Math.max(1, Math.floor(height / lineHeightPx));
 
   return {
-    color: style.color,
+    ...(inheritColor ? {} : { color: style.color }),
     fontWeight: style.fontWeight,
     textDecoration: style.textDecoration,
     fontSize: `${fontSize}px`,
     lineHeight: lineHeight,
     minWidth: 0,
     flex: 1,
-    // Multi-line ellipsis
-    display: '-webkit-box',
-    WebkitBoxOrient: 'vertical',
-    WebkitLineClamp: maxLines,
-    overflow: 'hidden',
-    wordBreak: 'break-all'
+    ...(singleLine ? {
+      display: 'block',
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      wordBreak: 'normal'
+    } : {
+      display: '-webkit-box',
+      WebkitBoxOrient: 'vertical',
+      WebkitLineClamp: maxLines,
+      overflow: 'hidden',
+      wordBreak: 'break-all'
+    })
+  } as any;
+};
+
+const useSplitNoteTitle = (note: NoteNode) => {
+  const ratio = getNoteDisplayTheme(note).partialFillRatio;
+  return typeof ratio === 'number' && ratio > 0 && ratio < 1;
+};
+
+const getNoteSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
+  const style = getNoteDisplayTheme(note);
+  const ratio = style.partialFillRatio ?? 0;
+  return {
+    color: mode === 'fill' ? style.fillTextColor : style.emptyTextColor,
+    clipPath: mode === 'fill'
+      ? `inset(0 ${(100 - ratio * 100).toFixed(2)}% 0 0)`
+      : `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`
   } as any;
 };
 
@@ -785,6 +834,20 @@ watch(viewProgram, (value) => {
   align-items: center;
   gap: 4px;
   min-width: 0;
+}
+
+.note-title--split {
+  display: grid !important;
+  width: 100%;
+}
+
+.note-title-layer {
+  grid-area: 1 / 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .note-title-text {

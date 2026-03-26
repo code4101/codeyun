@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.admin import init_storage_scheduler, router as admin_router
+from backend.api.ai_chat import router as ai_chat_router
 from backend.api.auth import router as auth_router
 from backend.api.device import router as device_router
 from backend.api.device_entries import router as device_entries_router
@@ -22,6 +23,7 @@ from backend.api.task_manager import (
 from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
+from backend.core.private_modules import register_private_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
     ATTACHMENTS_URL_PREFIX,
@@ -82,6 +84,8 @@ app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
+register_private_modules(app)
 
 # Mount static files
 migrate_legacy_attachments()

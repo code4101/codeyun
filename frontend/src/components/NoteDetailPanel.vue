@@ -6,6 +6,7 @@
       :empty-text="props.noteId ? '节点未就绪' : '未选择节点'"
       :readonly="currentNote?.can_edit === false"
       :show-private-toggle="true"
+      :editor-layout="props.editorLayout"
       :on-save="handleSave"
       :on-save-keepalive="handleSaveKeepalive"
       @change="handleEditorChange"
@@ -78,7 +79,12 @@ import { useNoteStore, type NoteNode } from '@/api/notes';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import type { EditableNotePatch } from '@/utils/noteAutoSave';
 
-const props = defineProps<{ noteId: string }>();
+const props = withDefaults(defineProps<{
+  noteId: string;
+  editorLayout?: 'fill' | 'flow';
+}>(), {
+  editorLayout: 'fill'
+});
 
 const emit = defineEmits<{
   (e: 'update', note: NoteNode): void;
@@ -192,6 +198,6 @@ const handleCopySuccess = (newNote: NoteNode) => {
 </script>
 
 <style scoped>
-.note-detail-panel{min-height:320px;display:flex;flex-direction:column}
+ .note-detail-panel{display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
 .graph-link-button{margin-left:10px}
 </style>

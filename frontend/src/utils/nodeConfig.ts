@@ -1,5 +1,6 @@
 import { ref } from 'vue';
 import { fetchNoteCategoryPalette, updateNoteCategoryPalette } from '@/api/noteTypes';
+import { fromHex, getReadableTextColor, mixWeightedColors, toHex } from '@/utils/colorToolkit';
 
 export interface NodeTypeItem {
   id: string;
@@ -50,11 +51,10 @@ export const NODE_TYPES: Record<string, NodeTypeItem> = {
 };
 
 export const NODE_STATUSES: Record<string, NodeStatusItem> = {
-  idea: { id: 'idea', label: '想法', description: '初始状态' },
-  todo: { id: 'todo', label: '待办', description: '计划中' },
-  doing: { id: 'doing', label: '进行中', description: '正在处理' },
-  predone: { id: 'predone', label: '预完成', description: '待验收' },
-  done: { id: 'done', label: '完成', description: '已结束' },
+  idea: { id: 'idea', label: '笔记', description: '普通记录' },
+  todo: { id: 'todo', label: '想法', description: '灵感草稿' },
+  doing: { id: 'doing', label: '待办', description: '准备执行' },
+  done: { id: 'done', label: '完成', description: '已完成，可按进度展示' },
   delete: { id: 'delete', label: '废弃', description: '已取消' }
 };
 
@@ -64,12 +64,13 @@ export const NOTE_FORMS: Record<string, NoteFormItem> = {
   memo: { id: 'memo', label: '备忘', description: '更短平快的便签形态' },
   music: { id: 'music', label: '音乐', description: '音乐作品、专辑或音频素材' },
   video: { id: 'video', label: '影视', description: '电影、剧集、视频或影像资料' },
+  game: { id: 'game', label: '游戏', description: '游戏作品、攻略记录或游玩资料' },
   book: { id: 'book', label: '书籍', description: '书籍、电子书或长篇阅读材料' }
 };
 
 export const NODE_TYPE_ORDER = ['general', 'project', 'module', 'task', 'bug'];
-export const NODE_STATUS_ORDER = ['idea', 'todo', 'doing', 'predone', 'done', 'delete'];
-export const NOTE_FORM_ORDER = ['note', 'document', 'memo', 'music', 'video', 'book'];
+export const NODE_STATUS_ORDER = ['idea', 'todo', 'doing', 'done', 'delete'];
+export const NOTE_FORM_ORDER = ['note', 'document', 'memo', 'music', 'video', 'game', 'book'];
 
 export const NOTE_TYPE_WEIGHT_DEFAULT = 100;
 export const NOTE_TYPE_WEIGHT_MIN = 0;
@@ -78,6 +79,13 @@ export const NOTE_TYPE_WEIGHT_MAX = 100;
 const HEX_COLOR_RE = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
 const LEGACY_COLOR_TYPE_PREFIX = 'legacy_color_';
 const CUSTOM_NOTE_TYPE_PREFIX = 'custom_';
+
+const normalizeNodeStatusId = (value: string | null | undefined) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (!normalized) return 'idea';
+  if (normalized === 'predone') return 'done';
+  return normalized;
+};
 
 const paletteItems = ref<Record<string, NoteTypePaletteItem>>({});
 const paletteLoaded = ref(false);
@@ -383,29 +391,15 @@ export const resolveNoteTypesColor = (
   const normalized = normalizeNoteTypeAssignments(noteTypes, fallbackType);
   if (!normalized.length) return null;
 
-  let totalWeight = 0;
-  let sumR = 0;
-  let sumG = 0;
-  let sumB = 0;
+  const mixedColor = mixWeightedColors(
+    normalized.map(item => ({
+      color: resolvePaletteType(item.key).baseColor,
+      weight: item.weight
+    })),
+    { fillColor: '#FFFFFF', fillToWeight: 100 }
+  );
 
-  for (const item of normalized) {
-    const color = resolvePaletteType(item.key).baseColor;
-    const rgb = hexToRgb(color);
-    totalWeight += item.weight;
-    sumR += rgb.r * item.weight;
-    sumG += rgb.g * item.weight;
-    sumB += rgb.b * item.weight;
-  }
-
-  const whiteWeight = Math.max(100 - totalWeight, 0);
-  const denominator = totalWeight + whiteWeight;
-  if (denominator <= 0) return null;
-
-  return rgbToHex({
-    r: (sumR + 255 * whiteWeight) / denominator,
-    g: (sumG + 255 * whiteWeight) / denominator,
-    b: (sumB + 255 * whiteWeight) / denominator
-  });
+  return mixedColor ? toHex(mixedColor) : null;
 };
 
 export const getNodeTheme = (
@@ -428,15 +422,7 @@ export const getNodeTheme = (
   };
 };
 
-export const getNodeStyle = (
-  typeStr: string | null | undefined,
-  statusStr: string | null | undefined,
-  customColor?: string | null,
-  noteTypes?: unknown
-) => {
-  const type = getNodeTheme(typeStr, customColor, noteTypes);
-  const status = NODE_STATUSES[statusStr || 'idea'] || NODE_STATUSES.idea;
-
+const createBaseNodeVisualStyle = (type: NodeTypeItem, status: NodeStatusItem) => {
   const style = {
     borderColor: '#000000',
     backgroundColor: '#ffffff',
@@ -455,16 +441,11 @@ export const getNodeStyle = (
       break;
     case 'todo':
       style.borderStyle = 'dashed';
-      style.borderColor = '#606266';
+      style.borderColor = type.baseColor;
       break;
     case 'doing':
       style.borderStyle = 'solid';
-      style.borderColor = '#303133';
-      break;
-    case 'predone':
-      style.borderStyle = 'dashed';
       style.borderColor = type.baseColor;
-      style.backgroundColor = type.lightColor;
       break;
     case 'done':
       style.borderStyle = 'solid';
@@ -476,6 +457,60 @@ export const getNodeStyle = (
       style.borderColor = '#ebeef5';
       style.textDecoration = 'line-through';
       style.opacity = '0.6';
+      break;
+  }
+
+  return style;
+};
+
+export const getNodeStyle = (
+  typeStr: string | null | undefined,
+  statusStr: string | null | undefined,
+  customColor?: string | null,
+  noteTypes?: unknown
+) => {
+  const type = getNodeTheme(typeStr, customColor, noteTypes);
+  const status = NODE_STATUSES[normalizeNodeStatusId(statusStr)] || NODE_STATUSES.idea;
+  return createBaseNodeVisualStyle(type, status);
+};
+
+export const getNodeDisplayStyle = (
+  typeStr: string | null | undefined,
+  statusStr: string | null | undefined,
+  customColor?: string | null,
+  noteTypes?: unknown,
+  completionProgress?: number | null
+) => {
+  const type = getNodeTheme(typeStr, customColor, noteTypes);
+  const status = NODE_STATUSES[normalizeNodeStatusId(statusStr)] || NODE_STATUSES.idea;
+  const foregroundColor = getReadableTextColor(fromHex(type.baseColor));
+  const clampedProgress = typeof completionProgress === 'number' && Number.isFinite(completionProgress)
+    ? Math.min(1, Math.max(0, completionProgress))
+    : null;
+
+  const style = {
+    ...createBaseNodeVisualStyle(type, status),
+    backgroundImage: 'none',
+    fillTextColor: foregroundColor,
+    emptyTextColor: foregroundColor,
+    partialFillRatio: null as number | null,
+  };
+
+  switch (status.id) {
+    case 'done':
+      if (clampedProgress !== null && clampedProgress < 1) {
+        const pct = `${(clampedProgress * 100).toFixed(2)}%`;
+        style.backgroundColor = '#FFFFFF';
+        style.backgroundImage = `linear-gradient(to right, ${type.baseColor} 0%, ${type.baseColor} ${pct}, #FFFFFF ${pct}, #FFFFFF 100%)`;
+        style.color = '#111827';
+        style.fillTextColor = foregroundColor;
+        style.emptyTextColor = '#111827';
+        style.partialFillRatio = clampedProgress;
+      } else {
+        style.backgroundColor = type.baseColor;
+        style.backgroundImage = 'none';
+        style.color = foregroundColor;
+      }
       break;
   }
 
@@ -536,5 +571,5 @@ export const createCustomNoteType = (label: string = '新类型') => {
 export const getOrderedNodeStatuses = () => NODE_STATUS_ORDER.map(k => NODE_STATUSES[k]);
 export const getOrderedNoteForms = () => NOTE_FORM_ORDER.map(k => NOTE_FORMS[k]).filter(Boolean);
 export const getNodeTypeConfig = (type: string) => resolvePaletteType(type);
-export const getNodeStatusConfig = (status: string) => NODE_STATUSES[status] || NODE_STATUSES.idea;
+export const getNodeStatusConfig = (status: string) => NODE_STATUSES[normalizeNodeStatusId(status)] || NODE_STATUSES.idea;
 export const getNoteFormConfig = (noteForm: string | null | undefined) => NOTE_FORMS[noteForm || 'note'] || NOTE_FORMS.note;

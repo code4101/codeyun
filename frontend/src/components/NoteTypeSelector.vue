@@ -1,5 +1,5 @@
 <template>
-  <div class="note-type-selector-wrapper">
+  <div class="note-type-selector-wrapper" :style="replaceDropdownStyle">
     <div class="label-row" v-if="showLabel">
       <span class="field-label">{{ label }}:</span>
       <el-tooltip v-if="showHelpIcon" content="点击查看分类说明" placement="top">
@@ -9,14 +9,19 @@
 
     <el-popover
       placement="bottom-start"
-      :width="420"
+      :width="456"
       trigger="click"
       popper-class="note-type-selector-popper"
       v-model:visible="popoverVisible"
       :disabled="disabled"
     >
       <template #reference>
-        <div class="selector-trigger" :class="{ 'is-disabled': disabled }" :style="triggerStyle">
+        <div
+          class="selector-trigger"
+          :class="{ 'is-disabled': disabled }"
+          :style="triggerStyle"
+          :title="mixedColorTooltip"
+        >
           <span class="trigger-text">{{ summaryText }}</span>
           <el-icon><ArrowDown /></el-icon>
         </div>
@@ -24,6 +29,16 @@
 
       <div class="selector-panel">
         <div class="selector-caption">点击添加/移除分类，已选分类可单独调权重。</div>
+        <div class="mix-preview" :title="mixedColorTooltip">
+          <span class="mix-preview-label">混色映射</span>
+          <div class="mix-preview-value">
+            <span class="mix-preview-swatch" :style="{ backgroundColor: mixedColorHex }" />
+            <div class="mix-preview-text">
+              <span class="mix-preview-primary">{{ mixedColorPrimaryText }}</span>
+              <span class="mix-preview-secondary">{{ mixedColorSecondaryText }}</span>
+            </div>
+          </div>
+        </div>
 
         <div class="selected-list" v-if="sortedValue.length">
           <div v-for="item in sortedValue" :key="item.key" class="selected-row">
@@ -31,7 +46,10 @@
               :model-value="item.key"
               size="small"
               class="selected-type-select"
+              :teleported="false"
+              popper-class="note-type-replace-popper"
               :style="getChipSelectStyle(item.key)"
+              @visible-change="visible => handleReplaceSelectVisibleChange(item.key, visible)"
               @update:model-value="value => replaceType(item.key, value)"
             >
               <el-option
@@ -68,9 +86,10 @@
               type="button"
               class="type-chip"
               :style="getChipStyle(item.id)"
+              :title="item.label"
               @click="addType(item.id)"
             >
-              <span>{{ item.label }}</span>
+              <span class="type-chip-label">{{ item.label }}</span>
               <el-icon class="type-chip-add"><Plus /></el-icon>
             </button>
             <div v-if="availableOptions.length === 0" class="add-empty">没有可新增的分类了</div>
@@ -100,8 +119,10 @@ import {
   getOrderedNodeTypes,
   normalizeNoteTypeAssignments,
   normalizeNoteTypeWeight,
+  resolveNoteTypesColor,
   type NoteTypeAssignment
 } from '@/utils/nodeConfig';
+import { resolveMappedStandardColor } from '@/features/color-tools';
 
 const props = defineProps<{
   modelValue: NoteTypeAssignment[] | null | undefined;
@@ -122,6 +143,7 @@ const emit = defineEmits<{
 const popoverVisible = ref(false);
 const managerVisible = ref(false);
 const showAddOptions = ref(false);
+const replaceDropdownColumns = ref(1);
 const options = computed(() => getOrderedNodeTypes());
 const fallbackType = computed(() => props.legacyType || 'general');
 const normalizedValue = computed(() => normalizeNoteTypeAssignments(props.modelValue, fallbackType.value));
@@ -133,6 +155,7 @@ const sortedValue = computed(() => normalizedValue.value
   }));
 const primaryType = computed(() => derivePrimaryNodeType(normalizedValue.value, fallbackType.value));
 const availableOptions = computed(() => options.value.filter(item => !isSelected(item.id)));
+const REPLACE_OPTION_ROWS_PER_COLUMN = 10;
 
 const formatSummaryEntry = (item: NoteTypeAssignment) => {
   const label = getNodeTypeConfig(item.key).label;
@@ -140,6 +163,32 @@ const formatSummaryEntry = (item: NoteTypeAssignment) => {
 };
 
 const summaryText = computed(() => sortedValue.value.map(formatSummaryEntry).join(','));
+const mixedColorHex = computed(() => (
+  resolveNoteTypesColor(normalizedValue.value, fallbackType.value)
+  ?? getNodeTypeConfig(primaryType.value).baseColor
+));
+const mixedStandardColor = computed(() => resolveMappedStandardColor(mixedColorHex.value, { range: 2, method: 'cie76' }));
+const mixedColorPrimaryText = computed(() => mixedStandardColor.value.displayName);
+const mixedColorSecondaryText = computed(() => (
+  mixedStandardColor.value.hex === mixedColorHex.value
+    ? mixedColorHex.value
+    : `${mixedColorHex.value} -> ${mixedStandardColor.value.hex}`
+));
+const mixedColorTooltip = computed(() => {
+  const color = mixedStandardColor.value;
+  const labels = [color.zhNames[0], color.enNames[0]].filter(Boolean);
+  return `当前混色：${mixedColorHex.value}；最接近标准色：${labels.join(' / ') || color.displayName} · ${color.hex}`;
+});
+
+const replaceDropdownStyle = computed(() => {
+  const columns = Math.max(1, replaceDropdownColumns.value);
+  const width = Math.max(196, columns * 160 + Math.max(0, columns - 1) * 6 + 12);
+  return {
+    '--replace-option-columns': String(columns),
+    '--replace-option-rows': String(REPLACE_OPTION_ROWS_PER_COLUMN),
+    '--replace-option-dropdown-width': `${width}px`
+  };
+});
 
 const triggerStyle = computed(() => {
   const style = getNodeStyle(primaryType.value, 'idea', props.legacyColor, normalizedValue.value);
@@ -176,6 +225,10 @@ const getReplaceOptions = (currentKey: string) => {
   );
   return options.value.filter(item => item.id === currentKey || !occupiedKeys.has(item.id));
 };
+
+const getReplaceOptionColumnCount = (currentKey: string) => (
+  Math.max(1, Math.ceil(getReplaceOptions(currentKey).length / REPLACE_OPTION_ROWS_PER_COLUMN))
+);
 
 const getChipStyle = (typeKey: string) => {
   const style = getNodeStyle(typeKey, 'idea');
@@ -236,6 +289,10 @@ const handlePaletteSaved = () => {
   managerVisible.value = false;
   showAddOptions.value = false;
 };
+
+const handleReplaceSelectVisibleChange = (currentKey: string, visible: boolean) => {
+  replaceDropdownColumns.value = visible ? getReplaceOptionColumnCount(currentKey) : 1;
+};
 </script>
 
 <style scoped>
@@ -248,11 +305,21 @@ const handlePaletteSaved = () => {
 .trigger-text{margin-right:8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .selector-panel{display:flex;flex-direction:column;gap:12px}
 .selector-caption{font-size:12px;color:#909399;line-height:1.4}
+.mix-preview{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid #ebeef5;border-radius:8px;background:#f8fafc}
+.mix-preview-label{flex:none;font-size:12px;color:#7a8799;white-space:nowrap}
+.mix-preview-value{display:flex;align-items:center;gap:8px;min-width:0}
+.mix-preview-swatch{flex:none;width:16px;height:16px;border-radius:999px;border:1px solid rgba(15,23,42,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.35)}
+.mix-preview-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+.mix-preview-primary,.mix-preview-secondary{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mix-preview-primary{font-size:12px;line-height:1.25;color:#243046;font-weight:600}
+.mix-preview-secondary{font-size:11px;line-height:1.2;color:#7a8799}
 .add-section{display:flex;flex-direction:column;gap:8px}
-.type-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
-.type-chip{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px;padding:0 10px;border-radius:6px;background:#fff;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
+.type-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.type-chip{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:34px;padding:0 12px;border-radius:6px;background:#fff;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease}
 .type-chip:hover{transform:translateY(-1px);box-shadow:0 2px 8px rgba(15,23,42,.08)}
+.type-chip-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .type-chip-weight,.type-chip-add{font-size:11px;opacity:.8}
+.type-chip-add{flex-shrink:0}
 .add-empty{grid-column:1 / -1;font-size:12px;color:#909399;padding:8px 2px}
 .selected-list{display:flex;flex-direction:column;gap:8px}
 .selected-row{display:grid;grid-template-columns:minmax(0,1fr) 110px 28px;align-items:center;gap:8px}
@@ -270,4 +337,20 @@ const handlePaletteSaved = () => {
 .replace-option-chip{display:flex;align-items:center;justify-content:center;min-height:26px;padding:0 8px;border-radius:6px;font-size:12px}
 .weight-input{width:110px}
 .panel-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:12px;color:#909399;line-height:1.4}
+:deep(.note-type-selector-popper.el-popper){width:min(456px, calc(100vw - 32px)) !important;max-width:calc(100vw - 32px) !important}
+:deep(.note-type-replace-popper.el-popper){width:min(var(--replace-option-dropdown-width, 320px), calc(100vw - 48px)) !important;max-width:calc(100vw - 48px) !important;min-width:min(var(--replace-option-dropdown-width, 320px), calc(100vw - 48px)) !important}
+:deep(.note-type-replace-popper .el-select-dropdown__wrap){max-height:none !important}
+:deep(.note-type-replace-popper .el-select-dropdown__list),
+:deep(.note-type-replace-popper .el-scrollbar__view){display:grid;grid-auto-flow:column;grid-template-rows:repeat(var(--replace-option-rows, 10), minmax(0, auto));grid-auto-columns:minmax(156px, 1fr);gap:4px;padding:4px}
+:deep(.note-type-replace-popper .el-select-dropdown__item){display:flex;align-items:stretch;height:auto;min-height:0;padding:0;line-height:1;background:transparent}
+:deep(.note-type-replace-popper .el-select-dropdown__item.is-hovering),
+:deep(.note-type-replace-popper .el-select-dropdown__item.is-selected){background:transparent}
+:deep(.note-type-replace-popper .el-select-dropdown__item .replace-option-chip){width:100%;min-height:0;justify-content:flex-start;padding:4px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.2}
+:deep(.note-type-replace-popper .el-select-dropdown__item.is-selected .replace-option-chip){box-shadow:0 0 0 1px rgba(64,158,255,.28) inset}
+:deep(.note-type-replace-popper .el-select-dropdown__item.is-hovering .replace-option-chip){transform:translateY(-1px);box-shadow:0 2px 8px rgba(15,23,42,.08)}
+
+@media (max-width: 540px) {
+  .mix-preview{align-items:flex-start;flex-direction:column}
+  .type-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 </style>

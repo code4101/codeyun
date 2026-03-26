@@ -56,3 +56,6 @@ backend/data/
 .env.*.local
 /backend/static
 /frontend/.codeyun-state/
+/backend/private_modules/*
+!/backend/private_modules/__init__.py
+/frontend/src/private/modules/

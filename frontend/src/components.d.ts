@@ -87,6 +87,7 @@ declare module 'vue' {
     RouterView: typeof import('vue-router')['RouterView']
     SharedNoteEditor: typeof import('./components/SharedNoteEditor.vue')['default']
     SmartTimeInput: typeof import('./components/SmartTimeInput.vue')['default']
+    SortableOrderHandle: typeof import('./components/SortableOrderHandle.vue')['default']
     UniversalNoteEditor: typeof import('./components/UniversalNoteEditor.vue')['default']
   }
   export interface GlobalDirectives {

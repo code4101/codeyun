@@ -1,9 +1,56 @@
-
+import json
 import time
 import uuid
-from typing import Optional
+from typing import Any, Optional
 from sqlmodel import Field, SQLModel, Session, select, text
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import JSON, Column, create_engine, inspect
+
+
+def _table_exists(session: Session, table_name: str) -> bool:
+    return (
+        session.execute(
+            text("SELECT name FROM sqlite_master WHERE type='table' AND name = :table_name"),
+            {"table_name": table_name},
+        ).first()
+        is not None
+    )
+
+
+def _get_table_columns(session: Session, table_name: str) -> set[str]:
+    if not _table_exists(session, table_name):
+        return set()
+    return {str(row[1]) for row in session.exec(text(f"PRAGMA table_info({table_name})")).all()}
+
+
+def _load_json_value(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return default
+    return value
+
+
+def _dump_json_value(value) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _first_scalar(row):
+    if row is None:
+        return None
+    mapping = getattr(row, "_mapping", None)
+    if mapping:
+        values = list(mapping.values())
+        if values:
+            return values[0]
+    if isinstance(row, (list, tuple)):
+        return row[0] if row else None
+    try:
+        return row[0]
+    except (TypeError, KeyError, IndexError):
+        return row
 
 # --- System Version Model ---
 class SystemVersion(SQLModel, table=True):
@@ -504,23 +551,33 @@ def v16_migrate_note_weight_levels(session: Session):
     Migration V16: Convert legacy note weights from 100-based scale to integer levels.
     Memo nodes keep their existing linear semantics because they are used as counts.
     """
-    from backend.models import NoteNode
-
     print("Running System Upgrade V16: Migrate note weight levels...")
-    notes = session.exec(select(NoteNode)).all()
+    columns = _get_table_columns(session, "notenode")
+    if "id" not in columns or "weight" not in columns:
+        print("  Missing id/weight columns on notenode, skipping.")
+        return
+
+    select_sql = "SELECT id, weight, node_type FROM notenode" if "node_type" in columns else "SELECT id, weight, '' AS node_type FROM notenode"
+    notes = session.exec(text(select_sql)).all()
     updated_count = 0
 
     for note in notes:
-        if (note.node_type or "").lower() == "memo":
+        note_id = note[0]
+        raw_weight = note[1]
+        node_type = note[2]
+
+        if str(node_type or "").lower() == "memo":
             continue
 
-        raw_weight = note.weight if isinstance(note.weight, (int, float)) else 0
-        normalized_weight = max(0, int(raw_weight // 100) - 1)
-        if note.weight == normalized_weight:
+        numeric_weight = raw_weight if isinstance(raw_weight, (int, float)) else 0
+        normalized_weight = max(0, int(numeric_weight // 100) - 1)
+        if raw_weight == normalized_weight:
             continue
 
-        note.weight = normalized_weight
-        session.add(note)
+        session.execute(
+            text("UPDATE notenode SET weight = :weight WHERE id = :id"),
+            {"weight": normalized_weight, "id": note_id},
+        )
         updated_count += 1
 
     if updated_count > 0:
@@ -534,14 +591,18 @@ def v17_add_note_semantics_fields(session: Session):
     Adds note_kind / weight_mode and backfills legacy memo behavior explicitly.
     """
     print("Running System Upgrade V17: Add note_kind / weight_mode...")
-    res = session.exec(text("PRAGMA table_info(notenode)")).all()
-    columns = [row[1] for row in res]
+    columns = _get_table_columns(session, "notenode")
+    if not columns:
+        print("  Table 'notenode' is missing, skipping.")
+        return
 
     statements = []
     if "note_kind" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN note_kind VARCHAR DEFAULT 'note'")
+        columns.add("note_kind")
     if "weight_mode" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN weight_mode VARCHAR")
+        columns.add("weight_mode")
 
     for statement in statements:
         session.exec(text(statement))
@@ -550,20 +611,24 @@ def v17_add_note_semantics_fields(session: Session):
         session.commit()
 
     session.exec(text("UPDATE notenode SET note_kind = 'note' WHERE note_kind IS NULL OR TRIM(note_kind) = ''"))
-    session.exec(text("UPDATE notenode SET weight_mode = 'linear' WHERE weight_mode IS NULL AND LOWER(COALESCE(node_type, '')) = 'memo'"))
-    session.exec(
-        text(
-            """
-            UPDATE notenode
-            SET note_kind = 'fanxiu_char',
-                weight_mode = COALESCE(weight_mode, 'linear')
-            WHERE user_id IN (
-                SELECT id FROM user WHERE username = '凡修手游'
+    if "node_type" in columns:
+        session.exec(text("UPDATE notenode SET weight_mode = 'linear' WHERE weight_mode IS NULL AND LOWER(COALESCE(node_type, '')) = 'memo'"))
+
+    user_columns = _get_table_columns(session, "user")
+    if "user_id" in columns and {"id", "username"}.issubset(user_columns):
+        session.exec(
+            text(
+                """
+                UPDATE notenode
+                SET note_kind = 'fanxiu_char',
+                    weight_mode = COALESCE(weight_mode, 'linear')
+                WHERE user_id IN (
+                    SELECT id FROM user WHERE username = '凡修手游'
+                )
+                  AND LOWER(COALESCE(node_type, '')) = 'memo'
+                """
             )
-              AND LOWER(COALESCE(node_type, '')) = 'memo'
-            """
         )
-    )
     session.commit()
     print("  note_kind / weight_mode ready.")
 
@@ -573,8 +638,10 @@ def v18_add_note_types(session: Session):
     Migration V18: Add weighted note_types and backfill from legacy node_type.
     """
     print("Running System Upgrade V18: Add note_types...")
-    res = session.exec(text("PRAGMA table_info(notenode)")).all()
-    columns = [row[1] for row in res]
+    columns = _get_table_columns(session, "notenode")
+    if "id" not in columns:
+        print("  Missing id column on notenode, skipping.")
+        return
 
     if "note_types" not in columns:
         try:
@@ -582,18 +649,27 @@ def v18_add_note_types(session: Session):
         except Exception:
             session.exec(text("ALTER TABLE notenode ADD COLUMN note_types TEXT DEFAULT '[]'"))
         session.commit()
+        columns.add("note_types")
 
-    from backend.models import NoteNode
     from backend.core.note_semantics import NOTE_TYPE_DEFAULT, normalize_note_types
 
-    notes = session.exec(select(NoteNode)).all()
+    select_sql = "SELECT id, note_types, node_type FROM notenode" if "node_type" in columns else "SELECT id, note_types, '' AS node_type FROM notenode"
+    notes = session.exec(text(select_sql)).all()
     updated_count = 0
     for note in notes:
-        if note.note_types:
+        note_id = note[0]
+        note_types = _load_json_value(note[1], [])
+        node_type = note[2]
+
+        if note_types:
             continue
-        fallback_type = (note.node_type or NOTE_TYPE_DEFAULT or "").strip() or NOTE_TYPE_DEFAULT
-        note.note_types = normalize_note_types([], fallback_type=fallback_type)
-        session.add(note)
+
+        fallback_type = (str(node_type or NOTE_TYPE_DEFAULT).strip() or NOTE_TYPE_DEFAULT)
+        normalized_note_types = normalize_note_types([], fallback_type=fallback_type)
+        session.execute(
+            text("UPDATE notenode SET note_types = :note_types WHERE id = :id"),
+            {"note_types": _dump_json_value(normalized_note_types), "id": note_id},
+        )
         updated_count += 1
 
     if updated_count > 0:
@@ -606,8 +682,10 @@ def v19_add_note_taxonomy_fields(session: Session):
     Migration V19: Add naming-aligned taxonomy fields and backfill from legacy semantics.
     """
     print("Running System Upgrade V19: Add note_categories / primary_category / note_form / lifecycle_stage / note_scene...")
-    res = session.exec(text("PRAGMA table_info(notenode)")).all()
-    columns = [row[1] for row in res]
+    columns = _get_table_columns(session, "notenode")
+    if "id" not in columns:
+        print("  Missing id column on notenode, skipping.")
+        return
 
     statements = []
     if "note_categories" not in columns:
@@ -615,14 +693,19 @@ def v19_add_note_taxonomy_fields(session: Session):
             statements.append("ALTER TABLE notenode ADD COLUMN note_categories JSON DEFAULT '[]'")
         except Exception:
             statements.append("ALTER TABLE notenode ADD COLUMN note_categories TEXT DEFAULT '[]'")
+        columns.add("note_categories")
     if "primary_category" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN primary_category VARCHAR DEFAULT 'general'")
+        columns.add("primary_category")
     if "note_form" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN note_form VARCHAR DEFAULT 'note'")
+        columns.add("note_form")
     if "lifecycle_stage" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN lifecycle_stage VARCHAR DEFAULT 'idea'")
+        columns.add("lifecycle_stage")
     if "note_scene" not in columns:
         statements.append("ALTER TABLE notenode ADD COLUMN note_scene VARCHAR DEFAULT 'note'")
+        columns.add("note_scene")
 
     for statement in statements:
         session.exec(text(statement))
@@ -630,34 +713,67 @@ def v19_add_note_taxonomy_fields(session: Session):
     if statements:
         session.commit()
 
-    from backend.models import NoteNode
     from backend.core.note_semantics import derive_note_taxonomy_from_legacy
 
-    notes = session.exec(select(NoteNode)).all()
+    select_sql = (
+        "SELECT id, "
+        + ("note_types, " if "note_types" in columns else "'[]' AS note_types, ")
+        + ("node_type, " if "node_type" in columns else "'' AS node_type, ")
+        + ("note_kind, " if "note_kind" in columns else "'' AS note_kind, ")
+        + ("node_status, " if "node_status" in columns else "'' AS node_status, ")
+        + "note_categories, primary_category, note_form, lifecycle_stage, note_scene "
+        + "FROM notenode"
+    )
+    notes = session.exec(text(select_sql)).all()
     updated_count = 0
     for note in notes:
+        note_id = note[0]
+        note_types = _load_json_value(note[1], [])
+        node_type = note[2]
+        note_kind = note[3]
+        node_status = note[4]
+        note_categories = _load_json_value(note[5], [])
+        primary_category = note[6]
+        note_form = note[7]
+        lifecycle_stage = note[8]
+        note_scene = note[9]
+
         taxonomy = derive_note_taxonomy_from_legacy(
-            note.note_types,
-            node_type=note.node_type,
-            note_kind=note.note_kind,
-            node_status=note.node_status,
+            note_types,
+            node_type=node_type,
+            note_kind=note_kind,
+            node_status=node_status,
         )
         changed = (
-            note.note_categories != taxonomy["note_categories"]
-            or (note.primary_category or "") != str(taxonomy["primary_category"])
-            or (note.note_form or "") != str(taxonomy["note_form"])
-            or (note.lifecycle_stage or "") != str(taxonomy["lifecycle_stage"])
-            or (note.note_scene or "") != str(taxonomy["note_scene"])
+            note_categories != taxonomy["note_categories"]
+            or (primary_category or "") != str(taxonomy["primary_category"])
+            or (note_form or "") != str(taxonomy["note_form"])
+            or (lifecycle_stage or "") != str(taxonomy["lifecycle_stage"])
+            or (note_scene or "") != str(taxonomy["note_scene"])
         )
 
-        note.note_categories = taxonomy["note_categories"]
-        note.primary_category = str(taxonomy["primary_category"])
-        note.note_form = str(taxonomy["note_form"])
-        note.lifecycle_stage = str(taxonomy["lifecycle_stage"])
-        note.note_scene = str(taxonomy["note_scene"])
-
         if changed:
-            session.add(note)
+            session.execute(
+                text(
+                    """
+                    UPDATE notenode
+                    SET note_categories = :note_categories,
+                        primary_category = :primary_category,
+                        note_form = :note_form,
+                        lifecycle_stage = :lifecycle_stage,
+                        note_scene = :note_scene
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "note_categories": _dump_json_value(taxonomy["note_categories"]),
+                    "primary_category": str(taxonomy["primary_category"]),
+                    "note_form": str(taxonomy["note_form"]),
+                    "lifecycle_stage": str(taxonomy["lifecycle_stage"]),
+                    "note_scene": str(taxonomy["note_scene"]),
+                    "id": note_id,
+                },
+            )
             updated_count += 1
 
     if updated_count > 0:
@@ -671,7 +787,7 @@ def v20_repair_note_category_drift(session: Session):
     """
     print("Running System Upgrade V20: Repair note category drift...")
 
-    from backend.models import AppSetting, NoteNode
+    from backend.models import AppSetting
     from backend.core.note_semantics import (
         NOTE_CATEGORY_DEFAULT,
         NOTE_FORM_DEFAULT,
@@ -681,42 +797,109 @@ def v20_repair_note_category_drift(session: Session):
         derive_note_taxonomy_from_legacy,
     )
 
-    notes = session.exec(select(NoteNode)).all()
+    note_columns = _get_table_columns(session, "notenode")
+    notes = []
+    if "id" in note_columns:
+        notes = session.exec(
+            text(
+                "SELECT id, "
+                + ("note_categories, " if "note_categories" in note_columns else "'[]' AS note_categories, ")
+                + ("primary_category, " if "primary_category" in note_columns else "'' AS primary_category, ")
+                + ("note_form, " if "note_form" in note_columns else "'' AS note_form, ")
+                + ("note_scene, " if "note_scene" in note_columns else "'' AS note_scene, ")
+                + ("lifecycle_stage, " if "lifecycle_stage" in note_columns else "'' AS lifecycle_stage, ")
+                + ("note_types, " if "note_types" in note_columns else "'[]' AS note_types, ")
+                + ("node_type, " if "node_type" in note_columns else "'' AS node_type, ")
+                + ("note_kind, " if "note_kind" in note_columns else "'' AS note_kind, ")
+                + ("node_status " if "node_status" in note_columns else "'' AS node_status ")
+                + "FROM notenode"
+            )
+        ).all()
+
     updated_note_count = 0
     for note in notes:
-        if note.note_categories or note.primary_category or note.note_form or note.note_scene or note.lifecycle_stage:
+        note_id = note[0]
+        note_categories = _load_json_value(note[1], [])
+        primary_category = note[2]
+        note_form = note[3]
+        note_scene = note[4]
+        lifecycle_stage = note[5]
+        note_types = _load_json_value(note[6], [])
+        node_type = note[7]
+        note_kind = note[8]
+        node_status = note[9]
+
+        if note_categories or primary_category or note_form or note_scene or lifecycle_stage:
             repaired = derive_legacy_semantics_from_taxonomy(
-                note.note_categories,
-                primary_category=note.primary_category or NOTE_CATEGORY_DEFAULT,
-                note_form=note.note_form or NOTE_FORM_DEFAULT,
-                note_scene=note.note_scene or note.note_kind or NOTE_SCENE_DEFAULT,
-                lifecycle_stage=note.lifecycle_stage or note.node_status or NOTE_LIFECYCLE_STAGE_DEFAULT,
+                note_categories,
+                primary_category=primary_category or NOTE_CATEGORY_DEFAULT,
+                note_form=note_form or NOTE_FORM_DEFAULT,
+                note_scene=note_scene or note_kind or NOTE_SCENE_DEFAULT,
+                lifecycle_stage=lifecycle_stage or node_status or NOTE_LIFECYCLE_STAGE_DEFAULT,
             )
         else:
             repaired = derive_note_taxonomy_from_legacy(
-                note.note_types,
-                node_type=note.node_type,
-                note_kind=note.note_kind,
-                node_status=note.node_status,
+                note_types,
+                node_type=node_type,
+                note_kind=note_kind,
+                node_status=node_status,
             )
 
-        changed = False
-        for field, value in repaired.items():
-            if getattr(note, field) != value:
-                setattr(note, field, value)
-                changed = True
+        changed = (
+            note_types != repaired["note_types"]
+            or (node_type or "") != str(repaired["node_type"])
+            or (note_kind or "") != str(repaired["note_kind"])
+            or (node_status or "") != str(repaired["node_status"])
+            or (note_form or "") != str(repaired["note_form"])
+            or note_categories != repaired["note_categories"]
+            or (primary_category or "") != str(repaired["primary_category"])
+            or (note_scene or "") != str(repaired["note_scene"])
+            or (lifecycle_stage or "") != str(repaired["lifecycle_stage"])
+        )
 
         if changed:
-            session.add(note)
+            session.execute(
+                text(
+                    """
+                    UPDATE notenode
+                    SET note_types = :note_types,
+                        node_type = :node_type,
+                        note_kind = :note_kind,
+                        node_status = :node_status,
+                        note_form = :note_form,
+                        note_categories = :note_categories,
+                        primary_category = :primary_category,
+                        note_scene = :note_scene,
+                        lifecycle_stage = :lifecycle_stage
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "note_types": _dump_json_value(repaired["note_types"]),
+                    "node_type": str(repaired["node_type"]),
+                    "note_kind": str(repaired["note_kind"]),
+                    "node_status": str(repaired["node_status"]),
+                    "note_form": str(repaired["note_form"]),
+                    "note_categories": _dump_json_value(repaired["note_categories"]),
+                    "primary_category": str(repaired["primary_category"]),
+                    "note_scene": str(repaired["note_scene"]),
+                    "lifecycle_stage": str(repaired["lifecycle_stage"]),
+                    "id": note_id,
+                },
+            )
             updated_note_count += 1
 
-    palette_rows = session.exec(
-        select(AppSetting).where(
-            AppSetting.key.like("note.category_palette.user.%"),
-            AppSetting.value.is_not(None)
-        )
-    ).all()
     updated_palette_count = 0
+    if _table_exists(session, "appsetting"):
+        palette_rows = session.exec(
+            select(AppSetting).where(
+                AppSetting.key.like("note.category_palette.user.%"),
+                AppSetting.value.is_not(None),
+            )
+        ).all()
+    else:
+        palette_rows = []
+
     for row in palette_rows:
         value = row.value if isinstance(row.value, dict) else {}
         items = value.get("items")
@@ -748,6 +931,37 @@ def v20_repair_note_category_drift(session: Session):
         session.commit()
     print(f"  Repaired {updated_note_count} notes and {updated_palette_count} category palettes.")
 
+
+def v21_merge_predone_into_done(session: Session):
+    """
+    Migration V21: merge legacy predone lifecycle stage into done.
+    """
+    print("Running System Upgrade V21: Merge predone lifecycle stage into done...")
+    columns = _get_table_columns(session, "notenode")
+    conditions = []
+    if "node_status" in columns:
+        conditions.append("LOWER(COALESCE(node_status, '')) = 'predone'")
+    if "lifecycle_stage" in columns:
+        conditions.append("LOWER(COALESCE(lifecycle_stage, '')) = 'predone'")
+    if not conditions:
+        print("  Missing predone-related columns on notenode, skipping.")
+        return
+
+    matched = session.exec(
+        text(
+            "SELECT COUNT(*) FROM notenode "
+            f"WHERE {' OR '.join(conditions)}"
+        )
+    ).first()
+    updated = int(_first_scalar(matched) or 0)
+    if updated > 0:
+        if "node_status" in columns:
+            session.exec(text("UPDATE notenode SET node_status = 'done' WHERE LOWER(COALESCE(node_status, '')) = 'predone'"))
+        if "lifecycle_stage" in columns:
+            session.exec(text("UPDATE notenode SET lifecycle_stage = 'done' WHERE LOWER(COALESCE(lifecycle_stage, '')) = 'predone'"))
+        session.commit()
+    print(f"  Merged {updated} notes from predone to done.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -771,6 +985,7 @@ MIGRATIONS = [
     (18, "Add weighted note types", v18_add_note_types),
     (19, "Add naming-aligned note taxonomy fields", v19_add_note_taxonomy_fields),
     (20, "Repair note category drift", v20_repair_note_category_drift),
+    (21, "Merge predone into done", v21_merge_predone_into_done),
 ]
 
 def get_current_version(session: Session) -> int:

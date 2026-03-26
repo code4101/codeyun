@@ -7,7 +7,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Document, Headset, Reading, Tickets, VideoPlay } from '@element-plus/icons-vue';
+import { Document, Headset, MagicStick, Reading, Tickets, VideoPlay } from '@element-plus/icons-vue';
 import { getNoteFormConfig } from '@/utils/nodeConfig';
 
 const props = withDefaults(defineProps<{
@@ -26,6 +26,7 @@ const iconComponent = computed(() => {
   if (formConfig.value.id === 'memo') return Tickets;
   if (formConfig.value.id === 'music') return Headset;
   if (formConfig.value.id === 'video') return VideoPlay;
+  if (formConfig.value.id === 'game') return MagicStick;
   if (formConfig.value.id === 'book') return Reading;
   return null;
 });

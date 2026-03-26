@@ -1,48 +1,76 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CopyDocument, Download, Picture, UploadFilled } from '@element-plus/icons-vue'
+import { Close, CopyDocument, Download, Picture, Plus, UploadFilled } from '@element-plus/icons-vue'
 import {
   analyzeImageColorDistribution,
   getTopCoveragePercent,
-  type AnalysisProgress,
-  type ColorDistributionRow,
-  type ImageColorDistributionResult,
-} from '@/utils/colorDistribution'
-import {
   COLOR_GROUPS,
   DISTANCE_METHODS,
+  StandardColorPickerPopover,
   createRgbColor,
-  distance,
-  findSimilarStandardColor,
   fromHex,
-  getColorMatchesByHex,
+  fromVbaValue,
+  getColorDistance,
   getGroupPalette,
   getPaletteForGroups,
   getReadableTextColor,
-  getRelativeColorDescription,
-  lightenColor,
-  mixColors,
-  parseColorInput,
+  getStandardColors,
+  matchesStandardColorKeyword,
+  mixWeightedColors,
+  resolveMappedStandardColorInfo,
   toHex,
   toPercentage,
   toVbaValue,
+  type AnalysisProgress,
+  type ImageColorDistributionResult,
   type ColorGroupId,
   type DistanceMethod,
   type RgbColor,
+  type ResolvedMappedColorInfo,
   type StandardColor,
-} from '@/utils/colorToolkit'
+} from '@/features/color-tools'
+
+interface MixComposerEntry {
+  id: string
+  hex: string
+  weight: number
+}
+
+interface ResolvedMixComposerEntry extends MixComposerEntry {
+  effectiveHex: string
+  mappedInfo: ResolvedMappedColorInfo
+  secondaryName: string
+}
+
+interface PersistedColorToolsState {
+  version: 1
+  currentHex: string
+  mixFillHex: string
+  mixEntries: Array<{
+    hex: string
+    weight: number
+  }>
+}
 
 const currentColor = reactive(createRgbColor(123, 45, 84))
 const activePalette = ref<ColorGroupId>('core-zh')
 const paletteSearch = ref('')
-const quickInput = ref('')
 const hexDraft = ref('#7B2D54')
-const preciseMode = ref(false)
-const lightRatio = ref(1)
-const mixRatio = ref(1)
-const mixTargetHex = ref('#FFFFFF')
-const mixTargetDraft = ref('#FFFFFF')
+const vbaPositiveDraft = ref('')
+const vbaNegativeDraft = ref('')
+const VBA_COLOR_SPACE = 256 ** 3
+const COLOR_TOOLS_STATE_STORAGE_KEY = 'color_tools_state_v1'
+let mixComposerEntrySeed = 0
+const createMixComposerEntry = (hex = '#FFFFFF', weight = 100): MixComposerEntry => ({
+  id: `mix-${++mixComposerEntrySeed}`,
+  hex: toHex(fromHex(hex)),
+  weight,
+})
+const mixEntries = ref<MixComposerEntry[]>([createMixComposerEntry('#7B2D54', 100)])
+const activeMixEntryPickerId = ref<string | null>(null)
+const mixFillHex = ref('#FFFFFF')
+const mixFillPickerVisible = ref(false)
 
 const analysisGroupIds = ref<ColorGroupId[]>(COLOR_GROUPS.map(group => group.id))
 const analysisDistanceMethod = ref<DistanceMethod>('cie76')
@@ -69,87 +97,121 @@ const groupPalettes: Record<ColorGroupId, StandardColor[]> = {
 }
 
 const currentHex = computed(() => toHex(currentColor))
-const pickerHex = computed({
-  get: () => currentHex.value,
-  set: (value: string) => {
-    try {
-      setCurrentColor(fromHex(value))
-    } catch {
-      ElMessage.error('颜色选择器返回了无效颜色')
-    }
-  },
-})
+const currentPickerVisible = ref(false)
 
 watch(
   () => [currentColor.r, currentColor.g, currentColor.b],
   () => {
     hexDraft.value = currentHex.value
+    vbaPositiveDraft.value = String(toVbaValue(currentColor))
+    vbaNegativeDraft.value = String(toVbaValue(currentColor, true))
   },
   { immediate: true },
 )
 
 watch(
-  mixTargetHex,
-  (value) => {
-    mixTargetDraft.value = value
+  [currentHex, mixFillHex, mixEntries],
+  () => {
+    persistColorToolsState()
   },
-  { immediate: true },
+  { deep: true },
 )
 
-const currentRgbLabel = computed(() => `(${currentColor.r}, ${currentColor.g}, ${currentColor.b})`)
-const currentCssRgb = computed(() => `rgb(${currentColor.r} ${currentColor.g} ${currentColor.b})`)
 const percentageValues = computed(() => toPercentage(currentColor))
-const percentageLabel = computed(() => percentageValues.value.map(value => value.toFixed(6)).join(', '))
 const percentagePercentLabel = computed(() => percentageValues.value.map(value => `${(value * 100).toFixed(2)}%`).join(' / '))
-const currentMatches = computed(() => getColorMatchesByHex(currentHex.value))
-const mixTargetColor = computed(() => {
-  try {
-    return fromHex(mixTargetHex.value)
-  } catch {
-    return createRgbColor(255, 255, 255)
-  }
+
+const similarityRows = computed(() => {
+  const sourceHex = currentHex.value
+  const sourceColor = currentColor
+
+  return getStandardColors(2)
+    .map((color) => {
+      const primaryEnglishName = color.enNames[0] || ''
+      const secondaryName = primaryEnglishName && primaryEnglishName !== color.displayName
+        ? primaryEnglishName
+        : ''
+      const distance = color.hex === sourceHex ? 0 : getColorDistance(sourceColor, color, 'cie76')
+
+      return {
+        color,
+        secondaryName,
+        distance,
+      }
+    })
+    .sort((left, right) => {
+      if (left.distance !== right.distance) return left.distance - right.distance
+      if (left.color.displayName.length !== right.color.displayName.length) {
+        return left.color.displayName.length - right.color.displayName.length
+      }
+      return left.color.hex.localeCompare(right.color.hex)
+    })
+    .slice(0, 5)
+    .map(row => ({
+      ...row,
+      delta: row.distance.toFixed(2),
+    }))
 })
 
-const exactMatchRows = computed(() => COLOR_GROUPS.map(group => ({
-  group,
-  color: currentMatches.value[group.id],
-})))
-
-const similarityRows = computed(() => COLOR_GROUPS.map((group) => {
-  const color = findSimilarStandardColor(currentColor, {
-    range: group.range,
-    preciseMode: preciseMode.value,
-  })
-
-  return {
-    group,
-    rangeLabel: group.range === 0
-      ? '范围 0：基础中文'
-      : group.range === 1
-        ? '范围 1：基础中文 + 扩展中文'
-        : '范围 2：全量英文',
-    color,
-    relative: getRelativeColorDescription(currentColor, color, {
-      range: group.range,
-      preciseMode: preciseMode.value,
-    }),
-    delta: distance(currentColor, color).toFixed(2),
-  }
-}))
-
-const filteredPalette = computed(() => {
-  const colors = groupPalettes[activePalette.value]
-  const keyword = paletteSearch.value.trim().toLowerCase()
-  if (!keyword) {
+function filterPaletteByKeyword(colors: StandardColor[], keyword: string): StandardColor[] {
+  if (!keyword.trim()) {
     return colors
   }
 
-  return colors.filter(color => color.hex.toLowerCase().includes(keyword)
-    || color.names.some(name => name.toLowerCase().includes(keyword)))
+  return colors.filter(color => matchesStandardColorKeyword(color, keyword))
+}
+
+const filteredPalette = computed(() => {
+  const colors = groupPalettes[activePalette.value]
+  return filterPaletteByKeyword(colors, paletteSearch.value)
 })
 
-const lightPreview = computed(() => lightenColor(currentColor, lightRatio.value))
-const mixedPreview = computed(() => mixColors(currentColor, mixTargetColor.value, mixRatio.value))
+const normalizeMixWeight = (value: unknown) => {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(numeric)) return 0
+  return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+const resolvedMixEntries = computed<ResolvedMixComposerEntry[]>(() => (
+  mixEntries.value.map((entry) => {
+    const effectiveHex = entry.hex
+    const mappedInfo = resolveMappedStandardColorInfo(effectiveHex, { range: 2, method: 'cie76' })
+
+    return {
+      ...entry,
+      effectiveHex,
+      mappedInfo,
+      secondaryName: getPaletteSecondaryName(mappedInfo.mappedColor),
+    }
+  })
+))
+
+const mixTotalWeight = computed(() => resolvedMixEntries.value.reduce((sum, entry) => sum + entry.weight, 0))
+const mixFillWeight = computed(() => Math.max(100 - mixTotalWeight.value, 0))
+const mixFillMappedInfo = computed(() => resolveMappedStandardColorInfo(mixFillHex.value, { range: 2, method: 'cie76' }))
+const mixFillSecondaryName = computed(() => getPaletteSecondaryName(mixFillMappedInfo.value.mappedColor))
+const mixedPreview = computed(() => (
+  mixWeightedColors(
+    resolvedMixEntries.value.map(entry => ({
+      color: entry.effectiveHex,
+      weight: entry.weight,
+    })),
+    {
+      fillColor: mixFillHex.value,
+      fillToWeight: 100,
+    }
+  )
+  ?? fromHex(mixFillHex.value)
+))
+const mixedPreviewHex = computed(() => toHex(mixedPreview.value))
+const mixedPreviewMappedInfo = computed(() => resolveMappedStandardColorInfo(mixedPreview.value, { range: 2, method: 'cie76' }))
+const mixedPreviewPrimaryText = computed(() => mixedPreviewMappedInfo.value.mappedColor.displayName)
+const mixedPreviewSecondaryName = computed(() => getPaletteSecondaryName(mixedPreviewMappedInfo.value.mappedColor))
+const mixedPreviewTooltip = computed(() => {
+  const color = mixedPreviewMappedInfo.value.mappedColor
+  const labels = [color.zhNames[0], color.enNames[0]].filter(Boolean)
+  return `当前混色：${mixedPreviewHex.value}；最接近标准色：${labels.join(' / ') || color.displayName} · ${color.hex}`
+})
+
 const analysisPaletteSize = computed(() => getPaletteForGroups(analysisGroupIds.value).length)
 const analysisProgressPercent = computed(() => Math.max(0, Math.min(100, Math.round(analysisProgress.ratio * 100))))
 const distributionRows = computed(() => (analysisResult.value?.rows ?? []).map(row => ({
@@ -178,8 +240,52 @@ function getSwatchStyle(color: RgbColor) {
   }
 }
 
-function getAliasText(color: StandardColor): string {
-  return color.names.slice(1, 4).join(' / ')
+function getContrastCardStyle(color: StandardColor | RgbColor | string): Record<string, string> {
+  const normalizedColor = typeof color === 'string'
+    ? fromHex(color)
+    : 'hex' in color
+      ? createRgbColor(color.r, color.g, color.b)
+      : color
+  const background = typeof color === 'string'
+    ? toHex(normalizedColor)
+    : 'hex' in color
+      ? color.hex
+      : toHex(color)
+  return {
+    background,
+    color: getReadableTextColor(normalizedColor),
+    ...getContrastVarsStyle(color),
+  }
+}
+
+function getContrastVarsStyle(color: StandardColor | RgbColor | string): Record<string, string> {
+  const normalizedColor = typeof color === 'string'
+    ? fromHex(color)
+    : 'hex' in color
+      ? createRgbColor(color.r, color.g, color.b)
+      : color
+  const foreground = getReadableTextColor(normalizedColor)
+  const lightForeground = foreground === '#111827'
+
+  return {
+    '--sim-fg': foreground,
+    '--sim-fg-muted': lightForeground ? 'rgba(17,24,39,0.72)' : 'rgba(255,255,255,0.84)',
+    '--sim-chip-bg': lightForeground ? 'rgba(255,255,255,0.56)' : 'rgba(15,23,42,0.22)',
+    '--sim-chip-border': lightForeground ? 'rgba(17,24,39,0.24)' : 'rgba(255,255,255,0.46)',
+  }
+}
+
+function getSimilarityCardStyle(color: StandardColor): Record<string, string> {
+  return getContrastCardStyle(color)
+}
+
+function getHexCardStyle(color: RgbColor | string): Record<string, string> {
+  return getContrastCardStyle(color)
+}
+
+function getPaletteSecondaryName(color: StandardColor): string {
+  const primaryEnglishName = color.enNames[0] || ''
+  return primaryEnglishName && primaryEnglishName !== color.displayName ? primaryEnglishName : ''
 }
 
 function formatPercent(value: number): string {
@@ -190,15 +296,84 @@ function formatInteger(value: number): string {
   return new Intl.NumberFormat('zh-CN').format(value)
 }
 
-function applyQuickInput(): void {
-  const parsed = parseColorInput(quickInput.value)
-  if (!parsed) {
-    ElMessage.error('未识别输入内容，支持 HEX、RGB、VBA 和标准颜色名')
-    return
-  }
+function canUseLocalStorage(): boolean {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
 
-  setCurrentColor(parsed)
-  ElMessage.success('已应用颜色')
+function buildPersistedColorToolsState(): PersistedColorToolsState {
+  return {
+    version: 1,
+    currentHex: currentHex.value,
+    mixFillHex: mixFillHex.value,
+    mixEntries: mixEntries.value.map(entry => ({
+      hex: entry.hex,
+      weight: normalizeMixWeight(entry.weight),
+    })),
+  }
+}
+
+function persistColorToolsState(): void {
+  if (!canUseLocalStorage()) return
+
+  try {
+    window.localStorage.setItem(
+      COLOR_TOOLS_STATE_STORAGE_KEY,
+      JSON.stringify(buildPersistedColorToolsState()),
+    )
+  } catch (error) {
+    console.warn('Failed to persist color tools state:', error)
+  }
+}
+
+function loadPersistedColorToolsState(): PersistedColorToolsState | null {
+  if (!canUseLocalStorage()) return null
+
+  try {
+    const raw = window.localStorage.getItem(COLOR_TOOLS_STATE_STORAGE_KEY)
+    if (!raw) return null
+
+    const parsed = JSON.parse(raw) as Partial<PersistedColorToolsState> | null
+    if (!parsed || parsed.version !== 1) {
+      window.localStorage.removeItem(COLOR_TOOLS_STATE_STORAGE_KEY)
+      return null
+    }
+
+    const currentHex = toHex(fromHex(parsed.currentHex || '#7B2D54'))
+    const mixFillHex = toHex(fromHex(parsed.mixFillHex || '#FFFFFF'))
+    const sourceEntries = Array.isArray(parsed.mixEntries) ? parsed.mixEntries : []
+    const mixEntries = sourceEntries
+      .map((entry) => {
+        try {
+          return {
+            hex: toHex(fromHex(entry?.hex || '#FFFFFF')),
+            weight: normalizeMixWeight(entry?.weight),
+          }
+        } catch {
+          return null
+        }
+      })
+      .filter((entry): entry is PersistedColorToolsState['mixEntries'][number] => Boolean(entry))
+
+    return {
+      version: 1,
+      currentHex,
+      mixFillHex,
+      mixEntries: sourceEntries.length === 0 ? [] : mixEntries,
+    }
+  } catch (error) {
+    console.warn('Failed to load persisted color tools state:', error)
+    window.localStorage.removeItem(COLOR_TOOLS_STATE_STORAGE_KEY)
+    return null
+  }
+}
+
+function restorePersistedColorToolsState(): void {
+  const persisted = loadPersistedColorToolsState()
+  if (!persisted) return
+
+  setCurrentColor(fromHex(persisted.currentHex))
+  mixFillHex.value = persisted.mixFillHex
+  mixEntries.value = persisted.mixEntries.map(entry => createMixComposerEntry(entry.hex, entry.weight))
 }
 
 function applyHexDraft(): void {
@@ -210,23 +385,95 @@ function applyHexDraft(): void {
   }
 }
 
-function applyMixTargetDraft(): void {
+function applyVbaDraft(negative = false): void {
+  const draftRef = negative ? vbaNegativeDraft : vbaPositiveDraft
+  const rawValue = draftRef.value.trim()
+
+  if (!/^-?\d+$/.test(rawValue)) {
+    draftRef.value = String(toVbaValue(currentColor, negative))
+    ElMessage.error('VBA 值需填写整数')
+    return
+  }
+
+  const parsed = Number.parseInt(rawValue, 10)
+  const isPositiveRangeValid = parsed >= 0 && parsed < VBA_COLOR_SPACE
+  const isNegativeRangeValid = parsed >= -VBA_COLOR_SPACE && parsed < 0
+
+  if ((!negative && !isPositiveRangeValid) || (negative && !isNegativeRangeValid)) {
+    draftRef.value = String(toVbaValue(currentColor, negative))
+    ElMessage.error(
+      negative
+        ? `VBA 负值范围应为 ${-VBA_COLOR_SPACE} 到 -1`
+        : `VBA 正值范围应为 0 到 ${VBA_COLOR_SPACE - 1}`,
+    )
+    return
+  }
+
   try {
-    mixTargetHex.value = toHex(fromHex(mixTargetDraft.value))
+    setCurrentColor(fromVbaValue(parsed))
   } catch (error) {
-    mixTargetDraft.value = mixTargetHex.value
-    ElMessage.error(error instanceof Error ? error.message : '混入颜色 HEX 格式错误')
+    draftRef.value = String(toVbaValue(currentColor, negative))
+    ElMessage.error(error instanceof Error ? error.message : 'VBA 数值格式错误')
   }
 }
 
 function selectPaletteColor(color: StandardColor): void {
   setCurrentColor(color)
-  quickInput.value = color.displayName
 }
 
-function usePreviewColor(color: RgbColor): void {
-  setCurrentColor(color)
-  ElMessage.success('已将结果颜色设为当前颜色')
+function handleCurrentPickerPreview(value: string): void {
+  try {
+    const normalized = toHex(fromHex(value))
+    setCurrentColor(fromHex(normalized))
+  } catch {
+    ElMessage.error('颜色选择器返回了无效颜色')
+  }
+}
+
+function handleCurrentPickerVisibleChange(visible: boolean): void {
+  currentPickerVisible.value = visible
+}
+
+function handleMixEntryColorPreview(entry: MixComposerEntry, value: string): void {
+  entry.hex = toHex(fromHex(value))
+}
+
+function handleMixEntryPickerVisibleChange(entry: MixComposerEntry, visible: boolean): void {
+  if (visible) {
+    activeMixEntryPickerId.value = entry.id
+    return
+  }
+
+  if (activeMixEntryPickerId.value === entry.id) {
+    activeMixEntryPickerId.value = null
+  }
+}
+
+function addMixEntry(): void {
+  mixEntries.value.push(createMixComposerEntry(currentHex.value, 100))
+}
+
+function updateMixEntryWeight(entryId: string, value: unknown): void {
+  mixEntries.value = mixEntries.value.map(entry => (
+    entry.id === entryId
+      ? { ...entry, weight: normalizeMixWeight(value) }
+      : entry
+  ))
+}
+
+function removeMixEntry(entryId: string): void {
+  mixEntries.value = mixEntries.value.filter(entry => entry.id !== entryId)
+  if (activeMixEntryPickerId.value === entryId) {
+    activeMixEntryPickerId.value = null
+  }
+}
+
+function handleMixFillColorPreview(value: string): void {
+  mixFillHex.value = toHex(fromHex(value))
+}
+
+function handleMixFillPickerVisibleChange(visible: boolean): void {
+  mixFillPickerVisible.value = visible
 }
 
 async function copyValue(value: string): Promise<void> {
@@ -400,11 +647,8 @@ function clearImageAnalysis(): void {
   resetAnalysisUrls()
 }
 
-function getRowSwatchStyle(row: ColorDistributionRow): Record<string, string> {
-  return getSwatchStyle(row.color)
-}
-
 onMounted(() => {
+  restorePersistedColorToolsState()
   window.addEventListener('paste', handleWindowPaste)
 })
 
@@ -422,15 +666,8 @@ onUnmounted(() => {
         <p class="hero-kicker">综合工具 / 颜色工具</p>
         <h1>颜色色卡与算法实验台</h1>
         <p class="hero-desc">
-          基于 <code>pyxllib/cv/rgbfmt.py</code> 移植到纯前端，可直接做颜色查找、格式换算、相近标准色匹配、混色、提亮，以及图片颜色分布分析。
+          基于 <code>pyxllib/cv/rgbfmt.py</code> 移植到纯前端，可直接做颜色查找、格式换算、相近标准色匹配、混色，以及图片颜色分布分析。
         </p>
-      </div>
-      <div class="hero-current" :style="getSwatchStyle(currentColor)">
-        <div class="hero-swatch" />
-        <div class="hero-values">
-          <strong>{{ currentHex }}</strong>
-          <span>{{ currentRgbLabel }}</span>
-        </div>
       </div>
     </section>
 
@@ -438,7 +675,7 @@ onUnmounted(() => {
       <el-card class="panel-card">
         <template #header>
           <div class="panel-header">
-            <span>当前颜色</span>
+            <span>挑选颜色</span>
             <el-button type="primary" link @click="copyValue(currentHex)">
               <el-icon><CopyDocument /></el-icon>
               复制 HEX
@@ -448,28 +685,32 @@ onUnmounted(() => {
 
         <div class="editor-grid">
           <div class="editor-preview" :style="getSwatchStyle(currentColor)">
-            <el-color-picker v-model="pickerHex" size="large" />
-            <div class="preview-labels">
-              <strong>{{ currentHex }}</strong>
-              <span>{{ currentRgbLabel }}</span>
-              <span>{{ currentCssRgb }}</span>
+            <div class="editor-picker-row">
+              <StandardColorPickerPopover
+                :model-value="currentHex"
+                :visible="currentPickerVisible"
+                placement="bottom-start"
+                @update:model-value="handleCurrentPickerPreview"
+                @update:visible="handleCurrentPickerVisibleChange"
+              >
+                <template #reference>
+                  <button
+                    type="button"
+                    class="editor-picker-trigger"
+                    :style="{ '--picker-color': currentHex }"
+                    title="打开标准选色器"
+                    aria-label="打开标准选色器"
+                  >
+                    <span class="editor-picker-trigger__swatch" />
+                    <span class="editor-picker-trigger__label">标准选色</span>
+                    <span class="editor-picker-trigger__caret" />
+                  </button>
+                </template>
+              </StandardColorPickerPopover>
             </div>
           </div>
 
           <div class="editor-form">
-            <div class="form-row">
-              <label>快速输入</label>
-              <el-input
-                v-model="quickInput"
-                placeholder="支持 #7B2D54 / 123,45,84 / -11260549 / 紫罗兰色"
-                @keyup.enter="applyQuickInput"
-              >
-                <template #append>
-                  <el-button @click="applyQuickInput">应用</el-button>
-                </template>
-              </el-input>
-            </div>
-
             <div class="form-row">
               <label>HEX</label>
               <el-input v-model="hexDraft" @change="applyHexDraft" />
@@ -498,75 +739,21 @@ onUnmounted(() => {
                 <el-input-number v-model="currentColor.b" :min="0" :max="255" />
               </div>
             </div>
-          </div>
-        </div>
-      </el-card>
 
-      <el-card class="panel-card">
-        <template #header>
-          <div class="panel-header">
-            <span>格式转换</span>
-            <span class="panel-hint">对应 RGB / HEX / VBA / 百分比转换</span>
-          </div>
-        </template>
-
-        <div class="conversion-grid">
-          <div class="value-box">
-            <span class="value-label">HEX</span>
-            <strong>{{ currentHex }}</strong>
-          </div>
-          <div class="value-box">
-            <span class="value-label">RGB</span>
-            <strong>{{ currentRgbLabel }}</strong>
-          </div>
-          <div class="value-box">
-            <span class="value-label">CSS</span>
-            <strong>{{ currentCssRgb }}</strong>
-          </div>
-          <div class="value-box">
-            <span class="value-label">VBA 正值</span>
-            <strong>{{ toVbaValue(currentColor) }}</strong>
-          </div>
-          <div class="value-box">
-            <span class="value-label">VBA 负值</span>
-            <strong>{{ toVbaValue(currentColor, true) }}</strong>
-          </div>
-          <div class="value-box">
-            <span class="value-label">百分比 (0~1)</span>
-            <strong>{{ percentageLabel }}</strong>
-          </div>
-          <div class="value-box value-box-wide">
-            <span class="value-label">百分比 (%)</span>
-            <strong>{{ percentagePercentLabel }}</strong>
-          </div>
-        </div>
-      </el-card>
-    </div>
-
-    <div class="mid-grid">
-      <el-card class="panel-card">
-        <template #header>
-          <div class="panel-header">
-            <span>精确命名命中</span>
-            <span class="panel-hint">当前颜色是否正好在各色卡中存在</span>
-          </div>
-        </template>
-
-        <div class="match-list">
-          <div v-for="row in exactMatchRows" :key="row.group.id" class="match-row">
-            <div class="match-meta">
-              <strong>{{ row.group.shortLabel }}</strong>
-              <span>{{ row.group.description }}</span>
+            <div class="form-row">
+              <label>VBA 正值</label>
+              <el-input v-model="vbaPositiveDraft" @change="applyVbaDraft()" />
             </div>
-            <div v-if="row.color" class="match-chip" :style="getSwatchStyle(row.color)">
-              <span>{{ row.color.displayName }}</span>
-              <small>{{ row.color.hex }}</small>
-              <span class="color-card-action" @click.stop="copyValue(row.color.hex)">
-                <el-icon><CopyDocument /></el-icon>
-                复制 HEX
-              </span>
+
+            <div class="form-row">
+              <label>VBA 负值</label>
+              <el-input v-model="vbaNegativeDraft" @change="applyVbaDraft(true)" />
             </div>
-            <span v-else class="match-miss">当前 HEX 未命中该组精确色卡</span>
+
+            <div class="form-row">
+              <label>百分比</label>
+              <div class="plain-value">{{ percentagePercentLabel }}</div>
+            </div>
           </div>
         </div>
       </el-card>
@@ -575,31 +762,26 @@ onUnmounted(() => {
         <template #header>
           <div class="panel-header">
             <span>相近标准色</span>
-            <el-switch
-              v-model="preciseMode"
-              active-text="精准距离"
-              inactive-text="快速距离"
-            />
           </div>
         </template>
 
         <div class="similarity-list">
-          <div v-for="row in similarityRows" :key="row.group.id" class="similarity-card">
-            <div class="similarity-top">
-              <div>
-                <strong>{{ row.rangeLabel }}</strong>
-                <p>{{ row.color.displayName }} · {{ row.color.hex }}</p>
-              </div>
-              <div class="mini-swatch" :style="getSwatchStyle(row.color)">
-                <span>{{ row.color.displayName }}</span>
-                <span class="color-card-action" @click.stop="copyValue(row.color.hex)">
-                  <el-icon><CopyDocument /></el-icon>
-                  复制 HEX
-                </span>
-              </div>
+          <div
+            v-for="(row, index) in similarityRows"
+            :key="row.color.hex"
+            class="similarity-card compact"
+            :style="getSimilarityCardStyle(row.color)"
+          >
+            <div class="similarity-row-main">
+              <span class="similarity-rank">{{ index + 1 }}.</span>
+              <span class="similarity-name">{{ row.color.displayName }}</span>
+              <span v-if="row.secondaryName" class="similarity-en">{{ row.secondaryName }}</span>
+              <span class="similarity-distance">距离 {{ row.delta }}</span>
             </div>
-            <div class="similarity-desc">{{ row.relative }}</div>
-            <div class="similarity-distance">色彩距离：{{ row.delta }}</div>
+            <button type="button" class="similarity-copy-btn" @click="copyValue(row.color.hex)">
+              <el-icon><CopyDocument /></el-icon>
+              复制 {{ row.color.hex }}
+            </button>
           </div>
         </div>
       </el-card>
@@ -608,49 +790,151 @@ onUnmounted(() => {
     <el-card class="panel-card">
       <template #header>
         <div class="panel-header">
-          <span>混色与提亮</span>
-          <span class="panel-hint">对应 mixtures / light</span>
+          <span>调色板</span>
         </div>
       </template>
 
-      <div class="blend-grid">
-        <div class="blend-column">
-          <h3>提亮</h3>
-          <div class="blend-control">
-            <label>白色权重</label>
-            <div class="channel-row">
-              <el-slider v-model="lightRatio" :min="0" :max="6" :step="0.1" />
-              <el-input-number v-model="lightRatio" :min="0" :max="6" :step="0.1" />
-            </div>
-          </div>
-          <div class="result-card" :style="getSwatchStyle(lightPreview)">
-            <strong>{{ toHex(lightPreview) }}</strong>
-            <span>RGB {{ `(${lightPreview.r}, ${lightPreview.g}, ${lightPreview.b})` }}</span>
-          </div>
-          <el-button type="primary" plain @click="usePreviewColor(lightPreview)">使用提亮结果</el-button>
+      <div class="mix-composer">
+        <div class="mix-section-head">
+          <span class="mix-section-label">补全色</span>
+          <span class="mix-section-meta">自动补 {{ mixFillWeight }}</span>
         </div>
 
-        <div class="blend-column">
-          <h3>混色</h3>
-          <div class="blend-control">
-            <label>混入颜色</label>
-            <div class="blend-picker-row">
-              <el-color-picker v-model="mixTargetHex" />
-              <el-input v-model="mixTargetDraft" @change="applyMixTargetDraft" />
+        <div class="mix-fill-row">
+          <div class="mix-single-row">
+            <StandardColorPickerPopover
+              :model-value="mixFillHex"
+              :visible="mixFillPickerVisible"
+              placement="bottom-start"
+              @update:model-value="handleMixFillColorPreview"
+              @update:visible="handleMixFillPickerVisibleChange"
+            >
+              <template #reference>
+                <button
+                  type="button"
+                  class="mix-fill-trigger"
+                  :style="getHexCardStyle(mixFillHex)"
+                >
+                  <div class="mix-fill-trigger__main">
+                    <span class="mix-fill-trigger__name">{{ mixFillMappedInfo.mappedColor.displayName }}</span>
+                    <span v-if="mixFillSecondaryName" class="mix-fill-trigger__secondary">{{ mixFillSecondaryName }}</span>
+                    <span class="mix-fill-trigger__hex">{{ mixFillHex }}</span>
+                  </div>
+                  <span class="mix-fill-trigger__caret" />
+                </button>
+              </template>
+            </StandardColorPickerPopover>
+            <button
+              type="button"
+              class="similarity-copy-btn mix-copy-btn"
+              :style="getContrastVarsStyle(mixFillHex)"
+              @click="copyValue(mixFillHex)"
+            >
+              <el-icon><CopyDocument /></el-icon>
+              复制 {{ mixFillHex }}
+            </button>
+          </div>
+        </div>
+
+        <div class="mix-section-head">
+          <span class="mix-section-label">搭配色</span>
+          <span class="mix-section-meta">当前总权重 {{ mixTotalWeight }}</span>
+        </div>
+
+        <div v-if="resolvedMixEntries.length" class="selected-list">
+          <div v-for="entry in resolvedMixEntries" :key="entry.id" class="mix-selected-row">
+            <StandardColorPickerPopover
+              :model-value="entry.effectiveHex"
+              :visible="activeMixEntryPickerId === entry.id"
+              placement="bottom-start"
+              @update:model-value="value => handleMixEntryColorPreview(entry, value)"
+              @update:visible="visible => handleMixEntryPickerVisibleChange(entry, visible)"
+            >
+              <template #reference>
+                <button
+                  type="button"
+                  class="mix-color-trigger"
+                  :style="getHexCardStyle(entry.effectiveHex)"
+                  :title="entry.effectiveHex"
+                >
+                  <div class="mix-color-trigger__main">
+                    <span class="mix-color-trigger__primary">{{ entry.mappedInfo.mappedColor.displayName }}</span>
+                    <span v-if="entry.secondaryName" class="mix-color-trigger__secondary">{{ entry.secondaryName }}</span>
+                    <span class="mix-color-trigger__meta">{{ entry.effectiveHex }}</span>
+                  </div>
+                  <span class="mix-color-trigger__caret" />
+                </button>
+              </template>
+            </StandardColorPickerPopover>
+
+            <button
+              type="button"
+              class="similarity-copy-btn mix-copy-btn"
+              :style="getContrastVarsStyle(entry.effectiveHex)"
+              @click="copyValue(entry.effectiveHex)"
+            >
+              <el-icon><CopyDocument /></el-icon>
+              复制 {{ entry.effectiveHex }}
+            </button>
+
+            <el-input-number
+              :model-value="entry.weight"
+              :min="0"
+              :max="100"
+              :step="5"
+              size="small"
+              controls-position="right"
+              class="weight-input"
+              @update:model-value="value => updateMixEntryWeight(entry.id, value)"
+            />
+            <el-button text :icon="Close" @click="removeMixEntry(entry.id)" />
+          </div>
+        </div>
+        <div v-else class="mix-empty">还没有颜色，新增一条开始配比。</div>
+
+        <div class="add-section">
+          <el-button size="small" plain :icon="Plus" @click="addMixEntry">
+            新增颜色
+          </el-button>
+          <span class="mix-add-hint">默认带入当前颜色，可再点色块修改。</span>
+        </div>
+
+        <div class="mix-section-head">
+          <span class="mix-section-label">混合映射结果</span>
+          <span class="mix-section-meta">自动计算</span>
+        </div>
+
+        <div class="mix-result-row">
+          <div
+            class="mix-preview-card"
+            :style="getHexCardStyle(mixedPreview)"
+            :title="mixedPreviewTooltip"
+          >
+            <div class="mix-preview-card__main">
+              <span class="mix-preview-card__name">{{ mixedPreviewPrimaryText }}</span>
+              <span v-if="mixedPreviewSecondaryName" class="mix-preview-card__en">{{ mixedPreviewSecondaryName }}</span>
+              <span class="mix-preview-card__meta">{{ mixedPreviewHex }}</span>
+              <span
+                v-if="mixedPreviewMappedInfo.mappedColor.hex !== mixedPreviewHex"
+                class="mix-preview-card__meta"
+              >
+                映射 {{ mixedPreviewMappedInfo.mappedColor.hex }}
+              </span>
             </div>
           </div>
-          <div class="blend-control">
-            <label>混入权重</label>
-            <div class="channel-row">
-              <el-slider v-model="mixRatio" :min="0" :max="6" :step="0.1" />
-              <el-input-number v-model="mixRatio" :min="0" :max="6" :step="0.1" />
-            </div>
-          </div>
-          <div class="result-card" :style="getSwatchStyle(mixedPreview)">
-            <strong>{{ toHex(mixedPreview) }}</strong>
-            <span>RGB {{ `(${mixedPreview.r}, ${mixedPreview.g}, ${mixedPreview.b})` }}</span>
-          </div>
-          <el-button type="primary" plain @click="usePreviewColor(mixedPreview)">使用混色结果</el-button>
+          <button
+            type="button"
+            class="similarity-copy-btn mix-copy-btn"
+            :style="getContrastVarsStyle(mixedPreview)"
+            @click="copyValue(mixedPreviewHex)"
+          >
+            <el-icon><CopyDocument /></el-icon>
+            复制 {{ mixedPreviewHex }}
+          </button>
+        </div>
+
+        <div class="panel-footer mix-panel-footer">
+          <span>颜色会按权重自动混合；总权重不足 100 时自动补补全色。</span>
         </div>
       </div>
     </el-card>
@@ -660,7 +944,7 @@ onUnmounted(() => {
         <div class="panel-header panel-header-wrap">
           <div>
             <span>图片颜色分布</span>
-            <p class="tab-hint">先统计唯一像素颜色，再投影到勾选色卡并集构成的标准色空间 A。</p>
+            <p class="tab-hint">先统计图片中的唯一像素颜色，再映射到所选标准色卡组成的参考色集合。</p>
           </div>
           <div class="analysis-actions">
             <el-button type="primary" @click="triggerImagePicker">
@@ -695,7 +979,7 @@ onUnmounted(() => {
 
       <div class="analysis-config">
         <div class="config-block">
-          <label>基准色卡 A</label>
+          <label>参考色集合</label>
           <el-checkbox-group v-model="analysisGroupIds">
             <el-checkbox
               v-for="group in COLOR_GROUPS"
@@ -805,34 +1089,28 @@ onUnmounted(() => {
 
           <div class="distribution-note">
             <span>Top 5 覆盖率 {{ formatPercent(topCoverageSummary.top5) }}</span>
-            <span>颜色空间 A 基于 {{ analysisPaletteSize }} 个标准色</span>
+            <span>当前参考色集合共 {{ analysisPaletteSize }} 个标准色</span>
             <span>统计表已按像素数从高到低排序</span>
           </div>
 
           <el-table :data="distributionRows" stripe class="distribution-table" max-height="560">
             <el-table-column prop="rank" label="#" width="70" />
-            <el-table-column label="颜色卡片" width="140">
+            <el-table-column label="标准色卡" min-width="420">
               <template #default="{ row }">
-                <div class="table-swatch" :style="getRowSwatchStyle(row)">
-                  {{ row.color.displayName }}
+                <div
+                  class="similarity-card compact distribution-card-row"
+                  :style="getSimilarityCardStyle(row.color)"
+                  :title="`${row.zhLabel} / ${row.enLabel} / ${row.color.hex}`"
+                >
+                  <div class="similarity-row-main distribution-card-main">
+                    <span class="similarity-name distribution-card-zh">{{ row.zhLabel }}</span>
+                    <span v-if="row.enLabel !== '—'" class="similarity-en distribution-card-en">{{ row.enLabel }}</span>
+                  </div>
+                  <button type="button" class="similarity-copy-btn" @click="copyValue(row.color.hex)">
+                    <el-icon><CopyDocument /></el-icon>
+                    复制 {{ row.color.hex }}
+                  </button>
                 </div>
-              </template>
-            </el-table-column>
-            <el-table-column label="中文名" min-width="180">
-              <template #default="{ row }">
-                {{ row.zhLabel }}
-              </template>
-            </el-table-column>
-            <el-table-column label="英文名" min-width="220">
-              <template #default="{ row }">
-                {{ row.enLabel }}
-              </template>
-            </el-table-column>
-            <el-table-column label="HEX" width="120">
-              <template #default="{ row }">
-                <el-tag class="copyable-hex-tag" @click="copyValue(row.color.hex)">
-                  {{ row.color.hex }}
-                </el-tag>
               </template>
             </el-table-column>
             <el-table-column label="占比" width="110">
@@ -860,7 +1138,7 @@ onUnmounted(() => {
           <el-input
             v-model="paletteSearch"
             class="palette-search"
-            placeholder="按 HEX 或名字筛选当前色卡"
+            placeholder="按 HEX 或中英文名筛选当前色卡"
             clearable
           />
         </div>
@@ -878,24 +1156,23 @@ onUnmounted(() => {
             <span>当前展示 {{ filteredPalette.length }} 个颜色</span>
           </div>
 
-          <div v-if="filteredPalette.length" class="palette-grid">
+          <div v-if="filteredPalette.length" class="palette-list">
             <button
               v-for="color in filteredPalette"
               :key="`${activePalette}-${color.hex}`"
               type="button"
-              class="palette-item"
+              class="palette-item-row"
               :class="{ active: color.hex === currentHex }"
+              :style="getSimilarityCardStyle(color)"
               @click="selectPaletteColor(color)"
             >
-              <span class="palette-swatch" :style="{ background: color.hex }" />
-              <span class="palette-name">{{ color.displayName }}</span>
-              <span class="palette-hex">{{ color.hex }}</span>
-              <span v-if="getAliasText(color)" class="palette-alias">
-                {{ getAliasText(color) }}
+              <span class="palette-row-main">
+                <span class="palette-name">{{ color.displayName }}</span>
+                <span v-if="getPaletteSecondaryName(color)" class="palette-en">{{ getPaletteSecondaryName(color) }}</span>
               </span>
-              <span class="palette-copy-action" @click.stop="copyValue(color.hex)">
+              <span class="similarity-copy-btn" @click.stop="copyValue(color.hex)">
                 <el-icon><CopyDocument /></el-icon>
-                复制 HEX
+                复制 {{ color.hex }}
               </span>
             </button>
           </div>
@@ -955,33 +1232,7 @@ onUnmounted(() => {
   line-height: 1.7;
 }
 
-.hero-current {
-  min-width: 240px;
-  border-radius: 22px;
-  padding: 22px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
-}
-
-.hero-swatch {
-  width: 100%;
-  height: 96px;
-  border-radius: 18px;
-  background: rgba(255, 255, 255, 0.28);
-  border: 1px solid rgba(255, 255, 255, 0.36);
-}
-
-.hero-values {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 18px;
-}
-
-.top-grid,
-.mid-grid {
+.top-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
@@ -1035,10 +1286,60 @@ onUnmounted(() => {
   min-height: 240px;
 }
 
-.preview-labels {
+.editor-picker-row {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-picker-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.18);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.editor-picker-trigger:hover {
+  border-color: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.editor-picker-trigger:focus-visible {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+}
+
+.editor-picker-trigger__swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--picker-color);
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  flex-shrink: 0;
+}
+
+.editor-picker-trigger__label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.editor-picker-trigger__caret {
+  width: 0;
+  height: 0;
+  margin-left: 2px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid rgba(255, 255, 255, 0.82);
 }
 
 .editor-form {
@@ -1055,7 +1356,6 @@ onUnmounted(() => {
 }
 
 .form-row label,
-.blend-control label,
 .config-block label {
   font-size: 13px;
   color: #5d697b;
@@ -1075,6 +1375,13 @@ onUnmounted(() => {
 .channel-row :deep(.el-input-number) {
   width: 120px;
   flex-shrink: 0;
+}
+
+.plain-value {
+  font-size: 14px;
+  line-height: 1.4;
+  color: #243046;
+  user-select: text;
 }
 
 .conversion-grid,
@@ -1106,47 +1413,34 @@ onUnmounted(() => {
   letter-spacing: 0.05em;
 }
 
-.match-list,
 .similarity-list {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
-.match-row,
 .similarity-card {
-  padding: 16px;
-  border-radius: 18px;
+  padding: 10px 12px;
+  border-radius: 12px;
   background: linear-gradient(180deg, #fcfdff 0%, #f4f7fb 100%);
   border: 1px solid #e6edf6;
 }
 
-.match-row {
+.similarity-card.compact {
   display: flex;
-  justify-content: space-between;
-  gap: 14px;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-color: var(--sim-chip-border);
+  color: var(--sim-fg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
-
-.match-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.match-meta span,
-.match-miss,
-.similarity-desc,
-.similarity-distance,
 .distribution-note {
   color: #607086;
   line-height: 1.6;
 }
 
-.match-chip,
-.mini-swatch,
-.result-card,
-.table-swatch {
+.result-card {
   border-radius: 16px;
   padding: 12px 14px;
   display: flex;
@@ -1156,90 +1450,255 @@ onUnmounted(() => {
   border: 1px solid rgba(255, 255, 255, 0.42);
 }
 
-.table-swatch {
+.similarity-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
-  justify-content: center;
-  font-size: 12px;
+  flex: 1;
+}
+
+.similarity-rank {
+  font-size: 14px;
+  line-height: 1.25;
+  color: var(--sim-fg);
+  font-weight: 700;
+  min-width: 20px;
+}
+
+.similarity-name {
+  font-size: 14px;
+  line-height: 1.2;
+  color: var(--sim-fg);
   font-weight: 700;
 }
 
-.color-card-action,
-.palette-copy-action {
+.similarity-en {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--sim-fg-muted);
+}
+
+.similarity-distance {
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--sim-fg-muted);
+}
+
+.similarity-copy-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
-  border: 1px solid rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--sim-chip-border);
+  background: var(--sim-chip-bg);
+  color: var(--sim-fg);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
-  user-select: none;
+  transition: background-color 0.18s ease, transform 0.18s ease;
 }
 
-.color-card-action:hover,
-.palette-copy-action:hover {
-  background: rgba(255, 255, 255, 0.4);
+.similarity-copy-btn:hover {
+  transform: translateY(-1px);
 }
 
-.similarity-top {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: flex-start;
-  margin-bottom: 10px;
+.similarity-copy-btn:focus-visible {
+  outline: 2px solid var(--sim-chip-border);
+  outline-offset: 1px;
 }
 
-.similarity-top p {
-  margin: 6px 0 0;
-  color: #607086;
-}
-
-.mini-swatch {
-  max-width: 220px;
-  justify-content: center;
-}
-
-.copyable-hex-tag {
-  cursor: pointer;
-}
-
-.blend-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 20px;
-}
-
-.blend-column {
-  padding: 18px;
-  border-radius: 18px;
-  background: linear-gradient(180deg, #fbfcfe 0%, #f3f6fa 100%);
-  border: 1px solid #e6edf6;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.blend-column h3 {
-  margin: 0;
-  color: #243046;
-}
-
-.blend-control,
+.mix-composer,
 .config-block {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.blend-picker-row {
+.mix-preview-card,
+.mix-color-trigger,
+.mix-fill-trigger {
   display: flex;
-  gap: 12px;
   align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  border-radius: 12px;
+  border: 1px solid var(--sim-chip-border);
+  color: var(--sim-fg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
 
-.blend-picker-row :deep(.el-input) {
+.mix-preview-card,
+.mix-fill-trigger {
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.mix-preview-card__main,
+.mix-color-trigger__main,
+.mix-fill-trigger__main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
   flex: 1;
+}
+
+.mix-preview-card__name,
+.mix-color-trigger__primary,
+.mix-fill-trigger__name {
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: var(--sim-fg);
+}
+
+.mix-preview-card__en,
+.mix-preview-card__meta,
+.mix-color-trigger__secondary,
+.mix-color-trigger__meta,
+.mix-fill-trigger__secondary,
+.mix-fill-trigger__hex {
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--sim-fg-muted);
+}
+
+.mix-preview-card__name,
+.mix-preview-card__en,
+.mix-preview-card__meta,
+.mix-color-trigger__primary,
+.mix-color-trigger__secondary,
+.mix-color-trigger__meta,
+.mix-fill-trigger__name,
+.mix-fill-trigger__secondary,
+.mix-fill-trigger__hex {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.selected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mix-single-row,
+.mix-result-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 152px 104px 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.mix-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #607086;
+}
+
+.mix-section-label {
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: 700;
+  color: #243046;
+}
+
+.mix-section-meta {
+  font-size: 12px;
+  line-height: 1.2;
+  color: #7a8799;
+  white-space: nowrap;
+}
+
+.mix-selected-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 152px 104px 28px;
+  align-items: center;
+  gap: 8px;
+}
+
+.mix-color-trigger,
+.mix-fill-trigger {
+  width: 100%;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.mix-color-trigger {
+  min-height: 40px;
+  padding: 8px 10px;
+}
+
+.mix-copy-btn {
+  width: 152px;
+  justify-content: center;
+  align-self: stretch;
+}
+
+.mix-color-trigger:hover,
+.mix-fill-trigger:hover {
+  transform: translateY(-1px);
+}
+
+.mix-color-trigger__caret,
+.mix-fill-trigger__caret {
+  width: 0;
+  height: 0;
+  margin-left: auto;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--sim-fg-muted);
+  flex: none;
+}
+
+.mix-empty {
+  font-size: 12px;
+  color: #909399;
+  padding: 6px 2px;
+}
+
+.add-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.mix-add-hint {
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+}
+
+.mix-fill-row {
+  display: block;
+}
+
+.weight-input {
+  width: 104px;
+}
+
+.mix-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+  flex-wrap: wrap;
 }
 
 .analysis-card,
@@ -1412,6 +1871,22 @@ onUnmounted(() => {
   width: 100%;
 }
 
+.distribution-card-row {
+  margin: 4px 0;
+}
+
+.distribution-card-main {
+  gap: 6px;
+}
+
+.distribution-card-zh,
+.distribution-card-en {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .palette-search {
   width: min(360px, 100%);
 }
@@ -1429,80 +1904,67 @@ onUnmounted(() => {
   margin: 0;
 }
 
-.palette-grid {
+.palette-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
 }
 
-.palette-item {
+.palette-item-row {
+  min-width: 0;
+  border-radius: 12px;
+  border: 1px solid var(--sim-chip-border);
+  background: transparent;
+  padding: 8px 10px;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 7px;
-  padding: 14px;
-  border-radius: 16px;
-  border: 1px solid #e5ebf3;
-  background: #fff;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   text-align: left;
   cursor: pointer;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  color: var(--sim-fg);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-.palette-item:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(18, 34, 66, 0.1);
-  border-color: #cdd9ea;
+.palette-item-row:hover {
+  transform: translateY(-1px);
 }
 
-.palette-item.active {
-  border-color: #409eff;
-  box-shadow: 0 12px 28px rgba(64, 158, 255, 0.16);
+.palette-item-row.active {
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.42);
 }
 
-.palette-swatch {
-  width: 100%;
-  height: 64px;
-  border-radius: 12px;
-  border: 1px solid rgba(15, 23, 42, 0.08);
+.palette-row-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
 }
 
 .palette-name {
+  font-size: 13px;
+  line-height: 1.2;
   font-weight: 700;
-  color: #243046;
+  color: var(--sim-fg);
 }
 
-.palette-hex {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-  color: #607086;
-}
-
-.palette-alias {
-  font-size: 12px;
-  color: #8090a6;
-  line-height: 1.5;
-}
-
-.palette-copy-action {
-  background: #eef5ff;
-  border-color: #d6e6ff;
-  color: #2f5ea5;
+.palette-en {
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--sim-fg-muted);
 }
 
 @media (max-width: 1100px) {
   .page-hero,
   .top-grid,
-  .mid-grid,
-  .blend-grid,
   .editor-grid,
   .analysis-config,
   .image-compare-grid {
     grid-template-columns: 1fr;
     flex-direction: column;
-  }
-
-  .hero-current {
-    min-width: 0;
   }
 }
 
@@ -1516,8 +1978,7 @@ onUnmounted(() => {
   }
 
   .conversion-grid,
-  .summary-grid,
-  .palette-grid {
+  .summary-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1525,8 +1986,7 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .match-row,
-  .similarity-top,
+  .similarity-card.compact,
   .palette-toolbar,
   .panel-header,
   .image-preview-head {
@@ -1534,11 +1994,55 @@ onUnmounted(() => {
     align-items: flex-start;
   }
 
+  .similarity-card.compact .similarity-copy-btn {
+    align-self: stretch;
+    justify-content: center;
+  }
+
+  .palette-item-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .palette-item-row .similarity-copy-btn {
+    align-self: stretch;
+    justify-content: center;
+  }
+
   .channel-row,
-  .blend-picker-row,
   .upload-zone {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .editor-picker-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .mix-section-head,
+  .mix-fill-trigger,
+  .mix-fill-trigger__main,
+  .mix-preview-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .mix-single-row,
+  .mix-result-row,
+  .mix-selected-row {
+    grid-template-columns: 1fr;
+  }
+
+  .mix-copy-btn,
+  .mix-preview-card .similarity-copy-btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .mix-section-meta {
+    align-self: stretch;
+    white-space: normal;
   }
 
   .channel-row :deep(.el-input-number) {

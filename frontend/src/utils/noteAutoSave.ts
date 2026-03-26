@@ -7,7 +7,7 @@ import {
   NOTE_LIFECYCLE_STAGE_DEFAULT
 } from './noteSemantics';
 
-export type NoteCustomFieldType = 'string' | 'number' | 'boolean';
+export type NoteCustomFieldType = 'string' | 'number' | 'boolean' | 'richtext';
 export type NoteCustomFieldStoredValue = string | number | boolean;
 export type NoteCustomFieldEditorValue = string | boolean;
 export type NoteCustomFieldTuple = [string, NoteCustomFieldType, NoteCustomFieldStoredValue];
@@ -65,7 +65,7 @@ const normalizeTimestamp = (value: unknown) => {
 };
 
 export const normalizeNoteCustomFieldType = (type: unknown): NoteCustomFieldType => {
-  if (type === 'number' || type === 'boolean') return type;
+  if (type === 'number' || type === 'boolean' || type === 'richtext') return type;
   return 'string';
 };
 
@@ -102,6 +102,7 @@ export const normalizeNoteCustomFieldValue = (
   value: unknown
 ): NoteCustomFieldEditorValue => {
   if (type === 'boolean') return parseNoteCustomFieldBoolean(value) ?? false;
+  if (type === 'richtext') return normalizeText(value);
   if (type === 'number') {
     if (typeof value === 'boolean') return value ? '1' : '0';
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
@@ -117,7 +118,7 @@ export const convertNoteCustomFieldValue = (
   type: NoteCustomFieldType,
   value: unknown
 ): NoteCustomFieldEditorValue => {
-  if (type === 'string') {
+  if (type === 'string' || type === 'richtext') {
     return typeof value === 'boolean' ? (value ? 'true' : 'false') : normalizeText(value);
   }
   if (type === 'number') {
@@ -135,6 +136,7 @@ export const serializeNoteCustomFieldValue = (
   value: unknown
 ): NoteCustomFieldStoredValue => {
   if (type === 'boolean') return parseNoteCustomFieldBoolean(value) ?? false;
+  if (type === 'richtext') return normalizeText(value);
   if (type === 'number') {
     const parsed = parseNoteCustomFieldNumber(value);
     return parsed ?? normalizeText(value);

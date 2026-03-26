@@ -14,14 +14,10 @@
 
     <div v-if="programValue.rules.length" ref="ruleListRef" class="rule-list">
       <div v-for="(rule, index) in programValue.rules" :key="`${index}-${rule.field}`" class="rule-row">
-        <button
-          type="button"
-          class="drag-handle-btn"
-          title="拖拽调整顺序"
-          aria-label="拖拽调整顺序"
-        >
-          <el-icon><Rank /></el-icon>
-        </button>
+        <SortableOrderHandle
+          :index="index"
+          :total="programValue.rules.length"
+        />
 
         <el-select
           size="small"
@@ -69,9 +65,9 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
-import Sortable from 'sortablejs';
-import { Delete, Plus, Rank } from '@element-plus/icons-vue';
+import { computed, ref } from 'vue';
+import { Delete, Plus } from '@element-plus/icons-vue';
+import SortableOrderHandle from './SortableOrderHandle.vue';
 import {
   cloneGallerySortProgram,
   createDefaultGallerySortProgram,
@@ -82,6 +78,7 @@ import {
   type GallerySortField,
   type GallerySortProgram,
 } from '@/utils/imageGallery';
+import { useSortableList } from '@/utils/useSortableList';
 
 const props = withDefaults(
   defineProps<{
@@ -135,7 +132,6 @@ const fieldOptions = fieldSequence.map((field) => ({
 
 const programValue = computed(() => normalizeGallerySortProgram(props.modelValue ?? createDefaultGallerySortProgram()));
 const ruleListRef = ref<HTMLElement | null>(null);
-let sortable: Sortable | null = null;
 
 const emitProgram = (program: GallerySortProgram) => {
   emit('update:modelValue', normalizeGallerySortProgram(program));
@@ -194,36 +190,13 @@ const resetProgram = () => {
   emit('reset');
 };
 
-const destroySortable = () => {
-  if (!sortable) return;
-  sortable.destroy();
-  sortable = null;
-};
-
-const initSortable = () => {
-  destroySortable();
-  if (!ruleListRef.value || programValue.value.rules.length < 2) return;
-  sortable = Sortable.create(ruleListRef.value, {
-    handle: '.drag-handle-btn',
-    animation: 150,
-    ghostClass: 'gallery-sort-program-ghost',
-    onEnd: ({ oldIndex, newIndex }) => {
-      if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
-      moveRule(oldIndex, newIndex);
-    },
-  });
-};
-
-watch(
-  () => programValue.value.rules.length,
-  async () => {
-    await nextTick();
-    initSortable();
-  },
-  { immediate: true }
-);
-
-onUnmounted(() => destroySortable());
+useSortableList({
+  listRef: ruleListRef,
+  getDeps: () => [programValue.value.rules.length] as const,
+  isEnabled: () => programValue.value.rules.length > 1,
+  ghostClass: 'gallery-sort-program-ghost',
+  onReorder: (oldIndex, newIndex) => moveRule(oldIndex, newIndex),
+});
 </script>
 
 <style scoped>
@@ -281,29 +254,6 @@ onUnmounted(() => destroySortable());
   background: #f8fafc;
   border: 1px solid #e2e8f0;
   cursor: default;
-}
-
-.drag-handle-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: none;
-  border-radius: 10px;
-  background: transparent;
-  color: #94a3b8;
-  cursor: grab;
-}
-
-.drag-handle-btn:active {
-  cursor: grabbing;
-}
-
-.drag-handle-btn:hover {
-  background: rgba(148, 163, 184, 0.12);
-  color: #475569;
 }
 
 .rule-field-select {

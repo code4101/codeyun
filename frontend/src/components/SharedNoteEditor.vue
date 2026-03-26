@@ -104,6 +104,7 @@
             :related-type="currentPrimaryType"
             :custom-color="currentNote.color"
             :note-types="currentNote.note_categories"
+            :completion-progress="currentCompletionProgress"
             label="阶段"
             :show-label="true"
             :show-help-icon="false"
@@ -111,6 +112,19 @@
             :disabled="effectiveReadonly"
             @change="handleLifecycleStageChange"
           />
+
+          <div v-if="showCompletionProgressControl" class="inline-control progress-control">
+            <span class="label">进度:</span>
+            <el-input
+              :model-value="completionProgressExpr"
+              size="small"
+              class="progress-expr-input"
+              placeholder="支持 0.41、41/83、(1+2*2)/(4+7)"
+              :readonly="effectiveReadonly"
+              @update:model-value="handleCompletionProgressExprChange"
+              @blur="handleCompletionProgressExprBlur"
+            />
+          </div>
 
           <div v-if="resolvedShowPrivateToggle" class="inline-control private-control">
             <span class="label">私密:</span>
@@ -142,18 +156,20 @@
             </el-button>
           </div>
 
-          <div class="custom-fields-container">
+          <div class="custom-fields-container" :style="customFieldColumnStyle">
             <div ref="ownCustomFieldsListRef" class="custom-fields-list">
-              <div v-for="(item, index) in customFieldsList" :key="item.localId" class="custom-field-item own-field">
-                <button
-                  type="button"
-                  class="drag-handle-btn"
+              <div
+                v-for="(item, index) in customFieldsList"
+                :key="item.localId"
+                class="custom-field-item own-field"
+                :class="{ 'is-richtext-field': item.type === 'richtext' }"
+              >
+                <SortableOrderHandle
+                  :index="index"
+                  :total="customFieldsList.length"
+                  size="xs"
                   :disabled="effectiveReadonly"
-                  title="拖拽调整顺序"
-                  aria-label="拖拽调整顺序"
-                >
-                  <el-icon><Rank /></el-icon>
-                </button>
+                />
 
                 <el-input
                   v-model="item.key"
@@ -164,6 +180,15 @@
                   @input="handleCustomFieldChange"
                 />
 
+                <button
+                  type="button"
+                  class="field-width-resizer"
+                  title="拖拽调整名称列宽度，双击恢复自动宽度"
+                  aria-label="拖拽调整名称列宽度，双击恢复自动宽度"
+                  @pointerdown="startCustomFieldKeyResize"
+                  @dblclick="resetCustomFieldKeyWidthAuto"
+                ></button>
+
                 <el-select
                   v-model="item.type"
                   size="small"
@@ -172,6 +197,7 @@
                   @change="handleCustomFieldTypeChange(item)"
                 >
                   <el-option label="文本" value="string" />
+                  <el-option label="富文本" value="richtext" />
                   <el-option label="数值" value="number" />
                   <el-option label="布尔" value="boolean" />
                 </el-select>
@@ -187,6 +213,18 @@
                     :readonly="effectiveReadonly"
                     @update:model-value="value => setTextFieldValue(item, value)"
                   />
+
+                  <div v-else-if="item.type === 'richtext'" class="field-richtext-editor">
+                    <NoteEditor
+                      :model-value="getTextFieldValue(item)"
+                      layout="flow"
+                      :readOnly="effectiveReadonly"
+                      :show-toolbar="false"
+                      :auto-focus-on-empty="false"
+                      :min-height="84"
+                      @update:model-value="value => setTextFieldValue(item, value)"
+                    />
+                  </div>
 
                   <el-input
                     v-else-if="item.type === 'number'"
@@ -206,32 +244,75 @@
                   />
                 </div>
 
-                <el-button link type="danger" size="small" :disabled="effectiveReadonly" @click="removeCustomField(index)">
+                <el-button
+                  link
+                  type="danger"
+                  size="small"
+                  class="field-action-btn"
+                  :disabled="effectiveReadonly"
+                  @click="removeCustomField(index)"
+                >
                   <el-icon><Close /></el-icon>
                 </el-button>
               </div>
             </div>
 
-            <div v-for="(item, key) in inheritedDirectFields" :key="`direct-${key}`" class="custom-field-item inherited-field">
+            <div
+              v-for="(item, key) in inheritedDirectFields"
+              :key="`direct-${key}`"
+              class="custom-field-item inherited-field"
+              :class="{ 'is-richtext-field': item.type === 'richtext' }"
+            >
               <div class="inherited-indicator">父</div>
               <span class="field-key-read">{{ key }}</span>
+              <div class="field-width-resizer-spacer" aria-hidden="true"></div>
               <span class="field-type-read">{{ getFieldTypeLabel(item.type, item.value) }}</span>
               <div class="field-value-container">
-                <span class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
+                <div
+                  v-if="item.type === 'richtext'"
+                  class="field-value-richtext-read"
+                  v-html="getInheritedRichTextHtml(item.value)"
+                ></div>
+                <span v-else class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
               </div>
-              <el-button link type="primary" size="small" :disabled="effectiveReadonly" @click="addInheritedField(String(key), item.value, item.type)">
+              <el-button
+                link
+                type="primary"
+                size="small"
+                class="field-action-btn"
+                :disabled="effectiveReadonly"
+                @click="addInheritedField(String(key), item.value, item.type)"
+              >
                 <el-icon><Plus /></el-icon>
               </el-button>
             </div>
 
-            <div v-for="(item, key) in inheritedAncestorFields" :key="`ancestor-${key}`" class="custom-field-item inherited-field ancestor-field">
+            <div
+              v-for="(item, key) in inheritedAncestorFields"
+              :key="`ancestor-${key}`"
+              class="custom-field-item inherited-field ancestor-field"
+              :class="{ 'is-richtext-field': item.type === 'richtext' }"
+            >
               <div class="inherited-indicator ancestor">祖</div>
               <span class="field-key-read">{{ key }}</span>
+              <div class="field-width-resizer-spacer" aria-hidden="true"></div>
               <span class="field-type-read">{{ getFieldTypeLabel(item.type, item.value) }}</span>
               <div class="field-value-container">
-                <span class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
+                <div
+                  v-if="item.type === 'richtext'"
+                  class="field-value-richtext-read"
+                  v-html="getInheritedRichTextHtml(item.value)"
+                ></div>
+                <span v-else class="field-value-read">{{ formatInheritedValue(item.value) }}</span>
               </div>
-              <el-button link type="primary" size="small" :disabled="effectiveReadonly" @click="addInheritedField(String(key), item.value, item.type)">
+              <el-button
+                link
+                type="primary"
+                size="small"
+                class="field-action-btn"
+                :disabled="effectiveReadonly"
+                @click="addInheritedField(String(key), item.value, item.type)"
+              >
                 <el-icon><Plus /></el-icon>
               </el-button>
             </div>
@@ -252,7 +333,7 @@
         </div>
       </div>
 
-      <NoteEditor :key="currentNote.id || 'new'" v-model="currentNote.content" :readOnly="effectiveReadonly" @change="handleContentChange" />
+      <NoteEditor :key="currentNote.id || 'new'" v-model="currentNote.content" :layout="editorLayout" :readOnly="effectiveReadonly" @change="handleContentChange" />
     </div>
 
     <NodeHelpDialog v-model="showHelpDialog" />
@@ -260,14 +341,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onUnmounted, ref, watch } from 'vue';
-import Sortable from 'sortablejs';
-import { Calendar, Check, Clock, List, Loading, Plus, Rank } from '@element-plus/icons-vue';
+import { computed, defineAsyncComponent, onUnmounted, ref, watch } from 'vue';
+import { Calendar, Check, Clock, List, Loading, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';
 import NodeSelector from './NodeSelector.vue';
 import NoteTypeSelector from './NoteTypeSelector.vue';
+import SortableOrderHandle from './SortableOrderHandle.vue';
 import SmartTimeInput from './SmartTimeInput.vue';
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate';
 import {
@@ -287,9 +368,18 @@ import {
   type NoteCustomFieldItem,
   type NoteCustomFieldType
 } from '@/utils/noteAutoSave';
+import {
+  evaluateCompletionProgressExpr,
+  getCompletionProgressExprFromCustomFields,
+  normalizeCompletionProgressExpr,
+  resolveCompletionProgressFillRatio,
+  stripNoteSystemCustomFields,
+  upsertCompletionProgressExprInCustomFields,
+} from '@/utils/noteProgress';
 import { NOTE_WEIGHT_DEFAULT, NOTE_WEIGHT_MIN, normalizeNoteWeight } from '@/utils/noteWeight';
 import { useAutoSave } from '@/utils/useAutoSave';
 import { derivePrimaryNodeType, getNodeStatusConfig, getNodeTypeConfig, normalizeNoteTypeAssignments } from '@/utils/nodeConfig';
+import { useSortableList } from '@/utils/useSortableList';
 import {
   deriveLegacySemanticsFromTaxonomy,
   deriveNoteTaxonomyFromLegacy,
@@ -310,6 +400,7 @@ const props = defineProps<{
   lockTitle?: boolean;
   lockNodeType?: boolean;
   lockNoteForm?: boolean;
+  editorLayout?: 'fill' | 'flow';
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();
@@ -326,6 +417,10 @@ interface InheritedFieldItem {
 
 const CONTENT_SAVE_DELAY_MS = 1800;
 const META_SAVE_DELAY_MS = 450;
+const EMPTY_RICH_TEXT_HTML_VALUES = new Set(['', '<p><br></p>', '<p></p>']);
+const CUSTOM_FIELD_KEY_WIDTH_MIN = 96;
+const CUSTOM_FIELD_KEY_WIDTH_MAX = 360;
+const CUSTOM_FIELD_KEY_WIDTH_PADDING = 32;
 const smartTimeInputStyle = { width: '100px', marginLeft: '5px' } as const;
 
 const currentNote = ref<NoteNode | undefined>();
@@ -340,18 +435,75 @@ const formReadonly = computed(() => effectiveReadonly.value || Boolean(props.loc
 const resolvedShowPrivateToggle = computed(() => Boolean(props.showPrivateToggle));
 const isReady = computed(() => !!currentNote.value && currentNote.value.content !== undefined);
 const currentPrimaryType = computed(() => derivePrimaryNodeType(currentNote.value?.note_categories, currentNote.value?.primary_category ?? NOTE_CATEGORY_DEFAULT));
+const showCompletionProgressControl = computed(() => getNodeStatusConfig(currentNote.value?.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT).id === 'done');
 
 const customFieldsList = ref<NoteCustomFieldItem[]>([]);
 const ownCustomFieldsListRef = ref<HTMLElement | null>(null);
+const customFieldKeyWidthMode = ref<'auto' | 'manual'>('auto');
+const customFieldKeyWidth = ref(120);
 const inheritedDirectFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedFieldSource = ref<NoteNode['inherited_fields'] | null>(null);
 const timeInputString = ref('');
 const currentDraftKey = ref<string | null>(null);
 let loadRequestToken = 0;
-let customFieldsSortable: Sortable | null = null;
+let customFieldKeyResizePointerId: number | null = null;
+let customFieldKeyResizeStartX = 0;
+let customFieldKeyResizeStartWidth = customFieldKeyWidth.value;
+let customFieldKeyMeasureCanvas: HTMLCanvasElement | null = null;
 
 const sortedHistory = computed(() => currentNote.value?.history ? [...currentNote.value.history].sort((a, b) => b.ts - a.ts) : []);
+const completionProgressExpr = computed(() => normalizeCompletionProgressExpr(currentNote.value?.completion_progress_expr));
+const currentCompletionProgress = computed(() => resolveCompletionProgressFillRatio({
+  lifecycleStage: currentNote.value?.lifecycle_stage,
+  completionProgress: currentNote.value?.completion_progress,
+  completionProgressExpr: currentNote.value?.completion_progress_expr,
+  customFields: currentNote.value?.custom_fields,
+}));
+const customFieldKeyTexts = computed(() => {
+  const texts = [
+    ...customFieldsList.value.map(item => item.key),
+    ...Object.keys(inheritedDirectFields.value),
+    ...Object.keys(inheritedAncestorFields.value),
+  ]
+    .map(item => String(item ?? '').trim())
+    .filter(Boolean);
+  return texts.length ? texts : ['Key'];
+});
+const autoCustomFieldKeyWidth = computed(() => {
+  const longestWidth = customFieldKeyTexts.value.reduce((maxWidth, text) => (
+    Math.max(maxWidth, measureCustomFieldKeyTextWidth(text))
+  ), 0);
+  return clampCustomFieldKeyWidth(longestWidth + CUSTOM_FIELD_KEY_WIDTH_PADDING);
+});
+const resolvedCustomFieldKeyWidth = computed(() => (
+  customFieldKeyWidthMode.value === 'manual' ? customFieldKeyWidth.value : autoCustomFieldKeyWidth.value
+));
+const customFieldColumnStyle = computed(() => ({
+  '--custom-field-key-width': `${resolvedCustomFieldKeyWidth.value}px`
+}));
+
+const clampCustomFieldKeyWidth = (value: number) => Math.max(
+  CUSTOM_FIELD_KEY_WIDTH_MIN,
+  Math.min(CUSTOM_FIELD_KEY_WIDTH_MAX, Math.round(value))
+);
+
+const getCustomFieldKeyMeasureFont = () => {
+  if (typeof window === 'undefined') return '14px sans-serif';
+  const bodyStyle = window.getComputedStyle(document.body);
+  const fontSize = bodyStyle.fontSize || '14px';
+  const fontFamily = bodyStyle.fontFamily || 'sans-serif';
+  return `${fontSize} ${fontFamily}`;
+};
+
+const measureCustomFieldKeyTextWidth = (text: string) => {
+  if (typeof document === 'undefined') return text.length * 9;
+  customFieldKeyMeasureCanvas ??= document.createElement('canvas');
+  const context = customFieldKeyMeasureCanvas.getContext('2d');
+  if (!context) return text.length * 9;
+  context.font = getCustomFieldKeyMeasureFont();
+  return context.measureText(text).width;
+};
 
 const startDateProxy = computed<Date | undefined>({
   get: () => currentNote.value ? new Date(currentNote.value.start_at) : undefined,
@@ -366,7 +518,24 @@ const startDateProxy = computed<Date | undefined>({
   }
 });
 
-const buildCurrentSnapshot = (): EditableNoteSnapshot | null => createEditableNoteSnapshot(currentNote.value, noteCustomFieldItemsToList(customFieldsList.value));
+const buildStoredCustomFields = () => upsertCompletionProgressExprInCustomFields(
+  noteCustomFieldItemsToList(customFieldsList.value),
+  currentNote.value?.completion_progress_expr ?? null
+);
+
+const syncCompletionProgressState = (
+  customFields: unknown,
+  source?: Partial<NoteNode> | null
+) => {
+  if (!currentNote.value) return;
+  const expr = normalizeCompletionProgressExpr(
+    source?.completion_progress_expr ?? getCompletionProgressExprFromCustomFields(customFields)
+  );
+  currentNote.value.completion_progress_expr = expr || null;
+  currentNote.value.completion_progress = evaluateCompletionProgressExpr(expr);
+};
+
+const buildCurrentSnapshot = (): EditableNoteSnapshot | null => createEditableNoteSnapshot(currentNote.value, buildStoredCustomFields());
 
 const normalizeIncomingNote = (note: NoteNode) => {
   const cloned = JSON.parse(JSON.stringify(note)) as NoteNode;
@@ -450,35 +619,62 @@ const refreshInheritedFields = (source?: Partial<NoteNode> | null) => {
 const syncCurrentNoteFromSnapshot = (snapshot: EditableNoteSnapshot, source?: Partial<NoteNode> | null) => {
   if (!currentNote.value && !source) return;
   currentNote.value = applyEditableNoteSnapshot((source ? { ...(currentNote.value as NoteNode | undefined), ...source } : currentNote.value!) as NoteNode, snapshot);
-  customFieldsList.value = noteCustomFieldsToItems(snapshot.custom_fields);
+  syncCompletionProgressState(snapshot.custom_fields, source);
+  customFieldsList.value = noteCustomFieldsToItems(stripNoteSystemCustomFields(snapshot.custom_fields));
   refreshInheritedFields(source ?? currentNote.value);
   if (currentNote.value) emit('update:modelValue', currentNote.value);
 };
 
-const destroyCustomFieldSortable = () => {
-  if (!customFieldsSortable) return;
-  customFieldsSortable.destroy();
-  customFieldsSortable = null;
+const stopCustomFieldKeyResize = () => {
+  if (customFieldKeyResizePointerId === null) return;
+  customFieldKeyResizePointerId = null;
+  window.removeEventListener('pointermove', handleCustomFieldKeyResizeMove);
+  window.removeEventListener('pointerup', stopCustomFieldKeyResize);
+  window.removeEventListener('pointercancel', stopCustomFieldKeyResize);
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
 };
 
-const initCustomFieldSortable = () => {
-  destroyCustomFieldSortable();
-  if (!ownCustomFieldsListRef.value || effectiveReadonly.value) return;
-  customFieldsSortable = Sortable.create(ownCustomFieldsListRef.value, {
-    handle: '.drag-handle-btn',
-    animation: 150,
-    ghostClass: 'custom-field-sortable-ghost',
-    onEnd: ({ oldIndex, newIndex }) => {
-      if (oldIndex == null || newIndex == null || oldIndex === newIndex) return;
-      const reordered = [...customFieldsList.value];
-      const [movedItem] = reordered.splice(oldIndex, 1);
-      if (!movedItem) return;
-      reordered.splice(Math.min(newIndex, reordered.length), 0, movedItem);
-      customFieldsList.value = reordered;
-      syncCustomFields();
-    }
-  });
+function handleCustomFieldKeyResizeMove(event: PointerEvent) {
+  if (customFieldKeyResizePointerId === null) return;
+  const deltaX = event.clientX - customFieldKeyResizeStartX;
+  const nextWidth = clampCustomFieldKeyWidth(customFieldKeyResizeStartWidth + deltaX);
+  customFieldKeyWidth.value = nextWidth;
+}
+
+const startCustomFieldKeyResize = (event: PointerEvent) => {
+  customFieldKeyWidthMode.value = 'manual';
+  customFieldKeyResizePointerId = event.pointerId;
+  customFieldKeyResizeStartX = event.clientX;
+  customFieldKeyResizeStartWidth = resolvedCustomFieldKeyWidth.value;
+  customFieldKeyWidth.value = resolvedCustomFieldKeyWidth.value;
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  window.addEventListener('pointermove', handleCustomFieldKeyResizeMove);
+  window.addEventListener('pointerup', stopCustomFieldKeyResize);
+  window.addEventListener('pointercancel', stopCustomFieldKeyResize);
+  event.preventDefault();
 };
+
+const resetCustomFieldKeyWidthAuto = () => {
+  customFieldKeyWidthMode.value = 'auto';
+  customFieldKeyWidth.value = autoCustomFieldKeyWidth.value;
+};
+
+useSortableList({
+  listRef: ownCustomFieldsListRef,
+  getDeps: () => [currentNote.value?.id ?? '', effectiveReadonly.value, customFieldsList.value.length] as const,
+  isEnabled: () => Boolean(currentNote.value?.id) && !effectiveReadonly.value && customFieldsList.value.length > 1,
+  ghostClass: 'custom-field-sortable-ghost',
+  onReorder: (oldIndex, newIndex) => {
+    const reordered = [...customFieldsList.value];
+    const [movedItem] = reordered.splice(oldIndex, 1);
+    if (!movedItem) return;
+    reordered.splice(Math.min(newIndex, reordered.length), 0, movedItem);
+    customFieldsList.value = reordered;
+    syncCustomFields();
+  }
+});
 
 const autoSave = useAutoSave<EditableNoteSnapshot>({
   debounceMs: 2000,
@@ -593,15 +789,6 @@ watch(() => props.modelValue, async newVal => {
   showHistory.value = false;
 }, { immediate: true });
 
-watch([() => currentNote.value?.id, () => effectiveReadonly.value], async ([noteId, readonly]) => {
-  if (!noteId || readonly) {
-    destroyCustomFieldSortable();
-    return;
-  }
-  await nextTick();
-  initCustomFieldSortable();
-}, { immediate: true });
-
 watch(() => currentNote.value?.start_at, value => {
   if (!value) {
     timeInputString.value = '';
@@ -611,7 +798,9 @@ watch(() => currentNote.value?.start_at, value => {
   timeInputString.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }, { immediate: true });
 
-onUnmounted(() => destroyCustomFieldSortable());
+onUnmounted(() => {
+  stopCustomFieldKeyResize();
+});
 
 const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) => {
   if (!isReady.value || effectiveReadonly.value) return;
@@ -633,7 +822,8 @@ const handleContentChange = (html: string) => {
 
 const syncCustomFields = (options: { immediate?: boolean } = {}) => {
   if (!currentNote.value) return;
-  currentNote.value.custom_fields = noteCustomFieldItemsToList(customFieldsList.value);
+  currentNote.value.custom_fields = buildStoredCustomFields();
+  syncCompletionProgressState(currentNote.value.custom_fields, currentNote.value);
   refreshInheritedFields(currentNote.value);
   queueMetaAutoSave(options);
 };
@@ -721,28 +911,41 @@ const handleLifecycleStageChange = (value: string) => {
   queueMetaAutoSave({ immediate: true });
 };
 
+const handleCompletionProgressExprChange = (value: string | number) => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  const expr = normalizeCompletionProgressExpr(value);
+  currentNote.value.completion_progress_expr = expr || null;
+  currentNote.value.completion_progress = evaluateCompletionProgressExpr(expr);
+  syncCustomFields();
+};
+
+const handleCompletionProgressExprBlur = () => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  const normalizedExpr = normalizeCompletionProgressExpr(currentNote.value.completion_progress_expr);
+  currentNote.value.completion_progress_expr = normalizedExpr || null;
+  currentNote.value.completion_progress = evaluateCompletionProgressExpr(normalizedExpr);
+  syncCustomFields({ immediate: true });
+};
+
 const addCustomField = () => {
   if (effectiveReadonly.value) return;
   customFieldsList.value.push(createNoteCustomFieldItem());
-  nextTick(() => initCustomFieldSortable());
 };
 
 const addInheritedField = (key: string, value: string | number | boolean, typeFromInheritance?: string) => {
   if (effectiveReadonly.value) return;
   let type: NoteCustomFieldType = 'string';
-  if (typeFromInheritance && ['string', 'number', 'boolean'].includes(typeFromInheritance)) type = typeFromInheritance as NoteCustomFieldType;
+  if (typeFromInheritance && ['string', 'richtext', 'number', 'boolean'].includes(typeFromInheritance)) type = typeFromInheritance as NoteCustomFieldType;
   else if (typeof value === 'boolean') type = 'boolean';
   else if (typeof value === 'number') type = 'number';
   customFieldsList.value.push(createNoteCustomFieldItem(key, type, value));
   syncCustomFields();
-  nextTick(() => initCustomFieldSortable());
 };
 
 const removeCustomField = (index: number) => {
   if (effectiveReadonly.value) return;
   customFieldsList.value.splice(index, 1);
   syncCustomFields();
-  nextTick(() => initCustomFieldSortable());
 };
 
 const handleCustomFieldChange = () => {
@@ -791,12 +994,24 @@ const formatHistoryValue = (field: string, value: any) => {
   return value;
 };
 
+const getInheritedRichTextHtml = (value: unknown) => {
+  const html = String(value ?? '').trim();
+  if (EMPTY_RICH_TEXT_HTML_VALUES.has(html)) return '<p class="field-richtext-empty">空</p>';
+  return html;
+};
+
 const formatInheritedValue = (value: any) => typeof value === 'boolean' ? (value ? 'True' : 'False') : String(value);
 
 const getFieldTypeLabel = (type: unknown, value?: any) => {
-  if (type === 'string' || type === 'number' || type === 'boolean') {
+  if (type === 'string' || type === 'richtext' || type === 'number' || type === 'boolean') {
     const normalizedType = normalizeNoteCustomFieldType(type);
-    return normalizedType === 'boolean' ? '布尔' : normalizedType === 'number' ? '数值' : '文本';
+    return normalizedType === 'boolean'
+      ? '布尔'
+      : normalizedType === 'number'
+        ? '数值'
+        : normalizedType === 'richtext'
+          ? '富文本'
+          : '文本';
   }
   if (typeof type === 'boolean') return '布尔';
   if (typeof type === 'number') return '数值';
@@ -807,28 +1022,50 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 </script>
 
 <style scoped>
-.shared-note-editor,.panel-content{display:flex;flex-direction:column;min-height:320px}
+.shared-note-editor,.panel-content{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
 .editor-header{display:flex;flex-direction:column;gap:12px;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid #f0f0f0}
 .header-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .primary-row{gap:10px}.secondary-row{justify-content:space-between;font-size:12px;color:#909399}
 .title-input{flex:1;font-size:18px}
 .meta-group,.meta-actions-slot,.inline-control,.save-status,.time-tag{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .weight-control,.private-control{flex-wrap:nowrap}
-.weight-value-input{width:68px}.private-level-control{width:58px}.label,.custom-fields-label .label{font-size:12px;color:#606266;white-space:nowrap}
+.weight-value-input{width:68px}.private-level-control{width:58px}.progress-control{flex-wrap:nowrap}.progress-expr-input{width:136px}.label,.custom-fields-label .label{font-size:12px;color:#606266;white-space:nowrap}
 .history-toggle{margin-left:auto}.start-date-picker{width:130px;margin-left:5px}
 .custom-fields-row{display:flex;flex-direction:column;gap:4px;margin-top:5px}.custom-fields-label{display:flex;align-items:center;gap:5px}
 .custom-fields-container{width:100%;display:flex;flex-direction:column;border:1px solid #f2f2f2;border-radius:4px;overflow:hidden}
-.custom-fields-list{display:flex;flex-direction:column}.custom-field-item{display:flex;align-items:flex-start;gap:6px;padding:4px 8px;border-bottom:1px solid #f2f2f2}
-.custom-field-item:last-child{border-bottom:none}.own-field{background:#f0f9eb}.inherited-field{background:#fdf6ec;opacity:.85}.ancestor-field{background:#f4f4f5;opacity:.7}
-.drag-handle-btn{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;padding:0;border:none;background:transparent;color:#909399;cursor:move;border-radius:4px}
-.drag-handle-btn:hover:not(:disabled){background:rgba(64,158,255,.08);color:#409eff}.drag-handle-btn:disabled{cursor:not-allowed;opacity:.45}
-.field-key,.field-key-read{width:120px;min-width:120px}.field-type-select,.field-type-read{width:70px;min-width:70px;font-size:12px;color:#909399}
-.field-value-container{flex:1;display:flex;align-items:center;min-width:0}.field-value,.field-value-read{width:100%}.field-value-read{color:#606266;padding-top:2px}
+.custom-fields-list{display:flex;flex-direction:column}
+.custom-field-item{display:flex;align-items:flex-start;gap:6px;padding:4px 8px;border-bottom:1px solid #f2f2f2}
+.custom-field-item:last-child{border-bottom:none}
+.custom-field-item.is-richtext-field{align-items:flex-start}
+.own-field{background:#f0f9eb}.inherited-field{background:#fdf6ec;opacity:.85}.ancestor-field{background:#f4f4f5;opacity:.7}
+.field-key,.field-key-read{width:var(--custom-field-key-width,120px);min-width:var(--custom-field-key-width,120px)}
+.field-key-read,.field-type-read{display:inline-flex;align-items:center}
+.field-width-resizer,.field-width-resizer-spacer{width:10px;min-width:10px;flex:0 0 10px}
+.field-width-resizer{position:relative;align-self:stretch;padding:0;border:none;background:transparent;cursor:col-resize;touch-action:none}
+.field-width-resizer::before{content:'';position:absolute;top:4px;bottom:4px;left:50%;width:1px;background:#dcdfe6;transform:translateX(-50%);transition:background-color .15s ease}
+.field-width-resizer:hover::before,.field-width-resizer:focus-visible::before{background:#409eff}
+.field-width-resizer:focus-visible{outline:none}
+.field-type-select,.field-type-read{width:70px;min-width:70px;font-size:12px;color:#909399}
+.field-value-container{flex:1;display:flex;align-items:center;min-width:0}
+.custom-field-item.is-richtext-field .field-value-container{align-self:stretch;align-items:stretch}
+.field-value,.field-value-read{width:100%}
+.field-value-read{color:#606266;padding-top:2px}
+.field-action-btn{margin-left:auto}
+.field-richtext-editor{width:100%;min-width:0}
+.field-value-richtext-read{width:100%;padding:8px 10px;color:#606266;background:rgba(255,255,255,.75);border:1px solid rgba(220,223,230,.75);border-radius:4px;overflow:auto}
+.field-value-richtext-read :deep(p),
+.field-value-richtext-read :deep(li),
+.field-value-richtext-read :deep(blockquote),
+.field-value-richtext-read :deep(td),
+.field-value-richtext-read :deep(th){line-height:1}
+.field-value-richtext-read :deep(p){margin:6px 0}
+.field-value-richtext-read :deep(img){max-width:100%;height:auto;display:block;margin:8px 0}
+.field-value-richtext-read :deep(.field-richtext-empty){margin:0;color:#909399}
 .inherited-indicator{font-size:10px;color:#fff;background:#e6a23c;padding:1px 4px;border-radius:2px;line-height:1.2}.inherited-indicator.ancestor{background:#909399}
 .custom-field-sortable-ghost{opacity:.7;background-color:#ecf5ff !important}
 .history-panel{margin-top:15px;padding:10px;background:#f8f9fb;border-radius:4px;max-height:200px;overflow-y:auto;font-size:13px;border:1px solid #ebeef5}
 .history-list{display:flex;flex-direction:column}.history-item{display:flex;align-items:flex-start;gap:15px;padding:6px 0;border-bottom:1px dashed #ebeef5}.history-item:last-child{border-bottom:none}
 .history-time{color:#909399;white-space:nowrap;font-family:monospace}.history-content{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.field-tag{min-width:40px;text-align:center}.history-value{color:#303133;word-break:break-all}
 .status-saved{color:#67c23a}.status-saving{color:#e6a23c}.status-unsaved,.status-readonly{color:#909399}
-.state-line,.state-block{display:flex;justify-content:center;align-items:center;color:#909399}.state-line{gap:8px;font-size:14px}.state-block{height:100%}
+.state-line,.state-block{display:flex;justify-content:center;align-items:center;color:#909399}.state-line{gap:8px;font-size:14px}.state-block{flex:1;min-height:0}
 </style>

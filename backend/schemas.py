@@ -108,6 +108,7 @@ class NoteCreate(BaseModel):
     weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: Optional[List[List[Any]]] = []
+    completion_progress_expr: Optional[str] = None
 
 class NoteUpdate(BaseModel):
     title: Optional[str] = None
@@ -127,6 +128,7 @@ class NoteUpdate(BaseModel):
     weight_mode: Optional[str] = None
     private_level: Optional[int] = None
     custom_fields: Optional[List[List[Any]]] = None
+    completion_progress_expr: Optional[str] = None
 
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -151,6 +153,8 @@ class NoteRead(BaseModel):
     weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
+    completion_progress_expr: Optional[str] = None
+    completion_progress: Optional[float] = None
     can_edit: bool = False
     
     inherited_fields: Optional[Dict[str, List[List[Any]]]] = None 
@@ -177,6 +181,8 @@ class NoteListRead(BaseModel):
     weight_mode: Optional[str] = None
     private_level: int = 0
     custom_fields: List[List[Any]] = []
+    completion_progress_expr: Optional[str] = None
+    completion_progress: Optional[float] = None
     can_edit: bool = False
     created_at: float
     updated_at: float

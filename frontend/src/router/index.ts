@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
 import { useUserStore } from '@/store/userStore';
 import MainLayout from '@/layout/MainLayout.vue';
+import { privateRoutes } from '@/private';
 import Home from '@/views/Home.vue';
 
 const routes: Array<RouteRecordRaw> = [
@@ -126,6 +127,18 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'tools/ai-config',
+        name: 'AiConfig',
+        component: () => import('@/views/tools/AiConfig.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'tools/ai-chat',
+        name: 'AiChat',
+        component: () => import('@/views/tools/AiChat.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'cluster/logs/:id',
         name: 'TaskLogs',
         component: () => import('@/views/TaskLogs.vue'),
@@ -137,6 +150,7 @@ const routes: Array<RouteRecordRaw> = [
         component: () => import('@/views/admin/StorageManager.vue'),
         meta: { requiresAuth: true, requiresAdmin: true },
       },
+      ...privateRoutes,
     ],
   },
 ];

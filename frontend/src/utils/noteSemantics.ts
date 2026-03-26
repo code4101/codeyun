@@ -12,6 +12,7 @@ export const NOTE_FORM_DOCUMENT = 'document';
 export const NOTE_FORM_MEMO = 'memo';
 export const NOTE_FORM_MUSIC = 'music';
 export const NOTE_FORM_VIDEO = 'video';
+export const NOTE_FORM_GAME = 'game';
 export const NOTE_FORM_BOOK = 'book';
 export const NOTE_LIFECYCLE_STAGE_DEFAULT = 'idea';
 export const NOTE_SCENE_DEFAULT = NOTE_KIND_DEFAULT;
@@ -80,6 +81,7 @@ export const normalizeNoteForm = (value: unknown, fallback: string = NOTE_FORM_D
     || normalized === NOTE_FORM_MEMO
     || normalized === NOTE_FORM_MUSIC
     || normalized === NOTE_FORM_VIDEO
+    || normalized === NOTE_FORM_GAME
     || normalized === NOTE_FORM_BOOK
     || normalized === NOTE_FORM_DEFAULT
   ) {
@@ -89,7 +91,8 @@ export const normalizeNoteForm = (value: unknown, fallback: string = NOTE_FORM_D
 };
 
 export const normalizeLifecycleStage = (value: unknown, fallback: string = NOTE_LIFECYCLE_STAGE_DEFAULT) => {
-  const normalized = String(value || '').trim();
+  let normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'predone') normalized = 'done';
   return normalized || fallback;
 };
 

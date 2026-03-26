@@ -9,6 +9,10 @@ from backend.core.note_semantics import (
     derive_legacy_semantics_from_taxonomy,
     derive_note_taxonomy_from_legacy,
 )
+from backend.core.note_progress import (
+    evaluate_completion_progress_expr,
+    get_completion_progress_expr,
+)
 
 
 def can_edit_note(note: NoteNode, current_user: Optional[User]) -> bool:
@@ -41,4 +45,6 @@ def note_to_response_dict(
     payload.update(normalized)
     payload["can_edit"] = can_edit_note(note, current_user)
     payload.update(extra_fields)
+    payload["completion_progress_expr"] = get_completion_progress_expr(payload.get("custom_fields"))
+    payload["completion_progress"] = evaluate_completion_progress_expr(payload.get("completion_progress_expr"))
     return payload

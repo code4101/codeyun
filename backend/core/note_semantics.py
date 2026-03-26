@@ -21,6 +21,7 @@ NOTE_FORM_DOCUMENT = "document"
 NOTE_FORM_MEMO = "memo"
 NOTE_FORM_MUSIC = "music"
 NOTE_FORM_VIDEO = "video"
+NOTE_FORM_GAME = "game"
 NOTE_FORM_BOOK = "book"
 NOTE_LIFECYCLE_STAGE_DEFAULT = "idea"
 NOTE_SCENE_DEFAULT = NOTE_KIND_DEFAULT
@@ -95,6 +96,7 @@ def normalize_note_form(value, default: str = NOTE_FORM_DEFAULT) -> str:
         NOTE_FORM_MEMO,
         NOTE_FORM_MUSIC,
         NOTE_FORM_VIDEO,
+        NOTE_FORM_GAME,
         NOTE_FORM_BOOK,
     }:
         return normalized
@@ -102,7 +104,9 @@ def normalize_note_form(value, default: str = NOTE_FORM_DEFAULT) -> str:
 
 
 def normalize_lifecycle_stage(value, default: str = NOTE_LIFECYCLE_STAGE_DEFAULT) -> str:
-    normalized = str(value or "").strip()
+    normalized = str(value or "").strip().lower()
+    if normalized == "predone":
+        normalized = "done"
     return normalized or default
 
 

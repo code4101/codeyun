@@ -1,4 +1,5 @@
 import { COLOR_LIST0, COLOR_LIST1, COLOR_LIST2 } from '@/utils/colorCatalogSource'
+import { SUPPLEMENTAL_EN_BY_ZH, SUPPLEMENTAL_ZH_BY_EN } from '@/utils/colorNameSupplement'
 
 export type ColorGroupId = 'core-zh' | 'extended-zh' | 'english-expanded'
 export type ColorRange = 0 | 1 | 2
@@ -8,6 +9,11 @@ export interface RgbColor {
   r: number
   g: number
   b: number
+}
+
+export interface WeightedColorMixEntry {
+  color: string | RgbColor
+  weight: number
 }
 
 export interface ColorGroupDefinition {
@@ -38,6 +44,14 @@ export interface StandardColor extends RgbColor {
   enNames: string[]
   names: string[]
   displayName: string
+}
+
+export interface ResolvedMappedColorInfo {
+  sourceColor: RgbColor
+  sourceHex: string
+  mappedColor: StandardColor
+  distance: number
+  isExact: boolean
 }
 
 interface ColorCatalog {
@@ -158,6 +172,13 @@ function normalizeHex(hex: string): string {
   return `#${match[1].toUpperCase()}`
 }
 
+function normalizeColorNameKeyword(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s\-_'".,()/]+/g, '')
+}
+
 function toHexWithoutHash(hex: string): string {
   return normalizeHex(hex).slice(1)
 }
@@ -190,10 +211,21 @@ function appendUnique(target: string[], value: string, caseInsensitive = false):
   }
 }
 
+function getResolvedEntryNames(entry: RawColorEntry): { zhName: string, enName: string } {
+  const zhName = entry.zhName || SUPPLEMENTAL_ZH_BY_EN[entry.enName] || ''
+  const enName = entry.enName || SUPPLEMENTAL_EN_BY_ZH[entry.zhName] || ''
+
+  return {
+    zhName,
+    enName,
+  }
+}
+
 function buildPalette(entries: RawColorEntry[], groupId?: ColorGroupId): StandardColor[] {
   const palette = new Map<string, StandardColor>()
 
   for (const entry of entries) {
+    const { zhName, enName } = getResolvedEntryNames(entry)
     const existing = palette.get(entry.hex)
     if (!existing) {
       const { r, g, b } = fromHex(entry.hex)
@@ -206,14 +238,14 @@ function buildPalette(entries: RawColorEntry[], groupId?: ColorGroupId): Standar
         zhNames: [],
         enNames: [],
         names: [],
-        displayName: entry.zhName || entry.enName || entry.hex,
+        displayName: zhName || enName || entry.hex,
       }
       palette.set(entry.hex, nextColor)
     }
 
     const color = palette.get(entry.hex)!
-    appendUnique(color.zhNames, entry.zhName)
-    appendUnique(color.enNames, entry.enName, true)
+    appendUnique(color.zhNames, zhName)
+    appendUnique(color.enNames, enName, true)
   }
 
   for (const color of palette.values()) {
@@ -237,6 +269,7 @@ const GROUP_PALETTES: Record<ColorGroupId, StandardColor[]> = {
 }
 
 const RANGE_CATALOGS = new Map<ColorRange, ColorCatalog>()
+const RANGE_NEAREST_MATCHERS = new Map<string, (color: RgbColor) => StandardColor>()
 
 function createCatalog(range: ColorRange): ColorCatalog {
   const mergedEntries = GROUP_ORDER
@@ -252,11 +285,13 @@ function createCatalog(range: ColorRange): ColorCatalog {
 
     for (const name of color.zhNames) {
       nameToHex.set(name, color.hex)
+      nameToHex.set(normalizeColorNameKeyword(name), color.hex)
     }
 
     for (const name of color.enNames) {
       nameToHex.set(name, color.hex)
       nameToHex.set(name.toLowerCase(), color.hex)
+      nameToHex.set(normalizeColorNameKeyword(name), color.hex)
     }
   }
 
@@ -376,6 +411,46 @@ export function mixColors(
   return createRgbColor(mixed.r / totalRatio, mixed.g / totalRatio, mixed.b / totalRatio)
 }
 
+export function mixWeightedColors(
+  entries: WeightedColorMixEntry[],
+  options: { fillColor?: string | RgbColor; fillToWeight?: number } = {},
+): RgbColor | null {
+  const { fillColor = '#FFFFFF', fillToWeight = 100 } = options
+  const normalizedEntries = entries
+    .map((entry) => {
+      const color = typeof entry.color === 'string' ? fromHex(entry.color) : entry.color
+      return {
+        color,
+        weight: Number.isFinite(entry.weight) ? entry.weight : 0,
+      }
+    })
+    .filter(entry => entry.weight > 0)
+
+  const normalizedFillColor = typeof fillColor === 'string' ? fromHex(fillColor) : fillColor
+
+  let totalWeight = 0
+  let sumR = 0
+  let sumG = 0
+  let sumB = 0
+
+  for (const entry of normalizedEntries) {
+    totalWeight += entry.weight
+    sumR += entry.color.r * entry.weight
+    sumG += entry.color.g * entry.weight
+    sumB += entry.color.b * entry.weight
+  }
+
+  const fillWeight = Math.max(fillToWeight - totalWeight, 0)
+  const denominator = totalWeight + fillWeight
+  if (denominator <= 0) return null
+
+  return createRgbColor(
+    (sumR + normalizedFillColor.r * fillWeight) / denominator,
+    (sumG + normalizedFillColor.g * fillWeight) / denominator,
+    (sumB + normalizedFillColor.b * fillWeight) / denominator,
+  )
+}
+
 export function lightenColor(color: RgbColor, ratio = 1): RgbColor {
   return mixColors(color, createRgbColor(255, 255, 255), ratio)
 }
@@ -447,8 +522,101 @@ export function findColorByName(name: string, range: ColorRange = 2): StandardCo
   if (!trimmed) return undefined
 
   const { nameToHex } = getCatalog(range)
-  const hex = nameToHex.get(trimmed) || nameToHex.get(trimmed.toLowerCase())
+  const hex = nameToHex.get(trimmed)
+    || nameToHex.get(trimmed.toLowerCase())
+    || nameToHex.get(normalizeColorNameKeyword(trimmed))
   return hex ? findExactStandardColorByHex(hex, range) : undefined
+}
+
+export function matchesStandardColorKeyword(color: StandardColor, keyword: string): boolean {
+  const trimmed = keyword.trim()
+  if (!trimmed) return true
+
+  const normalizedKeyword = trimmed.toLowerCase()
+  const compactKeyword = normalizeColorNameKeyword(trimmed)
+  const colorHex = color.hex.toLowerCase()
+  if (colorHex.includes(normalizedKeyword) || colorHex.slice(1).includes(normalizedKeyword.replace(/^#/, ''))) {
+    return true
+  }
+
+  const names = [color.displayName, ...color.zhNames, ...color.enNames]
+  return names.some((name) => {
+    const normalizedName = name.toLowerCase()
+    if (normalizedName.includes(normalizedKeyword) || name.includes(trimmed)) {
+      return true
+    }
+
+    return compactKeyword.length > 0 && normalizeColorNameKeyword(name).includes(compactKeyword)
+  })
+}
+
+export function searchStandardColors(keyword: string, range: ColorRange = 2, limit?: number): StandardColor[] {
+  const trimmed = keyword.trim()
+  if (!trimmed) return []
+
+  const normalizedKeyword = trimmed.toLowerCase()
+  const compactKeyword = normalizeColorNameKeyword(trimmed)
+  const normalizedHex = trimmed.replace(/^#/, '').toLowerCase()
+  const candidates = getStandardColors(range)
+    .map((color) => {
+      let score = 0
+      const names = [color.displayName, ...color.zhNames, ...color.enNames]
+
+      for (const name of names) {
+        const normalizedName = name.toLowerCase()
+        const compactName = normalizeColorNameKeyword(name)
+        if (
+          name === trimmed
+          || normalizedName === normalizedKeyword
+          || (compactKeyword.length > 0 && compactName === compactKeyword)
+        ) {
+          score = Math.max(score, 500)
+          continue
+        }
+        if (
+          name.startsWith(trimmed)
+          || normalizedName.startsWith(normalizedKeyword)
+          || (compactKeyword.length > 0 && compactName.startsWith(compactKeyword))
+        ) {
+          score = Math.max(score, 360)
+          continue
+        }
+        if (
+          name.includes(trimmed)
+          || normalizedName.includes(normalizedKeyword)
+          || (compactKeyword.length > 0 && compactName.includes(compactKeyword))
+        ) {
+          score = Math.max(score, 240)
+        }
+      }
+
+      const colorHex = color.hex.toLowerCase()
+      const colorHexWithoutHash = colorHex.slice(1)
+      if (colorHex === normalizedKeyword || colorHexWithoutHash === normalizedHex) {
+        score = Math.max(score, 420)
+      } else if (colorHex.includes(normalizedKeyword) || colorHexWithoutHash.includes(normalizedHex)) {
+        score = Math.max(score, 180)
+      }
+
+      return {
+        color,
+        score,
+      }
+    })
+    .filter(item => item.score > 0)
+    .sort((left, right) => {
+      if (left.score !== right.score) return right.score - left.score
+      if (left.color.displayName.length !== right.color.displayName.length) {
+        return left.color.displayName.length - right.color.displayName.length
+      }
+      return left.color.hex.localeCompare(right.color.hex)
+    })
+
+  if (Number.isFinite(limit) && typeof limit === 'number' && limit > 0) {
+    return candidates.slice(0, Math.max(1, limit)).map(item => item.color)
+  }
+
+  return candidates.map(item => item.color)
 }
 
 export function findSimilarStandardColor(
@@ -640,5 +808,57 @@ export function buildNearestColorMatcher(
 
     cache.set(cacheKey, nearest)
     return nearest
+  }
+}
+
+function getRangeNearestColorMatcher(
+  range: ColorRange = 2,
+  method: DistanceMethod = 'cie76',
+): (color: RgbColor) => StandardColor {
+  const cacheKey = `${range}:${method}`
+  const cached = RANGE_NEAREST_MATCHERS.get(cacheKey)
+  if (cached) {
+    return cached
+  }
+
+  const matcher = buildNearestColorMatcher(getStandardColors(range), method)
+  RANGE_NEAREST_MATCHERS.set(cacheKey, matcher)
+  return matcher
+}
+
+export function resolveMappedStandardColor(
+  input: string | RgbColor,
+  options: { range?: ColorRange; method?: DistanceMethod } = {},
+): StandardColor {
+  const { range = 2, method = 'cie76' } = options
+
+  if (typeof input === 'string') {
+    const exact = findExactStandardColorByHex(input, range)
+    if (exact) {
+      return exact
+    }
+
+    return getRangeNearestColorMatcher(range, method)(fromHex(input))
+  }
+
+  return getRangeNearestColorMatcher(range, method)(input)
+}
+
+export function resolveMappedStandardColorInfo(
+  input: string | RgbColor,
+  options: { range?: ColorRange; method?: DistanceMethod } = {},
+): ResolvedMappedColorInfo {
+  const { range = 2, method = 'cie76' } = options
+  const sourceColor = typeof input === 'string' ? fromHex(input) : input
+  const sourceHex = typeof input === 'string' ? normalizeHex(input) : toHex(input)
+  const exact = findExactStandardColorByHex(sourceHex, range)
+  const mappedColor = exact ?? getRangeNearestColorMatcher(range, method)(sourceColor)
+
+  return {
+    sourceColor,
+    sourceHex,
+    mappedColor,
+    distance: exact ? 0 : getColorDistance(sourceColor, mappedColor, method),
+    isExact: Boolean(exact),
   }
 }

@@ -73,6 +73,7 @@
       <template #editor>
         <NoteDetailPanel
           :noteId="currentNoteId"
+          editor-layout="fill"
           @update="handleNoteUpdate"
           @delete="handleNoteDelete"
           @create="handleNoteCreate"
@@ -882,6 +883,9 @@ const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolea
       lifecycle_stage: note.lifecycle_stage,
       color: note.color,
       weight_mode: note.weight_mode,
+      custom_fields: note.custom_fields,
+      completion_progress_expr: note.completion_progress_expr,
+      completion_progress: note.completion_progress,
       created_at: note.created_at,
       start_at: note.start_at
     },
@@ -992,6 +996,9 @@ const handleNoteUpdate = (note: NoteNode) => {
         node.data.lifecycle_stage = note.lifecycle_stage;
         node.data.color = note.color;
         node.data.weight_mode = note.weight_mode;
+        node.data.custom_fields = note.custom_fields;
+        node.data.completion_progress_expr = note.completion_progress_expr;
+        node.data.completion_progress = note.completion_progress;
         void refreshNodeInternals([String(note.id)]).then(() => {
           const affectedEdgeIds = getAffectedEdgeIdsForNodes([String(note.id)]);
           if (affectedEdgeIds.size > 0) {
@@ -1032,6 +1039,9 @@ const handleNoteCreate = (note: NoteNode) => {
           lifecycle_stage: note.lifecycle_stage,
           color: note.color,
           weight_mode: note.weight_mode,
+          custom_fields: note.custom_fields,
+          completion_progress_expr: note.completion_progress_expr,
+          completion_progress: note.completion_progress,
           created_at: note.created_at,
           start_at: note.start_at
       },

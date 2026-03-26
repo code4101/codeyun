@@ -1,18 +1,19 @@
 <template>
-  <div class="editor-container" @click="handleContainerClick">
+  <div class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
     <Toolbar
-      v-if="!readOnly"
+      v-if="showToolbar && !readOnly"
       class="editor-toolbar"
       :editor="editorRef"
       :defaultConfig="toolbarConfig"
       :mode="mode"
     />
     <!-- Extra Toolbar Items Slot -->
-    <div v-if="!readOnly && $slots.extra" class="editor-toolbar-extra">
+    <div v-if="showToolbar && !readOnly && $slots.extra" class="editor-toolbar-extra">
       <slot name="extra"></slot>
     </div>
     <Editor
       class="editor-content-area"
+      :class="`is-${layout}`"
       v-model="valueHtml"
       :defaultConfig="editorConfig"
       :mode="mode"
@@ -72,7 +73,7 @@
 
 <script setup lang="ts">
 import '@wangeditor/editor/dist/css/style.css' // 引入 css
-import { onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } from 'vue'
+import { computed, onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } from 'vue'
 import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
 import { type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
 import { ElMessage } from 'element-plus'
@@ -95,6 +96,22 @@ const props = defineProps({
   readOnly: {
     type: Boolean,
     default: false
+  },
+  showToolbar: {
+    type: Boolean,
+    default: true
+  },
+  autoFocusOnEmpty: {
+    type: Boolean,
+    default: true
+  },
+  minHeight: {
+    type: Number,
+    default: undefined
+  },
+  layout: {
+    type: String,
+    default: 'fill' // 'fill' for split panes, 'flow' for dialogs/standalone blocks
   }
 })
 
@@ -107,11 +124,24 @@ const editorRef = shallowRef()
 const valueHtml = ref(props.modelValue)
 
 const readOnly = toRef(props, 'readOnly')
+const showToolbar = toRef(props, 'showToolbar')
 const imageMergeVisible = ref(false)
 const mergeGap = ref(0)
 const detectedImages = ref<string[]>([])
 const mergedImageResult = ref('')
 const merging = ref(false)
+
+const editorStyle = computed(() => {
+    if (props.layout !== 'flow' || typeof props.minHeight !== 'number' || props.minHeight <= 0) {
+        return {}
+    }
+    const minHeight = `${props.minHeight}px`
+    return {
+        '--editor-flow-min-height': minHeight,
+        '--editor-content-min-height': minHeight,
+        '--editor-text-min-height': minHeight,
+    }
+})
 
 // 模拟 ajax 异步获取内容
 onMounted(() => {
@@ -183,7 +213,7 @@ const uploadEditorImage = async (
 }
 
 const editorConfig: any = {
-    placeholder: '请输入内容...',
+    placeholder: '',
     readOnly: props.readOnly,
     MENU_CONF: {
         uploadImage: {
@@ -231,7 +261,7 @@ const handleCreated = (editor: any) => {
     })
     
     // Auto focus on creation if it's an empty note to improve UX
-    if (!valueHtml.value || valueHtml.value === '<p><br></p>') {
+    if (props.autoFocusOnEmpty && (!valueHtml.value || valueHtml.value === '<p><br></p>')) {
         setTimeout(() => {
             if (editorRef.value) {
                 editorRef.value.focus()
@@ -264,6 +294,44 @@ const handleChange = (editor: any) => {
     emit('update:modelValue', editor.getHtml())
     emit('change', editor.getHtml())
 }
+
+const syncValueFromEditor = () => {
+    const editor = editorRef.value as IDomEditor | undefined
+    if (!editor) return
+    const nextHtml = editor.getHtml()
+    if (nextHtml === valueHtml.value) return
+    valueHtml.value = nextHtml
+    emit('update:modelValue', nextHtml)
+    emit('change', nextHtml)
+}
+
+const focusEditor = (isEnd = true) => {
+    const editor = editorRef.value as IDomEditor | undefined
+    if (!editor) return
+    editor.focus(isEnd)
+}
+
+const undo = () => {
+    const editor = editorRef.value as IDomEditor | undefined
+    if (!editor?.undo) return
+    editor.undo()
+    queueMicrotask(syncValueFromEditor)
+    editor.focus()
+}
+
+const redo = () => {
+    const editor = editorRef.value as IDomEditor | undefined
+    if (!editor?.redo) return
+    editor.redo()
+    queueMicrotask(syncValueFromEditor)
+    editor.focus()
+}
+
+defineExpose({
+    focus: focusEditor,
+    undo,
+    redo,
+})
 
 const getSelectedImageSrcList = (): string[] => {
     const editor = editorRef.value as IDomEditor | undefined
@@ -331,26 +399,79 @@ const confirmInsertMergedImage = () => {
 .editor-container {
     border: 1px solid #ccc;
     z-index: 100; /* 按需调整 */
-    height: auto; /* Ensure it grows */
-    min-height: 320px;
     cursor: text; /* 提示可编辑 */
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.editor-container.is-fill {
+    flex: 1;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+
+.editor-container.is-flow {
+    height: auto;
+    min-height: var(--editor-flow-min-height, 320px);
 }
 
 .editor-toolbar {
     border-bottom: 1px solid #ccc;
+    flex-shrink: 0;
 }
 
 .editor-content-area {
+    min-width: 0;
+}
+
+.editor-content-area.is-fill {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+.editor-content-area.is-flow {
     height: auto;
-    min-height: 500px;
-    overflow: visible;
+    min-height: var(--editor-content-min-height, 500px);
 }
 
 /* 确保编辑器区域填满容器，点击空白处也能触发编辑器焦点 */
-:deep(.w-e-text-container) {
-    height: auto !important; /* 让它自适应内容高度 */
-    min-height: 320px !important;
+:deep([data-w-e-textarea='true']) {
+    min-width: 0;
+}
+
+.editor-container.is-fill :deep([data-w-e-textarea='true']) {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.editor-container.is-flow :deep([data-w-e-textarea='true']) {
+    height: auto;
+}
+
+.editor-container.is-fill :deep(.w-e-text-container) {
+    height: 100% !important;
+    min-height: 0 !important;
+    display: flex;
+    flex-direction: column;
     background-color: transparent !important;
+    overflow: hidden !important;
+}
+
+.editor-container.is-flow :deep(.w-e-text-container) {
+    height: auto !important;
+    min-height: var(--editor-text-min-height, 320px) !important;
+    background-color: transparent !important;
+}
+
+.editor-container.is-fill :deep(.w-e-text-container .w-e-scroll) {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
 }
 
 :deep(.w-e-text-container blockquote),
@@ -372,6 +493,7 @@ const confirmInsertMergedImage = () => {
     display: flex;
     align-items: center;
     gap: 10px;
+    flex-shrink: 0;
 }
 
 .merge-settings {
