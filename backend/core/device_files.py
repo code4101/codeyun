@@ -298,6 +298,190 @@ def _select_hash_active_candidate(
     return matching[0]
 
 
+def _normalize_record_identity_path(record: DeviceFile) -> str:
+    return (record.absolute_path or record.last_known_path or "").strip()
+
+
+def _resolve_scope_relative_tail(path: str, scope_prefixes: list[str]) -> str | None:
+    normalized_path = (path or "").strip()
+    if not normalized_path:
+        return None
+
+    for raw_prefix in scope_prefixes:
+        prefix = (raw_prefix or "").strip().rstrip("/\\")
+        if not prefix:
+            continue
+        if not (normalized_path == prefix or normalized_path.startswith(prefix + "\\") or normalized_path.startswith(prefix + "/")):
+            continue
+
+        relative_path = normalized_path[len(prefix) :].lstrip("/\\")
+        if not relative_path:
+            return None
+
+        parts = [part for part in relative_path.replace("/", "\\").split("\\") if part]
+        if len(parts) < 2:
+            return None
+        return "\\".join(parts[1:]).lower()
+
+    return None
+
+
+def _matches_scope_tail_candidate(
+    record: DeviceFile,
+    snapshot: DeviceFileSyncSnapshot,
+    *,
+    scope_prefixes: list[str],
+) -> bool:
+    record_path = _normalize_record_identity_path(record)
+    if not record_path:
+        return False
+
+    record_tail = _resolve_scope_relative_tail(record_path, scope_prefixes)
+    snapshot_tail = _resolve_scope_relative_tail(snapshot.absolute_path, scope_prefixes)
+    if not record_tail or not snapshot_tail or record_tail != snapshot_tail:
+        return False
+
+    if snapshot.file_size is None or record.file_size != snapshot.file_size:
+        return False
+
+    if snapshot.modified_at_ms is None or record.modified_at_ms != snapshot.modified_at_ms:
+        return False
+
+    if snapshot.media_kind and record.media_kind and record.media_kind != snapshot.media_kind:
+        return False
+
+    return True
+
+
+def _select_scope_tail_active_candidates(
+    active_candidates: list[DeviceFile],
+    snapshot: DeviceFileSyncSnapshot,
+    *,
+    exclude_ids: set[int],
+    seen_paths: set[str],
+    scope_prefixes: list[str],
+) -> list[DeviceFile]:
+    matching = [
+        record
+        for record in active_candidates
+        if record.id not in exclude_ids
+        and record.absolute_path
+        and record.absolute_path not in seen_paths
+        and _matches_scope_tail_candidate(record, snapshot, scope_prefixes=scope_prefixes)
+    ]
+    matching.sort(key=lambda item: item.updated_at, reverse=True)
+    return matching
+
+
+def _select_scope_tail_dangling_candidates(
+    session: Session,
+    device_id: str,
+    snapshot: DeviceFileSyncSnapshot,
+    *,
+    exclude_ids: set[int],
+    scope_prefixes: list[str],
+) -> list[DeviceFile]:
+    if snapshot.file_size is None or snapshot.modified_at_ms is None or not scope_prefixes:
+        return []
+
+    candidates = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == device_id,
+            DeviceFile.absolute_path.is_(None),
+            DeviceFile.file_size == snapshot.file_size,
+            DeviceFile.modified_at_ms == snapshot.modified_at_ms,
+        )
+    ).all()
+
+    filtered = [
+        record
+        for record in candidates
+        if record.id not in exclude_ids
+        and _matches_scope_tail_candidate(record, snapshot, scope_prefixes=scope_prefixes)
+    ]
+    filtered.sort(key=lambda item: item.updated_at, reverse=True)
+    return filtered
+
+
+def _collect_duplicate_metadata_candidates(
+    session: Session,
+    device_id: str,
+    snapshot: DeviceFileSyncSnapshot,
+    *,
+    active_scope_candidates: list[DeviceFile],
+    exclude_ids: set[int],
+    seen_paths: set[str],
+    scope_prefixes: list[str],
+) -> list[DeviceFile]:
+    candidates: dict[int, DeviceFile] = {}
+
+    if snapshot.content_hash:
+        hash_dangling = _select_hash_dangling_candidate(
+            session,
+            device_id,
+            snapshot,
+            exclude_ids=exclude_ids,
+        )
+        if hash_dangling is not None and hash_dangling.id is not None:
+            candidates[hash_dangling.id] = hash_dangling
+
+        hash_active = _select_hash_active_candidate(
+            active_scope_candidates,
+            snapshot,
+            exclude_ids=exclude_ids,
+            seen_paths=seen_paths,
+        )
+        if hash_active is not None and hash_active.id is not None:
+            candidates[hash_active.id] = hash_active
+
+    for record in _select_scope_tail_active_candidates(
+        active_scope_candidates,
+        snapshot,
+        exclude_ids=exclude_ids,
+        seen_paths=seen_paths,
+        scope_prefixes=scope_prefixes,
+    ):
+        if record.id is not None:
+            candidates[record.id] = record
+
+    for record in _select_scope_tail_dangling_candidates(
+        session,
+        device_id,
+        snapshot,
+        exclude_ids=exclude_ids,
+        scope_prefixes=scope_prefixes,
+    ):
+        if record.id is not None:
+            candidates[record.id] = record
+
+    return list(candidates.values())
+
+
+def _merge_duplicate_metadata(target: DeviceFile, candidates: list[DeviceFile]) -> None:
+    if target.weight == 0:
+        weighted_candidates = [record for record in candidates if record.weight != 0]
+        if weighted_candidates:
+            weighted_candidates.sort(key=lambda item: ((item.updated_at or 0), abs(item.weight), item.id or 0), reverse=True)
+            target.weight = weighted_candidates[0].weight
+
+    if target.cover_source != "manual":
+        manual_cover_candidates = [
+            record
+            for record in candidates
+            if record.cover_source == "manual" and record.cover_path
+        ]
+        if manual_cover_candidates:
+            manual_cover_candidates.sort(
+                key=lambda item: ((item.cover_updated_at or 0), (item.updated_at or 0), item.id or 0),
+                reverse=True,
+            )
+            donor = manual_cover_candidates[0]
+            target.cover_path = donor.cover_path
+            target.cover_mime_type = donor.cover_mime_type
+            target.cover_source = donor.cover_source
+            target.cover_updated_at = donor.cover_updated_at
+
+
 def _path_is_within_scope(path: str, scope_prefixes: list[str]) -> bool:
     normalized_path = (path or "").strip()
     if not normalized_path:
@@ -393,6 +577,17 @@ def reconcile_device_file_batch(
             updated_count += 1
 
         _apply_snapshot_to_record(target, snapshot, now=now)
+        duplicate_candidates = _collect_duplicate_metadata_candidates(
+            session,
+            device_id,
+            snapshot,
+            active_scope_candidates=active_scope_candidates,
+            exclude_ids={target.id} if target.id is not None else set(),
+            seen_paths=seen_paths,
+            scope_prefixes=normalized_scope_prefixes,
+        )
+        if duplicate_candidates:
+            _merge_duplicate_metadata(target, duplicate_candidates)
         session.add(target)
         session.flush()
         processed_records.append(target)

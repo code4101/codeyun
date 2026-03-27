@@ -45,6 +45,7 @@
           :reveal-image-in-folder="revealDeviceMediaInFolder"
           delete-button-text="删除文件"
           set-cover-button-text="设为封面"
+          show-quick-delete-for-non-positive-weight
           @update:show-sidebar="showSidebar = $event"
         >
           <template #gallery-top>
@@ -210,7 +211,17 @@
           <template #sidebar-extra>
             <div class="device-gallery-sidebar-stack">
               <GallerySortProgramBar
+                v-model="directorySortProgram"
+                title="目录排序"
+                caption="基于 devicefile 索引聚合递归大小、文件数、最新修改时间和权重。"
+                help-text="只影响当前层子目录顺序，不重新递归扫描设备目录。"
+                :field-options="DIRECTORY_SORT_FIELD_OPTIONS"
+                :default-program="DEFAULT_DIRECTORY_SORT_PROGRAM"
+                collapse-meta-to-tooltip
+              />
+              <GallerySortProgramBar
                 v-model="backendSortProgram"
+                title="媒体排序"
                 empty-text=""
                 :show-caption="false"
                 :show-help-text="false"
@@ -354,6 +365,8 @@ import {
   setDeviceFileCover,
   setDeviceFileWeight,
   type DeviceDirectoryItem,
+  type DeviceDirectorySortField,
+  type DeviceDirectorySortProgram,
   type DeviceDirectoryListing,
   type DeviceFileSelector,
   type DeviceImageRecord,
@@ -383,10 +396,16 @@ interface DeviceBrowserImage extends GalleryImage {
   isFetchingUrl?: boolean;
 }
 
+interface SortFieldOption {
+  value: string;
+  label: string;
+}
+
 const DEVICE_ROOT_SENTINEL = '__device_root__';
 const DEVICE_ROOT_LABEL = '设备根目录';
 const DEVICE_PATH_STORAGE_PREFIX = 'codeyun_device_media_browser_path';
 const DEVICE_SORT_PROGRAM_STORAGE_SUFFIX = '_backend_sort_program';
+const DEVICE_DIRECTORY_SORT_PROGRAM_STORAGE_SUFFIX = '_directory_sort_program';
 const DEVICE_SCAN_LIMIT_STORAGE_SUFFIX = '_media_scan_limit';
 const DEVICE_RECURSIVE_STORAGE_SUFFIX = '_recursive_display';
 const THUMBNAIL_MAX_EDGE = 360;
@@ -400,6 +419,51 @@ const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;
 const STREAMABLE_VIDEO_MIME_TYPES = new Set(['video/mp4', 'video/webm']);
 const STREAMABLE_VIDEO_EXTENSIONS = ['.mp4', '.webm'];
 const THUMBNAIL_WARM_CONCURRENCY = 4;
+
+const DIRECTORY_SORT_FIELD_OPTIONS: SortFieldOption[] = [
+  { value: 'name', label: '目录名' },
+  { value: 'recursive_total_bytes', label: '递归总大小' },
+  { value: 'recursive_file_count', label: '递归文件数' },
+  { value: 'latest_descendant_modified_at', label: '最新文件修改时间' },
+  { value: 'max_weight', label: '最大权重' },
+  { value: 'weighted_file_count', label: '加权文件数' },
+  { value: 'modified_at', label: '目录修改时间' },
+];
+
+const DEFAULT_DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
+  rules: [{ field: 'recursive_total_bytes', direction: 'desc', nulls: 'last' }],
+};
+
+const LEGACY_DIRECTORY_SORT_PROGRAM: DeviceDirectorySortProgram = {
+  rules: [{ field: 'name', direction: 'asc', nulls: 'last' }],
+};
+
+const isDirectorySortField = (value: unknown): value is DeviceDirectorySortField =>
+  value === 'name'
+  || value === 'modified_at'
+  || value === 'recursive_total_bytes'
+  || value === 'recursive_file_count'
+  || value === 'latest_descendant_modified_at'
+  || value === 'max_weight'
+  || value === 'weighted_file_count';
+
+const normalizeDirectorySortProgram = (value?: Partial<DeviceDirectorySortProgram> | null): DeviceDirectorySortProgram => ({
+  rules: Array.isArray(value?.rules) && value.rules.length
+    ? value.rules.map((rule) => ({
+        field: isDirectorySortField(rule?.field) ? rule.field : 'name',
+        direction: rule?.direction === 'asc' ? 'asc' : 'desc',
+        nulls: rule?.nulls === 'first' ? 'first' : 'last',
+      }))
+    : DEFAULT_DIRECTORY_SORT_PROGRAM.rules.map((rule) => ({ ...rule })),
+});
+
+const cloneDirectorySortProgram = (value?: Partial<DeviceDirectorySortProgram> | null): DeviceDirectorySortProgram =>
+  JSON.parse(JSON.stringify(normalizeDirectorySortProgram(value)));
+
+const isSameDirectorySortProgram = (
+  left?: Partial<DeviceDirectorySortProgram> | null,
+  right?: Partial<DeviceDirectorySortProgram> | null
+) => JSON.stringify(normalizeDirectorySortProgram(left)) === JSON.stringify(normalizeDirectorySortProgram(right));
 
 const route = useRoute();
 const router = useRouter();
@@ -424,6 +488,7 @@ const isLoadingListing = ref(false);
 const isLoadingMediaPage = ref(false);
 const downloadingPath = ref('');
 const revealingPath = ref('');
+const directorySortProgram = ref<DeviceDirectorySortProgram>(cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM));
 const backendSortProgram = ref<GallerySortProgram>(createDefaultGallerySortProgram());
 const previewVisible = ref(false);
 const previewImageId = ref<string | null>(null);
@@ -437,7 +502,8 @@ const mediaSnapshotId = ref<string | null>(null);
 const mediaListingDirty = ref(false);
 const mediaScanLimit = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
 const mediaScanLimitInput = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
-let loadVersion = 0;
+let directoryLoadVersion = 0;
+let mediaLoadVersion = 0;
 const pendingMediaRequests = new Map<string, Promise<void>>();
 
 const isAbsolutePath = (value: string) => /^(?:[a-zA-Z]:[\\/]|\\\\|\/|~(?:[\\/]|$))/.test((value || '').trim());
@@ -447,6 +513,7 @@ const isDeviceRootPath = (value: string) => (value || '').trim() === DEVICE_ROOT
 const getPathStorageKey = (entryId: string) => `${DEVICE_PATH_STORAGE_PREFIX}:${entryId || 'default'}`;
 const getScanLimitStorageKey = (storageKey: string) => `${storageKey}${DEVICE_SCAN_LIMIT_STORAGE_SUFFIX}`;
 const getRecursiveStorageKey = (storageKey: string) => `${storageKey}${DEVICE_RECURSIVE_STORAGE_SUFFIX}`;
+const getDirectorySortStorageKey = (storageKey: string) => `${storageKey}${DEVICE_DIRECTORY_SORT_PROGRAM_STORAGE_SUFFIX}`;
 
 const normalizeMediaScanLimit = (value: unknown) => {
   const parsed = Number.parseInt(String(value ?? ''), 10);
@@ -472,6 +539,28 @@ const loadPersistedBackendSortProgram = (storageKey: string): GallerySortProgram
   }
 };
 
+const loadPersistedDirectorySortProgram = (storageKey: string): DeviceDirectorySortProgram => {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
+  }
+
+  try {
+    const savedValue = window.localStorage.getItem(getDirectorySortStorageKey(storageKey)) || '';
+    if (!savedValue) {
+      return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
+    }
+
+    const normalizedProgram = normalizeDirectorySortProgram(JSON.parse(savedValue));
+    if (isSameDirectorySortProgram(normalizedProgram, LEGACY_DIRECTORY_SORT_PROGRAM)) {
+      return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
+    }
+    return normalizedProgram;
+  } catch (error) {
+    console.warn('Failed to load persisted directory sort program', error);
+    return cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM);
+  }
+};
+
 const persistBackendSortProgram = (storageKey: string, value: GallerySortProgram) => {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return;
@@ -484,6 +573,21 @@ const persistBackendSortProgram = (storageKey: string, value: GallerySortProgram
     );
   } catch (error) {
     console.warn('Failed to persist backend media sort program', error);
+  }
+};
+
+const persistDirectorySortProgram = (storageKey: string, value: DeviceDirectorySortProgram) => {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(
+      getDirectorySortStorageKey(storageKey),
+      JSON.stringify(normalizeDirectorySortProgram(value))
+    );
+  } catch (error) {
+    console.warn('Failed to persist directory sort program', error);
   }
 };
 
@@ -657,11 +761,17 @@ const syncPathInputFromSelection = () => {
 };
 
 let suppressNextBackendSortProgramReload = false;
+let suppressNextDirectorySortProgramReload = false;
 let suppressNextRecursiveDisplayReload = false;
 
 const restoreBackendSortProgram = (storageKey: string) => {
   suppressNextBackendSortProgramReload = true;
   backendSortProgram.value = loadPersistedBackendSortProgram(storageKey);
+};
+
+const restoreDirectorySortProgram = (storageKey: string) => {
+  suppressNextDirectorySortProgramReload = true;
+  directorySortProgram.value = loadPersistedDirectorySortProgram(storageKey);
 };
 
 const restoreMediaScanLimit = (storageKey: string) => {
@@ -676,6 +786,7 @@ const restoreRecursiveDisplay = (storageKey: string) => {
 };
 
 restoreBackendSortProgram(galleryStorageKey.value);
+restoreDirectorySortProgram(galleryStorageKey.value);
 restoreMediaScanLimit(galleryStorageKey.value);
 restoreRecursiveDisplay(galleryStorageKey.value);
 
@@ -706,9 +817,10 @@ const handlePathBlur = () => {
   void commitPathInput();
 };
 
-const buildBrowsePayload = (): DeviceFileSelector => {
-  return { absolute_path: normalizedPathInput.value };
-};
+const buildDirectoryListPayload = () => ({
+  absolute_path: normalizedPathInput.value,
+  sort_program: cloneDirectorySortProgram(directorySortProgram.value),
+});
 
 const buildEntryPayload = (item: DeviceDirectoryItem): DeviceFileSelector => {
   return { absolute_path: item.path };
@@ -797,8 +909,9 @@ const loadMediaPage = async (
   }
 
   const entryId = selectedEntryId.value;
+  const pathValue = normalizedPathInput.value;
   const targetPage = Math.max(1, Math.floor(page || 1));
-  const requestVersion = ++loadVersion;
+  const requestVersion = ++mediaLoadVersion;
   const shouldResetSnapshot = Boolean(options?.resetSnapshot || mediaListingDirty.value);
   if (shouldResetSnapshot) {
     mediaSnapshotId.value = null;
@@ -811,7 +924,11 @@ const loadMediaPage = async (
         includeSnapshot: !shouldResetSnapshot,
       })
     );
-    if (loadVersion !== requestVersion || selectedEntryId.value !== entryId) {
+    if (
+      mediaLoadVersion !== requestVersion
+      || selectedEntryId.value !== entryId
+      || normalizedPathInput.value !== pathValue
+    ) {
       return false;
     }
 
@@ -819,13 +936,21 @@ const loadMediaPage = async (
     currentMediaPage.value = targetPage;
     return true;
   } catch (error) {
-    if (loadVersion === requestVersion && selectedEntryId.value === entryId) {
+    if (
+      mediaLoadVersion === requestVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+    ) {
       console.error('Failed to load device media page', error);
       ElMessage.error('读取媒体分页失败');
     }
     return false;
   } finally {
-    if (loadVersion === requestVersion && selectedEntryId.value === entryId) {
+    if (
+      mediaLoadVersion === requestVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+    ) {
       isLoadingMediaPage.value = false;
     }
   }
@@ -973,6 +1098,8 @@ const removeMediaItemLocally = (imageId: string) => {
   clearMediaUrl(target);
   pendingMediaRequests.delete(imageId);
   mediaItems.value = mediaItems.value.filter((item) => item.id !== imageId);
+  mediaTotalCount.value = Math.max(0, mediaTotalCount.value - 1);
+  mediaTotalBytes.value = Math.max(0, mediaTotalBytes.value - (target.size || 0));
 };
 
 const markMediaListingDirty = () => {
@@ -1016,7 +1143,10 @@ const loadDirectory = async () => {
     return;
   }
 
-  const version = ++loadVersion;
+  const listingRequestVersion = ++directoryLoadVersion;
+  const mediaRequestVersion = ++mediaLoadVersion;
+  const entryId = selectedEntryId.value;
+  const pathValue = normalizedPathInput.value;
   isLoadingListing.value = true;
   isLoadingMediaPage.value = false;
   currentDirectoryPage.value = 1;
@@ -1024,10 +1154,14 @@ const loadDirectory = async () => {
   mediaSnapshotId.value = null;
   try {
     const [directoryResult, mediaResult] = await Promise.allSettled([
-      fetchDeviceDirectoryItems(selectedEntryId.value, buildBrowsePayload()),
-      fetchDeviceMedia(selectedEntryId.value, buildMediaListPayload(0, { includeSnapshot: false })),
+      fetchDeviceDirectoryItems(entryId, buildDirectoryListPayload()),
+      fetchDeviceMedia(entryId, buildMediaListPayload(0, { includeSnapshot: false })),
     ]);
-    if (version !== loadVersion) {
+    if (
+      listingRequestVersion !== directoryLoadVersion
+      || selectedEntryId.value !== entryId
+      || normalizedPathInput.value !== pathValue
+    ) {
       return;
     }
 
@@ -1037,9 +1171,18 @@ const loadDirectory = async () => {
 
     listing.value = directoryResult.value;
 
-    if (mediaResult.status === 'fulfilled') {
+    if (
+      mediaRequestVersion === mediaLoadVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+      && mediaResult.status === 'fulfilled'
+    ) {
       applyMediaListing(mediaResult.value);
-    } else {
+    } else if (
+      mediaRequestVersion === mediaLoadVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+    ) {
       resetMediaPagination();
       replaceMediaItems([]);
       ElMessage.warning('目录已加载，但媒体预览信息读取失败');
@@ -1057,7 +1200,11 @@ const loadDirectory = async () => {
         : '读取设备文件失败'
     );
   } finally {
-    if (version === loadVersion) {
+    if (
+      listingRequestVersion === directoryLoadVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+    ) {
       isLoadingListing.value = false;
     }
   }
@@ -1265,14 +1412,20 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
     }
   }
 
-  const requestVersion = loadVersion;
+  const requestVersion = mediaLoadVersion;
   const entryId = selectedEntryId.value;
+  const pathValue = normalizedPathInput.value;
   const payload = buildImagePayload(target);
   const requestPromise = (async () => {
     target.isFetchingUrl = true;
     try {
       const latestTarget = mediaItems.value.find((item) => item.id === image.id);
-      if (!latestTarget || loadVersion !== requestVersion || selectedEntryId.value !== entryId) {
+      if (
+        !latestTarget
+        || mediaLoadVersion !== requestVersion
+        || selectedEntryId.value !== entryId
+        || normalizedPathInput.value !== pathValue
+      ) {
         return;
       }
 
@@ -1282,7 +1435,12 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
           throw new Error('Empty stream url');
         }
         const currentTarget = mediaItems.value.find((item) => item.id === image.id);
-        if (!currentTarget || loadVersion !== requestVersion || selectedEntryId.value !== entryId) {
+        if (
+          !currentTarget
+          || mediaLoadVersion !== requestVersion
+          || selectedEntryId.value !== entryId
+          || normalizedPathInput.value !== pathValue
+        ) {
           return;
         }
         replaceMediaUrlFromRemote(currentTarget, streamUrl, desiredVariant);
@@ -1293,7 +1451,12 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
         ? await fetchDeviceThumbnailBlob(entryId, payload, { max_edge: THUMBNAIL_MAX_EDGE })
         : await fetchDeviceMediaBlob(entryId, payload);
       const currentTarget = mediaItems.value.find((item) => item.id === image.id);
-      if (!currentTarget || loadVersion !== requestVersion || selectedEntryId.value !== entryId) {
+      if (
+        !currentTarget
+        || mediaLoadVersion !== requestVersion
+        || selectedEntryId.value !== entryId
+        || normalizedPathInput.value !== pathValue
+      ) {
         return;
       }
       replaceMediaUrlFromBlob(currentTarget, blob, desiredVariant);
@@ -1314,7 +1477,11 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
     if (latestTarget && desiredVariant === 'thumbnail') {
       latestTarget.thumbnailFailed = true;
     }
-    if (loadVersion === requestVersion) {
+    if (
+      mediaLoadVersion === requestVersion
+      && selectedEntryId.value === entryId
+      && normalizedPathInput.value === pathValue
+    ) {
       console.warn('Failed to fetch device media asset', target.filePath, error);
     }
   }
@@ -1429,6 +1596,7 @@ watch(selectedEntryId, async (nextEntryId) => {
   listing.value = null;
   resetMediaPagination();
   replaceMediaItems([]);
+  restoreDirectorySortProgram(`device_media_gallery_${nextEntryId || 'default'}`);
   restoreBackendSortProgram(`device_media_gallery_${nextEntryId || 'default'}`);
   restoreMediaScanLimit(`device_media_gallery_${nextEntryId || 'default'}`);
   restoreRecursiveDisplay(`device_media_gallery_${nextEntryId || 'default'}`);
@@ -1469,6 +1637,22 @@ watch(recursiveDisplay, (nextRecursive) => {
     void loadMediaPage(1, { resetSnapshot: true });
   }
 });
+
+watch(
+  directorySortProgram,
+  (nextProgram) => {
+    persistDirectorySortProgram(galleryStorageKey.value, nextProgram);
+    if (suppressNextDirectorySortProgramReload) {
+      suppressNextDirectorySortProgramReload = false;
+      return;
+    }
+    currentDirectoryPage.value = 1;
+    if (canBrowse.value) {
+      void loadDirectory();
+    }
+  },
+  { deep: true }
+);
 
 watch(
   backendSortProgram,

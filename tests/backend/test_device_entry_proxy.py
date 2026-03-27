@@ -797,6 +797,102 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     assert rows[0].content_hash == first_hash
 
 
+def test_local_entry_proxy_scan_merges_weight_when_directory_rename_left_zero_weight_duplicate(
+    client,
+    auth_user,
+    test_device,
+    session,
+    tmp_path,
+):
+    scan_dir = tmp_path / "scan-root"
+    scan_dir.mkdir(parents=True, exist_ok=True)
+    original_path = scan_dir / "001_artist" / "set"
+    original_path.mkdir(parents=True, exist_ok=True)
+    old_file = original_path / "image-01.png"
+    old_file.write_text("alpha", encoding="utf-8")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    first_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/scan",
+        json={"absolute_path": str(scan_dir), "hash_mode": "always"},
+    )
+    assert first_resp.status_code == 200
+    first_payload = first_resp.json()
+    assert first_payload["processed_count"] == 1
+    assert first_payload["hashed_count"] == 1
+    first_hash = first_payload["items"][0]["content_hash"]
+    assert first_hash
+
+    indexed_old = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == test_device["id"],
+            DeviceFile.absolute_path == str(old_file),
+        )
+    ).one()
+    indexed_old.weight = 5
+    session.add(indexed_old)
+    session.commit()
+
+    renamed_dir = scan_dir / "artist" / "set"
+    renamed_dir.mkdir(parents=True, exist_ok=True)
+    renamed_file = renamed_dir / "image-01.png"
+    old_file.rename(renamed_file)
+
+    stat_result = renamed_file.stat()
+    session.add(
+        DeviceFile(
+            device_id=test_device["id"],
+            absolute_path=str(renamed_file),
+            last_known_path=str(renamed_file),
+            file_size=stat_result.st_size,
+            modified_at_ms=int(stat_result.st_mtime * 1000),
+            media_kind="image",
+            mime_type="image/png",
+            match_status="matched",
+            weight=0,
+        )
+    )
+    session.commit()
+
+    second_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/scan",
+        json={"absolute_path": str(scan_dir), "hash_mode": "auto"},
+    )
+    assert second_resp.status_code == 200
+    second_payload = second_resp.json()
+    assert second_payload["processed_count"] == 1
+    assert second_payload["hashed_count"] == 1
+
+    current_record = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == test_device["id"],
+            DeviceFile.absolute_path == str(renamed_file),
+        )
+    ).one()
+    assert current_record.weight == 5
+    assert current_record.content_hash == first_hash
+
+    legacy_record = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == test_device["id"],
+            DeviceFile.last_known_path == str(old_file),
+        )
+    ).one()
+    assert legacy_record.absolute_path is None
+    assert legacy_record.match_status == "dangling"
+    assert legacy_record.weight == 5
+
+
 def test_local_entry_proxy_serves_image_thumbnail(client, auth_user, test_device):
     settings = get_settings()
     attachments_dir = settings.attachments_dir
@@ -962,6 +1058,103 @@ def test_local_entry_proxy_lists_device_root_directory(client, auth_user, test_d
             "modified_at": None,
         },
     ]
+
+
+def test_local_entry_proxy_sorts_directories_by_indexed_recursive_bytes(
+    client,
+    auth_user,
+    test_device,
+    session,
+    tmp_path,
+    monkeypatch,
+):
+    browse_dir = tmp_path / "browse-root"
+    large_dir = browse_dir / "large"
+    small_dir = browse_dir / "small"
+    nested_dir = large_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    small_dir.mkdir(parents=True, exist_ok=True)
+    (browse_dir / "notes.txt").write_text("root", encoding="utf-8")
+
+    large_file = large_dir / "cover.jpg"
+    nested_large_file = nested_dir / "detail.jpg"
+    small_file = small_dir / "thumb.jpg"
+    large_file.write_bytes(b"a" * 10)
+    nested_large_file.write_bytes(b"b" * 30)
+    small_file.write_bytes(b"c" * 5)
+
+    monkeypatch.setattr("backend.api.filesystem.get_device_id", lambda: test_device["id"])
+
+    session.add_all(
+        [
+            DeviceFile(
+                device_id=test_device["id"],
+                absolute_path=str(large_file),
+                last_known_path=str(large_file),
+                file_size=10,
+                modified_at_ms=1000,
+                match_status="matched",
+                weight=1,
+            ),
+            DeviceFile(
+                device_id=test_device["id"],
+                absolute_path=str(nested_large_file),
+                last_known_path=str(nested_large_file),
+                file_size=30,
+                modified_at_ms=3000,
+                match_status="matched",
+                weight=2,
+            ),
+            DeviceFile(
+                device_id=test_device["id"],
+                absolute_path=str(small_file),
+                last_known_path=str(small_file),
+                file_size=5,
+                modified_at_ms=2000,
+                match_status="matched",
+                weight=0,
+            ),
+        ]
+    )
+    session.commit()
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={
+            "absolute_path": str(browse_dir),
+            "sort_program": {
+                "rules": [
+                    {
+                        "field": "recursive_total_bytes",
+                        "direction": "desc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert [item["name"] for item in payload["items"][:3]] == ["large", "small", "notes.txt"]
+    assert payload["items"][0]["recursive_total_bytes"] == 40
+    assert payload["items"][0]["recursive_file_count"] == 2
+    assert payload["items"][0]["latest_descendant_modified_at"] == 3000
+    assert payload["items"][0]["max_weight"] == 2
+    assert payload["items"][0]["weighted_file_count"] == 2
+    assert payload["items"][1]["recursive_total_bytes"] == 5
+    assert payload["items"][1]["recursive_file_count"] == 1
 
 
 def test_remote_entry_proxy_forwards_files_request(client, session, auth_user, monkeypatch):
@@ -1793,6 +1986,74 @@ def test_remote_entry_proxy_forwards_directory_request(client, session, auth_use
     assert captured["headers"]["Authorization"] == "Bearer remote-token"
     assert captured["headers"]["X-Device-Token"] == "remote-token"
     assert captured["timeout"] == 10
+
+
+def test_remote_entry_proxy_forwards_directory_sort_program(client, session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-device-1",
+        mode="remote",
+        name="Remote Device",
+        server_url="http://remote-device:8000",
+        token="remote-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {"items": []}
+
+        @property
+        def content(self):
+            return b"{}"
+
+    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = json
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
+
+    resp = client.post(
+        f"/api/device-entries/{entry.entry_id}/files/list_dir",
+        json={
+            "absolute_path": r"D:\home\chenkunze",
+            "sort_program": {
+                "rules": [
+                    {
+                        "field": "recursive_total_bytes",
+                        "direction": "desc",
+                        "nulls": "last",
+                    }
+                ]
+            },
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://remote-device:8000/api/fs/scoped/list_dir"
+    assert captured["json"] == {
+        "path": "",
+        "absolute_path": r"D:\home\chenkunze",
+        "sort_program": {
+            "rules": [
+                {
+                    "field": "recursive_total_bytes",
+                    "direction": "desc",
+                    "nulls": "last",
+                }
+            ]
+        },
+    }
 
 
 def test_remote_entry_proxy_forwards_absolute_files_request(client, session, auth_user, monkeypatch):

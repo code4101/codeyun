@@ -32,6 +32,7 @@ from backend.core.device_files import (
 )
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.db import get_session
+from backend.models import DeviceFile
 
 router = APIRouter()
 
@@ -124,6 +125,31 @@ class GallerySortRule(BaseModel):
 
 class GallerySortProgram(BaseModel):
     rules: List[GallerySortRule] = PydanticField(default_factory=list)
+
+
+DirectorySortField = Literal[
+    "name",
+    "modified_at",
+    "recursive_total_bytes",
+    "recursive_file_count",
+    "latest_descendant_modified_at",
+    "max_weight",
+    "weighted_file_count",
+]
+
+
+class DirectorySortRule(BaseModel):
+    field: DirectorySortField = "name"
+    direction: GallerySortDirection = "asc"
+    nulls: GallerySortNulls = "last"
+
+
+class DirectorySortProgram(BaseModel):
+    rules: List[DirectorySortRule] = PydanticField(default_factory=list)
+
+
+class DirectoryListRequest(RootScopedRequest):
+    sort_program: Optional[DirectorySortProgram] = None
 
 
 class MediaListRequest(RootScopedRequest):
@@ -417,6 +443,11 @@ def _should_hash_scanned_file(
         same_size = active_record.file_size == file_size
         same_modified_at = active_record.modified_at_ms == modified_at_ms
         if same_size and same_modified_at:
+            if (
+                not active_record.content_hash
+                and (has_dangling_same_path or has_dangling_same_size or has_unseen_active_same_size)
+            ):
+                return True
             return False
         return True
 
@@ -455,6 +486,179 @@ def _entry_payload(entry: os.DirEntry[str], base_path: Path, *, use_absolute_pat
         "size": None if is_dir or stat_result is None else stat_result.st_size,
         "modified_at": None if stat_result is None else int(stat_result.st_mtime * 1000),
     }
+
+
+def _build_empty_directory_stats() -> dict[str, int | None]:
+    return {
+        "recursive_total_bytes": None,
+        "recursive_file_count": None,
+        "latest_descendant_modified_at": None,
+        "max_weight": None,
+        "weighted_file_count": None,
+    }
+
+
+def _build_directory_stats_by_name(
+    session: Session | None,
+    *,
+    target_path: Path,
+    directory_items: list[dict],
+) -> dict[str, dict[str, int | None]]:
+    if session is None or not directory_items:
+        return {}
+
+    try:
+        device_id = get_device_id()
+    except Exception:
+        return {}
+
+    scope_prefix = os.fspath(target_path.resolve(strict=False))
+    normalized_prefix = (scope_prefix or "").strip().rstrip("/\\")
+    if not normalized_prefix:
+        return {}
+
+    directory_names = {
+        str(item.get("name") or "").lower(): str(item.get("name") or "")
+        for item in directory_items
+        if item.get("is_dir") and item.get("name")
+    }
+    if not directory_names:
+        return {}
+
+    rows = session.exec(
+        select(
+            DeviceFile.absolute_path,
+            DeviceFile.file_size,
+            DeviceFile.modified_at_ms,
+            DeviceFile.weight,
+        ).where(
+            DeviceFile.device_id == device_id,
+            DeviceFile.absolute_path.is_not(None),
+            DeviceFile.match_status == "matched",
+            DeviceFile.absolute_path.startswith(normalized_prefix),
+        )
+    ).all()
+
+    stats_by_name: dict[str, dict[str, int | None]] = {}
+    for absolute_path, file_size, modified_at_ms, weight in rows:
+        if not absolute_path or not _path_matches_scope_prefix(absolute_path, normalized_prefix):
+            continue
+
+        relative_path = absolute_path[len(normalized_prefix):].lstrip("/\\")
+        if not relative_path:
+            continue
+
+        normalized_relative = relative_path.replace("/", "\\")
+        first_segment = normalized_relative.split("\\", 1)[0].strip()
+        if not first_segment:
+            continue
+
+        directory_name = directory_names.get(first_segment.lower())
+        if not directory_name:
+            continue
+
+        stats = stats_by_name.setdefault(directory_name, _build_empty_directory_stats())
+        size_value = int(file_size) if isinstance(file_size, (int, float)) else 0
+        modified_value = int(modified_at_ms) if isinstance(modified_at_ms, (int, float)) else None
+        weight_value = int(weight) if isinstance(weight, (int, float)) else 0
+
+        stats["recursive_total_bytes"] = int(stats["recursive_total_bytes"] or 0) + size_value
+        stats["recursive_file_count"] = int(stats["recursive_file_count"] or 0) + 1
+        if modified_value is not None:
+            stats["latest_descendant_modified_at"] = max(
+                int(stats["latest_descendant_modified_at"] or 0),
+                modified_value,
+            )
+        stats["max_weight"] = max(int(stats["max_weight"] or 0), weight_value)
+        if weight_value != 0:
+            stats["weighted_file_count"] = int(stats["weighted_file_count"] or 0) + 1
+
+    return stats_by_name
+
+
+DIRECTORY_SORT_FALLBACK_RULES = [DirectorySortRule(field="name", direction="asc", nulls="last")]
+
+
+def _create_directory_sort_program() -> DirectorySortProgram:
+    return DirectorySortProgram(rules=[DirectorySortRule(field="recursive_total_bytes", direction="desc", nulls="last")])
+
+
+def _normalize_directory_sort_program(sort_program: DirectorySortProgram | None) -> list[DirectorySortRule]:
+    base_program = sort_program if sort_program and sort_program.rules else _create_directory_sort_program()
+    return [*base_program.rules, *DIRECTORY_SORT_FALLBACK_RULES]
+
+
+def _get_directory_sort_value(item: dict, field: DirectorySortField) -> str | int | None:
+    if field == "name":
+        return str(item.get("name") or "").lower()
+    if field == "modified_at":
+        value = item.get("modified_at")
+        return int(value) if isinstance(value, (int, float)) else None
+    if field == "recursive_total_bytes":
+        value = item.get("recursive_total_bytes")
+        return int(value) if isinstance(value, (int, float)) else None
+    if field == "recursive_file_count":
+        value = item.get("recursive_file_count")
+        return int(value) if isinstance(value, (int, float)) else None
+    if field == "latest_descendant_modified_at":
+        value = item.get("latest_descendant_modified_at")
+        return int(value) if isinstance(value, (int, float)) else None
+    if field == "max_weight":
+        value = item.get("max_weight")
+        return int(value) if isinstance(value, (int, float)) else None
+    if field == "weighted_file_count":
+        value = item.get("weighted_file_count")
+        return int(value) if isinstance(value, (int, float)) else None
+    return None
+
+
+def _compare_directory_sort_rule(left: dict, right: dict, rule: DirectorySortRule) -> int:
+    left_value = _get_directory_sort_value(left, rule.field)
+    right_value = _get_directory_sort_value(right, rule.field)
+    left_missing = left_value is None
+    right_missing = right_value is None
+
+    if left_missing or right_missing:
+        if left_missing and right_missing:
+            return 0
+        if rule.nulls == "first":
+            return -1 if left_missing else 1
+        return 1 if left_missing else -1
+
+    if isinstance(left_value, str) and isinstance(right_value, str):
+        if left_value < right_value:
+            result = -1
+        elif left_value > right_value:
+            result = 1
+        else:
+            result = 0
+    else:
+        left_number = int(left_value)
+        right_number = int(right_value)
+        result = (left_number > right_number) - (left_number < right_number)
+
+    if result == 0:
+        return 0
+    return -result if rule.direction == "desc" else result
+
+
+def _compare_directory_entries(left: dict, right: dict, rules: list[DirectorySortRule]) -> int:
+    for rule in rules:
+        result = _compare_directory_sort_rule(left, right, rule)
+        if result != 0:
+            return result
+    left_name = str(left.get("name") or "").lower()
+    right_name = str(right.get("name") or "").lower()
+    if left_name < right_name:
+        return -1
+    if left_name > right_name:
+        return 1
+    return 0
+
+
+def _sort_directory_entries(entries: list[dict], sort_program: DirectorySortProgram | None) -> None:
+    normalized_rules = _normalize_directory_sort_program(sort_program)
+    entries.sort(key=cmp_to_key(lambda left, right: _compare_directory_entries(left, right, normalized_rules)))
 
 
 def _list_system_root_entries() -> list[dict]:
@@ -500,7 +704,14 @@ def _list_system_root_entries() -> list[dict]:
     ]
 
 
-def list_directory_items(root_key: Optional[str] = None, rel_path: str = "", absolute_path: str = "") -> dict:
+def list_directory_items(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    absolute_path: str = "",
+    *,
+    sort_program: DirectorySortProgram | None = None,
+    session: Session | None = None,
+) -> dict:
     if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
         return {
             "root": None,
@@ -524,12 +735,18 @@ def list_directory_items(root_key: Optional[str] = None, rel_path: str = "", abs
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="Permission denied") from exc
 
-    items.sort(key=lambda item: (not item["is_dir"], item["name"].lower()))
+    directory_items = [item for item in items if item["is_dir"]]
+    file_items = [item for item in items if not item["is_dir"]]
+    stats_by_name = _build_directory_stats_by_name(session, target_path=target_path, directory_items=directory_items)
+    for item in directory_items:
+        item.update(stats_by_name.get(str(item.get("name") or ""), _build_empty_directory_stats()))
+    _sort_directory_entries(directory_items, sort_program)
+    file_items.sort(key=lambda item: str(item.get("name") or "").lower())
     return {
         "root": resolved["root"],
         "current_path": resolved["path"],
         "absolute_path": resolved["absolute_path"],
-        "items": items,
+        "items": [*directory_items, *file_items],
     }
 
 
@@ -1677,8 +1894,6 @@ def scan_device_file_records(
     *,
     device_id: str,
 ) -> dict:
-    from backend.models import DeviceFile
-
     target_path, resolved = resolve_request_path(req.root, req.path, absolute_path=req.absolute_path)
     if not target_path.exists():
         raise HTTPException(status_code=404, detail="Path not found")
@@ -1908,8 +2123,14 @@ def list_directory(req: LegacyPathRequest):
 
 
 @router.post("/scoped/list_dir")
-def list_scoped_directory(req: RootScopedRequest):
-    return list_directory_items(req.root, req.path, absolute_path=req.absolute_path)
+def list_scoped_directory(req: DirectoryListRequest, session: Session = Depends(get_session)):
+    return list_directory_items(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        sort_program=req.sort_program,
+        session=session,
+    )
 
 
 @router.post("/images/list")

@@ -25,6 +25,12 @@ class GitChangedFile(BaseModel):
     untracked: bool = False
 
 
+class GitSuggestedSplitGroup(BaseModel):
+    label: str
+    file_count: int = 0
+    sample_paths: list[str] = Field(default_factory=list)
+
+
 class GitToolInspectRequest(BaseModel):
     cwd: str
 
@@ -44,6 +50,12 @@ class GitToolInspectResponse(BaseModel):
     diff_stat: str = ""
     staged_diff_stat: str = ""
     changed_files: list[GitChangedFile] = Field(default_factory=list)
+    changed_file_count: int = 0
+    estimated_changed_line_count: int = 0
+    split_recommended: bool = False
+    split_reason: str = ""
+    oversized: bool = False
+    suggested_split_groups: list[GitSuggestedSplitGroup] = Field(default_factory=list)
 
 
 class GitToolContextResponse(GitToolInspectResponse):
@@ -51,6 +63,7 @@ class GitToolContextResponse(GitToolInspectResponse):
     selected_paths: list[str] = Field(default_factory=list)
     omitted_path_count: int = 0
     context_truncated: bool = False
+    context_mode: Literal["sampled", "overview_only"] = "sampled"
 
 
 class GitToolGenerateMessageRequest(BaseModel):
@@ -75,6 +88,10 @@ class GitToolGenerateMessageResponse(BaseModel):
     raw_content: str = ""
 
 
+class GitToolGenerateAndCommitRequest(GitToolGenerateMessageRequest):
+    add_all: bool = True
+
+
 class GitToolCommitRequest(BaseModel):
     cwd: str
     subject: str
@@ -92,6 +109,10 @@ class GitToolCommitResponse(BaseModel):
     full_message: str
     clean: bool
     status_lines: list[str] = Field(default_factory=list)
+
+
+class GitToolGenerateAndCommitResponse(GitToolGenerateMessageResponse):
+    commit: GitToolCommitResponse
 
 
 def _raise_git_error(exc: GitToolError) -> None:

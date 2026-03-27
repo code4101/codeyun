@@ -213,6 +213,68 @@ def test_reconcile_device_file_batch_rebinds_unseen_active_record_within_same_sc
     assert rows[0].match_status == "matched"
 
 
+def test_reconcile_device_file_batch_merges_weight_from_scope_tail_match_when_same_path_record_exists(session):
+    new_path = r"C:\scan\artist\set\image-01.png"
+    old_path = r"C:\scan\001_artist\set\image-01.png"
+
+    session.add(
+        DeviceFile(
+            device_id="device-1",
+            absolute_path=new_path,
+            last_known_path=new_path,
+            file_size=100,
+            modified_at_ms=1000,
+            media_kind="image",
+            weight=0,
+            match_status="matched",
+        )
+    )
+    session.add(
+        DeviceFile(
+            device_id="device-1",
+            absolute_path=old_path,
+            last_known_path=old_path,
+            file_size=100,
+            modified_at_ms=1000,
+            media_kind="image",
+            weight=3,
+            match_status="matched",
+        )
+    )
+    session.commit()
+
+    result = reconcile_device_file_batch(
+        session,
+        "device-1",
+        [
+            DeviceFileSyncSnapshot(
+                absolute_path=new_path,
+                last_known_path=new_path,
+                file_size=100,
+                modified_at_ms=1000,
+                media_kind="image",
+            )
+        ],
+        mark_missing_as_dangling=True,
+        scope_prefixes=[r"C:\scan"],
+    )
+
+    assert result.created_count == 0
+    assert result.updated_count == 1
+    assert result.dangling_count == 1
+
+    rows = {
+        (row.absolute_path or row.last_known_path): row
+        for row in session.exec(select(DeviceFile).where(DeviceFile.device_id == "device-1")).all()
+    }
+    assert rows[new_path].absolute_path == new_path
+    assert rows[new_path].weight == 3
+    assert rows[new_path].match_status == "matched"
+    assert rows[old_path].absolute_path is None
+    assert rows[old_path].weight == 3
+    assert rows[old_path].match_status == "dangling"
+
+
 def test_reconcile_device_file_batch_updates_same_path_in_place_and_keeps_manual_cover(session):
     session.add(
         DeviceFile(

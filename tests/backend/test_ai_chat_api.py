@@ -1,7 +1,7 @@
 import json
 from unittest.mock import patch
 
-from backend.core.ai_chat import OllamaClientError
+from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status
 from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key
 from backend.models import AppSetting
 
@@ -170,6 +170,66 @@ def test_ai_chat_builtin_provider_list_includes_new_openai_compatible_sources(cl
     assert response.status_code == 200
     provider_ids = {item["id"] for item in response.json()["items"]}
     assert {"ollama", "deepseek", "302ai", "aihubmix", "openrouter"} <= provider_ids
+
+
+def test_ai_chat_status_adds_qwen35_instruct_alias_for_ollama_models(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "models": [
+                    {"model": "qwen3.5:4b"},
+                    {"model": "qwen3-vl:8b-instruct"},
+                ]
+            }
+
+    monkeypatch.setattr("backend.core.ai_chat.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    status = get_ai_provider_status(
+        "ollama",
+        base_url="http://127.0.0.1:11434",
+    )
+
+    assert status["available"] is True
+    assert "qwen3.5:4b-instruct" in status["models"]
+    assert status["models"].index("qwen3.5:4b-instruct") < status["models"].index("qwen3.5:4b")
+
+
+def test_ai_chat_ollama_alias_runs_with_think_false(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "model": "qwen3.5:4b",
+                "message": {
+                    "role": "assistant",
+                    "content": "OK",
+                },
+            }
+
+    def fake_post(url, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.core.ai_chat.requests.post", fake_post)
+
+    response = chat_with_provider(
+        provider_id="ollama",
+        base_url="http://127.0.0.1:11434",
+        messages=[{"role": "user", "content": "只回复OK"}],
+        model="qwen3.5:4b-instruct",
+    )
+
+    assert captured["json"]["model"] == "qwen3.5:4b"
+    assert captured["json"]["think"] is False
+    assert response["model"] == "qwen3.5:4b-instruct"
+    assert response["content"] == "OK"
 
 
 def test_ai_chat_can_save_provider_config_to_user_asset(client, session, auth_user):

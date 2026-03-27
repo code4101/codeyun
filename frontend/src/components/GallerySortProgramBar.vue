@@ -2,13 +2,32 @@
   <div class="program-bar">
     <div class="program-header">
       <div class="program-meta">
-        <div class="program-title">{{ title }}</div>
-        <div v-if="showHelpText && helpText" class="program-inline-help">{{ helpText }}</div>
-        <div v-if="showCaption && caption" class="program-caption">{{ caption }}</div>
+        <div class="program-title-row">
+          <div class="program-title">{{ title }}</div>
+          <el-tooltip
+            v-if="collapseMetaToTooltip && tooltipLines.length"
+            placement="top-start"
+            :show-after="120"
+            effect="light"
+          >
+            <template #content>
+              <div class="program-tooltip">
+                <div v-for="(line, index) in tooltipLines" :key="`${index}-${line}`" class="program-tooltip-line">
+                  {{ line }}
+                </div>
+              </div>
+            </template>
+            <button type="button" class="program-info-button" :aria-label="`${title}说明`">
+              ?
+            </button>
+          </el-tooltip>
+        </div>
+        <div v-if="!collapseMetaToTooltip && showHelpText && helpText" class="program-inline-help">{{ helpText }}</div>
+        <div v-if="!collapseMetaToTooltip && showCaption && caption" class="program-caption">{{ caption }}</div>
       </div>
     </div>
 
-    <div v-if="showHint" class="program-hint">
+    <div v-if="!collapseMetaToTooltip && showHint" class="program-hint">
       规则按顺序比较，前面的规则优先；只有前面结果相同，后面的规则才会继续参与排序。
     </div>
 
@@ -26,7 +45,7 @@
           @update:model-value="value => updateRuleField(index, value)"
         >
           <el-option
-            v-for="field in fieldOptions"
+            v-for="field in resolvedFieldOptions"
             :key="field.value"
             :label="field.label"
             :value="field.value"
@@ -69,20 +88,33 @@ import { computed, ref } from 'vue';
 import { Delete, Plus } from '@element-plus/icons-vue';
 import SortableOrderHandle from './SortableOrderHandle.vue';
 import {
-  cloneGallerySortProgram,
   createDefaultGallerySortProgram,
-  createGallerySortRule,
   getGallerySortFieldLabel,
-  normalizeGallerySortProgram,
-  type GallerySortDirection,
   type GallerySortField,
-  type GallerySortProgram,
 } from '@/utils/imageGallery';
 import { useSortableList } from '@/utils/useSortableList';
 
+type SortDirection = 'asc' | 'desc';
+type SortNulls = 'first' | 'last';
+
+interface SortRuleLike {
+  field: string;
+  direction: SortDirection;
+  nulls: SortNulls;
+}
+
+interface SortProgramLike {
+  rules: SortRuleLike[];
+}
+
+interface SortFieldOption {
+  value: string;
+  label: string;
+}
+
 const props = withDefaults(
   defineProps<{
-    modelValue?: GallerySortProgram | null;
+    modelValue?: SortProgramLike | null;
     title?: string;
     caption?: string;
     helpText?: string;
@@ -91,6 +123,9 @@ const props = withDefaults(
     showCaption?: boolean;
     showHelpText?: boolean;
     showHint?: boolean;
+    fieldOptions?: SortFieldOption[];
+    defaultProgram?: SortProgramLike | null;
+    collapseMetaToTooltip?: boolean;
   }>(),
   {
     modelValue: null,
@@ -102,15 +137,18 @@ const props = withDefaults(
     showCaption: true,
     showHelpText: true,
     showHint: true,
+    fieldOptions: undefined,
+    defaultProgram: null,
+    collapseMetaToTooltip: false,
   }
 );
 
 const emit = defineEmits<{
-  (e: 'update:modelValue', value: GallerySortProgram): void;
+  (e: 'update:modelValue', value: SortProgramLike): void;
   (e: 'reset'): void;
 }>();
 
-const fieldSequence: GallerySortField[] = [
+const defaultFieldSequence: GallerySortField[] = [
   'random',
   'weight',
   'modified_at',
@@ -125,32 +163,85 @@ const fieldSequence: GallerySortField[] = [
   'height',
 ];
 
-const fieldOptions = fieldSequence.map((field) => ({
+const defaultFieldOptions = defaultFieldSequence.map((field) => ({
   value: field,
   label: getGallerySortFieldLabel(field),
 }));
 
-const programValue = computed(() => normalizeGallerySortProgram(props.modelValue ?? createDefaultGallerySortProgram()));
+const tooltipLines = computed(() => {
+  const lines: string[] = [];
+  if (props.showHelpText && props.helpText) {
+    lines.push(props.helpText);
+  }
+  if (props.showCaption && props.caption) {
+    lines.push(props.caption);
+  }
+  if (props.showHint) {
+    lines.push('规则按顺序比较，前面的规则优先；只有前面结果相同，后面的规则才会继续参与排序。');
+  }
+  return lines;
+});
+
+const resolvedFieldOptions = computed(() =>
+  Array.isArray(props.fieldOptions) && props.fieldOptions.length ? props.fieldOptions : defaultFieldOptions
+);
+
 const ruleListRef = ref<HTMLElement | null>(null);
 
-const emitProgram = (program: GallerySortProgram) => {
-  emit('update:modelValue', normalizeGallerySortProgram(program));
+const getFallbackField = () => resolvedFieldOptions.value[0]?.value || 'name';
+
+const normalizeRule = (value?: Partial<SortRuleLike> | null): SortRuleLike => ({
+  field: typeof value?.field === 'string' && value.field ? value.field : getFallbackField(),
+  direction: value?.direction === 'asc' ? 'asc' : 'desc',
+  nulls: value?.nulls === 'first' ? 'first' : 'last',
+});
+
+const createDefaultProgramValue = (): SortProgramLike => {
+  const fallback = props.defaultProgram?.rules?.length ? props.defaultProgram : createDefaultGallerySortProgram();
+  return {
+    rules: Array.isArray(fallback.rules) ? fallback.rules.map((rule) => normalizeRule(rule)) : [normalizeRule()],
+  };
 };
 
-const updateProgram = (mutator: (draft: GallerySortProgram) => void) => {
-  const draft = cloneGallerySortProgram(programValue.value);
+const normalizeProgram = (value?: Partial<SortProgramLike> | null): SortProgramLike => ({
+  rules: Array.isArray(value?.rules)
+    ? value.rules.map((rule) => normalizeRule(rule))
+    : createDefaultProgramValue().rules,
+});
+
+const cloneProgram = (value?: Partial<SortProgramLike> | null): SortProgramLike =>
+  JSON.parse(JSON.stringify(normalizeProgram(value)));
+
+const createSortRule = (
+  field = getFallbackField(),
+  direction: SortDirection = 'desc',
+  nulls: SortNulls = 'last'
+): SortRuleLike => ({
+  field,
+  direction,
+  nulls,
+});
+
+const programValue = computed(() => normalizeProgram(props.modelValue));
+
+const emitProgram = (program: SortProgramLike) => {
+  emit('update:modelValue', normalizeProgram(program));
+};
+
+const updateProgram = (mutator: (draft: SortProgramLike) => void) => {
+  const draft = cloneProgram(programValue.value);
   mutator(draft);
   emitProgram(draft);
 };
 
 const findNextField = () => {
   const usedFields = new Set(programValue.value.rules.map((rule) => rule.field));
-  return fieldSequence.find((field) => !usedFields.has(field)) ?? 'relative_path';
+  return resolvedFieldOptions.value.find((field) => !usedFields.has(field.value))?.value ?? getFallbackField();
 };
 
 const addRule = () => {
   updateProgram((draft) => {
-    draft.rules.push(createGallerySortRule(findNextField(), 'desc', 'last'));
+    draft.rules.push(createSortRule(findNextField(), 'desc', 'last'));
   });
 };
 
@@ -175,18 +266,18 @@ const removeRule = (index: number) => {
 
 const updateRuleField = (index: number, value: string | number | boolean) => {
   updateProgram((draft) => {
-    draft.rules[index].field = String(value) as GallerySortField;
+    draft.rules[index].field = String(value);
   });
 };
 
 const updateRuleDirection = (index: number, value: string | number | boolean) => {
   updateProgram((draft) => {
-    draft.rules[index].direction = String(value) as GallerySortDirection;
+    draft.rules[index].direction = String(value) === 'asc' ? 'asc' : 'desc';
   });
 };
 
 const resetProgram = () => {
-  emitProgram(createDefaultGallerySortProgram());
+  emitProgram(createDefaultProgramValue());
   emit('reset');
 };
 
@@ -237,8 +328,43 @@ useSortableList({
   gap: 6px;
 }
 
+.program-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .program-hint {
   line-height: 1.5;
+}
+
+.program-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid #cbd5e1;
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: help;
+}
+
+.program-tooltip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 320px;
+  line-height: 1.55;
+}
+
+.program-tooltip-line {
+  color: #334155;
+  font-size: 12px;
 }
 
 .rule-list {

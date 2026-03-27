@@ -2,6 +2,26 @@ import api, { getDeviceEntryPath } from '@/api';
 import type { GalleryItemKind, GallerySortProgram } from '@/utils/imageGallery';
 
 export type DeviceMediaSortMode = 'path' | 'modified-desc' | 'size-desc' | 'weight-desc';
+export type DeviceDirectorySortField =
+  | 'name'
+  | 'modified_at'
+  | 'recursive_total_bytes'
+  | 'recursive_file_count'
+  | 'latest_descendant_modified_at'
+  | 'max_weight'
+  | 'weighted_file_count';
+export type DeviceDirectorySortDirection = 'asc' | 'desc';
+export type DeviceDirectorySortNulls = 'first' | 'last';
+
+export interface DeviceDirectorySortRule {
+  field: DeviceDirectorySortField;
+  direction: DeviceDirectorySortDirection;
+  nulls: DeviceDirectorySortNulls;
+}
+
+export interface DeviceDirectorySortProgram {
+  rules: DeviceDirectorySortRule[];
+}
 
 export interface DeviceFilesystemRoot {
   key: string;
@@ -60,6 +80,10 @@ export interface DeviceMediaListRequest extends DeviceFileSelector {
   layout_column_heights?: number[];
 }
 
+export interface DeviceDirectoryListRequest extends DeviceFileSelector {
+  sort_program?: DeviceDirectorySortProgram | null;
+}
+
 export interface DeviceMediaListing {
   root: string | null;
   path: string;
@@ -89,6 +113,11 @@ export interface DeviceDirectoryItem {
   is_dir: boolean;
   size: number | null;
   modified_at: number | null;
+  recursive_total_bytes?: number | null;
+  recursive_file_count?: number | null;
+  latest_descendant_modified_at?: number | null;
+  max_weight?: number | null;
+  weighted_file_count?: number | null;
 }
 
 export interface DeviceDirectoryListing {
@@ -149,7 +178,7 @@ export const fetchDeviceMedia = async (
 
 export const fetchDeviceDirectoryItems = async (
   entryId: string,
-  payload: DeviceFileSelector
+  payload: DeviceDirectoryListRequest
 ): Promise<DeviceDirectoryListing> => {
   const response = await api.post(getDeviceEntryPath(entryId, '/files/list_dir'), payload);
   return {

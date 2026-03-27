@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from collections import defaultdict
 from pathlib import Path
 
 
@@ -87,6 +88,14 @@ MAX_CONTEXT_CHARS = 18_000
 MAX_FILE_SECTION_CHARS = 4_000
 MAX_PREVIEW_BYTES = 8_192
 MAX_PREVIEW_LINES = 120
+SPLIT_RECOMMENDED_FILE_THRESHOLD = 40
+SPLIT_RECOMMENDED_LINE_THRESHOLD = 8_000
+OVERSIZED_FILE_THRESHOLD = 80
+OVERSIZED_LINE_THRESHOLD = 20_000
+MAX_SPLIT_GROUPS = 6
+MAX_GROUP_SAMPLE_PATHS = 3
+MAX_OVERVIEW_PATHS = 20
+UNTRACKED_LINE_COUNT_CAP = OVERSIZED_LINE_THRESHOLD + 1_000
 
 
 class GitToolError(RuntimeError):
@@ -172,6 +181,32 @@ def _parse_changed_files(status_output: str) -> list[dict[str, object]]:
     return changed_files
 
 
+def _merge_untracked_files(
+    changed_files: list[dict[str, object]],
+    untracked_paths: set[str],
+) -> list[dict[str, object]]:
+    merged = [item for item in changed_files if not bool(item.get("untracked"))]
+    seen_paths = {
+        str(item["path"])
+        for item in merged
+        if isinstance(item.get("path"), str)
+    }
+
+    for path in sorted(untracked_paths):
+        if path in seen_paths:
+            continue
+        merged.append(
+            {
+                "path": path,
+                "status": "??",
+                "staged": False,
+                "unstaged": False,
+                "untracked": True,
+            }
+        )
+    return merged
+
+
 def _parse_branch_name(branch_text: str, branch_status: str) -> str:
     branch = (branch_text or "").strip()
     if branch and branch != "HEAD":
@@ -195,8 +230,17 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
     status_output = _run_git(repo_root, ["status", "--short"])
     status_lines = [line.rstrip() for line in status_output.splitlines() if line.strip()]
     changed_files = _parse_changed_files(status_output)
+    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard"])
+    changed_files = _merge_untracked_files(changed_files, untracked_paths)
+    changed_paths = [
+        str(item["path"])
+        for item in changed_files
+        if isinstance(item.get("path"), str)
+    ]
     diff_stat = _run_git(repo_root, ["--no-pager", "diff", "--stat", "--find-renames", "--no-color"], timeout=20, check=False)
     staged_diff_stat = _run_git(repo_root, ["--no-pager", "diff", "--cached", "--stat", "--find-renames", "--no-color"], timeout=20, check=False)
+    estimated_changed_line_count = _estimate_changed_line_count(repo_root, untracked_paths=untracked_paths)
+    scope_summary = _assess_commit_scope(len(changed_files), estimated_changed_line_count)
 
     return {
         "cwd": str(requested_cwd),
@@ -208,12 +252,145 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
         "diff_stat": diff_stat,
         "staged_diff_stat": staged_diff_stat,
         "changed_files": changed_files,
+        "suggested_split_groups": _build_split_groups(changed_paths),
+        **scope_summary,
     }
 
 
 def _read_git_path_set(repo_root: Path, args: list[str]) -> set[str]:
     output = _run_git(repo_root, args, timeout=20, check=False)
     return {line.strip() for line in output.splitlines() if line.strip()}
+
+
+def _parse_numstat_total(output: str) -> int:
+    total = 0
+    for raw_line in output.splitlines():
+        parts = raw_line.strip().split("\t", 2)
+        if len(parts) < 3:
+            continue
+        added_text, deleted_text, _ = parts
+        if added_text.isdigit():
+            total += int(added_text)
+        if deleted_text.isdigit():
+            total += int(deleted_text)
+    return total
+
+
+def _estimate_text_file_line_count(path: Path, *, limit: int) -> int:
+    try:
+        with path.open("rb") as handle:
+            line_count = 0
+            saw_content = False
+            last_byte = b""
+            while True:
+                chunk = handle.read(64 * 1024)
+                if not chunk:
+                    break
+                if b"\x00" in chunk:
+                    return 0
+                saw_content = True
+                line_count += chunk.count(b"\n")
+                last_byte = chunk[-1:]
+                if line_count >= limit:
+                    return limit
+    except OSError:
+        return 0
+
+    if saw_content and last_byte not in {b"", b"\n"}:
+        line_count += 1
+    return min(line_count, limit)
+
+
+def _estimate_untracked_line_count(repo_root: Path, untracked_paths: set[str]) -> int:
+    total = 0
+    for relative_path in sorted(untracked_paths):
+        remaining = UNTRACKED_LINE_COUNT_CAP - total
+        if remaining <= 0:
+            break
+        total += _estimate_text_file_line_count((repo_root / relative_path).resolve(), limit=remaining)
+    return total
+
+
+def _estimate_changed_line_count(repo_root: Path, *, untracked_paths: set[str]) -> int:
+    unstaged = _run_git(
+        repo_root,
+        ["diff", "--numstat", "--find-renames", "--no-color"],
+        timeout=20,
+        check=False,
+    )
+    staged = _run_git(
+        repo_root,
+        ["diff", "--cached", "--numstat", "--find-renames", "--no-color"],
+        timeout=20,
+        check=False,
+    )
+    return _parse_numstat_total(unstaged) + _parse_numstat_total(staged) + _estimate_untracked_line_count(repo_root, untracked_paths)
+
+
+def _group_changed_path(path: str) -> str:
+    pure_path = Path(path)
+    parts = pure_path.parts
+    if len(parts) <= 1:
+        return "(仓库根目录)"
+    if parts[0].startswith(".") and len(parts) >= 2:
+        return "/".join(parts[:2])
+    return parts[0]
+
+
+def _build_split_groups(changed_paths: list[str]) -> list[dict[str, object]]:
+    grouped_counts: dict[str, int] = defaultdict(int)
+    grouped_samples: dict[str, list[str]] = defaultdict(list)
+
+    for path in changed_paths:
+        label = _group_changed_path(path)
+        grouped_counts[label] += 1
+        if len(grouped_samples[label]) < MAX_GROUP_SAMPLE_PATHS:
+            grouped_samples[label].append(path)
+
+    ranked = sorted(grouped_counts.items(), key=lambda item: (-item[1], item[0]))[:MAX_SPLIT_GROUPS]
+    return [
+        {
+            "label": label,
+            "file_count": file_count,
+            "sample_paths": grouped_samples[label],
+        }
+        for label, file_count in ranked
+    ]
+
+
+def _build_split_reason(changed_file_count: int, estimated_changed_line_count: int, *, oversized: bool) -> str:
+    level_text = "已经超出单次 AI 总结的安全范围" if oversized else "规模较大，建议拆成多次提交"
+    return (
+        f"本次改动约 {changed_file_count} 个文件，估算 {estimated_changed_line_count} 行变更，"
+        f"{level_text}。"
+    )
+
+
+def _assess_commit_scope(changed_file_count: int, estimated_changed_line_count: int) -> dict[str, object]:
+    oversized = (
+        changed_file_count >= OVERSIZED_FILE_THRESHOLD
+        or estimated_changed_line_count >= OVERSIZED_LINE_THRESHOLD
+    )
+    split_recommended = oversized or (
+        changed_file_count >= SPLIT_RECOMMENDED_FILE_THRESHOLD
+        or estimated_changed_line_count >= SPLIT_RECOMMENDED_LINE_THRESHOLD
+    )
+    split_reason = (
+        _build_split_reason(
+            changed_file_count,
+            estimated_changed_line_count,
+            oversized=oversized,
+        )
+        if split_recommended
+        else ""
+    )
+    return {
+        "changed_file_count": changed_file_count,
+        "estimated_changed_line_count": estimated_changed_line_count,
+        "split_recommended": split_recommended,
+        "split_reason": split_reason,
+        "oversized": oversized,
+    }
 
 
 def _is_generated_path(path: str) -> bool:
@@ -333,9 +510,45 @@ def collect_git_commit_context(cwd: str, *, max_files: int = 8) -> dict[str, obj
     context_sections.append("- 已暂存 diff 统计:")
     context_sections.append(staged_diff_stat)
 
+    if bool(inspect_payload.get("split_recommended")):
+        context_sections.append("- 提交规模提示:")
+        context_sections.append(str(inspect_payload.get("split_reason") or "建议拆分提交"))
+
+    split_groups = inspect_payload.get("suggested_split_groups") or []
+    if isinstance(split_groups, list) and split_groups:
+        context_sections.append("- 建议拆分分组:")
+        for group in split_groups:
+            if not isinstance(group, dict):
+                continue
+            label = str(group.get("label") or "").strip()
+            file_count = int(group.get("file_count") or 0)
+            sample_paths = [
+                str(item).strip()
+                for item in (group.get("sample_paths") or [])
+                if str(item).strip()
+            ]
+            sample_text = f"（例如: {', '.join(sample_paths)}）" if sample_paths else ""
+            context_sections.append(f"  - {label}: {file_count} 个文件{sample_text}")
+
     prompt_parts = ["\n".join(context_sections), "重点文件变更片段"]
     total_chars = len(prompt_parts[0])
     truncated = False
+
+    if bool(inspect_payload.get("oversized")):
+        overview_paths = candidate_paths[: max(1, min(len(candidate_paths), MAX_OVERVIEW_PATHS))]
+        omitted_path_count = max(0, len(candidate_paths) - len(overview_paths))
+        if overview_paths:
+            prompt_parts.append("### 代表性文件路径\n" + "\n".join(f"- {path}" for path in overview_paths))
+        if omitted_path_count > 0:
+            prompt_parts.append(f"### 其余文件\n还有 {omitted_path_count} 个文件未展开，请优先判断是否应该拆分提交。")
+        return {
+            **inspect_payload,
+            "prompt_context": "\n\n".join(prompt_parts).strip(),
+            "selected_paths": overview_paths,
+            "omitted_path_count": omitted_path_count,
+            "context_truncated": True,
+            "context_mode": "overview_only",
+        }
 
     for path in selected_paths:
         file_sections = [f"### 文件: {path}"]
@@ -375,6 +588,7 @@ def collect_git_commit_context(cwd: str, *, max_files: int = 8) -> dict[str, obj
         "selected_paths": selected_paths,
         "omitted_path_count": omitted_path_count,
         "context_truncated": truncated,
+        "context_mode": "sampled",
     }
 
 
