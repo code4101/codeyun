@@ -18,6 +18,12 @@ import {
 } from '@/api/aiChat'
 
 const LOCAL_PROVIDER_CONFIG_STORAGE_KEY = 'codeyun_ai_provider_configs_v1'
+const OLLAMA_MODEL_ALIASES = [
+  {
+    alias: 'qwen3.5:4b-instruct',
+    runtimeModel: 'qwen3.5:4b',
+  },
+]
 
 export interface AiProviderRuntimeConfig {
   baseUrl: string
@@ -77,11 +83,32 @@ function areModelListsEqual(left: string[], right: string[]) {
   return left.length === right.length && left.every((item, index) => item === right[index])
 }
 
+function decorateProviderModelList(providerId: string | null | undefined, items: string[]) {
+  const normalized = dedupeModelNames(items)
+  if ((providerId || '').trim().toLowerCase() !== 'ollama') {
+    return normalized
+  }
+
+  for (const item of OLLAMA_MODEL_ALIASES) {
+    const aliasIndex = normalized.indexOf(item.alias)
+    if (aliasIndex >= 0) {
+      continue
+    }
+    const runtimeIndex = normalized.indexOf(item.runtimeModel)
+    if (runtimeIndex < 0) {
+      continue
+    }
+    normalized.splice(runtimeIndex, 0, item.alias)
+  }
+
+  return normalized
+}
+
 function getProviderDefaultModelList(provider: AiChatProviderSummary | null) {
   if (!provider) {
     return []
   }
-  return dedupeModelNames([
+  return decorateProviderModelList(provider.id, [
     provider.default_model,
     ...provider.models,
   ].filter((item): item is string => typeof item === 'string'))
@@ -345,7 +372,7 @@ export const useAiProviderStore = defineStore('aiProvider', {
     getEffectiveModels(providerId: string) {
       const providerConfig = this.getProviderConfig(providerId)
       if (providerConfig.preferredModels.length) {
-        return dedupeModelNames(providerConfig.preferredModels)
+        return decorateProviderModelList(providerId, providerConfig.preferredModels)
       }
       return getProviderDefaultModelList(this.getProviderById(providerId))
     },
@@ -357,7 +384,7 @@ export const useAiProviderStore = defineStore('aiProvider', {
       }
 
       const current = this.providers[providerIndex]
-      const nextModels = dedupeModelNames(status.models ?? [])
+      const nextModels = decorateProviderModelList(status.provider, status.models ?? [])
       this.providers.splice(providerIndex, 1, {
         ...current,
         label: status.label || current.label,
@@ -380,7 +407,7 @@ export const useAiProviderStore = defineStore('aiProvider', {
         return false
       }
 
-      const discoveredModels = dedupeModelNames(status.models ?? [])
+      const discoveredModels = decorateProviderModelList(status.provider, status.models ?? [])
       if (!discoveredModels.length) {
         return false
       }

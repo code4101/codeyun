@@ -13,6 +13,12 @@ export interface GitChangedFile {
   untracked: boolean
 }
 
+export interface GitSuggestedSplitGroup {
+  label: string
+  file_count: number
+  sample_paths: string[]
+}
+
 export interface GitInspectResponse {
   cwd: string
   repo_root: string
@@ -23,6 +29,12 @@ export interface GitInspectResponse {
   diff_stat: string
   staged_diff_stat: string
   changed_files: GitChangedFile[]
+  changed_file_count: number
+  estimated_changed_line_count: number
+  split_recommended: boolean
+  split_reason: string
+  oversized: boolean
+  suggested_split_groups: GitSuggestedSplitGroup[]
 }
 
 export interface GitInspectRequest {
@@ -50,6 +62,10 @@ export interface GitGenerateMessageResponse {
   raw_content: string
 }
 
+export interface GitGenerateAndCommitRequest extends GitGenerateMessageRequest {
+  add_all?: boolean
+}
+
 export interface GitCommitRequest extends GitInspectRequest {
   subject: string
   body: string[]
@@ -68,6 +84,10 @@ export interface GitCommitResponse {
   status_lines: string[]
 }
 
+export interface GitGenerateAndCommitResponse extends GitGenerateMessageResponse {
+  commit: GitCommitResponse
+}
+
 export async function inspectDeviceEntryGit(entryId: string, payload: GitInspectRequest) {
   const response = await api.post<GitInspectResponse>(
     getDeviceEntryPath(entryId, '/git/inspect'),
@@ -82,6 +102,17 @@ export async function generateDeviceEntryGitMessage(entryId: string, payload: Gi
     payload,
     {
       timeout: AI_GIT_GENERATE_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function generateAndCommitDeviceEntryGit(entryId: string, payload: GitGenerateAndCommitRequest) {
+  const response = await api.post<GitGenerateAndCommitResponse>(
+    getDeviceEntryPath(entryId, '/git/generate-and-commit'),
+    payload,
+    {
+      timeout: AI_GIT_GENERATE_TIMEOUT_MS + AI_GIT_COMMIT_TIMEOUT_MS,
     },
   )
   return response.data

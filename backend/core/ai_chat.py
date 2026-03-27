@@ -31,6 +31,14 @@ class AiProviderConfig:
     is_custom: bool = False
 
 
+OLLAMA_MODEL_ALIASES: dict[str, dict[str, Any]] = {
+    "qwen3.5:4b-instruct": {
+        "runtime_model": "qwen3.5:4b",
+        "think": False,
+    },
+}
+
+
 def _build_provider_map(
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> dict[str, AiProviderConfig]:
@@ -348,7 +356,7 @@ def list_ollama_models(provider: AiProviderConfig | None = None) -> list[str]:
         if isinstance(name, str) and name.strip():
             names.append(name.strip())
 
-    return sorted(set(names))
+    return _extend_ollama_model_names(sorted(set(names)))
 
 
 def _extract_ollama_chat_response(payload: dict[str, Any]) -> dict[str, Any]:
@@ -371,6 +379,39 @@ def _extract_ollama_chat_response(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _extend_ollama_model_names(names: list[str]) -> list[str]:
+    extended = [item.strip() for item in names if isinstance(item, str) and item.strip()]
+    for alias, config in OLLAMA_MODEL_ALIASES.items():
+        runtime_model = str(config.get("runtime_model") or "").strip()
+        if not runtime_model or runtime_model not in extended:
+            continue
+        if alias in extended:
+            continue
+        insert_index = extended.index(runtime_model)
+        extended.insert(insert_index, alias)
+    return extended
+
+
+def _resolve_ollama_model_request(
+    requested_model: str | None,
+    default_model: str,
+) -> tuple[str, str | None, dict[str, Any]]:
+    display_model = (requested_model or "").strip() or None
+    runtime_model = display_model or default_model
+    extra_payload: dict[str, Any] = {}
+
+    alias_config = OLLAMA_MODEL_ALIASES.get(runtime_model.casefold())
+    if alias_config is None:
+        return runtime_model, display_model, extra_payload
+
+    runtime_override = str(alias_config.get("runtime_model") or "").strip()
+    if runtime_override:
+        runtime_model = runtime_override
+    if "think" in alias_config:
+        extra_payload["think"] = bool(alias_config["think"])
+    return runtime_model, display_model, extra_payload
+
+
 def _chat_with_ollama(
     provider: AiProviderConfig,
     *,
@@ -379,13 +420,18 @@ def _chat_with_ollama(
     system_prompt: str | None,
     temperature: float | None,
 ) -> dict[str, Any]:
+    runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
+        model,
+        provider.default_model,
+    )
     payload: dict[str, Any] = {
-        "model": (model or provider.default_model).strip() or provider.default_model,
+        "model": runtime_model,
         "messages": _build_ollama_messages(messages, system_prompt),
         "stream": False,
     }
     if temperature is not None:
         payload["options"] = {"temperature": temperature}
+    payload.update(extra_payload)
 
     try:
         response = requests.post(
@@ -406,7 +452,10 @@ def _chat_with_ollama(
     if not isinstance(response_payload, dict):
         raise OllamaClientError("Ollama 返回了异常的聊天结果格式")
 
-    return _extract_ollama_chat_response(response_payload)
+    extracted = _extract_ollama_chat_response(response_payload)
+    if display_model:
+        extracted["model"] = display_model
+    return extracted
 
 
 def _stream_chat_with_ollama(
@@ -417,13 +466,18 @@ def _stream_chat_with_ollama(
     system_prompt: str | None,
     temperature: float | None,
 ) -> Iterator[dict[str, Any]]:
+    runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
+        model,
+        provider.default_model,
+    )
     payload: dict[str, Any] = {
-        "model": (model or provider.default_model).strip() or provider.default_model,
+        "model": runtime_model,
         "messages": _build_ollama_messages(messages, system_prompt),
         "stream": True,
     }
     if temperature is not None:
         payload["options"] = {"temperature": temperature}
+    payload.update(extra_payload)
 
     try:
         with requests.post(
@@ -461,13 +515,15 @@ def _stream_chat_with_ollama(
                     yield {
                         "type": "delta",
                         "delta": delta,
-                        "model": item.get("model") or payload["model"],
+                        "model": display_model or item.get("model") or payload["model"],
                         "created_at": _normalize_created_at(item.get("created_at")),
                     }
 
                 if item.get("done"):
                     seen_done = True
                     final_payload = _extract_ollama_chat_response(item)
+                    if display_model:
+                        final_payload["model"] = display_model
                     if not final_payload["content"]:
                         final_payload["content"] = "".join(content_parts)
                     yield {

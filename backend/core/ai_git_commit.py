@@ -71,7 +71,7 @@ def _build_system_prompt(style: str, include_body: bool) -> str:
         f"{style_text}"
         "subject 使用中文，尽量不超过 50 个汉字或等价长度。"
         f"{body_text}"
-        "如果变更明显混杂、应该拆成多个提交，则把 needs_split 设为 true，并在 reason 里简短说明。"
+        "如果变更明显混杂、应该拆成多个提交，或上下文已经明确提示规模过大，则把 needs_split 设为 true，并在 reason 里简短说明。"
     )
 
 
@@ -141,6 +141,7 @@ def generate_ai_git_commit_draft(
     model: Optional[str],
     style: str,
     include_body: bool,
+    force_split_reason: Optional[str] = None,
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> dict[str, object]:
     response = chat_with_provider(
@@ -170,12 +171,16 @@ def generate_ai_git_commit_draft(
 
     body = _normalize_body_lines(payload.get("body"), include_body=include_body)
     full_message = format_git_commit_message(subject, body)
+    model_needs_split = bool(payload.get("needs_split"))
+    final_reason = str(payload.get("reason") or "").strip()
+    if force_split_reason and not final_reason:
+        final_reason = force_split_reason
     return {
         "subject": subject,
         "body": body,
         "full_message": full_message,
-        "needs_split": bool(payload.get("needs_split")),
-        "reason": str(payload.get("reason") or "").strip(),
+        "needs_split": model_needs_split or bool(force_split_reason),
+        "reason": final_reason,
         "model": str(response.get("model") or model or provider_id),
         "raw_content": str(response.get("content") or ""),
     }

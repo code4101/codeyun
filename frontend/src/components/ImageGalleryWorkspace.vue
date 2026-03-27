@@ -176,6 +176,17 @@
                 </span>
               </div>
 
+              <button
+                v-if="shouldShowQuickDeleteButton(image)"
+                type="button"
+                class="media-quick-delete-button"
+                :class="{ 'is-disabled': deletingImageId === image.id }"
+                :disabled="deletingImageId === image.id"
+                @click.stop="handleDeleteImage(image.id)"
+              >
+                删
+              </button>
+
               <div v-if="shouldShowWeightPanel(image)" class="media-weight-panel" @click.stop>
                 <button
                   type="button"
@@ -258,6 +269,17 @@
                     {{ formatDuration(image.duration) }}
                   </span>
                 </div>
+
+                <button
+                  v-if="shouldShowQuickDeleteButton(image)"
+                  type="button"
+                  class="media-quick-delete-button"
+                  :class="{ 'is-disabled': deletingImageId === image.id }"
+                  :disabled="deletingImageId === image.id"
+                  @click.stop="handleDeleteImage(image.id)"
+                >
+                  删
+                </button>
 
                 <div v-if="shouldShowWeightPanel(image)" class="media-weight-panel" @click.stop>
                   <button
@@ -476,6 +498,7 @@ const props = withDefaults(
     deleteTip?: string;
     itemLabel?: string;
     itemCountLabel?: string;
+    showQuickDeleteForNonPositiveWeight?: boolean;
   }>(),
   {
     sourceLabel: '',
@@ -501,6 +524,7 @@ const props = withDefaults(
     deleteTip: '',
     itemLabel: '图片',
     itemCountLabel: '张图片',
+    showQuickDeleteForNonPositiveWeight: false,
   }
 );
 
@@ -612,6 +636,10 @@ const getImageWeight = (image: GalleryImage) =>
   typeof image.weight === 'number' && Number.isFinite(image.weight) ? Math.trunc(image.weight) : 0;
 const shouldShowWeightPanel = (image: GalleryImage) =>
   typeof image.weight === 'number' || Boolean(props.updateImageWeight);
+const shouldShowQuickDeleteButton = (image: GalleryImage) =>
+  Boolean(props.deleteImage)
+  && Boolean(props.showQuickDeleteForNonPositiveWeight)
+  && getImageWeight(image) <= 0;
 const isWeightUpdating = (imageId: string) => Boolean(updatingWeightById.value[imageId]);
 const getMediaFormatLabel = (image: GalleryImage) => {
   const source = image.name || image.relativePath || '';
@@ -1110,12 +1138,13 @@ const handleDeleteImage = async (imageId: string) => {
     null;
 
   deletingImageId.value = imageId;
+  preserveNextMasonryReset = viewMode.value === 'masonry';
   try {
     const deleted = await props.deleteImage(imageId);
     if (!deleted) {
+      preserveNextMasonryReset = false;
       return;
     }
-    preserveNextMasonryReset = true;
     if (previewImageId.value === imageId) {
       if (nextImageId) {
         await handleOpenPreview(nextImageId);
@@ -1710,6 +1739,39 @@ onBeforeUnmount(() => {
   background: rgba(15, 23, 42, 0.82);
   color: #f8fafc;
   backdrop-filter: blur(8px);
+}
+
+.media-quick-delete-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 1;
+  min-width: 30px;
+  height: 24px;
+  border: none;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(185, 28, 28, 0.9);
+  color: #fff7ed;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(127, 29, 29, 0.28);
+  transition:
+    background-color 0.2s ease,
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.media-quick-delete-button:hover:not(.is-disabled) {
+  background: rgba(153, 27, 27, 0.96);
+  transform: translateY(-1px);
+}
+
+.media-quick-delete-button.is-disabled {
+  opacity: 0.55;
+  cursor: wait;
 }
 
 .media-weight-value {

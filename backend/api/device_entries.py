@@ -16,6 +16,7 @@ from sqlmodel import Session, select
 from backend.api.filesystem import (
     DEFAULT_MEDIA_SCAN_LIMIT,
     DeleteEntryRequest,
+    DirectoryListRequest,
     DeviceFileScanRequest,
     DeviceFileSyncItemRequest,
     DeviceFileSyncRequest,
@@ -40,6 +41,8 @@ from backend.api.git_tools import (
     GitToolCommitRequest,
     GitToolContextRequest,
     GitToolContextResponse,
+    GitToolGenerateAndCommitRequest,
+    GitToolGenerateAndCommitResponse,
     GitToolGenerateMessageRequest,
     GitToolGenerateMessageResponse,
     GitToolInspectRequest,
@@ -142,7 +145,7 @@ def _proxy_response(resp: requests.Response, *, stream_response: bool = False) -
 
 
 def _filesystem_payload(
-    req: RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest
+    req: DirectoryListRequest | RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest
 ) -> Dict[str, Any]:
     payload = req.model_dump(exclude_none=True)
     if not payload.get("absolute_path"):
@@ -893,6 +896,7 @@ def generate_git_message_for_entry(
             model=req.model,
             style=req.style,
             include_body=req.include_body,
+            force_split_reason=str(context_payload.get("split_reason") or "").strip() or None,
             extra_providers=extra_providers,
         )
     except GitToolError as exc:
@@ -949,6 +953,98 @@ def commit_git_for_entry(
     return GitToolCommitResponse.model_validate(payload)
 
 
+@router.post("/{entry_id}/git/generate-and-commit", response_model=GitToolGenerateAndCommitResponse)
+def generate_and_commit_git_for_entry(
+    entry_id: str,
+    req: GitToolGenerateAndCommitRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        if entry.mode == "local":
+            context_payload = collect_git_commit_context(req.cwd, max_files=req.max_files)
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/context",
+                json_body=GitToolContextRequest(
+                    cwd=req.cwd,
+                    max_files=req.max_files,
+                ).model_dump(),
+                timeout=30,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            context_payload = GitToolContextResponse.model_validate(payload).model_dump()
+
+        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+            session=session,
+            current_user=current_user,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+        )
+        draft = generate_ai_git_commit_draft(
+            context_text=str(context_payload["prompt_context"]),
+            provider_id=provider_id,
+            base_url=base_url,
+            api_key=api_key,
+            model=req.model,
+            style=req.style,
+            include_body=req.include_body,
+            force_split_reason=str(context_payload.get("split_reason") or "").strip() or None,
+            extra_providers=extra_providers,
+        )
+
+        if entry.mode == "local":
+            commit_payload = create_git_commit(
+                req.cwd,
+                subject=str(draft["subject"]),
+                body=[str(item) for item in draft["body"]],
+                add_all=req.add_all,
+            )
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/commit",
+                json_body=GitToolCommitRequest(
+                    cwd=req.cwd,
+                    subject=str(draft["subject"]),
+                    body=[str(item) for item in draft["body"]],
+                    add_all=req.add_all,
+                ).model_dump(),
+                timeout=30,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            commit_payload = GitToolCommitResponse.model_validate(payload).model_dump()
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AiGitCommitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    inspect_payload = GitToolInspectResponse.model_validate(
+        {
+            key: value
+            for key, value in context_payload.items()
+            if key in GitToolInspectResponse.model_fields
+        }
+    )
+    return GitToolGenerateAndCommitResponse(
+        inspect=inspect_payload,
+        commit=GitToolCommitResponse.model_validate(commit_payload),
+        **draft,
+    )
+
+
 @router.get("/{entry_id}/files/roots")
 def get_filesystem_roots_for_entry(
     entry_id: str,
@@ -964,13 +1060,19 @@ def get_filesystem_roots_for_entry(
 @router.post("/{entry_id}/files/list_dir")
 def list_directory_for_entry(
     entry_id: str,
-    req: RootScopedRequest,
+    req: DirectoryListRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
-        return list_directory_items(req.root, req.path, absolute_path=req.absolute_path)
+        return list_directory_items(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            sort_program=req.sort_program,
+            session=session,
+        )
     return _proxy_request(entry, "POST", "/fs/scoped/list_dir", json_body=_filesystem_payload(req))
 
 
