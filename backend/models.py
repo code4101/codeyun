@@ -116,6 +116,112 @@ class AppSetting(SQLModel, table=True):
     value: dict = Field(default_factory=dict, sa_column=Column(JSON))
     updated_at: float = Field(default_factory=time.time)
 
+
+class DocumentAsset(SQLModel, table=True):
+    __tablename__ = "documentasset"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    title: str = Field(default="")
+    original_filename: str = Field(index=True)
+    media_type: str = Field(default="text/plain", index=True)
+    file_ext: str = Field(default="", index=True)
+    size_bytes: int = Field(default=0)
+    sha256: str = Field(index=True)
+    source_char_count: int = Field(default=0)
+    status: str = Field(default="uploaded", index=True)
+    latest_run_id: Optional[str] = Field(default=None, index=True)
+    latest_summary: str = Field(default="")
+    latest_query_at: Optional[float] = Field(default=None, index=True)
+    run_count: int = Field(default=0)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class DocumentReductionRun(SQLModel, table=True):
+    __tablename__ = "documentreductionrun"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    document_id: str = Field(index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    provider: str = Field(default="", index=True)
+    model: str = Field(default="", index=True)
+    task_type: str = Field(default="document_index", index=True)
+    status: str = Field(default="pending", index=True)
+    branch_factor: int = Field(default=8)
+    source_unit_count: int = Field(default=0)
+    source_unit_truncated_count: int = Field(default=0)
+    estimated_level_count: int = Field(default=0)
+    current_level_index: int = Field(default=0)
+    current_level_chunk_count: int = Field(default=0)
+    current_level_completed_chunk_count: int = Field(default=0)
+    completed_chunk_count: int = Field(default=0)
+    level_count: int = Field(default=0)
+    node_count: int = Field(default=0)
+    top_summary: str = Field(default="")
+    error_message: Optional[str] = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class DocumentQueryHistory(SQLModel, table=True):
+    __tablename__ = "documentqueryhistory"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    document_id: str = Field(index=True)
+    run_id: Optional[str] = Field(default=None, index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    provider: str = Field(default="", index=True)
+    model: str = Field(default="", index=True)
+    query_text: str = Field(default="")
+    answer_text: str = Field(default="")
+    status: str = Field(default="completed", index=True)
+    matched_node_count: int = Field(default=0)
+    matched_source_count: int = Field(default=0)
+    error_message: Optional[str] = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class GitReductionRun(SQLModel, table=True):
+    __tablename__ = "gitreductionrun"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    entry_id: str = Field(index=True)
+    cwd: str = Field(default="", index=True)
+    provider: str = Field(default="", index=True)
+    model: str = Field(default="", index=True)
+    style: str = Field(default="summary")
+    include_body: bool = Field(default=True)
+    branch_factor: int = Field(default=10)
+    auto_commit: bool = Field(default=False, index=True)
+    add_all: bool = Field(default=True)
+    status: str = Field(default="pending", index=True)
+    repo_root: str = Field(default="")
+    branch: str = Field(default="")
+    source_unit_count: int = Field(default=0)
+    source_unit_truncated_count: int = Field(default=0)
+    estimated_level_count: int = Field(default=0)
+    current_level_index: int = Field(default=0)
+    current_level_chunk_count: int = Field(default=0)
+    current_level_completed_chunk_count: int = Field(default=0)
+    completed_chunk_count: int = Field(default=0)
+    level_count: int = Field(default=0)
+    node_count: int = Field(default=0)
+    error_message: Optional[str] = Field(default=None)
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    commit_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
 # --- Note Models ---
 
 class NoteNode(SQLModel, table=True):

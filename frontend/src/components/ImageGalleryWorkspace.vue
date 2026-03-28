@@ -1936,10 +1936,19 @@ onBeforeUnmount(() => {
 .preview-dialog :deep(.el-dialog) {
   max-width: 1240px;
   border-radius: 24px;
+  max-height: 96vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .preview-dialog :deep(.el-dialog__body) {
   padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  height: calc(96vh - 118px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 .preview-header {
@@ -1969,9 +1978,11 @@ onBeforeUnmount(() => {
 
 .preview-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-rows: minmax(0, 1fr) auto;
   gap: 18px;
-  min-height: 68vh;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .preview-stage {
@@ -1982,12 +1993,13 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: center;
   padding: 16px;
+  overflow: hidden;
 }
 
 .preview-stage img,
 .preview-video {
   max-width: 100%;
-  max-height: calc(88vh - 180px);
+  max-height: 100%;
   object-fit: contain;
 }
 
@@ -2000,6 +2012,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  max-height: min(22vh, 240px);
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .meta-card {
@@ -2067,8 +2082,8 @@ onBeforeUnmount(() => {
     max-height: 280px;
   }
 
-  .preview-layout {
-    grid-template-columns: 1fr;
+  .preview-dialog :deep(.el-dialog__body) {
+    height: calc(96vh - 132px);
   }
 }
 
@@ -2123,6 +2138,14 @@ onBeforeUnmount(() => {
 
   .meta-value {
     text-align: left;
+  }
+
+  .preview-sidebar {
+    max-height: min(28vh, 320px);
+  }
+
+  .preview-dialog :deep(.el-dialog__body) {
+    height: calc(96vh - 148px);
   }
 }
 </style>

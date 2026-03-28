@@ -116,6 +116,7 @@ const handleLogin = () => {
             </template>
             <el-menu-item index="/tools/ai-config">配置</el-menu-item>
             <el-menu-item index="/tools/ai-chat">AI聊天</el-menu-item>
+            <el-menu-item index="/tools/ai-reduction">AI归纳</el-menu-item>
             <el-menu-item index="/tools/ai-git-commit">AI提交</el-menu-item>
           </el-sub-menu>
           
