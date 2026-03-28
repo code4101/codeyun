@@ -4,7 +4,7 @@
       <div class="hero-copy">
         <div class="eyebrow">AI工具 / AI提交</div>
         <h1>AI提交</h1>
-        <p>切换项目后会自动同步 Git 变更；主操作区只保留 AI 生成和一键提交，减少干扰。</p>
+        <p>切换项目后会自动同步 Git 变更；普通改动直接生成草稿，超大改动会先进入分层拆分。</p>
       </div>
     </section>
 
@@ -168,31 +168,56 @@
 
             <div class="provider-hint">
               <span>当前来源：</span>
-              <strong>{{ currentProvider?.label || '未选择' }}</strong>
+              <strong>{{ currentProviderLabel }}</strong>
               <span v-if="form.model"> / {{ form.model }}</span>
             </div>
           </el-form>
 
           <div class="action-row">
-            <el-button
-              type="primary"
-              :icon="MagicStick"
-              :loading="generating"
-              :disabled="!canGenerate || isRunningPrimaryAction"
-              @click="generateDraft"
-            >
-              AI生成
-            </el-button>
-            <el-button
-              type="success"
-              :icon="Check"
-              :loading="generatingAndCommitting"
-              :disabled="!canGenerate || isRunningPrimaryAction"
-              @click="generateAndCommit"
-            >
-              生成并提交
-            </el-button>
+            <template v-if="requiresReduction">
+              <el-button
+                type="primary"
+                :icon="MagicStick"
+                :loading="reducing"
+                :disabled="!canGenerate || isRunningPrimaryAction"
+                @click="startReduction"
+              >
+                {{ reductionMeta ? '重新拆分' : '开始拆分' }}
+              </el-button>
+              <el-button
+                type="success"
+                :icon="Check"
+                :loading="generatingAndCommitting"
+                :disabled="!canGenerate || isRunningPrimaryAction"
+                @click="generateAndCommit"
+              >
+                生成并提交
+              </el-button>
+            </template>
+            <template v-else>
+              <el-button
+                type="primary"
+                :icon="MagicStick"
+                :loading="generating"
+                :disabled="!canGenerate || isRunningPrimaryAction"
+                @click="generateDraft"
+              >
+                AI生成
+              </el-button>
+              <el-button
+                type="success"
+                :icon="Check"
+                :loading="generatingAndCommitting"
+                :disabled="!canGenerate || isRunningPrimaryAction"
+                @click="generateAndCommit"
+              >
+                生成并提交
+              </el-button>
+            </template>
           </div>
+          <p v-if="requiresReduction" class="action-caption">
+            当前改动超出单轮 AI 总结范围。可以先开始拆分查看草稿，也可以直接一键完成“拆分归纳 + 提交”。
+          </p>
         </section>
 
         <section v-if="devices.length === 0" class="panel-card empty-card">
@@ -239,7 +264,7 @@
           </div>
 
           <div v-if="!inspectResult" class="placeholder-card">
-            <p>先选择或切换项目，页面会自动读取当前仓库变更；之后可以直接 AI生成 或 生成并提交。</p>
+            <p>先选择或切换项目，页面会自动读取当前仓库变更；普通改动可直接生成，超大改动会先进入拆分。</p>
           </div>
 
           <template v-else>
@@ -333,8 +358,43 @@
             </el-tag>
           </div>
 
+          <div v-if="activeReductionRun" class="reduction-progress-card">
+            <div class="reduction-progress-head">
+              <strong>
+                {{
+                  activeReductionRun.status === 'running'
+                    ? (activeReductionRun.auto_commit ? '拆分并提交中' : '分层拆分中')
+                    : (activeReductionRun.status === 'failed' ? '分层拆分失败' : (activeReductionRun.auto_commit ? '拆分并提交完成' : '分层拆分完成'))
+                }}
+              </strong>
+              <span>已切分 {{ activeReductionRun.completed_chunk_count }} 次会话</span>
+            </div>
+            <el-progress :percentage="reductionRunLevelProgressPercent" :stroke-width="8" :show-text="false" />
+            <div class="reduction-progress-grid">
+              <div class="reduction-progress-item">
+                <span>原始单元</span>
+                <strong>{{ activeReductionRun.source_unit_count }}</strong>
+              </div>
+              <div class="reduction-progress-item">
+                <span>估算层数</span>
+                <strong>{{ activeReductionRun.estimated_level_count || '-' }}</strong>
+              </div>
+              <div class="reduction-progress-item">
+                <span>当前层</span>
+                <strong>{{ activeReductionRun.current_level_chunk_count > 0 ? activeReductionRun.current_level_index + 1 : '-' }}</strong>
+              </div>
+              <div class="reduction-progress-item">
+                <span>本层进度</span>
+                <strong>{{ activeReductionRun.current_level_completed_chunk_count }} / {{ activeReductionRun.current_level_chunk_count || '-' }}</strong>
+              </div>
+            </div>
+            <p v-if="activeReductionRun.error_message" class="run-error-text">
+              {{ activeReductionRun.error_message }}
+            </p>
+          </div>
+
           <div v-if="!draftSubject.trim() && !draftBodyText.trim()" class="placeholder-card">
-            <p>AI 生成后，这里会展示可编辑的提交标题和正文。</p>
+            <p>{{ requiresReduction ? '这批改动超出单轮 AI 总结范围，但仍支持一键“生成并提交”；开始拆分则用于先看草稿。' : 'AI 生成后，这里会展示可编辑的提交标题和正文。' }}</p>
           </div>
 
           <template v-else>
@@ -345,6 +405,52 @@
               :closable="false"
               show-icon
             />
+
+            <div v-if="reductionMeta" class="reduction-meta-card">
+              <div class="inspect-title reduction-meta-title">分层拆分</div>
+              <p v-if="reductionSummary" class="reduction-summary">{{ reductionSummary }}</p>
+              <div class="reduction-meta-grid">
+                <div class="reduction-meta-item">
+                  <span>层级</span>
+                  <strong>{{ reductionMeta.level_count }}</strong>
+                </div>
+                <div class="reduction-meta-item">
+                  <span>原始单元</span>
+                  <strong>{{ reductionMeta.source_unit_count }}</strong>
+                </div>
+                <div class="reduction-meta-item">
+                  <span>叶子分组</span>
+                  <strong>{{ reductionMeta.leaf_chunk_count }}</strong>
+                </div>
+                <div class="reduction-meta-item">
+                  <span>摘要节点</span>
+                  <strong>{{ reductionMeta.node_count }}</strong>
+                </div>
+              </div>
+              <div v-if="reductionLevelItems.length" class="reduction-level-list">
+                <div
+                  v-for="item in reductionLevelItems"
+                  :key="item.key"
+                  class="reduction-level-item"
+                >
+                  <div class="reduction-level-main">
+                    <strong>{{ item.label }}</strong>
+                    <span>{{ item.value }}</span>
+                  </div>
+                  <div v-if="item.previewNodes.length" class="reduction-preview-list">
+                    <div
+                      v-for="preview in item.previewNodes"
+                      :key="preview.node_id"
+                      class="reduction-preview-item"
+                    >
+                      <strong>{{ preview.candidate_subject || preview.topic || '未命名摘要' }}</strong>
+                      <p v-if="preview.summary">{{ preview.summary }}</p>
+                      <span>{{ preview.source_ref_count }} 个来源单元</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <el-form label-position="top" class="draft-form">
               <el-form-item label="提交标题">
@@ -438,7 +544,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Check, MagicStick, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -455,13 +561,18 @@ import {
 } from '@/api/aiGitRepos'
 import {
   commitDeviceEntryGit,
+  fetchDeviceEntryGitReductionRun,
   generateAndCommitDeviceEntryGit,
   generateDeviceEntryGitMessage,
   inspectDeviceEntryGit,
+  startDeviceEntryGitReductionRun,
   type GitChangedFile,
   type GitCommitResponse,
   type GitCommitStyle,
   type GitInspectResponse,
+  type GitReductionRunRead,
+  type GitReduceResponse,
+  type GitReductionMeta,
 } from '@/api/aiGitCommit'
 import { taskStore, type Device } from '@/store/taskStore'
 import { useAiProviderStore } from '@/store/aiProviderStore'
@@ -533,13 +644,19 @@ const inspecting = ref(false)
 const generating = ref(false)
 const committing = ref(false)
 const generatingAndCommitting = ref(false)
+const reducing = ref(false)
 const inspectResult = ref<GitInspectResponse | null>(null)
 const lastCommit = ref<GitCommitResponse | null>(null)
+const reductionRun = ref<GitReductionRunRead | null>(null)
 const draftSubject = ref('')
 const draftBodyText = ref('')
 const draftNeedsSplit = ref(false)
 const draftReason = ref('')
 const draftModelLabel = ref('')
+const reductionMeta = ref<GitReductionMeta | null>(null)
+const reductionSummary = ref('')
+const reductionKeyPoints = ref<string[]>([])
+const reductionRiskPoints = ref<string[]>([])
 const savedRepos = ref<AiGitSavedRepo[]>([])
 const repoStatusMap = ref<Record<string, AiGitRepoStatusItem>>({})
 const savingSavedRepos = ref(false)
@@ -547,6 +664,8 @@ const repoStatusesLoading = ref(false)
 const selectedSavedRepoId = ref('')
 const addRepoDialogVisible = ref(false)
 const savedRepoListRef = ref<HTMLElement | null>(null)
+let reductionRunPollTimer: ReturnType<typeof setInterval> | null = null
+let reductionRunPollInFlight = false
 const addRepoForm = reactive<AddRepoFormState>({
   name: '',
   entryId: '',
@@ -558,6 +677,7 @@ const providers = computed(() => aiProviderStore.providers)
 const selectedDevice = computed(() => devices.value.find(device => device.id === form.entryId) ?? null)
 const selectedSavedRepo = computed(() => savedRepos.value.find(repo => repo.id === selectedSavedRepoId.value) ?? null)
 const currentProvider = computed(() => aiProviderStore.getProviderById(form.providerId))
+const currentProviderLabel = computed(() => currentProvider.value?.label || form.providerId.trim() || '未选择')
 const availableModels = computed(() => {
   const items = aiProviderStore.getEffectiveModels(form.providerId)
   if (form.model.trim() && !items.includes(form.model.trim())) {
@@ -565,6 +685,8 @@ const availableModels = computed(() => {
   }
   return items
 })
+const activeReductionRun = computed(() => reductionRun.value)
+const reductionRunInProgress = computed(() => activeReductionRun.value?.status === 'running')
 const displayedSavedRepos = computed(() =>
   [...savedRepos.value].sort((left, right) => {
     if (left.order_index !== right.order_index) {
@@ -576,8 +698,9 @@ const displayedSavedRepos = computed(() =>
 
 const canInspect = computed(() => Boolean(form.entryId && form.cwd.trim()))
 const canGenerate = computed(() => Boolean(form.entryId && form.cwd.trim() && form.providerId && form.model.trim()))
+const requiresReduction = computed(() => Boolean(inspectResult.value?.oversized))
 const isRunningPrimaryAction = computed(() =>
-  inspecting.value || generating.value || committing.value || generatingAndCommitting.value,
+  inspecting.value || generating.value || committing.value || generatingAndCommitting.value || reducing.value || reductionRunInProgress.value,
 )
 const normalizedBodyLines = computed(() =>
   draftBodyText.value
@@ -618,6 +741,21 @@ const inspectDiffText = computed(() => {
     '[已暂存]',
     inspectResult.value.staged_diff_stat || '(空)',
   ].join('\n')
+})
+const reductionLevelItems = computed(() =>
+  (reductionMeta.value?.levels || []).map(level => ({
+    key: `${level.level}-${level.input_kind}`,
+    label: level.input_kind === 'source' ? `第 ${level.level + 1} 层 · 原始单元` : `第 ${level.level + 1} 层 · 摘要归并`,
+    value: `${level.chunk_count} 组 -> ${level.node_count} 个摘要`,
+    previewNodes: level.preview_nodes || [],
+  })),
+)
+const reductionRunLevelProgressPercent = computed(() => {
+  const run = activeReductionRun.value
+  if (!run || run.current_level_chunk_count <= 0) {
+    return 0
+  }
+  return Math.min(100, Math.round((run.current_level_completed_chunk_count / run.current_level_chunk_count) * 100))
 })
 
 watch(
@@ -696,6 +834,10 @@ onMounted(async () => {
   }
 })
 
+onBeforeUnmount(() => {
+  stopReductionRunPolling()
+})
+
 function getDeviceLabel(device: Device) {
   const modeLabel = device.mode === 'local' ? '本地' : '远程'
   return `${device.name || device.device_id} · ${modeLabel}`
@@ -749,11 +891,67 @@ function clearDraftState() {
   draftNeedsSplit.value = false
   draftReason.value = ''
   draftModelLabel.value = ''
+  reductionMeta.value = null
+  reductionSummary.value = ''
+  reductionKeyPoints.value = []
+  reductionRiskPoints.value = []
 }
 
 function resetWorkspaceResult() {
+  stopReductionRunPolling()
+  reductionRun.value = null
   inspectResult.value = null
   clearDraftState()
+}
+
+function stopReductionRunPolling() {
+  if (reductionRunPollTimer !== null) {
+    clearInterval(reductionRunPollTimer)
+    reductionRunPollTimer = null
+  }
+}
+
+async function refreshReductionRunSilently(entryId: string, runId: string) {
+  if (reductionRunPollInFlight) {
+    return
+  }
+  reductionRunPollInFlight = true
+  try {
+    const nextRun = await fetchDeviceEntryGitReductionRun(entryId, runId)
+    reductionRun.value = nextRun
+    if (nextRun.status === 'completed') {
+      stopReductionRunPolling()
+      if (nextRun.result) {
+        applyDraftResponse(nextRun.result)
+      }
+      if (nextRun.commit) {
+        lastCommit.value = nextRun.commit
+        ElMessage.success(`已拆分归纳并提交：${nextRun.commit.short_hash}`)
+        await loadInspectResult({ silentClean: true })
+        if (selectedSavedRepoId.value) {
+          await markSavedRepoAsUsed(selectedSavedRepoId.value)
+        }
+      } else {
+        ElMessage.success(`已完成分层拆分，共 ${nextRun.level_count || nextRun.estimated_level_count || '-'} 层`)
+      }
+    } else if (nextRun.status === 'failed') {
+      stopReductionRunPolling()
+      ElMessage.error(nextRun.error_message || '分层拆分失败')
+    }
+  } catch (error: any) {
+    stopReductionRunPolling()
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    reductionRunPollInFlight = false
+  }
+}
+
+function startReductionRunPolling(entryId: string, runId: string) {
+  stopReductionRunPolling()
+  void refreshReductionRunSilently(entryId, runId)
+  reductionRunPollTimer = window.setInterval(() => {
+    void refreshReductionRunSilently(entryId, runId)
+  }, 1500)
 }
 
 function buildSavedRepoStatusFromInspect(repo: AiGitSavedRepo, inspect: GitInspectResponse): AiGitRepoStatusItem {
@@ -1104,6 +1302,10 @@ async function generateDraft() {
       ElMessage.success('当前工作区是干净的')
       return
     }
+    if (latestInspect.oversized) {
+      ElMessage.warning('当前改动超出单轮 AI 总结范围，请先开始拆分')
+      return
+    }
 
     const aiPayload = buildAiConnectionPayload()
     const response = await generateDeviceEntryGitMessage(form.entryId, {
@@ -1116,13 +1318,7 @@ async function generateDraft() {
       include_body: form.includeBody,
       max_files: 8,
     })
-    inspectResult.value = response.inspect
-    applyInspectToSavedRepo(response.inspect)
-    draftSubject.value = response.subject
-    draftBodyText.value = response.body.join('\n')
-    draftNeedsSplit.value = response.needs_split
-    draftReason.value = response.reason
-    draftModelLabel.value = response.model
+    applyDraftResponse(response)
     if (response.needs_split) {
       ElMessage.warning(response.reason || 'AI 认为这批改动更适合拆分提交')
     } else {
@@ -1152,7 +1348,100 @@ async function generateAndCommit() {
     }
 
     const aiPayload = buildAiConnectionPayload()
-    const response = await generateAndCommitDeviceEntryGit(form.entryId, {
+    if (latestInspect.oversized) {
+      const run = await startDeviceEntryGitReductionRun(form.entryId, {
+        cwd: form.cwd.trim(),
+        provider: aiPayload.provider,
+        base_url: aiPayload.base_url,
+        api_key: aiPayload.api_key,
+        model: form.model.trim(),
+        style: form.style,
+        include_body: form.includeBody,
+        branch_factor: 10,
+        auto_commit: true,
+        add_all: form.addAll,
+      })
+      reductionRun.value = run
+      startReductionRunPolling(form.entryId, run.id)
+      ElMessage.success('已开始拆分归纳并提交')
+    } else {
+      const response = await generateAndCommitDeviceEntryGit(form.entryId, {
+        cwd: form.cwd.trim(),
+        provider: aiPayload.provider,
+        base_url: aiPayload.base_url,
+        api_key: aiPayload.api_key,
+        model: form.model.trim(),
+        style: form.style,
+        include_body: form.includeBody,
+        max_files: 8,
+        add_all: form.addAll,
+      })
+      applyDraftResponse(response)
+      lastCommit.value = response.commit
+      ElMessage.success(`已生成并提交：${response.commit.short_hash}`)
+      await loadInspectResult({ silentClean: true })
+      if (selectedSavedRepoId.value) {
+        await markSavedRepoAsUsed(selectedSavedRepoId.value)
+      }
+    }
+  } catch (error: any) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    generatingAndCommitting.value = false
+  }
+}
+
+function applyDraftResponse(response: {
+  inspect: GitInspectResponse
+  subject: string
+  body: string[]
+  needs_split: boolean
+  reason: string
+  model: string
+}) {
+  inspectResult.value = response.inspect
+  applyInspectToSavedRepo(response.inspect)
+  draftSubject.value = response.subject
+  draftBodyText.value = response.body.join('\n')
+  draftNeedsSplit.value = response.needs_split
+  draftReason.value = response.reason
+  draftModelLabel.value = response.model
+  if (!('reduction' in response)) {
+    reductionMeta.value = null
+    reductionSummary.value = ''
+    reductionKeyPoints.value = []
+    reductionRiskPoints.value = []
+    return
+  }
+  const reductionResponse = response as GitReduceResponse
+  reductionMeta.value = reductionResponse.reduction
+  reductionSummary.value = reductionResponse.summary || reductionResponse.topic || ''
+  reductionKeyPoints.value = reductionResponse.key_points || []
+  reductionRiskPoints.value = reductionResponse.risk_points || []
+}
+
+async function startReduction() {
+  if (!canGenerate.value) {
+    ElMessage.warning('请先补全设备、项目目录、AI 来源和模型')
+    return
+  }
+
+  reducing.value = true
+  draftNeedsSplit.value = false
+  draftReason.value = ''
+  try {
+    const latestInspect = await loadInspectResult({ silentClean: true })
+    if (latestInspect.clean) {
+      ElMessage.success('当前工作区是干净的')
+      return
+    }
+    if (!latestInspect.oversized) {
+      ElMessage.info('当前改动已经回到普通规模，可以直接使用 AI生成')
+      return
+    }
+
+    const aiPayload = buildAiConnectionPayload()
+    const run = await startDeviceEntryGitReductionRun(form.entryId, {
       cwd: form.cwd.trim(),
       provider: aiPayload.provider,
       base_url: aiPayload.base_url,
@@ -1160,26 +1449,17 @@ async function generateAndCommit() {
       model: form.model.trim(),
       style: form.style,
       include_body: form.includeBody,
-      max_files: 8,
+      branch_factor: 10,
+      auto_commit: false,
       add_all: form.addAll,
     })
-    inspectResult.value = response.inspect
-    applyInspectToSavedRepo(response.inspect)
-    draftSubject.value = response.subject
-    draftBodyText.value = response.body.join('\n')
-    draftNeedsSplit.value = response.needs_split
-    draftReason.value = response.reason
-    draftModelLabel.value = response.model
-    lastCommit.value = response.commit
-    ElMessage.success(`已生成并提交：${response.commit.short_hash}`)
-    await loadInspectResult({ silentClean: true })
-    if (selectedSavedRepoId.value) {
-      await markSavedRepoAsUsed(selectedSavedRepoId.value)
-    }
+    reductionRun.value = run
+    startReductionRunPolling(form.entryId, run.id)
+    ElMessage.success('已开始分层拆分')
   } catch (error: any) {
     ElMessage.error(getErrorMessage(error))
   } finally {
-    generatingAndCommitting.value = false
+    reducing.value = false
   }
 }
 
@@ -1377,6 +1657,13 @@ function getErrorMessage(error: any) {
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 18px;
+}
+
+.action-caption {
+  margin: 10px 2px 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .empty-card,
@@ -1655,6 +1942,165 @@ function getErrorMessage(error: any) {
   margin-top: 16px;
 }
 
+.reduction-progress-card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.reduction-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.reduction-progress-head strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.reduction-progress-head span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.reduction-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.reduction-progress-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.reduction-progress-item span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.reduction-progress-item strong {
+  color: #0f172a;
+}
+
+.reduction-meta-card {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.reduction-meta-title {
+  margin-top: 0;
+}
+
+.reduction-summary {
+  margin: 0 0 12px;
+  color: #334155;
+  line-height: 1.7;
+}
+
+.reduction-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.reduction-meta-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.reduction-meta-item span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.reduction-meta-item strong {
+  color: #0f172a;
+}
+
+.reduction-level-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.reduction-level-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #334155;
+}
+
+.reduction-level-main {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reduction-level-item strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.reduction-level-main span {
+  color: #64748b;
+  font-size: 12px;
+  text-align: right;
+}
+
+.reduction-preview-list {
+  display: grid;
+  gap: 8px;
+}
+
+.reduction-preview-item {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.reduction-preview-item strong {
+  font-size: 12px;
+}
+
+.reduction-preview-item p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.reduction-preview-item span {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.run-error-text {
+  margin: 12px 0 0;
+  color: #dc2626;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .preview-block {
   margin-top: 10px;
 }
@@ -1671,7 +2117,9 @@ function getErrorMessage(error: any) {
   }
 
   .repo-meta-grid,
-  .inspect-grid {
+  .inspect-grid,
+  .reduction-meta-grid,
+  .reduction-progress-grid {
     grid-template-columns: 1fr;
   }
 }

@@ -66,6 +66,109 @@ export interface GitGenerateAndCommitRequest extends GitGenerateMessageRequest {
   add_all?: boolean
 }
 
+export interface GitReductionLevel {
+  level: number
+  input_kind: 'source' | 'summary'
+  chunk_count: number
+  node_count: number
+  preview_nodes: {
+    node_id: string
+    topic: string
+    summary: string
+    candidate_subject: string
+    source_ref_count: number
+  }[]
+}
+
+export interface GitReductionMeta {
+  run_id: string
+  profile_id: string
+  level_count: number
+  source_unit_count: number
+  source_unit_truncated_count: number
+  node_count: number
+  leaf_chunk_count: number
+  levels: GitReductionLevel[]
+}
+
+export interface GitReduceRequest extends GitInspectRequest {
+  provider?: string | null
+  base_url?: string | null
+  api_key?: string | null
+  model?: string | null
+  style?: GitCommitStyle
+  include_body?: boolean
+  branch_factor?: number
+}
+
+export interface GitReduceAndCommitRequest extends GitReduceRequest {
+  add_all?: boolean
+}
+
+export interface GitReduceResponse {
+  inspect: GitInspectResponse
+  subject: string
+  body: string[]
+  full_message: string
+  needs_split: boolean
+  reason: string
+  model: string
+  raw_content: string
+  topic: string
+  summary: string
+  key_points: string[]
+  risk_points: string[]
+  reduction: GitReductionMeta
+}
+
+export interface GitReduceAndCommitResponse extends GitReduceResponse {
+  commit: GitCommitResponse
+}
+
+export interface GitReductionRunRead {
+  id: string
+  entry_id: string
+  cwd: string
+  provider: string
+  model: string
+  style: GitCommitStyle
+  include_body: boolean
+  branch_factor: number
+  auto_commit: boolean
+  add_all: boolean
+  status: 'running' | 'completed' | 'failed'
+  repo_root: string
+  branch: string
+  source_unit_count: number
+  source_unit_truncated_count: number
+  estimated_level_count: number
+  current_level_index: number
+  current_level_chunk_count: number
+  current_level_completed_chunk_count: number
+  completed_chunk_count: number
+  level_count: number
+  node_count: number
+  error_message?: string | null
+  result?: GitReduceResponse | null
+  commit?: GitCommitResponse | null
+  created_at: number
+  finished_at?: number | null
+  updated_at: number
+}
+
+export interface GitStartReductionRunRequest {
+  cwd: string
+  provider?: string | null
+  base_url?: string | null
+  api_key?: string | null
+  model?: string | null
+  style?: GitCommitStyle
+  include_body?: boolean
+  branch_factor?: number
+  auto_commit?: boolean
+  add_all?: boolean
+}
+
 export interface GitCommitRequest extends GitInspectRequest {
   subject: string
   body: string[]
@@ -114,6 +217,43 @@ export async function generateAndCommitDeviceEntryGit(entryId: string, payload: 
     {
       timeout: AI_GIT_GENERATE_TIMEOUT_MS + AI_GIT_COMMIT_TIMEOUT_MS,
     },
+  )
+  return response.data
+}
+
+export async function reduceDeviceEntryGit(entryId: string, payload: GitReduceRequest) {
+  const response = await api.post<GitReduceResponse>(
+    getDeviceEntryPath(entryId, '/git/reduce'),
+    payload,
+    {
+      timeout: AI_GIT_GENERATE_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function reduceAndCommitDeviceEntryGit(entryId: string, payload: GitReduceAndCommitRequest) {
+  const response = await api.post<GitReduceAndCommitResponse>(
+    getDeviceEntryPath(entryId, '/git/reduce-and-commit'),
+    payload,
+    {
+      timeout: AI_GIT_GENERATE_TIMEOUT_MS + AI_GIT_COMMIT_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function startDeviceEntryGitReductionRun(entryId: string, payload: GitStartReductionRunRequest) {
+  const response = await api.post<GitReductionRunRead>(
+    getDeviceEntryPath(entryId, '/git/reduce-runs'),
+    payload,
+  )
+  return response.data
+}
+
+export async function fetchDeviceEntryGitReductionRun(entryId: string, runId: string) {
+  const response = await api.get<GitReductionRunRead>(
+    getDeviceEntryPath(entryId, `/git/reduce-runs/${runId}`),
   )
   return response.data
 }

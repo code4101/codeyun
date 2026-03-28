@@ -419,6 +419,8 @@ def _chat_with_ollama(
     model: str | None,
     system_prompt: str | None,
     temperature: float | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
         model,
@@ -431,13 +433,15 @@ def _chat_with_ollama(
     }
     if temperature is not None:
         payload["options"] = {"temperature": temperature}
+    if response_format is not None:
+        payload["format"] = response_format
     payload.update(extra_payload)
 
     try:
         response = requests.post(
             f"{provider.base_url}/api/chat",
             json=payload,
-            timeout=provider.timeout_seconds,
+            timeout=timeout_seconds or provider.timeout_seconds,
         )
     except requests.RequestException as exc:
         raise OllamaClientError(f"请求 Ollama 失败：{exc}") from exc
@@ -581,6 +585,8 @@ def _chat_with_openai_compatible(
     model: str | None,
     system_prompt: str | None,
     temperature: float | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": (model or provider.default_model).strip() or provider.default_model,
@@ -589,13 +595,24 @@ def _chat_with_openai_compatible(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if response_format is not None:
+        if response_format == "json":
+            payload["response_format"] = {"type": "json_object"}
+        elif isinstance(response_format, dict):
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": response_format,
+                },
+            }
 
     try:
         response = requests.post(
             f"{provider.base_url}/chat/completions",
             json=payload,
             headers=_build_openai_headers(provider),
-            timeout=provider.timeout_seconds,
+            timeout=timeout_seconds or provider.timeout_seconds,
         )
     except requests.RequestException as exc:
         raise OllamaClientError(f"请求 {provider.label} 失败：{exc}") from exc
@@ -737,6 +754,8 @@ def chat_with_provider(
     model: str | None = None,
     system_prompt: str | None = None,
     temperature: float | None = None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> dict[str, Any]:
     provider = get_ai_provider(
@@ -757,6 +776,8 @@ def chat_with_provider(
             model=model,
             system_prompt=system_prompt,
             temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
         )
 
     if provider.kind == "openai_compatible":
@@ -766,6 +787,8 @@ def chat_with_provider(
             model=model,
             system_prompt=system_prompt,
             temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
         )
 
     raise OllamaClientError(f"未实现的 AI 来源类型：{provider.kind}")

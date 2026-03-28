@@ -86,6 +86,7 @@ BINARY_LIKE_SUFFIXES = {
 
 MAX_CONTEXT_CHARS = 18_000
 MAX_FILE_SECTION_CHARS = 4_000
+MAX_REDUCTION_UNIT_CHARS = 2_400
 MAX_PREVIEW_BYTES = 8_192
 MAX_PREVIEW_LINES = 120
 SPLIT_RECOMMENDED_FILE_THRESHOLD = 40
@@ -128,7 +129,7 @@ def _run_git(
     check: bool = True,
 ) -> str:
     _ensure_git_available()
-    command = ["git", *args]
+    command = ["git", "-c", "core.quotepath=false", *args]
     try:
         completed = subprocess.run(
             command,
@@ -160,51 +161,79 @@ def _resolve_repo_root(cwd: str) -> tuple[Path, Path]:
     return requested_cwd, repo_root
 
 
-def _parse_changed_files(status_output: str) -> list[dict[str, object]]:
-    changed_files: list[dict[str, object]] = []
-    for raw_line in status_output.splitlines():
-        line = raw_line.rstrip()
-        if not line or len(line) < 3:
+def _read_git_name_status_map(repo_root: Path, args: list[str]) -> dict[str, str]:
+    output = _run_git(repo_root, [*args, "-z"], timeout=20, check=False)
+    if not output:
+        return {}
+
+    tokens = [item for item in output.split("\0") if item]
+    parsed: dict[str, str] = {}
+    index = 0
+    while index < len(tokens):
+        status_token = tokens[index].strip()
+        index += 1
+        if not status_token:
             continue
 
-        status = line[:2]
-        path = line[3:].strip()
+        status_code = status_token[0]
+        if status_code in {"R", "C"}:
+            if index + 1 >= len(tokens):
+                break
+            index += 1  # old path
+            path = tokens[index].strip()
+            index += 1
+        else:
+            if index >= len(tokens):
+                break
+            path = tokens[index].strip()
+            index += 1
+
+        if path:
+            parsed[path] = status_code
+    return parsed
+
+
+def _build_changed_files(
+    *,
+    staged_statuses: dict[str, str],
+    unstaged_statuses: dict[str, str],
+    untracked_paths: set[str],
+) -> list[dict[str, object]]:
+    changed_files: list[dict[str, object]] = []
+    changed_paths = sorted(set(staged_statuses) | set(unstaged_statuses) | set(untracked_paths))
+
+    for path in changed_paths:
+        if path in untracked_paths and path not in staged_statuses and path not in unstaged_statuses:
+            status = "??"
+            staged = False
+            unstaged = False
+            untracked = True
+        else:
+            staged_status = staged_statuses.get(path, " ")
+            unstaged_status = unstaged_statuses.get(path, " ")
+            status = f"{staged_status}{unstaged_status}"
+            staged = path in staged_statuses
+            unstaged = path in unstaged_statuses
+            untracked = False
+
         changed_files.append(
             {
                 "path": path,
                 "status": status,
-                "staged": status[0] not in {" ", "?", "!"},  # type: ignore[dict-item]
-                "unstaged": status[1] not in {" ", "?"},  # type: ignore[dict-item]
-                "untracked": status == "??",  # type: ignore[dict-item]
+                "staged": staged,
+                "unstaged": unstaged,
+                "untracked": untracked,
             }
         )
     return changed_files
 
 
-def _merge_untracked_files(
-    changed_files: list[dict[str, object]],
-    untracked_paths: set[str],
-) -> list[dict[str, object]]:
-    merged = [item for item in changed_files if not bool(item.get("untracked"))]
-    seen_paths = {
-        str(item["path"])
-        for item in merged
-        if isinstance(item.get("path"), str)
-    }
-
-    for path in sorted(untracked_paths):
-        if path in seen_paths:
-            continue
-        merged.append(
-            {
-                "path": path,
-                "status": "??",
-                "staged": False,
-                "unstaged": False,
-                "untracked": True,
-            }
-        )
-    return merged
+def _format_status_lines(changed_files: list[dict[str, object]]) -> list[str]:
+    return [
+        f"{str(item.get('status') or '??')} {str(item.get('path') or '').strip()}".rstrip()
+        for item in changed_files
+        if str(item.get("path") or "").strip()
+    ]
 
 
 def _parse_branch_name(branch_text: str, branch_status: str) -> str:
@@ -227,11 +256,15 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
     branch_status = branch_status_lines[0].strip() if branch_status_lines else ""
 
     branch_text = _run_git(repo_root, ["symbolic-ref", "--short", "HEAD"], check=False)
-    status_output = _run_git(repo_root, ["status", "--short"])
-    status_lines = [line.rstrip() for line in status_output.splitlines() if line.strip()]
-    changed_files = _parse_changed_files(status_output)
-    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard"])
-    changed_files = _merge_untracked_files(changed_files, untracked_paths)
+    staged_statuses = _read_git_name_status_map(repo_root, ["diff", "--cached", "--name-status", "--find-renames", "--no-color"])
+    unstaged_statuses = _read_git_name_status_map(repo_root, ["diff", "--name-status", "--find-renames", "--no-color"])
+    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard", "-z"])
+    changed_files = _build_changed_files(
+        staged_statuses=staged_statuses,
+        unstaged_statuses=unstaged_statuses,
+        untracked_paths=untracked_paths,
+    )
+    status_lines = _format_status_lines(changed_files)
     changed_paths = [
         str(item["path"])
         for item in changed_files
@@ -247,7 +280,7 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
         "repo_root": str(repo_root),
         "branch": _parse_branch_name(branch_text, branch_status),
         "branch_status": branch_status,
-        "clean": not status_lines,
+        "clean": not changed_files,
         "status_lines": status_lines,
         "diff_stat": diff_stat,
         "staged_diff_stat": staged_diff_stat,
@@ -259,6 +292,8 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
 
 def _read_git_path_set(repo_root: Path, args: list[str]) -> set[str]:
     output = _run_git(repo_root, args, timeout=20, check=False)
+    if "\0" in output:
+        return {item.strip() for item in output.split("\0") if item.strip()}
     return {line.strip() for line in output.splitlines() if line.strip()}
 
 
@@ -474,15 +509,107 @@ def _build_untracked_preview(repo_root: Path, path: str) -> tuple[str, bool]:
     return f"[未跟踪文件预览]\n{limited}", truncated or was_truncated
 
 
+def _summarize_file_status(path: str, *, staged_paths: set[str], unstaged_paths: set[str], untracked_paths: set[str]) -> str:
+    if path in untracked_paths:
+        return "未跟踪"
+    if path in staged_paths and path in unstaged_paths:
+        return "已暂存 + 未暂存"
+    if path in staged_paths:
+        return "已暂存"
+    if path in unstaged_paths:
+        return "未暂存"
+    return "未知状态"
+
+
+def _build_reduction_unit_section(
+    repo_root: Path,
+    path: str,
+    *,
+    staged_paths: set[str],
+    unstaged_paths: set[str],
+    untracked_paths: set[str],
+) -> tuple[str, bool]:
+    section_lines = [
+        f"文件路径: {path}",
+        f"所属分组: {_group_changed_path(path)}",
+        f"状态: {_summarize_file_status(path, staged_paths=staged_paths, unstaged_paths=unstaged_paths, untracked_paths=untracked_paths)}",
+    ]
+
+    truncated = False
+    if path in unstaged_paths:
+        diff_section, section_truncated = _build_diff_section(repo_root, path, staged=False)
+        if diff_section:
+            section_lines.append(diff_section)
+            truncated = truncated or section_truncated
+    if path in staged_paths:
+        diff_section, section_truncated = _build_diff_section(repo_root, path, staged=True)
+        if diff_section:
+            section_lines.append(diff_section)
+            truncated = truncated or section_truncated
+    if path in untracked_paths:
+        preview_section, section_truncated = _build_untracked_preview(repo_root, path)
+        section_lines.append(preview_section)
+        truncated = truncated or section_truncated
+
+    limited, was_truncated = _limit_text("\n".join(section_lines).strip(), max_chars=MAX_REDUCTION_UNIT_CHARS)
+    return limited, truncated or was_truncated
+
+
+def collect_git_reduction_source_units(cwd: str) -> dict[str, object]:
+    inspect_payload = inspect_git_repository(cwd)
+    if bool(inspect_payload["clean"]):
+        raise GitToolError("当前工作区没有可提交的变更")
+
+    repo_root = Path(str(inspect_payload["repo_root"]))
+    unstaged_paths = _read_git_path_set(repo_root, ["diff", "--name-only", "-z"])
+    staged_paths = _read_git_path_set(repo_root, ["diff", "--cached", "--name-only", "-z"])
+    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard", "-z"])
+
+    candidate_paths = sorted(unstaged_paths | staged_paths | untracked_paths, key=_score_changed_path)
+    if not candidate_paths:
+        candidate_paths = [str(item["path"]) for item in inspect_payload["changed_files"]]  # type: ignore[index]
+
+    source_units: list[dict[str, object]] = []
+    truncated_count = 0
+    for path in candidate_paths:
+        content, truncated = _build_reduction_unit_section(
+            repo_root,
+            path,
+            staged_paths=staged_paths,
+            unstaged_paths=unstaged_paths,
+            untracked_paths=untracked_paths,
+        )
+        if not content.strip():
+            continue
+        if truncated:
+            truncated_count += 1
+        source_units.append(
+            {
+                "unit_id": path,
+                "path": path,
+                "group": _group_changed_path(path),
+                "content": content,
+                "truncated": truncated,
+            }
+        )
+
+    return {
+        **inspect_payload,
+        "source_units": source_units,
+        "source_unit_count": len(source_units),
+        "source_unit_truncated_count": truncated_count,
+    }
+
+
 def collect_git_commit_context(cwd: str, *, max_files: int = 8) -> dict[str, object]:
     inspect_payload = inspect_git_repository(cwd)
     if bool(inspect_payload["clean"]):
         raise GitToolError("当前工作区没有可提交的变更")
 
     repo_root = Path(str(inspect_payload["repo_root"]))
-    unstaged_paths = _read_git_path_set(repo_root, ["diff", "--name-only"])
-    staged_paths = _read_git_path_set(repo_root, ["diff", "--cached", "--name-only"])
-    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard"])
+    unstaged_paths = _read_git_path_set(repo_root, ["diff", "--name-only", "-z"])
+    staged_paths = _read_git_path_set(repo_root, ["diff", "--cached", "--name-only", "-z"])
+    untracked_paths = _read_git_path_set(repo_root, ["ls-files", "--others", "--exclude-standard", "-z"])
 
     candidate_paths = sorted(unstaged_paths | staged_paths | untracked_paths, key=_score_changed_path)
     if not candidate_paths:

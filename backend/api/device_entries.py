@@ -1,6 +1,7 @@
 import shlex
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import timedelta
@@ -10,6 +11,7 @@ import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from jose import JWTError, jwt
+from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from sqlmodel import Session, select
 
@@ -47,6 +49,12 @@ from backend.api.git_tools import (
     GitToolGenerateMessageResponse,
     GitToolInspectRequest,
     GitToolInspectResponse,
+    GitToolReduceRequest,
+    GitToolReduceAndCommitRequest,
+    GitToolReduceAndCommitResponse,
+    GitToolReduceResponse,
+    GitToolReductionInputRequest,
+    GitToolReductionInputResponse,
 )
 from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_manager
 from backend.core.ai_git_commit import (
@@ -54,6 +62,7 @@ from backend.core.ai_git_commit import (
     generate_ai_git_commit_draft,
     resolve_ai_runtime_config,
 )
+from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.device_file_cover import (
@@ -63,15 +72,25 @@ from backend.core.device_file_cover import (
     upsert_device_file_metadata_batch,
 )
 from backend.core.device_files import update_device_file_weight
-from backend.core.git_tools import GitToolError, collect_git_commit_context, create_git_commit, inspect_git_repository
+from backend.core.git_tools import (
+    GitToolError,
+    collect_git_commit_context,
+    collect_git_reduction_source_units,
+    create_git_commit,
+    inspect_git_repository,
+)
 from backend.db import get_session
+from backend.db import engine
 from backend.models import DeviceFile
+from backend.models import GitReductionRun
 from backend.models import Task as TaskModel
 from backend.models import User, UserDevice
 
 router = APIRouter()
 MEDIA_STREAM_TOKEN_SCOPE = "device-media-stream"
 MEDIA_STREAM_TOKEN_EXPIRE_HOURS = 12
+_GIT_REDUCTION_RUN_STATE: Dict[str, Dict[str, Any]] = {}
+_GIT_REDUCTION_RUN_STATE_LOCK = threading.Lock()
 
 
 def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
@@ -828,6 +847,273 @@ def associate_process_for_entry(
     return _proxy_request(entry, "POST", f"/task/{task_id}/associate", json_body=req)
 
 
+class GitToolStartReductionRunRequest(BaseModel):
+    cwd: str
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    style: str = "summary"
+    include_body: bool = True
+    branch_factor: int = Field(default=10, ge=2, le=20)
+    auto_commit: bool = False
+    add_all: bool = True
+
+
+class GitReductionRunRead(BaseModel):
+    id: str
+    entry_id: str
+    cwd: str
+    provider: str
+    model: str
+    style: str
+    include_body: bool
+    branch_factor: int
+    auto_commit: bool
+    add_all: bool
+    status: str
+    repo_root: str = ""
+    branch: str = ""
+    source_unit_count: int = 0
+    source_unit_truncated_count: int = 0
+    estimated_level_count: int = 0
+    current_level_index: int = 0
+    current_level_chunk_count: int = 0
+    current_level_completed_chunk_count: int = 0
+    completed_chunk_count: int = 0
+    level_count: int = 0
+    node_count: int = 0
+    error_message: Optional[str] = None
+    result: Optional[GitToolReduceResponse] = None
+    commit: Optional[GitToolCommitResponse] = None
+    created_at: float
+    finished_at: Optional[float] = None
+    updated_at: float
+
+
+def _serialize_git_reduction_run(run: GitReductionRun) -> GitReductionRunRead:
+    result_payload = dict(run.result_json or {})
+    commit_payload = dict(run.commit_json or {})
+    return GitReductionRunRead(
+        id=run.id,
+        entry_id=run.entry_id,
+        cwd=run.cwd,
+        provider=run.provider,
+        model=run.model,
+        style=run.style,
+        include_body=bool(run.include_body),
+        branch_factor=int(run.branch_factor or 10),
+        auto_commit=bool(run.auto_commit),
+        add_all=bool(run.add_all),
+        status=run.status,
+        repo_root=run.repo_root or "",
+        branch=run.branch or "",
+        source_unit_count=int(run.source_unit_count or 0),
+        source_unit_truncated_count=int(run.source_unit_truncated_count or 0),
+        estimated_level_count=int(run.estimated_level_count or 0),
+        current_level_index=int(run.current_level_index or 0),
+        current_level_chunk_count=int(run.current_level_chunk_count or 0),
+        current_level_completed_chunk_count=int(run.current_level_completed_chunk_count or 0),
+        completed_chunk_count=int(run.completed_chunk_count or 0),
+        level_count=int(run.level_count or 0),
+        node_count=int(run.node_count or 0),
+        error_message=run.error_message,
+        result=GitToolReduceResponse.model_validate(result_payload) if result_payload else None,
+        commit=GitToolCommitResponse.model_validate(commit_payload) if commit_payload else None,
+        created_at=run.created_at,
+        finished_at=run.finished_at,
+        updated_at=run.updated_at,
+    )
+
+
+def _store_git_reduction_run_state(user_id: int, run_payload: Dict[str, Any]) -> None:
+    payload = dict(run_payload)
+    payload["_user_id"] = user_id
+    with _GIT_REDUCTION_RUN_STATE_LOCK:
+        _GIT_REDUCTION_RUN_STATE[str(payload["id"])] = payload
+
+
+def _load_git_reduction_run_state(user_id: int, entry_id: str, run_id: str) -> Optional[GitReductionRunRead]:
+    with _GIT_REDUCTION_RUN_STATE_LOCK:
+        payload = dict(_GIT_REDUCTION_RUN_STATE.get(run_id) or {})
+    if not payload:
+        return None
+    if int(payload.pop("_user_id", 0) or 0) != int(user_id):
+        return None
+    if str(payload.get("entry_id") or "") != str(entry_id):
+        return None
+    return GitReductionRunRead.model_validate(payload)
+
+
+def _get_git_reduction_run_or_404(
+    session: Session,
+    current_user: User,
+    entry_id: str,
+    run_id: str,
+) -> GitReductionRun:
+    run = session.get(GitReductionRun, run_id)
+    if not run or run.user_id != current_user.id or run.entry_id != entry_id:
+        raise HTTPException(status_code=404, detail="Git reduction run not found")
+    return run
+
+
+def _load_git_reduction_input(entry: UserDevice, cwd: str) -> dict[str, Any]:
+    if entry.mode == "local":
+        return collect_git_reduction_source_units(cwd)
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/git-tools/reduction-input",
+        json_body=GitToolReductionInputRequest(cwd=cwd).model_dump(),
+        timeout=60,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    return GitToolReductionInputResponse.model_validate(payload).model_dump()
+
+
+def _run_git_reduction_worker(
+    *,
+    user_id: int,
+    run_id: str,
+    entry_snapshot: dict[str, Any],
+    initial_run_payload: dict[str, Any],
+    provider_id: str,
+    base_url: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+    extra_providers: tuple[Any, ...],
+) -> None:
+    with Session(engine) as session:
+        run = session.get(GitReductionRun, run_id)
+        entry = UserDevice.model_validate(entry_snapshot)
+        state = dict(initial_run_payload)
+
+        def publish_state() -> None:
+            _store_git_reduction_run_state(user_id, state)
+
+        def sync_row() -> None:
+            if not run:
+                return
+            run.provider = str(state.get("provider") or run.provider or "")
+            run.model = str(state.get("model") or run.model or "")
+            run.style = str(state.get("style") or run.style or "summary")
+            run.include_body = bool(state.get("include_body", run.include_body))
+            run.branch_factor = int(state.get("branch_factor") or run.branch_factor or 10)
+            run.auto_commit = bool(state.get("auto_commit", run.auto_commit))
+            run.add_all = bool(state.get("add_all", run.add_all))
+            run.status = str(state.get("status") or run.status or "running")
+            run.repo_root = str(state.get("repo_root") or "")
+            run.branch = str(state.get("branch") or "")
+            run.source_unit_count = int(state.get("source_unit_count") or 0)
+            run.source_unit_truncated_count = int(state.get("source_unit_truncated_count") or 0)
+            run.estimated_level_count = int(state.get("estimated_level_count") or 0)
+            run.current_level_index = int(state.get("current_level_index") or 0)
+            run.current_level_chunk_count = int(state.get("current_level_chunk_count") or 0)
+            run.current_level_completed_chunk_count = int(state.get("current_level_completed_chunk_count") or 0)
+            run.completed_chunk_count = int(state.get("completed_chunk_count") or 0)
+            run.level_count = int(state.get("level_count") or 0)
+            run.node_count = int(state.get("node_count") or 0)
+            run.error_message = state.get("error_message")
+            run.result_json = dict(state.get("result") or {})
+            run.commit_json = dict(state.get("commit") or {})
+            run.updated_at = float(state.get("updated_at") or time.time())
+            run.finished_at = state.get("finished_at")
+            session.add(run)
+            session.commit()
+
+        def update_progress(event: dict[str, Any]) -> None:
+            event_type = str(event.get("event") or "").strip()
+            if event_type == "prepared":
+                state["source_unit_count"] = int(event.get("source_unit_count") or 0)
+                state["estimated_level_count"] = int(event.get("estimated_level_count") or 0)
+                state["source_unit_truncated_count"] = int(event.get("source_unit_truncated_count") or 0)
+            elif event_type in {"level_started", "chunk_completed"}:
+                state["current_level_index"] = int(event.get("level") or 0)
+                state["current_level_chunk_count"] = int(event.get("chunk_count") or 0)
+                state["completed_chunk_count"] = int(event.get("completed_chunk_count") or 0)
+                state["current_level_completed_chunk_count"] = int(event.get("completed_level_chunk_count") or 0)
+            elif event_type == "completed":
+                state["completed_chunk_count"] = int(event.get("completed_chunk_count") or state.get("completed_chunk_count") or 0)
+                state["level_count"] = int(event.get("level_count") or state.get("level_count") or 0)
+            state["updated_at"] = time.time()
+            publish_state()
+            sync_row()
+
+        try:
+            reduction_input = _load_git_reduction_input(entry, str(state["cwd"]))
+            state["repo_root"] = str(reduction_input.get("repo_root") or "")
+            state["branch"] = str(reduction_input.get("branch") or "")
+            state["source_unit_count"] = int(reduction_input.get("source_unit_count") or 0)
+            state["source_unit_truncated_count"] = int(reduction_input.get("source_unit_truncated_count") or 0)
+            state["updated_at"] = time.time()
+            publish_state()
+            sync_row()
+
+            reduction_payload = generate_ai_git_commit_draft_hierarchical(
+                cwd=str(state["cwd"]) if entry.mode == "local" else None,
+                provider_id=provider_id,
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                style=str(state.get("style") or "summary"),
+                include_body=bool(state.get("include_body")),
+                extra_providers=extra_providers,
+                branch_factor=int(state.get("branch_factor") or 10),
+                reduction_input=reduction_input,
+                progress_callback=update_progress,
+            )
+            reduction_result = GitToolReduceResponse.model_validate(reduction_payload)
+            state["result"] = reduction_result.model_dump(mode="json")
+            state["repo_root"] = reduction_result.inspect.repo_root
+            state["branch"] = reduction_result.inspect.branch
+            state["source_unit_count"] = reduction_result.reduction.source_unit_count
+            state["source_unit_truncated_count"] = reduction_result.reduction.source_unit_truncated_count
+            state["level_count"] = reduction_result.reduction.level_count
+            state["node_count"] = reduction_result.reduction.node_count
+            state["model"] = reduction_result.model or str(state.get("model") or "")
+            state["current_level_completed_chunk_count"] = int(state.get("current_level_chunk_count") or 0)
+
+            if bool(state.get("auto_commit")):
+                if entry.mode == "local":
+                    commit_payload = create_git_commit(
+                        str(state["cwd"]),
+                        subject=reduction_result.subject,
+                        body=list(reduction_result.body),
+                        add_all=bool(state.get("add_all")),
+                    )
+                else:
+                    payload, error_response = _fetch_remote_json(
+                        entry,
+                        "POST",
+                        "/git-tools/commit",
+                        json_body=GitToolCommitRequest(
+                            cwd=str(state["cwd"]),
+                            subject=reduction_result.subject,
+                            body=list(reduction_result.body),
+                            add_all=bool(state.get("add_all")),
+                        ).model_dump(),
+                        timeout=30,
+                    )
+                    if error_response is not None:
+                        _raise_remote_json_error(error_response)
+                    commit_payload = GitToolCommitResponse.model_validate(payload).model_dump()
+                state["commit"] = GitToolCommitResponse.model_validate(commit_payload).model_dump(mode="json")
+
+            state["status"] = "completed"
+            state["finished_at"] = time.time()
+            state["updated_at"] = state["finished_at"]
+            publish_state()
+            sync_row()
+        except Exception as exc:
+            state["status"] = "failed"
+            state["error_message"] = str(exc)
+            state["finished_at"] = time.time()
+            state["updated_at"] = state["finished_at"]
+            publish_state()
+            sync_row()
+
+
 @router.post("/{entry_id}/git/inspect", response_model=GitToolInspectResponse)
 def inspect_git_for_entry(
     entry_id: str,
@@ -852,6 +1138,94 @@ def inspect_git_for_entry(
     if error_response is not None:
         _raise_remote_json_error(error_response)
     return GitToolInspectResponse.model_validate(payload)
+
+
+@router.post("/{entry_id}/git/reduce-runs", response_model=GitReductionRunRead)
+def start_git_reduction_run_for_entry(
+    entry_id: str,
+    req: GitToolStartReductionRunRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+            session=session,
+            current_user=current_user,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+        )
+    except AiGitCommitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    run = GitReductionRun(
+        user_id=current_user.id,
+        entry_id=entry.entry_id,
+        cwd=req.cwd,
+        provider=provider_id,
+        model=(req.model or "").strip(),
+        style=req.style,
+        include_body=req.include_body,
+        branch_factor=req.branch_factor,
+        auto_commit=req.auto_commit,
+        add_all=req.add_all,
+        status="running",
+        created_at=time.time(),
+        updated_at=time.time(),
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+    serialized_run = _serialize_git_reduction_run(run)
+    _store_git_reduction_run_state(current_user.id, serialized_run.model_dump(mode="json"))
+
+    entry_snapshot = {
+        "entry_id": entry.entry_id,
+        "user_id": entry.user_id,
+        "device_id": entry.device_id,
+        "name": entry.name,
+        "mode": entry.mode,
+        "server_url": entry.server_url,
+        "token": entry.token,
+        "is_active": entry.is_active,
+        "order_index": entry.order_index,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
+    worker = threading.Thread(
+        target=_run_git_reduction_worker,
+        kwargs={
+            "user_id": current_user.id,
+            "run_id": run.id,
+            "entry_snapshot": entry_snapshot,
+            "initial_run_payload": serialized_run.model_dump(mode="json"),
+            "provider_id": provider_id,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": req.model,
+            "extra_providers": extra_providers,
+        },
+        daemon=True,
+    )
+    worker.start()
+    return serialized_run
+
+
+@router.get("/{entry_id}/git/reduce-runs/{run_id}", response_model=GitReductionRunRead)
+def get_git_reduction_run_for_entry(
+    entry_id: str,
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    _get_entry_or_404(session, current_user, entry_id)
+    cached = _load_git_reduction_run_state(current_user.id, entry_id, run_id)
+    if cached is not None:
+        return cached
+    run = _get_git_reduction_run_or_404(session, current_user, entry_id, run_id)
+    return _serialize_git_reduction_run(run)
 
 
 @router.post("/{entry_id}/git/generate-message", response_model=GitToolGenerateMessageResponse)
@@ -918,6 +1292,143 @@ def generate_git_message_for_entry(
     return GitToolGenerateMessageResponse(
         inspect=inspect_payload,
         **draft,
+    )
+
+
+@router.post("/{entry_id}/git/reduce", response_model=GitToolReduceResponse)
+def reduce_git_message_for_entry(
+    entry_id: str,
+    req: GitToolReduceRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        if entry.mode == "local":
+            reduction_input = None
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/reduction-input",
+                json_body=GitToolReductionInputRequest(cwd=req.cwd).model_dump(),
+                timeout=60,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            reduction_input = GitToolReductionInputResponse.model_validate(payload).model_dump()
+
+        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+            session=session,
+            current_user=current_user,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+        )
+        reduction_payload = generate_ai_git_commit_draft_hierarchical(
+            cwd=req.cwd if entry.mode == "local" else None,
+            provider_id=provider_id,
+            base_url=base_url,
+            api_key=api_key,
+            model=req.model,
+            style=req.style,
+            include_body=req.include_body,
+            extra_providers=extra_providers,
+            branch_factor=req.branch_factor,
+            reduction_input=reduction_input,
+        )
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AiGitCommitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return GitToolReduceResponse.model_validate(reduction_payload)
+
+
+@router.post("/{entry_id}/git/reduce-and-commit", response_model=GitToolReduceAndCommitResponse)
+def reduce_and_commit_git_for_entry(
+    entry_id: str,
+    req: GitToolReduceAndCommitRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+
+    try:
+        if entry.mode == "local":
+            reduction_input = None
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/reduction-input",
+                json_body=GitToolReductionInputRequest(cwd=req.cwd).model_dump(),
+                timeout=60,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            reduction_input = GitToolReductionInputResponse.model_validate(payload).model_dump()
+
+        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+            session=session,
+            current_user=current_user,
+            provider=req.provider,
+            base_url=req.base_url,
+            api_key=req.api_key,
+        )
+        reduction_payload = generate_ai_git_commit_draft_hierarchical(
+            cwd=req.cwd if entry.mode == "local" else None,
+            provider_id=provider_id,
+            base_url=base_url,
+            api_key=api_key,
+            model=req.model,
+            style=req.style,
+            include_body=req.include_body,
+            extra_providers=extra_providers,
+            branch_factor=req.branch_factor,
+            reduction_input=reduction_input,
+        )
+
+        if entry.mode == "local":
+            commit_payload = create_git_commit(
+                req.cwd,
+                subject=str(reduction_payload["subject"]),
+                body=[str(item) for item in reduction_payload["body"]],
+                add_all=req.add_all,
+            )
+        else:
+            payload, error_response = _fetch_remote_json(
+                entry,
+                "POST",
+                "/git-tools/commit",
+                json_body=GitToolCommitRequest(
+                    cwd=req.cwd,
+                    subject=str(reduction_payload["subject"]),
+                    body=[str(item) for item in reduction_payload["body"]],
+                    add_all=req.add_all,
+                ).model_dump(),
+                timeout=30,
+            )
+            if error_response is not None:
+                _raise_remote_json_error(error_response)
+            commit_payload = GitToolCommitResponse.model_validate(payload).model_dump()
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AiGitCommitError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return GitToolReduceAndCommitResponse(
+        commit=GitToolCommitResponse.model_validate(commit_payload),
+        **GitToolReduceResponse.model_validate(reduction_payload).model_dump(),
     )
 
 

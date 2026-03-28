@@ -139,6 +139,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'tools/ai-reduction',
+        name: 'AiReduction',
+        component: () => import('@/views/tools/AiReduction.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
         path: 'tools/ai-git-commit',
         name: 'AiGitCommit',
         component: () => import('@/views/tools/AiGitCommit.vue'),

@@ -9,6 +9,7 @@ from backend.core.auth import verify_api_token
 from backend.core.git_tools import (
     GitToolError,
     collect_git_commit_context,
+    collect_git_reduction_source_units,
     create_git_commit,
     inspect_git_repository,
 )
@@ -29,6 +30,14 @@ class GitSuggestedSplitGroup(BaseModel):
     label: str
     file_count: int = 0
     sample_paths: list[str] = Field(default_factory=list)
+
+
+class GitReductionSourceUnit(BaseModel):
+    unit_id: str
+    path: str
+    group: str
+    content: str
+    truncated: bool = False
 
 
 class GitToolInspectRequest(BaseModel):
@@ -66,6 +75,16 @@ class GitToolContextResponse(GitToolInspectResponse):
     context_mode: Literal["sampled", "overview_only"] = "sampled"
 
 
+class GitToolReductionInputRequest(BaseModel):
+    cwd: str
+
+
+class GitToolReductionInputResponse(GitToolInspectResponse):
+    source_units: list[GitReductionSourceUnit] = Field(default_factory=list)
+    source_unit_count: int = 0
+    source_unit_truncated_count: int = 0
+
+
 class GitToolGenerateMessageRequest(BaseModel):
     cwd: str
     provider: Optional[str] = None
@@ -92,6 +111,64 @@ class GitToolGenerateAndCommitRequest(GitToolGenerateMessageRequest):
     add_all: bool = True
 
 
+class GitToolReduceRequest(BaseModel):
+    cwd: str
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    style: Literal["summary", "conventional"] = "summary"
+    include_body: bool = True
+    branch_factor: int = Field(default=10, ge=2, le=20)
+
+
+class GitToolReduceAndCommitRequest(GitToolReduceRequest):
+    add_all: bool = True
+
+
+class GitToolReductionPreviewNode(BaseModel):
+    node_id: str
+    topic: str = ""
+    summary: str = ""
+    candidate_subject: str = ""
+    source_ref_count: int = 0
+
+
+class GitToolReductionLevel(BaseModel):
+    level: int
+    input_kind: Literal["source", "summary"]
+    chunk_count: int
+    node_count: int
+    preview_nodes: list[GitToolReductionPreviewNode] = Field(default_factory=list)
+
+
+class GitToolReductionMeta(BaseModel):
+    run_id: str
+    profile_id: str
+    level_count: int
+    source_unit_count: int
+    source_unit_truncated_count: int = 0
+    node_count: int = 0
+    leaf_chunk_count: int = 0
+    levels: list[GitToolReductionLevel] = Field(default_factory=list)
+
+
+class GitToolReduceResponse(BaseModel):
+    inspect: GitToolInspectResponse
+    subject: str
+    body: list[str] = Field(default_factory=list)
+    full_message: str
+    needs_split: bool = False
+    reason: str = ""
+    model: str = ""
+    raw_content: str = ""
+    topic: str = ""
+    summary: str = ""
+    key_points: list[str] = Field(default_factory=list)
+    risk_points: list[str] = Field(default_factory=list)
+    reduction: GitToolReductionMeta
+
+
 class GitToolCommitRequest(BaseModel):
     cwd: str
     subject: str
@@ -115,6 +192,10 @@ class GitToolGenerateAndCommitResponse(GitToolGenerateMessageResponse):
     commit: GitToolCommitResponse
 
 
+class GitToolReduceAndCommitResponse(GitToolReduceResponse):
+    commit: GitToolCommitResponse
+
+
 def _raise_git_error(exc: GitToolError) -> None:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -131,6 +212,14 @@ def inspect_git_repository_endpoint(req: GitToolInspectRequest):
 def collect_git_commit_context_endpoint(req: GitToolContextRequest):
     try:
         return collect_git_commit_context(req.cwd, max_files=req.max_files)
+    except GitToolError as exc:
+        _raise_git_error(exc)
+
+
+@router.post("/reduction-input", response_model=GitToolReductionInputResponse)
+def collect_git_reduction_input_endpoint(req: GitToolReductionInputRequest):
+    try:
+        return collect_git_reduction_source_units(req.cwd)
     except GitToolError as exc:
         _raise_git_error(exc)
 

@@ -17,6 +17,7 @@ from backend.api.fanxiu import router as fanxiu_router
 from backend.api.filesystem import router as filesystem_router
 from backend.api.git_tools import router as git_tools_router
 from backend.api.notes import router as notes_router
+from backend.api.reduction_documents import router as reduction_documents_router
 from backend.api.task_manager import (
     router as task_router,
     start_task_manager_services,
@@ -93,6 +94,7 @@ app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
 app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
 app.include_router(ai_git_repos_router, prefix="/api/ai-git-repos", tags=["ai-git-repos"])
+app.include_router(reduction_documents_router, prefix="/api/reduction-documents", tags=["reduction-documents"])
 register_private_modules(app)
 
 # Mount static files

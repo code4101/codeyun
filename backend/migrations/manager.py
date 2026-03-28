@@ -962,6 +962,96 @@ def v21_merge_predone_into_done(session: Session):
         session.commit()
     print(f"  Merged {updated} notes from predone to done.")
 
+
+def v22_add_document_reduction_progress_fields(session: Session):
+    """
+    Migration V22: add progress fields for long-running document reduction runs.
+    """
+    print("Running System Upgrade V22: Add document reduction progress fields...")
+    columns = _get_table_columns(session, "documentreductionrun")
+    if "id" not in columns:
+        print("  Table 'documentreductionrun' missing, skipping.")
+        return
+
+    statements = []
+    if "estimated_level_count" not in columns:
+        statements.append("ALTER TABLE documentreductionrun ADD COLUMN estimated_level_count INTEGER DEFAULT 0")
+    if "current_level_index" not in columns:
+        statements.append("ALTER TABLE documentreductionrun ADD COLUMN current_level_index INTEGER DEFAULT 0")
+    if "current_level_chunk_count" not in columns:
+        statements.append("ALTER TABLE documentreductionrun ADD COLUMN current_level_chunk_count INTEGER DEFAULT 0")
+    if "current_level_completed_chunk_count" not in columns:
+        statements.append("ALTER TABLE documentreductionrun ADD COLUMN current_level_completed_chunk_count INTEGER DEFAULT 0")
+    if "completed_chunk_count" not in columns:
+        statements.append("ALTER TABLE documentreductionrun ADD COLUMN completed_chunk_count INTEGER DEFAULT 0")
+
+    if not statements:
+        print("  Document reduction progress fields already exist, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print(f"  Added {len(statements)} document reduction progress columns.")
+
+
+def v23_add_git_reduction_run_table(session: Session):
+    """
+    Migration V23: add git reduction run table for async progress tracking.
+    """
+    print("Running System Upgrade V23: Add git reduction run table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS gitreductionrun (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                entry_id VARCHAR NOT NULL,
+                cwd VARCHAR NOT NULL DEFAULT '',
+                provider VARCHAR NOT NULL DEFAULT '',
+                model VARCHAR NOT NULL DEFAULT '',
+                style VARCHAR NOT NULL DEFAULT 'summary',
+                include_body BOOLEAN NOT NULL DEFAULT 1,
+                branch_factor INTEGER NOT NULL DEFAULT 10,
+                auto_commit BOOLEAN NOT NULL DEFAULT 0,
+                add_all BOOLEAN NOT NULL DEFAULT 1,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                repo_root VARCHAR NOT NULL DEFAULT '',
+                branch VARCHAR NOT NULL DEFAULT '',
+                source_unit_count INTEGER NOT NULL DEFAULT 0,
+                source_unit_truncated_count INTEGER NOT NULL DEFAULT 0,
+                estimated_level_count INTEGER NOT NULL DEFAULT 0,
+                current_level_index INTEGER NOT NULL DEFAULT 0,
+                current_level_chunk_count INTEGER NOT NULL DEFAULT 0,
+                current_level_completed_chunk_count INTEGER NOT NULL DEFAULT 0,
+                completed_chunk_count INTEGER NOT NULL DEFAULT 0,
+                level_count INTEGER NOT NULL DEFAULT 0,
+                node_count INTEGER NOT NULL DEFAULT 0,
+                error_message VARCHAR,
+                result_json JSON,
+                commit_json JSON,
+                created_at FLOAT NOT NULL,
+                finished_at FLOAT,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+    index_statements = [
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_user_id ON gitreductionrun (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_entry_id ON gitreductionrun (entry_id)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_cwd ON gitreductionrun (cwd)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_provider ON gitreductionrun (provider)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_model ON gitreductionrun (model)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_auto_commit ON gitreductionrun (auto_commit)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_status ON gitreductionrun (status)",
+        "CREATE INDEX IF NOT EXISTS ix_gitreductionrun_finished_at ON gitreductionrun (finished_at)",
+    ]
+    for statement in index_statements:
+        session.exec(text(statement))
+    session.commit()
+    print("  gitreductionrun ready.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -986,6 +1076,8 @@ MIGRATIONS = [
     (19, "Add naming-aligned note taxonomy fields", v19_add_note_taxonomy_fields),
     (20, "Repair note category drift", v20_repair_note_category_drift),
     (21, "Merge predone into done", v21_merge_predone_into_done),
+    (22, "Add document reduction progress fields", v22_add_document_reduction_progress_fields),
+    (23, "Add git reduction run table", v23_add_git_reduction_run_table),
 ]
 
 def get_current_version(session: Session) -> int:
