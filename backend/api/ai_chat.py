@@ -21,6 +21,13 @@ from backend.core.ai_chat_prompt_cards import (
     list_user_ai_chat_prompt_cards,
     save_user_ai_chat_prompt_cards,
 )
+from backend.core.ollama_access_keys import (
+    create_ollama_access_key,
+    delete_ollama_access_key,
+    ensure_ollama_access_key_allowed,
+    list_ollama_access_keys,
+    reveal_ollama_access_key,
+)
 from backend.core.ai_chat_user_config import (
     AiChatUserConfigError,
     activate_user_ai_chat_provider_api_key,
@@ -33,7 +40,7 @@ from backend.core.ai_chat_user_config import (
     save_user_ai_chat_custom_provider,
     save_user_ai_chat_provider_config,
 )
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User
@@ -142,6 +149,27 @@ class AiChatSavedConfigsResponse(BaseModel):
     items: list[AiChatSavedProviderConfig] = Field(default_factory=list)
 
 
+class AiChatOllamaAccessKeySummary(BaseModel):
+    id: str
+    label: str
+    masked_value: str
+    created_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    created_by_user_id: Optional[int] = None
+
+
+class AiChatOllamaAccessKeysResponse(BaseModel):
+    items: list[AiChatOllamaAccessKeySummary] = Field(default_factory=list)
+
+
+class AiChatCreateOllamaAccessKeyRequest(BaseModel):
+    label: Optional[str] = None
+
+
+class AiChatOllamaAccessKeyDetail(AiChatOllamaAccessKeySummary):
+    plaintext_value: str
+
+
 class AiChatPromptCard(BaseModel):
     id: str
     title: str
@@ -230,6 +258,20 @@ def _get_extra_providers(current_user: Optional[User], session: Session) -> tupl
     return list_user_ai_chat_custom_provider_configs(session, current_user.id)
 
 
+def _ollama_requires_access_key(provider_id: Optional[str]) -> bool:
+    return (provider_id or "").strip().lower() == "ollama"
+
+
+def _apply_ollama_access_policy_to_provider_item(item: dict[str, object]) -> dict[str, object]:
+    normalized_id = str(item.get("id") or "").strip().lower()
+    if normalized_id != "ollama":
+        return item
+
+    next_item = dict(item)
+    next_item["requires_api_key"] = True
+    return next_item
+
+
 def _resolve_runtime_provider_config(
     *,
     provider: Optional[str],
@@ -243,13 +285,18 @@ def _resolve_runtime_provider_config(
     resolved_api_key = (api_key or "").strip()
 
     if current_user is None:
+        if _ollama_requires_access_key(resolved_provider):
+            ensure_ollama_access_key_allowed(session, resolved_api_key)
         return resolved_provider, resolved_base_url or None, resolved_api_key or None
 
     saved_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
+    resolved_api_key = resolved_api_key or saved_config["api_key"] or None
+    if _ollama_requires_access_key(resolved_provider):
+        ensure_ollama_access_key_allowed(session, resolved_api_key)
     return (
         resolved_provider,
         resolved_base_url or saved_config["base_url"] or None,
-        resolved_api_key or saved_config["api_key"] or None,
+        resolved_api_key,
     )
 
 
@@ -291,7 +338,7 @@ def _build_ai_chat_status_response(
             configured=False,
             supports_stream=True,
             supports_vision=False,
-            requires_api_key=False,
+            requires_api_key=_ollama_requires_access_key(provider or get_default_ai_provider_id()),
             base_url=base_url or "",
             default_model="",
             error=str(exc),
@@ -324,7 +371,7 @@ def _build_ai_chat_status_response(
         configured=provider_status["configured"],
         supports_stream=provider_status["supports_stream"],
         supports_vision=provider_status["supports_vision"],
-        requires_api_key=provider_status["requires_api_key"],
+        requires_api_key=True if _ollama_requires_access_key(provider_status["id"]) else provider_status["requires_api_key"],
         base_url=provider_status["base_url"],
         default_model=provider_status["default_model"],
         models=models,
@@ -378,7 +425,7 @@ def get_ai_chat_providers(
     return AiChatProvidersResponse(
         default_provider=get_default_ai_provider_id(),
         items=[
-            AiChatProviderSummary.model_validate(item)
+            AiChatProviderSummary.model_validate(_apply_ollama_access_policy_to_provider_item(item))
             for item in list_ai_provider_summaries(extra_providers=extra_providers)
         ],
     )
@@ -400,6 +447,66 @@ def get_ai_chat_saved_configs(
             for item in list_user_ai_chat_provider_configs(session, current_user.id)
         ],
     )
+
+
+@router.get("/ollama-access-keys", response_model=AiChatOllamaAccessKeysResponse)
+def get_ai_chat_ollama_access_keys(
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    return AiChatOllamaAccessKeysResponse(
+        items=[
+            AiChatOllamaAccessKeySummary.model_validate(item)
+            for item in list_ollama_access_keys(session)
+        ],
+    )
+
+
+@router.post("/ollama-access-keys", response_model=AiChatOllamaAccessKeyDetail)
+def post_ai_chat_ollama_access_key(
+    payload: AiChatCreateOllamaAccessKeyRequest,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        created = create_ollama_access_key(
+            session,
+            created_by_user_id=current_user.id,
+            label=payload.label,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return AiChatOllamaAccessKeyDetail.model_validate(created)
+
+
+@router.get("/ollama-access-keys/{key_id}", response_model=AiChatOllamaAccessKeyDetail)
+def get_ai_chat_ollama_access_key_detail(
+    key_id: str,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        item = reveal_ollama_access_key(session, key_id)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AiChatOllamaAccessKeyDetail.model_validate(item)
+
+
+@router.delete("/ollama-access-keys/{key_id}", response_model=AiChatDeleteSavedConfigResponse)
+def delete_ai_chat_ollama_access_key(
+    key_id: str,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        delete_ollama_access_key(session, key_id)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AiChatDeleteSavedConfigResponse()
 
 
 @router.get("/prompt-cards", response_model=AiChatPromptCardsResponse)

@@ -1034,7 +1034,7 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .custom-fields-row{display:flex;flex-direction:column;gap:4px;margin-top:5px}.custom-fields-label{display:flex;align-items:center;gap:5px}
 .custom-fields-container{width:100%;display:flex;flex-direction:column;border:1px solid #f2f2f2;border-radius:4px;overflow:hidden}
 .custom-fields-list{display:flex;flex-direction:column}
-.custom-field-item{display:flex;align-items:flex-start;gap:6px;padding:4px 8px;border-bottom:1px solid #f2f2f2}
+.custom-field-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f2f2f2}
 .custom-field-item:last-child{border-bottom:none}
 .custom-field-item.is-richtext-field{align-items:flex-start}
 .own-field{background:#f0f9eb}.inherited-field{background:#fdf6ec;opacity:.85}.ancestor-field{background:#f4f4f5;opacity:.7}

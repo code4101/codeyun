@@ -350,3 +350,18 @@ class NoteBatchUpdateRequest(BaseModel):
 class NoteBatchUpdateResponse(BaseModel):
     updated_count: int
     notes: List[NoteListRead]
+
+
+class AiNoteCategorizeRequest(BaseModel):
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+
+
+class AiNoteCategorizeResponse(BaseModel):
+    app: str
+    provider: str
+    model: str
+    summary: str
+    note: NoteRead

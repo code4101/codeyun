@@ -18,6 +18,15 @@
     <Handle id="r-s" type="source" :position="Position.Right" />
 
     <div class="node-content">
+      <button
+        type="button"
+        class="node-ai-button nodrag nopan"
+        :disabled="data.is_ai_categorizing"
+        :title="data.is_ai_categorizing ? 'AI分类中...' : 'AI分类'"
+        @click.stop="handleAiClick"
+      >
+        {{ data.is_ai_categorizing ? '...' : 'AI' }}
+      </button>
       <div v-if="useSplitTitle" class="node-title node-title--split" :style="titleStyle">
         <div class="node-title-layer" :style="filledTitleLayerStyle">
           <NoteFormBadge :form="data.note_form" compact />
@@ -59,7 +68,9 @@ const props = defineProps<{
     color?: string | null,
     custom_fields?: unknown,
     completion_progress_expr?: string | null,
-    completion_progress?: number | null
+    completion_progress?: number | null,
+    is_ai_categorizing?: boolean,
+    on_ai_categorize?: (() => void) | null
   }
 }>()
 
@@ -129,12 +140,19 @@ const filledTitleLayerStyle = computed(() => {
 });
 
 const emptyTitleLayerStyle = computed(() => {
-    const ratio = computedStyle.value.partialFillRatio ?? 0;
-    return {
-        color: computedStyle.value.emptyTextColor,
-        clipPath: `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`,
-    };
+  const ratio = computedStyle.value.partialFillRatio ?? 0;
+  return {
+    color: computedStyle.value.emptyTextColor,
+    clipPath: `inset(0 0 0 ${(ratio * 100).toFixed(2)}%)`,
+  };
 });
+
+const handleAiClick = () => {
+  if (props.data.is_ai_categorizing) {
+    return;
+  }
+  props.data.on_ai_categorize?.();
+};
 </script>
 
 <style scoped>
@@ -158,6 +176,7 @@ const emptyTitleLayerStyle = computed(() => {
     padding: 0 10px; /* Internal padding */
     box-sizing: border-box;
     overflow: hidden;
+    position: relative;
 }
 
 .custom-note-node:hover {
@@ -197,6 +216,42 @@ const emptyTitleLayerStyle = computed(() => {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.node-ai-button {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  min-width: 28px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid rgba(14, 116, 144, 0.2);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.16s ease, transform 0.16s ease, border-color 0.16s ease;
+}
+
+.custom-note-node:hover .node-ai-button,
+.node-ai-button:focus-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.node-ai-button:hover:not(:disabled) {
+  border-color: rgba(14, 116, 144, 0.45);
+}
+
+.node-ai-button:disabled {
+  cursor: wait;
+  color: #94a3b8;
 }
 
 /* 默认隐藏句柄 */

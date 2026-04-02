@@ -96,6 +96,27 @@ export interface AiChatSavedConfigsResponse {
   items: AiChatSavedProviderConfig[]
 }
 
+export interface AiChatOllamaAccessKeySummary {
+  id: string
+  label: string
+  masked_value: string
+  created_at?: number | null
+  updated_at?: number | null
+  created_by_user_id?: number | null
+}
+
+export interface AiChatOllamaAccessKeysResponse {
+  items: AiChatOllamaAccessKeySummary[]
+}
+
+export interface AiChatCreateOllamaAccessKeyRequest {
+  label?: string | null
+}
+
+export interface AiChatOllamaAccessKeyDetail extends AiChatOllamaAccessKeySummary {
+  plaintext_value: string
+}
+
 export interface AiChatPromptCard {
   id: string
   title: string
@@ -172,6 +193,25 @@ export async function fetchAiChatStatus(payload: AiChatStatusRequest) {
 export async function fetchAiChatSavedConfigs() {
   const response = await api.get<AiChatSavedConfigsResponse>('/ai-chat/saved-configs')
   return response.data
+}
+
+export async function fetchAiChatOllamaAccessKeys() {
+  const response = await api.get<AiChatOllamaAccessKeysResponse>('/ai-chat/ollama-access-keys')
+  return response.data
+}
+
+export async function createAiChatOllamaAccessKey(payload: AiChatCreateOllamaAccessKeyRequest = {}) {
+  const response = await api.post<AiChatOllamaAccessKeyDetail>('/ai-chat/ollama-access-keys', payload)
+  return response.data
+}
+
+export async function revealAiChatOllamaAccessKey(keyId: string) {
+  const response = await api.get<AiChatOllamaAccessKeyDetail>(`/ai-chat/ollama-access-keys/${keyId}`)
+  return response.data
+}
+
+export async function deleteAiChatOllamaAccessKey(keyId: string) {
+  await api.delete(`/ai-chat/ollama-access-keys/${keyId}`)
 }
 
 export async function fetchAiChatPromptCards() {

@@ -442,6 +442,13 @@ export const useAiProviderStore = defineStore('aiProvider', {
       }
 
       const providerConfig = this.getProviderConfig(providerId)
+      if ((provider.id || '').trim().toLowerCase() === 'ollama') {
+        return Boolean(
+          providerConfig.apiKey.trim()
+          || providerConfig.savedKeys.length
+        )
+      }
+
       return Boolean(
         providerConfig.apiKey.trim()
         || providerConfig.savedKeys.length

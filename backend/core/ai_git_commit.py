@@ -12,9 +12,11 @@ from backend.core.ai_chat import (
     get_default_ai_provider_id,
 )
 from backend.core.ai_chat_user_config import (
+    AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
     list_user_ai_chat_custom_provider_configs,
 )
+from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
 from backend.core.git_tools import format_git_commit_message
 from backend.models import User
 
@@ -31,25 +33,31 @@ def resolve_ai_runtime_config(
     base_url: Optional[str],
     api_key: Optional[str],
 ) -> tuple[str, Optional[str], Optional[str], tuple[AiProviderConfig, ...]]:
-    resolved_provider = (provider or get_default_ai_provider_id()).strip().lower() or get_default_ai_provider_id()
-    resolved_base_url = (base_url or "").strip()
-    resolved_api_key = (api_key or "").strip()
-    extra_providers: tuple[AiProviderConfig, ...] = ()
+    try:
+        resolved_provider = (provider or get_default_ai_provider_id()).strip().lower() or get_default_ai_provider_id()
+        resolved_base_url = (base_url or "").strip()
+        resolved_api_key = (api_key or "").strip()
+        extra_providers: tuple[AiProviderConfig, ...] = ()
 
-    if current_user is not None:
-        extra_providers = tuple(list_user_ai_chat_custom_provider_configs(session, current_user.id))
-        saved_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
-        if not resolved_base_url:
-            resolved_base_url = str(saved_config.get("base_url") or "").strip()
-        if not resolved_api_key:
-            resolved_api_key = str(saved_config.get("api_key") or "").strip()
+        if current_user is not None:
+            extra_providers = tuple(list_user_ai_chat_custom_provider_configs(session, current_user.id))
+            saved_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
+            if not resolved_base_url:
+                resolved_base_url = str(saved_config.get("base_url") or "").strip()
+            if not resolved_api_key:
+                resolved_api_key = str(saved_config.get("api_key") or "").strip()
 
-    return (
-        resolved_provider,
-        resolved_base_url or None,
-        resolved_api_key or None,
-        extra_providers,
-    )
+        if resolved_provider == "ollama":
+            ensure_ollama_access_key_allowed(session, resolved_api_key)
+
+        return (
+            resolved_provider,
+            resolved_base_url or None,
+            resolved_api_key or None,
+            extra_providers,
+        )
+    except AiChatUserConfigError as exc:
+        raise AiGitCommitError(str(exc)) from exc
 
 
 def _build_system_prompt(style: str, include_body: bool) -> str:

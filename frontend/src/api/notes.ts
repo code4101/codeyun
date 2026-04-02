@@ -2,6 +2,9 @@ import api from '@/api';
 import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import { ElMessage } from 'element-plus';
+import { useAiAppStore } from '@/store/aiAppStore';
+import { useAiProviderStore } from '@/store/aiProviderStore';
+import { useUserStore } from '@/store/userStore';
 import { NOTE_WEIGHT_DEFAULT } from '@/utils/noteWeight';
 import { createEffectiveNoteTypes, type NoteTypeAssignment } from '@/utils/nodeConfig';
 import {
@@ -188,6 +191,21 @@ export interface NoteBatchUpdateRequest {
 export interface NoteBatchUpdateResponse {
   updated_count: number;
   notes: NoteNode[];
+}
+
+export interface AiNoteCategorizeRequest {
+  provider?: string | null;
+  base_url?: string | null;
+  api_key?: string | null;
+  model?: string | null;
+}
+
+export interface AiNoteCategorizeResponse {
+  app: string;
+  provider: string;
+  model: string;
+  summary: string;
+  note: NoteNode;
 }
 
 export interface NoteScopeState {
@@ -1702,6 +1720,106 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
+  const aiCategorizeNote = async (id: string) => {
+    const userStore = useUserStore();
+    const aiProviderStore = useAiProviderStore();
+    const aiAppStore = useAiAppStore();
+
+    aiAppStore.ensureLoaded();
+    if (
+      aiProviderStore.providers.length === 0
+      || aiProviderStore.loadedForAuthState !== userStore.isAuthenticated
+    ) {
+      await aiProviderStore.loadProviders(userStore.isAuthenticated);
+    }
+
+    const appConfig = aiAppStore.getAppConfig('note-taxonomy');
+    if (!appConfig.enabled) {
+      ElMessage.warning('“笔记分类”应用当前已停用');
+      return null;
+    }
+
+    const providerId = appConfig.provider || aiProviderStore.defaultProviderId || 'ollama';
+    const providerMeta = aiProviderStore.getProviderById(providerId);
+    if (!providerMeta) {
+      ElMessage.error('当前 AI 应用绑定的来源不存在');
+      return null;
+    }
+
+    const providerConfig = aiProviderStore.getProviderConfig(providerId);
+    const effectiveBaseUrl = providerConfig.baseUrl.trim() || providerMeta.base_url.trim();
+    if (!effectiveBaseUrl) {
+      ElMessage.error(`请先在 AI 配置里为“${providerMeta.label}”填写地址`);
+      return null;
+    }
+
+    if (providerMeta.requires_api_key && !aiProviderStore.hasEffectiveApiKey(providerId)) {
+      const keyLabel = providerId.trim().toLowerCase() === 'ollama' ? '访问 Key' : 'API Key';
+      ElMessage.error(`请先在 AI 配置里为“${providerMeta.label}”保存${keyLabel}，再使用“笔记分类”`);
+      return null;
+    }
+
+    if (!aiProviderStore.hasEffectiveConnection(providerId)) {
+      ElMessage.error(`AI 来源“${providerMeta.label}”尚未配置完成`);
+      return null;
+    }
+
+    const modelName = appConfig.model.trim() || aiProviderStore.getEffectiveModel(providerId).trim();
+    if (!modelName) {
+      ElMessage.error('请先为“笔记分类”选择模型');
+      return null;
+    }
+
+    const connectionPayload = aiProviderStore.buildConnectionPayload(providerId);
+
+    bumpPending(1);
+    try {
+      const response = await api.post(`/notes/${encodeURIComponent(id)}/ai-categorize`, {
+        ...connectionPayload,
+        model: modelName,
+      } satisfies AiNoteCategorizeRequest);
+
+      const payload = response.data as {
+        app: string;
+        provider: string;
+        model: string;
+        summary: string;
+        note: unknown;
+      };
+      const updatedNote = normalizeNote(payload.note);
+      mergeNoteSummaries([updatedNote]);
+      mergeNoteDetails([updatedNote]);
+      pruneCaches();
+      return {
+        app: String(payload.app || 'note-taxonomy'),
+        provider: String(payload.provider || providerId),
+        model: String(payload.model || modelName),
+        summary: typeof payload.summary === 'string' ? payload.summary : '',
+        note: getNoteById(updatedNote.id) || updatedNote,
+      } satisfies AiNoteCategorizeResponse;
+    } catch (error) {
+      console.error('Failed to categorize note with AI:', error);
+      const maybeError = error as {
+        response?: {
+          data?: {
+            detail?: string;
+            message?: string;
+          };
+        };
+        message?: string;
+      };
+      ElMessage.error(
+        maybeError.response?.data?.detail
+        || maybeError.response?.data?.message
+        || maybeError.message
+        || 'AI 分类失败'
+      );
+      return null;
+    } finally {
+      bumpPending(-1);
+    }
+  };
+
   return {
     loading,
     tabs,
@@ -1722,6 +1840,7 @@ export const useNoteStore = defineStore('notes', () => {
     fetchConnectedComponentForTab,
     createNote,
     updateNote,
+    aiCategorizeNote,
     batchUpdateNotes,
     deleteNote,
     createEdge,

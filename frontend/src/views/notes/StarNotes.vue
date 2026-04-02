@@ -72,6 +72,7 @@
 
       <template #editor>
         <NoteDetailPanel
+          :key="`${currentNoteId}:${editorRefreshVersion}`"
           :noteId="currentNoteId"
           editor-layout="fill"
           @update="handleNoteUpdate"
@@ -200,8 +201,10 @@ let pendingDragEdgeIds = new Set<string>();
 
 // Editor state
 const currentNoteId = ref<string>('');
+const editorRefreshVersion = ref(0);
 const isRefreshing = ref(false);
 const isGraphUpdating = ref(false);
+const aiCategorizingMap = ref<Record<string, boolean>>({});
 let graphFilterQueued = false;
 let graphRelayoutQueued = false;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
@@ -864,31 +867,37 @@ const getFallbackNodePosition = (index: number) => {
   };
 };
 
+const buildGraphNodeData = (note: NoteNode) => ({
+  title: note.title,
+  weight: note.weight,
+  node_type: note.node_type,
+  note_types: note.note_types,
+  primary_category: note.primary_category,
+  note_categories: note.note_categories,
+  note_form: note.note_form,
+  note_kind: note.note_kind,
+  node_status: note.node_status,
+  lifecycle_stage: note.lifecycle_stage,
+  color: note.color,
+  weight_mode: note.weight_mode,
+  custom_fields: note.custom_fields,
+  completion_progress_expr: note.completion_progress_expr,
+  completion_progress: note.completion_progress,
+  created_at: note.created_at,
+  start_at: note.start_at,
+  is_ai_categorizing: Boolean(aiCategorizingMap.value[note.id]),
+  on_ai_categorize: () => {
+    void handleAiCategorizeNote(note.id);
+  }
+});
+
 const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {
   const cachedPosition = useCachedPosition ? nodePositionCache.value[note.id] : null;
   return {
     id: note.id,
     label: note.title || 'Untitled',
     position: cachedPosition ? { ...cachedPosition } : getFallbackNodePosition(index),
-    data: {
-      title: note.title,
-      weight: note.weight,
-      node_type: note.node_type,
-      note_types: note.note_types,
-      primary_category: note.primary_category,
-      note_categories: note.note_categories,
-      note_form: note.note_form,
-      note_kind: note.note_kind,
-      node_status: note.node_status,
-      lifecycle_stage: note.lifecycle_stage,
-      color: note.color,
-      weight_mode: note.weight_mode,
-      custom_fields: note.custom_fields,
-      completion_progress_expr: note.completion_progress_expr,
-      completion_progress: note.completion_progress,
-      created_at: note.created_at,
-      start_at: note.start_at
-    },
+    data: buildGraphNodeData(note),
     type: 'custom'
   };
 };
@@ -977,28 +986,57 @@ const selectNote = async (noteId: string) => {
   currentNoteId.value = noteId;
 };
 
+const updateGraphNodeAiState = (noteId: string, loading: boolean) => {
+  if (loading) {
+    aiCategorizingMap.value = {
+      ...aiCategorizingMap.value,
+      [noteId]: true
+    };
+  } else {
+    const { [noteId]: _removed, ...rest } = aiCategorizingMap.value;
+    aiCategorizingMap.value = rest;
+  }
+
+  const node = nodes.value.find(item => String(item.id) === String(noteId));
+  if (node?.data) {
+    node.data.is_ai_categorizing = loading;
+  }
+};
+
+const handleAiCategorizeNote = async (noteId: string) => {
+  if (!checkAuth()) {
+    return;
+  }
+  if (aiCategorizingMap.value[noteId]) {
+    return;
+  }
+
+  updateGraphNodeAiState(noteId, true);
+  try {
+    const result = await noteStore.aiCategorizeNote(noteId);
+    if (!result) {
+      return;
+    }
+
+    handleNoteUpdate(result.note);
+    if (currentNoteId.value === noteId) {
+      editorRefreshVersion.value += 1;
+    }
+    ElMessage.success(result.summary || '已完成 AI 分类');
+  } finally {
+    updateGraphNodeAiState(noteId, false);
+  }
+};
+
 const handleNoteUpdate = (note: NoteNode) => {
     // Update graph node data
     const node = nodes.value.find(n => n.id === note.id);
     if (node) {
         node.label = note.title;
-        if (!node.data) node.data = {};
-        node.data.title = note.title;
-        node.data.weight = note.weight;
-        node.data.start_at = note.start_at;
-        node.data.node_type = note.node_type;
-        node.data.note_types = note.note_types;
-        node.data.primary_category = note.primary_category;
-        node.data.note_categories = note.note_categories;
-        node.data.note_form = note.note_form;
-        node.data.note_kind = note.note_kind;
-        node.data.node_status = note.node_status;
-        node.data.lifecycle_stage = note.lifecycle_stage;
-        node.data.color = note.color;
-        node.data.weight_mode = note.weight_mode;
-        node.data.custom_fields = note.custom_fields;
-        node.data.completion_progress_expr = note.completion_progress_expr;
-        node.data.completion_progress = note.completion_progress;
+        node.data = {
+          ...(node.data || {}),
+          ...buildGraphNodeData(note)
+        };
         void refreshNodeInternals([String(note.id)]).then(() => {
           const affectedEdgeIds = getAffectedEdgeIdsForNodes([String(note.id)]);
           if (affectedEdgeIds.size > 0) {
@@ -1026,25 +1064,7 @@ const handleNoteCreate = (note: NoteNode) => {
       id: note.id,
       label: note.title,
       position: pos,
-      data: { 
-          title: note.title,
-          weight: note.weight,
-          node_type: note.node_type,
-          note_types: note.note_types,
-          primary_category: note.primary_category,
-          note_categories: note.note_categories,
-          note_form: note.note_form,
-          note_kind: note.note_kind,
-          node_status: note.node_status,
-          lifecycle_stage: note.lifecycle_stage,
-          color: note.color,
-          weight_mode: note.weight_mode,
-          custom_fields: note.custom_fields,
-          completion_progress_expr: note.completion_progress_expr,
-          completion_progress: note.completion_progress,
-          created_at: note.created_at,
-          start_at: note.start_at
-      },
+      data: buildGraphNodeData(note),
       type: 'custom'
     };
     nodePositionCache.value = {
@@ -1058,6 +1078,8 @@ const handleNoteCreate = (note: NoteNode) => {
 
 const handleNoteDelete = (noteId: string) => {
     nodes.value = nodes.value.filter(n => n.id !== noteId);
+    const { [noteId]: _removedAiState, ...restAiState } = aiCategorizingMap.value;
+    aiCategorizingMap.value = restAiState;
     const { [noteId]: _removedNodePosition, ...restNodePositions } = nodePositionCache.value;
     nodePositionCache.value = restNodePositions;
     if (currentNoteId.value === noteId) {
@@ -1324,20 +1346,7 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
       id: newNote.id,
       label: newNote.title,
       position: pos,
-      data: { 
-          title: newNote.title,
-          weight: newNote.weight,
-          node_type: newNote.node_type,
-          note_types: newNote.note_types,
-          primary_category: newNote.primary_category,
-          note_categories: newNote.note_categories,
-          note_form: newNote.note_form,
-          node_status: newNote.node_status,
-          lifecycle_stage: newNote.lifecycle_stage,
-          color: newNote.color,
-          created_at: newNote.created_at,
-          start_at: newNote.start_at
-      },
+      data: buildGraphNodeData(newNote),
       type: 'custom'
     };
     nodePositionCache.value = {

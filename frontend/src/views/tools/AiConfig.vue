@@ -12,18 +12,33 @@
         <section class="panel-card">
           <div class="panel-header">
             <div>
-              <p class="panel-kicker">来源资产</p>
-              <h2>来源列表</h2>
+              <p class="panel-kicker">{{ assetMode === 'providers' ? '来源资产' : '应用配置' }}</p>
+              <h2>{{ assetMode === 'providers' ? '来源列表' : '应用列表' }}</h2>
             </div>
             <div class="panel-header-actions">
-              <el-tag v-if="!isAuthenticated" type="info" effect="plain">
+              <el-radio-group v-model="assetMode" size="small" class="asset-mode-switch">
+                <el-radio-button label="providers">来源</el-radio-button>
+                <el-radio-button label="apps">应用</el-radio-button>
+              </el-radio-group>
+              <el-tag
+                v-if="assetMode === 'providers' && !isAuthenticated"
+                type="info"
+                effect="plain"
+              >
                 本地保存
               </el-tag>
-              <el-tag v-else type="success" effect="plain">
+              <el-tag
+                v-else-if="assetMode === 'providers'"
+                type="success"
+                effect="plain"
+              >
                 账号资产
               </el-tag>
+              <el-tag v-else type="info" effect="plain">
+                本地设置
+              </el-tag>
               <el-button
-                v-if="isAuthenticated"
+                v-if="assetMode === 'providers' && isAuthenticated"
                 size="small"
                 @click="openCustomProviderDialog"
               >
@@ -34,20 +49,25 @@
 
           <div class="provider-list">
             <button
-              v-for="provider in providers"
+              v-for="provider in visibleAssets"
               :key="provider.id"
               type="button"
               class="provider-item"
-              :class="{ active: selectedProviderId === provider.id }"
-              @click="handleProviderChange(provider.id)"
+              :class="{ active: selectedAssetId === provider.id }"
+              @click="handleAssetChange(provider.id)"
             >
               <div class="provider-item-main">
                 <span class="provider-item-label">{{ provider.label }}</span>
-                <span class="provider-item-model">{{ getProviderSummaryModel(provider.id) }}</span>
+                <span class="provider-item-model">
+                  {{ assetMode === 'providers' ? getProviderSummaryModel(provider.id) : getAppSummaryModel(provider.id) }}
+                </span>
               </div>
               <div class="provider-item-meta">
-                <span class="provider-item-state" :class="getProviderStateClass(provider.id)">
-                  {{ getProviderStateLabel(provider.id) }}
+                <span
+                  class="provider-item-state"
+                  :class="assetMode === 'providers' ? getProviderStateClass(provider.id) : getAppStateClass(provider.id)"
+                >
+                  {{ assetMode === 'providers' ? getProviderStateLabel(provider.id) : getAppStateLabel(provider.id) }}
                 </span>
               </div>
             </button>
@@ -56,7 +76,7 @@
       </aside>
 
       <section class="editor-panel">
-        <section class="panel-card">
+        <section v-if="assetMode === 'providers'" class="panel-card">
           <div class="panel-header">
             <div>
               <p class="panel-kicker">连接与模型</p>
@@ -101,7 +121,7 @@
               />
             </el-form-item>
 
-            <el-form-item label="API Key">
+            <el-form-item :label="currentProviderKeyFieldLabel">
               <el-input
                 v-if="isAuthenticated"
                 v-model="currentApiKeyLabelInput"
@@ -115,7 +135,7 @@
                   type="password"
                   show-password
                   clearable
-                  :placeholder="currentProviderRequiresApiKey ? '输入新 Key 后点击保存' : 'Ollama 可留空'"
+                  :placeholder="currentProviderKeyInputPlaceholder"
                 />
                 <el-button
                   class="api-key-save-button"
@@ -139,8 +159,8 @@
               </div>
               <div v-if="isAuthenticated && currentProviderSavedKeys.length" class="saved-key-section">
                 <div class="saved-key-header">
-                  <span class="saved-key-title">已保存 API Key</span>
-                  <span class="saved-key-note">每次只会使用其中一把激活项</span>
+                  <span class="saved-key-title">{{ currentProviderSavedKeyTitle }}</span>
+                  <span class="saved-key-note">{{ currentProviderSavedKeyNote }}</span>
                 </div>
                 <div class="saved-key-list">
                   <div
@@ -176,6 +196,78 @@
                       </el-button>
                     </div>
                   </div>
+                </div>
+              </div>
+              <div v-if="currentProviderIsOllama" class="ollama-access-hint">
+                <el-alert
+                  title="这里填写的是 CodeYun 分发的访问 Key，不是 Ollama 原生鉴权。"
+                  type="info"
+                  :closable="false"
+                />
+              </div>
+              <div v-if="currentProviderIsOllama && isAdmin" class="ollama-system-key-section">
+                <div class="saved-key-header">
+                  <span class="saved-key-title">系统访问 Key</span>
+                  <span class="saved-key-note">管理员生成后可分发给其他用户，用户再保存到自己的来源配置里。</span>
+                </div>
+                <div class="ollama-system-key-toolbar">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="generatingOllamaAccessKey"
+                    @click="createOllamaAccessKeyWithPrompt"
+                  >
+                    生成新 Key
+                  </el-button>
+                  <el-tag v-if="ollamaAccessKeysLoading" size="small" type="info" effect="plain">
+                    加载中
+                  </el-tag>
+                </div>
+                <div v-if="ollamaAccessKeys.length" class="saved-key-list">
+                  <div
+                    v-for="accessKey in ollamaAccessKeys"
+                    :key="accessKey.id"
+                    class="saved-key-item ollama-system-key-item"
+                  >
+                    <div class="saved-key-meta">
+                      <span class="saved-key-label">{{ accessKey.label }}</span>
+                      <span class="saved-key-mask">{{ accessKey.masked_value }}</span>
+                    </div>
+                    <div class="saved-key-actions">
+                      <el-button
+                        text
+                        size="small"
+                        :loading="revealingOllamaAccessKeyId === accessKey.id"
+                        @click="revealCurrentOllamaAccessKey(accessKey.id)"
+                      >
+                        查看明文
+                      </el-button>
+                      <el-button
+                        text
+                        size="small"
+                        type="danger"
+                        :loading="deletingOllamaAccessKeyId === accessKey.id"
+                        @click="deleteCurrentOllamaAccessKey(accessKey.id)"
+                      >
+                        删除
+                      </el-button>
+                    </div>
+                    <div v-if="getOllamaAccessKeyPlaintext(accessKey.id)" class="ollama-plaintext-row">
+                      <el-input
+                        :model-value="getOllamaAccessKeyPlaintext(accessKey.id)"
+                        readonly
+                        type="password"
+                        show-password
+                      />
+                      <el-button text @click="copyOllamaAccessKeyPlaintext(accessKey.id)">
+                        复制
+                      </el-button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="model-list-empty">
+                  还没有系统访问 Key，先生成一把。
                 </div>
               </div>
             </el-form-item>
@@ -231,6 +323,88 @@
             class="status-alert"
           />
         </section>
+
+        <section v-else class="panel-card">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">应用设置</p>
+              <h2>{{ currentAppDefinition?.label || '应用配置' }}</h2>
+            </div>
+            <div class="panel-header-actions">
+              <el-tag :type="getCurrentAppStatusType()" effect="light">
+                {{ getCurrentAppStatusLabel() }}
+              </el-tag>
+              <el-tag type="info" effect="plain">
+                本地设置
+              </el-tag>
+            </div>
+          </div>
+
+          <el-form label-position="top" class="settings-form">
+            <el-form-item label="启用">
+              <div class="app-toggle-row">
+                <el-switch v-model="currentAppEnabled" />
+                <el-tag size="small" effect="plain" :type="currentAppEnabled ? 'success' : 'info'">
+                  {{ currentAppEnabled ? '节点与详情页可直接调用' : '当前不执行' }}
+                </el-tag>
+              </div>
+            </el-form-item>
+
+            <el-form-item label="AI来源">
+              <el-select
+                v-model="currentAppProviderId"
+                filterable
+                placeholder="选择一个已配置来源"
+                class="app-provider-select"
+              >
+                <el-option
+                  v-for="provider in providers"
+                  :key="provider.id"
+                  :label="provider.label"
+                  :value="provider.id"
+                />
+              </el-select>
+            </el-form-item>
+
+            <el-form-item label="模型">
+              <div class="app-model-row">
+                <el-select
+                  v-model="currentAppModel"
+                  filterable
+                  allow-create
+                  default-first-option
+                  clearable
+                  placeholder="留空则跟随来源首选模型"
+                  class="app-model-select"
+                >
+                  <el-option
+                    v-for="modelName in currentAppModelOptions"
+                    :key="`${resolvedCurrentAppProviderId}-${modelName}`"
+                    :label="modelName"
+                    :value="modelName"
+                  />
+                </el-select>
+                <el-button text @click="clearCurrentAppModel">
+                  跟随首选
+                </el-button>
+              </div>
+            </el-form-item>
+          </el-form>
+
+          <el-alert
+            title="会读取当前节点的标题和正文，并自动回写分类、形态、阶段。"
+            type="info"
+            :closable="false"
+            class="status-alert"
+          />
+          <el-alert
+            v-if="currentAppEnabled && !currentAppIsReady"
+            title="请先为这个应用绑定一个已可用的来源和模型。"
+            type="warning"
+            :closable="false"
+            class="status-alert"
+          />
+        </section>
       </section>
     </div>
 
@@ -265,8 +439,17 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshRight } from '@element-plus/icons-vue'
 
-import { fetchAiChatStatus, type AiChatStatusResponse } from '@/api/aiChat'
+import {
+  createAiChatOllamaAccessKey,
+  deleteAiChatOllamaAccessKey,
+  fetchAiChatOllamaAccessKeys,
+  fetchAiChatStatus,
+  revealAiChatOllamaAccessKey,
+  type AiChatOllamaAccessKeySummary,
+  type AiChatStatusResponse,
+} from '@/api/aiChat'
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
+import { useAiAppStore } from '@/store/aiAppStore'
 import { useAiProviderStore } from '@/store/aiProviderStore'
 import { useUserStore } from '@/store/userStore'
 import { useSortableList } from '@/utils/useSortableList'
@@ -278,9 +461,12 @@ interface CustomProviderDraft {
 }
 
 const aiProviderStore = useAiProviderStore()
+const aiAppStore = useAiAppStore()
 const userStore = useUserStore()
 
+const assetMode = ref<'providers' | 'apps'>('providers')
 const selectedProviderId = ref('')
+const selectedAppId = ref<'note-taxonomy'>('note-taxonomy')
 const status = reactive<AiChatStatusResponse>({
   provider: 'ollama',
   label: 'Ollama',
@@ -291,7 +477,7 @@ const status = reactive<AiChatStatusResponse>({
   configured: true,
   supports_stream: true,
   supports_vision: true,
-  requires_api_key: false,
+  requires_api_key: true,
   base_url: '',
   default_model: 'qwen3-vl:4b',
   models: [],
@@ -302,6 +488,12 @@ const savingProviderConfig = ref(false)
 const removingProviderConfig = ref(false)
 const activatingProviderKeyId = ref('')
 const deletingProviderKeyId = ref('')
+const ollamaAccessKeys = ref<AiChatOllamaAccessKeySummary[]>([])
+const ollamaAccessKeyPlaintexts = reactive<Record<string, string>>({})
+const ollamaAccessKeysLoading = ref(false)
+const generatingOllamaAccessKey = ref(false)
+const revealingOllamaAccessKeyId = ref('')
+const deletingOllamaAccessKeyId = ref('')
 const customProviderDialogVisible = ref(false)
 const creatingCustomProvider = ref(false)
 const apiKeyDrafts = reactive<Record<string, string>>({})
@@ -316,12 +508,70 @@ const customProviderDraft = reactive<CustomProviderDraft>({
 })
 
 const isAuthenticated = computed(() => userStore.isAuthenticated)
+const isAdmin = computed(() => userStore.isAdmin)
 const providers = computed(() => aiProviderStore.providers)
+const visibleAssets = computed(() => assetMode.value === 'providers' ? providers.value : aiAppStore.appDefinitions)
+const selectedAssetId = computed(() => assetMode.value === 'providers' ? selectedProviderId.value : selectedAppId.value)
 const currentProvider = computed(() => aiProviderStore.getProviderById(selectedProviderId.value))
 const currentProviderConfig = computed(() => aiProviderStore.getProviderConfig(selectedProviderId.value))
 const currentProviderRequiresApiKey = computed(() => currentProvider.value?.requires_api_key ?? status.requires_api_key)
 const currentProviderHasSavedConfig = computed(() => currentProviderConfig.value.hasAccountConfig)
 const currentProviderSavedKeys = computed(() => currentProviderConfig.value.savedKeys)
+const currentProviderIsOllama = computed(() => (selectedProviderId.value || '').trim().toLowerCase() === 'ollama')
+const currentProviderKeyFieldLabel = computed(() => currentProviderIsOllama.value ? '访问 Key' : 'API Key')
+const currentProviderKeyInputPlaceholder = computed(() => {
+  if (currentProviderIsOllama.value) {
+    return '输入管理员分发的 CodeYun Ollama 访问 Key'
+  }
+  return currentProviderRequiresApiKey.value ? '输入新 Key 后点击保存' : '可留空'
+})
+const currentProviderSavedKeyTitle = computed(() => currentProviderIsOllama.value ? '已保存访问 Key' : '已保存 API Key')
+const currentProviderSavedKeyNote = computed(() => currentProviderIsOllama.value
+  ? '每次只会使用其中一把激活项；这里保存的是 CodeYun 分发的访问 Key'
+  : '每次只会使用其中一把激活项'
+)
+const currentAppDefinition = computed(() => aiAppStore.getDefinition(selectedAppId.value))
+const currentAppConfig = computed(() => aiAppStore.getAppConfig(selectedAppId.value))
+const resolvedCurrentAppProviderId = computed(() =>
+  currentAppConfig.value.provider.trim()
+  || aiProviderStore.defaultProviderId
+  || providers.value[0]?.id
+  || ''
+)
+const currentAppEnabled = computed({
+  get: () => currentAppConfig.value.enabled,
+  set: (value: boolean) => {
+    aiAppStore.updateAppConfig(selectedAppId.value, { enabled: value })
+  },
+})
+const currentAppProviderId = computed({
+  get: () => currentAppConfig.value.provider.trim() || resolvedCurrentAppProviderId.value,
+  set: (value: string) => {
+    aiAppStore.updateAppConfig(selectedAppId.value, {
+      provider: value,
+      model: currentAppConfig.value.provider.trim() === value ? currentAppConfig.value.model : '',
+    })
+  },
+})
+const currentAppModel = computed({
+  get: () => currentAppConfig.value.model,
+  set: (value: string) => {
+    aiAppStore.updateAppConfig(selectedAppId.value, { model: value })
+  },
+})
+const currentAppProvider = computed(() => aiProviderStore.getProviderById(resolvedCurrentAppProviderId.value))
+const currentAppModelOptions = computed(() => (
+  resolvedCurrentAppProviderId.value
+    ? aiProviderStore.getEffectiveModels(resolvedCurrentAppProviderId.value)
+    : []
+))
+const currentAppEffectiveModel = computed(() => currentAppConfig.value.model.trim() || currentAppModelOptions.value[0] || '')
+const currentAppIsReady = computed(() => (
+  currentAppEnabled.value
+  && Boolean(resolvedCurrentAppProviderId.value)
+  && Boolean(currentAppEffectiveModel.value)
+  && aiProviderStore.hasEffectiveConnection(resolvedCurrentAppProviderId.value)
+))
 
 const currentBaseUrl = computed({
   get: () => aiProviderStore.getProviderConfig(selectedProviderId.value).baseUrl,
@@ -353,13 +603,14 @@ const currentNewModelInput = computed({
 })
 
 watch(
-  () => isAuthenticated.value,
+  () => [isAuthenticated.value, isAdmin.value],
   async () => {
     await loadProvidersAndStatus()
   }
 )
 
 onMounted(async () => {
+  aiAppStore.ensureLoaded()
   await loadProvidersAndStatus()
 })
 
@@ -378,6 +629,15 @@ function ensureSelectedProvider() {
   }
 
   selectedProviderId.value = providers.value[0]?.id || aiProviderStore.defaultProviderId || 'ollama'
+}
+
+function handleAssetChange(id: string) {
+  if (assetMode.value === 'providers') {
+    void handleProviderChange(id)
+    return
+  }
+
+  selectedAppId.value = id as 'note-taxonomy'
 }
 
 function getApiKeyDraft(providerId: string) {
@@ -438,6 +698,7 @@ async function loadProvidersAndStatus() {
     getApiKeyDraft(selectedProviderId.value)
     getApiKeyLabelDraft(selectedProviderId.value)
     getNewModelDraft(selectedProviderId.value)
+    await syncOllamaAccessKeysForSelection()
     await refreshStatus(selectedProviderId.value)
   } catch (error) {
     const message = getErrorMessage(error)
@@ -455,6 +716,23 @@ function getProviderSummaryModel(providerId: string) {
     return models[0]
   }
   return `${models[0]} 等 ${models.length} 个`
+}
+
+function getAppSummaryModel(appId: string) {
+  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy')
+  const providerId = config.provider.trim() || aiProviderStore.defaultProviderId || providers.value[0]?.id || ''
+  const provider = aiProviderStore.getProviderById(providerId)
+  const resolvedModel = config.model.trim() || (providerId ? aiProviderStore.getEffectiveModel(providerId) : '')
+  if (!provider && !resolvedModel) {
+    return '未绑定来源'
+  }
+  if (!provider) {
+    return resolvedModel || '未绑定来源'
+  }
+  if (!resolvedModel) {
+    return `${provider.label} / 未选模型`
+  }
+  return `${provider.label} / ${resolvedModel}`
 }
 
 function getProviderStateLabel(providerId: string) {
@@ -478,12 +756,184 @@ function getProviderStateClass(providerId: string) {
   return 'is-pending'
 }
 
+function getAppStateLabel(appId: string) {
+  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy')
+  if (!config.enabled) {
+    return '已停用'
+  }
+  const providerId = config.provider.trim() || aiProviderStore.defaultProviderId || providers.value[0]?.id || ''
+  const modelName = config.model.trim() || (providerId ? aiProviderStore.getEffectiveModel(providerId) : '')
+  if (providerId && modelName && aiProviderStore.hasEffectiveConnection(providerId)) {
+    return '已就绪'
+  }
+  return '待配置'
+}
+
+function getAppStateClass(appId: string) {
+  const label = getAppStateLabel(appId)
+  if (label === '已就绪') {
+    return 'is-connected'
+  }
+  if (label === '已停用') {
+    return 'is-neutral'
+  }
+  return 'is-pending'
+}
+
+function getCurrentAppStatusLabel() {
+  return getAppStateLabel(selectedAppId.value)
+}
+
+function getCurrentAppStatusType() {
+  const label = getCurrentAppStatusLabel()
+  if (label === '已就绪') {
+    return 'success'
+  }
+  if (label === '已停用') {
+    return 'info'
+  }
+  return 'warning'
+}
+
+function clearCurrentAppModel() {
+  aiAppStore.updateAppConfig(selectedAppId.value, { model: '' })
+}
+
 async function handleProviderChange(providerId: string) {
   selectedProviderId.value = providerId
   getApiKeyDraft(providerId)
   getApiKeyLabelDraft(providerId)
   getNewModelDraft(providerId)
+  await syncOllamaAccessKeysForSelection()
   await refreshStatus(providerId)
+}
+
+function clearOllamaAccessKeyState() {
+  ollamaAccessKeys.value = []
+  for (const keyId of Object.keys(ollamaAccessKeyPlaintexts)) {
+    delete ollamaAccessKeyPlaintexts[keyId]
+  }
+}
+
+async function syncOllamaAccessKeysForSelection() {
+  if (!isAdmin.value || !currentProviderIsOllama.value) {
+    clearOllamaAccessKeyState()
+    return
+  }
+  await loadOllamaAccessKeys()
+}
+
+async function loadOllamaAccessKeys() {
+  if (!isAdmin.value || !currentProviderIsOllama.value) {
+    clearOllamaAccessKeyState()
+    return
+  }
+
+  ollamaAccessKeysLoading.value = true
+  try {
+    const payload = await fetchAiChatOllamaAccessKeys()
+    ollamaAccessKeys.value = payload.items
+  } catch (error) {
+    clearOllamaAccessKeyState()
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    ollamaAccessKeysLoading.value = false
+  }
+}
+
+function getOllamaAccessKeyPlaintext(keyId: string) {
+  return ollamaAccessKeyPlaintexts[keyId] || ''
+}
+
+async function createOllamaAccessKeyWithPrompt() {
+  if (!isAdmin.value) {
+    return
+  }
+
+  let promptValue = ''
+  try {
+    const result = await ElMessageBox.prompt('可选，用于标记分发对象，例如自己、测试号、同事名。', '生成系统访问 Key', {
+      confirmButtonText: '生成',
+      cancelButtonText: '取消',
+      inputPlaceholder: '留空则自动编号',
+    })
+    promptValue = result.value || ''
+  } catch {
+    return
+  }
+
+  generatingOllamaAccessKey.value = true
+  try {
+    const created = await createAiChatOllamaAccessKey({
+      label: promptValue.trim() || undefined,
+    })
+    ollamaAccessKeyPlaintexts[created.id] = created.plaintext_value
+    currentApiKeyInput.value = created.plaintext_value
+    await loadOllamaAccessKeys()
+    ElMessage.success('已生成新的系统访问 Key，并填入当前输入框')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    generatingOllamaAccessKey.value = false
+  }
+}
+
+async function revealCurrentOllamaAccessKey(keyId: string) {
+  if (!isAdmin.value || !keyId) {
+    return
+  }
+
+  revealingOllamaAccessKeyId.value = keyId
+  try {
+    const detail = await revealAiChatOllamaAccessKey(keyId)
+    ollamaAccessKeyPlaintexts[keyId] = detail.plaintext_value
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    revealingOllamaAccessKeyId.value = ''
+  }
+}
+
+async function copyOllamaAccessKeyPlaintext(keyId: string) {
+  const value = getOllamaAccessKeyPlaintext(keyId)
+  if (!value) {
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(value)
+    ElMessage.success('已复制明文 Key')
+  } catch {
+    ElMessage.warning('当前环境无法自动复制，请手动查看并复制')
+  }
+}
+
+async function deleteCurrentOllamaAccessKey(keyId: string) {
+  if (!isAdmin.value || !keyId) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm('将删除这把系统访问 Key。已经分发出去的用户将无法继续使用它。', '删除系统访问 Key', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+
+  deletingOllamaAccessKeyId.value = keyId
+  try {
+    await deleteAiChatOllamaAccessKey(keyId)
+    delete ollamaAccessKeyPlaintexts[keyId]
+    await loadOllamaAccessKeys()
+    ElMessage.success('已删除系统访问 Key')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    deletingOllamaAccessKeyId.value = ''
+  }
 }
 
 async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; silent?: boolean; apiKey?: string; apiKeyLabel?: string } = {}) {
@@ -905,6 +1355,10 @@ function getErrorMessage(error: unknown) {
   flex-wrap: wrap;
 }
 
+.asset-mode-switch :deep(.el-radio-button__inner) {
+  min-width: 60px;
+}
+
 .provider-list {
   display: flex;
   flex-direction: column;
@@ -981,6 +1435,11 @@ function getErrorMessage(error: unknown) {
   background: rgba(254, 243, 199, 0.95);
 }
 
+.provider-item-state.is-neutral {
+  color: #475569;
+  background: rgba(226, 232, 240, 0.95);
+}
+
 .settings-form :deep(.el-form-item) {
   margin-bottom: 18px;
 }
@@ -1003,6 +1462,25 @@ function getErrorMessage(error: unknown) {
 .api-key-save-button {
   flex: 0 0 auto;
   min-width: 88px;
+}
+
+.app-toggle-row,
+.app-model-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+
+.app-provider-select,
+.app-model-select {
+  width: 100%;
+}
+
+.app-model-row :deep(.el-select) {
+  flex: 1;
+  min-width: 220px;
 }
 
 .model-list-editor {
@@ -1134,6 +1612,39 @@ function getErrorMessage(error: unknown) {
   flex-wrap: wrap;
 }
 
+.ollama-access-hint,
+.ollama-system-key-section {
+  margin-top: 12px;
+}
+
+.ollama-system-key-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ollama-system-key-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ollama-system-key-item {
+  align-items: flex-start;
+}
+
+.ollama-plaintext-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ollama-plaintext-row :deep(.el-input) {
+  flex: 1;
+}
+
 .status-alert {
   margin-top: 4px;
 }
@@ -1167,6 +1678,14 @@ function getErrorMessage(error: unknown) {
   }
 
   .api-key-save-button {
+    width: 100%;
+  }
+
+  .ollama-plaintext-row {
+    flex-wrap: wrap;
+  }
+
+  .ollama-plaintext-row .el-button {
     width: 100%;
   }
 

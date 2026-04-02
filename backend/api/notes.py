@@ -1,3 +1,5 @@
+import html
+import json
 from typing import Any, List, Optional, Tuple
 import re
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -23,7 +25,16 @@ from backend.schemas import (
     NoteProgramResponse,
     NoteBatchUpdateRequest,
     NoteBatchUpdateResponse,
+    AiNoteCategorizeRequest,
+    AiNoteCategorizeResponse,
 )
+from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_default_ai_provider_id
+from backend.core.ai_chat_user_config import (
+    AiChatUserConfigError,
+    get_user_ai_chat_provider_runtime_config,
+    list_user_ai_chat_custom_provider_configs,
+)
+from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
 from backend.core.auth import get_current_active_user
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
@@ -65,6 +76,33 @@ import uuid
 router = APIRouter()
 
 ALLOWED_ORDER_FIELDS = {"updated_at", "created_at", "start_at", "weight", "title", "private_level"}
+NOTE_AI_APP_ID = "note-taxonomy"
+NOTE_AI_CATEGORY_DESCRIPTIONS = {
+    "general": "默认综合分类",
+    "project": "长期性工作，非具体任务容器",
+    "module": "项目的组成部分",
+    "task": "具体的执行事项",
+    "bug": "需要修复的问题",
+}
+NOTE_AI_FORM_OPTIONS = (
+    {"key": "note", "label": "笔记", "description": "普通笔记形态"},
+    {"key": "document", "label": "文档", "description": "偏正文排版的文档形态"},
+    {"key": "memo", "label": "备忘", "description": "更短平快的便签形态"},
+    {"key": "music", "label": "音乐", "description": "音乐作品、专辑或音频素材"},
+    {"key": "video", "label": "影视", "description": "电影、剧集、视频或影像资料"},
+    {"key": "game", "label": "游戏", "description": "游戏作品、攻略记录或游玩资料"},
+    {"key": "book", "label": "书籍", "description": "书籍、电子书或长篇阅读材料"},
+)
+NOTE_AI_LIFECYCLE_OPTIONS = (
+    {"key": "idea", "label": "笔记", "description": "普通记录"},
+    {"key": "todo", "label": "想法", "description": "灵感草稿"},
+    {"key": "doing", "label": "待办", "description": "准备执行"},
+    {"key": "done", "label": "完成", "description": "已完成，可按进度展示"},
+    {"key": "delete", "label": "废弃", "description": "已取消"},
+)
+NOTE_AI_HTML_BREAK_RE = re.compile(r"</?(?:p|div|li|tr|h[1-6]|blockquote)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
+NOTE_AI_HTML_TAG_RE = re.compile(r"<[^>]+>")
+NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> dict[str, Any] | None:
@@ -493,6 +531,134 @@ def _serialize_note_read(
     **extra_fields: Any,
 ) -> dict[str, Any]:
     return note_to_response_dict(note, current_user, **extra_fields)
+
+
+def _html_to_plain_text(value: Any) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    text = NOTE_AI_HTML_BREAK_RE.sub("\n", text)
+    text = NOTE_AI_HTML_TAG_RE.sub(" ", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return NOTE_AI_WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _truncate_note_ai_text(value: str, limit: int = 4000) -> str:
+    text = str(value or "").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
+def _extract_note_ai_json(raw_content: Any) -> dict[str, Any]:
+    content = str(raw_content or "").strip()
+    if not content:
+        raise HTTPException(status_code=502, detail="AI 没有返回可解析的 JSON")
+
+    if content.startswith("```"):
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        if fence_match:
+            content = fence_match.group(1).strip()
+
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"(\{.*\})", content, re.DOTALL)
+        if not match:
+            raise HTTPException(status_code=502, detail="AI 没有返回可解析的 JSON")
+        try:
+            parsed = json.loads(match.group(1))
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=502, detail="AI 返回的 JSON 格式无效") from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="AI 返回的结果不是 JSON 对象")
+    return parsed
+
+
+def _resolve_note_ai_runtime_config(
+    payload: AiNoteCategorizeRequest,
+    *,
+    current_user: User,
+    session: Session,
+) -> tuple[str, str | None, str | None]:
+    resolved_provider = (payload.provider or get_default_ai_provider_id()).strip().lower() or get_default_ai_provider_id()
+    saved_runtime = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
+    resolved_base_url = (payload.base_url or "").strip() or str(saved_runtime.get("base_url") or "").strip() or None
+    resolved_api_key = (payload.api_key or "").strip() or str(saved_runtime.get("api_key") or "").strip() or None
+    if resolved_provider == "ollama":
+        ensure_ollama_access_key_allowed(session, resolved_api_key)
+    return resolved_provider, resolved_base_url, resolved_api_key
+
+
+def _normalize_note_ai_choice(
+    value: Any,
+    *,
+    field_label: str,
+    allowed_keys: set[str],
+) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=502, detail=f"AI 没有返回 {field_label}")
+    if normalized not in allowed_keys:
+        raise HTTPException(status_code=502, detail=f"AI 返回了未知{field_label}：{normalized}")
+    return normalized
+
+
+def _build_note_ai_prompt(
+    note: NoteNode,
+    *,
+    palette_items: list[dict[str, Any]],
+) -> tuple[str, str]:
+    def _format_category_line(item: dict[str, Any]) -> str:
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or "").strip() or key
+        description = NOTE_AI_CATEGORY_DESCRIPTIONS.get(key, "").strip()
+        if description:
+            return f"- {key} | {label} | {description}"
+        return f"- {key} | {label}"
+
+    categories_text = "\n".join(
+        _format_category_line(item)
+        for item in palette_items
+        if str(item.get("key") or "").strip()
+    )
+    forms_text = "\n".join(
+        f"- {item['key']} | {item['label']} | {item['description']}"
+        for item in NOTE_AI_FORM_OPTIONS
+    )
+    stages_text = "\n".join(
+        f"- {item['key']} | {item['label']} | {item['description']}"
+        for item in NOTE_AI_LIFECYCLE_OPTIONS
+    )
+    plain_content = _truncate_note_ai_text(_html_to_plain_text(note.content))
+    plain_title = str(note.title or "").strip()
+    if not plain_title and not plain_content:
+        raise HTTPException(status_code=400, detail="当前节点缺少可供分析的标题或正文")
+
+    system_prompt = (
+        "你是 CodeYun 星图笔记里的“笔记分类”应用。"
+        "你的任务是根据标题和正文，为单条笔记选择最合适的分类、形态、阶段。"
+        "必须严格从候选项中各选 1 个，不得自造值。"
+        "优先根据内容语义判断分类，根据内容载体判断形态，根据推进状态判断阶段。"
+        f"信息不足时，优先使用保守默认值：primary_category={NOTE_CATEGORY_DEFAULT}，note_form={NOTE_FORM_DEFAULT}，lifecycle_stage={NOTE_LIFECYCLE_STAGE_DEFAULT}。"
+        "只返回 JSON 对象，不要 Markdown，不要额外解释。"
+    )
+    user_prompt = (
+        "可用分类:\n"
+        f"{categories_text}\n\n"
+        "可用形态:\n"
+        f"{forms_text}\n\n"
+        "可用阶段:\n"
+        f"{stages_text}\n\n"
+        "节点标题:\n"
+        f"{plain_title or '(空)'}\n\n"
+        "节点正文纯文本摘录:\n"
+        f"{plain_content or '(空)'}\n\n"
+        "请输出严格 JSON，格式如下:\n"
+        '{"primary_category":"分类key","note_form":"形态key","lifecycle_stage":"阶段key","reason":"一句话说明","confidence":0.0}'
+    )
+    return system_prompt, user_prompt
 
 
 NOTE_HISTORY_FIELD_MAP = {
@@ -1124,6 +1290,114 @@ def batch_update_notes(
     return {
         "updated_count": len(updated_notes),
         "notes": [_serialize_note_list(note, current_user) for note in updated_notes],
+    }
+
+
+@router.post("/{note_id}/ai-categorize", response_model=AiNoteCategorizeResponse)
+def ai_categorize_note(
+    note_id: str,
+    payload: AiNoteCategorizeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    note = _get_accessible_note(note_id, current_user, session)
+    if not note:
+        raise HTTPException(status_code=404, detail="Note not found")
+
+    palette_items = _build_note_type_palette_response(current_user.id, session).get("items", [])
+    if not palette_items:
+        palette_items = _default_note_type_palette_items()
+
+    resolved_provider, resolved_base_url, resolved_api_key = _resolve_note_ai_runtime_config(
+        payload,
+        current_user=current_user,
+        session=session,
+    )
+    resolved_model = (payload.model or "").strip()
+    extra_providers = list_user_ai_chat_custom_provider_configs(session, current_user.id)
+    system_prompt, user_prompt = _build_note_ai_prompt(note, palette_items=palette_items)
+
+    try:
+        ai_response = chat_with_provider(
+            provider_id=resolved_provider,
+            base_url=resolved_base_url,
+            api_key=resolved_api_key,
+            messages=[{"role": "user", "content": user_prompt}],
+            model=resolved_model or None,
+            system_prompt=system_prompt,
+            temperature=0,
+            extra_providers=extra_providers,
+        )
+    except (OllamaClientError, AiChatUserConfigError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    parsed = _extract_note_ai_json(ai_response.get("content"))
+    allowed_category_keys = {
+        str(item.get("key") or "").strip()
+        for item in palette_items
+        if str(item.get("key") or "").strip()
+    }
+    allowed_form_keys = {item["key"] for item in NOTE_AI_FORM_OPTIONS}
+    allowed_stage_keys = {item["key"] for item in NOTE_AI_LIFECYCLE_OPTIONS}
+
+    primary_category = _normalize_note_ai_choice(
+        parsed.get("primary_category"),
+        field_label="分类",
+        allowed_keys=allowed_category_keys,
+    )
+    note_form = _normalize_note_ai_choice(
+        parsed.get("note_form"),
+        field_label="形态",
+        allowed_keys=allowed_form_keys,
+    )
+    lifecycle_stage = _normalize_note_ai_choice(
+        parsed.get("lifecycle_stage"),
+        field_label="阶段",
+        allowed_keys=allowed_stage_keys,
+    )
+
+    taxonomy_payload = _build_legacy_fields_from_taxonomy(
+        [{"key": primary_category, "weight": 100}],
+        primary_category,
+        note_form,
+        note.note_scene or note.note_kind or NOTE_SCENE_DEFAULT,
+        lifecycle_stage,
+    )
+    changed_fields = {
+        field: value
+        for field, value in taxonomy_payload.items()
+        if getattr(note, field) != value
+    }
+    if changed_fields:
+        _append_note_history(note, changed_fields, int(time.time()))
+        for field, value in changed_fields.items():
+            setattr(note, field, value)
+        note.updated_at = time.time()
+        session.add(note)
+        session.commit()
+        session.refresh(note)
+
+    category_label_map = {
+        str(item.get("key") or "").strip(): str(item.get("label") or "").strip() or str(item.get("key") or "").strip()
+        for item in palette_items
+    }
+    form_label_map = {item["key"]: item["label"] for item in NOTE_AI_FORM_OPTIONS}
+    stage_label_map = {item["key"]: item["label"] for item in NOTE_AI_LIFECYCLE_OPTIONS}
+    summary = " / ".join([
+        category_label_map.get(primary_category, primary_category),
+        form_label_map.get(note_form, note_form),
+        stage_label_map.get(lifecycle_stage, lifecycle_stage),
+    ])
+    note_payload = _serialize_note_read(note, current_user)
+    if not isinstance(note_payload.get("custom_fields"), list):
+        note_payload["custom_fields"] = []
+
+    return {
+        "app": NOTE_AI_APP_ID,
+        "provider": resolved_provider,
+        "model": str(ai_response.get("model") or resolved_model or ""),
+        "summary": f"已标记为 {summary}",
+        "note": note_payload,
     }
 
 

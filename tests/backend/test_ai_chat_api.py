@@ -1,12 +1,33 @@
 import json
 from unittest.mock import patch
 
+from backend.app import app
 from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status
-from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key
-from backend.models import AppSetting
+from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
+from backend.core.auth import get_current_active_superuser
+from backend.core.ollama_access_keys import create_ollama_access_key
+from backend.models import AppSetting, User
 
 
-def test_ai_chat_status_success(client):
+def _create_test_ollama_access_key(session) -> str:
+    created = create_ollama_access_key(session, created_by_user_id=1, label="测试访问 Key")
+    return created["plaintext_value"]
+
+
+def _override_superuser():
+    admin_user = User(
+        id=1,
+        username="admin",
+        hashed_password="pw",
+        is_active=True,
+        is_superuser=True,
+    )
+    app.dependency_overrides[get_current_active_superuser] = lambda: admin_user
+    return admin_user
+
+
+def test_ai_chat_status_success(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch(
         "backend.api.ai_chat.get_ai_provider_status",
         return_value={
@@ -25,7 +46,13 @@ def test_ai_chat_status_success(client):
             "error": None,
         },
     ):
-        response = client.get("/api/ai-chat/status")
+        response = client.post(
+            "/api/ai-chat/status",
+            json={
+                "provider": "ollama",
+                "api_key": access_key,
+            },
+        )
 
     assert response.status_code == 200
     payload = response.json()
@@ -33,13 +60,20 @@ def test_ai_chat_status_success(client):
     assert payload["provider"] == "ollama"
     assert payload["default_model"] == "qwen3-vl:4b"
     assert payload["models"] == ["qwen3-vl:4b", "llama3.2:latest"]
-    assert payload["requires_api_key"] is False
+    assert payload["requires_api_key"] is True
     assert payload["is_custom"] is False
 
 
-def test_ai_chat_status_unavailable(client):
+def test_ai_chat_status_unavailable(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch("backend.api.ai_chat.get_ai_provider_status", side_effect=OllamaClientError("连接 Ollama 失败")):
-        response = client.get("/api/ai-chat/status")
+        response = client.post(
+            "/api/ai-chat/status",
+            json={
+                "provider": "ollama",
+                "api_key": access_key,
+            },
+        )
 
     assert response.status_code == 200
     payload = response.json()
@@ -85,6 +119,7 @@ def test_ai_chat_providers(client):
     payload = response.json()
     assert payload["default_provider"] == "ollama"
     assert [item["id"] for item in payload["items"]] == ["ollama", "deepseek"]
+    assert payload["items"][0]["requires_api_key"] is True
     assert payload["items"][1]["requires_api_key"] is True
 
 
@@ -119,6 +154,55 @@ def test_ai_chat_saved_configs_anonymous_returns_empty(client):
         "signed_in": False,
         "items": [],
     }
+
+
+def test_ai_chat_admin_can_manage_ollama_access_keys(client):
+    _override_superuser()
+    try:
+        create_response = client.post(
+            "/api/ai-chat/ollama-access-keys",
+            json={"label": "分发给测试同学"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert create_response.status_code == 200
+    created = create_response.json()
+    assert created["label"] == "分发给测试同学"
+    assert created["plaintext_value"].startswith("oky-")
+    assert created["masked_value"]
+
+    _override_superuser()
+    try:
+        list_response = client.get("/api/ai-chat/ollama-access-keys")
+        reveal_response = client.get(f"/api/ai-chat/ollama-access-keys/{created['id']}")
+        delete_response = client.delete(f"/api/ai-chat/ollama-access-keys/{created['id']}")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["id"] == created["id"]
+    assert reveal_response.status_code == 200
+    assert reveal_response.json()["plaintext_value"] == created["plaintext_value"]
+    assert delete_response.status_code == 200
+
+
+def test_ai_chat_ollama_requires_valid_access_key(client, auth_user):
+    response = client.post(
+        "/api/ai-chat/chat",
+        json={
+            "provider": "ollama",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "你好",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 502
+    assert "访问 Key" in response.json()["detail"]
 
 
 def test_ai_chat_prompt_cards_anonymous_returns_empty(client):
@@ -314,6 +398,41 @@ def test_ai_chat_uses_saved_user_provider_config_for_runtime_requests(client, au
     assert kwargs["base_url"] == "https://api.deepseek.com/v1"
     assert kwargs["api_key"] == "sk-saved"
     assert kwargs["model"] == "deepseek-reasoner"
+
+
+def test_ai_chat_uses_saved_ollama_access_key_for_runtime_requests(client, session, auth_user):
+    access_key = _create_test_ollama_access_key(session)
+    save_user_ai_chat_provider_config(
+        session,
+        auth_user.id,
+        "ollama",
+        api_key=access_key,
+    )
+
+    with patch(
+        "backend.api.ai_chat.chat_with_provider",
+        return_value={
+            "model": "qwen3-vl:4b",
+            "content": "你好",
+        },
+    ) as mock_chat:
+        response = client.post(
+            "/api/ai-chat/chat",
+            json={
+                "provider": "ollama",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "你好",
+                    }
+                ],
+            },
+        )
+
+    assert response.status_code == 200
+    kwargs = mock_chat.call_args.kwargs
+    assert kwargs["provider_id"] == "ollama"
+    assert kwargs["api_key"] == access_key
 
 
 def test_ai_chat_can_switch_active_saved_provider_key(client, auth_user):
@@ -596,7 +715,8 @@ def test_ai_chat_custom_provider_delete_removes_provider_and_saved_config(client
     assert saved_items == []
 
 
-def test_ai_chat_post_success_with_images(client):
+def test_ai_chat_post_success_with_images(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch(
         "backend.api.ai_chat.chat_with_provider",
         return_value={
@@ -613,6 +733,7 @@ def test_ai_chat_post_success_with_images(client):
             "/api/ai-chat/chat",
             json={
                 "provider": "ollama",
+                "api_key": access_key,
                 "model": "qwen3-vl:4b",
                 "system_prompt": "你是一个测试助手",
                 "temperature": 0.4,
@@ -640,7 +761,7 @@ def test_ai_chat_post_success_with_images(client):
     kwargs = mock_chat.call_args.kwargs
     assert kwargs["provider_id"] == "ollama"
     assert kwargs["base_url"] is None
-    assert kwargs["api_key"] is None
+    assert kwargs["api_key"] == access_key
     assert kwargs["model"] == "qwen3-vl:4b"
     assert kwargs["system_prompt"] == "你是一个测试助手"
     assert kwargs["temperature"] == 0.4
@@ -675,11 +796,14 @@ def test_ai_chat_rejects_images_on_assistant_message(client):
     assert response.json()["detail"] == "只有用户消息可以附带图片"
 
 
-def test_ai_chat_surfaces_ollama_errors(client):
+def test_ai_chat_surfaces_ollama_errors(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch("backend.api.ai_chat.chat_with_provider", side_effect=OllamaClientError("请求 Ollama 失败")):
         response = client.post(
             "/api/ai-chat/chat",
             json={
+                "provider": "ollama",
+                "api_key": access_key,
                 "messages": [
                     {
                         "role": "user",
@@ -693,7 +817,8 @@ def test_ai_chat_surfaces_ollama_errors(client):
     assert response.json()["detail"] == "请求 Ollama 失败"
 
 
-def test_ai_chat_stream_success(client):
+def test_ai_chat_stream_success(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch(
         "backend.api.ai_chat.stream_chat_with_provider",
         return_value=iter(
@@ -726,6 +851,7 @@ def test_ai_chat_stream_success(client):
             "/api/ai-chat/chat-stream",
             json={
                 "provider": "ollama",
+                "api_key": access_key,
                 "messages": [
                     {
                         "role": "user",
@@ -781,11 +907,14 @@ def test_ai_chat_stream_passes_runtime_provider_config(client):
     assert kwargs["api_key"] == "sk-test"
 
 
-def test_ai_chat_stream_surfaces_errors(client):
+def test_ai_chat_stream_surfaces_errors(client, session):
+    access_key = _create_test_ollama_access_key(session)
     with patch("backend.api.ai_chat.stream_chat_with_provider", side_effect=OllamaClientError("流式请求失败")):
         response = client.post(
             "/api/ai-chat/chat-stream",
             json={
+                "provider": "ollama",
+                "api_key": access_key,
                 "messages": [
                     {
                         "role": "user",
