@@ -40,6 +40,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'fanxiu/discount',
+        name: 'FanxiuDiscountGuide',
+        component: () => import('@/views/fanxiu/DiscountGuide.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'fanxiu/recharge',
         name: 'FanxiuRecharge',
         component: () => import('@/views/fanxiu/Recharge.vue'),
@@ -149,6 +155,18 @@ const routes: Array<RouteRecordRaw> = [
         name: 'AiGitCommit',
         component: () => import('@/views/tools/AiGitCommit.vue'),
         meta: { requiresAuth: true },
+      },
+      {
+        path: 'attendance/configs',
+        name: 'AttendanceConfigs',
+        component: () => import('@/views/attendance/AttendanceConfigs.vue'),
+        meta: { requiresAuth: true, requiresAdmin: true },
+      },
+      {
+        path: 'attendance/wjx-templates',
+        name: 'AttendanceWjxTemplates',
+        component: () => import('@/views/attendance/AttendanceWjxTemplates.vue'),
+        meta: { requiresAuth: true, requiresAdmin: true },
       },
       {
         path: 'cluster/logs/:id',

@@ -38,6 +38,17 @@
       </template>
 
       <template #meta-actions="{ readonly }">
+        <el-tooltip content="根据标题和正文自动识别分类、形态、阶段" placement="top">
+          <el-button
+            size="small"
+            :icon="MagicStick"
+            :loading="aiCategorizing"
+            :disabled="readonly || !currentNote"
+            @click="categorizeCurrentNote"
+          >
+            AI分类
+          </el-button>
+        </el-tooltip>
         <el-tooltip content="全景图：展示该节点所在的完整关联网络" placement="top">
           <el-button
             size="small"
@@ -71,7 +82,7 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
-import { CopyDocument, Delete } from '@element-plus/icons-vue';
+import { CopyDocument, Delete, MagicStick } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import SharedNoteEditor from './SharedNoteEditor.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
@@ -96,6 +107,7 @@ const noteStore = useNoteStore();
 const currentNote = ref<NoteNode | undefined>();
 const isFetchingContent = ref(false);
 const showCopyDialog = ref(false);
+const aiCategorizing = ref(false);
 let loadRequestToken = 0;
 
 const hasConnections = computed(() => (currentNote.value?.edge_count ?? 0) > 0);
@@ -170,6 +182,26 @@ const handleSaveKeepalive = (note: NoteNode, patch: EditableNotePatch = {}) => {
 const handleEditorChange = (note: NoteNode) => {
   currentNote.value = JSON.parse(JSON.stringify(note));
   emit('update', note);
+};
+
+const categorizeCurrentNote = async () => {
+  if (!currentNote.value || aiCategorizing.value) {
+    return;
+  }
+
+  aiCategorizing.value = true;
+  try {
+    const result = await noteStore.aiCategorizeNote(currentNote.value.id);
+    if (!result) {
+      return;
+    }
+
+    currentNote.value = JSON.parse(JSON.stringify(result.note));
+    emit('update', result.note);
+    ElMessage.success(result.summary || '已完成 AI 分类');
+  } finally {
+    aiCategorizing.value = false;
+  }
 };
 
 const deleteCurrentNote = async () => {

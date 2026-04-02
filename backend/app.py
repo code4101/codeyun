@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.admin import init_storage_scheduler, router as admin_router
+from backend.api.attendance import router as attendance_router
 from backend.api.ai_chat import router as ai_chat_router
 from backend.api.ai_git_repos import router as ai_git_repos_router
 from backend.api.auth import router as auth_router
@@ -92,6 +93,7 @@ app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+app.include_router(attendance_router, prefix="/api/attendance", tags=["attendance"])
 app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
 app.include_router(ai_git_repos_router, prefix="/api/ai-git-repos", tags=["ai-git-repos"])
 app.include_router(reduction_documents_router, prefix="/api/reduction-documents", tags=["reduction-documents"])

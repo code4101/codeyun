@@ -58,4 +58,8 @@ backend/data/
 /frontend/.codeyun-state/
 /backend/private_modules/*
 !/backend/private_modules/__init__.py
+/backend/private_modules/*/tests/
+/backend/private_modules/*/tests/**
 /frontend/src/private/modules/
+/tests/private/
+/.tmp-dev-observe

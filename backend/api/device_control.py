@@ -2,13 +2,14 @@ import os
 import socket
 import subprocess
 import sys
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 import psutil
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.core.auth import verify_api_token
+from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
 from backend.core.device import (
     build_background_popen_kwargs,
     device_manager,
@@ -157,3 +158,29 @@ class ConfigRequest(BaseModel):
 def update_device_control_config(req: ConfigRequest):
     _ = req
     raise HTTPException(status_code=400, detail="本机运行配置不再支持通过该接口持久化")
+
+
+class AttendanceWjxExecuteRequest(BaseModel):
+    login_username: str
+    password: str
+    activity_id: str
+    action: Literal["inspect", "apply"]
+    hide_names: List[str] = Field(default_factory=list)
+    add_names: List[str] = Field(default_factory=list)
+
+
+@router.post("/attendance/wjx/execute")
+def execute_attendance_wjx(req: AttendanceWjxExecuteRequest):
+    try:
+        return execute_wjx_template_action(
+            login_username=req.login_username,
+            password=req.password,
+            activity_id=req.activity_id,
+            action=req.action,
+            hide_names=req.hide_names,
+            add_names=req.add_names,
+        )
+    except WjxAutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc

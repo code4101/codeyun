@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 
-from backend.core.ai_git_commit import resolve_ai_runtime_config
+from backend.core.ai_git_commit import AiGitCommitError, resolve_ai_runtime_config
 from backend.core.document_reduction import (
     DOCUMENT_REDUCTION_BRANCH_FACTOR,
     DocumentReductionError,
@@ -352,6 +352,17 @@ def index_reduction_document(
         session.commit()
         session.refresh(run)
         session.refresh(document)
+    except AiGitCommitError as exc:
+        run.status = "failed"
+        run.error_message = str(exc)
+        run.finished_at = time.time()
+        run.updated_at = run.finished_at
+        session.add(run)
+        document.status = "error"
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except (DocumentReductionError, DocumentReductionStorageError) as exc:
         run.status = "failed"
         run.error_message = str(exc)
@@ -467,6 +478,14 @@ def query_reduction_document(
         document.updated_at = document.latest_query_at
         session.add(document)
         session.commit()
+    except AiGitCommitError as exc:
+        query_row.status = "failed"
+        query_row.error_message = str(exc)
+        query_row.finished_at = time.time()
+        query_row.updated_at = query_row.finished_at
+        session.add(query_row)
+        session.commit()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except (DocumentReductionError, DocumentReductionStorageError) as exc:
         query_row.status = "failed"
         query_row.error_message = str(exc)

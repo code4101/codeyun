@@ -61,6 +61,7 @@ const defaultOpeneds = computed(() => {
   if (route.path === '/cluster') return ['cluster-tools'];
   if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
+  if (route.path.startsWith('/attendance/')) openeds.push('attendance-tools');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
@@ -119,6 +120,15 @@ const handleLogin = () => {
             <el-menu-item index="/tools/ai-reduction">AI归纳</el-menu-item>
             <el-menu-item index="/tools/ai-git-commit">AI提交</el-menu-item>
           </el-sub-menu>
+
+          <el-sub-menu index="attendance-tools" v-if="userStore.isAdmin">
+            <template #title>
+              <el-icon><Document /></el-icon>
+              <span>禅寺考勤</span>
+            </template>
+            <el-menu-item index="/attendance/configs">考勤配置</el-menu-item>
+            <el-menu-item index="/attendance/wjx-templates">问卷星模版</el-menu-item>
+          </el-sub-menu>
           
           <el-sub-menu index="game-tools">
             <template #title>
@@ -131,6 +141,7 @@ const handleLogin = () => {
               </template>
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
               <el-menu-item index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
+              <el-menu-item index="/fanxiu/discount">凡修优惠券</el-menu-item>
               <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
               <el-menu-item index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
             </el-sub-menu>

@@ -1,14 +1,14 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, Delete, Refresh, ShoppingCart, ArrowDown } from '@element-plus/icons-vue';
+import { Plus, Delete, ShoppingCart, ArrowDown } from '@element-plus/icons-vue';
 
 // --- Types ---
 interface Pack {
   name: string;
   price: number;
   pulls: number;
-  limit: number;
+  limit: number; // 0 means unlimited
   purchased: number;
   // Computed/Internal
   round_idx?: number;
@@ -38,7 +38,16 @@ interface StrategyResult {
     message?: string;
 }
 
+interface RechargeLocalState {
+    version: 1;
+    active_tab: string;
+    rounds: Round[];
+}
+
 // --- Constants ---
+const MAX_PULL_DECIMALS = 3;
+const RECHARGE_STORAGE_KEY = 'codeyun_fanxiu_recharge_v1';
+
 const DEFAULT_PACKS: Pack[] = [
     { name: "6元包", price: 6, pulls: 2, limit: 1, purchased: 0 },
     { name: "18元包", price: 18, pulls: 4, limit: 1, purchased: 0 },
@@ -49,36 +58,262 @@ const DEFAULT_PACKS: Pack[] = [
     { name: "328元包", price: 328, pulls: 35, limit: 3, purchased: 0 }
 ];
 
-const PRESETS = [
-    { name: "2026春节", packs: DEFAULT_PACKS },
-    // Future presets can be added here
+const DAHUA_ZHUANZHUANLE_PACKS: Pack[] = [
+    { name: "6元包", price: 6, pulls: 2, limit: 1, purchased: 0 },
+    { name: "18元包", price: 18, pulls: 4, limit: 1, purchased: 0 },
+    { name: "30元包", price: 30, pulls: 6, limit: 2, purchased: 0 },
+    { name: "68元包", price: 68, pulls: 10, limit: 3, purchased: 0 },
+    { name: "98元包", price: 98, pulls: 15, limit: 3, purchased: 0 },
+    { name: "198元包", price: 198, pulls: 22.5, limit: 3, purchased: 0 },
+    { name: "328元包", price: 328, pulls: 30, limit: 5, purchased: 0 },
+    { name: "648元包", price: 648, pulls: 50, limit: 0, purchased: 0 }
 ];
 
+const clonePacks = (packs: Pack[]) => JSON.parse(JSON.stringify(packs)) as Pack[];
+
+const normalizePullValue = (value: number) => Number(Number(value || 0).toFixed(MAX_PULL_DECIMALS));
+
+const formatPulls = (value: number) => {
+    const normalized = normalizePullValue(value);
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toString();
+};
+
+const getPullDecimalPlaces = (value: number) => {
+    const normalizedText = formatPulls(value);
+    const dotIndex = normalizedText.indexOf('.');
+    return dotIndex === -1 ? 0 : normalizedText.length - dotIndex - 1;
+};
+
+const getPullScaleFactor = (values: number[]) => {
+    const maxDecimals = values.reduce((max, value) => Math.max(max, getPullDecimalPlaces(value)), 0);
+    return 10 ** maxDecimals;
+};
+
+const scalePull = (value: number, scaleFactor: number) => Math.round(normalizePullValue(value) * scaleFactor);
+
+const unscalePull = (value: number, scaleFactor: number) => normalizePullValue(value / scaleFactor);
+
+const isUnlimitedLimit = (limit: number) => Number(limit || 0) <= 0;
+
+const PRESETS = [
+    { name: "2026春节", packs: DEFAULT_PACKS },
+    { name: "2026/3/30 大话转转乐", packs: DAHUA_ZHUANZHUANLE_PACKS }
+];
+
+const buildInitialRound = (): Round => ({
+    id: 1,
+    target_pulls: 70,
+    free_pulls: 31,
+    packs: clonePacks(DEFAULT_PACKS)
+});
+
+const canUseLocalStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+const normalizeNonNegativeNumber = (value: unknown, fallback: number) => {
+    const normalized = Number(value);
+    if (!Number.isFinite(normalized) || normalized < 0) {
+        return fallback;
+    }
+    return normalized;
+};
+
+const normalizePack = (value: unknown): Pack => {
+    const raw = value && typeof value === 'object' ? value as Partial<Pack> : {};
+    const limit = Math.floor(normalizeNonNegativeNumber(raw.limit, 1));
+    const purchased = Math.floor(normalizeNonNegativeNumber(raw.purchased, 0));
+
+    return {
+        name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : '新礼包',
+        price: normalizeNonNegativeNumber(raw.price, 0),
+        pulls: normalizePullValue(normalizeNonNegativeNumber(raw.pulls, 0)),
+        limit,
+        purchased: limit > 0 ? Math.min(purchased, limit) : purchased,
+    };
+};
+
+const normalizeRound = (value: unknown, idx: number): Round => {
+    const raw = value && typeof value === 'object' ? value as Partial<Round> : {};
+    const packs = Array.isArray(raw.packs) && raw.packs.length > 0
+        ? raw.packs.map(normalizePack)
+        : clonePacks(DEFAULT_PACKS);
+
+    return {
+        id: idx + 1,
+        target_pulls: normalizePullValue(normalizeNonNegativeNumber(raw.target_pulls, 70)),
+        free_pulls: normalizePullValue(normalizeNonNegativeNumber(raw.free_pulls, idx === 0 ? 31 : 0)),
+        packs,
+    };
+};
+
+const normalizeRounds = (value: unknown) => {
+    if (!Array.isArray(value) || value.length === 0) {
+        return [buildInitialRound()];
+    }
+
+    return value.map((item, idx) => normalizeRound(item, idx));
+};
+
+const serializePack = (pack: Pack): Pack => ({
+    name: pack.name,
+    price: normalizeNonNegativeNumber(pack.price, 0),
+    pulls: normalizePullValue(normalizeNonNegativeNumber(pack.pulls, 0)),
+    limit: Math.floor(normalizeNonNegativeNumber(pack.limit, 1)),
+    purchased: Math.floor(normalizeNonNegativeNumber(pack.purchased, 0)),
+});
+
+const serializeRound = (round: Round, idx: number): Round => {
+    const packs = round.packs.map(serializePack);
+    return normalizeRound({
+        id: idx + 1,
+        target_pulls: round.target_pulls,
+        free_pulls: round.free_pulls,
+        packs,
+    }, idx);
+};
+
+const getPackPresetSignature = (packs: Pack[]) => JSON.stringify(
+    packs.map(pack => ({
+        name: pack.name,
+        price: normalizeNonNegativeNumber(pack.price, 0),
+        pulls: normalizePullValue(normalizeNonNegativeNumber(pack.pulls, 0)),
+        limit: Math.floor(normalizeNonNegativeNumber(pack.limit, 1)),
+    }))
+);
+
+const PRESET_SIGNATURE_TO_NAME = new Map(PRESETS.map(preset => [getPackPresetSignature(preset.packs), preset.name]));
+
+const getRoundPresetName = (round: Round) => PRESET_SIGNATURE_TO_NAME.get(getPackPresetSignature(round.packs)) ?? '自定义';
+
+const loadRechargeState = (): RechargeLocalState | null => {
+    if (!canUseLocalStorage()) {
+        return null;
+    }
+
+    try {
+        const raw = window.localStorage.getItem(RECHARGE_STORAGE_KEY);
+        if (!raw) {
+            return null;
+        }
+
+        const payload = JSON.parse(raw) as Partial<RechargeLocalState>;
+        const rounds = normalizeRounds(payload?.rounds);
+        const rawActiveTab = typeof payload?.active_tab === 'string' ? payload.active_tab : '0';
+        const parsedTab = Number.parseInt(rawActiveTab, 10);
+        const activeTab = Number.isFinite(parsedTab)
+            ? String(Math.min(Math.max(parsedTab, 0), Math.max(0, rounds.length - 1)))
+            : '0';
+
+        return {
+            version: 1,
+            active_tab: activeTab,
+            rounds,
+        };
+    } catch {
+        return null;
+    }
+};
+
+const persistRechargeState = (activeTabValue: string, roundsValue: Round[]) => {
+    if (!canUseLocalStorage()) {
+        return;
+    }
+
+    const normalizedRounds = roundsValue.map((round, idx) => serializeRound(round, idx));
+    const parsedTab = Number.parseInt(activeTabValue, 10);
+    const normalizedTab = Number.isFinite(parsedTab)
+        ? String(Math.min(Math.max(parsedTab, 0), Math.max(0, normalizedRounds.length - 1)))
+        : '0';
+
+    const payload: RechargeLocalState = {
+        version: 1,
+        active_tab: normalizedTab,
+        rounds: normalizedRounds,
+    };
+
+    window.localStorage.setItem(RECHARGE_STORAGE_KEY, JSON.stringify(payload));
+};
+
+const initialRechargeState = loadRechargeState();
+
 // --- State ---
-const activeTab = ref('0');
-const rounds = ref<Round[]>([
-    { id: 1, target_pulls: 70, free_pulls: 31, packs: JSON.parse(JSON.stringify(DEFAULT_PACKS)) }
-]);
+const activeTab = ref(initialRechargeState?.active_tab ?? '0');
+const rounds = ref<Round[]>(initialRechargeState?.rounds ?? [buildInitialRound()]);
 const loading = ref(false);
 const result = ref<StrategyResult | null>(null);
 
 // --- Computed ---
 const totalTargetPulls = computed(() => {
-    return rounds.value.reduce((sum, r) => sum + (r.target_pulls || 0), 0);
+    return normalizePullValue(rounds.value.reduce((sum, r) => sum + Number(r.target_pulls || 0), 0));
 });
 
 const currentStatus = computed(() => {
     let pulls = 0;
     let spent = 0;
     rounds.value.forEach(r => {
-        pulls += (r.free_pulls || 0);
+        pulls += Number(r.free_pulls || 0);
         r.packs.forEach(p => {
-            pulls += (p.pulls * (p.purchased || 0));
-            spent += (p.price * (p.purchased || 0));
+            pulls += Number(p.pulls || 0) * Number(p.purchased || 0);
+            spent += Number(p.price || 0) * Number(p.purchased || 0);
         });
     });
-    return { total_pulls: pulls, total_spent: spent };
+    return { total_pulls: normalizePullValue(pulls), total_spent: spent };
 });
+
+const formatCost = (value: number) => {
+    const normalized = Number(Number(value || 0).toFixed(2));
+    return Number.isInteger(normalized) ? String(normalized) : normalized.toString();
+};
+
+const getPackFullPurchaseCumulative = (packs: Pack[], packIdx: number) => {
+    let totalPulls = 0;
+    let totalCost = 0;
+    let pullsInfinite = false;
+    let costInfinite = false;
+
+    for (let i = 0; i <= packIdx; i++) {
+        const pack = packs[i];
+        if (!pack) break;
+
+        if (isUnlimitedLimit(pack.limit)) {
+            if (Number(pack.pulls || 0) > 0) {
+                pullsInfinite = true;
+            }
+            if (Number(pack.price || 0) > 0) {
+                costInfinite = true;
+            }
+            if (pullsInfinite || costInfinite) {
+                break;
+            }
+            continue;
+        }
+
+        const limit = Math.floor(normalizeNonNegativeNumber(pack.limit, 0));
+        totalPulls += Number(pack.pulls || 0) * limit;
+        totalCost += Number(pack.price || 0) * limit;
+    }
+
+    return {
+        pulls: normalizePullValue(totalPulls),
+        cost: Number(Number(totalCost).toFixed(2)),
+        pullsInfinite,
+        costInfinite,
+    };
+};
+
+const formatPackFullPurchaseSummary = (packs: Pack[], packIdx: number) => {
+    const summary = getPackFullPurchaseCumulative(packs, packIdx);
+    const pullsText = summary.pullsInfinite ? '∞' : formatPulls(summary.pulls);
+    const costText = summary.costInfinite ? '∞' : formatCost(summary.cost);
+    return `${pullsText}抽 / ${costText}元`;
+};
+
+watch(
+    [activeTab, rounds],
+    ([nextActiveTab, nextRounds]) => {
+        persistRechargeState(nextActiveTab, nextRounds);
+    },
+    { deep: true }
+);
 
 // --- Methods ---
 const addRound = () => {
@@ -87,14 +322,14 @@ const addRound = () => {
         id: newId,
         target_pulls: 70,
         free_pulls: 0,
-        packs: JSON.parse(JSON.stringify(DEFAULT_PACKS))
+        packs: clonePacks(DEFAULT_PACKS)
     };
 
     if (rounds.value.length > 0) {
         const lastRound = rounds.value[rounds.value.length - 1];
         newRound.target_pulls = lastRound.target_pulls;
         newRound.free_pulls = lastRound.free_pulls;
-        newRound.packs = JSON.parse(JSON.stringify(lastRound.packs));
+        newRound.packs = clonePacks(lastRound.packs);
         newRound.packs.forEach(p => p.purchased = 0);
     }
 
@@ -138,19 +373,27 @@ const removePack = (roundIdx: number, packIdx: number) => {
 const fillDefaultPacks = (roundIdx: number, presetIdx: number = 0) => {
     const preset = PRESETS[presetIdx];
     ElMessageBox.confirm(`确定重置为"${preset.name}"吗？将丢失当前已填写的购买数量。`, '提示', { type: 'warning' }).then(() => {
-        rounds.value[roundIdx].packs = JSON.parse(JSON.stringify(preset.packs));
+        rounds.value[roundIdx].packs = clonePacks(preset.packs);
     });
 };
 
 // --- Algorithm ---
-// Ported from Python
+const getExpandableCopies = (pack: Pack, neededPulls: number, maxPackPulls: number) => {
+    if (pack.pulls <= 0) return 0;
+    if (isUnlimitedLimit(pack.limit)) {
+        return Math.max(0, Math.ceil((neededPulls + maxPackPulls) / pack.pulls));
+    }
+
+    return Math.max(0, Math.floor(Number(pack.limit || 0) - Number(pack.purchased || 0)));
+};
+
 const solveKnapsack = (targetPulls: number, availablePacks: Pack[]) => {
-    // 1. Pre-check
-    const totalAvailablePulls = availablePacks.reduce((sum, p) => sum + p.pulls, 0);
+    const normalizedTargetPulls = normalizePullValue(targetPulls);
+    const totalAvailablePulls = normalizePullValue(availablePacks.reduce((sum, p) => sum + Number(p.pulls || 0), 0));
 
-    if (targetPulls <= 0) return { selected: [], cost: 0, pulls: 0 };
+    if (normalizedTargetPulls <= 0) return { selected: [], cost: 0, pulls: 0 };
 
-    if (totalAvailablePulls < targetPulls) {
+    if (totalAvailablePulls < normalizedTargetPulls) {
         return {
             selected: [...availablePacks],
             cost: availablePacks.reduce((sum, p) => sum + p.price, 0),
@@ -158,92 +401,91 @@ const solveKnapsack = (targetPulls: number, availablePacks: Pack[]) => {
         };
     }
 
-    // 2. DP Init
-    const maxSinglePull = Math.max(...availablePacks.map(p => p.pulls), 0);
-    const limitPulls = targetPulls + maxSinglePull + 1;
-    
-    // dp[j] = min cost to get exactly j pulls
-    const dp = new Array(limitPulls).fill(Infinity);
-    dp[0] = 0;
-    
-    // keep[i][j] = true if item i is selected for weight j
-    const n = availablePacks.length;
-    // Using simple array of arrays. 
-    // Size warning: n * limitPulls. 
-    // If limitPulls is 1000 and n is 50, that's 50k booleans. Fine.
-    const keep: boolean[][] = Array.from({ length: n + 1 }, () => new Array(limitPulls).fill(false));
+    const scaleFactor = getPullScaleFactor([normalizedTargetPulls, ...availablePacks.map(p => p.pulls)]);
+    const scaledTargetPulls = scalePull(normalizedTargetPulls, scaleFactor);
+    const scaledAvailablePacks = availablePacks.map((pack, idx) => ({
+        idx,
+        price: pack.price,
+        pulls: scalePull(pack.pulls, scaleFactor)
+    }));
 
-    // 3. Iteration
-    for (let i = 1; i <= n; i++) {
-        const pack = availablePacks[i-1];
+    const maxSinglePull = Math.max(...scaledAvailablePacks.map(p => p.pulls), 0);
+    const limitPulls = scaledTargetPulls + maxSinglePull + 1;
+
+    const dp = new Array(limitPulls).fill(Infinity);
+    const prevWeight = new Array(limitPulls).fill(-1);
+    const prevItem = new Array(limitPulls).fill(-1);
+    dp[0] = 0;
+
+    for (let i = 0; i < scaledAvailablePacks.length; i++) {
+        const pack = scaledAvailablePacks[i];
         const pCost = pack.price;
         const pPulls = pack.pulls;
 
+        if (pPulls <= 0) continue;
+
         for (let j = limitPulls - 1; j >= pPulls; j--) {
             if (dp[j - pPulls] !== Infinity) {
-                if (dp[j - pPulls] + pCost < dp[j]) {
-                    dp[j] = dp[j - pPulls] + pCost;
-                    keep[i][j] = true;
+                const nextCost = dp[j - pPulls] + pCost;
+                if (nextCost < dp[j]) {
+                    dp[j] = nextCost;
+                    prevWeight[j] = j - pPulls;
+                    prevItem[j] = i;
                 }
             }
         }
     }
 
-    // 4. Find best
     let minCost = Infinity;
     let bestPulls = -1;
 
-    for (let j = targetPulls; j < limitPulls; j++) {
+    for (let j = scaledTargetPulls; j < limitPulls; j++) {
         if (dp[j] < minCost) {
             minCost = dp[j];
             bestPulls = j;
         }
     }
 
-    // 5. Reconstruct
     const selectedPacks: Pack[] = [];
-    if (bestPulls !== -1) {
+    if (bestPulls !== -1 && minCost !== Infinity) {
         let currW = bestPulls;
-        for (let i = n; i > 0; i--) {
-            if (keep[i][currW]) {
-                const pack = availablePacks[i-1];
-                selectedPacks.push(pack);
-                currW -= pack.pulls;
-            }
+        while (currW > 0 && prevItem[currW] !== -1) {
+            const pack = availablePacks[scaledAvailablePacks[prevItem[currW]].idx];
+            selectedPacks.push(pack);
+            currW = prevWeight[currW];
         }
     }
 
-    return { selected: selectedPacks, cost: minCost, pulls: bestPulls };
+    return {
+        selected: selectedPacks,
+        cost: minCost,
+        pulls: bestPulls === -1 ? 0 : unscalePull(bestPulls, scaleFactor)
+    };
 };
 
 const calculateStrategy = () => {
     loading.value = true;
+    result.value = null;
     try {
-        // Prepare pool
         let currentPullsTotal = 0;
-        let availablePacksPool: Pack[] = [];
+        const candidatePacks: Pack[] = [];
         
         rounds.value.forEach(r => {
              currentPullsTotal += Number(r.free_pulls || 0);
              r.packs.forEach(p => {
                  const purchased = Number(p.purchased || 0);
-                 currentPullsTotal += p.pulls * purchased;
+                 currentPullsTotal += Number(p.pulls || 0) * purchased;
                  
-                 const remaining = p.limit - purchased;
-                 if (remaining > 0) {
-                     for(let k=0; k<remaining; k++) {
-                         // Create flat pack objects for the pool
-                         availablePacksPool.push({
-                             ...p,
-                             round_idx: r.id,
-                             unit_price: p.pulls > 0 ? p.price / p.pulls : Infinity
-                         });
-                     }
-                 }
+                 candidatePacks.push({
+                     ...p,
+                     round_idx: r.id,
+                     unit_price: p.pulls > 0 ? p.price / p.pulls : Infinity
+                 });
              });
         });
 
-        const neededPulls = totalTargetPulls.value - currentPullsTotal;
+        currentPullsTotal = normalizePullValue(currentPullsTotal);
+        const neededPulls = normalizePullValue(totalTargetPulls.value - currentPullsTotal);
         
         if (neededPulls <= 0) {
             result.value = {
@@ -256,20 +498,24 @@ const calculateStrategy = () => {
             return;
         }
 
-        // DP
+        const maxPackPulls = Math.max(...candidatePacks.map(p => Number(p.pulls || 0)), 0);
+        const availablePacksPool: Pack[] = [];
+
+        candidatePacks.forEach(p => {
+            const remaining = getExpandableCopies(p, neededPulls, maxPackPulls);
+            for (let k = 0; k < remaining; k++) {
+                availablePacksPool.push({ ...p });
+            }
+        });
+
         const { selected, cost, pulls } = solveKnapsack(neededPulls, availablePacksPool);
 
-        // Sort
-        // 1. Round (asc)
-        // 2. Unit Price (asc)
-        // 3. Price (asc)
         selected.sort((a, b) => {
             if ((a.round_idx || 0) !== (b.round_idx || 0)) return (a.round_idx || 0) - (b.round_idx || 0);
             if ((a.unit_price || 0) !== (b.unit_price || 0)) return (a.unit_price || 0) - (b.unit_price || 0);
             return a.price - b.price;
         });
 
-        // Add status
         const strategySequence: StrategyItem[] = [];
         let currentCumPulls = 0;
         let currentCumCost = 0;
@@ -277,7 +523,7 @@ const calculateStrategy = () => {
         const maxRound = Math.max(...selected.map(p => p.round_idx || 0), 0);
 
         selected.forEach(p => {
-            currentCumPulls += p.pulls;
+            currentCumPulls = normalizePullValue(currentCumPulls + p.pulls);
             currentCumCost += p.price;
             
             let status: 'safe' | 'cautious' | 'overflow' = 'safe';
@@ -301,10 +547,9 @@ const calculateStrategy = () => {
             packs: strategySequence,
             cost: cost,
             total_pulls: pulls,
-            surplus: pulls - neededPulls
+            surplus: normalizePullValue(pulls - neededPulls)
         };
 
-        // Scroll to result
         setTimeout(() => {
             document.getElementById('result-section')?.scrollIntoView({ behavior: 'smooth' });
         }, 100);
@@ -336,13 +581,13 @@ const calculateStrategy = () => {
         <el-col :span="8">
           <div class="stat-item">
             <div class="label">总目标抽数</div>
-            <div class="value-lg">{{ totalTargetPulls }}</div>
+            <div class="value-lg">{{ formatPulls(totalTargetPulls) }}</div>
           </div>
         </el-col>
         <el-col :span="16">
           <el-alert type="info" :closable="false" show-icon>
               <template #title>
-                  当前已拥有: <strong>{{ currentStatus.total_pulls }}</strong> / {{ totalTargetPulls }} 抽
+                  当前已拥有: <strong>{{ formatPulls(currentStatus.total_pulls) }}</strong> / {{ formatPulls(totalTargetPulls) }} 抽
                   &nbsp;|&nbsp;
                   已花费: <strong>{{ currentStatus.total_spent }}</strong> 元
               </template>
@@ -378,11 +623,10 @@ const calculateStrategy = () => {
                 <div class="packs-table">
                     <div class="table-header mb-2 flex justify-between">
                         <h4>礼包配置</h4>
-                        <div>
-                            <el-button size="small" :icon="Plus" @click="addPack(idx)">添加礼包</el-button>
-                            <el-dropdown @command="(cmd: number) => fillDefaultPacks(idx, cmd)" class="ml-2">
-                                <el-button size="small" :icon="Refresh">
-                                    重置预设<el-icon class="el-icon--right"><ArrowDown /></el-icon>
+                        <div class="flex items-center gap-2">
+                            <el-dropdown @command="(cmd: number) => fillDefaultPacks(idx, cmd)">
+                                <el-button size="small">
+                                    {{ getRoundPresetName(round) }}<el-icon class="el-icon--right"><ArrowDown /></el-icon>
                                 </el-button>
                                 <template #dropdown>
                                     <el-dropdown-menu>
@@ -392,6 +636,7 @@ const calculateStrategy = () => {
                                     </el-dropdown-menu>
                                 </template>
                             </el-dropdown>
+                            <el-button size="small" :icon="Plus" @click="addPack(idx)">添加礼包</el-button>
                         </div>
                     </div>
                     
@@ -403,7 +648,13 @@ const calculateStrategy = () => {
                         </el-table-column>
                         <el-table-column label="包含抽数" width="140">
                             <template #default="scope">
-                                <el-input-number v-model="scope.row.pulls" :min="0" :controls="false" style="width: 100%" />
+                                <el-input-number
+                                    v-model="scope.row.pulls"
+                                    :min="0"
+                                    :step="0.5"
+                                    :controls="false"
+                                    style="width: 100%"
+                                />
                             </template>
                         </el-table-column>
                         <el-table-column label="性价比" width="100">
@@ -411,14 +662,25 @@ const calculateStrategy = () => {
                                 {{ (scope.row.pulls > 0 ? scope.row.price / scope.row.pulls : 0).toFixed(2) }}
                             </template>
                         </el-table-column>
-                        <el-table-column label="限购" width="120">
+                        <el-table-column label="限购(0=无限)" width="120">
                             <template #default="scope">
-                                <el-input-number v-model="scope.row.limit" :min="1" :controls="false" style="width: 100%" />
+                                <el-input-number v-model="scope.row.limit" :min="0" :controls="false" style="width: 100%" />
+                            </template>
+                        </el-table-column>
+                        <el-table-column label="买满累计(抽/元)" width="170">
+                            <template #default="scope">
+                                <span class="text-sm">{{ formatPackFullPurchaseSummary(round.packs, scope.$index) }}</span>
                             </template>
                         </el-table-column>
                         <el-table-column label="已购买" width="120">
                             <template #default="scope">
-                                <el-input-number v-model="scope.row.purchased" :min="0" :max="scope.row.limit" controls-position="right" style="width: 100%" />
+                                <el-input-number
+                                    v-model="scope.row.purchased"
+                                    :min="0"
+                                    :max="scope.row.limit > 0 ? scope.row.limit : undefined"
+                                    controls-position="right"
+                                    style="width: 100%"
+                                />
                             </template>
                         </el-table-column>
                         <el-table-column label="操作" width="60" align="center">
@@ -464,13 +726,13 @@ const calculateStrategy = () => {
                     <el-col :span="8">
                         <div class="stat-box">
                             <div class="label">获得额外抽数</div>
-                            <div class="value">{{ result.total_pulls }} <small>抽</small></div>
+                            <div class="value">{{ formatPulls(result.total_pulls) }} <small>抽</small></div>
                         </div>
                     </el-col>
                     <el-col :span="8">
                         <div class="stat-box">
                             <div class="label">最终溢出</div>
-                            <div class="value text-success">{{ result.surplus }} <small>抽</small></div>
+                            <div class="value text-success">{{ formatPulls(result.surplus) }} <small>抽</small></div>
                         </div>
                     </el-col>
                 </el-row>
@@ -483,12 +745,12 @@ const calculateStrategy = () => {
                         <div class="item-info">
                             <el-tag size="small" effect="plain" class="mr-2">第 {{ item.round_idx }} 轮</el-tag>
                             <span class="font-bold mr-2">{{ item.name }}</span>
-                            <span class="text-gray-500 text-sm">({{ item.price }}元, {{ item.pulls }}抽)</span>
+                            <span class="text-gray-500 text-sm">({{ item.price }}元, {{ formatPulls(item.pulls) }}抽)</span>
                         </div>
                         
                         <div class="item-meta">
                             <div class="text-xs text-gray-400">
-                                累计: {{ item.cumulative_pulls }}抽 / {{ item.cumulative_cost }}元
+                                累计: {{ formatPulls(item.cumulative_pulls || 0) }}抽 / {{ item.cumulative_cost }}元
                             </div>
                             <div class="flex items-center gap-2">
                                 <span class="text-xs text-gray-400">性价比: {{ item.unit_price?.toFixed(2) }}</span>

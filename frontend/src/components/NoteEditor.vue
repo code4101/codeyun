@@ -553,6 +553,13 @@ const confirmInsertMergedImage = () => {
     overflow-y: hidden !important; /* 禁用内部滚动，让外部容器处理 */
 }
 
+/* 去掉 wangEditor 表格外层默认虚线容器，仅保留单元格边框 */
+:deep(.w-e-text-container [data-slate-editor] .table-container) {
+    border: none !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+}
+
 /* 确保图片自适应宽度，防止撑破容器 */
 :deep(.w-e-text-container img) {
     max-width: 100% !important;

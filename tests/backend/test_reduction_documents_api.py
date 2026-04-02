@@ -1,11 +1,26 @@
 import json
 import sqlite3
 
+import pytest
 from sqlmodel import select
 
+from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
 from backend.core.document_reduction_cache import get_document_cache_db_path
 from backend.core.document_reduction_storage import get_document_assets_dir
+from backend.core.ollama_access_keys import create_ollama_access_key
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun
+
+
+@pytest.fixture(autouse=True)
+def _configure_test_ollama_access(session, auth_user):
+    created = create_ollama_access_key(session, created_by_user_id=auth_user.id, label="文档归纳测试 Key")
+    save_user_ai_chat_provider_config(
+        session,
+        auth_user.id,
+        "ollama",
+        api_key=created["plaintext_value"],
+    )
+    return created["plaintext_value"]
 
 
 def test_reduction_document_upload_index_and_query_flow(client, auth_user, monkeypatch):

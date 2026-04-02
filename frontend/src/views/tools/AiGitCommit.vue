@@ -462,7 +462,7 @@
                 />
               </el-form-item>
 
-              <el-form-item label="提交正文">
+            <el-form-item label="提交正文">
                 <el-input
                   v-model="draftBodyText"
                   type="textarea"
@@ -471,9 +471,6 @@
                 />
               </el-form-item>
             </el-form>
-
-            <div class="inspect-title">提交预览</div>
-            <pre class="code-block preview-block">{{ commitPreview }}</pre>
 
             <div class="action-row">
               <el-button
@@ -2099,10 +2096,6 @@ function getErrorMessage(error: any) {
   color: #dc2626;
   font-size: 13px;
   line-height: 1.6;
-}
-
-.preview-block {
-  margin-top: 10px;
 }
 
 .dialog-footer {

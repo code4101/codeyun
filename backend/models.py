@@ -222,6 +222,70 @@ class GitReductionRun(SQLModel, table=True):
     finished_at: Optional[float] = Field(default=None, index=True)
     updated_at: float = Field(default_factory=time.time)
 
+
+class AttendanceServiceConfig(SQLModel, table=True):
+    __tablename__ = "attendanceserviceconfig"
+    __table_args__ = {"extend_existing": True}
+
+    id: int = Field(default=1, primary_key=True)
+    current_wjx_account_id: Optional[str] = Field(default=None, index=True)
+    execution_device_entry_id: Optional[str] = Field(default=None, index=True)
+    granted_user_ids: List[int] = Field(default_factory=list, sa_column=Column(JSON))
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AttendanceAccountAsset(SQLModel, table=True):
+    __tablename__ = "attendanceaccountasset"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    provider: str = Field(default="wjx", index=True)
+    name: str = Field(index=True)
+    login_username: str
+    password_encrypted: str = Field(default="")
+    is_active: bool = Field(default=True, index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AttendanceTemplateAsset(SQLModel, table=True):
+    __tablename__ = "attendancetemplateasset"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    provider: str = Field(default="wjx", index=True)
+    name: str = Field(index=True)
+    activity_id: str = Field(index=True)
+    is_active: bool = Field(default=True, index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AttendanceRun(SQLModel, table=True):
+    __tablename__ = "attendancerun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    template_id: str = Field(default="", index=True)
+    account_id: str = Field(default="", index=True)
+    execution_device_entry_id: str = Field(default="", index=True)
+    requested_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    action: str = Field(default="inspect", index=True)
+    status: str = Field(default="pending", index=True)
+    request_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    created_at: float = Field(default_factory=time.time)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
 # --- Note Models ---
 
 class NoteNode(SQLModel, table=True):
