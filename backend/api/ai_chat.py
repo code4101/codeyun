@@ -21,6 +21,10 @@ from backend.core.ai_chat_prompt_cards import (
     list_user_ai_chat_prompt_cards,
     save_user_ai_chat_prompt_cards,
 )
+from backend.core.ai_chat_session import (
+    get_user_ai_chat_sessions,
+    save_user_ai_chat_sessions,
+)
 from backend.core.ollama_access_keys import (
     create_ollama_access_key,
     delete_ollama_access_key,
@@ -186,6 +190,52 @@ class AiChatPromptCardsResponse(BaseModel):
 class AiChatPromptCardsUpdateRequest(BaseModel):
     selected_id: Optional[str] = None
     items: list[AiChatPromptCard] = Field(default_factory=list)
+
+
+class AiChatSessionImage(BaseModel):
+    id: str
+    name: str = ""
+    mime_type: str = ""
+    data_base64: str
+
+
+class AiChatSessionMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str = ""
+    images: list[AiChatSessionImage] = Field(default_factory=list)
+    target_model_option_ids: list[str] = Field(default_factory=list)
+    provider_id: str = ""
+    model_option_id: str = ""
+    model: str = ""
+    display_model: str = ""
+    created_at: Optional[str] = None
+    total_duration: Optional[float] = None
+    error: bool = False
+
+
+class AiChatSessionItem(BaseModel):
+    id: str
+    title: str = ""
+    preview: str = ""
+    provider_id: str = ""
+    model: str = ""
+    selected_model_option_ids: list[str] = Field(default_factory=list)
+    selected_assistant_message_id: Optional[str] = None
+    draft: str = ""
+    messages: list[AiChatSessionMessage] = Field(default_factory=list)
+    updated_at: Optional[float] = None
+
+
+class AiChatSessionsResponse(BaseModel):
+    signed_in: bool
+    active_session_id: Optional[str] = None
+    items: list[AiChatSessionItem] = Field(default_factory=list)
+
+
+class AiChatSessionsUpdateRequest(BaseModel):
+    active_session_id: Optional[str] = None
+    items: list[AiChatSessionItem] = Field(default_factory=list)
 
 
 class AiChatSaveProviderConfigRequest(BaseModel):
@@ -543,6 +593,43 @@ def put_ai_chat_prompt_cards(
         signed_in=True,
         selected_id=saved["selected_id"],
         items=[AiChatPromptCard.model_validate(item) for item in saved["items"]],
+    )
+
+
+@router.get("/sessions", response_model=AiChatSessionsResponse)
+def get_ai_chat_sessions(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    if current_user is None:
+        return AiChatSessionsResponse(signed_in=False)
+
+    payload = get_user_ai_chat_sessions(session, current_user.id)
+    return AiChatSessionsResponse(
+        signed_in=True,
+        active_session_id=payload["active_session_id"],
+        items=[AiChatSessionItem.model_validate(item) for item in payload["items"]],
+    )
+
+
+@router.put("/sessions", response_model=AiChatSessionsResponse)
+def put_ai_chat_sessions(
+    payload: AiChatSessionsUpdateRequest,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    saved = save_user_ai_chat_sessions(
+        session,
+        current_user.id,
+        active_session_id=payload.active_session_id,
+        items=[item.model_dump() for item in payload.items],
+    )
+    return AiChatSessionsResponse(
+        signed_in=True,
+        active_session_id=saved["active_session_id"],
+        items=[AiChatSessionItem.model_validate(item) for item in saved["items"]],
     )
 
 

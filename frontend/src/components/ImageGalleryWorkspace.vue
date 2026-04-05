@@ -129,7 +129,13 @@
         </div>
       </div>
 
-      <div v-if="visibleImages.length" ref="galleryScrollRef" class="gallery-scroll" @scroll="handleGalleryScroll">
+      <div
+        v-if="visibleImages.length"
+        ref="galleryScrollRef"
+        class="gallery-scroll"
+        tabindex="-1"
+        @scroll="handleGalleryScroll"
+      >
         <div
           v-if="viewMode === 'grid'"
           class="gallery-grid"
@@ -234,6 +240,8 @@
             <article
               v-for="image in column"
               :key="image.id"
+              :ref="(element) => registerMediaCard(image.id, element)"
+              :data-image-id="image.id"
               class="masonry-item"
               @click="handleOpenPreview(image.id)"
               @keydown.enter.prevent="handleOpenPreview(image.id)"
@@ -338,6 +346,7 @@
     width="92vw"
     top="4vh"
     destroy-on-close
+    @close-auto-focus="handlePreviewCloseAutoFocus"
   >
     <template #header>
       <div class="preview-header" v-if="previewImage">
@@ -597,6 +606,8 @@ const revealingImageId = ref<string | null>(null);
 const settingCoverImageId = ref<string | null>(null);
 const updatingWeightById = ref<Record<string, boolean>>({});
 const mediaCardElements = new Map<string, Element>();
+const galleryScrollTop = ref(0);
+const pendingFocusRestoreImageId = ref<string | null>(null);
 let mediaVisibilityObserver: IntersectionObserver | null = null;
 let masonryLoadMoreObserver: IntersectionObserver | null = null;
 const lastPreviewedVideoId = ref<string | null>(null);
@@ -1007,6 +1018,7 @@ const maybeLoadMoreMasonry = () => {
 resetMasonryState();
 
 const handleGalleryScroll = () => {
+  galleryScrollTop.value = galleryScrollRef.value?.scrollTop ?? 0;
   maybeLoadMoreMasonry();
 };
 
@@ -1128,6 +1140,51 @@ const handleShowNext = async () => {
   await handleOpenPreview(nextImage.id);
 };
 
+const getFocusedImageId = () => {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+  const activeElement = document.activeElement;
+  if (!(activeElement instanceof HTMLElement)) {
+    return null;
+  }
+  const mediaElement = activeElement.closest('[data-image-id]');
+  if (!(mediaElement instanceof HTMLElement)) {
+    return null;
+  }
+  return mediaElement.dataset.imageId ?? null;
+};
+
+const restoreGalleryFocus = (preferredImageId: string | null) => {
+  const targetElement = preferredImageId ? mediaCardElements.get(preferredImageId) : null;
+  if (targetElement instanceof HTMLElement) {
+    targetElement.focus({ preventScroll: true });
+    return true;
+  }
+  if (galleryScrollRef.value) {
+    galleryScrollRef.value.focus({ preventScroll: true });
+    return true;
+  }
+  return false;
+};
+
+const restoreGalleryScrollPosition = async (scrollTop: number) => {
+  await nextTick();
+  const galleryElement = galleryScrollRef.value;
+  if (!galleryElement) {
+    galleryScrollTop.value = scrollTop;
+    return;
+  }
+  const applyScroll = () => {
+    const maxScrollTop = Math.max(0, galleryElement.scrollHeight - galleryElement.clientHeight);
+    const nextScrollTop = Math.max(0, Math.min(scrollTop, maxScrollTop));
+    galleryElement.scrollTop = nextScrollTop;
+    galleryScrollTop.value = nextScrollTop;
+  };
+  applyScroll();
+  window.requestAnimationFrame(applyScroll);
+};
+
 const handleDeleteImage = async (imageId: string) => {
   if (!props.deleteImage) return;
 
@@ -1136,6 +1193,9 @@ const handleDeleteImage = async (imageId: string) => {
     visibleImages.value[visibleIndex + 1]?.id ??
     visibleImages.value[visibleIndex - 1]?.id ??
     null;
+  const focusedImageId = getFocusedImageId();
+  const shouldRestoreCardFocus = focusedImageId === imageId;
+  const previousScrollTop = galleryScrollRef.value?.scrollTop ?? galleryScrollTop.value;
 
   deletingImageId.value = imageId;
   preserveNextMasonryReset = viewMode.value === 'masonry';
@@ -1149,12 +1209,27 @@ const handleDeleteImage = async (imageId: string) => {
       if (nextImageId) {
         await handleOpenPreview(nextImageId);
       } else {
+        pendingFocusRestoreImageId.value = nextImageId;
         setPreviewImage(null);
       }
+    }
+    await restoreGalleryScrollPosition(previousScrollTop);
+    if (shouldRestoreCardFocus && !previewVisible.value) {
+      window.requestAnimationFrame(() => {
+        restoreGalleryFocus(nextImageId);
+      });
     }
   } finally {
     deletingImageId.value = null;
   }
+};
+
+const handlePreviewCloseAutoFocus = () => {
+  const targetImageId = pendingFocusRestoreImageId.value;
+  pendingFocusRestoreImageId.value = null;
+  window.requestAnimationFrame(() => {
+    restoreGalleryFocus(targetImageId);
+  });
 };
 
 const handleRevealImageInFolder = async () => {
