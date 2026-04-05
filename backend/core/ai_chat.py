@@ -328,6 +328,38 @@ def _raise_provider_error(prefix: str, response: requests.Response) -> None:
     raise OllamaClientError(f"{prefix}: {detail}")
 
 
+def _iter_sse_data_lines(response: requests.Response) -> Iterator[str]:
+    data_lines: list[bytes] = []
+
+    for raw_line in response.iter_lines(decode_unicode=False):
+        if raw_line is None:
+            continue
+
+        line_bytes = raw_line.encode("utf-8") if isinstance(raw_line, str) else raw_line
+        line = line_bytes.rstrip(b"\r")
+        if line == b"":
+            if data_lines:
+                yield b"\n".join(data_lines).decode("utf-8")
+                data_lines = []
+            continue
+
+        if line.startswith(b":"):
+            continue
+
+        field, separator, value = line.partition(b":")
+        if separator:
+            if value.startswith(b" "):
+                value = value[1:]
+        else:
+            value = b""
+
+        if field == b"data":
+            data_lines.append(value)
+
+    if data_lines:
+        yield b"\n".join(data_lines).decode("utf-8")
+
+
 def list_ollama_models(provider: AiProviderConfig | None = None) -> list[str]:
     target = provider or get_ai_provider("ollama")
     try:
@@ -616,6 +648,8 @@ def _chat_with_openai_compatible(
         )
     except requests.RequestException as exc:
         raise OllamaClientError(f"请求 {provider.label} 失败：{exc}") from exc
+    except UnicodeDecodeError as exc:
+        raise OllamaClientError(f"{provider.label} 返回了无法解码的流式结果") from exc
 
     if response.status_code >= 400:
         _raise_provider_error(f"{provider.label} 聊天请求失败", response)
@@ -663,14 +697,7 @@ def _stream_chat_with_openai_compatible(
             done_reason: str | None = None
             usage: dict[str, Any] = {}
 
-            for raw_line in response.iter_lines(decode_unicode=True):
-                if not raw_line:
-                    continue
-
-                line = raw_line.strip()
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-
+            for line in _iter_sse_data_lines(response):
                 if line == "[DONE]":
                     break
 

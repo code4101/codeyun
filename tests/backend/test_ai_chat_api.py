@@ -2,7 +2,7 @@ import json
 from unittest.mock import patch
 
 from backend.app import app
-from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status
+from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
 from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
 from backend.core.auth import get_current_active_superuser
 from backend.core.ollama_access_keys import create_ollama_access_key
@@ -248,6 +248,124 @@ def test_ai_chat_prompt_cards_can_save_to_user_asset(client, auth_user):
     assert listed == payload
 
 
+def test_ai_chat_sessions_anonymous_returns_empty(client):
+    response = client.get("/api/ai-chat/sessions")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "signed_in": False,
+        "active_session_id": None,
+        "items": [],
+    }
+
+
+def test_ai_chat_sessions_can_save_restore_and_reorder_by_update_time(client, auth_user):
+    response = client.put(
+        "/api/ai-chat/sessions",
+        json={
+            "active_session_id": "session-new",
+            "items": [
+                {
+                    "id": "session-old",
+                    "title": "旧会话",
+                    "preview": "更早的内容",
+                    "provider_id": "",
+                    "model": "",
+                    "selected_model_option_ids": [],
+                    "selected_assistant_message_id": None,
+                    "draft": "",
+                    "updated_at": 10,
+                    "messages": [
+                        {
+                            "id": "user-old",
+                            "role": "user",
+                            "content": "旧内容",
+                            "images": [],
+                            "target_model_option_ids": [],
+                            "provider_id": "",
+                            "model_option_id": "",
+                            "model": "",
+                            "display_model": "",
+                            "created_at": "2026-04-03T09:00:00Z",
+                            "total_duration": None,
+                            "error": False,
+                        }
+                    ],
+                },
+                {
+                    "id": "session-new",
+                    "title": "新会话",
+                    "preview": "继续追问",
+                    "provider_id": "ollama",
+                    "model": "qwen3.5:4b-instruct",
+                    "selected_model_option_ids": ["ollama::qwen3.5:4b-instruct"],
+                    "selected_assistant_message_id": "assistant-1",
+                    "draft": "继续追问",
+                    "updated_at": 20,
+                    "messages": [
+                        {
+                            "id": "user-1",
+                            "role": "user",
+                            "content": "你好",
+                            "images": [],
+                            "target_model_option_ids": ["ollama::qwen3.5:4b-instruct"],
+                            "provider_id": "",
+                            "model_option_id": "",
+                            "model": "",
+                            "display_model": "",
+                            "created_at": "2026-04-03T09:00:00Z",
+                            "total_duration": None,
+                            "error": False,
+                        },
+                        {
+                            "id": "assistant-1",
+                            "role": "assistant",
+                            "content": "你好，我在。",
+                            "images": [],
+                            "target_model_option_ids": [],
+                            "provider_id": "ollama",
+                            "model_option_id": "ollama::qwen3.5:4b-instruct",
+                            "model": "qwen3.5:4b-instruct",
+                            "display_model": "Ollama / qwen3.5:4b-instruct",
+                            "created_at": "2026-04-03T09:00:02Z",
+                            "total_duration": 1200000,
+                            "error": False,
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["signed_in"] is True
+    assert payload["active_session_id"] == "session-new"
+    assert [item["id"] for item in payload["items"]] == ["session-new", "session-old"]
+    assert payload["items"][0]["model"] == "qwen3.5:4b-instruct"
+    assert payload["items"][0]["draft"] == "继续追问"
+    assert payload["items"][0]["updated_at"] is not None
+    assert payload["items"][1]["updated_at"] == 10
+
+    listed = client.get("/api/ai-chat/sessions").json()
+    assert listed == payload
+
+    cleared = client.put(
+        "/api/ai-chat/sessions",
+        json={
+            "active_session_id": None,
+            "items": [],
+        },
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json() == {
+        "signed_in": True,
+        "active_session_id": None,
+        "items": [],
+    }
+
+
 def test_ai_chat_builtin_provider_list_includes_new_openai_compatible_sources(client):
     response = client.get("/api/ai-chat/providers")
 
@@ -314,6 +432,109 @@ def test_ai_chat_ollama_alias_runs_with_think_false(monkeypatch):
     assert captured["json"]["think"] is False
     assert response["model"] == "qwen3.5:4b-instruct"
     assert response["content"] == "OK"
+
+
+def test_ai_chat_openrouter_stream_ignores_sse_comments_and_event_lines(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self, decode_unicode=False):
+            assert decode_unicode is False
+            return iter(
+                [
+                    ": OPENROUTER PROCESSING",
+                    "",
+                    "event: message",
+                    "data: {\"model\":\"anthropic/claude-opus-4.6\",\"created\":1712620800,\"choices\":[{\"delta\":{\"content\":\"你\"}}]}",
+                    "",
+                    "data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}",
+                    "",
+                    "event: message",
+                    "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}",
+                    "",
+                    "data: [DONE]",
+                    "",
+                ]
+            )
+
+    monkeypatch.setattr("backend.core.ai_chat.requests.post", lambda *args, **kwargs: FakeResponse())
+
+    events = list(
+        stream_chat_with_provider(
+            provider_id="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-test",
+            model="anthropic/claude-opus-4.6",
+            messages=[{"role": "user", "content": "你好"}],
+        )
+    )
+
+    assert events[0]["type"] == "delta"
+    assert events[0]["delta"] == "你"
+    assert events[1]["type"] == "delta"
+    assert events[1]["delta"] == "好"
+    assert events[2] == {
+        "type": "done",
+        "model": "anthropic/claude-opus-4.6",
+        "content": "你好",
+        "created_at": "2024-04-09T00:00:00+00:00",
+        "done_reason": "stop",
+        "prompt_eval_count": 3,
+        "eval_count": 2,
+        "total_duration": None,
+    }
+
+
+def test_ai_chat_openrouter_stream_decodes_utf8_bytes_without_mojibake(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self, decode_unicode=False):
+            assert decode_unicode is False
+            return iter(
+                [
+                    b": OPENROUTER PROCESSING",
+                    b"",
+                    'data: {"model":"anthropic/claude-opus-4.6","created":1712620800,"choices":[{"delta":{"content":"仅"}}]}'.encode("utf-8"),
+                    b"",
+                    'data: {"choices":[{"delta":{"content":"好"}}]}'.encode("utf-8"),
+                    b"",
+                    b'data: {"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2}}',
+                    b"",
+                    b"data: [DONE]",
+                    b"",
+                ]
+            )
+
+    monkeypatch.setattr("backend.core.ai_chat.requests.post", lambda *args, **kwargs: FakeResponse())
+
+    events = list(
+        stream_chat_with_provider(
+            provider_id="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_key="sk-test",
+            model="anthropic/claude-opus-4.6",
+            messages=[{"role": "user", "content": "只回复‘仅好’"}],
+        )
+    )
+
+    assert events[0]["type"] == "delta"
+    assert events[0]["delta"] == "仅"
+    assert events[1]["type"] == "delta"
+    assert events[1]["delta"] == "好"
+    assert events[2]["content"] == "仅好"
 
 
 def test_ai_chat_can_save_provider_config_to_user_asset(client, session, auth_user):

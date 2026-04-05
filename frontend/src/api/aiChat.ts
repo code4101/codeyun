@@ -135,6 +135,52 @@ export interface AiChatPromptCardsUpdateRequest {
   items: AiChatPromptCard[]
 }
 
+export interface AiChatSessionImage {
+  id: string
+  name: string
+  mime_type: string
+  data_base64: string
+}
+
+export interface AiChatSessionMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  images: AiChatSessionImage[]
+  target_model_option_ids: string[]
+  provider_id: string
+  model_option_id: string
+  model: string
+  display_model: string
+  created_at?: string | null
+  total_duration?: number | null
+  error: boolean
+}
+
+export interface AiChatSessionItem {
+  id: string
+  title: string
+  preview: string
+  provider_id: string
+  model: string
+  selected_model_option_ids: string[]
+  selected_assistant_message_id?: string | null
+  draft: string
+  messages: AiChatSessionMessage[]
+  updated_at?: number | null
+}
+
+export interface AiChatSessionsResponse {
+  signed_in: boolean
+  active_session_id?: string | null
+  items: AiChatSessionItem[]
+}
+
+export interface AiChatSessionsUpdateRequest {
+  active_session_id?: string | null
+  items: AiChatSessionItem[]
+}
+
 export interface AiChatSaveProviderConfigRequest {
   base_url?: string | null
   preferred_model?: string | null
@@ -221,6 +267,16 @@ export async function fetchAiChatPromptCards() {
 
 export async function saveAiChatPromptCards(payload: AiChatPromptCardsUpdateRequest) {
   const response = await api.put<AiChatPromptCardsResponse>('/ai-chat/prompt-cards', payload)
+  return response.data
+}
+
+export async function fetchAiChatSessions() {
+  const response = await api.get<AiChatSessionsResponse>('/ai-chat/sessions')
+  return response.data
+}
+
+export async function saveAiChatSessions(payload: AiChatSessionsUpdateRequest) {
+  const response = await api.put<AiChatSessionsResponse>('/ai-chat/sessions', payload)
   return response.data
 }
 

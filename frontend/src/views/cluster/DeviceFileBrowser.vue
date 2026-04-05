@@ -1044,6 +1044,14 @@ const clearMediaUrl = (item: DeviceBrowserImage) => {
   item.urlNeedsRevoke = false;
 };
 
+const invalidateThumbnailCache = (item: DeviceBrowserImage) => {
+  item.thumbnailFailed = false;
+  item.thumbnailVersion = Date.now();
+  if (item.urlVariant === 'thumbnail') {
+    clearMediaUrl(item);
+  }
+};
+
 const trimLoadedMediaCache = (protectedImageId?: string) => {
   const trimByVariant = (variant: GalleryUrlVariant, limit: number) => {
     const loadedItems = mediaItems.value
@@ -1338,9 +1346,10 @@ const setVideoCover = async (imageId: string, cover: Blob) => {
 
   try {
     await setDeviceFileCover(selectedEntryId.value, buildImagePayload(target), cover);
-    clearMediaUrl(target);
-    target.thumbnailFailed = false;
-    await ensureMediaReady(target);
+    invalidateThumbnailCache(target);
+    if (target.urlVariant !== 'full') {
+      await ensureMediaReady(target);
+    }
     ElMessage.success('封面已更新');
     return true;
   } catch (error) {
@@ -1448,7 +1457,10 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
       }
 
       const blob = desiredVariant === 'thumbnail'
-        ? await fetchDeviceThumbnailBlob(entryId, payload, { max_edge: THUMBNAIL_MAX_EDGE })
+        ? await fetchDeviceThumbnailBlob(entryId, payload, {
+          max_edge: THUMBNAIL_MAX_EDGE,
+          cache_key: target.thumbnailVersion ?? undefined,
+        })
         : await fetchDeviceMediaBlob(entryId, payload);
       const currentTarget = mediaItems.value.find((item) => item.id === image.id);
       if (

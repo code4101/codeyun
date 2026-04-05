@@ -7,6 +7,9 @@
       </div>
 
       <div class="hero-actions">
+        <el-tag size="large" effect="plain" :type="chatSessionStatusTagType">
+          {{ chatSessionStatusLabel }}
+        </el-tag>
         <el-button
           size="large"
           :icon="Delete"
@@ -125,7 +128,6 @@
             :closable="false"
             class="status-alert"
           />
-
         </section>
       </aside>
 
@@ -339,6 +341,54 @@
         </div>
       </section>
     </div>
+
+    <section class="panel-card history-panel-card">
+      <div class="chat-history-section">
+        <div class="chat-history-header">
+          <span class="chat-history-title">历史会话</span>
+          <el-button text size="small" @click="startNewSession">
+            新建
+          </el-button>
+        </div>
+
+        <div v-if="historySessionItems.length" class="chat-history-list">
+          <article
+            v-for="session in historySessionItems"
+            :key="session.id"
+            class="chat-history-card"
+            :class="{ active: session.id === activeSessionId }"
+          >
+            <button
+              type="button"
+              class="chat-history-main"
+              @click="switchSession(session.id)"
+            >
+              <div class="chat-history-main-topline">
+                <span class="chat-history-item-title">{{ session.title || '未命名会话' }}</span>
+                <span v-if="session.updated_at" class="chat-history-item-time">
+                  {{ formatSessionUpdateTime(session.updated_at) }}
+                </span>
+              </div>
+              <div class="chat-history-item-preview">
+                {{ session.preview || '没有正文内容' }}
+              </div>
+            </button>
+            <el-button
+              text
+              size="small"
+              type="danger"
+              class="chat-history-delete"
+              @click.stop="removeSession(session.id)"
+            >
+              删除
+            </el-button>
+          </article>
+        </div>
+        <div v-else class="chat-history-empty">
+          暂无历史会话。发出第一条消息后会自动进入这里。
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -352,15 +402,23 @@ import { marked } from 'marked'
 
 import {
   fetchAiChatStatus,
+  fetchAiChatSessions,
   sendAiChatMessage,
+  saveAiChatSessions,
   streamAiChatMessage,
   type AiChatProviderSummary,
   type AiChatResponse,
+  type AiChatSessionImage,
+  type AiChatSessionItem,
+  type AiChatSessionMessage,
+  type AiChatSessionsResponse,
+  type AiChatSessionsUpdateRequest,
   type AiChatStatusResponse,
 } from '@/api/aiChat'
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
 import { useAiProviderStore } from '@/store/aiProviderStore'
 import { useUserStore } from '@/store/userStore'
+import { useAutoSave } from '@/utils/useAutoSave'
 import { useSortableList } from '@/utils/useSortableList'
 
 interface LocalChatImage {
@@ -412,6 +470,7 @@ interface ConversationRound {
 }
 
 const SETTINGS_STORAGE_KEY = 'codeyun_ai_chat_settings_v1'
+const CHAT_SESSION_DRAFT_STORAGE_KEY_PREFIX = 'codeyun_ai_chat_session_draft_v1'
 const MAX_IMAGE_SIZE_BYTES = 6 * 1024 * 1024
 const MAX_ATTACHMENT_COUNT = 4
 
@@ -443,6 +502,9 @@ const selectedModelListRef = ref<HTMLElement | null>(null)
 const pendingModelOptionId = ref('')
 const selectedAssistantMessageId = ref('')
 const chatModelSelectionHydrated = ref(false)
+const chatSessionHydrated = ref(false)
+const sessionItems = ref<AiChatSessionItem[]>([])
+const activeSessionId = ref('')
 
 let localIdSeed = 0
 
@@ -451,6 +513,23 @@ const aiProviderStore = useAiProviderStore()
 const userStore = useUserStore()
 const settings = reactive(loadInitialSettings())
 const isAuthenticated = computed(() => userStore.isAuthenticated)
+const chatSessionAutoSave = useAutoSave<AiChatSessionsUpdateRequest>({
+  debounceMs: 1200,
+  equals: areAiChatSessionsSnapshotsEqual,
+  storageKey: () => buildChatSessionDraftStorageKey(),
+  save: async snapshot => {
+    if (!isAuthenticated.value) {
+      sessionItems.value = snapshot.items
+      return snapshot
+    }
+    const saved = await saveAiChatSessions(snapshot)
+    sessionItems.value = saved.items
+    return chatSessionsResponseToSnapshot(saved)
+  },
+  onError: error => {
+    console.error('Failed to autosave AI chat session', error)
+  },
+})
 const chatModelOptions = computed<ChatModelOption[]>(() => (
   providers.value
     .flatMap(provider => {
@@ -577,6 +656,49 @@ const composerNote = computed(() => {
   }
   return '请选择模型并输入文本，或在支持视觉的模型下添加图片。'
 })
+const chatSessionStatusLabel = computed(() => {
+  if (!isAuthenticated.value) {
+    return '未登录，仅保留本机草稿'
+  }
+  if (!chatSessionHydrated.value) {
+    return '会话载入中'
+  }
+  if (chatSessionAutoSave.saveStatus.value === 'saving') {
+    return '会话保存中'
+  }
+  if (chatSessionAutoSave.saveStatus.value === 'unsaved') {
+    return '会话待保存'
+  }
+  return '会话已保存'
+})
+const chatSessionStatusTagType = computed(() => {
+  if (!isAuthenticated.value) {
+    return 'info'
+  }
+  if (!chatSessionHydrated.value) {
+    return 'warning'
+  }
+  if (chatSessionAutoSave.saveStatus.value === 'saving') {
+    return 'warning'
+  }
+  if (chatSessionAutoSave.saveStatus.value === 'unsaved') {
+    return 'danger'
+  }
+  return 'success'
+})
+const historySessionItems = computed(() => {
+  const activeWorkspaceItem = buildActiveWorkspaceSessionItem()
+  const merged = sessionItems.value
+    .filter(item => item.id !== activeSessionId.value)
+    .map(item => ({ ...item }))
+
+  if (activeWorkspaceItem) {
+    merged.push(activeWorkspaceItem)
+  }
+
+  return merged
+    .sort((left, right) => (Number(right.updated_at || 0) - Number(left.updated_at || 0)) || left.id.localeCompare(right.id))
+})
 
 watch(settings, persistSettings, { deep: true })
 watch(
@@ -604,8 +726,25 @@ watch(addableModelOptions, options => {
 watch(
   () => isAuthenticated.value,
   async () => {
-    await loadProvidersAndStatus()
+    await initializeAiChatPage()
   }
+)
+watch(
+  [
+    () => settings.providerId,
+    () => settings.model,
+    () => [...settings.selectedModelOptionIds],
+    () => draft.value,
+    () => selectedAssistantMessageId.value,
+    messages,
+  ],
+  () => {
+    if (!chatSessionHydrated.value) {
+      return
+    }
+    chatSessionAutoSave.markDirty(buildChatSessionsSnapshot())
+  },
+  { deep: true }
 )
 
 useSortableList({
@@ -617,7 +756,7 @@ useSortableList({
 })
 
 onMounted(async () => {
-  await loadProvidersAndStatus()
+  await initializeAiChatPage()
 })
 
 onBeforeUnmount(() => {
@@ -669,6 +808,196 @@ function persistSettings() {
   )
 }
 
+function buildChatSessionDraftStorageKey() {
+  const scope = userStore.user?.id ?? 'anonymous'
+  return `${CHAT_SESSION_DRAFT_STORAGE_KEY_PREFIX}:${scope}`
+}
+
+function buildEmptyChatSessionsSnapshot(): AiChatSessionsUpdateRequest {
+  return {
+    active_session_id: null,
+    items: [],
+  }
+}
+
+function chatSessionsResponseToSnapshot(response: AiChatSessionsResponse): AiChatSessionsUpdateRequest {
+  return {
+    active_session_id: response.active_session_id ?? null,
+    items: [...(response.items || [])],
+  }
+}
+
+function areAiChatSessionsSnapshotsEqual(
+  left: AiChatSessionsUpdateRequest,
+  right: AiChatSessionsUpdateRequest,
+) {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function getSessionTitle(messages: ChatMessage[]) {
+  for (const message of messages) {
+    if (message.role !== 'user') {
+      continue
+    }
+    const content = message.content.trim()
+    if (content) {
+      return content.replace(/\s+/g, ' ').slice(0, 40)
+    }
+    if (message.images.length) {
+      return '图片对话'
+    }
+  }
+  return '新会话'
+}
+
+function getSessionPreview(messages: ChatMessage[], draftText: string) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    const content = message.content.trim()
+    if (content) {
+      return content.replace(/\s+/g, ' ').slice(0, 80)
+    }
+    if (message.images.length) {
+      return '包含图片'
+    }
+  }
+  if (draftText.trim()) {
+    return `草稿：${draftText.trim().replace(/\s+/g, ' ').slice(0, 76)}`
+  }
+  return ''
+}
+
+function estimateBase64Size(dataBase64: string) {
+  const normalized = (dataBase64 || '').trim()
+  if (!normalized) {
+    return 0
+  }
+  const padding = normalized.endsWith('==') ? 2 : (normalized.endsWith('=') ? 1 : 0)
+  return Math.max(0, Math.floor((normalized.length * 3) / 4) - padding)
+}
+
+function buildImagePreviewUrl(image: AiChatSessionImage) {
+  const mimeType = image.mime_type || 'image/png'
+  return `data:${mimeType};base64,${image.data_base64}`
+}
+
+function serializeLocalImage(image: LocalChatImage): AiChatSessionImage {
+  return {
+    id: image.id,
+    name: image.name || '',
+    mime_type: image.mime_type || '',
+    data_base64: image.data_base64,
+  }
+}
+
+function restoreSessionImage(image: AiChatSessionImage): LocalChatImage {
+  return {
+    id: image.id,
+    name: image.name || '',
+    mime_type: image.mime_type || 'image/png',
+    data_base64: image.data_base64,
+    preview_url: buildImagePreviewUrl(image),
+    size: estimateBase64Size(image.data_base64),
+  }
+}
+
+function buildSessionMessagesSnapshot(messagesValue: ChatMessage[]): AiChatSessionMessage[] {
+  return messagesValue.map(message => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    images: message.images.map(serializeLocalImage),
+    target_model_option_ids: [...(message.target_model_option_ids ?? [])],
+    provider_id: message.provider_id ?? '',
+    model_option_id: message.model_option_id ?? '',
+    model: message.model ?? '',
+    display_model: message.display_model ?? '',
+    created_at: message.created_at ?? null,
+    total_duration: message.total_duration ?? null,
+    error: Boolean(message.error || message.pending),
+  }))
+}
+
+function shouldPersistSessionItem(item: AiChatSessionItem) {
+  return Boolean(item.messages.length || item.draft.trim())
+}
+
+function buildActiveWorkspaceSessionItem(): AiChatSessionItem | null {
+  if (!activeSessionId.value) {
+    return null
+  }
+
+  const snapshotMessages = buildSessionMessagesSnapshot(messages.value)
+  const item: AiChatSessionItem = {
+    id: activeSessionId.value,
+    title: getSessionTitle(messages.value),
+    preview: getSessionPreview(messages.value, draft.value),
+    provider_id: settings.providerId,
+    model: settings.model,
+    selected_model_option_ids: [...settings.selectedModelOptionIds],
+    selected_assistant_message_id: selectedAssistantMessageId.value || null,
+    draft: draft.value,
+    messages: snapshotMessages,
+    updated_at: Date.now() / 1000,
+  }
+
+  return shouldPersistSessionItem(item) ? item : null
+}
+
+function buildChatSessionsSnapshot(): AiChatSessionsUpdateRequest {
+  const items = historySessionItems.value.map(item => ({ ...item }))
+  const activeItem = buildActiveWorkspaceSessionItem()
+  const activeSessionIds = new Set(items.map(item => item.id))
+  const resolvedActiveSessionId = activeItem?.id ?? (activeSessionIds.has(activeSessionId.value) ? activeSessionId.value : null)
+
+  return {
+    active_session_id: resolvedActiveSessionId,
+    items,
+  }
+}
+
+function applySessionItemToWorkspace(
+  item: AiChatSessionItem | null,
+  options: { hydrateSelection?: boolean } = {},
+) {
+  revokeImages(attachments.value)
+  attachments.value = []
+  for (const message of messages.value) {
+    revokeImages(message.images)
+  }
+
+  if (!item) {
+    draft.value = ''
+    messages.value = []
+    selectedAssistantMessageId.value = ''
+    return
+  }
+
+  if (options.hydrateSelection && item.selected_model_option_ids.length) {
+    settings.providerId = item.provider_id || settings.providerId
+    settings.model = item.model || settings.model
+    settings.selectedModelOptionIds = [...item.selected_model_option_ids]
+  }
+
+  draft.value = item.draft || ''
+  messages.value = item.messages.map(message => ({
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    images: message.images.map(restoreSessionImage),
+    target_model_option_ids: [...(message.target_model_option_ids || [])],
+    provider_id: message.provider_id || undefined,
+    model_option_id: message.model_option_id || undefined,
+    model: message.model || undefined,
+    display_model: message.display_model || undefined,
+    created_at: message.created_at ?? undefined,
+    total_duration: message.total_duration ?? undefined,
+    pending: false,
+    error: Boolean(message.error),
+  }))
+  selectedAssistantMessageId.value = item.selected_assistant_message_id || ''
+}
+
 function formatCompactIndex(index: number, total: number) {
   const normalizedIndex = Math.max(0, index) + 1
   const padLength = total >= 100 ? 3 : (total >= 10 ? 2 : 1)
@@ -694,6 +1023,14 @@ function buildConnectionPayload(providerId = settings.providerId) {
   return aiProviderStore.buildConnectionPayload(providerId)
 }
 
+async function initializeAiChatPage() {
+  chatSessionHydrated.value = false
+  await loadProvidersAndStatus()
+  await loadPersistedChatSession()
+  await scrollConversationToEnd()
+  chatSessionHydrated.value = true
+}
+
 async function loadProvidersAndStatus() {
   chatModelSelectionHydrated.value = false
   try {
@@ -710,6 +1047,105 @@ async function loadProvidersAndStatus() {
   await refreshStatus(settings.providerId || aiProviderStore.defaultProviderId, true)
   chatModelSelectionHydrated.value = true
   syncSelectedChatModelOptions()
+}
+
+async function loadPersistedChatSession() {
+  const emptySnapshot = buildEmptyChatSessionsSnapshot()
+  let baseSnapshot = emptySnapshot
+
+  try {
+    if (isAuthenticated.value) {
+      const response = await fetchAiChatSessions()
+      baseSnapshot = chatSessionsResponseToSnapshot(response)
+    }
+  } catch (error) {
+    console.error('Failed to load AI chat session', error)
+  }
+
+  const { snapshot, restored } = chatSessionAutoSave.loadSnapshot(baseSnapshot, { draftStrategy: 'auto' })
+  const effectiveSnapshot = snapshot ?? baseSnapshot
+  sessionItems.value = effectiveSnapshot.items
+  activeSessionId.value = effectiveSnapshot.active_session_id || effectiveSnapshot.items[0]?.id || createLocalId('session')
+
+  const activeItem = effectiveSnapshot.items.find(item => item.id === activeSessionId.value) ?? null
+  applySessionItemToWorkspace(activeItem, {
+    hydrateSelection: Boolean(activeItem?.selected_model_option_ids?.length),
+  })
+
+  if (activeItem?.selected_model_option_ids?.length) {
+    syncSelectedChatModelOptions()
+    await refreshStatus(settings.providerId || aiProviderStore.defaultProviderId, true)
+  }
+
+  if (restored) {
+    chatSessionAutoSave.markDirty(effectiveSnapshot)
+  }
+}
+
+async function startNewSession() {
+  if (chatSessionHydrated.value) {
+    await chatSessionAutoSave.flush()
+  }
+  activeSessionId.value = createLocalId('session')
+  applySessionItemToWorkspace(null)
+  await scrollConversationToEnd()
+}
+
+async function switchSession(sessionId: string) {
+  if (!sessionId || sessionId === activeSessionId.value) {
+    return
+  }
+
+  if (chatSessionHydrated.value) {
+    await chatSessionAutoSave.flush()
+  }
+
+  sessionItems.value = buildChatSessionsSnapshot().items
+  activeSessionId.value = sessionId
+  const targetSession = sessionItems.value.find(item => item.id === sessionId) ?? null
+  applySessionItemToWorkspace(targetSession, {
+    hydrateSelection: Boolean(targetSession?.selected_model_option_ids?.length),
+  })
+  if (targetSession?.selected_model_option_ids?.length) {
+    syncSelectedChatModelOptions()
+    await refreshStatus(settings.providerId || aiProviderStore.defaultProviderId, true)
+  }
+  await scrollConversationToEnd()
+}
+
+async function removeSession(sessionId: string) {
+  const targetSession = historySessionItems.value.find(item => item.id === sessionId)
+  if (!targetSession) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(`将删除会话“${targetSession.title || '未命名会话'}”。`, '删除历史会话', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+
+  if (chatSessionHydrated.value) {
+    await chatSessionAutoSave.flush()
+  }
+
+  const remainingItems = buildChatSessionsSnapshot().items.filter(item => item.id !== sessionId)
+  sessionItems.value = remainingItems
+
+  if (activeSessionId.value === sessionId) {
+    const nextActive = remainingItems[0] ?? null
+    activeSessionId.value = nextActive?.id || createLocalId('session')
+    applySessionItemToWorkspace(nextActive)
+  }
+
+  chatSessionAutoSave.markDirty({
+    active_session_id: remainingItems.some(item => item.id === activeSessionId.value) ? activeSessionId.value : (remainingItems[0]?.id ?? null),
+    items: remainingItems,
+  }, { immediate: true })
 }
 
 function syncSelectedChatModelOptions(forceReset = false) {
@@ -1000,6 +1436,9 @@ async function sendMessage() {
   if (!canSend.value) {
     return
   }
+  if (!activeSessionId.value) {
+    activeSessionId.value = createLocalId('session')
+  }
 
   const targetModelOptions = selectedModelOptions.value
   if (!targetModelOptions.length) {
@@ -1189,7 +1628,7 @@ function readFileAsDataUrl(file: File) {
 
 function revokeImages(images: LocalChatImage[]) {
   for (const image of images) {
-    if (image.preview_url) {
+    if (image.preview_url && image.preview_url.startsWith('blob:')) {
       URL.revokeObjectURL(image.preview_url)
     }
   }
@@ -1223,6 +1662,14 @@ function formatTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) {
     return value
+  }
+  return date.toLocaleString()
+}
+
+function formatSessionUpdateTime(value: number) {
+  const date = new Date(value * 1000)
+  if (Number.isNaN(date.getTime())) {
+    return ''
   }
   return date.toLocaleString()
 }
@@ -1356,6 +1803,9 @@ function getErrorMessage(error: unknown) {
 
 .panel-card {
   padding: 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .panel-header {
@@ -1391,6 +1841,115 @@ function getErrorMessage(error: unknown) {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.chat-history-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.history-panel-card .chat-history-section {
+  gap: 12px;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.chat-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chat-history-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334155;
+  letter-spacing: 0.04em;
+}
+
+.chat-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.chat-history-card {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.78);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+}
+
+.chat-history-card.active {
+  border-color: rgba(14, 165, 233, 0.4);
+  box-shadow: 0 10px 24px rgba(14, 165, 233, 0.12);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.98), rgba(248, 250, 252, 0.94));
+}
+
+.chat-history-main {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 12px 0 12px 14px;
+  cursor: pointer;
+}
+
+.chat-history-main-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.chat-history-item-title {
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat-history-item-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.chat-history-item-preview {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.chat-history-delete {
+  align-self: center;
+  margin-right: 10px;
+}
+
+.chat-history-empty {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
 }
 
 .settings-form {
