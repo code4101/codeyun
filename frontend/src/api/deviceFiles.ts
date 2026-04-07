@@ -48,6 +48,14 @@ export interface DeviceImageRecord {
   kind?: GalleryItemKind;
   mime_type?: string | null;
   weight?: number | null;
+  content_hash?: string | null;
+  hash_algorithm?: string | null;
+  visual_hash?: string | null;
+  visual_hash_algorithm?: string | null;
+  duplicate_cluster_order?: number | null;
+  duplicate_cluster_distance?: number | null;
+  duplicate_cluster_member_order?: number | null;
+  duplicate_cluster_size?: number | null;
 }
 
 export interface DeviceFileSelector {
@@ -63,6 +71,17 @@ export interface DeviceMediaLayout {
   gap: number;
   columns: string[][];
   column_heights: number[];
+}
+
+export interface DeviceMediaVisualHashStatus {
+  requested: boolean;
+  total_image_count: number;
+  indexed_count: number;
+  missing_count: number;
+  computed_count: number;
+  reused_content_hash_count: number;
+  prewarm_scheduled_count: number;
+  complete: boolean;
 }
 
 export interface DeviceMediaListRequest extends DeviceFileSelector {
@@ -93,6 +112,7 @@ export interface DeviceMediaListing {
   snapshot_id: string | null;
   total_count: number;
   total_bytes: number;
+  visual_hash_status: DeviceMediaVisualHashStatus | null;
   offset: number;
   limit: number;
   has_more: boolean;
@@ -100,6 +120,13 @@ export interface DeviceMediaListing {
   layout: DeviceMediaLayout | null;
   media: DeviceImageRecord[];
 }
+
+const DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS = 10_000;
+const DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS = 120_000;
+
+const usesDuplicateClusterSort = (payload: DeviceMediaListRequest) =>
+  Array.isArray(payload.sort_program?.rules)
+  && payload.sort_program.rules.some((rule) => rule?.field === 'duplicate_cluster');
 
 export interface DeviceThumbnailOptions {
   max_edge?: number;
@@ -140,6 +167,21 @@ export interface DeviceRevealResult {
   directory_path: string;
 }
 
+export interface DeviceTextFilePayload extends DeviceFileSelector {
+  encoding?: string;
+}
+
+export interface DeviceTextFileResult {
+  ok: boolean;
+  root: string | null;
+  path: string;
+  absolute_path: string;
+  encoding: string;
+  size: number;
+  modified_at: number;
+  text: string;
+}
+
 export const fetchDeviceRoots = async (entryId: string): Promise<DeviceFilesystemRoot[]> => {
   const response = await api.get(getDeviceEntryPath(entryId, '/files/roots'));
   return response.data.roots ?? [];
@@ -157,7 +199,11 @@ export const fetchDeviceMedia = async (
   entryId: string,
   payload: DeviceMediaListRequest
 ): Promise<DeviceMediaListing> => {
-  const response = await api.post(getDeviceEntryPath(entryId, '/files/media/list'), payload);
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/media/list'), payload, {
+    timeout: usesDuplicateClusterSort(payload)
+      ? DEVICE_MEDIA_LIST_DUPLICATE_CLUSTER_TIMEOUT_MS
+      : DEVICE_MEDIA_LIST_DEFAULT_TIMEOUT_MS,
+  });
   return {
     root: response.data.root ?? null,
     path: response.data.path ?? '',
@@ -167,6 +213,7 @@ export const fetchDeviceMedia = async (
     snapshot_id: response.data.snapshot_id ?? null,
     total_count: response.data.total_count ?? 0,
     total_bytes: response.data.total_bytes ?? 0,
+    visual_hash_status: response.data.visual_hash_status ?? null,
     offset: response.data.offset ?? 0,
     limit: response.data.limit ?? 0,
     has_more: Boolean(response.data.has_more),
@@ -196,6 +243,36 @@ export const fetchDeviceFileBlob = async (
   const response = await api.get(getDeviceEntryPath(entryId, '/files/content'), {
     params: payload,
     responseType: 'blob',
+  });
+  return response.data;
+};
+
+export const fetchDeviceFileText = async (
+  entryId: string,
+  payload: DeviceTextFilePayload
+): Promise<DeviceTextFileResult> => {
+  const response = await api.get(getDeviceEntryPath(entryId, '/files/text'), {
+    params: payload,
+  });
+  return {
+    ok: Boolean(response.data.ok),
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    encoding: response.data.encoding ?? 'utf-8',
+    size: Number(response.data.size ?? 0),
+    modified_at: Number(response.data.modified_at ?? 0),
+    text: typeof response.data.text === 'string' ? response.data.text : '',
+  };
+};
+
+export const saveDeviceFileText = async (
+  entryId: string,
+  payload: DeviceTextFilePayload & { text: string }
+) => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/text'), {
+    ...payload,
+    encoding: payload.encoding ?? 'utf-8',
   });
   return response.data;
 };

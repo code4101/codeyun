@@ -18,6 +18,8 @@ class DeviceFileSyncSnapshot:
     last_known_path: str | None = None
     content_hash: str | None = None
     hash_algorithm: str = "sha256"
+    visual_hash: str | None = None
+    visual_hash_algorithm: str = "dhash-8"
     file_size: int | None = None
     modified_at_ms: int | None = None
     duration_ms: int | None = None
@@ -46,6 +48,8 @@ def _normalize_snapshot(snapshot: DeviceFileSyncSnapshot) -> DeviceFileSyncSnaps
     last_known_path = (snapshot.last_known_path or absolute_path).strip() or absolute_path
     content_hash = (snapshot.content_hash or "").strip() or None
     hash_algorithm = (snapshot.hash_algorithm or "sha256").strip().lower() or "sha256"
+    visual_hash = (snapshot.visual_hash or "").strip().lower() or None
+    visual_hash_algorithm = (snapshot.visual_hash_algorithm or "dhash-8").strip().lower() or "dhash-8"
     media_kind = (snapshot.media_kind or "").strip() or None
     mime_type = (snapshot.mime_type or "").strip() or None
 
@@ -54,6 +58,8 @@ def _normalize_snapshot(snapshot: DeviceFileSyncSnapshot) -> DeviceFileSyncSnaps
         last_known_path=last_known_path,
         content_hash=content_hash,
         hash_algorithm=hash_algorithm,
+        visual_hash=visual_hash,
+        visual_hash_algorithm=visual_hash_algorithm,
         file_size=snapshot.file_size,
         modified_at_ms=snapshot.modified_at_ms,
         duration_ms=snapshot.duration_ms,
@@ -152,6 +158,19 @@ def _apply_snapshot_to_record(
         # future rematch won't trust outdated content identity.
         record.content_hash = None
         record.hash_updated_at = None
+
+    if snapshot.visual_hash:
+        record.visual_hash = snapshot.visual_hash
+        record.visual_hash_algorithm = snapshot.visual_hash_algorithm
+        record.visual_hash_updated_at = now
+    elif (
+        record.visual_hash
+        and previous_modified_at_ms is not None
+        and snapshot.modified_at_ms is not None
+        and previous_modified_at_ms != snapshot.modified_at_ms
+    ):
+        record.visual_hash = None
+        record.visual_hash_updated_at = None
 
     if invalidate_auto_cover:
         record.cover_path = None

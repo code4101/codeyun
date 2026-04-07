@@ -2,6 +2,7 @@ import api, { getDeviceEntryPath } from '@/api'
 
 const AI_GIT_GENERATE_TIMEOUT_MS = 5 * 60 * 1000
 const AI_GIT_COMMIT_TIMEOUT_MS = 2 * 60 * 1000
+const AI_GIT_HISTORY_TIMEOUT_MS = 60 * 1000
 
 export type GitCommitStyle = 'summary' | 'conventional'
 
@@ -11,6 +12,26 @@ export interface GitChangedFile {
   staged: boolean
   unstaged: boolean
   untracked: boolean
+}
+
+export interface GitFileDiffSection {
+  kind: 'unstaged' | 'staged' | 'untracked' | 'empty'
+  title: string
+  content: string
+  truncated: boolean
+}
+
+export interface GitFileDiffResponse {
+  cwd: string
+  repo_root: string
+  branch: string
+  path: string
+  status: string
+  staged: boolean
+  unstaged: boolean
+  untracked: boolean
+  truncated: boolean
+  sections: GitFileDiffSection[]
 }
 
 export interface GitSuggestedSplitGroup {
@@ -31,6 +52,8 @@ export interface GitInspectResponse {
   changed_files: GitChangedFile[]
   changed_file_count: number
   estimated_changed_line_count: number
+  added_line_count: number
+  deleted_line_count: number
   split_recommended: boolean
   split_reason: string
   oversized: boolean
@@ -39,6 +62,34 @@ export interface GitInspectResponse {
 
 export interface GitInspectRequest {
   cwd: string
+}
+
+export interface GitFileDiffRequest extends GitInspectRequest {
+  path: string
+}
+
+export interface GitHistoryStatsRequest extends GitInspectRequest {
+  days?: number
+}
+
+export interface GitHistoryStatsPoint {
+  date: string
+  added_line_count: number
+  deleted_line_count: number
+  commit_count: number
+}
+
+export interface GitHistoryStatsResponse {
+  cwd: string
+  repo_root: string
+  branch: string
+  days: number
+  start_date: string
+  end_date: string
+  total_added_line_count: number
+  total_deleted_line_count: number
+  total_commit_count: number
+  points: GitHistoryStatsPoint[]
 }
 
 export interface GitGenerateMessageRequest extends GitInspectRequest {
@@ -195,6 +246,25 @@ export async function inspectDeviceEntryGit(entryId: string, payload: GitInspect
   const response = await api.post<GitInspectResponse>(
     getDeviceEntryPath(entryId, '/git/inspect'),
     payload,
+  )
+  return response.data
+}
+
+export async function fetchDeviceEntryGitFileDiff(entryId: string, payload: GitFileDiffRequest) {
+  const response = await api.post<GitFileDiffResponse>(
+    getDeviceEntryPath(entryId, '/git/file-diff'),
+    payload,
+  )
+  return response.data
+}
+
+export async function fetchDeviceEntryGitHistoryStats(entryId: string, payload: GitHistoryStatsRequest) {
+  const response = await api.post<GitHistoryStatsResponse>(
+    getDeviceEntryPath(entryId, '/git/history-stats'),
+    payload,
+    {
+      timeout: AI_GIT_HISTORY_TIMEOUT_MS,
+    },
   )
   return response.data
 }

@@ -115,6 +115,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: true },
       },
       {
+        path: 'cluster/labelme',
+        name: 'DeviceLabelmeBrowser',
+        component: () => import('@/views/cluster/DeviceLabelmeBrowser.vue'),
+        meta: { requiresAuth: true },
+      },
+      {
         path: 'tools/password-generator',
         name: 'PasswordGenerator',
         component: () => import('@/views/tools/PasswordGenerator.vue'),
@@ -131,6 +137,12 @@ const routes: Array<RouteRecordRaw> = [
         name: 'ImageBrowser',
         component: () => import('@/views/tools/ImageBrowser.vue'),
         meta: { requiresAuth: false },
+      },
+      {
+        path: 'tools/labelme-lite',
+        name: 'LabelmeLite',
+        redirect: '/cluster/labelme',
+        meta: { requiresAuth: true },
       },
       {
         path: 'tools/ai-config',

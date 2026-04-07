@@ -24,6 +24,10 @@ export interface GalleryItem {
   thumbnailVersion?: string | number | null;
   lastAccessedAt?: number | null;
   urlNeedsRevoke?: boolean;
+  duplicateClusterOrder?: number | null;
+  duplicateClusterDistance?: number | null;
+  duplicateClusterMemberOrder?: number | null;
+  duplicateClusterSize?: number | null;
 }
 
 export type GalleryImage = GalleryItem;
@@ -39,6 +43,7 @@ export interface FolderOption {
 type LegacyGallerySortMode = 'path' | 'modified-desc' | 'size-desc';
 export type GallerySortField =
   | 'random'
+  | 'duplicate_cluster'
   | 'weight'
   | 'modified_at'
   | 'size'
@@ -113,6 +118,8 @@ export const getGallerySortFieldLabel = (field: GallerySortField) => {
   switch (field) {
     case 'random':
       return '随机';
+    case 'duplicate_cluster':
+      return '重复聚簇';
     case 'weight':
       return '权重';
     case 'modified_at':
@@ -152,6 +159,7 @@ export const formatGallerySortSummary = (program?: Partial<GallerySortProgram> |
 
 const isGallerySortField = (value: unknown): value is GallerySortField =>
   value === 'random'
+  || value === 'duplicate_cluster'
   || value === 'weight'
   || value === 'modified_at'
   || value === 'size'
@@ -177,6 +185,8 @@ const getGallerySortValue = (image: GalleryImage, field: GallerySortField): stri
   switch (field) {
     case 'random':
       return getStablePseudoRandomValue(`${image.id}|${image.relativePath}|${image.name}`);
+    case 'duplicate_cluster':
+      return isFiniteNumber(image.duplicateClusterOrder) ? image.duplicateClusterOrder : null;
     case 'weight':
       return isFiniteNumber(image.weight) ? image.weight : 0;
     case 'modified_at':
@@ -204,7 +214,54 @@ const getGallerySortValue = (image: GalleryImage, field: GallerySortField): stri
   }
 };
 
+const compareDuplicateClusterRule = (left: GalleryImage, right: GalleryImage, rule: GallerySortRule) => {
+  const compareScalar = (
+    leftValue: number | null,
+    rightValue: number | null,
+    direction: GallerySortDirection,
+    nulls: GallerySortNulls
+  ) => {
+    const leftMissing = leftValue === null || leftValue === undefined || !Number.isFinite(leftValue);
+    const rightMissing = rightValue === null || rightValue === undefined || !Number.isFinite(rightValue);
+    if (leftMissing || rightMissing) {
+      if (leftMissing && rightMissing) return 0;
+      return nulls === 'first'
+        ? (leftMissing ? -1 : 1)
+        : (leftMissing ? 1 : -1);
+    }
+    if (leftValue === rightValue) return 0;
+    const result = leftValue < rightValue ? -1 : 1;
+    return direction === 'desc' ? -result : result;
+  };
+
+  let result = compareScalar(
+    isFiniteNumber(left.duplicateClusterOrder) ? left.duplicateClusterOrder : null,
+    isFiniteNumber(right.duplicateClusterOrder) ? right.duplicateClusterOrder : null,
+    rule.direction,
+    rule.nulls
+  );
+  if (result !== 0) return result;
+
+  result = compareScalar(
+    isFiniteNumber(left.duplicateClusterDistance) ? left.duplicateClusterDistance : null,
+    isFiniteNumber(right.duplicateClusterDistance) ? right.duplicateClusterDistance : null,
+    'asc',
+    'last'
+  );
+  if (result !== 0) return result;
+
+  return compareScalar(
+    isFiniteNumber(left.duplicateClusterMemberOrder) ? left.duplicateClusterMemberOrder : null,
+    isFiniteNumber(right.duplicateClusterMemberOrder) ? right.duplicateClusterMemberOrder : null,
+    'asc',
+    'last'
+  );
+};
+
 const compareGallerySortRule = (left: GalleryImage, right: GalleryImage, rule: GallerySortRule) => {
+  if (rule.field === 'duplicate_cluster') {
+    return compareDuplicateClusterRule(left, right, rule);
+  }
   const leftValue = getGallerySortValue(left, rule.field);
   const rightValue = getGallerySortValue(right, rule.field);
   const leftMissing = leftValue === null || leftValue === undefined || (typeof leftValue === 'number' && !Number.isFinite(leftValue));
