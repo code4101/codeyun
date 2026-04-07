@@ -65,6 +65,8 @@ class DeviceFile(SQLModel, table=True):
     last_known_path: Optional[str] = Field(default=None, index=True)
     content_hash: Optional[str] = Field(default=None, index=True)
     hash_algorithm: str = Field(default="sha256")
+    visual_hash: Optional[str] = Field(default=None)
+    visual_hash_algorithm: str = Field(default="dhash-8")
     file_size: Optional[int] = Field(default=None, index=True)
     modified_at_ms: Optional[int] = Field(default=None, index=True)
     duration_ms: Optional[int] = Field(default=None, index=True)
@@ -82,6 +84,7 @@ class DeviceFile(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
     last_seen_at: Optional[float] = None
     hash_updated_at: Optional[float] = None
+    visual_hash_updated_at: Optional[float] = None
 
 # --- Task Models ---
 

@@ -189,6 +189,24 @@
                   />
                   <span class="media-toolbar-value">{{ thumbnailScale }}%</span>
                 </div>
+
+                <div v-if="mediaVisualHashHint" class="media-toolbar-group media-toolbar-group-index">
+                  <span class="media-toolbar-label">视觉索引</span>
+                  <span class="media-index-pill" :class="`is-${mediaVisualHashHint.tone}`">
+                    <el-icon v-if="mediaVisualHashHint.loading" class="media-index-pill-icon is-loading">
+                      <Loading />
+                    </el-icon>
+                    <span>{{ mediaVisualHashHint.label }}</span>
+                  </span>
+                  <el-tooltip effect="light" placement="top">
+                    <template #content>
+                      <div class="media-index-tooltip">{{ mediaVisualHashHint.detail }}</div>
+                    </template>
+                    <button type="button" class="media-index-help" aria-label="视觉索引说明">
+                      <el-icon><QuestionFilled /></el-icon>
+                    </button>
+                  </el-tooltip>
+                </div>
               </div>
 
               <div v-if="mediaTotalCount > 0" class="media-pagination-inline media-pagination-inline-top">
@@ -351,7 +369,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
-import { Document, FolderOpened, Picture, VideoCamera } from '@element-plus/icons-vue';
+import { Document, FolderOpened, Loading, Picture, QuestionFilled, VideoCamera } from '@element-plus/icons-vue';
 
 import {
   deleteDeviceEntry,
@@ -372,6 +390,7 @@ import {
   type DeviceImageRecord,
   type DeviceMediaListRequest,
   type DeviceMediaListing,
+  type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
 import GallerySortProgramBar from '@/components/GallerySortProgramBar.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
@@ -500,6 +519,7 @@ const currentMediaPage = ref(1);
 const currentDirectoryPage = ref(1);
 const mediaSnapshotId = ref<string | null>(null);
 const mediaListingDirty = ref(false);
+const mediaVisualHashStatus = ref<DeviceMediaVisualHashStatus | null>(null);
 const mediaScanLimit = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
 const mediaScanLimitInput = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
 let directoryLoadVersion = 0;
@@ -733,6 +753,43 @@ const pagedDirectoryEntries = computed(() => {
   return directoryEntries.value.slice(offset, offset + DEFAULT_DIRECTORY_PAGE_SIZE);
 });
 const orderedMediaItems = computed(() => mediaItems.value);
+const duplicateClusterRuleActive = computed(() =>
+  backendSortProgram.value.rules.some((rule) => rule.field === 'duplicate_cluster')
+);
+const mediaVisualHashHint = computed(() => {
+  const status = mediaVisualHashStatus.value;
+  if (!status || status.total_image_count <= 0) {
+    return null;
+  }
+  return {
+    label: duplicateClusterRuleActive.value
+      ? (
+          status.complete
+            ? `视觉索引已就绪 ${status.indexed_count}/${status.total_image_count}`
+            : `视觉索引补齐中 ${status.indexed_count}/${status.total_image_count}`
+        )
+      : (
+          status.complete
+            ? `视觉索引已缓存 ${status.indexed_count}/${status.total_image_count}`
+            : `视觉索引后台预热 ${status.indexed_count}/${status.total_image_count}`
+        ),
+    tone: duplicateClusterRuleActive.value
+      ? (status.complete ? 'ready' : 'active')
+      : (status.complete ? 'cached' : 'warming'),
+    loading: !status.complete,
+    detail: [
+      duplicateClusterRuleActive.value
+        ? '当前排序包含“重复聚簇”，后端会优先复用已有视觉哈希，并补齐缺失项。'
+        : '当前只是普通浏览，后台会渐进预热视觉哈希，减少后续首次使用“重复聚簇”的等待。',
+      `当前目录图片：${status.total_image_count} 张`,
+      `已就绪：${status.indexed_count} 张`,
+      status.missing_count > 0 ? `待补齐：${status.missing_count} 张` : '待补齐：0 张',
+      status.computed_count > 0 ? `本次现算：${status.computed_count} 张` : '',
+      status.reused_content_hash_count > 0 ? `同内容复用：${status.reused_content_hash_count} 张` : '',
+      status.prewarm_scheduled_count > 0 ? `后台已排队预热：${status.prewarm_scheduled_count} 张` : '',
+    ].filter(Boolean).join('\n'),
+  };
+});
 const previewIndex = computed(() => {
   if (!previewImageId.value) {
     return -1;
@@ -852,6 +909,7 @@ const resetMediaPagination = () => {
   currentMediaPage.value = 1;
   mediaSnapshotId.value = null;
   mediaListingDirty.value = false;
+  mediaVisualHashStatus.value = null;
 };
 
 const mapDeviceMediaRecord = (record: DeviceImageRecord): DeviceBrowserImage => {
@@ -877,6 +935,10 @@ const mapDeviceMediaRecord = (record: DeviceImageRecord): DeviceBrowserImage => 
     mimeType: record.mime_type ?? null,
     duration: typeof record.duration_ms === 'number' ? record.duration_ms / 1000 : null,
     weight: typeof record.weight === 'number' ? record.weight : 0,
+    duplicateClusterOrder: typeof record.duplicate_cluster_order === 'number' ? record.duplicate_cluster_order : null,
+    duplicateClusterDistance: typeof record.duplicate_cluster_distance === 'number' ? record.duplicate_cluster_distance : null,
+    duplicateClusterMemberOrder: typeof record.duplicate_cluster_member_order === 'number' ? record.duplicate_cluster_member_order : null,
+    duplicateClusterSize: typeof record.duplicate_cluster_size === 'number' ? record.duplicate_cluster_size : null,
     filePath: absolutePath,
     absolutePath,
   };
@@ -887,6 +949,7 @@ const applyMediaListing = (mediaListing: DeviceMediaListing, options?: { append?
   mediaTotalBytes.value = mediaListing.total_bytes ?? 0;
   mediaSnapshotId.value = mediaListing.snapshot_id ?? mediaSnapshotId.value;
   mediaListingDirty.value = false;
+  mediaVisualHashStatus.value = mediaListing.visual_hash_status ?? null;
 
   const nextItems = mediaListing.media.map(mapDeviceMediaRecord);
   if (options?.append) {
@@ -2120,6 +2183,10 @@ onBeforeUnmount(() => {
   min-width: 280px;
 }
 
+.media-toolbar-group-index {
+  gap: 8px;
+}
+
 .media-toolbar-label {
   color: #64748b;
   font-size: 13px;
@@ -2143,6 +2210,63 @@ onBeforeUnmount(() => {
   font-weight: 600;
   text-align: right;
   white-space: nowrap;
+}
+
+.media-index-pill {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.media-index-pill.is-ready,
+.media-index-pill.is-cached {
+  background: rgba(236, 253, 245, 0.96);
+  border-color: rgba(16, 185, 129, 0.2);
+  color: #047857;
+}
+
+.media-index-pill.is-active,
+.media-index-pill.is-warming {
+  background: rgba(239, 246, 255, 0.96);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: #1d4ed8;
+}
+
+.media-index-pill-icon {
+  font-size: 13px;
+}
+
+.media-index-help {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(248, 250, 252, 0.9);
+  color: #64748b;
+  cursor: pointer;
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.media-index-help:hover {
+  background: rgba(219, 234, 254, 0.92);
+  color: #2563eb;
+}
+
+.media-index-tooltip {
+  max-width: 280px;
+  line-height: 1.6;
+  white-space: pre-line;
 }
 
 .device-gallery-sidebar-stack {

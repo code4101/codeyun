@@ -25,6 +25,10 @@ class DeviceFileMetadataSnapshot:
     last_known_path: str
     file_size: int | None
     modified_at_ms: int | None
+    content_hash: str | None
+    hash_algorithm: str
+    visual_hash: str | None
+    visual_hash_algorithm: str
     duration_ms: int | None
     width_px: int | None
     height_px: int | None
@@ -88,6 +92,10 @@ def upsert_device_file_metadata_batch(
             DeviceFileSyncSnapshot(
                 absolute_path=normalized_absolute,
                 last_known_path=(snapshot.last_known_path or normalized_absolute).strip() or normalized_absolute,
+                content_hash=(snapshot.content_hash or "").strip() or None,
+                hash_algorithm=(snapshot.hash_algorithm or "sha256").strip() or "sha256",
+                visual_hash=(snapshot.visual_hash or "").strip() or None,
+                visual_hash_algorithm=(snapshot.visual_hash_algorithm or "dhash-8").strip() or "dhash-8",
                 file_size=snapshot.file_size,
                 modified_at_ms=snapshot.modified_at_ms,
                 duration_ms=snapshot.duration_ms,

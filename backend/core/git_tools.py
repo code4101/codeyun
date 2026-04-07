@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -86,6 +87,7 @@ BINARY_LIKE_SUFFIXES = {
 
 MAX_CONTEXT_CHARS = 18_000
 MAX_FILE_SECTION_CHARS = 4_000
+MAX_FILE_PREVIEW_CHARS = 24_000
 MAX_REDUCTION_UNIT_CHARS = 2_400
 MAX_PREVIEW_BYTES = 8_192
 MAX_PREVIEW_LINES = 120
@@ -97,6 +99,11 @@ MAX_SPLIT_GROUPS = 6
 MAX_GROUP_SAMPLE_PATHS = 3
 MAX_OVERVIEW_PATHS = 20
 UNTRACKED_LINE_COUNT_CAP = OVERSIZED_LINE_THRESHOLD + 1_000
+DEFAULT_HISTORY_WINDOW_DAYS = 180
+MIN_HISTORY_WINDOW_DAYS = 7
+MAX_HISTORY_WINDOW_DAYS = 365
+GIT_HISTORY_LOG_TIMEOUT = 60
+GIT_HISTORY_MARKER = "__CODEYUN_HISTORY__"
 
 
 class GitToolError(RuntimeError):
@@ -272,7 +279,8 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
     ]
     diff_stat = _run_git(repo_root, ["--no-pager", "diff", "--stat", "--find-renames", "--no-color"], timeout=20, check=False)
     staged_diff_stat = _run_git(repo_root, ["--no-pager", "diff", "--cached", "--stat", "--find-renames", "--no-color"], timeout=20, check=False)
-    estimated_changed_line_count = _estimate_changed_line_count(repo_root, untracked_paths=untracked_paths)
+    added_line_count, deleted_line_count = _estimate_changed_line_counts(repo_root, untracked_paths=untracked_paths)
+    estimated_changed_line_count = added_line_count + deleted_line_count
     scope_summary = _assess_commit_scope(len(changed_files), estimated_changed_line_count)
 
     return {
@@ -285,8 +293,112 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
         "diff_stat": diff_stat,
         "staged_diff_stat": staged_diff_stat,
         "changed_files": changed_files,
+        "added_line_count": added_line_count,
+        "deleted_line_count": deleted_line_count,
         "suggested_split_groups": _build_split_groups(changed_paths),
         **scope_summary,
+    }
+
+
+def _normalize_history_window_days(days: int) -> int:
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        return DEFAULT_HISTORY_WINDOW_DAYS
+    return max(MIN_HISTORY_WINDOW_DAYS, min(MAX_HISTORY_WINDOW_DAYS, value))
+
+
+def _build_empty_history_points(start_date: date, end_date: date) -> list[dict[str, object]]:
+    cursor = start_date
+    items: list[dict[str, object]] = []
+    while cursor <= end_date:
+        items.append(
+            {
+                "date": cursor.isoformat(),
+                "added_line_count": 0,
+                "deleted_line_count": 0,
+                "commit_count": 0,
+            }
+        )
+        cursor += timedelta(days=1)
+    return items
+
+
+def _collect_git_history_points(repo_root: Path, *, start_date: date, end_date: date) -> list[dict[str, object]]:
+    points = _build_empty_history_points(start_date, end_date)
+    point_map = {str(item["date"]): item for item in points}
+    output = _run_git(
+        repo_root,
+        [
+            "log",
+            "--no-merges",
+            f"--since={start_date.isoformat()}",
+            "--date=short",
+            f"--pretty=format:{GIT_HISTORY_MARKER}%x09%cd",
+            "--numstat",
+            "HEAD",
+        ],
+        timeout=GIT_HISTORY_LOG_TIMEOUT,
+        check=False,
+    )
+
+    active_date = ""
+    for raw_line in output.splitlines():
+        line = raw_line.rstrip()
+        if not line:
+            continue
+        if line.startswith(f"{GIT_HISTORY_MARKER}\t"):
+            active_date = line.split("\t", 1)[1].strip()
+            point = point_map.get(active_date)
+            if point is not None:
+                point["commit_count"] = int(point["commit_count"]) + 1
+            continue
+        if not active_date:
+            continue
+        point = point_map.get(active_date)
+        if point is None:
+            continue
+        parts = line.split("\t", 2)
+        if len(parts) < 3:
+            continue
+        added_text, deleted_text, _ = parts
+        if added_text.isdigit():
+            point["added_line_count"] = int(point["added_line_count"]) + int(added_text)
+        if deleted_text.isdigit():
+            point["deleted_line_count"] = int(point["deleted_line_count"]) + int(deleted_text)
+    return points
+
+
+def collect_git_history_stats(cwd: str, *, days: int = DEFAULT_HISTORY_WINDOW_DAYS) -> dict[str, object]:
+    requested_cwd, repo_root = _resolve_repo_root(cwd)
+    normalized_days = _normalize_history_window_days(days)
+    end_date = date.today()
+    start_date = end_date - timedelta(days=normalized_days - 1)
+    branch_status_output = _run_git(repo_root, ["status", "--short", "--branch"])
+    branch_status_lines = branch_status_output.splitlines()
+    branch_status = branch_status_lines[0].strip() if branch_status_lines else ""
+    branch_text = _run_git(repo_root, ["symbolic-ref", "--short", "HEAD"], check=False)
+    points = _collect_git_history_points(
+        repo_root,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    total_added_line_count = sum(int(item["added_line_count"]) for item in points)
+    total_deleted_line_count = sum(int(item["deleted_line_count"]) for item in points)
+    total_commit_count = sum(int(item["commit_count"]) for item in points)
+
+    return {
+        "cwd": str(requested_cwd),
+        "repo_root": str(repo_root),
+        "branch": _parse_branch_name(branch_text, branch_status),
+        "days": normalized_days,
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "total_added_line_count": total_added_line_count,
+        "total_deleted_line_count": total_deleted_line_count,
+        "total_commit_count": total_commit_count,
+        "points": points,
     }
 
 
@@ -297,18 +409,19 @@ def _read_git_path_set(repo_root: Path, args: list[str]) -> set[str]:
     return {line.strip() for line in output.splitlines() if line.strip()}
 
 
-def _parse_numstat_total(output: str) -> int:
-    total = 0
+def _parse_numstat_counts(output: str) -> tuple[int, int]:
+    added_total = 0
+    deleted_total = 0
     for raw_line in output.splitlines():
         parts = raw_line.strip().split("\t", 2)
         if len(parts) < 3:
             continue
         added_text, deleted_text, _ = parts
         if added_text.isdigit():
-            total += int(added_text)
+            added_total += int(added_text)
         if deleted_text.isdigit():
-            total += int(deleted_text)
-    return total
+            deleted_total += int(deleted_text)
+    return added_total, deleted_total
 
 
 def _estimate_text_file_line_count(path: Path, *, limit: int) -> int:
@@ -346,7 +459,7 @@ def _estimate_untracked_line_count(repo_root: Path, untracked_paths: set[str]) -
     return total
 
 
-def _estimate_changed_line_count(repo_root: Path, *, untracked_paths: set[str]) -> int:
+def _estimate_changed_line_counts(repo_root: Path, *, untracked_paths: set[str]) -> tuple[int, int]:
     unstaged = _run_git(
         repo_root,
         ["diff", "--numstat", "--find-renames", "--no-color"],
@@ -359,7 +472,12 @@ def _estimate_changed_line_count(repo_root: Path, *, untracked_paths: set[str]) 
         timeout=20,
         check=False,
     )
-    return _parse_numstat_total(unstaged) + _parse_numstat_total(staged) + _estimate_untracked_line_count(repo_root, untracked_paths)
+    unstaged_added, unstaged_deleted = _parse_numstat_counts(unstaged)
+    staged_added, staged_deleted = _parse_numstat_counts(staged)
+    return (
+        unstaged_added + staged_added + _estimate_untracked_line_count(repo_root, untracked_paths),
+        unstaged_deleted + staged_deleted,
+    )
 
 
 def _group_changed_path(path: str) -> str:
@@ -467,6 +585,7 @@ def _build_diff_section(
     path: str,
     *,
     staged: bool,
+    max_chars: int = MAX_FILE_SECTION_CHARS,
 ) -> tuple[str, bool]:
     args = ["--no-pager", "diff", "--unified=2", "--find-renames", "--no-color"]
     if staged:
@@ -475,7 +594,7 @@ def _build_diff_section(
     diff_text = _run_git(repo_root, args, timeout=20, check=False)
     if not diff_text.strip():
         return "", False
-    limited, truncated = _limit_text(diff_text)
+    limited, truncated = _limit_text(diff_text, max_chars=max_chars)
     title = "已暂存差异" if staged else "未暂存差异"
     return f"[{title}]\n{limited}", truncated
 
@@ -486,7 +605,12 @@ def _looks_binary(path: Path, data: bytes) -> bool:
     return b"\x00" in data
 
 
-def _build_untracked_preview(repo_root: Path, path: str) -> tuple[str, bool]:
+def _build_untracked_preview(
+    repo_root: Path,
+    path: str,
+    *,
+    max_chars: int = MAX_FILE_SECTION_CHARS,
+) -> tuple[str, bool]:
     file_path = (repo_root / path).resolve()
     if not file_path.exists() or not file_path.is_file():
         return "[未跟踪文件预览]\n<文件不存在或不是普通文件>", False
@@ -505,8 +629,15 @@ def _build_untracked_preview(repo_root: Path, path: str) -> tuple[str, bool]:
     if len(preview_lines) > MAX_PREVIEW_LINES:
         preview_text = "\n".join(preview_lines[:MAX_PREVIEW_LINES]) + "\n...<截断>"
         truncated = True
-    limited, was_truncated = _limit_text(preview_text)
+    limited, was_truncated = _limit_text(preview_text, max_chars=max_chars)
     return f"[未跟踪文件预览]\n{limited}", truncated or was_truncated
+
+
+def _strip_preview_heading(text: str) -> str:
+    lines = text.splitlines()
+    if len(lines) >= 2 and lines[0].startswith("[") and lines[0].endswith("]"):
+        return "\n".join(lines[1:])
+    return text
 
 
 def _summarize_file_status(path: str, *, staged_paths: set[str], unstaged_paths: set[str], untracked_paths: set[str]) -> str:
@@ -598,6 +729,105 @@ def collect_git_reduction_source_units(cwd: str) -> dict[str, object]:
         "source_units": source_units,
         "source_unit_count": len(source_units),
         "source_unit_truncated_count": truncated_count,
+    }
+
+
+def collect_git_file_diff(cwd: str, path: str) -> dict[str, object]:
+    inspect_payload = inspect_git_repository(cwd)
+    requested_path = (path or "").strip().replace("\\", "/")
+    if not requested_path:
+        raise GitToolError("文件路径不能为空")
+
+    changed_files = inspect_payload.get("changed_files") or []
+    selected_file = next(
+        (
+            item
+            for item in changed_files
+            if isinstance(item, dict) and str(item.get("path") or "").strip() == requested_path
+        ),
+        None,
+    )
+    if not isinstance(selected_file, dict):
+        raise GitToolError("指定文件不在当前工作区改动列表中")
+
+    repo_root = Path(str(inspect_payload["repo_root"]))
+    sections: list[dict[str, object]] = []
+    truncated = False
+
+    if bool(selected_file.get("unstaged")):
+        section_content, section_truncated = _build_diff_section(
+            repo_root,
+            requested_path,
+            staged=False,
+            max_chars=MAX_FILE_PREVIEW_CHARS,
+        )
+        if section_content:
+            sections.append(
+                {
+                    "kind": "unstaged",
+                    "title": "未暂存差异",
+                    "content": _strip_preview_heading(section_content),
+                    "truncated": section_truncated,
+                }
+            )
+            truncated = truncated or section_truncated
+
+    if bool(selected_file.get("staged")):
+        section_content, section_truncated = _build_diff_section(
+            repo_root,
+            requested_path,
+            staged=True,
+            max_chars=MAX_FILE_PREVIEW_CHARS,
+        )
+        if section_content:
+            sections.append(
+                {
+                    "kind": "staged",
+                    "title": "已暂存差异",
+                    "content": _strip_preview_heading(section_content),
+                    "truncated": section_truncated,
+                }
+            )
+            truncated = truncated or section_truncated
+
+    if bool(selected_file.get("untracked")):
+        section_content, section_truncated = _build_untracked_preview(
+            repo_root,
+            requested_path,
+            max_chars=MAX_FILE_PREVIEW_CHARS,
+        )
+        if section_content:
+            sections.append(
+                {
+                    "kind": "untracked",
+                    "title": "未跟踪文件预览",
+                    "content": _strip_preview_heading(section_content),
+                    "truncated": section_truncated,
+                }
+            )
+            truncated = truncated or section_truncated
+
+    if not sections:
+        sections.append(
+            {
+                "kind": "empty",
+                "title": "当前文件没有可展示的差异",
+                "content": "",
+                "truncated": False,
+            }
+        )
+
+    return {
+        "cwd": str(inspect_payload["cwd"]),
+        "repo_root": str(inspect_payload["repo_root"]),
+        "branch": str(inspect_payload["branch"]),
+        "path": requested_path,
+        "status": str(selected_file.get("status") or ""),
+        "staged": bool(selected_file.get("staged")),
+        "unstaged": bool(selected_file.get("unstaged")),
+        "untracked": bool(selected_file.get("untracked")),
+        "truncated": truncated,
+        "sections": sections,
     }
 
 

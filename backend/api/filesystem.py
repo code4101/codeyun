@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import cmp_to_key
 from pathlib import Path
@@ -31,7 +32,7 @@ from backend.core.device_files import (
     update_device_file_weight,
 )
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.db import get_session
+from backend.db import engine, get_session
 from backend.models import DeviceFile
 
 router = APIRouter()
@@ -67,6 +68,10 @@ MEDIA_LISTING_SNAPSHOT_LIMIT = 32
 MEDIA_LISTING_SNAPSHOT_TTL_SECONDS = 30 * 60
 DEFAULT_MEDIA_SCAN_LIMIT = 2000
 MAX_MEDIA_SCAN_LIMIT = 50000
+DUPLICATE_CLUSTER_VISUAL_HASH_SIZE = 8
+DUPLICATE_CLUSTER_VISUAL_THRESHOLD = 3
+VISUAL_HASH_LOOKUP_CHUNK_SIZE = 500
+VISUAL_HASH_PREWARM_BATCH_SIZE = 256
 
 
 @dataclass(slots=True)
@@ -80,12 +85,28 @@ class MediaListingSnapshot:
     sort_program: dict
     entries: list[dict]
     total_bytes: int
+    visual_hash_status: dict | None
     created_at: float
     last_accessed_at: float
 
 
+@dataclass(frozen=True, slots=True)
+class VisualHashPrewarmCandidate:
+    absolute_path: str
+    last_known_path: str
+    file_size: int | None
+    modified_at_ms: int | None
+    content_hash: str | None
+    hash_algorithm: str
+    media_kind: str | None
+    mime_type: str | None
+
+
 _media_listing_snapshots: OrderedDict[str, MediaListingSnapshot] = OrderedDict()
 _media_listing_snapshot_lock = RLock()
+_visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
+_visual_hash_prewarm_lock = RLock()
+_visual_hash_prewarm_active_keys: set[str] = set()
 
 
 class LegacyPathRequest(BaseModel):
@@ -98,9 +119,15 @@ class RootScopedRequest(BaseModel):
     absolute_path: str = ""
 
 
+class TextFileWriteRequest(RootScopedRequest):
+    text: str = ""
+    encoding: str = "utf-8"
+
+
 MediaSortMode = Literal["path", "modified-desc", "size-desc", "weight-desc"]
 GallerySortField = Literal[
     "random",
+    "duplicate_cluster",
     "weight",
     "modified_at",
     "size",
@@ -199,6 +226,8 @@ class DeviceFileSyncItemRequest(BaseModel):
     last_known_path: Optional[str] = None
     content_hash: Optional[str] = None
     hash_algorithm: str = "sha256"
+    visual_hash: Optional[str] = None
+    visual_hash_algorithm: str = "dhash-8"
     file_size: Optional[int] = None
     modified_at_ms: Optional[int] = None
     duration_ms: Optional[int] = None
@@ -228,6 +257,345 @@ GALLERY_SORT_FALLBACK_RULES = (
     GallerySortRule(field="relative_path", direction="asc", nulls="last"),
     GallerySortRule(field="name", direction="asc", nulls="last"),
 )
+
+
+def _compute_image_dhash(path: Path, *, hash_size: int = DUPLICATE_CLUSTER_VISUAL_HASH_SIZE) -> str | None:
+    if not path.exists() or not path.is_file():
+        return None
+    try:
+        with Image.open(path) as image_obj:
+            image = ImageOps.exif_transpose(image_obj).convert("L")
+            resampling = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+            image = image.resize((hash_size + 1, hash_size), resampling)
+            pixels = list(image.get_flattened_data())
+    except Exception:
+        return None
+
+    bits: list[int] = []
+    row_width = hash_size + 1
+    for row in range(hash_size):
+        offset = row * row_width
+        for col in range(hash_size):
+            bits.append(1 if pixels[offset + col] > pixels[offset + col + 1] else 0)
+
+    value = 0
+    for bit in bits:
+        value = (value << 1) | bit
+    width = max(1, (hash_size * hash_size) // 4)
+    return f"{value:0{width}x}"
+
+
+def _visual_hash_distance(left: str | None, right: str | None) -> int | None:
+    if not left or not right:
+        return None
+    try:
+        return (int(left, 16) ^ int(right, 16)).bit_count()
+    except Exception:
+        return None
+
+
+def _parse_visual_hash_int(value: str | None) -> int | None:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return None
+    try:
+        return int(normalized, 16)
+    except Exception:
+        return None
+
+
+def _normalize_hash_algorithm(value: str | None, default: str) -> str:
+    return (str(value or default).strip().lower() or default)
+
+
+def _normalize_optional_hash(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    return normalized or None
+
+
+def _make_content_hash_key(
+    content_hash: str | None,
+    hash_algorithm: str | None = "sha256",
+) -> tuple[str, str] | None:
+    normalized_content_hash = _normalize_optional_hash(content_hash)
+    if not normalized_content_hash:
+        return None
+    return (_normalize_hash_algorithm(hash_algorithm, "sha256"), normalized_content_hash)
+
+
+def _iter_list_chunks(values: list[str], size: int = VISUAL_HASH_LOOKUP_CHUNK_SIZE) -> Iterator[list[str]]:
+    normalized_size = max(1, int(size or VISUAL_HASH_LOOKUP_CHUNK_SIZE))
+    for start in range(0, len(values), normalized_size):
+        yield values[start:start + normalized_size]
+
+
+def _load_cached_device_records_by_path(
+    session: Session | None,
+    device_id: str,
+    absolute_paths: list[str],
+) -> dict[str, DeviceFile]:
+    if session is None or not device_id or not absolute_paths:
+        return {}
+
+    deduplicated_paths = list(dict.fromkeys(path for path in absolute_paths if path))
+    records: dict[str, DeviceFile] = {}
+    for path_chunk in _iter_list_chunks(deduplicated_paths):
+        for record in session.exec(
+            select(DeviceFile).where(
+                DeviceFile.device_id == device_id,
+                DeviceFile.absolute_path.in_(path_chunk),
+            )
+        ).all():
+            if record.absolute_path:
+                records[record.absolute_path] = record
+    return records
+
+
+def _load_visual_hashes_by_content_hash(
+    session: Session | None,
+    device_id: str,
+    hash_keys: set[tuple[str, str]],
+) -> dict[tuple[str, str], tuple[str, str]]:
+    if session is None or not device_id or not hash_keys:
+        return {}
+
+    requested_hashes = sorted({content_hash for _, content_hash in hash_keys if content_hash})
+    visual_hashes: dict[tuple[str, str], tuple[str, str]] = {}
+    for hash_chunk in _iter_list_chunks(requested_hashes):
+        for record in session.exec(
+            select(DeviceFile).where(
+                DeviceFile.device_id == device_id,
+                DeviceFile.content_hash.in_(hash_chunk),
+                DeviceFile.visual_hash.is_not(None),
+            )
+        ).all():
+            hash_key = _make_content_hash_key(record.content_hash, record.hash_algorithm)
+            visual_hash = _normalize_optional_hash(record.visual_hash)
+            if hash_key is None or hash_key not in hash_keys or not visual_hash or hash_key in visual_hashes:
+                continue
+            visual_hashes[hash_key] = (
+                visual_hash,
+                _normalize_hash_algorithm(record.visual_hash_algorithm, "dhash-8"),
+            )
+    return visual_hashes
+
+
+def _resolve_pending_visual_hash_items(
+    pending_items: list[dict],
+    session: Session | None,
+    device_id: str,
+) -> tuple[int, int]:
+    if not pending_items:
+        return 0, 0
+
+    requested_hash_keys = {
+        hash_key
+        for hash_key in (
+            _make_content_hash_key(
+                item.get("entry", {}).get("content_hash"),
+                item.get("entry", {}).get("hash_algorithm"),
+            )
+            for item in pending_items
+        )
+        if hash_key is not None
+    }
+    available_visual_hashes = _load_visual_hashes_by_content_hash(session, device_id, requested_hash_keys)
+    reused_content_hash_count = 0
+    computed_count = 0
+
+    for item in pending_items:
+        entry = item.get("entry")
+        file_path = item.get("file_path")
+        if not isinstance(entry, dict):
+            continue
+
+        entry["hash_algorithm"] = _normalize_hash_algorithm(entry.get("hash_algorithm"), "sha256")
+        entry["visual_hash_algorithm"] = _normalize_hash_algorithm(entry.get("visual_hash_algorithm"), "dhash-8")
+
+        existing_visual_hash = _normalize_optional_hash(entry.get("visual_hash"))
+        if existing_visual_hash:
+            entry["visual_hash"] = existing_visual_hash
+            hash_key = _make_content_hash_key(entry.get("content_hash"), entry.get("hash_algorithm"))
+            if hash_key is not None:
+                available_visual_hashes.setdefault(
+                    hash_key,
+                    (existing_visual_hash, entry["visual_hash_algorithm"]),
+                )
+            continue
+
+        hash_key = _make_content_hash_key(entry.get("content_hash"), entry.get("hash_algorithm"))
+        if hash_key is not None and hash_key in available_visual_hashes:
+            cached_visual_hash, cached_visual_hash_algorithm = available_visual_hashes[hash_key]
+            entry["visual_hash"] = cached_visual_hash
+            entry["visual_hash_algorithm"] = cached_visual_hash_algorithm
+            reused_content_hash_count += 1
+            continue
+
+        if not isinstance(file_path, Path):
+            continue
+
+        computed_visual_hash = _compute_image_dhash(file_path)
+        if not computed_visual_hash:
+            continue
+
+        entry["visual_hash"] = computed_visual_hash
+        entry["visual_hash_algorithm"] = "dhash-8"
+        computed_count += 1
+        if hash_key is not None:
+            available_visual_hashes[hash_key] = (computed_visual_hash, "dhash-8")
+    return reused_content_hash_count, computed_count
+
+
+def _run_visual_hash_prewarm(
+    prewarm_key: str,
+    device_id: str,
+    candidates: list[VisualHashPrewarmCandidate],
+) -> None:
+    try:
+        from backend.core.device_file_cover import (
+            DeviceFileMetadataSnapshot,
+            upsert_device_file_metadata_batch,
+        )
+
+        if not device_id or not candidates:
+            return
+
+        with Session(engine) as session:
+            current_records = _load_cached_device_records_by_path(
+                session,
+                device_id,
+                [candidate.absolute_path for candidate in candidates],
+            )
+            pending_items: list[dict] = []
+            snapshot_specs: list[tuple[VisualHashPrewarmCandidate, dict, int | None, int | None, int | None, str | None, str | None]] = []
+
+            for candidate in candidates:
+                current_record = current_records.get(candidate.absolute_path)
+                if current_record is not None:
+                    if (
+                        current_record.file_size != candidate.file_size
+                        or current_record.modified_at_ms != candidate.modified_at_ms
+                    ):
+                        continue
+                    if _normalize_optional_hash(current_record.visual_hash):
+                        continue
+
+                file_path = Path(candidate.absolute_path)
+                if not file_path.exists() or not file_path.is_file():
+                    continue
+
+                entry = {
+                    "content_hash": (
+                        _normalize_optional_hash(current_record.content_hash)
+                        if current_record is not None
+                        else _normalize_optional_hash(candidate.content_hash)
+                    ),
+                    "hash_algorithm": (
+                        _normalize_hash_algorithm(current_record.hash_algorithm, "sha256")
+                        if current_record is not None
+                        else _normalize_hash_algorithm(candidate.hash_algorithm, "sha256")
+                    ),
+                    "visual_hash": None,
+                    "visual_hash_algorithm": "dhash-8",
+                }
+                pending_items.append({
+                    "entry": entry,
+                    "file_path": file_path,
+                })
+                snapshot_specs.append((
+                    candidate,
+                    entry,
+                    current_record.duration_ms if current_record is not None else None,
+                    current_record.width_px if current_record is not None else None,
+                    current_record.height_px if current_record is not None else None,
+                    candidate.media_kind or (current_record.media_kind if current_record is not None else None),
+                    candidate.mime_type or (current_record.mime_type if current_record is not None else None),
+                ))
+
+            _resolve_pending_visual_hash_items(pending_items, session, device_id)
+
+            snapshots = []
+            for candidate, entry, duration_ms, width_px, height_px, media_kind, mime_type in snapshot_specs:
+                visual_hash = _normalize_optional_hash(entry.get("visual_hash"))
+                if not visual_hash:
+                    continue
+                snapshots.append(
+                    DeviceFileMetadataSnapshot(
+                        absolute_path=candidate.absolute_path,
+                        last_known_path=candidate.last_known_path,
+                        file_size=candidate.file_size,
+                        modified_at_ms=candidate.modified_at_ms,
+                        content_hash=_normalize_optional_hash(entry.get("content_hash")),
+                        hash_algorithm=_normalize_hash_algorithm(entry.get("hash_algorithm"), "sha256"),
+                        visual_hash=visual_hash,
+                        visual_hash_algorithm=_normalize_hash_algorithm(entry.get("visual_hash_algorithm"), "dhash-8"),
+                        duration_ms=duration_ms,
+                        width_px=width_px,
+                        height_px=height_px,
+                        media_kind=media_kind,
+                        mime_type=mime_type,
+                    )
+                )
+
+            if snapshots:
+                upsert_device_file_metadata_batch(session, device_id, snapshots)
+    except Exception:
+        return
+    finally:
+        with _visual_hash_prewarm_lock:
+            _visual_hash_prewarm_active_keys.discard(prewarm_key)
+
+
+def _schedule_visual_hash_prewarm(
+    prewarm_key: str | None,
+    device_id: str,
+    candidates: list[VisualHashPrewarmCandidate],
+) -> None:
+    normalized_key = str(prewarm_key or "").strip()
+    if not normalized_key or not device_id or not candidates:
+        return
+
+    batch = candidates[:VISUAL_HASH_PREWARM_BATCH_SIZE]
+    if not batch:
+        return
+
+    with _visual_hash_prewarm_lock:
+        if normalized_key in _visual_hash_prewarm_active_keys:
+            return
+        _visual_hash_prewarm_active_keys.add(normalized_key)
+
+    try:
+        _visual_hash_prewarm_executor.submit(_run_visual_hash_prewarm, normalized_key, device_id, batch)
+    except Exception:
+        with _visual_hash_prewarm_lock:
+            _visual_hash_prewarm_active_keys.discard(normalized_key)
+
+
+def _build_visual_hash_status(
+    *,
+    include_visual_hash: bool,
+    total_image_count: int,
+    indexed_count: int,
+    computed_count: int = 0,
+    reused_content_hash_count: int = 0,
+    prewarm_scheduled_count: int = 0,
+) -> dict:
+    normalized_total = max(0, int(total_image_count or 0))
+    normalized_indexed = min(normalized_total, max(0, int(indexed_count or 0)))
+    normalized_computed = max(0, int(computed_count or 0))
+    normalized_reused = max(0, int(reused_content_hash_count or 0))
+    normalized_prewarm = max(0, int(prewarm_scheduled_count or 0))
+    missing_count = max(0, normalized_total - normalized_indexed)
+    return {
+        "requested": bool(include_visual_hash),
+        "total_image_count": normalized_total,
+        "indexed_count": normalized_indexed,
+        "missing_count": missing_count,
+        "computed_count": normalized_computed,
+        "reused_content_hash_count": normalized_reused,
+        "prewarm_scheduled_count": normalized_prewarm,
+        "complete": missing_count == 0,
+    }
 
 
 def _normalize_rel_path(raw_path: str) -> str:
@@ -854,9 +1222,15 @@ def _probe_video_metadata(path: Path, ffprobe_bin: str) -> tuple[int | None, int
     return duration_ms, width_px, height_px
 
 
-def _attach_cached_media_metadata(entries: list[dict], session: Session | None = None) -> None:
+def _attach_cached_media_metadata(
+    entries: list[dict],
+    session: Session | None = None,
+    *,
+    include_visual_hash: bool = False,
+    prewarm_visual_hash_key: str | None = None,
+) -> dict:
     if not entries:
-        return
+        return _build_visual_hash_status(include_visual_hash=include_visual_hash, total_image_count=0, indexed_count=0)
 
     try:
         from backend.core.device import get_device_id
@@ -869,7 +1243,7 @@ def _attach_cached_media_metadata(entries: list[dict], session: Session | None =
         for entry in entries:
             entry.pop("_absolute_identity_path", None)
             entry.pop("_file_path", None)
-        return
+        return _build_visual_hash_status(include_visual_hash=include_visual_hash, total_image_count=0, indexed_count=0)
 
     try:
         device_id = get_device_id()
@@ -881,21 +1255,14 @@ def _attach_cached_media_metadata(entries: list[dict], session: Session | None =
         for entry in entries
         if entry.get("_absolute_identity_path")
     ]
-    cached_records: dict[str, DeviceFile] = {}
-    if session is not None and device_id and absolute_paths:
-        cached_records = {
-            record.absolute_path: record
-            for record in session.exec(
-                select(DeviceFile).where(
-                    DeviceFile.device_id == device_id,
-                    DeviceFile.absolute_path.in_(absolute_paths),
-                )
-            ).all()
-            if record.absolute_path
-        }
+    cached_records = _load_cached_device_records_by_path(session, device_id, absolute_paths)
 
     ffprobe_bin = shutil.which("ffprobe")
-    snapshots: list[DeviceFileMetadataSnapshot] = []
+    pending_visual_hash_items: list[dict] = []
+    prewarm_candidates: list[VisualHashPrewarmCandidate] = []
+    snapshot_refs: list[tuple[dict, str]] = []
+    total_image_count = 0
+    browse_indexed_count = 0
     for entry in entries:
         absolute_identity_path = str(entry.pop("_absolute_identity_path", "") or "")
         file_path = entry.pop("_file_path", None)
@@ -904,16 +1271,33 @@ def _attach_cached_media_metadata(entries: list[dict], session: Session | None =
         duration_ms = None
         width_px = None
         height_px = None
+        content_hash = None
+        hash_algorithm = "sha256"
+        visual_hash = None
+        visual_hash_algorithm = "dhash-8"
         matches_cached_file = (
             cached_record is not None
             and cached_record.file_size == entry.get("size")
             and cached_record.modified_at_ms == entry.get("modified_at")
         )
+        cached_visual_hash = (
+            _normalize_optional_hash(cached_record.visual_hash)
+            if matches_cached_file and cached_record is not None
+            else None
+        )
 
         if entry.get("kind") == "image":
+            total_image_count += 1
             if matches_cached_file and cached_record:
                 width_px = cached_record.width_px
                 height_px = cached_record.height_px
+                content_hash = cached_record.content_hash
+                hash_algorithm = cached_record.hash_algorithm or hash_algorithm
+                if include_visual_hash:
+                    visual_hash = cached_visual_hash
+                    visual_hash_algorithm = cached_record.visual_hash_algorithm or visual_hash_algorithm
+                elif cached_visual_hash:
+                    browse_indexed_count += 1
             if (width_px is None or height_px is None) and isinstance(file_path, Path):
                 probed_width, probed_height = _probe_image_dimensions(file_path)
                 width_px = probed_width if probed_width is not None else width_px
@@ -924,6 +1308,8 @@ def _attach_cached_media_metadata(entries: list[dict], session: Session | None =
                 duration_ms = cached_record.duration_ms
                 width_px = cached_record.width_px
                 height_px = cached_record.height_px
+                content_hash = cached_record.content_hash
+                hash_algorithm = cached_record.hash_algorithm or hash_algorithm
 
             if ffprobe_bin and isinstance(file_path, Path) and (
                 duration_ms is None or width_px is None or height_px is None
@@ -938,26 +1324,100 @@ def _attach_cached_media_metadata(entries: list[dict], session: Session | None =
         entry["height"] = height_px
         entry["aspect_ratio"] = (width_px / height_px) if width_px and height_px else None
         entry["weight"] = cached_record.weight if cached_record else 0
+        entry["content_hash"] = content_hash
+        entry["hash_algorithm"] = hash_algorithm
+        entry["visual_hash"] = visual_hash if include_visual_hash else None
+        entry["visual_hash_algorithm"] = visual_hash_algorithm if include_visual_hash else None
+        if (
+            entry.get("kind") == "image"
+            and include_visual_hash
+            and entry["visual_hash"] is None
+            and isinstance(file_path, Path)
+        ):
+            pending_visual_hash_items.append({
+                "entry": entry,
+                "file_path": file_path,
+            })
+        if (
+            entry.get("kind") == "image"
+            and not include_visual_hash
+            and isinstance(file_path, Path)
+            and absolute_identity_path
+        ):
+            if not cached_visual_hash:
+                prewarm_candidates.append(
+                    VisualHashPrewarmCandidate(
+                        absolute_path=absolute_identity_path,
+                        last_known_path=absolute_identity_path,
+                        file_size=entry.get("size"),
+                        modified_at_ms=entry.get("modified_at"),
+                        content_hash=_normalize_optional_hash(content_hash),
+                        hash_algorithm=_normalize_hash_algorithm(hash_algorithm, "sha256"),
+                        media_kind=entry.get("kind"),
+                        mime_type=entry.get("mime_type"),
+                    )
+                )
         if device_id and absolute_identity_path:
-            snapshots.append(
+            snapshot_refs.append((entry, absolute_identity_path))
+
+    reused_content_hash_count = 0
+    computed_count = 0
+    if include_visual_hash and pending_visual_hash_items:
+        reused_content_hash_count, computed_count = _resolve_pending_visual_hash_items(
+            pending_visual_hash_items,
+            session,
+            device_id,
+        )
+
+    indexed_count = (
+        sum(
+            1
+            for entry in entries
+            if entry.get("kind") == "image"
+            and _normalize_optional_hash(entry.get("visual_hash"))
+        )
+        if include_visual_hash
+        else browse_indexed_count
+    )
+
+    if session is not None and device_id and snapshot_refs:
+        try:
+            snapshots = [
                 DeviceFileMetadataSnapshot(
                     absolute_path=absolute_identity_path,
                     last_known_path=absolute_identity_path,
                     file_size=entry.get("size"),
                     modified_at_ms=entry.get("modified_at"),
-                    duration_ms=duration_ms,
-                    width_px=width_px,
-                    height_px=height_px,
+                    content_hash=_normalize_optional_hash(entry.get("content_hash")),
+                    hash_algorithm=_normalize_hash_algorithm(entry.get("hash_algorithm"), "sha256"),
+                    visual_hash=_normalize_optional_hash(entry.get("visual_hash")) if include_visual_hash else None,
+                    visual_hash_algorithm=_normalize_hash_algorithm(entry.get("visual_hash_algorithm"), "dhash-8"),
+                    duration_ms=entry.get("duration_ms"),
+                    width_px=entry.get("width"),
+                    height_px=entry.get("height"),
                     media_kind=entry.get("kind"),
                     mime_type=entry.get("mime_type"),
                 )
-            )
-
-    if session is not None and device_id and snapshots:
-        try:
+                for entry, absolute_identity_path in snapshot_refs
+            ]
             upsert_device_file_metadata_batch(session, device_id, snapshots)
         except Exception:
             pass
+        else:
+            if not include_visual_hash and prewarm_candidates:
+                _schedule_visual_hash_prewarm(prewarm_visual_hash_key, device_id, prewarm_candidates)
+    return _build_visual_hash_status(
+        include_visual_hash=include_visual_hash,
+        total_image_count=total_image_count,
+        indexed_count=indexed_count,
+        computed_count=computed_count,
+        reused_content_hash_count=reused_content_hash_count,
+        prewarm_scheduled_count=(
+            min(len(prewarm_candidates), VISUAL_HASH_PREWARM_BATCH_SIZE)
+            if (not include_visual_hash and prewarm_candidates)
+            else 0
+        ),
+    )
 
 
 def _create_media_sort_program_from_mode(sort_mode: MediaSortMode) -> GallerySortProgram:
@@ -999,12 +1459,90 @@ def _populate_media_random_sort_values(entries: list[dict], rules: list[GalleryS
         entry["_random_order"] = _compute_media_random_order(seed, entry)
 
 
+def _populate_media_duplicate_cluster_values(entries: list[dict], rules: list[GallerySortRule]) -> None:
+    duplicate_rule_active = any(rule.field == "duplicate_cluster" for rule in rules)
+    for entry in entries:
+        entry.pop("duplicate_cluster_order", None)
+        entry.pop("duplicate_cluster_distance", None)
+        entry.pop("duplicate_cluster_member_order", None)
+        entry.pop("duplicate_cluster_size", None)
+
+    if not duplicate_rule_active or not entries:
+        return
+
+    comparison_rules = [rule for rule in rules if rule.field != "duplicate_cluster"]
+    if not comparison_rules:
+        comparison_rules = list(GALLERY_SORT_FALLBACK_RULES)
+    baseline_entries = sorted(
+        entries,
+        key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, comparison_rules)),
+    )
+
+    cluster_visual_anchors: dict[int, int] = {}
+    cluster_by_content_hash: dict[str, int] = {}
+    cluster_members: list[list[tuple[dict, int, int]]] = []
+
+    for baseline_rank, entry in enumerate(baseline_entries):
+        normalized_content_hash = str(entry.get("content_hash") or "").strip().lower() or None
+        visual_hash_int = _parse_visual_hash_int(str(entry.get("visual_hash") or "").strip().lower() or None)
+
+        cluster_index = cluster_by_content_hash.get(normalized_content_hash) if normalized_content_hash else None
+        cluster_distance = 0
+        if cluster_index is None and visual_hash_int is not None:
+            best_cluster_index = None
+            best_distance = None
+            for candidate_cluster_index, anchor_hash_int in cluster_visual_anchors.items():
+                distance = (visual_hash_int ^ anchor_hash_int).bit_count()
+                if distance > DUPLICATE_CLUSTER_VISUAL_THRESHOLD:
+                    continue
+                if (
+                    best_distance is None
+                    or distance < best_distance
+                    or (distance == best_distance and candidate_cluster_index < (best_cluster_index or 0))
+                ):
+                    best_cluster_index = candidate_cluster_index
+                    best_distance = distance
+            if best_cluster_index is not None:
+                cluster_index = best_cluster_index
+                cluster_distance = int(best_distance or 0)
+
+        if cluster_index is None:
+            cluster_index = len(cluster_members)
+            cluster_members.append([])
+
+        cluster_members[cluster_index].append((entry, cluster_distance, baseline_rank))
+
+        if normalized_content_hash:
+            cluster_by_content_hash.setdefault(normalized_content_hash, cluster_index)
+        if visual_hash_int is not None and cluster_index not in cluster_visual_anchors:
+            cluster_visual_anchors[cluster_index] = visual_hash_int
+
+    for cluster_index, members in enumerate(cluster_members):
+        ordered_members = sorted(
+            members,
+            key=lambda item: (
+                int(item[1]),
+                int(item[2]),
+                str(item[0].get("id") or ""),
+            ),
+        )
+        cluster_size = len(ordered_members)
+        for member_order, (entry, distance, _) in enumerate(ordered_members):
+            entry["duplicate_cluster_order"] = cluster_index
+            entry["duplicate_cluster_distance"] = int(distance)
+            entry["duplicate_cluster_member_order"] = member_order
+            entry["duplicate_cluster_size"] = cluster_size
+
+
 def _get_media_sort_value(item: dict, field: GallerySortField) -> str | int | None:
     if field == "random":
         random_order = item.get("_random_order")
         if isinstance(random_order, int):
             return random_order
         return _compute_media_random_order("stable-random", item)
+    if field == "duplicate_cluster":
+        cluster_order = item.get("duplicate_cluster_order")
+        return int(cluster_order) if isinstance(cluster_order, (int, float)) else None
     if field == "weight":
         return int(item.get("weight") or 0)
     if field == "modified_at":
@@ -1037,16 +1575,19 @@ def _get_media_sort_value(item: dict, field: GallerySortField) -> str | int | No
     return None
 
 
-def _compare_media_sort_rule(left: dict, right: dict, rule: GallerySortRule) -> int:
-    left_value = _get_media_sort_value(left, rule.field)
-    right_value = _get_media_sort_value(right, rule.field)
+def _compare_media_sort_values(
+    left_value: str | int | None,
+    right_value: str | int | None,
+    *,
+    direction: GallerySortDirection,
+    nulls: GallerySortNulls,
+) -> int:
     left_missing = left_value is None
     right_missing = right_value is None
-
     if left_missing or right_missing:
         if left_missing and right_missing:
             return 0
-        if rule.nulls == "first":
+        if nulls == "first":
             return -1 if left_missing else 1
         return 1 if left_missing else -1
 
@@ -1064,7 +1605,40 @@ def _compare_media_sort_rule(left: dict, right: dict, rule: GallerySortRule) -> 
 
     if result == 0:
         return 0
-    return -result if rule.direction == "desc" else result
+    return -result if direction == "desc" else result
+
+
+def _compare_duplicate_cluster_rule(left: dict, right: dict, rule: GallerySortRule) -> int:
+    result = _compare_media_sort_values(
+        _get_media_sort_value(left, "duplicate_cluster"),
+        _get_media_sort_value(right, "duplicate_cluster"),
+        direction=rule.direction,
+        nulls=rule.nulls,
+    )
+    if result != 0:
+        return result
+    result = _compare_media_sort_values(
+        int(left.get("duplicate_cluster_distance")) if isinstance(left.get("duplicate_cluster_distance"), (int, float)) else None,
+        int(right.get("duplicate_cluster_distance")) if isinstance(right.get("duplicate_cluster_distance"), (int, float)) else None,
+        direction="asc",
+        nulls="last",
+    )
+    if result != 0:
+        return result
+    return _compare_media_sort_values(
+        int(left.get("duplicate_cluster_member_order")) if isinstance(left.get("duplicate_cluster_member_order"), (int, float)) else None,
+        int(right.get("duplicate_cluster_member_order")) if isinstance(right.get("duplicate_cluster_member_order"), (int, float)) else None,
+        direction="asc",
+        nulls="last",
+    )
+
+
+def _compare_media_sort_rule(left: dict, right: dict, rule: GallerySortRule) -> int:
+    if rule.field == "duplicate_cluster":
+        return _compare_duplicate_cluster_rule(left, right, rule)
+    left_value = _get_media_sort_value(left, rule.field)
+    right_value = _get_media_sort_value(right, rule.field)
+    return _compare_media_sort_values(left_value, right_value, direction=rule.direction, nulls=rule.nulls)
 
 
 def _compare_media_entries(left: dict, right: dict, rules: list[GallerySortRule]) -> int:
@@ -1089,6 +1663,7 @@ def _sort_supported_media_entries(
 ) -> list[GallerySortRule]:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
     _populate_media_random_sort_values(entries, normalized_rules)
+    _populate_media_duplicate_cluster_values(entries, normalized_rules)
     entries.sort(key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, normalized_rules)))
     for entry in entries:
         entry.pop("_random_order", None)
@@ -1255,6 +1830,7 @@ def _store_media_listing_snapshot(
     sort_program: dict,
     entries: list[dict],
     total_bytes: int,
+    visual_hash_status: dict | None,
 ) -> MediaListingSnapshot:
     now = time.time()
     snapshot = MediaListingSnapshot(
@@ -1267,6 +1843,7 @@ def _store_media_listing_snapshot(
         sort_program=sort_program,
         entries=entries,
         total_bytes=total_bytes,
+        visual_hash_status=visual_hash_status,
         created_at=now,
         last_accessed_at=now,
     )
@@ -1306,6 +1883,7 @@ def _build_media_listing_response(
     snapshot_id: str,
     entries: list[dict],
     total_bytes: int,
+    visual_hash_status: dict | None,
     offset: int,
     limit: int,
     response_key: str,
@@ -1336,6 +1914,7 @@ def _build_media_listing_response(
         "snapshot_id": snapshot_id,
         "total_count": total_count,
         "total_bytes": total_bytes,
+        "visual_hash_status": visual_hash_status,
         "offset": normalized_offset,
         "limit": normalized_limit,
         "has_more": has_more,
@@ -1367,6 +1946,7 @@ def _list_supported_entries(
     layout_column_heights: list[float] | None = None,
 ) -> dict:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
+    include_visual_hash = any(rule.field == "duplicate_cluster" for rule in normalized_rules)
     normalized_scan_limit = _normalize_media_scan_limit(scan_limit)
     if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
         return {
@@ -1377,6 +1957,11 @@ def _list_supported_entries(
             "sort_program": {"rules": [rule.model_dump() for rule in normalized_rules]},
             "total_count": 0,
             "total_bytes": 0,
+            "visual_hash_status": _build_visual_hash_status(
+                include_visual_hash=include_visual_hash,
+                total_image_count=0,
+                indexed_count=0,
+            ),
             "offset": 0,
             "limit": max(0, int(limit or 0)),
             "has_more": False,
@@ -1417,6 +2002,7 @@ def _list_supported_entries(
             snapshot_id=cached_snapshot.snapshot_id,
             entries=cached_snapshot.entries,
             total_bytes=cached_snapshot.total_bytes,
+            visual_hash_status=cached_snapshot.visual_hash_status,
             offset=offset,
             limit=limit,
             response_key=response_key,
@@ -1476,7 +2062,12 @@ def _list_supported_entries(
     ):
         _append_supported_file(file_path)
 
-    _attach_cached_media_metadata(entries, session)
+    visual_hash_status = _attach_cached_media_metadata(
+        entries,
+        session,
+        include_visual_hash=include_visual_hash,
+        prewarm_visual_hash_key=query_signature,
+    )
     normalized_rules = _sort_supported_media_entries(entries, sort_mode, sort_program)
     sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
     total_bytes = sum(int(entry.get("size") or 0) for entry in entries)
@@ -1489,6 +2080,7 @@ def _list_supported_entries(
         sort_program=sort_program_payload,
         entries=entries,
         total_bytes=total_bytes,
+        visual_hash_status=visual_hash_status,
     )
     return _build_media_listing_response(
         root=resolved["root"],
@@ -1499,6 +2091,7 @@ def _list_supported_entries(
         snapshot_id=snapshot.snapshot_id,
         entries=snapshot.entries,
         total_bytes=snapshot.total_bytes,
+        visual_hash_status=snapshot.visual_hash_status,
         offset=offset,
         limit=limit,
         response_key=response_key,
@@ -1690,6 +2283,75 @@ def build_file_response(root_key: Optional[str] = None, rel_path: str = "", *, a
     )
 
 
+def read_text_file(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+    encoding: str = "utf-8",
+) -> dict:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        stat_result = target_path.stat()
+        text = target_path.read_text(encoding=encoding)
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to decode file as {encoding}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {exc}") from exc
+
+    return {
+        "ok": True,
+        "root": resolved["root"],
+        "path": resolved["path"],
+        "absolute_path": os.fspath(target_path.resolve(strict=False)),
+        "encoding": encoding,
+        "size": stat_result.st_size,
+        "modified_at": int(stat_result.st_mtime * 1000),
+        "text": text,
+    }
+
+
+def write_text_file(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+    text: str = "",
+    encoding: str = "utf-8",
+) -> dict:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if target_path.exists() and not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    parent_path = target_path.parent
+    if not parent_path.exists():
+        raise HTTPException(status_code=404, detail="Parent directory not found")
+    if not parent_path.is_dir():
+        raise HTTPException(status_code=400, detail="Parent path is not a directory")
+
+    try:
+        target_path.write_text(text, encoding=encoding)
+        stat_result = target_path.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to write file: {exc}") from exc
+
+    absolute_identity_path = os.fspath(target_path.resolve(strict=False))
+    return {
+        "ok": True,
+        "root": resolved["root"],
+        "path": resolved["path"] or target_path.name,
+        "absolute_path": absolute_identity_path,
+        "encoding": encoding,
+        "size": stat_result.st_size,
+        "modified_at": int(stat_result.st_mtime * 1000),
+    }
+
+
 def build_thumbnail_response(
     root_key: Optional[str] = None,
     rel_path: str = "",
@@ -1808,6 +2470,8 @@ def sync_device_file_records(
                     last_known_path=item.last_known_path,
                     content_hash=item.content_hash,
                     hash_algorithm=item.hash_algorithm,
+                    visual_hash=item.visual_hash,
+                    visual_hash_algorithm=item.visual_hash_algorithm,
                     file_size=item.file_size,
                     modified_at_ms=item.modified_at_ms,
                     duration_ms=item.duration_ms,
@@ -1840,6 +2504,8 @@ def sync_device_file_records(
                 "last_known_path": record.last_known_path,
                 "content_hash": record.content_hash,
                 "hash_algorithm": record.hash_algorithm,
+                "visual_hash": record.visual_hash,
+                "visual_hash_algorithm": record.visual_hash_algorithm,
                 "file_size": record.file_size,
                 "modified_at_ms": record.modified_at_ms,
                 "duration_ms": record.duration_ms,
@@ -2201,6 +2867,27 @@ def get_content(
     absolute_path: str = Query(""),
 ):
     return build_file_response(root, path, absolute_path=absolute_path)
+
+
+@router.get("/text")
+def get_text(
+    root: Optional[str] = Query(None),
+    path: str = Query(""),
+    absolute_path: str = Query(""),
+    encoding: str = Query("utf-8"),
+):
+    return read_text_file(root, path, absolute_path=absolute_path, encoding=encoding)
+
+
+@router.post("/text")
+def save_text(req: TextFileWriteRequest):
+    return write_text_file(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        text=req.text,
+        encoding=req.encoding,
+    )
 
 
 @router.get("/thumbnail")

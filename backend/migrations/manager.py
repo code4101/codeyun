@@ -1052,6 +1052,32 @@ def v23_add_git_reduction_run_table(session: Session):
     session.commit()
     print("  gitreductionrun ready.")
 
+
+def v24_add_device_file_visual_hash_fields(session: Session):
+    """
+    Migration V24: Add cached image duplicate-cluster hash columns to devicefile.
+    """
+    print("Running System Upgrade V24: Add devicefile visual hash fields...")
+    res = session.exec(text("PRAGMA table_info(devicefile)")).all()
+    columns = [row[1] for row in res]
+
+    statements = []
+    if "visual_hash" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN visual_hash VARCHAR")
+    if "visual_hash_algorithm" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN visual_hash_algorithm VARCHAR NOT NULL DEFAULT 'dhash-8'")
+    if "visual_hash_updated_at" not in columns:
+        statements.append("ALTER TABLE devicefile ADD COLUMN visual_hash_updated_at FLOAT")
+
+    if not statements:
+        print("  Devicefile visual hash fields already exist, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print(f"  Added {len(statements)} devicefile visual hash columns.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1078,6 +1104,7 @@ MIGRATIONS = [
     (21, "Merge predone into done", v21_merge_predone_into_done),
     (22, "Add document reduction progress fields", v22_add_document_reduction_progress_fields),
     (23, "Add git reduction run table", v23_add_git_reduction_run_table),
+    (24, "Add device file visual hash fields", v24_add_device_file_visual_hash_fields),
 ]
 
 def get_current_version(session: Session) -> int:

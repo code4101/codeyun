@@ -8,7 +8,9 @@ from pydantic import BaseModel, Field
 from backend.core.auth import verify_api_token
 from backend.core.git_tools import (
     GitToolError,
+    collect_git_history_stats,
     collect_git_commit_context,
+    collect_git_file_diff,
     collect_git_reduction_source_units,
     create_git_commit,
     inspect_git_repository,
@@ -49,6 +51,16 @@ class GitToolContextRequest(BaseModel):
     max_files: int = Field(default=8, ge=1, le=20)
 
 
+class GitToolHistoryStatsRequest(BaseModel):
+    cwd: str
+    days: int = Field(default=180, ge=7, le=365)
+
+
+class GitToolFileDiffRequest(BaseModel):
+    cwd: str
+    path: str
+
+
 class GitToolInspectResponse(BaseModel):
     cwd: str
     repo_root: str
@@ -61,6 +73,8 @@ class GitToolInspectResponse(BaseModel):
     changed_files: list[GitChangedFile] = Field(default_factory=list)
     changed_file_count: int = 0
     estimated_changed_line_count: int = 0
+    added_line_count: int = 0
+    deleted_line_count: int = 0
     split_recommended: bool = False
     split_reason: str = ""
     oversized: bool = False
@@ -73,6 +87,46 @@ class GitToolContextResponse(GitToolInspectResponse):
     omitted_path_count: int = 0
     context_truncated: bool = False
     context_mode: Literal["sampled", "overview_only"] = "sampled"
+
+
+class GitToolHistoryStatsPoint(BaseModel):
+    date: str
+    added_line_count: int = 0
+    deleted_line_count: int = 0
+    commit_count: int = 0
+
+
+class GitToolHistoryStatsResponse(BaseModel):
+    cwd: str
+    repo_root: str
+    branch: str
+    days: int
+    start_date: str
+    end_date: str
+    total_added_line_count: int = 0
+    total_deleted_line_count: int = 0
+    total_commit_count: int = 0
+    points: list[GitToolHistoryStatsPoint] = Field(default_factory=list)
+
+
+class GitToolFileDiffSection(BaseModel):
+    kind: Literal["unstaged", "staged", "untracked", "empty"]
+    title: str
+    content: str = ""
+    truncated: bool = False
+
+
+class GitToolFileDiffResponse(BaseModel):
+    cwd: str
+    repo_root: str
+    branch: str
+    path: str
+    status: str = ""
+    staged: bool = False
+    unstaged: bool = False
+    untracked: bool = False
+    truncated: bool = False
+    sections: list[GitToolFileDiffSection] = Field(default_factory=list)
 
 
 class GitToolReductionInputRequest(BaseModel):
@@ -212,6 +266,22 @@ def inspect_git_repository_endpoint(req: GitToolInspectRequest):
 def collect_git_commit_context_endpoint(req: GitToolContextRequest):
     try:
         return collect_git_commit_context(req.cwd, max_files=req.max_files)
+    except GitToolError as exc:
+        _raise_git_error(exc)
+
+
+@router.post("/history-stats", response_model=GitToolHistoryStatsResponse)
+def collect_git_history_stats_endpoint(req: GitToolHistoryStatsRequest):
+    try:
+        return collect_git_history_stats(req.cwd, days=req.days)
+    except GitToolError as exc:
+        _raise_git_error(exc)
+
+
+@router.post("/file-diff", response_model=GitToolFileDiffResponse)
+def collect_git_file_diff_endpoint(req: GitToolFileDiffRequest):
+    try:
+        return collect_git_file_diff(req.cwd, req.path)
     except GitToolError as exc:
         _raise_git_error(exc)
 

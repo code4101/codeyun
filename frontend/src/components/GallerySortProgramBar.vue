@@ -150,6 +150,7 @@ const emit = defineEmits<{
 
 const defaultFieldSequence: GallerySortField[] = [
   'random',
+  'duplicate_cluster',
   'weight',
   'modified_at',
   'size',

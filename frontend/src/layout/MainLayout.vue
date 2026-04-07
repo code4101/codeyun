@@ -39,6 +39,9 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/cluster/files') || route.path.startsWith('/cluster/media') || route.path.startsWith('/cluster/images')) {
     return '/cluster/files';
   }
+  if (route.path.startsWith('/cluster/labelme')) {
+    return '/cluster/labelme';
+  }
   if (route.path.startsWith('/cluster/')) return '/cluster/tasks';
   const privateMenuIndex = findPrivateMenuIndex(route.path);
   if (privateMenuIndex) return privateMenuIndex;
@@ -190,6 +193,7 @@ const handleLogin = () => {
             </template>
             <el-menu-item index="/cluster/tasks">设备任务</el-menu-item>
             <el-menu-item index="/cluster/files">浏览文件</el-menu-item>
+            <el-menu-item index="/cluster/labelme">图片标注</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu index="admin-tools" v-if="userStore.isAdmin">

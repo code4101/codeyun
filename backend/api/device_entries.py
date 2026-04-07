@@ -25,6 +25,7 @@ from backend.api.filesystem import (
     DeviceFileWeightUpdateRequest,
     MediaListRequest,
     RootScopedRequest,
+    TextFileWriteRequest,
     build_file_response,
     build_thumbnail_response,
     delete_scoped_entry,
@@ -32,17 +33,23 @@ from backend.api.filesystem import (
     list_directory_items,
     list_image_entries,
     list_media_entries,
+    read_text_file,
     reveal_scoped_entry,
     resolve_request_path,
     scan_device_file_records,
     sync_device_file_records,
     update_device_file_weight_for_request,
+    write_text_file,
 )
 from backend.api.git_tools import (
     GitToolCommitResponse,
     GitToolCommitRequest,
     GitToolContextRequest,
     GitToolContextResponse,
+    GitToolHistoryStatsRequest,
+    GitToolHistoryStatsResponse,
+    GitToolFileDiffRequest,
+    GitToolFileDiffResponse,
     GitToolGenerateAndCommitRequest,
     GitToolGenerateAndCommitResponse,
     GitToolGenerateMessageRequest,
@@ -74,7 +81,9 @@ from backend.core.device_file_cover import (
 from backend.core.device_files import update_device_file_weight
 from backend.core.git_tools import (
     GitToolError,
+    collect_git_history_stats,
     collect_git_commit_context,
+    collect_git_file_diff,
     collect_git_reduction_source_units,
     create_git_commit,
     inspect_git_repository,
@@ -164,7 +173,7 @@ def _proxy_response(resp: requests.Response, *, stream_response: bool = False) -
 
 
 def _filesystem_payload(
-    req: DirectoryListRequest | RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest
+    req: DirectoryListRequest | RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest | TextFileWriteRequest
 ) -> Dict[str, Any]:
     payload = req.model_dump(exclude_none=True)
     if not payload.get("absolute_path"):
@@ -424,6 +433,10 @@ def _index_device_media_payload(
                 last_known_path=file_identity,
                 file_size=item.get("size"),
                 modified_at_ms=item.get("modified_at"),
+                content_hash=item.get("content_hash"),
+                hash_algorithm=item.get("hash_algorithm") or "sha256",
+                visual_hash=item.get("visual_hash"),
+                visual_hash_algorithm=item.get("visual_hash_algorithm") or "dhash-8",
                 duration_ms=item.get("duration_ms"),
                 width_px=item.get("width"),
                 height_px=item.get("height"),
@@ -464,6 +477,8 @@ def _mirror_scanned_device_files_to_cache(
                 last_known_path=file_identity,
                 content_hash=item.get("content_hash"),
                 hash_algorithm=item.get("hash_algorithm") or "sha256",
+                visual_hash=item.get("visual_hash"),
+                visual_hash_algorithm=item.get("visual_hash_algorithm") or "dhash-8",
                 file_size=item.get("size"),
                 modified_at_ms=item.get("modified_at"),
                 width_px=item.get("width_px"),
@@ -1140,6 +1155,58 @@ def inspect_git_for_entry(
     return GitToolInspectResponse.model_validate(payload)
 
 
+@router.post("/{entry_id}/git/history-stats", response_model=GitToolHistoryStatsResponse)
+def collect_git_history_stats_for_entry(
+    entry_id: str,
+    req: GitToolHistoryStatsRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    try:
+        if entry.mode == "local":
+            return collect_git_history_stats(req.cwd, days=req.days)
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/git-tools/history-stats",
+        json_body=req.model_dump(),
+        timeout=60,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    return GitToolHistoryStatsResponse.model_validate(payload)
+
+
+@router.post("/{entry_id}/git/file-diff", response_model=GitToolFileDiffResponse)
+def collect_git_file_diff_for_entry(
+    entry_id: str,
+    req: GitToolFileDiffRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    try:
+        if entry.mode == "local":
+            return collect_git_file_diff(req.cwd, req.path)
+    except GitToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/git-tools/file-diff",
+        json_body=req.model_dump(),
+        timeout=30,
+    )
+    if error_response is not None:
+        _raise_remote_json_error(error_response)
+    return GitToolFileDiffResponse.model_validate(payload)
+
+
 @router.post("/{entry_id}/git/reduce-runs", response_model=GitReductionRunRead)
 def start_git_reduction_run_for_entry(
     entry_id: str,
@@ -1801,6 +1868,65 @@ def get_file_content_for_entry(
         },
         stream_response=True,
     )
+
+
+@router.get("/{entry_id}/files/text")
+def get_file_text_for_entry(
+    entry_id: str,
+    root: Optional[str] = Query(None),
+    path: str = Query(""),
+    absolute_path: str = Query(""),
+    encoding: str = Query("utf-8"),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return read_text_file(root, path, absolute_path=absolute_path, encoding=encoding)
+
+    params = {"path": path, "encoding": encoding}
+    if root:
+        params["root"] = root
+    if absolute_path:
+        params["absolute_path"] = absolute_path
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "GET",
+        "/fs/text",
+        params=params,
+    )
+    if error_response is not None:
+        return _proxy_response(error_response)
+    return payload
+
+
+@router.post("/{entry_id}/files/text")
+def save_file_text_for_entry(
+    entry_id: str,
+    req: TextFileWriteRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return write_text_file(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            text=req.text,
+            encoding=req.encoding,
+        )
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/fs/text",
+        json_body=_filesystem_payload(req),
+    )
+    if error_response is not None:
+        return _proxy_response(error_response)
+    return payload
 
 
 @router.post("/{entry_id}/files/stream-url")
