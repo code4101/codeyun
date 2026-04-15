@@ -182,6 +182,48 @@ export interface DeviceTextFileResult {
   text: string;
 }
 
+export interface DeviceLabelmeRenameRequest extends DeviceFileSelector {
+  base_root?: string;
+  base_path?: string;
+  base_absolute_path?: string;
+  target_relative_path: string;
+  overwrite?: boolean;
+  encoding?: string;
+}
+
+export interface DeviceLabelmeRenameResult {
+  ok: boolean;
+  root: string | null;
+  path: string;
+  absolute_path: string;
+  source_image_absolute_path: string;
+  target_image_absolute_path: string;
+  source_json_absolute_path: string;
+  target_json_absolute_path: string;
+  target_relative_path: string;
+  target_name: string;
+  json_moved: boolean;
+  json_updated: boolean;
+  overwritten: boolean;
+}
+
+export type DeviceOcrShapeType = 'polygon' | 'rectangle';
+
+export interface DeviceOcrPreviewRequest extends DeviceFileSelector {
+  shape_type?: DeviceOcrShapeType;
+}
+
+export interface DeviceOcrPreviewResponse {
+  ok: boolean;
+  root: string | null;
+  path: string;
+  absolute_path: string;
+  engine: string;
+  shape_type: DeviceOcrShapeType;
+  shape_count: number;
+  document: Record<string, unknown>;
+}
+
 export const fetchDeviceRoots = async (entryId: string): Promise<DeviceFilesystemRoot[]> => {
   const response = await api.get(getDeviceEntryPath(entryId, '/files/roots'));
   return response.data.roots ?? [];
@@ -275,6 +317,54 @@ export const saveDeviceFileText = async (
     encoding: payload.encoding ?? 'utf-8',
   });
   return response.data;
+};
+
+export const renameDeviceLabelmeAnnotation = async (
+  entryId: string,
+  payload: DeviceLabelmeRenameRequest
+): Promise<DeviceLabelmeRenameResult> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/labelme/rename'), {
+    ...payload,
+    encoding: payload.encoding ?? 'utf-8',
+    overwrite: Boolean(payload.overwrite),
+  });
+  return {
+    ok: Boolean(response.data.ok),
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    source_image_absolute_path: response.data.source_image_absolute_path ?? '',
+    target_image_absolute_path: response.data.target_image_absolute_path ?? '',
+    source_json_absolute_path: response.data.source_json_absolute_path ?? '',
+    target_json_absolute_path: response.data.target_json_absolute_path ?? '',
+    target_relative_path: response.data.target_relative_path ?? '',
+    target_name: response.data.target_name ?? '',
+    json_moved: Boolean(response.data.json_moved),
+    json_updated: Boolean(response.data.json_updated),
+    overwritten: Boolean(response.data.overwritten),
+  };
+};
+
+export const fetchDeviceFileOcrPreview = async (
+  entryId: string,
+  payload: DeviceOcrPreviewRequest
+): Promise<DeviceOcrPreviewResponse> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/ocr'), {
+    ...payload,
+    shape_type: payload.shape_type ?? 'polygon',
+  }, {
+    timeout: 120000,
+  });
+  return {
+    ok: Boolean(response.data.ok),
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    engine: response.data.engine ?? 'paddleocr',
+    shape_type: response.data.shape_type ?? 'polygon',
+    shape_count: Number(response.data.shape_count ?? 0),
+    document: response.data.document ?? {},
+  };
 };
 
 export const fetchDeviceFileStreamUrl = async (

@@ -11,6 +11,58 @@ import {
 } from '@/utils/noteSemantics';
 import { createEffectiveNoteTypes } from '@/utils/nodeConfig';
 
+export interface FanxiuStatusConfig {
+  status_path: string | null;
+  auto_detected_path: string | null;
+  effective_path: string | null;
+  mode: 'configured' | 'auto' | 'unset';
+  file_exists: boolean;
+}
+
+export interface FanxiuTaskStatusItem {
+  name: string;
+  scheduled_at: string;
+  due: boolean;
+  seconds_until_due: number;
+  is_next: boolean;
+}
+
+export interface FanxiuAccountStatusItem {
+  name: string;
+  phone: string | null;
+  is_current: boolean;
+  has_due_task: boolean;
+  due_count: number;
+  task_count: number;
+  next_task_name: string | null;
+  next_task_at: string | null;
+  tasks: FanxiuTaskStatusItem[];
+}
+
+export interface FanxiuRuntimeTimerItem {
+  name: string;
+  scheduled_at: string;
+  due: boolean;
+  seconds_until_due: number;
+}
+
+export interface FanxiuStatusSnapshot extends FanxiuStatusConfig {
+  loaded_at: string;
+  error: string | null;
+  current_account: string | null;
+  recommended_account: string | null;
+  next_task_path: string | null;
+  next_task_name: string | null;
+  next_task_at: string | null;
+  next_task_seconds_until_due: number | null;
+  program_initialized: boolean;
+  all_tasks_completed: boolean;
+  watchdog_hash: string | null;
+  runtime_timers: FanxiuRuntimeTimerItem[];
+  accounts: FanxiuAccountStatusItem[];
+  raw_status?: Record<string, unknown> | null;
+}
+
 const normalizeFanxiuNote = (raw: any): NoteNode => {
   const normalizeTimestamp = (value: unknown) => {
     const numeric = typeof value === 'number' ? value : Number(value ?? 0);
@@ -77,4 +129,24 @@ export const getFanxiuCharDetail = (charName: string) => {
 
 export const updateFanxiuChar = (charName: string, data: Partial<NoteNode>) => {
   return api.put<NoteNode>(`/fanxiu/chars/${charName}`, toFanxiuPayload(data)).then(res => normalizeFanxiuNote(res.data));
+};
+
+export const getFanxiuStatusConfig = () => {
+  return api.get<FanxiuStatusConfig>('/fanxiu/status/config').then(res => res.data);
+};
+
+export const updateFanxiuStatusConfig = (statusPath: string | null) => {
+  return api.put<FanxiuStatusConfig>('/fanxiu/status/config', { status_path: statusPath }).then(res => res.data);
+};
+
+export const getFanxiuStatus = () => {
+  return api.get<FanxiuStatusSnapshot>('/fanxiu/status').then(res => res.data);
+};
+
+export const parseFanxiuStatus = (rawStatus: Record<string, unknown>) => {
+  return api.post<FanxiuStatusSnapshot>('/fanxiu/status/parse', { raw_status: rawStatus }).then(res => res.data);
+};
+
+export const saveFanxiuStatus = (rawStatus: Record<string, unknown>) => {
+  return api.put<FanxiuStatusSnapshot>('/fanxiu/status', { raw_status: rawStatus }).then(res => res.data);
 };

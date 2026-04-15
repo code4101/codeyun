@@ -20,9 +20,6 @@
               <el-button type="primary" plain @click="openAddRepoDialog()">
                 添加项目
               </el-button>
-              <el-tag v-if="selectedDevice" :type="selectedDevice.mode === 'local' ? 'success' : 'warning'" effect="plain">
-                {{ selectedDevice.mode === 'local' ? '本地设备' : '远程设备' }}
-              </el-tag>
             </div>
           </div>
 

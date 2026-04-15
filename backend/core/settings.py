@@ -95,6 +95,11 @@ class Settings:
     deepseek_default_model: str
     deepseek_timeout_seconds: float
     deepseek_models: tuple[str, ...]
+    ocr_device: str
+    ocr_lang: str
+    ocr_use_doc_orientation_classify: bool
+    ocr_use_doc_unwarping: bool
+    ocr_use_textline_orientation: bool
 
     @property
     def is_development(self) -> bool:
@@ -177,6 +182,11 @@ def load_settings() -> Settings:
         "deepseek-chat",
         "deepseek-reasoner",
     )
+    ocr_device = (os.getenv("CODEYUN_OCR_DEVICE") or "cpu").strip().lower() or "cpu"
+    ocr_lang = (os.getenv("CODEYUN_OCR_LANG") or "ch").strip() or "ch"
+    ocr_use_doc_orientation_classify = _env_flag("CODEYUN_OCR_USE_DOC_ORIENTATION_CLASSIFY", False)
+    ocr_use_doc_unwarping = _env_flag("CODEYUN_OCR_USE_DOC_UNWARPING", False)
+    ocr_use_textline_orientation = _env_flag("CODEYUN_OCR_USE_TEXTLINE_ORIENTATION", False)
 
     return Settings(
         data_dir=data_dir,
@@ -208,6 +218,11 @@ def load_settings() -> Settings:
         deepseek_default_model=deepseek_default_model or "deepseek-chat",
         deepseek_timeout_seconds=max(1.0, deepseek_timeout_seconds),
         deepseek_models=deepseek_models,
+        ocr_device=ocr_device,
+        ocr_lang=ocr_lang,
+        ocr_use_doc_orientation_classify=ocr_use_doc_orientation_classify,
+        ocr_use_doc_unwarping=ocr_use_doc_unwarping,
+        ocr_use_textline_orientation=ocr_use_textline_orientation,
     )
 
 

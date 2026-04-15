@@ -145,8 +145,10 @@ const handleLogin = () => {
               <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
               <el-menu-item index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
               <el-menu-item index="/fanxiu/discount">凡修优惠券</el-menu-item>
+              <el-menu-item index="/fanxiu/task-status">任务状态</el-menu-item>
               <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
               <el-menu-item index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
+              <el-menu-item index="/fanxiu/cuijian-trial">淬剑试炼</el-menu-item>
             </el-sub-menu>
             <el-menu-item index="/dsp/calculator">
               <span>戴森球计划</span>

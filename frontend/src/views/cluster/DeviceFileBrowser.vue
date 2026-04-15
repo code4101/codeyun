@@ -758,30 +758,19 @@ const duplicateClusterRuleActive = computed(() =>
 );
 const mediaVisualHashHint = computed(() => {
   const status = mediaVisualHashStatus.value;
-  if (!status || status.total_image_count <= 0) {
+  if (!duplicateClusterRuleActive.value || !status || status.total_image_count <= 0) {
     return null;
   }
+  const scopeLabel = '当前页';
   return {
-    label: duplicateClusterRuleActive.value
-      ? (
-          status.complete
-            ? `视觉索引已就绪 ${status.indexed_count}/${status.total_image_count}`
-            : `视觉索引补齐中 ${status.indexed_count}/${status.total_image_count}`
-        )
-      : (
-          status.complete
-            ? `视觉索引已缓存 ${status.indexed_count}/${status.total_image_count}`
-            : `视觉索引后台预热 ${status.indexed_count}/${status.total_image_count}`
-        ),
-    tone: duplicateClusterRuleActive.value
-      ? (status.complete ? 'ready' : 'active')
-      : (status.complete ? 'cached' : 'warming'),
+    label: status.complete
+      ? `${scopeLabel}索引已就绪 ${status.indexed_count}/${status.total_image_count}`
+      : `${scopeLabel}索引补齐中 ${status.indexed_count}/${status.total_image_count}`,
+    tone: status.complete ? 'ready' : 'active',
     loading: !status.complete,
     detail: [
-      duplicateClusterRuleActive.value
-        ? '当前排序包含“重复聚簇”，后端会优先复用已有视觉哈希，并补齐缺失项。'
-        : '当前只是普通浏览，后台会渐进预热视觉哈希，减少后续首次使用“重复聚簇”的等待。',
-      `当前目录图片：${status.total_image_count} 张`,
+      '当前排序包含“重复聚簇”，后端只会对当前页条目复用或补齐视觉哈希，并做页内聚簇。',
+      `${scopeLabel}图片：${status.total_image_count} 张`,
       `已就绪：${status.indexed_count} 张`,
       status.missing_count > 0 ? `待补齐：${status.missing_count} 张` : '待补齐：0 张',
       status.computed_count > 0 ? `本次现算：${status.computed_count} 张` : '',

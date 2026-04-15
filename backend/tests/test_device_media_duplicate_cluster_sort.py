@@ -80,6 +80,65 @@ def test_sort_supported_media_entries_clusters_exact_and_visual_duplicates():
     assert [entry["duplicate_cluster_size"] for entry in entries] == [3, 3, 3, 1]
 
 
+def test_media_listing_duplicate_cluster_only_reorders_within_current_page():
+    entries = [
+        _build_media_entry(
+            item_id="anchor",
+            modified_at=400,
+            content_hash="hash-shared",
+            visual_hash="0000000000000000",
+        ),
+        _build_media_entry(
+            item_id="unique-a",
+            modified_at=350,
+            content_hash="hash-unique-a",
+            visual_hash="f000000000000000",
+        ),
+        _build_media_entry(
+            item_id="exact-dup",
+            modified_at=300,
+            content_hash="hash-shared",
+            visual_hash="ffffffffffffffff",
+        ),
+        _build_media_entry(
+            item_id="unique-b",
+            modified_at=250,
+            content_hash="hash-unique-b",
+            visual_hash="0f00000000000000",
+        ),
+    ]
+
+    rules = filesystem_api.GallerySortProgram(
+        rules=[
+            filesystem_api.GallerySortRule(field="duplicate_cluster", direction="asc", nulls="last"),
+            filesystem_api.GallerySortRule(field="modified_at", direction="desc", nulls="last"),
+        ]
+    )
+
+    normalized_rules = filesystem_api._prepare_media_listing_snapshot_entries(entries, "path", rules)
+    assert [entry["id"] for entry in entries] == [
+        "anchor",
+        "unique-a",
+        "exact-dup",
+        "unique-b",
+    ]
+
+    first_page, total_count, next_offset = filesystem_api._slice_media_listing_entries(entries, offset=0, limit=2)
+    filesystem_api._apply_duplicate_cluster_sort_to_entries(first_page, normalized_rules)
+
+    assert total_count == 4
+    assert next_offset == 2
+    assert [entry["id"] for entry in first_page] == ["anchor", "unique-a"]
+    assert [entry["duplicate_cluster_size"] for entry in first_page] == [1, 1]
+
+    second_page, _, second_next_offset = filesystem_api._slice_media_listing_entries(entries, offset=2, limit=2)
+    filesystem_api._apply_duplicate_cluster_sort_to_entries(second_page, normalized_rules)
+
+    assert second_next_offset is None
+    assert [entry["id"] for entry in second_page] == ["exact-dup", "unique-b"]
+    assert [entry["duplicate_cluster_size"] for entry in second_page] == [1, 1]
+
+
 def test_attach_cached_media_metadata_persists_visual_hash(tmp_path, monkeypatch):
     engine = create_engine(
         "sqlite://",
@@ -282,3 +341,83 @@ def test_attach_cached_media_metadata_schedules_visual_hash_prewarm_for_browse_r
     assert status["indexed_count"] == 0
     assert status["missing_count"] == 1
     assert status["prewarm_scheduled_count"] == 1
+
+
+def test_list_supported_entries_does_not_prewarm_visual_hash_without_duplicate_cluster_rule(tmp_path, monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    DeviceFile.__table__.create(engine, checkfirst=True)
+
+    image_path = tmp_path / "plain-browse.png"
+    Image.new("RGB", (20, 20), color=(40, 120, 180)).save(image_path)
+
+    scheduled: list[tuple[str | None, str, list[object]]] = []
+
+    monkeypatch.setattr(device_core, "get_device_id", lambda: "device-test")
+    monkeypatch.setattr(
+        filesystem_api,
+        "_schedule_visual_hash_prewarm",
+        lambda prewarm_key, device_id, candidates: scheduled.append((prewarm_key, device_id, list(candidates))),
+    )
+
+    with Session(engine) as session:
+        result = filesystem_api._list_supported_entries(
+            absolute_path=str(tmp_path),
+            allowed_kinds={"image"},
+            response_key="media",
+            session=session,
+            sort_program=filesystem_api.GallerySortProgram(
+                rules=[filesystem_api.GallerySortRule(field="weight", direction="desc", nulls="last")]
+            ),
+        )
+
+    assert result["visual_hash_status"]["requested"] is False
+    assert result["visual_hash_status"]["prewarm_scheduled_count"] == 0
+    assert scheduled == []
+
+
+def test_list_supported_entries_prewarms_visual_hash_when_duplicate_cluster_rule_active(tmp_path, monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    DeviceFile.__table__.create(engine, checkfirst=True)
+
+    image_path = tmp_path / "cluster-browse.png"
+    Image.new("RGB", (20, 20), color=(120, 40, 180)).save(image_path)
+
+    scheduled: list[tuple[str | None, str, list[object]]] = []
+
+    monkeypatch.setattr(device_core, "get_device_id", lambda: "device-test")
+    monkeypatch.setattr(
+        filesystem_api,
+        "_schedule_visual_hash_prewarm",
+        lambda prewarm_key, device_id, candidates: scheduled.append((prewarm_key, device_id, list(candidates))),
+    )
+
+    with Session(engine) as session:
+        result = filesystem_api._list_supported_entries(
+            absolute_path=str(tmp_path),
+            allowed_kinds={"image"},
+            response_key="media",
+            session=session,
+            sort_program=filesystem_api.GallerySortProgram(
+                rules=[
+                    filesystem_api.GallerySortRule(field="duplicate_cluster", direction="asc", nulls="last"),
+                    filesystem_api.GallerySortRule(field="weight", direction="desc", nulls="last"),
+                ]
+            ),
+        )
+
+    assert result["visual_hash_status"]["requested"] is True
+    assert result["visual_hash_status"]["indexed_count"] == 1
+    assert len(scheduled) == 1
+    prewarm_key, device_id, candidates = scheduled[0]
+    assert isinstance(prewarm_key, str)
+    assert prewarm_key
+    assert device_id == "device-test"
+    assert len(candidates) == 1

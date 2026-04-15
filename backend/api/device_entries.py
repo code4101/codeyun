@@ -23,9 +23,12 @@ from backend.api.filesystem import (
     DeviceFileSyncItemRequest,
     DeviceFileSyncRequest,
     DeviceFileWeightUpdateRequest,
+    LabelmeRenameRequest,
     MediaListRequest,
+    OcrPreviewRequest,
     RootScopedRequest,
     TextFileWriteRequest,
+    build_ocr_preview_response,
     build_file_response,
     build_thumbnail_response,
     delete_scoped_entry,
@@ -34,6 +37,7 @@ from backend.api.filesystem import (
     list_image_entries,
     list_media_entries,
     read_text_file,
+    rename_labelme_annotation_pair,
     reveal_scoped_entry,
     resolve_request_path,
     scan_device_file_records,
@@ -173,7 +177,7 @@ def _proxy_response(resp: requests.Response, *, stream_response: bool = False) -
 
 
 def _filesystem_payload(
-    req: DirectoryListRequest | RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest | TextFileWriteRequest
+    req: DirectoryListRequest | RootScopedRequest | MediaListRequest | DeleteEntryRequest | DeviceFileSyncRequest | DeviceFileScanRequest | TextFileWriteRequest | LabelmeRenameRequest | OcrPreviewRequest
 ) -> Dict[str, Any]:
     payload = req.model_dump(exclude_none=True)
     if not payload.get("absolute_path"):
@@ -1771,6 +1775,19 @@ def delete_file_for_entry(
     return _proxy_request(entry, "POST", "/fs/delete", json_body=_filesystem_payload(req))
 
 
+@router.post("/{entry_id}/files/labelme/rename")
+def rename_labelme_file_for_entry(
+    entry_id: str,
+    req: LabelmeRenameRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return rename_labelme_annotation_pair(req)
+    return _proxy_request(entry, "POST", "/fs/labelme/rename", json_body=_filesystem_payload(req))
+
+
 @router.post("/{entry_id}/files/reveal")
 def reveal_file_for_entry(
     entry_id: str,
@@ -1922,6 +1939,33 @@ def save_file_text_for_entry(
         entry,
         "POST",
         "/fs/text",
+        json_body=_filesystem_payload(req),
+    )
+    if error_response is not None:
+        return _proxy_response(error_response)
+    return payload
+
+
+@router.post("/{entry_id}/files/ocr")
+def preview_file_ocr_for_entry(
+    entry_id: str,
+    req: OcrPreviewRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return build_ocr_preview_response(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            shape_type=req.shape_type,
+        )
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "POST",
+        "/fs/ocr",
         json_body=_filesystem_payload(req),
     )
     if error_response is not None:
