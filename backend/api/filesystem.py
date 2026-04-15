@@ -31,6 +31,11 @@ from backend.core.device_files import (
     reconcile_device_file_batch,
     update_device_file_weight,
 )
+from backend.core.ocr_preview import (
+    OcrPreviewError,
+    OcrShapeType,
+    run_paddle_ocr_preview,
+)
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.db import engine, get_session
 from backend.models import DeviceFile
@@ -122,6 +127,19 @@ class RootScopedRequest(BaseModel):
 class TextFileWriteRequest(RootScopedRequest):
     text: str = ""
     encoding: str = "utf-8"
+
+
+class LabelmeRenameRequest(RootScopedRequest):
+    base_root: Optional[str] = None
+    base_path: str = ""
+    base_absolute_path: str = ""
+    target_relative_path: str = ""
+    overwrite: bool = False
+    encoding: str = "utf-8"
+
+
+class OcrPreviewRequest(RootScopedRequest):
+    shape_type: OcrShapeType = "polygon"
 
 
 MediaSortMode = Literal["path", "modified-desc", "size-desc", "weight-desc"]
@@ -606,6 +624,23 @@ def _normalize_rel_path(raw_path: str) -> str:
     return "/".join(part for part in normalized.split("/") if part not in {"", "."})
 
 
+def _normalize_strict_relative_file_path(raw_path: str) -> str:
+    normalized_input = (raw_path or "").strip()
+    if not normalized_input:
+        raise HTTPException(status_code=400, detail="Target relative path is required")
+    if _is_absolute_input(normalized_input):
+        raise HTTPException(status_code=400, detail="Target path must be relative")
+    if normalized_input.endswith(("/", "\\")):
+        raise HTTPException(status_code=400, detail="Target path must include a file name")
+
+    normalized = _normalize_rel_path(normalized_input)
+    if not normalized:
+        raise HTTPException(status_code=400, detail="Target relative path is required")
+    if any(part == ".." for part in normalized.split("/")):
+        raise HTTPException(status_code=400, detail="Target path escapes the base directory")
+    return normalized
+
+
 def _normalize_input_path(raw_path: str) -> str:
     return (raw_path or "").strip()
 
@@ -740,6 +775,10 @@ def resolve_request_path(
         "absolute_path": "",
         "is_absolute": False,
     }
+
+
+def _paths_equal(left: Path, right: Path) -> bool:
+    return os.path.normcase(os.fspath(left.resolve(strict=False))) == os.path.normcase(os.fspath(right.resolve(strict=False)))
 
 
 def _iter_scan_files(target_path: Path, *, recursive: bool) -> list[Path]:
@@ -1232,6 +1271,8 @@ def _attach_cached_media_metadata(
     if not entries:
         return _build_visual_hash_status(include_visual_hash=include_visual_hash, total_image_count=0, indexed_count=0)
 
+    prewarm_requested = bool(not include_visual_hash and str(prewarm_visual_hash_key or "").strip())
+
     try:
         from backend.core.device import get_device_id
         from backend.core.device_file_cover import (
@@ -1264,8 +1305,10 @@ def _attach_cached_media_metadata(
     total_image_count = 0
     browse_indexed_count = 0
     for entry in entries:
-        absolute_identity_path = str(entry.pop("_absolute_identity_path", "") or "")
+        absolute_identity_path = str(entry.get("_absolute_identity_path", "") or "")
         file_path = entry.pop("_file_path", None)
+        if file_path is None and absolute_identity_path:
+            file_path = Path(absolute_identity_path)
         cached_record = cached_records.get(absolute_identity_path) if absolute_identity_path else None
 
         duration_ms = None
@@ -1404,7 +1447,7 @@ def _attach_cached_media_metadata(
         except Exception:
             pass
         else:
-            if not include_visual_hash and prewarm_candidates:
+            if prewarm_requested and prewarm_candidates:
                 _schedule_visual_hash_prewarm(prewarm_visual_hash_key, device_id, prewarm_candidates)
     return _build_visual_hash_status(
         include_visual_hash=include_visual_hash,
@@ -1414,7 +1457,7 @@ def _attach_cached_media_metadata(
         reused_content_hash_count=reused_content_hash_count,
         prewarm_scheduled_count=(
             min(len(prewarm_candidates), VISUAL_HASH_PREWARM_BATCH_SIZE)
-            if (not include_visual_hash and prewarm_candidates)
+            if (prewarm_requested and prewarm_candidates)
             else 0
         ),
     )
@@ -1459,8 +1502,19 @@ def _populate_media_random_sort_values(entries: list[dict], rules: list[GalleryS
         entry["_random_order"] = _compute_media_random_order(seed, entry)
 
 
+def _media_sort_rules_use_duplicate_cluster(rules: list[GallerySortRule]) -> bool:
+    return any(rule.field == "duplicate_cluster" for rule in rules)
+
+
+def _get_media_duplicate_cluster_baseline_rules(rules: list[GallerySortRule]) -> list[GallerySortRule]:
+    comparison_rules = [rule for rule in rules if rule.field != "duplicate_cluster"]
+    if comparison_rules:
+        return comparison_rules
+    return list(GALLERY_SORT_FALLBACK_RULES)
+
+
 def _populate_media_duplicate_cluster_values(entries: list[dict], rules: list[GallerySortRule]) -> None:
-    duplicate_rule_active = any(rule.field == "duplicate_cluster" for rule in rules)
+    duplicate_rule_active = _media_sort_rules_use_duplicate_cluster(rules)
     for entry in entries:
         entry.pop("duplicate_cluster_order", None)
         entry.pop("duplicate_cluster_distance", None)
@@ -1470,9 +1524,7 @@ def _populate_media_duplicate_cluster_values(entries: list[dict], rules: list[Ga
     if not duplicate_rule_active or not entries:
         return
 
-    comparison_rules = [rule for rule in rules if rule.field != "duplicate_cluster"]
-    if not comparison_rules:
-        comparison_rules = list(GALLERY_SORT_FALLBACK_RULES)
+    comparison_rules = _get_media_duplicate_cluster_baseline_rules(rules)
     baseline_entries = sorted(
         entries,
         key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, comparison_rules)),
@@ -1656,6 +1708,17 @@ def _compare_media_entries(left: dict, right: dict, rules: list[GallerySortRule]
     return 0
 
 
+def _sort_media_entries_by_rules(entries: list[dict], rules: list[GallerySortRule]) -> None:
+    entries.sort(key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, rules)))
+
+
+def _apply_duplicate_cluster_sort_to_entries(entries: list[dict], rules: list[GallerySortRule]) -> None:
+    if not entries or not _media_sort_rules_use_duplicate_cluster(rules):
+        return
+    _populate_media_duplicate_cluster_values(entries, rules)
+    _sort_media_entries_by_rules(entries, rules)
+
+
 def _sort_supported_media_entries(
     entries: list[dict],
     sort_mode: MediaSortMode,
@@ -1663,11 +1726,35 @@ def _sort_supported_media_entries(
 ) -> list[GallerySortRule]:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
     _populate_media_random_sort_values(entries, normalized_rules)
-    _populate_media_duplicate_cluster_values(entries, normalized_rules)
-    entries.sort(key=cmp_to_key(lambda left, right: _compare_media_entries(left, right, normalized_rules)))
-    for entry in entries:
-        entry.pop("_random_order", None)
+    _apply_duplicate_cluster_sort_to_entries(entries, normalized_rules)
     return normalized_rules
+
+
+def _prepare_media_listing_snapshot_entries(
+    entries: list[dict],
+    sort_mode: MediaSortMode,
+    sort_program: GallerySortProgram | None,
+) -> list[GallerySortRule]:
+    normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
+    _populate_media_random_sort_values(entries, normalized_rules)
+    snapshot_rules = (
+        _get_media_duplicate_cluster_baseline_rules(normalized_rules)
+        if _media_sort_rules_use_duplicate_cluster(normalized_rules)
+        else normalized_rules
+    )
+    _sort_media_entries_by_rules(entries, snapshot_rules)
+    return normalized_rules
+
+
+def _serialize_media_entries(entries: list[dict]) -> list[dict]:
+    return [
+        {
+            key: value
+            for key, value in entry.items()
+            if not (isinstance(key, str) and key.startswith("_"))
+        }
+        for entry in entries
+    ]
 
 
 def _estimate_masonry_item_height(item: dict, column_width: int) -> float:
@@ -1884,6 +1971,8 @@ def _build_media_listing_response(
     entries: list[dict],
     total_bytes: int,
     visual_hash_status: dict | None,
+    normalized_rules: list[GallerySortRule],
+    session: Session | None,
     offset: int,
     limit: int,
     response_key: str,
@@ -1894,11 +1983,20 @@ def _build_media_listing_response(
     layout_column_heights: list[float],
 ) -> dict:
     sliced_entries, total_count, next_offset = _slice_media_listing_entries(entries, offset=offset, limit=limit)
+    response_entries = list(sliced_entries)
+    response_visual_hash_status = visual_hash_status
+    if _media_sort_rules_use_duplicate_cluster(normalized_rules) and response_entries:
+        response_visual_hash_status = _attach_cached_media_metadata(
+            response_entries,
+            session,
+            include_visual_hash=True,
+        )
+        _apply_duplicate_cluster_sort_to_entries(response_entries, normalized_rules)
     normalized_offset = max(0, int(offset or 0))
     normalized_limit = max(0, int(limit or 0))
     has_more = next_offset is not None
     layout = _build_media_layout(
-        sliced_entries,
+        response_entries,
         layout_mode=layout_mode,
         layout_columns=layout_columns,
         layout_column_width=layout_column_width,
@@ -1914,13 +2012,13 @@ def _build_media_listing_response(
         "snapshot_id": snapshot_id,
         "total_count": total_count,
         "total_bytes": total_bytes,
-        "visual_hash_status": visual_hash_status,
+        "visual_hash_status": response_visual_hash_status,
         "offset": normalized_offset,
         "limit": normalized_limit,
         "has_more": has_more,
         "next_offset": next_offset,
         "layout": layout,
-        response_key: sliced_entries,
+        response_key: _serialize_media_entries(response_entries),
     }
 
 
@@ -1946,7 +2044,7 @@ def _list_supported_entries(
     layout_column_heights: list[float] | None = None,
 ) -> dict:
     normalized_rules = _normalize_media_sort_program(sort_mode, sort_program)
-    include_visual_hash = any(rule.field == "duplicate_cluster" for rule in normalized_rules)
+    include_visual_hash = _media_sort_rules_use_duplicate_cluster(normalized_rules)
     normalized_scan_limit = _normalize_media_scan_limit(scan_limit)
     if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
         return {
@@ -2003,6 +2101,8 @@ def _list_supported_entries(
             entries=cached_snapshot.entries,
             total_bytes=cached_snapshot.total_bytes,
             visual_hash_status=cached_snapshot.visual_hash_status,
+            normalized_rules=normalized_rules,
+            session=session,
             offset=offset,
             limit=limit,
             response_key=response_key,
@@ -2065,10 +2165,10 @@ def _list_supported_entries(
     visual_hash_status = _attach_cached_media_metadata(
         entries,
         session,
-        include_visual_hash=include_visual_hash,
-        prewarm_visual_hash_key=query_signature,
+        include_visual_hash=False,
+        prewarm_visual_hash_key=query_signature if include_visual_hash else None,
     )
-    normalized_rules = _sort_supported_media_entries(entries, sort_mode, sort_program)
+    normalized_rules = _prepare_media_listing_snapshot_entries(entries, sort_mode, sort_program)
     sort_program_payload = {"rules": [rule.model_dump() for rule in normalized_rules]}
     total_bytes = sum(int(entry.get("size") or 0) for entry in entries)
     snapshot = _store_media_listing_snapshot(
@@ -2092,6 +2192,8 @@ def _list_supported_entries(
         entries=snapshot.entries,
         total_bytes=snapshot.total_bytes,
         visual_hash_status=snapshot.visual_hash_status,
+        normalized_rules=normalized_rules,
+        session=session,
         offset=offset,
         limit=limit,
         response_key=response_key,
@@ -2349,6 +2451,155 @@ def write_text_file(
         "encoding": encoding,
         "size": stat_result.st_size,
         "modified_at": int(stat_result.st_mtime * 1000),
+    }
+
+
+def rename_labelme_annotation_pair(req: LabelmeRenameRequest) -> dict:
+    source_image_path, source_resolved = resolve_request_path(req.root, req.path, absolute_path=req.absolute_path)
+    if not source_image_path.exists():
+        raise HTTPException(status_code=404, detail="Source image not found")
+    if not source_image_path.is_file():
+        raise HTTPException(status_code=400, detail="Source path is not a file")
+    if source_image_path.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Source path is not a supported image file")
+
+    base_root = req.base_root if req.base_root is not None else req.root
+    base_path = req.base_path or ""
+    base_absolute_path = req.base_absolute_path or ""
+    if not base_absolute_path and not base_root:
+        base_absolute_path = os.fspath(source_image_path.parent)
+
+    base_dir_path, _ = resolve_request_path(base_root, base_path, absolute_path=base_absolute_path)
+    if not base_dir_path.exists():
+        raise HTTPException(status_code=404, detail="Base directory not found")
+    if not base_dir_path.is_dir():
+        raise HTTPException(status_code=400, detail="Base path is not a directory")
+
+    target_relative_path = _normalize_strict_relative_file_path(req.target_relative_path)
+    raw_target_path = _ensure_within_root(base_dir_path, base_dir_path / target_relative_path)
+    target_image_path = raw_target_path if raw_target_path.suffix else raw_target_path.with_suffix(source_image_path.suffix)
+    if target_image_path.suffix.lower() != source_image_path.suffix.lower():
+        raise HTTPException(status_code=400, detail="Target image extension must match the source image extension")
+    if target_image_path.name in {"", ".", ".."}:
+        raise HTTPException(status_code=400, detail="Target path must include a file name")
+
+    target_image_path = _ensure_within_root(base_dir_path, target_image_path)
+    target_relative_path = os.fspath(target_image_path.relative_to(base_dir_path)).replace("\\", "/")
+    source_json_path = source_image_path.with_suffix(".json")
+    target_json_path = target_image_path.with_suffix(".json")
+    source_json_exists = source_json_path.exists()
+    target_image_same = _paths_equal(source_image_path, target_image_path)
+    target_json_same = _paths_equal(source_json_path, target_json_path)
+    target_image_exists = target_image_path.exists() and not target_image_same
+    target_json_exists = target_json_path.exists() and not target_json_same
+
+    if target_image_path.exists() and target_image_path.is_dir():
+        raise HTTPException(status_code=400, detail="Target image path is a directory")
+    if target_json_path.exists() and target_json_path.is_dir():
+        raise HTTPException(status_code=400, detail="Target JSON path is a directory")
+    if (target_image_exists or target_json_exists) and not req.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Target image or annotation JSON already exists",
+                "target_image_exists": target_image_exists,
+                "target_json_exists": target_json_exists,
+                "target_relative_path": target_relative_path,
+            },
+        )
+
+    next_json_text = ""
+    if source_json_exists:
+        if not source_json_path.is_file():
+            raise HTTPException(status_code=400, detail="Source annotation JSON path is not a file")
+        try:
+            document = json.loads(source_json_path.read_text(encoding=req.encoding))
+        except UnicodeDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Failed to decode annotation JSON as {req.encoding}") from exc
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Failed to parse annotation JSON") from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to read annotation JSON: {exc}") from exc
+
+        if isinstance(document, dict):
+            document["imagePath"] = target_image_path.name
+        else:
+            raise HTTPException(status_code=400, detail="Annotation JSON root must be an object")
+        next_json_text = f"{json.dumps(document, ensure_ascii=False, indent=2)}\n"
+
+    target_image_path.parent.mkdir(parents=True, exist_ok=True)
+    if source_json_exists:
+        target_json_path.parent.mkdir(parents=True, exist_ok=True)
+
+    overwritten = bool(target_image_exists or target_json_exists)
+    try:
+        if not target_image_same:
+            os.replace(source_image_path, target_image_path)
+
+        json_moved = False
+        json_updated = False
+        if source_json_exists:
+            if target_json_same:
+                source_json_path.write_text(next_json_text, encoding=req.encoding)
+            else:
+                target_json_path.write_text(next_json_text, encoding=req.encoding)
+                try:
+                    source_json_path.unlink()
+                except FileNotFoundError:
+                    pass
+                json_moved = True
+            json_updated = True
+        elif target_json_exists and req.overwrite:
+            target_json_path.unlink()
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Permission denied") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to rename annotation files: {exc}") from exc
+
+    return {
+        "ok": True,
+        "root": source_resolved["root"],
+        "path": target_relative_path if source_resolved["root"] else os.fspath(target_image_path),
+        "absolute_path": os.fspath(target_image_path.resolve(strict=False)),
+        "source_image_absolute_path": os.fspath(source_image_path.resolve(strict=False)),
+        "target_image_absolute_path": os.fspath(target_image_path.resolve(strict=False)),
+        "source_json_absolute_path": os.fspath(source_json_path.resolve(strict=False)) if source_json_exists else "",
+        "target_json_absolute_path": os.fspath(target_json_path.resolve(strict=False)) if source_json_exists else "",
+        "target_relative_path": target_relative_path,
+        "target_name": target_image_path.name,
+        "json_moved": json_moved,
+        "json_updated": json_updated,
+        "overwritten": overwritten,
+    }
+
+
+def build_ocr_preview_response(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+    shape_type: OcrShapeType = "polygon",
+) -> dict:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        preview = run_paddle_ocr_preview(target_path, shape_type=shape_type)
+    except OcrPreviewError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    return {
+        "ok": True,
+        "root": resolved["root"],
+        "path": resolved["path"],
+        "absolute_path": os.fspath(target_path.resolve(strict=False)),
+        "engine": preview["engine"],
+        "shape_type": preview["shape_type"],
+        "shape_count": preview["shape_count"],
+        "document": preview["document"],
     }
 
 
@@ -2887,6 +3138,21 @@ def save_text(req: TextFileWriteRequest):
         absolute_path=req.absolute_path,
         text=req.text,
         encoding=req.encoding,
+    )
+
+
+@router.post("/labelme/rename")
+def rename_labelme_annotation(req: LabelmeRenameRequest):
+    return rename_labelme_annotation_pair(req)
+
+
+@router.post("/ocr")
+def preview_ocr(req: OcrPreviewRequest):
+    return build_ocr_preview_response(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        shape_type=req.shape_type,
     )
 
 

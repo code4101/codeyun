@@ -434,6 +434,63 @@ def test_ai_chat_ollama_alias_runs_with_think_false(monkeypatch):
     assert response["content"] == "OK"
 
 
+def test_ai_chat_ollama_structured_sync_requests_use_streaming(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_lines(self, decode_unicode=False):
+            assert decode_unicode is True
+            return iter(
+                [
+                    json.dumps(
+                        {
+                            "model": "qwen3.5:4b",
+                            "message": {
+                                "role": "assistant",
+                                "content": '{"topic":"Git 分层"}',
+                            },
+                            "done": True,
+                        },
+                        ensure_ascii=False,
+                    )
+                ]
+            )
+
+    def fake_post(url, json=None, timeout=None, stream=False):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        captured["stream"] = stream
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.core.ai_chat.requests.post", fake_post)
+
+    response = chat_with_provider(
+        provider_id="ollama",
+        base_url="http://127.0.0.1:11434",
+        messages=[{"role": "user", "content": "只输出 JSON"}],
+        model="qwen3.5:4b-instruct",
+        response_format={"type": "object"},
+        timeout_seconds=321,
+    )
+
+    assert captured["url"] == "http://127.0.0.1:11434/api/chat"
+    assert captured["stream"] is True
+    assert captured["timeout"] == 321
+    assert captured["json"]["model"] == "qwen3.5:4b"
+    assert captured["json"]["format"] == {"type": "object"}
+    assert response["model"] == "qwen3.5:4b-instruct"
+    assert response["content"] == '{"topic":"Git 分层"}'
+
+
 def test_ai_chat_openrouter_stream_ignores_sse_comments_and_event_lines(monkeypatch):
     class FakeResponse:
         status_code = 200

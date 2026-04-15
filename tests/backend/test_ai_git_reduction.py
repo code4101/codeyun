@@ -1,7 +1,7 @@
 import json
 import subprocess
 
-from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
+from backend.core.ai_git_reduction import _build_reduce_system_prompt, generate_ai_git_commit_draft_hierarchical
 from backend.core.git_tools import collect_git_reduction_source_units
 
 
@@ -48,6 +48,14 @@ def test_collect_git_reduction_source_units_builds_file_level_units(tmp_path):
     assert "文件路径: README.md" in unit_map["README.md"]["content"]
     assert "状态: 未跟踪" in unit_map["src/中文 计划.py"]["content"]
     assert "所属分组: src" in unit_map["src/中文 计划.py"]["content"]
+
+
+def test_build_reduce_system_prompt_contains_reduce_specific_guidance():
+    prompt = _build_reduce_system_prompt(style="summary", include_body=True)
+
+    assert "Git 归并摘要助手" in prompt
+    assert "summary 应该是归并后的整体概括" in prompt
+    assert "candidate_body 必须是 2 到 4 条中文短句数组" in prompt
 
 
 def test_generate_ai_git_commit_draft_hierarchical_returns_final_draft_and_reduction_meta(tmp_path, monkeypatch):

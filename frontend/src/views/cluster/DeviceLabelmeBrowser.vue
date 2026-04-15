@@ -14,7 +14,6 @@
         <aside class="annotation-overview-panel panel-card">
           <div class="panel-section-head">
             <div>
-              <div class="section-kicker">浏览文件</div>
               <h3>标注概览</h3>
             </div>
             <el-tag size="small" type="info">{{ filteredItems.length }} / {{ annotationItems.length }}</el-tag>
@@ -28,7 +27,7 @@
             </div>
 
             <div class="overview-stat-card">
-              <div class="overview-stat-label">已读取 / 已知框数</div>
+              <div class="overview-stat-label">已读取 / 已知标注数</div>
               <strong>{{ visitedItemCount }} / {{ knownShapeCount }}</strong>
               <span>只统计已打开过的标注文件</span>
             </div>
@@ -40,8 +39,14 @@
               v-model="keyword"
               clearable
               class="annotation-search"
-              placeholder="按文件名或相对路径筛选"
+              :placeholder="searchPlaceholder"
             />
+            <div class="annotation-search-options">
+              <el-checkbox v-model="includeAnnotationContentSearch" size="small">
+                包含标注正文
+              </el-checkbox>
+              <span v-if="isLoadingAnnotationContentSearch" class="annotation-search-loading">读取中</span>
+            </div>
           </div>
 
         </aside>
@@ -154,414 +159,530 @@
         </section>
       </section>
 
-      <section class="annotation-layout">
-        <aside class="annotation-list-panel panel-card">
-          <div class="panel-section-head">
-            <div>
-              <div class="section-kicker">标注文件</div>
-              <h3>图片列表</h3>
-            </div>
-            <el-tag size="small" type="info">{{ filteredItems.length }} 张</el-tag>
+      <section class="annotation-file-panel panel-card">
+        <div class="panel-section-head">
+          <div>
+            <h3>图片列表</h3>
           </div>
+        </div>
 
-          <div v-if="filteredItems.length" class="annotation-item-list">
+        <div v-if="filteredItems.length" class="annotation-file-panel-body">
+          <div class="annotation-item-list annotation-item-list-grid">
             <button
-              v-for="(item, index) in filteredItems"
+              v-for="(item, index) in pagedFilteredItems"
               :key="item.id"
               type="button"
               class="annotation-item-card"
               :class="{ 'is-active': item.id === currentItemId }"
               @click="void openItemById(item.id)"
             >
-              <div class="annotation-item-index">{{ index + 1 }}</div>
+              <div class="annotation-item-index">{{ annotationFileListOffset + index + 1 }}</div>
               <div class="annotation-item-main">
                 <div class="annotation-item-name">{{ item.name }}</div>
-                <div class="annotation-item-path">{{ item.relativePath }}</div>
               </div>
-              <el-tag size="small" :type="getItemTagType(item)">
-                {{ getItemStatusLabel(item) }}
-              </el-tag>
             </button>
           </div>
 
-          <div v-else class="annotation-inline-empty">
-            {{ annotationItems.length ? '当前筛选没有文件' : '当前目录下没有可标注图片' }}
+          <div v-if="filteredItems.length > FILE_LIST_PAGE_SIZE" class="annotation-file-pagination">
+            <el-pagination
+              small
+              background
+              :current-page="currentFileListPage"
+              :page-size="FILE_LIST_PAGE_SIZE"
+              :total="filteredItems.length"
+              layout="total, prev, pager, next"
+              @current-change="handleFileListPageChange"
+            />
           </div>
-        </aside>
+        </div>
 
-        <section class="annotation-stage-panel panel-card">
-          <div class="stage-toolbar">
-            <div class="stage-toolbar-main">
-              <div class="stage-title-row">
-                <div class="stage-title">{{ currentItem?.name || '未选择图片' }}</div>
-                <el-tag size="small" :type="isDirty ? 'warning' : 'success'">
-                  {{ isDirty ? '未保存' : '已同步' }}
-                </el-tag>
-                <el-tag v-if="currentDoc" size="small" type="info">
-                  {{ currentDoc.editableShapes.length }} 框
-                </el-tag>
-              </div>
-              <div class="stage-path">
-                {{ currentItem?.relativePath || '先选择设备目录与图片' }}
-              </div>
-            </div>
+        <div v-else class="annotation-inline-empty">
+          {{ annotationItems.length ? '当前筛选没有文件' : '当前目录下没有可标注图片' }}
+        </div>
+      </section>
 
-            <div class="stage-toolbar-actions">
-              <el-popover placement="bottom" :width="300" trigger="click">
-                <template #reference>
-                  <el-button circle plain>
-                    <el-icon><QuestionFilled /></el-icon>
-                  </el-button>
-                </template>
-                <div class="help-popover">
-                  <div>1. 用上面的设备和路径定位目录。</div>
-                  <div>2. 从左侧图片列表切换文件。</div>
-                  <div>3. 点“新框”后在图上拖动，或直接拖动已有矩形和四角。</div>
-                  <div>4. `Ctrl + S` 保存，`Delete` 删除，`Esc` 取消画框。</div>
-                </div>
-              </el-popover>
-              <el-button :disabled="!hasPreviousItem" @click="void openRelativeItem(-1)">上一张</el-button>
-              <el-button :disabled="!hasNextItem" @click="void openRelativeItem(1)">下一张</el-button>
-              <el-button
-                :type="toolMode === 'draw' ? 'primary' : 'default'"
-                :disabled="!currentDoc"
-                @click="toggleDrawMode"
-              >
-                {{ toolMode === 'draw' ? '取消新框' : '新框' }}
-              </el-button>
-              <el-button :disabled="!selectedShape" @click="deleteSelectedShape">删除选中</el-button>
-              <div class="zoom-control">
-                <span>缩放</span>
-                <el-slider
-                  :model-value="zoomPercent"
-                  :min="40"
-                  :max="220"
-                  :step="10"
-                  @update:model-value="zoomPercent = Number($event)"
-                />
-                <span>{{ zoomPercent }}%</span>
-              </div>
-              <el-button
-                type="primary"
-                :disabled="!currentDoc || !isDirty"
-                :loading="isSaving"
-                @click="void saveCurrentDocument()"
-              >
-                保存
-              </el-button>
-            </div>
-          </div>
-
-          <div v-if="currentDoc && currentItem && currentImageUrl" class="stage-body">
-            <div class="stage-hint">{{ stageHintText }}</div>
-            <div class="stage-scroll">
-              <div ref="stageRef" class="annotation-stage" :style="stageStyle" @mousedown="handleStageMouseDown">
-                <img class="stage-image" :src="currentImageUrl" :alt="currentItem.name" draggable="false" />
-
-                <svg
-                  class="stage-overlay"
-                  :viewBox="`0 0 ${currentDoc.imageWidth} ${currentDoc.imageHeight}`"
-                  preserveAspectRatio="none"
-                >
-                  <g v-for="(shape, index) in currentDoc.editableShapes" :key="shape.id">
-                    <rect
-                      class="annotation-rect"
-                      :class="{
-                        'is-selected': shape.id === selectedShapeId,
-                        'is-draw-mode': toolMode === 'draw',
-                      }"
-                      :x="shape.rect.x1"
-                      :y="shape.rect.y1"
-                      :width="shape.rect.x2 - shape.rect.x1"
-                      :height="shape.rect.y2 - shape.rect.y1"
-                      :stroke-width="strokeWidth"
-                      @click.stop="selectShape(shape.id)"
-                      @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
-                    />
-
-                    <template v-if="shape.id === selectedShapeId && toolMode !== 'draw'">
-                      <circle
-                        v-for="handle in resizeHandles"
-                        :key="handle.key"
-                        class="annotation-handle"
-                        :cx="getHandlePosition(shape.rect, handle.key).x"
-                        :cy="getHandlePosition(shape.rect, handle.key).y"
-                        :r="handleRadius"
-                        @mousedown.stop="handleResizeMouseDown(shape.id, handle.key, $event)"
-                      />
-                    </template>
-                  </g>
-
-                  <rect
-                    v-if="draftRect"
-                    class="annotation-draft"
-                    :x="draftRect.x1"
-                    :y="draftRect.y1"
-                    :width="draftRect.x2 - draftRect.x1"
-                    :height="draftRect.y2 - draftRect.y1"
-                    :stroke-width="strokeWidth"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-
-          <div v-else class="annotation-main-empty">
-            <div class="empty-badge subtle">标注面板</div>
-            <h3>当前还没有可编辑图片</h3>
-            <p>进入一个包含图片的设备目录后，这里会显示当前图片及其 LabelMe 标注内容。</p>
-          </div>
-        </section>
-
-        <aside class="annotation-inspector-panel panel-card">
-          <div class="panel-section-head">
-            <div>
-              <div class="section-kicker">属性</div>
-              <h3>当前标注</h3>
-            </div>
-          </div>
-
-          <div class="meta-grid">
-            <div class="meta-label">图片</div>
-            <div class="meta-value">{{ currentItem?.absolutePath || '--' }}</div>
-            <div class="meta-label">JSON</div>
-            <div class="meta-value">{{ currentItem?.jsonAbsolutePath || '--' }}</div>
-            <div class="meta-label">尺寸</div>
-            <div class="meta-value">
-              {{ currentDoc ? `${currentDoc.imageWidth} × ${currentDoc.imageHeight}` : '--' }}
-            </div>
-          </div>
-
-          <div v-if="currentDoc?.unsupportedShapeCount" class="inspector-note">
-            当前文件里有 {{ currentDoc.unsupportedShapeCount }} 个非矩形 shape，会保留但不在这里编辑。
-          </div>
-
-          <template v-if="selectedShape">
-            <div class="inspector-block">
-              <div class="inspector-block-title">文本标签</div>
-              <el-input
-                :model-value="selectedShapeLabel"
-                placeholder="输入标签"
-                @update:model-value="updateSelectedShapeLabel"
-              />
-            </div>
-
-            <div class="inspector-block">
-              <div class="inspector-block-head">
-                <div class="inspector-block-title">自定义属性</div>
-                <el-button link type="primary" size="small" @click="addSelectedShapeLabelField">
-                  <el-icon><Plus /></el-icon>
-                </el-button>
-              </div>
-
-              <div
-                v-if="selectedShapeLabelFields.length"
-                ref="selectedShapeLabelFieldsListRef"
-                class="label-fields-list"
-              >
-                <div
-                  v-for="(item, index) in selectedShapeLabelFields"
-                  :key="item.localId"
-                  class="label-field-item"
-                  :class="{ 'is-invalid': hasSelectedShapeLabelFieldError(item.localId) }"
-                >
-                  <SortableOrderHandle
-                    :index="index"
-                    :total="selectedShapeLabelFields.length"
-                    size="xs"
-                  />
-
-                  <el-input
-                    v-model="item.key"
-                    size="small"
-                    class="label-field-key"
-                    placeholder="属性名"
-                    @input="handleSelectedShapeLabelFieldChange"
-                  />
-
-                  <el-select
-                    v-model="item.type"
-                    size="small"
-                    class="label-field-type"
-                    @change="handleSelectedShapeLabelFieldTypeChange(item)"
-                  >
-                    <el-option label="文本" value="string" />
-                    <el-option label="数值" value="number" />
-                    <el-option label="布尔" value="boolean" />
-                    <el-option label="JSON" value="json" />
-                  </el-select>
-
-                  <div class="label-field-value-shell">
-                    <el-input
-                      v-if="item.type === 'string'"
-                      :model-value="getShapeLabelFieldTextValue(item)"
-                      size="small"
-                      class="label-field-value"
-                      placeholder="属性值"
-                      @update:model-value="value => setShapeLabelFieldTextValue(item, value)"
-                    />
-
-                    <el-input
-                      v-else-if="item.type === 'number'"
-                      :model-value="getShapeLabelFieldTextValue(item)"
-                      size="small"
-                      class="label-field-value"
-                      placeholder="输入数值"
-                      @update:model-value="value => setShapeLabelFieldNumberValue(item, value)"
-                    />
-
-                    <el-switch
-                      v-else-if="item.type === 'boolean'"
-                      :model-value="getShapeLabelFieldBooleanValue(item)"
-                      size="small"
-                      @update:model-value="value => setShapeLabelFieldBooleanValue(item, value)"
-                    />
-
-                    <el-input
-                      v-else
-                      :model-value="getShapeLabelFieldTextValue(item)"
-                      type="textarea"
-                      autosize
-                      size="small"
-                      class="label-field-value is-json"
-                      placeholder='输入有效 JSON，例如 {"x": 1}'
-                      @update:model-value="value => setShapeLabelFieldJsonValue(item, value)"
-                    />
-                  </div>
-
+      <section class="annotation-editor-layout">
+          <section class="annotation-stage-panel panel-card">
+            <div class="stage-toolbar">
+              <div class="stage-toolbar-main">
+                <div class="stage-title-row">
+                  <div class="stage-title">{{ currentItem?.name || '未选择图片' }}</div>
+                  <el-tag v-if="isLabelmeMode" size="small" :type="isDirty ? 'warning' : 'success'">
+                    {{ isDirty ? '未保存' : '已同步' }}
+                  </el-tag>
                   <el-button
                     link
-                    type="danger"
+                    type="primary"
                     size="small"
-                    class="label-field-delete"
-                    @click="removeSelectedShapeLabelField(index)"
+                    class="rename-image-button"
+                    :loading="isRenamingLabelmeItem"
+                    :disabled="!currentItem || !isLabelmeMode"
+                    @click="void renameCurrentLabelmeItem()"
                   >
-                    <el-icon><Close /></el-icon>
+                    重命名
                   </el-button>
                 </div>
+                <div class="stage-path">
+                  {{ currentItem?.relativePath || '先选择设备目录与图片' }}
+                </div>
+                <div class="stage-meta">
+                  {{ currentDoc ? `${currentDoc.imageWidth} × ${currentDoc.imageHeight}` : '--' }}
+                </div>
+              </div>
+
+              <div class="stage-toolbar-actions">
+                <el-popover placement="bottom" :width="300" trigger="click">
+                  <template #reference>
+                    <el-button circle plain>
+                      <el-icon><QuestionFilled /></el-icon>
+                    </el-button>
+                  </template>
+                  <div class="help-popover">
+                    <div>1. 用上面的设备和路径定位目录。</div>
+                    <div>2. 从上方图片列表切换文件。</div>
+                    <div>3. 点“新矩形”后在图上拖动，或在图上右键后点“新建矩形”。</div>
+                    <div>4. `Ctrl + S` 保存，`Delete` 删除，`Esc` 取消新建。</div>
+                    <div>5. `Ctrl + 滚轮` 或 `Ctrl + +/-` 缩放，`Ctrl + 0` 适应窗口。</div>
+                    <div>6. 按住空格后拖动画面，或用鼠标中键拖动画面。</div>
+                  </div>
+                </el-popover>
+                <el-button :disabled="!hasPreviousItem" @click="void openRelativeItem(-1)">上一张</el-button>
+                <el-button :disabled="!hasNextItem" @click="void openRelativeItem(1)">下一张</el-button>
+                <el-button
+                  v-if="isOcrMode"
+                  :disabled="!currentItem"
+                  :loading="isLoadingOcr"
+                  @click="void rerunCurrentOcr()"
+                >
+                  重新识别
+                </el-button>
+                <el-button
+                  :type="toolMode === 'draw' ? 'primary' : 'default'"
+                  :disabled="!currentDoc"
+                  @click="toggleDrawMode"
+                >
+                  {{ toolMode === 'draw' ? '取消新矩形' : '新矩形' }}
+                </el-button>
+                <el-button :disabled="!selectedShape" @click="deleteSelectedShape">删除选中</el-button>
+                <el-button text class="zoom-fit-button" :disabled="!currentDoc" @click="void fitStageToViewport()">
+                  适应
+                </el-button>
+                <div class="zoom-control">
+                  <span>缩放</span>
+                  <el-slider
+                    :model-value="zoomPercent"
+                    :min="MIN_ZOOM_PERCENT"
+                    :max="MAX_ZOOM_PERCENT"
+                    :step="ZOOM_STEP"
+                    @update:model-value="handleZoomSliderChange"
+                  />
+                  <span>{{ zoomPercent }}%</span>
+                </div>
+                <el-button
+                  v-if="isLabelmeMode"
+                  type="primary"
+                  :disabled="!currentDoc || !isDirty"
+                  :loading="isSaving"
+                  @click="void saveCurrentDocument()"
+                >
+                  保存
+                </el-button>
+              </div>
+            </div>
+
+            <div v-if="currentDoc && currentItem && currentImageUrl" class="stage-body">
+              <div class="stage-hint">{{ stageHintText }}</div>
+              <div
+                ref="stageScrollRef"
+                class="stage-scroll"
+                :class="stageScrollClasses"
+                @wheel="handleStageWheel"
+                @scroll.passive="closeStageContextMenu"
+                @mousedown.capture="handleStageViewportMouseDown"
+                @contextmenu.prevent="handleStageContextMenu"
+              >
+                <div class="stage-workspace" :style="stageWorkspaceStyle">
+                  <div ref="stageRef" class="annotation-stage" :style="stageStyle" @mousedown="handleStageMouseDown">
+                    <img class="stage-image" :src="currentImageUrl" :alt="currentItem.name" draggable="false" />
+
+                    <svg
+                      class="stage-overlay"
+                      :viewBox="`0 0 ${currentDoc.imageWidth} ${currentDoc.imageHeight}`"
+                      preserveAspectRatio="none"
+                    >
+                      <g v-for="shape in currentDoc.editableShapes" :key="shape.id">
+                        <rect
+                          v-if="shape.shapeType === 'rectangle'"
+                          class="annotation-shape annotation-shape--rectangle"
+                          :class="{
+                            'is-selected': shape.id === selectedShapeId,
+                            'is-draw-mode': toolMode === 'draw',
+                          }"
+                          :x="getRectangleRect(shape).x1"
+                          :y="getRectangleRect(shape).y1"
+                          :width="getRectangleRect(shape).x2 - getRectangleRect(shape).x1"
+                          :height="getRectangleRect(shape).y2 - getRectangleRect(shape).y1"
+                          :stroke-width="strokeWidth"
+                          @click.stop="selectShape(shape.id)"
+                          @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
+                        />
+
+                        <polygon
+                          v-else-if="shape.shapeType === 'polygon'"
+                          class="annotation-shape annotation-shape--polygon"
+                          :class="{
+                            'is-selected': shape.id === selectedShapeId,
+                            'is-draw-mode': toolMode === 'draw',
+                          }"
+                          :points="getShapeSvgPoints(shape)"
+                          :stroke-width="strokeWidth"
+                          @click.stop="selectShape(shape.id)"
+                          @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
+                        />
+
+                        <circle
+                          v-else-if="shape.shapeType === 'circle'"
+                          class="annotation-shape annotation-shape--circle"
+                          :class="{
+                            'is-selected': shape.id === selectedShapeId,
+                            'is-draw-mode': toolMode === 'draw',
+                          }"
+                          :cx="getCircleGeometry(shape).cx"
+                          :cy="getCircleGeometry(shape).cy"
+                          :r="getCircleGeometry(shape).r"
+                          :stroke-width="strokeWidth"
+                          @click.stop="selectShape(shape.id)"
+                          @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
+                        />
+
+                        <template v-else-if="shape.shapeType === 'line'">
+                          <line
+                            class="annotation-hit-stroke"
+                            :class="{ 'is-draw-mode': toolMode === 'draw' }"
+                            :x1="shape.points[0]?.x ?? 0"
+                            :y1="shape.points[0]?.y ?? 0"
+                            :x2="shape.points[1]?.x ?? 0"
+                            :y2="shape.points[1]?.y ?? 0"
+                            :stroke-width="hitStrokeWidth"
+                            @click.stop="selectShape(shape.id)"
+                            @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
+                          />
+                          <line
+                            class="annotation-shape annotation-shape--line"
+                            :class="{
+                              'is-selected': shape.id === selectedShapeId,
+                              'is-draw-mode': toolMode === 'draw',
+                            }"
+                            :x1="shape.points[0]?.x ?? 0"
+                            :y1="shape.points[0]?.y ?? 0"
+                            :x2="shape.points[1]?.x ?? 0"
+                            :y2="shape.points[1]?.y ?? 0"
+                            :stroke-width="strokeWidth"
+                          />
+                        </template>
+
+                        <template v-else-if="shape.shapeType === 'linestrip'">
+                          <polyline
+                            class="annotation-hit-stroke"
+                            :class="{ 'is-draw-mode': toolMode === 'draw' }"
+                            :points="getShapeSvgPoints(shape)"
+                            :stroke-width="hitStrokeWidth"
+                            @click.stop="selectShape(shape.id)"
+                            @mousedown.stop="handleShapeMouseDown(shape.id, $event)"
+                          />
+                          <polyline
+                            class="annotation-shape annotation-shape--linestrip"
+                            :class="{
+                              'is-selected': shape.id === selectedShapeId,
+                              'is-draw-mode': toolMode === 'draw',
+                            }"
+                            :points="getShapeSvgPoints(shape)"
+                            :stroke-width="strokeWidth"
+                          />
+                        </template>
+
+                        <template v-if="shape.id === selectedShapeId && toolMode !== 'draw'">
+                          <circle
+                            v-for="(point, pointIndex) in shape.points"
+                            :key="`${shape.id}:${pointIndex}`"
+                            class="annotation-handle"
+                            :cx="point.x"
+                            :cy="point.y"
+                            :r="handleRadius"
+                            @mousedown.stop="handleShapePointMouseDown(shape.id, pointIndex, $event)"
+                          />
+                        </template>
+                      </g>
+
+                      <rect
+                        v-if="draftRect"
+                        class="annotation-draft"
+                        :x="draftRect.x1"
+                        :y="draftRect.y1"
+                        :width="draftRect.x2 - draftRect.x1"
+                        :height="draftRect.y2 - draftRect.y1"
+                        :stroke-width="strokeWidth"
+                      />
+                    </svg>
+                  </div>
+                </div>
+              </div>
+              <Teleport to="body">
+                <div
+                  v-if="stageContextMenu.visible"
+                  ref="stageContextMenuRef"
+                  class="stage-context-menu"
+                  :style="stageContextMenuStyle"
+                  @mousedown.stop
+                  @contextmenu.prevent
+                >
+                  <button type="button" class="stage-context-menu-item" @click="createRectangleFromContextMenu">
+                    新建矩形
+                  </button>
+                </div>
+              </Teleport>
+            </div>
+
+            <div v-else class="annotation-main-empty">
+              <div class="empty-badge subtle">标注面板</div>
+              <h3>当前还没有可编辑图片</h3>
+              <p>进入一个包含图片的设备目录后，这里会显示当前图片及其 LabelMe 标注内容。</p>
+            </div>
+          </section>
+
+          <aside class="annotation-inspector-panel panel-card" v-loading="isLoadingOcr">
+            <div class="panel-section-head">
+              <div>
+                <h3>当前标注</h3>
+              </div>
+              <el-radio-group
+                :model-value="annotationSourceMode"
+                size="small"
+                class="annotation-source-switch"
+                @update:model-value="value => void handleAnnotationSourceModeChange(value)"
+              >
+                <el-radio-button label="labelme">真实标注</el-radio-button>
+                <el-radio-button label="ocr">OCR</el-radio-button>
+              </el-radio-group>
+            </div>
+  
+            <div v-if="isOcrMode && currentOcrStatus === 'loading'" class="inspector-note">
+              正在识别 OCR...
+            </div>
+            <div v-else-if="isOcrMode && currentOcrStatus === 'error'" class="inspector-note">
+              {{ currentOcrError || 'OCR 识别失败' }}
+            </div>
+            <div v-if="currentDoc?.unsupportedShapeCount" class="inspector-note">
+              当前文件里有 {{ currentDoc.unsupportedShapeCount }} 个暂不支持的 shape，会保留但不在这里编辑。
+            </div>
+
+            <template v-if="selectedShape">
+              <div class="inspector-block">
+                <div class="inspector-block-title">文本标签</div>
+                <el-input
+                  :model-value="selectedShapeLabel"
+                  placeholder="输入标签"
+                  @update:model-value="updateSelectedShapeLabel"
+                />
+              </div>
+
+              <div class="inspector-block">
+                <div class="inspector-block-head">
+                  <div class="inspector-block-title">自定义属性</div>
+                  <el-button link type="primary" size="small" @click="addSelectedShapeLabelField">
+                    <el-icon><Plus /></el-icon>
+                  </el-button>
+                </div>
+
+                <div
+                  v-if="selectedShapeLabelFields.length"
+                  ref="selectedShapeLabelFieldsListRef"
+                  class="label-fields-list"
+                >
+                  <div
+                    v-for="(item, index) in selectedShapeLabelFields"
+                    :key="item.localId"
+                    class="label-field-item"
+                    :class="{ 'is-invalid': hasSelectedShapeLabelFieldError(item.localId) }"
+                  >
+                    <SortableOrderHandle
+                      :index="index"
+                      :total="selectedShapeLabelFields.length"
+                      size="xs"
+                    />
+
+                    <el-input
+                      v-model="item.key"
+                      size="small"
+                      class="label-field-key"
+                      placeholder="属性名"
+                      @input="handleSelectedShapeLabelFieldChange"
+                    />
+
+                    <div class="label-field-value-shell">
+                      <el-input
+                        :model-value="getShapeLabelFieldTextValue(item)"
+                        size="small"
+                        class="label-field-value"
+                        placeholder="属性值"
+                        @update:model-value="value => setShapeLabelFieldTextValue(item, value)"
+                      />
+                    </div>
+
+                    <el-button
+                      link
+                      type="danger"
+                      size="small"
+                      class="label-field-delete"
+                      @click="removeSelectedShapeLabelField(index)"
+                    >
+                      <el-icon><Close /></el-icon>
+                    </el-button>
+                  </div>
+                </div>
+                <div v-else class="annotation-inline-empty">
+                  当前只保存 `text`，需要时再添加自定义属性。
+                </div>
+
+                <div v-if="selectedShapeLabelFieldErrors.length" class="inspector-note label-field-errors">
+                  <div
+                    v-for="error in selectedShapeLabelFieldErrors"
+                    :key="`${error.fieldLocalId}:${error.message}`"
+                  >
+                    {{ error.message }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="inspector-block">
+                <div class="inspector-block-head">
+                  <div class="inspector-block-title">点集坐标</div>
+                  <div class="shape-points-head-actions">
+                    <el-tag size="small" type="info">{{ selectedShapeTypeLabel }}</el-tag>
+                    <el-button
+                      v-if="selectedShapeCanAppendPoint"
+                      link
+                      type="primary"
+                      size="small"
+                      @click="appendPointToSelectedShape"
+                    >
+                      <el-icon><Plus /></el-icon>
+                    </el-button>
+                  </div>
+                </div>
+                <div class="shape-points-list">
+                  <div class="shape-point-columns" aria-hidden="true">
+                    <span class="shape-point-column-spacer"></span>
+                    <span class="shape-point-column-label">X</span>
+                    <span class="shape-point-column-label">Y</span>
+                    <span class="shape-point-column-spacer"></span>
+                  </div>
+                  <div
+                    v-for="pointItem in selectedShapePointRows"
+                    :key="`${selectedShape.id}:${pointItem.index}`"
+                    class="shape-point-item"
+                  >
+                    <div class="shape-point-index">{{ pointItem.index + 1 }}</div>
+                    <div class="shape-point-axis">
+                      <el-input-number
+                        :model-value="pointItem.point.x"
+                        :step="1"
+                        :min="0"
+                        :max="currentDoc?.imageWidth || 0"
+                        :controls="false"
+                        class="shape-point-input"
+                        @change="value => updateSelectedShapePointCoordinate(pointItem.index, 'x', value)"
+                      />
+                    </div>
+                    <div class="shape-point-axis">
+                      <el-input-number
+                        :model-value="pointItem.point.y"
+                        :step="1"
+                        :min="0"
+                        :max="currentDoc?.imageHeight || 0"
+                        :controls="false"
+                        class="shape-point-input"
+                        @change="value => updateSelectedShapePointCoordinate(pointItem.index, 'y', value)"
+                      />
+                    </div>
+                    <el-button
+                      v-if="canRemovePointFromShape(selectedShape, pointItem.index)"
+                      link
+                      type="danger"
+                      size="small"
+                      class="shape-point-delete"
+                      @click="removeSelectedShapePoint(pointItem.index)"
+                    >
+                      <el-icon><Close /></el-icon>
+                    </el-button>
+                  </div>
+                </div>
+              </div>
+            </template>
+            <div v-else class="annotation-inline-empty">
+              先在图里选择一个标注，再在这里改标签和点坐标。
+            </div>
+
+            <div class="inspector-block inspector-block-grow">
+              <div class="inspector-block-title">标注列表</div>
+              <div v-if="currentDoc?.editableShapes.length" class="shape-list">
+                <button
+                  v-for="(shape, index) in currentDoc.editableShapes"
+                  :key="shape.id"
+                  type="button"
+                  class="shape-card"
+                  :class="{ 'is-active': shape.id === selectedShapeId }"
+                  @click="selectShape(shape.id)"
+                >
+                  <div class="shape-card-top">
+                    <span class="shape-card-index">{{ index + 1 }}</span>
+                    <span class="shape-card-label">{{ shape.labelText || '未命名' }}</span>
+                  </div>
+                </button>
               </div>
               <div v-else class="annotation-inline-empty">
-                当前只保存 `text`，需要时再添加自定义属性。
-              </div>
-
-              <div v-if="selectedShapeLabelFieldErrors.length" class="inspector-note label-field-errors">
-                <div
-                  v-for="error in selectedShapeLabelFieldErrors"
-                  :key="`${error.fieldLocalId}:${error.message}`"
-                >
-                  {{ error.message }}
-                </div>
+                当前图片还没有标注。
               </div>
             </div>
-
-            <div class="inspector-block">
-              <div class="inspector-block-title">坐标</div>
-              <div class="coordinate-grid">
-                <label class="coordinate-field">
-                  <span>左</span>
-                  <el-input-number
-                    :model-value="selectedShape.rect.x1"
-                    :step="1"
-                    :min="0"
-                    :max="currentDoc?.imageWidth || 0"
-                    controls-position="right"
-                    @change="value => updateSelectedShapeCoordinate('x1', value)"
-                  />
-                </label>
-                <label class="coordinate-field">
-                  <span>上</span>
-                  <el-input-number
-                    :model-value="selectedShape.rect.y1"
-                    :step="1"
-                    :min="0"
-                    :max="currentDoc?.imageHeight || 0"
-                    controls-position="right"
-                    @change="value => updateSelectedShapeCoordinate('y1', value)"
-                  />
-                </label>
-                <label class="coordinate-field">
-                  <span>右</span>
-                  <el-input-number
-                    :model-value="selectedShape.rect.x2"
-                    :step="1"
-                    :min="0"
-                    :max="currentDoc?.imageWidth || 0"
-                    controls-position="right"
-                    @change="value => updateSelectedShapeCoordinate('x2', value)"
-                  />
-                </label>
-                <label class="coordinate-field">
-                  <span>下</span>
-                  <el-input-number
-                    :model-value="selectedShape.rect.y2"
-                    :step="1"
-                    :min="0"
-                    :max="currentDoc?.imageHeight || 0"
-                    controls-position="right"
-                    @change="value => updateSelectedShapeCoordinate('y2', value)"
-                  />
-                </label>
-              </div>
-            </div>
-          </template>
-          <div v-else class="annotation-inline-empty">
-            先在图里选择一个矩形框，再在这里改标签和坐标。
-          </div>
-
-          <div class="inspector-block inspector-block-grow">
-            <div class="inspector-block-title">矩形列表</div>
-            <div v-if="currentDoc?.editableShapes.length" class="shape-list">
-              <button
-                v-for="(shape, index) in currentDoc.editableShapes"
-                :key="shape.id"
-                type="button"
-                class="shape-card"
-                :class="{ 'is-active': shape.id === selectedShapeId }"
-                @click="selectShape(shape.id)"
-              >
-                <div class="shape-card-top">
-                  <span class="shape-card-index">{{ index + 1 }}</span>
-                  <span class="shape-card-label">{{ shape.labelText || '未命名' }}</span>
-                </div>
-                <div class="shape-card-meta">{{ formatShapeSummary(shape.rect) }}</div>
-              </button>
-            </div>
-            <div v-else class="annotation-inline-empty">
-              当前图片还没有矩形框。
-            </div>
-          </div>
-        </aside>
+          </aside>
       </section>
     </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { Close, FolderOpened, Plus, QuestionFilled } from '@element-plus/icons-vue';
 
 import {
   fetchDeviceDirectoryItems,
   fetchDeviceFileBlob,
+  fetchDeviceFileOcrPreview,
   fetchDeviceFileText,
   fetchDeviceMedia,
+  renameDeviceLabelmeAnnotation,
   saveDeviceFileText,
   type DeviceDirectoryItem,
   type DeviceDirectoryListing,
   type DeviceFileSelector,
   type DeviceImageRecord,
+  type DeviceOcrShapeType,
 } from '@/api/deviceFiles';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import { taskStore } from '@/store/taskStore';
 import { useSortableList } from '@/utils/useSortableList';
 
 type LabelMode = 'json' | 'plain';
-type ResizeHandleKey = 'nw' | 'ne' | 'sw' | 'se';
-type ShapeLabelFieldType = 'string' | 'number' | 'boolean' | 'json';
-type ShapeLabelFieldStoredValue = string | number | boolean | Record<string, unknown> | unknown[] | null;
-type ShapeLabelFieldEditorValue = string | boolean;
+type SupportedShapeType = 'rectangle' | 'polygon' | 'circle' | 'line' | 'linestrip';
+type ShapeLabelFieldType = 'string';
+type ShapeLabelFieldStoredValue = string;
+type ShapeLabelFieldEditorValue = string;
+type ZoomMode = 'fit' | 'manual';
+type ShapeCoordinateAxis = 'x' | 'y';
+type AnnotationSourceMode = 'labelme' | 'ocr';
+type OcrSessionStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface Point {
   x: number;
@@ -592,12 +713,19 @@ interface DocumentLabelFieldValidationError extends ShapeLabelFieldValidationErr
   shapeIndex: number;
 }
 
+interface DocumentShapeValidationError {
+  shapeId: string;
+  shapeIndex: number;
+  message: string;
+}
+
 interface EditableShape {
   id: string;
+  shapeType: SupportedShapeType;
   labelText: string;
   labelMode: LabelMode;
   labelFields: ShapeLabelFieldItem[];
-  rect: Rect;
+  points: Point[];
   flags: Record<string, unknown>;
   groupId: unknown;
   originalShape: Record<string, unknown> | null;
@@ -632,36 +760,77 @@ interface DeviceAnnotationItem {
   width: number | null;
   height: number | null;
   cachedShapeCount: number | null;
+  annotationSearchContent: string;
+  annotationSearchContentLoaded: boolean;
 }
 
 interface DragState {
-  mode: 'draw' | 'move' | 'resize';
+  mode: 'draw' | 'move' | 'move-point';
   shapeId?: string;
-  handle?: ResizeHandleKey;
+  pointIndex?: number;
   anchor: Point;
-  initialRect: Rect;
+  initialPoints: Point[];
+}
+
+interface PanState {
+  startClientX: number;
+  startClientY: number;
+  startScrollLeft: number;
+  startScrollTop: number;
+}
+
+interface StageViewportSize {
+  width: number;
+  height: number;
+}
+
+interface StageContextMenuState {
+  visible: boolean;
+  clientX: number;
+  clientY: number;
+  imagePoint: Point | null;
 }
 
 const DEVICE_ROOT_SENTINEL = '__device_root__';
 const DEVICE_ROOT_LABEL = '系统根目录';
 const DEFAULT_DIRECTORY_PAGE_SIZE = 20;
+const FILE_LIST_PAGE_SIZE = 12;
 const DEFAULT_DEVICE_MEDIA_SCAN_LIMIT = 2000;
+const MIN_ZOOM_PERCENT = 5;
+const MAX_ZOOM_PERCENT = 400;
+const ZOOM_STEP = 10;
+const MIN_STAGE_VISIBLE_RATIO = 0.2;
+const DEFAULT_OCR_SHAPE_TYPE: DeviceOcrShapeType = 'polygon';
 const MIN_DEVICE_MEDIA_SCAN_LIMIT = 100;
 const MAX_DEVICE_MEDIA_SCAN_LIMIT = 50000;
+const ANNOTATION_SEARCH_CONTENT_CONCURRENCY = 6;
+const DEVICE_ENTRY_STORAGE_KEY = 'device_labelme_browser_entry';
 const DEVICE_PATH_STORAGE_PREFIX = 'device_labelme_browser_path';
 const DEVICE_SCAN_LIMIT_STORAGE_SUFFIX = '_scan_limit';
 const DEVICE_RECURSIVE_STORAGE_SUFFIX = '_recursive';
+const ANNOTATION_SEARCH_EXCLUDED_KEYS = new Set(['imageData', 'imageHeight', 'imageWidth', 'points']);
 const DEFAULT_LABEL_TEXT = '新标注';
 const MIN_RECT_EDGE = 6;
-const STANDARD_NUMBER_PATTERN = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/;
-const BOOLEAN_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
-const BOOLEAN_FALSE_TOKENS = new Set(['false', '0', 'no', 'n', 'off', '']);
-const resizeHandles: Array<{ key: ResizeHandleKey }> = [
-  { key: 'nw' },
-  { key: 'ne' },
-  { key: 'sw' },
-  { key: 'se' },
-];
+const SHAPE_TYPE_LABELS: Record<SupportedShapeType, string> = {
+  rectangle: '矩形',
+  polygon: '多边形',
+  circle: '圆形',
+  line: '线段',
+  linestrip: '折线',
+};
+const formatShapeTypeDisplay = (shapeType: SupportedShapeType) => `${SHAPE_TYPE_LABELS[shapeType]} / ${shapeType}`;
+const SHAPE_MIN_POINT_COUNTS: Record<SupportedShapeType, number> = {
+  rectangle: 2,
+  polygon: 3,
+  circle: 2,
+  line: 2,
+  linestrip: 2,
+};
+const SHAPE_FIXED_POINT_COUNTS: Partial<Record<SupportedShapeType, number>> = {
+  rectangle: 2,
+  circle: 2,
+  line: 2,
+};
 
 let shapeSeed = 0;
 let shapeLabelFieldSeed = 0;
@@ -678,8 +847,36 @@ const getQueryString = (value: unknown) => {
   return typeof value === 'string' ? value : '';
 };
 
+const loadPersistedEntryId = () => {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return '';
+  }
+
+  try {
+    return (window.localStorage.getItem(DEVICE_ENTRY_STORAGE_KEY) || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const persistSelectedEntryId = (entryId: string) => {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
+    return;
+  }
+
+  try {
+    if (entryId) {
+      window.localStorage.setItem(DEVICE_ENTRY_STORAGE_KEY, entryId);
+    } else {
+      window.localStorage.removeItem(DEVICE_ENTRY_STORAGE_KEY);
+    }
+  } catch {
+    // ignore local storage failures
+  }
+};
+
 const devices = computed(() => taskStore.devices);
-const selectedEntryId = ref(getQueryString(route.query.entry_id));
+const selectedEntryId = ref(getQueryString(route.query.entry_id) || loadPersistedEntryId());
 const selectedPath = ref(DEVICE_ROOT_SENTINEL);
 const pathInputValue = ref('');
 const listing = ref<DeviceDirectoryListing | null>(null);
@@ -687,26 +884,51 @@ const annotationItems = ref<DeviceAnnotationItem[]>([]);
 const currentItemId = ref('');
 const recursiveDisplay = ref(false);
 const keyword = ref('');
+const includeAnnotationContentSearch = ref(false);
 const isLoadingDevices = ref(false);
 const isLoadingListing = ref(false);
 const isLoadingItem = ref(false);
+const isLoadingAnnotationContentSearch = ref(false);
 const isSaving = ref(false);
+const isRenamingLabelmeItem = ref(false);
 const mediaScanLimit = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
 const mediaScanLimitInput = ref(DEFAULT_DEVICE_MEDIA_SCAN_LIMIT);
 const currentDirectoryPage = ref(1);
-const currentDoc = ref<LabelmeDocument | null>(null);
+const currentFileListPage = ref(1);
+const annotationSourceMode = ref<AnnotationSourceMode>('labelme');
+const currentLabelmeDoc = ref<LabelmeDocument | null>(null);
+const currentOcrDoc = ref<LabelmeDocument | null>(null);
 const currentImageUrl = ref('');
-const isDirty = ref(false);
+const currentLabelmeDirty = ref(false);
+const currentOcrDirty = ref(false);
+const currentOcrStatus = ref<OcrSessionStatus>('idle');
+const currentOcrError = ref('');
+const isLoadingOcr = ref(false);
 const zoomPercent = ref(100);
+const zoomMode = ref<ZoomMode>('fit');
 const toolMode = ref<'select' | 'draw'>('select');
 const selectedShapeId = ref('');
 const draftRect = ref<Rect | null>(null);
+const stageScrollRef = ref<HTMLDivElement | null>(null);
 const stageRef = ref<HTMLDivElement | null>(null);
+const stageContextMenuRef = ref<HTMLElement | null>(null);
+const stageViewportSize = ref<StageViewportSize>({ width: 0, height: 0 });
+const stageContextMenu = ref<StageContextMenuState>({
+  visible: false,
+  clientX: 0,
+  clientY: 0,
+  imagePoint: null,
+});
 const selectedShapeLabelFieldsListRef = ref<HTMLElement | null>(null);
 const activeDrag = ref<DragState | null>(null);
+const activePan = ref<PanState | null>(null);
+const isSpacePressed = ref(false);
 
 let directoryLoadVersion = 0;
 let itemLoadVersion = 0;
+let ocrLoadVersion = 0;
+let annotationContentSearchLoadVersion = 0;
+let stageResizeObserver: ResizeObserver | null = null;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -829,6 +1051,9 @@ mediaScanLimitInput.value = mediaScanLimit.value;
 
 const normalizedPathInput = computed(() => normalizePathInput(selectedPath.value));
 const canBrowse = computed(() => canBrowseFor(selectedEntryId.value, selectedPath.value));
+const searchPlaceholder = computed(() =>
+  includeAnnotationContentSearch.value ? '按文件名、路径或标注正文筛选' : '按文件名或相对路径筛选'
+);
 const listingItems = computed(() => listing.value?.items ?? []);
 const directoryEntries = computed(() => listingItems.value.filter((entry) => entry.is_dir));
 const directoryPageCount = computed(() =>
@@ -839,14 +1064,32 @@ const pagedDirectoryEntries = computed(() => {
   return directoryEntries.value.slice(offset, offset + DEFAULT_DIRECTORY_PAGE_SIZE);
 });
 
+const annotationItemMatchesKeyword = (item: DeviceAnnotationItem, normalizedKeyword: string) => {
+  if (
+    item.name.toLowerCase().includes(normalizedKeyword)
+    || item.relativePath.toLowerCase().includes(normalizedKeyword)
+  ) {
+    return true;
+  }
+  return (
+    includeAnnotationContentSearch.value
+    && item.annotationSearchContentLoaded
+    && item.annotationSearchContent.toLowerCase().includes(normalizedKeyword)
+  );
+};
+
 const filteredItems = computed(() => {
   const normalizedKeyword = keyword.value.trim().toLowerCase();
   if (!normalizedKeyword) return annotationItems.value;
-  return annotationItems.value.filter((item) =>
-    item.name.toLowerCase().includes(normalizedKeyword)
-    || item.relativePath.toLowerCase().includes(normalizedKeyword)
-  );
+  return annotationItems.value.filter((item) => annotationItemMatchesKeyword(item, normalizedKeyword));
 });
+const fileListPageCount = computed(() => Math.max(1, Math.ceil(filteredItems.value.length / FILE_LIST_PAGE_SIZE)));
+const annotationFileListOffset = computed(() =>
+  Math.max(0, (Math.max(1, currentFileListPage.value) - 1) * FILE_LIST_PAGE_SIZE)
+);
+const pagedFilteredItems = computed(() =>
+  filteredItems.value.slice(annotationFileListOffset.value, annotationFileListOffset.value + FILE_LIST_PAGE_SIZE)
+);
 
 const currentFilteredIndex = computed(() =>
   filteredItems.value.findIndex((item) => item.id === currentItemId.value)
@@ -858,11 +1101,29 @@ const hasNextItem = computed(
 const currentItem = computed(
   () => annotationItems.value.find((item) => item.id === currentItemId.value) ?? null
 );
+const currentDoc = computed(() =>
+  annotationSourceMode.value === 'ocr' ? currentOcrDoc.value : currentLabelmeDoc.value
+);
+const isDirty = computed(() =>
+  annotationSourceMode.value === 'ocr' ? currentOcrDirty.value : currentLabelmeDirty.value
+);
+const isLabelmeMode = computed(() => annotationSourceMode.value === 'labelme');
+const isOcrMode = computed(() => annotationSourceMode.value === 'ocr');
 const selectedShape = computed(
   () => currentDoc.value?.editableShapes.find((shape) => shape.id === selectedShapeId.value) ?? null
 );
 const selectedShapeLabel = computed(() => selectedShape.value?.labelText ?? '');
 const selectedShapeLabelFields = computed(() => selectedShape.value?.labelFields ?? []);
+const selectedShapeTypeLabel = computed(() =>
+  selectedShape.value ? formatShapeTypeDisplay(selectedShape.value.shapeType) : ''
+);
+const selectedShapePointRows = computed(() => {
+  if (!selectedShape.value) return [];
+  return selectedShape.value.points.map((point, index) => ({
+    index,
+    point,
+  }));
+});
 const visitedItemCount = computed(
   () => annotationItems.value.filter((item) => typeof item.cachedShapeCount === 'number').length
 );
@@ -881,28 +1142,315 @@ const stageStyle = computed(() => {
   };
 });
 
+const stageContextMenuStyle = computed(() => ({
+  left: `${stageContextMenu.value.clientX}px`,
+  top: `${stageContextMenu.value.clientY}px`,
+}));
+
+const stageWorkspaceStyle = computed(() => {
+  if (!currentDoc.value) return {};
+  const stageWidth = Math.max(1, Math.round((currentDoc.value.imageWidth * zoomPercent.value) / 100));
+  const stageHeight = Math.max(1, Math.round((currentDoc.value.imageHeight * zoomPercent.value) / 100));
+  const overscrollX = Math.max(0, Math.round(stageViewportSize.value.width * (1 - MIN_STAGE_VISIBLE_RATIO)));
+  const overscrollY = Math.max(0, Math.round(stageViewportSize.value.height * (1 - MIN_STAGE_VISIBLE_RATIO)));
+  return {
+    width: `${stageWidth + overscrollX * 2}px`,
+    height: `${stageHeight + overscrollY * 2}px`,
+    minWidth: '100%',
+    minHeight: '100%',
+  };
+});
+
 const strokeWidth = computed(() => {
   if (!currentDoc.value) return 2;
   return Math.max(2, currentDoc.value.imageWidth / 250);
 });
 
+const hitStrokeWidth = computed(() => Math.max(14, strokeWidth.value * 4));
+
 const handleRadius = computed(() => {
-  if (!currentDoc.value) return 7;
-  return Math.max(7, currentDoc.value.imageWidth / 60);
+  const baseRadius = !currentDoc.value ? 5 : Math.max(5, currentDoc.value.imageWidth / 85);
+  return Math.round(baseRadius * 0.5 * 100) / 100;
 });
 
 const stageHintText = computed(() => {
   if (!currentDoc.value) {
     return '进入目录后开始标注。';
   }
-  if (toolMode.value === 'draw') {
-    return '拖动图片区域创建新的矩形框，按 Esc 取消。';
-  }
-  if (selectedShape.value) {
-    return '拖动矩形可移动，拖四角可缩放，右侧可改标签与坐标。';
-  }
-  return '点击“新框”开始标注，或先在图上选择已有矩形。';
+  return '右键菜单可新建矩形；Ctrl + 滚轮 / +/- 缩放，Ctrl + 0 适应窗口；按住空格或中键拖动画面。';
 });
+
+const stageScrollClasses = computed(() => ({
+  'is-pan-ready': Boolean(currentDoc.value) && isSpacePressed.value && !activePan.value,
+  'is-panning': Boolean(activePan.value),
+}));
+
+const normalizeZoomPercent = (value: number, options?: { snap?: boolean }) => {
+  if (!Number.isFinite(value)) {
+    return 100;
+  }
+  const normalized = options?.snap === false
+    ? Math.round(Number(value))
+    : Math.round(Number(value) / ZOOM_STEP) * ZOOM_STEP;
+  return clampNumber(normalized, MIN_ZOOM_PERCENT, MAX_ZOOM_PERCENT);
+};
+
+const readStageViewportSize = (): StageViewportSize => {
+  const scrollContainer = stageScrollRef.value;
+  if (!scrollContainer || typeof window === 'undefined') {
+    return { width: 0, height: 0 };
+  }
+
+  const style = window.getComputedStyle(scrollContainer);
+  const paddingX = (Number.parseFloat(style.paddingLeft) || 0) + (Number.parseFloat(style.paddingRight) || 0);
+  const paddingY = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+  return {
+    width: Math.max(0, scrollContainer.clientWidth - paddingX),
+    height: Math.max(0, scrollContainer.clientHeight - paddingY),
+  };
+};
+
+const updateStageViewportSize = () => {
+  const nextSize = readStageViewportSize();
+  if (
+    stageViewportSize.value.width === nextSize.width
+    && stageViewportSize.value.height === nextSize.height
+  ) {
+    return;
+  }
+  stageViewportSize.value = nextSize;
+};
+
+const centerStageViewport = () => {
+  const scrollContainer = stageScrollRef.value;
+  if (!scrollContainer) return;
+  scrollContainer.scrollLeft = Math.max(0, (scrollContainer.scrollWidth - scrollContainer.clientWidth) / 2);
+  scrollContainer.scrollTop = Math.max(0, (scrollContainer.scrollHeight - scrollContainer.clientHeight) / 2);
+};
+
+const computeFitZoomPercent = () => {
+  if (!currentDoc.value || stageViewportSize.value.width <= 0 || stageViewportSize.value.height <= 0) {
+    return 100;
+  }
+  const scale = Math.min(
+    stageViewportSize.value.width / currentDoc.value.imageWidth,
+    stageViewportSize.value.height / currentDoc.value.imageHeight
+  );
+  return normalizeZoomPercent(scale * 100, { snap: false });
+};
+
+const fitStageToViewport = async () => {
+  if (!currentDoc.value) return;
+  updateStageViewportSize();
+  zoomMode.value = 'fit';
+  zoomPercent.value = computeFitZoomPercent();
+  await nextTick();
+  centerStageViewport();
+};
+
+const setZoomPercent = async (
+  value: number,
+  options?: {
+    anchorClientX?: number;
+    anchorClientY?: number;
+    snap?: boolean;
+    nextMode?: ZoomMode;
+  }
+) => {
+  const nextZoom = normalizeZoomPercent(value, { snap: options?.snap });
+  const currentZoom = normalizeZoomPercent(zoomPercent.value, { snap: false });
+  if (nextZoom === currentZoom) {
+    zoomPercent.value = currentZoom;
+    if (options?.nextMode) {
+      zoomMode.value = options.nextMode;
+    }
+    return;
+  }
+
+  const scrollContainer = stageScrollRef.value;
+  const stageElement = stageRef.value;
+  if (!scrollContainer || !stageElement || !currentDoc.value) {
+    zoomPercent.value = nextZoom;
+    if (options?.nextMode) {
+      zoomMode.value = options.nextMode;
+    }
+    return;
+  }
+
+  const containerRect = scrollContainer.getBoundingClientRect();
+  const currentStageRect = stageElement.getBoundingClientRect();
+  const requestedAnchorClientX = options?.anchorClientX ?? (containerRect.left + containerRect.width / 2);
+  const requestedAnchorClientY = options?.anchorClientY ?? (containerRect.top + containerRect.height / 2);
+  const isAnchorInsideStage =
+    requestedAnchorClientX >= currentStageRect.left
+    && requestedAnchorClientX <= currentStageRect.right
+    && requestedAnchorClientY >= currentStageRect.top
+    && requestedAnchorClientY <= currentStageRect.bottom;
+  const anchorClientX = isAnchorInsideStage
+    ? requestedAnchorClientX
+    : (currentStageRect.left + currentStageRect.width / 2);
+  const anchorClientY = isAnchorInsideStage
+    ? requestedAnchorClientY
+    : (currentStageRect.top + currentStageRect.height / 2);
+  const currentScale = currentZoom / 100;
+  const nextScale = nextZoom / 100;
+  const imageX = clampNumber((anchorClientX - currentStageRect.left) / currentScale, 0, currentDoc.value.imageWidth);
+  const imageY = clampNumber((anchorClientY - currentStageRect.top) / currentScale, 0, currentDoc.value.imageHeight);
+  const previousScrollLeft = scrollContainer.scrollLeft;
+  const previousScrollTop = scrollContainer.scrollTop;
+
+  if (options?.nextMode) {
+    zoomMode.value = options.nextMode;
+  }
+  zoomPercent.value = nextZoom;
+  await nextTick();
+
+  const nextStageRect = stageElement.getBoundingClientRect();
+  const nextAnchorClientX = nextStageRect.left + imageX * nextScale;
+  const nextAnchorClientY = nextStageRect.top + imageY * nextScale;
+
+  scrollContainer.scrollLeft = Math.max(0, previousScrollLeft + (nextAnchorClientX - anchorClientX));
+  scrollContainer.scrollTop = Math.max(0, previousScrollTop + (nextAnchorClientY - anchorClientY));
+};
+
+const handleZoomSliderChange = (value: number | string) => {
+  void setZoomPercent(Number(value), { nextMode: 'manual' });
+};
+
+const zoomIn = (options?: { anchorClientX?: number; anchorClientY?: number }) => {
+  void setZoomPercent(zoomPercent.value + ZOOM_STEP, {
+    ...options,
+    nextMode: 'manual',
+  });
+};
+
+const zoomOut = (options?: { anchorClientX?: number; anchorClientY?: number }) => {
+  void setZoomPercent(zoomPercent.value - ZOOM_STEP, {
+    ...options,
+    nextMode: 'manual',
+  });
+};
+
+const resetZoom = () => {
+  void fitStageToViewport();
+};
+
+const handleStageWheel = (event: WheelEvent) => {
+  closeStageContextMenu();
+  if (!(event.ctrlKey || event.metaKey)) {
+    return;
+  }
+
+  event.preventDefault();
+  if (event.deltaY > 0) {
+    zoomOut({ anchorClientX: event.clientX, anchorClientY: event.clientY });
+    return;
+  }
+  zoomIn({ anchorClientX: event.clientX, anchorClientY: event.clientY });
+};
+
+const beginPan = (event: MouseEvent) => {
+  const scrollContainer = stageScrollRef.value;
+  if (!scrollContainer) return;
+
+  activePan.value = {
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startScrollLeft: scrollContainer.scrollLeft,
+    startScrollTop: scrollContainer.scrollTop,
+  };
+  if (scrollContainer.scrollWidth > scrollContainer.clientWidth || scrollContainer.scrollHeight > scrollContainer.clientHeight) {
+    zoomMode.value = 'manual';
+  }
+  document.addEventListener('mousemove', handleWindowPanMove);
+  document.addEventListener('mouseup', handleWindowPanUp);
+};
+
+function handleWindowPanMove(event: MouseEvent) {
+  const scrollContainer = stageScrollRef.value;
+  if (!activePan.value || !scrollContainer) return;
+
+  const deltaX = event.clientX - activePan.value.startClientX;
+  const deltaY = event.clientY - activePan.value.startClientY;
+  scrollContainer.scrollLeft = Math.max(0, activePan.value.startScrollLeft - deltaX);
+  scrollContainer.scrollTop = Math.max(0, activePan.value.startScrollTop - deltaY);
+}
+
+function handleWindowPanUp() {
+  stopPan();
+}
+
+const stopPan = () => {
+  activePan.value = null;
+  document.removeEventListener('mousemove', handleWindowPanMove);
+  document.removeEventListener('mouseup', handleWindowPanUp);
+};
+
+const handleStageViewportMouseDown = (event: MouseEvent) => {
+  closeStageContextMenu();
+  if (!currentDoc.value) return;
+  const shouldPan = event.button === 1 || (event.button === 0 && isSpacePressed.value);
+  if (!shouldPan) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  beginPan(event);
+};
+
+const closeStageContextMenu = () => {
+  stageContextMenu.value.visible = false;
+  stageContextMenu.value.imagePoint = null;
+};
+
+const openStageContextMenu = (event: MouseEvent) => {
+  if (!currentDoc.value) return;
+  const point = getPointerInImage(event);
+  if (!point) {
+    closeStageContextMenu();
+    return;
+  }
+
+  const padding = 12;
+  const menuWidth = 144;
+  const menuHeight = 48;
+  const maxLeft = typeof window === 'undefined'
+    ? event.clientX
+    : Math.max(padding, window.innerWidth - menuWidth - padding);
+  const maxTop = typeof window === 'undefined'
+    ? event.clientY
+    : Math.max(padding, window.innerHeight - menuHeight - padding);
+
+  stageContextMenu.value = {
+    visible: true,
+    clientX: clampNumber(event.clientX, padding, maxLeft),
+    clientY: clampNumber(event.clientY, padding, maxTop),
+    imagePoint: point,
+  };
+};
+
+const handleStageContextMenu = (event: MouseEvent) => {
+  if (!currentDoc.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openStageContextMenu(event);
+};
+
+const bindStageResizeObserver = () => {
+  stageResizeObserver?.disconnect();
+  stageResizeObserver = null;
+
+  if (typeof ResizeObserver === 'undefined' || !stageScrollRef.value) {
+    updateStageViewportSize();
+    return;
+  }
+
+  updateStageViewportSize();
+  stageResizeObserver = new ResizeObserver(() => {
+    updateStageViewportSize();
+  });
+  stageResizeObserver.observe(stageScrollRef.value);
+};
 
 const syncPathInputFromSelection = () => {
   pathInputValue.value = formatPathInput(selectedPath.value);
@@ -977,20 +1525,22 @@ const replaceExtension = (filePath: string, nextExtension: string) => {
   return `${trimmed}${nextExtension}`;
 };
 
-const roundCoordinate = (value: number) => Math.round(value * 100) / 100;
+const roundCoordinate = (value: number) => Math.round(value);
+const clonePoint = (point: Point): Point => ({ x: roundCoordinate(point.x), y: roundCoordinate(point.y) });
+const clonePoints = (points: Point[]) => points.map(clonePoint);
 
 const normalizeRect = (rect: Rect): Rect => ({
-  x1: Math.min(rect.x1, rect.x2),
-  y1: Math.min(rect.y1, rect.y2),
-  x2: Math.max(rect.x1, rect.x2),
-  y2: Math.max(rect.y1, rect.y2),
+  x1: roundCoordinate(Math.min(rect.x1, rect.x2)),
+  y1: roundCoordinate(Math.min(rect.y1, rect.y2)),
+  x2: roundCoordinate(Math.max(rect.x1, rect.x2)),
+  y2: roundCoordinate(Math.max(rect.y1, rect.y2)),
 });
 
 const ensureRectWithinBounds = (rect: Rect, width: number, height: number): Rect => ({
-  x1: clampNumber(rect.x1, 0, width),
-  y1: clampNumber(rect.y1, 0, height),
-  x2: clampNumber(rect.x2, 0, width),
-  y2: clampNumber(rect.y2, 0, height),
+  x1: roundCoordinate(clampNumber(rect.x1, 0, width)),
+  y1: roundCoordinate(clampNumber(rect.y1, 0, height)),
+  x2: roundCoordinate(clampNumber(rect.x2, 0, width)),
+  y2: roundCoordinate(clampNumber(rect.y2, 0, height)),
 });
 
 const toPoint = (value: unknown): Point | null => {
@@ -998,110 +1548,119 @@ const toPoint = (value: unknown): Point | null => {
   const x = Number(value[0]);
   const y = Number(value[1]);
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  return { x, y };
+  return { x: roundCoordinate(x), y: roundCoordinate(y) };
 };
 
-const normalizeShapeLabelFieldType = (type: unknown): ShapeLabelFieldType => {
-  if (type === 'number' || type === 'boolean' || type === 'json') {
-    return type;
-  }
-  return 'string';
-};
-
-const normalizeShapeLabelFieldText = (value: unknown) => (value == null ? '' : String(value));
-
-const parseShapeLabelFieldNumber = (value: unknown): number | null => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+const normalizeShapeType = (value: unknown): SupportedShapeType | null => {
+  if (value === 'rectangle' || value === 'polygon' || value === 'circle' || value === 'line' || value === 'linestrip') {
     return value;
   }
-  if (typeof value !== 'string') {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed || !STANDARD_NUMBER_PATTERN.test(trimmed)) {
-    return null;
-  }
-
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) ? parsed : null;
+  return null;
 };
 
-const parseShapeLabelFieldBoolean = (value: unknown): boolean | null => {
-  if (typeof value === 'boolean') {
-    return value;
+const clampPointWithinBounds = (point: Point, width: number, height: number): Point => ({
+  x: roundCoordinate(clampNumber(point.x, 0, width)),
+  y: roundCoordinate(clampNumber(point.y, 0, height)),
+});
+
+const getRectangleRect = (shape: Pick<EditableShape, 'points'>): Rect => {
+  const [firstPoint, secondPoint] = shape.points;
+  if (!firstPoint || !secondPoint) {
+    return { x1: 0, y1: 0, x2: 0, y2: 0 };
+  }
+  return normalizeRect({
+    x1: firstPoint.x,
+    y1: firstPoint.y,
+    x2: secondPoint.x,
+    y2: secondPoint.y,
+  });
+};
+
+const getCircleGeometry = (shape: Pick<EditableShape, 'points'>) => {
+  const [centerPoint, radiusPoint] = shape.points;
+  if (!centerPoint || !radiusPoint) {
+    return { cx: 0, cy: 0, r: 0 };
+  }
+  return {
+    cx: centerPoint.x,
+    cy: centerPoint.y,
+    r: Math.hypot(radiusPoint.x - centerPoint.x, radiusPoint.y - centerPoint.y),
+  };
+};
+
+const getShapeSvgPoints = (shape: Pick<EditableShape, 'points'>) =>
+  shape.points.map((point) => `${point.x},${point.y}`).join(' ');
+
+const validateShapePoints = (
+  shapeType: SupportedShapeType,
+  points: Point[]
+): { ok: true } | { ok: false; message: string } => {
+  const fixedPointCount = SHAPE_FIXED_POINT_COUNTS[shapeType];
+  if (fixedPointCount && points.length !== fixedPointCount) {
+    return { ok: false, message: `${SHAPE_TYPE_LABELS[shapeType]}需要 ${fixedPointCount} 个点` };
   }
 
-  const parsedNumber = parseShapeLabelFieldNumber(value);
-  if (parsedNumber !== null) {
-    return parsedNumber !== 0;
+  const minPointCount = SHAPE_MIN_POINT_COUNTS[shapeType];
+  if (points.length < minPointCount) {
+    return { ok: false, message: `${SHAPE_TYPE_LABELS[shapeType]}至少需要 ${minPointCount} 个点` };
   }
 
+  if (shapeType === 'rectangle') {
+    const rect = getRectangleRect({ points });
+    if ((rect.x2 - rect.x1) <= 0 || (rect.y2 - rect.y1) <= 0) {
+      return { ok: false, message: '矩形需要两个不同的对角点' };
+    }
+  }
+
+  if (shapeType === 'circle') {
+    const { r } = getCircleGeometry({ points });
+    if (r <= 0) {
+      return { ok: false, message: '圆形需要圆心和有效的圆周点' };
+    }
+  }
+
+  if (shapeType === 'line') {
+    const [startPoint, endPoint] = points;
+    if (!startPoint || !endPoint || (startPoint.x === endPoint.x && startPoint.y === endPoint.y)) {
+      return { ok: false, message: '线段需要不同的起点和终点' };
+    }
+  }
+
+  if (shapeType === 'linestrip') {
+    const hasDistinctSegment = points.some((point, index) => {
+      const nextPoint = points[index + 1];
+      return nextPoint && (point.x !== nextPoint.x || point.y !== nextPoint.y);
+    });
+    if (!hasDistinctSegment) {
+      return { ok: false, message: '折线至少需要一段有效线段' };
+    }
+  }
+
+  if (shapeType === 'polygon') {
+    const uniqueVertices = new Set(points.map((point) => `${roundCoordinate(point.x)},${roundCoordinate(point.y)}`));
+    if (uniqueVertices.size < 3) {
+      return { ok: false, message: '多边形至少需要 3 个不同顶点' };
+    }
+  }
+
+  return { ok: true };
+};
+
+const normalizeShapeLabelFieldText = (value: unknown) => {
   if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase();
-    if (BOOLEAN_TRUE_TOKENS.has(normalized)) return true;
-    if (BOOLEAN_FALSE_TOKENS.has(normalized)) return false;
-    return normalized.length > 0;
+    return value;
   }
-
   if (value == null) {
-    return false;
+    return '';
   }
-  return Boolean(value);
-};
-
-const inferShapeLabelFieldType = (value: unknown): ShapeLabelFieldType => {
-  if (typeof value === 'boolean') return 'boolean';
-  if (typeof value === 'number' && Number.isFinite(value)) return 'number';
-  if (Array.isArray(value) || value === null || isRecord(value)) return 'json';
-  return 'string';
-};
-
-const normalizeShapeLabelFieldEditorValue = (
-  type: ShapeLabelFieldType,
-  value: unknown
-): ShapeLabelFieldEditorValue => {
-  if (type === 'boolean') {
-    return parseShapeLabelFieldBoolean(value) ?? false;
-  }
-  if (type === 'json') {
-    if (typeof value === 'string') {
-      return value;
-    }
-    return JSON.stringify(value ?? null, null, 2);
-  }
-  if (type === 'number') {
-    if (typeof value === 'boolean') return value ? '1' : '0';
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-    if (typeof value === 'string') {
-      const parsed = parseShapeLabelFieldNumber(value);
-      return parsed === null ? value : value.trim();
+  if (Array.isArray(value) || isRecord(value)) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
     }
   }
-  return normalizeShapeLabelFieldText(value);
-};
-
-const convertShapeLabelFieldValue = (
-  type: ShapeLabelFieldType,
-  value: unknown
-): ShapeLabelFieldEditorValue => {
-  if (type === 'string') {
-    return typeof value === 'boolean' ? (value ? 'true' : 'false') : normalizeShapeLabelFieldText(value);
-  }
-  if (type === 'number') {
-    if (typeof value === 'boolean') return value ? '1' : '0';
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
-    const text = normalizeShapeLabelFieldText(value);
-    const parsed = parseShapeLabelFieldNumber(text);
-    return parsed === null ? text : text.trim();
-  }
-  if (type === 'boolean') {
-    return parseShapeLabelFieldBoolean(value) ?? false;
-  }
-  if (typeof value === 'string') {
-    return value;
-  }
-  return JSON.stringify(value ?? null, null, 2);
+  return String(value);
 };
 
 const createShapeLabelFieldItem = (
@@ -1109,47 +1668,24 @@ const createShapeLabelFieldItem = (
   type: unknown = 'string',
   value: unknown = ''
 ): ShapeLabelFieldItem => {
-  const normalizedType = normalizeShapeLabelFieldType(type);
   return {
     localId: createShapeLabelFieldId(),
     key: typeof key === 'string' ? key : '',
-    type: normalizedType,
-    value: normalizeShapeLabelFieldEditorValue(normalizedType, value),
+    type: 'string',
+    value: normalizeShapeLabelFieldText(value),
   };
 };
 
 const shapeLabelExtrasToFieldItems = (extras: Record<string, unknown>) =>
   Object.entries(extras).map(([key, value]) =>
-    createShapeLabelFieldItem(key, inferShapeLabelFieldType(value), value)
+    createShapeLabelFieldItem(key, 'string', value)
   );
 
 const serializeShapeLabelFieldValue = (
-  type: ShapeLabelFieldType,
+  _type: ShapeLabelFieldType,
   value: unknown
 ): { ok: true; value: ShapeLabelFieldStoredValue } | { ok: false; message: string } => {
-  if (type === 'string') {
-    return { ok: true, value: normalizeShapeLabelFieldText(value) };
-  }
-  if (type === 'boolean') {
-    return { ok: true, value: parseShapeLabelFieldBoolean(value) ?? false };
-  }
-  if (type === 'number') {
-    const parsed = parseShapeLabelFieldNumber(value);
-    if (parsed === null) {
-      return { ok: false, message: '数值字段需要有效数字' };
-    }
-    return { ok: true, value: parsed };
-  }
-
-  const text = normalizeShapeLabelFieldText(value).trim();
-  if (!text) {
-    return { ok: false, message: 'JSON 字段不能为空' };
-  }
-  try {
-    return { ok: true, value: JSON.parse(text) as ShapeLabelFieldStoredValue };
-  } catch {
-    return { ok: false, message: 'JSON 字段格式无效' };
-  }
+  return { ok: true, value: normalizeShapeLabelFieldText(value) };
 };
 
 const validateShapeLabelFieldItems = (items: ShapeLabelFieldItem[]): ShapeLabelFieldValidationError[] => {
@@ -1200,6 +1736,21 @@ const collectDocumentLabelFieldValidationErrors = (doc: LabelmeDocument): Docume
         ...error,
         shapeId: shape.id,
         shapeIndex,
+      });
+    }
+  });
+  return errors;
+};
+
+const collectDocumentShapeValidationErrors = (doc: LabelmeDocument): DocumentShapeValidationError[] => {
+  const errors: DocumentShapeValidationError[] = [];
+  doc.editableShapes.forEach((shape, shapeIndex) => {
+    const validation = validateShapePoints(shape.shapeType, shape.points);
+    if (!validation.ok) {
+      errors.push({
+        shapeId: shape.id,
+        shapeIndex,
+        message: validation.message,
       });
     }
   });
@@ -1263,18 +1814,24 @@ const encodeShapeLabel = (shape: EditableShape) => {
 };
 
 const normalizeEditableShape = (value: unknown): EditableShape | null => {
-  if (!isRecord(value) || value.shape_type !== 'rectangle') {
+  if (!isRecord(value)) {
     return null;
   }
 
-  const points = Array.isArray(value.points) ? value.points : [];
-  if (points.length < 2) {
+  const shapeType = normalizeShapeType(value.shape_type);
+  if (!shapeType) {
     return null;
   }
 
-  const firstPoint = toPoint(points[0]);
-  const secondPoint = toPoint(points[1]);
-  if (!firstPoint || !secondPoint) {
+  const rawPoints = Array.isArray(value.points) ? value.points : [];
+  const normalizedPoints = rawPoints.map(toPoint);
+  if (!normalizedPoints.length || normalizedPoints.some((point) => !point)) {
+    return null;
+  }
+
+  const points = normalizedPoints.filter((point): point is Point => Boolean(point));
+  const pointValidation = validateShapePoints(shapeType, points);
+  if (!pointValidation.ok) {
     return null;
   }
 
@@ -1283,15 +1840,11 @@ const normalizeEditableShape = (value: unknown): EditableShape | null => {
 
   return {
     id: createShapeId(),
+    shapeType,
     labelText: parsedLabel.text,
     labelMode: parsedLabel.mode,
     labelFields: shapeLabelExtrasToFieldItems(parsedLabel.extras),
-    rect: normalizeRect({
-      x1: firstPoint.x,
-      y1: firstPoint.y,
-      x2: secondPoint.x,
-      y2: secondPoint.y,
-    }),
+    points: clonePoints(points),
     flags: isRecord(value.flags) ? { ...value.flags } : {},
     groupId: value.group_id ?? null,
     originalShape: { ...value },
@@ -1316,20 +1869,30 @@ const createEmptyDocument = (
   unsupportedShapeCount: 0,
 });
 
-const buildDocumentFromText = (
-  rawText: string,
+const createOcrPlaceholderDocument = (sourceDoc: LabelmeDocument): LabelmeDocument => ({
+  version: sourceDoc.version,
+  flags: { ...sourceDoc.flags },
+  imagePath: sourceDoc.imagePath,
+  imageData: null,
+  imageWidth: sourceDoc.imageWidth,
+  imageHeight: sourceDoc.imageHeight,
+  extras: { ...sourceDoc.extras },
+  editableShapes: [],
+  shapeOrder: [],
+  defaultLabelMode: sourceDoc.defaultLabelMode,
+  unsupportedShapeCount: 0,
+});
+
+const buildDocumentFromValue = (
+  rawValue: unknown,
   imageFilename: string,
   imageWidth: number,
   imageHeight: number
 ): LabelmeDocument => {
-  if (!rawText.trim()) {
+  if (!isRecord(rawValue)) {
     return createEmptyDocument(imageFilename, imageWidth, imageHeight);
   }
-
-  const parsed = JSON.parse(rawText);
-  if (!isRecord(parsed)) {
-    return createEmptyDocument(imageFilename, imageWidth, imageHeight);
-  }
+  const parsed = rawValue;
 
   const sourceShapes = Array.isArray(parsed.shapes) ? parsed.shapes : [];
   const editableShapes: EditableShape[] = [];
@@ -1376,6 +1939,20 @@ const buildDocumentFromText = (
   };
 };
 
+const buildDocumentFromText = (
+  rawText: string,
+  imageFilename: string,
+  imageWidth: number,
+  imageHeight: number
+): LabelmeDocument => {
+  if (!rawText.trim()) {
+    return createEmptyDocument(imageFilename, imageWidth, imageHeight);
+  }
+
+  const parsed = JSON.parse(rawText);
+  return buildDocumentFromValue(parsed, imageFilename, imageWidth, imageHeight);
+};
+
 const buildPayloadFromDocument = (doc: LabelmeDocument, item: DeviceAnnotationItem) => {
   const editableById = new Map(doc.editableShapes.map((shape) => [shape.id, shape]));
   const shapes = doc.shapeOrder
@@ -1390,12 +1967,9 @@ const buildPayloadFromDocument = (doc: LabelmeDocument, item: DeviceAnnotationIt
       return {
         ...(shape.originalShape ? { ...shape.originalShape } : {}),
         label: encodeShapeLabel(shape),
-        points: [
-          [roundCoordinate(shape.rect.x1), roundCoordinate(shape.rect.y1)],
-          [roundCoordinate(shape.rect.x2), roundCoordinate(shape.rect.y2)],
-        ],
+        points: shape.points.map((point) => [roundCoordinate(point.x), roundCoordinate(point.y)]),
         group_id: shape.groupId ?? null,
-        shape_type: 'rectangle',
+        shape_type: shape.shapeType,
         flags: shape.flags ?? {},
       };
     })
@@ -1411,6 +1985,42 @@ const buildPayloadFromDocument = (doc: LabelmeDocument, item: DeviceAnnotationIt
     imageHeight: doc.imageHeight,
     imageWidth: doc.imageWidth,
   };
+};
+
+const collectAnnotationSearchTokens = (value: unknown): string[] => {
+  if (typeof value === 'string') {
+    return [value];
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return [String(value)];
+  }
+  if (Array.isArray(value)) {
+    return value.flatMap(collectAnnotationSearchTokens);
+  }
+  if (isRecord(value)) {
+    return Object.entries(value).flatMap(([key, nestedValue]) => {
+      if (ANNOTATION_SEARCH_EXCLUDED_KEYS.has(key)) {
+        return [];
+      }
+      return [key, ...collectAnnotationSearchTokens(nestedValue)];
+    });
+  }
+  return [];
+};
+
+const buildAnnotationSearchContentFromValue = (value: unknown) =>
+  collectAnnotationSearchTokens(value).join('\n');
+
+const buildAnnotationSearchContentFromText = (rawText: string) => {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return '';
+  }
+  try {
+    return buildAnnotationSearchContentFromValue(JSON.parse(trimmed));
+  } catch {
+    return rawText;
+  }
 };
 
 const loadImageResourceFromBlob = async (blob: Blob) => {
@@ -1444,13 +2054,42 @@ const replaceCurrentImageUrl = (nextUrl: string) => {
   currentImageUrl.value = nextUrl;
 };
 
+const setCurrentSourceDirty = (dirty: boolean) => {
+  if (annotationSourceMode.value === 'ocr') {
+    currentOcrDirty.value = dirty;
+  } else {
+    currentLabelmeDirty.value = dirty;
+  }
+};
+
+const syncSelectedShapeForCurrentDoc = () => {
+  const doc = currentDoc.value;
+  if (!doc) {
+    selectedShapeId.value = '';
+    return;
+  }
+  if (selectedShapeId.value && doc.editableShapes.some((shape) => shape.id === selectedShapeId.value)) {
+    return;
+  }
+  selectedShapeId.value = doc.editableShapes[0]?.id ?? '';
+};
+
 const clearCurrentDocument = () => {
+  stopPan();
+  ++ocrLoadVersion;
   currentItemId.value = '';
-  currentDoc.value = null;
+  currentLabelmeDoc.value = null;
+  currentOcrDoc.value = null;
   selectedShapeId.value = '';
   draftRect.value = null;
+  zoomMode.value = 'fit';
+  zoomPercent.value = 100;
+  isSpacePressed.value = false;
   toolMode.value = 'select';
-  isDirty.value = false;
+  currentLabelmeDirty.value = false;
+  currentOcrDirty.value = false;
+  currentOcrStatus.value = 'idle';
+  currentOcrError.value = '';
   if (currentImageUrl.value) {
     URL.revokeObjectURL(currentImageUrl.value);
     currentImageUrl.value = '';
@@ -1480,24 +2119,31 @@ const mapAnnotationItem = (record: DeviceImageRecord): DeviceAnnotationItem | nu
     width: typeof record.width === 'number' ? record.width : null,
     height: typeof record.height === 'number' ? record.height : null,
     cachedShapeCount: null,
+    annotationSearchContent: '',
+    annotationSearchContentLoaded: false,
   };
 };
 
 const updateItemCache = (item: DeviceAnnotationItem, doc: LabelmeDocument) => {
   item.cachedShapeCount = doc.editableShapes.length;
+  if (item.annotationSearchContentLoaded) {
+    item.annotationSearchContent = buildAnnotationSearchContentFromValue(buildPayloadFromDocument(doc, item));
+  }
 };
 
 const syncCurrentItemCache = () => {
-  if (!currentItem.value || !currentDoc.value) return;
-  updateItemCache(currentItem.value, currentDoc.value);
+  if (!currentItem.value || !currentLabelmeDoc.value) return;
+  updateItemCache(currentItem.value, currentLabelmeDoc.value);
 };
 
 const getShapeById = (shapeId: string) =>
   currentDoc.value?.editableShapes.find((shape) => shape.id === shapeId) ?? null;
 
 const markDirty = () => {
-  isDirty.value = true;
-  syncCurrentItemCache();
+  setCurrentSourceDirty(true);
+  if (annotationSourceMode.value === 'labelme') {
+    syncCurrentItemCache();
+  }
 };
 
 const buildDirectoryListPayload = () => ({
@@ -1516,23 +2162,162 @@ const buildItemPayload = (item: DeviceAnnotationItem, json = false): DeviceFileS
   absolute_path: json ? item.jsonAbsolutePath : item.absolutePath,
 });
 
-const confirmDiscardUnsavedChanges = (reason: string) => {
-  if (!isDirty.value) return true;
-  return window.confirm(`当前标注未保存，${reason}会丢失修改。是否继续？`);
-};
-
-const getItemStatusLabel = (item: DeviceAnnotationItem) => {
-  if (item.id === currentItemId.value && isDirty.value) return '未保存';
-  if (typeof item.cachedShapeCount === 'number') {
-    return item.cachedShapeCount > 0 ? `${item.cachedShapeCount} 框` : '空标注';
+const loadAnnotationSearchContent = async () => {
+  if (
+    !includeAnnotationContentSearch.value
+    || !keyword.value.trim()
+    || !selectedEntryId.value
+    || !annotationItems.value.length
+    || isLoadingAnnotationContentSearch.value
+  ) {
+    return;
   }
-  return '未读';
+
+  const itemsToLoad = annotationItems.value.filter((item) => !item.annotationSearchContentLoaded);
+  if (!itemsToLoad.length) {
+    return;
+  }
+
+  const requestVersion = annotationContentSearchLoadVersion;
+  const entryId = selectedEntryId.value;
+  let nextIndex = 0;
+  isLoadingAnnotationContentSearch.value = true;
+
+  const loadNextItem = async () => {
+    while (requestVersion === annotationContentSearchLoadVersion && entryId === selectedEntryId.value) {
+      const item = itemsToLoad[nextIndex++];
+      if (!item) {
+        return;
+      }
+
+      try {
+        const textResult = await fetchDeviceFileText(entryId, {
+          absolute_path: item.jsonAbsolutePath,
+        });
+        if (requestVersion !== annotationContentSearchLoadVersion || entryId !== selectedEntryId.value) {
+          return;
+        }
+        item.annotationSearchContent = buildAnnotationSearchContentFromText(textResult.text);
+      } catch (error: any) {
+        if (requestVersion !== annotationContentSearchLoadVersion || entryId !== selectedEntryId.value) {
+          return;
+        }
+        if (error?.response?.status !== 404) {
+          console.warn('Failed to load annotation content for search', error);
+        }
+        item.annotationSearchContent = '';
+      }
+      item.annotationSearchContentLoaded = true;
+    }
+  };
+
+  try {
+    await Promise.all(
+      Array.from(
+        { length: Math.min(ANNOTATION_SEARCH_CONTENT_CONCURRENCY, itemsToLoad.length) },
+        loadNextItem
+      )
+    );
+  } finally {
+    if (requestVersion === annotationContentSearchLoadVersion && entryId === selectedEntryId.value) {
+      isLoadingAnnotationContentSearch.value = false;
+    }
+  }
 };
 
-const getItemTagType = (item: DeviceAnnotationItem): '' | 'success' | 'info' | 'warning' => {
-  if (item.id === currentItemId.value && isDirty.value) return 'warning';
-  if (typeof item.cachedShapeCount === 'number' && item.cachedShapeCount > 0) return 'success';
-  return 'info';
+const confirmDiscardUnsavedChanges = (reason: string) => {
+  if (!currentLabelmeDirty.value) return true;
+  return window.confirm(`当前真实标注未保存，${reason}会丢失修改。是否继续？`);
+};
+
+const confirmOverwriteCurrentOcrEdits = () => {
+  if (!currentOcrDirty.value) return true;
+  return window.confirm('重新识别会覆盖当前 OCR 临时修改。是否继续？');
+};
+
+const applyActiveDocumentState = () => {
+  selectedShapeId.value = currentDoc.value?.editableShapes[0]?.id ?? '';
+  toolMode.value = 'select';
+  draftRect.value = null;
+};
+
+const ensureOcrDocument = async (
+  options: { force?: boolean; showErrorMessage?: boolean } = {}
+) => {
+  if (!selectedEntryId.value || !currentItem.value) return;
+  if (!options.force && currentOcrDoc.value) {
+    syncSelectedShapeForCurrentDoc();
+    return;
+  }
+  if (options.force && !confirmOverwriteCurrentOcrEdits()) {
+    return;
+  }
+
+  const requestVersion = ++ocrLoadVersion;
+  currentOcrStatus.value = 'loading';
+  currentOcrError.value = '';
+  isLoadingOcr.value = true;
+  if (!currentOcrDoc.value && currentLabelmeDoc.value) {
+    currentOcrDoc.value = createOcrPlaceholderDocument(currentLabelmeDoc.value);
+    currentOcrDirty.value = false;
+  }
+
+  try {
+    const response = await fetchDeviceFileOcrPreview(selectedEntryId.value, {
+      absolute_path: currentItem.value.absolutePath,
+      shape_type: DEFAULT_OCR_SHAPE_TYPE,
+    });
+    if (requestVersion !== ocrLoadVersion || currentItem.value?.absolutePath !== response.absolute_path) {
+      return;
+    }
+
+    const nextDoc = buildDocumentFromValue(
+      response.document,
+      currentItem.value.name,
+      currentLabelmeDoc.value?.imageWidth ?? currentItem.value.width ?? 0,
+      currentLabelmeDoc.value?.imageHeight ?? currentItem.value.height ?? 0
+    );
+    currentOcrDoc.value = nextDoc;
+    currentOcrDirty.value = false;
+    currentOcrStatus.value = 'ready';
+    if (annotationSourceMode.value === 'ocr') {
+      applyActiveDocumentState();
+      await nextTick();
+      bindStageResizeObserver();
+      syncSelectedShapeForCurrentDoc();
+    }
+  } catch (error: any) {
+    if (requestVersion !== ocrLoadVersion) {
+      return;
+    }
+    currentOcrStatus.value = 'error';
+    currentOcrError.value = error?.response?.data?.detail || error?.message || 'OCR 识别失败';
+    if (options.showErrorMessage !== false) {
+      ElMessage.error(currentOcrError.value);
+    }
+  } finally {
+    if (requestVersion === ocrLoadVersion) {
+      isLoadingOcr.value = false;
+    }
+  }
+};
+
+const rerunCurrentOcr = async () => {
+  await ensureOcrDocument({ force: true });
+};
+
+const handleAnnotationSourceModeChange = async (nextMode: AnnotationSourceMode | string | number) => {
+  const normalizedMode = nextMode === 'ocr' ? 'ocr' : 'labelme';
+  if (normalizedMode === annotationSourceMode.value) {
+    return;
+  }
+  annotationSourceMode.value = normalizedMode;
+  applyActiveDocumentState();
+  if (normalizedMode === 'ocr') {
+    await ensureOcrDocument();
+  } else {
+    syncSelectedShapeForCurrentDoc();
+  }
 };
 
 const openItemById = async (
@@ -1576,15 +2361,29 @@ const openItemById = async (
       }
 
       const nextDoc = buildDocumentFromText(jsonText, item.name, imageResource.width, imageResource.height);
+      item.annotationSearchContent = buildAnnotationSearchContentFromText(jsonText);
+      item.annotationSearchContentLoaded = true;
       replaceCurrentImageUrl(imageResource.url);
+      ++ocrLoadVersion;
       currentItemId.value = item.id;
-      currentDoc.value = nextDoc;
-      selectedShapeId.value = nextDoc.editableShapes[0]?.id ?? '';
-      toolMode.value = 'select';
-      draftRect.value = null;
-      zoomPercent.value = 100;
-      isDirty.value = false;
+      currentLabelmeDoc.value = nextDoc;
+      currentLabelmeDirty.value = false;
+      currentOcrDoc.value = null;
+      currentOcrDirty.value = false;
+      currentOcrStatus.value = 'idle';
+      currentOcrError.value = '';
+      if (annotationSourceMode.value === 'ocr') {
+        currentOcrDoc.value = createOcrPlaceholderDocument(nextDoc);
+      }
+      applyActiveDocumentState();
+      zoomMode.value = 'fit';
       updateItemCache(item, nextDoc);
+      await nextTick();
+      bindStageResizeObserver();
+      await fitStageToViewport();
+      if (annotationSourceMode.value === 'ocr') {
+        void ensureOcrDocument({ showErrorMessage: false });
+      }
     } catch (error) {
       URL.revokeObjectURL(imageResource.url);
       throw error;
@@ -1600,32 +2399,129 @@ const openItemById = async (
 };
 
 const saveCurrentDocument = async () => {
-  if (!selectedEntryId.value || !currentItem.value || !currentDoc.value) return;
+  if (!selectedEntryId.value || !currentItem.value || !currentLabelmeDoc.value || annotationSourceMode.value !== 'labelme') return;
 
-  const validationErrors = collectDocumentLabelFieldValidationErrors(currentDoc.value);
-  if (validationErrors.length) {
-    const firstError = validationErrors[0];
+  const shapeValidationErrors = collectDocumentShapeValidationErrors(currentLabelmeDoc.value);
+  if (shapeValidationErrors.length) {
+    const firstError = shapeValidationErrors[0];
     selectedShapeId.value = firstError.shapeId;
-    ElMessage.error(`保存前请修正第 ${firstError.shapeIndex + 1} 个框的属性：${firstError.message}`);
+    ElMessage.error(`保存前请修正第 ${firstError.shapeIndex + 1} 个标注的点集：${firstError.message}`);
+    return;
+  }
+
+  const labelValidationErrors = collectDocumentLabelFieldValidationErrors(currentLabelmeDoc.value);
+  if (labelValidationErrors.length) {
+    const firstError = labelValidationErrors[0];
+    selectedShapeId.value = firstError.shapeId;
+    ElMessage.error(`保存前请修正第 ${firstError.shapeIndex + 1} 个标注的属性：${firstError.message}`);
     return;
   }
 
   isSaving.value = true;
   try {
-    const payload = buildPayloadFromDocument(currentDoc.value, currentItem.value);
+    const payload = buildPayloadFromDocument(currentLabelmeDoc.value, currentItem.value);
     await saveDeviceFileText(selectedEntryId.value, {
       absolute_path: currentItem.value.jsonAbsolutePath,
       text: `${JSON.stringify(payload, null, 2)}\n`,
     });
 
-    isDirty.value = false;
-    updateItemCache(currentItem.value, currentDoc.value);
+    currentLabelmeDirty.value = false;
+    updateItemCache(currentItem.value, currentLabelmeDoc.value);
     ElMessage.success('标注已保存');
   } catch (error) {
     console.error('Failed to save device annotation', error);
     ElMessage.error('保存标注失败');
   } finally {
     isSaving.value = false;
+  }
+};
+
+const renameCurrentLabelmeItem = async () => {
+  if (!selectedEntryId.value || !currentItem.value) {
+    return;
+  }
+  if (isDeviceRootPath(normalizedPathInput.value)) {
+    ElMessage.warning('请先进入一个具体目录');
+    return;
+  }
+  if (currentLabelmeDirty.value) {
+    ElMessage.warning('请先保存当前标注，再重命名文件');
+    return;
+  }
+
+  let targetRelativePath = '';
+  try {
+    const promptResult = await ElMessageBox.prompt(
+      '输入相对当前目录的目标路径，例如 d/e.jpg。图片文件和同名 JSON 会一起移动。',
+      '重命名图片与标注',
+      {
+        inputValue: currentItem.value.relativePath,
+        inputPlaceholder: '例如 d/e.jpg',
+        confirmButtonText: '重命名',
+        cancelButtonText: '取消',
+      }
+    );
+    targetRelativePath = String(promptResult.value ?? '').trim();
+  } catch {
+    return;
+  }
+
+  if (!targetRelativePath) {
+    ElMessage.warning('请输入目标相对路径');
+    return;
+  }
+
+  const sourceItem = currentItem.value;
+  const executeRename = (overwrite: boolean) =>
+    renameDeviceLabelmeAnnotation(selectedEntryId.value, {
+      absolute_path: sourceItem.absolutePath,
+      base_absolute_path: normalizedPathInput.value,
+      target_relative_path: targetRelativePath,
+      overwrite,
+    });
+
+  isRenamingLabelmeItem.value = true;
+  try {
+    let result;
+    try {
+      result = await executeRename(false);
+    } catch (error: any) {
+      if (error?.response?.status !== 409) {
+        throw error;
+      }
+
+      const detail = error?.response?.data?.detail;
+      const targetPath = detail?.target_relative_path || targetRelativePath;
+      await ElMessageBox.confirm(
+        `目标 "${targetPath}" 的图片或标注 JSON 已存在，是否覆盖？`,
+        '确认覆盖',
+        {
+          type: 'warning',
+          confirmButtonText: '覆盖',
+          cancelButtonText: '取消',
+        }
+      );
+      result = await executeRename(true);
+    }
+
+    ElMessage.success(result.overwritten ? '已覆盖并重命名' : '已重命名');
+    await loadDirectory();
+    const renamedItem = annotationItems.value.find(
+      (item) =>
+        item.absolutePath === result.target_image_absolute_path
+        || item.relativePath === result.target_relative_path
+    );
+    if (renamedItem) {
+      await openItemById(renamedItem.id, { skipConfirm: true });
+    }
+  } catch (error: any) {
+    if (error === 'cancel' || error?.action === 'cancel') {
+      return;
+    }
+    console.error('Failed to rename labelme annotation pair', error);
+    ElMessage.error(error?.response?.data?.detail?.message || error?.response?.data?.detail || '重命名失败');
+  } finally {
+    isRenamingLabelmeItem.value = false;
   }
 };
 
@@ -1642,6 +2538,7 @@ const loadDirectory = async () => {
       annotationItems.value = [];
       clearCurrentDocument();
       currentDirectoryPage.value = 1;
+      currentFileListPage.value = 1;
       await syncRouteQuery();
     } catch (error) {
       console.error('Failed to load root directory list', error);
@@ -1665,6 +2562,7 @@ const loadDirectory = async () => {
   const pathValue = normalizedPathInput.value;
   isLoadingListing.value = true;
   currentDirectoryPage.value = 1;
+  currentFileListPage.value = 1;
   try {
     const [directoryResult, mediaResult] = await Promise.all([
       fetchDeviceDirectoryItems(entryId, buildDirectoryListPayload()),
@@ -1783,6 +2681,10 @@ const handleDirectoryPageChange = (page: number) => {
   currentDirectoryPage.value = Math.min(directoryPageCount.value, Math.max(1, Math.floor(page || 1)));
 };
 
+const handleFileListPageChange = (page: number) => {
+  currentFileListPage.value = Math.min(fileListPageCount.value, Math.max(1, Math.floor(page || 1)));
+};
+
 const handleSelectedEntryChange = async (nextEntryId: string) => {
   if (nextEntryId === selectedEntryId.value) {
     return;
@@ -1830,6 +2732,7 @@ const selectShape = (shapeId: string) => {
 };
 
 const toggleDrawMode = () => {
+  closeStageContextMenu();
   if (!currentDoc.value) return;
   if (toolMode.value === 'draw') {
     toolMode.value = 'select';
@@ -1838,6 +2741,15 @@ const toggleDrawMode = () => {
   }
   selectedShapeId.value = '';
   toolMode.value = 'draw';
+};
+
+const beginRectangleDraw = (point: Point) => {
+  draftRect.value = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
+  beginDrag({
+    mode: 'draw',
+    anchor: point,
+    initialPoints: [point],
+  });
 };
 
 const addShape = (rect: Rect) => {
@@ -1849,12 +2761,16 @@ const addShape = (rect: Rect) => {
 
   const shape: EditableShape = {
     id: createShapeId(),
+    shapeType: 'rectangle',
     labelText: DEFAULT_LABEL_TEXT,
     labelMode: currentDoc.value.defaultLabelMode,
     labelFields: currentDoc.value.defaultLabelMode === 'json'
-      ? [createShapeLabelFieldItem('score', 'number', -1)]
+      ? [createShapeLabelFieldItem('score', 'string', '-1')]
       : [],
-    rect: normalizedRect,
+    points: [
+      { x: normalizedRect.x1, y: normalizedRect.y1 },
+      { x: normalizedRect.x2, y: normalizedRect.y2 },
+    ],
     flags: {},
     groupId: null,
     originalShape: null,
@@ -1865,6 +2781,33 @@ const addShape = (rect: Rect) => {
   selectedShapeId.value = shape.id;
   toolMode.value = 'select';
   markDirty();
+};
+
+const createDefaultRectAtPoint = (point: Point): Rect | null => {
+  if (!currentDoc.value) return null;
+  const rectWidth = clampNumber(roundCoordinate(currentDoc.value.imageWidth * 0.12), 48, 180);
+  const rectHeight = clampNumber(roundCoordinate(currentDoc.value.imageHeight * 0.08), 40, 120);
+  const halfWidth = rectWidth / 2;
+  const halfHeight = rectHeight / 2;
+  return ensureRectWithinBounds(
+    normalizeRect({
+      x1: point.x - halfWidth,
+      y1: point.y - halfHeight,
+      x2: point.x + halfWidth,
+      y2: point.y + halfHeight,
+    }),
+    currentDoc.value.imageWidth,
+    currentDoc.value.imageHeight
+  );
+};
+
+const createRectangleFromContextMenu = () => {
+  const point = stageContextMenu.value.imagePoint;
+  closeStageContextMenu();
+  if (!point) return;
+  const rect = createDefaultRectAtPoint(point);
+  if (!rect) return;
+  addShape(rect);
 };
 
 const deleteSelectedShape = () => {
@@ -1885,10 +2828,7 @@ const updateSelectedShapeLabel = (value: string | number) => {
 };
 
 const getShapeLabelFieldTextValue = (item: ShapeLabelFieldItem) =>
-  item.type === 'boolean' ? '' : String(item.value ?? '');
-
-const getShapeLabelFieldBooleanValue = (item: ShapeLabelFieldItem) =>
-  item.type === 'boolean' ? Boolean(item.value) : false;
+  String(item.value ?? '');
 
 const hasSelectedShapeLabelFieldError = (fieldLocalId: string) =>
   selectedShapeLabelFieldErrors.value.some((error) => error.fieldLocalId === fieldLocalId);
@@ -1898,31 +2838,7 @@ const handleSelectedShapeLabelFieldChange = () => {
   markDirty();
 };
 
-const handleSelectedShapeLabelFieldTypeChange = (item: ShapeLabelFieldItem) => {
-  item.value = convertShapeLabelFieldValue(item.type, item.value);
-  handleSelectedShapeLabelFieldChange();
-};
-
 const setShapeLabelFieldTextValue = (item: ShapeLabelFieldItem, value: string | number) => {
-  if (item.type === 'boolean') return;
-  item.value = String(value ?? '');
-  handleSelectedShapeLabelFieldChange();
-};
-
-const setShapeLabelFieldNumberValue = (item: ShapeLabelFieldItem, value: string | number) => {
-  if (item.type !== 'number') return;
-  item.value = String(value ?? '');
-  handleSelectedShapeLabelFieldChange();
-};
-
-const setShapeLabelFieldBooleanValue = (item: ShapeLabelFieldItem, value: string | number | boolean) => {
-  if (item.type !== 'boolean') return;
-  item.value = Boolean(value);
-  handleSelectedShapeLabelFieldChange();
-};
-
-const setShapeLabelFieldJsonValue = (item: ShapeLabelFieldItem, value: string | number) => {
-  if (item.type !== 'json') return;
   item.value = String(value ?? '');
   handleSelectedShapeLabelFieldChange();
 };
@@ -1956,37 +2872,67 @@ useSortableList({
   onReorder: moveSelectedShapeLabelField,
 });
 
-const updateSelectedShapeCoordinate = (key: keyof Rect, value: string | number | null | undefined) => {
+const canAppendPointToShape = (shape: EditableShape | null) =>
+  shape?.shapeType === 'polygon' || shape?.shapeType === 'linestrip';
+
+const canRemovePointFromShape = (shape: EditableShape, pointIndex: number) =>
+  pointIndex >= 0 && pointIndex < shape.points.length && shape.points.length > SHAPE_MIN_POINT_COUNTS[shape.shapeType];
+
+const selectedShapeCanAppendPoint = computed(() => canAppendPointToShape(selectedShape.value));
+
+const getSuggestedNextPoint = (shape: EditableShape, width: number, height: number): Point => {
+  const lastPoint = shape.points[shape.points.length - 1] ?? { x: width / 2, y: height / 2 };
+  const previousPoint = shape.points[shape.points.length - 2] ?? null;
+  if (!previousPoint) {
+    return clampPointWithinBounds({ x: lastPoint.x + 24, y: lastPoint.y + 24 }, width, height);
+  }
+
+  const deltaX = Math.abs(lastPoint.x - previousPoint.x) < 1 ? 24 : (lastPoint.x - previousPoint.x);
+  const deltaY = Math.abs(lastPoint.y - previousPoint.y) < 1 ? 24 : (lastPoint.y - previousPoint.y);
+  return clampPointWithinBounds(
+    {
+      x: lastPoint.x + deltaX,
+      y: lastPoint.y + deltaY,
+    },
+    width,
+    height
+  );
+};
+
+const appendPointToSelectedShape = () => {
+  if (!selectedShape.value || !currentDoc.value || !canAppendPointToShape(selectedShape.value)) return;
+  selectedShape.value.points = [
+    ...selectedShape.value.points,
+    getSuggestedNextPoint(selectedShape.value, currentDoc.value.imageWidth, currentDoc.value.imageHeight),
+  ];
+  markDirty();
+};
+
+const removeSelectedShapePoint = (pointIndex: number) => {
+  if (!selectedShape.value || !canRemovePointFromShape(selectedShape.value, pointIndex)) return;
+  selectedShape.value.points = selectedShape.value.points.filter((_, index) => index !== pointIndex);
+  markDirty();
+};
+
+const updateSelectedShapePointCoordinate = (
+  pointIndex: number,
+  axis: ShapeCoordinateAxis,
+  value: string | number | null | undefined
+) => {
   if (!selectedShape.value || !currentDoc.value || value === null || value === undefined) return;
   const numericValue = Number(value);
   if (!Number.isFinite(numericValue)) return;
 
-  const limit = key === 'x1' || key === 'x2' ? currentDoc.value.imageWidth : currentDoc.value.imageHeight;
-  const nextRect = normalizeRect({
-    ...selectedShape.value.rect,
-    [key]: clampNumber(numericValue, 0, limit),
-  });
-  selectedShape.value.rect = ensureRectWithinBounds(nextRect, currentDoc.value.imageWidth, currentDoc.value.imageHeight);
+  const nextPoints = clonePoints(selectedShape.value.points);
+  const targetPoint = nextPoints[pointIndex];
+  if (!targetPoint) return;
+  targetPoint[axis] = roundCoordinate(clampNumber(
+    numericValue,
+    0,
+    axis === 'x' ? currentDoc.value.imageWidth : currentDoc.value.imageHeight
+  ));
+  selectedShape.value.points = nextPoints;
   markDirty();
-};
-
-const getHandlePosition = (rect: Rect, key: ResizeHandleKey): Point => {
-  switch (key) {
-    case 'nw':
-      return { x: rect.x1, y: rect.y1 };
-    case 'ne':
-      return { x: rect.x2, y: rect.y1 };
-    case 'sw':
-      return { x: rect.x1, y: rect.y2 };
-    case 'se':
-      return { x: rect.x2, y: rect.y2 };
-  }
-};
-
-const formatShapeSummary = (rect: Rect) => {
-  const width = Math.max(0, Math.round(rect.x2 - rect.x1));
-  const height = Math.max(0, Math.round(rect.y2 - rect.y1));
-  return `${Math.round(rect.x1)}, ${Math.round(rect.y1)} · ${width} × ${height}`;
 };
 
 const getPointerInImage = (event: MouseEvent, clamp = false): Point | null => {
@@ -2003,8 +2949,8 @@ const getPointerInImage = (event: MouseEvent, clamp = false): Point | null => {
   const x = (relativeX / bounds.width) * currentDoc.value.imageWidth;
   const y = (relativeY / bounds.height) * currentDoc.value.imageHeight;
   return {
-    x: clamp ? clampNumber(x, 0, currentDoc.value.imageWidth) : x,
-    y: clamp ? clampNumber(y, 0, currentDoc.value.imageHeight) : y,
+    x: roundCoordinate(clamp ? clampNumber(x, 0, currentDoc.value.imageWidth) : x),
+    y: roundCoordinate(clamp ? clampNumber(y, 0, currentDoc.value.imageHeight) : y),
   };
 };
 
@@ -2020,56 +2966,35 @@ const beginDrag = (state: DragState) => {
   document.addEventListener('mouseup', handleWindowMouseUp);
 };
 
-const translateRectWithinBounds = (
-  initialRect: Rect,
+const translatePointsWithinBounds = (
+  initialPoints: Point[],
   deltaX: number,
   deltaY: number,
   width: number,
   height: number
-): Rect => {
-  const rectWidth = initialRect.x2 - initialRect.x1;
-  const rectHeight = initialRect.y2 - initialRect.y1;
-  const nextX1 = clampNumber(initialRect.x1 + deltaX, 0, Math.max(0, width - rectWidth));
-  const nextY1 = clampNumber(initialRect.y1 + deltaY, 0, Math.max(0, height - rectHeight));
-  return {
-    x1: nextX1,
-    y1: nextY1,
-    x2: nextX1 + rectWidth,
-    y2: nextY1 + rectHeight,
-  };
-};
-
-const resizeRectFromHandle = (
-  initialRect: Rect,
-  handle: ResizeHandleKey,
-  point: Point,
-  width: number,
-  height: number
-): Rect => {
-  const clampedPoint = {
-    x: clampNumber(point.x, 0, width),
-    y: clampNumber(point.y, 0, height),
-  };
-  const nextRect = { ...initialRect };
-  if (handle.includes('w')) nextRect.x1 = clampedPoint.x;
-  else nextRect.x2 = clampedPoint.x;
-  if (handle.includes('n')) nextRect.y1 = clampedPoint.y;
-  else nextRect.y2 = clampedPoint.y;
-  return ensureRectWithinBounds(normalizeRect(nextRect), width, height);
+): Point[] => {
+  if (!initialPoints.length) return [];
+  const minX = Math.min(...initialPoints.map((point) => point.x));
+  const maxX = Math.max(...initialPoints.map((point) => point.x));
+  const minY = Math.min(...initialPoints.map((point) => point.y));
+  const maxY = Math.max(...initialPoints.map((point) => point.y));
+  const nextDeltaX = clampNumber(deltaX, -minX, width - maxX);
+  const nextDeltaY = clampNumber(deltaY, -minY, height - maxY);
+  return initialPoints.map((point) => ({
+    x: point.x + nextDeltaX,
+    y: point.y + nextDeltaY,
+  }));
 };
 
 const handleStageMouseDown = (event: MouseEvent) => {
-  if (!currentDoc.value || toolMode.value !== 'draw' || event.button !== 0) return;
+  closeStageContextMenu();
+  if (!currentDoc.value) return;
   const point = getPointerInImage(event);
   if (!point) return;
 
+  if (toolMode.value !== 'draw' || event.button !== 0) return;
   event.preventDefault();
-  draftRect.value = { x1: point.x, y1: point.y, x2: point.x, y2: point.y };
-  beginDrag({
-    mode: 'draw',
-    anchor: point,
-    initialRect: { x1: point.x, y1: point.y, x2: point.x, y2: point.y },
-  });
+  beginRectangleDraw(point);
 };
 
 const handleShapeMouseDown = (shapeId: string, event: MouseEvent) => {
@@ -2083,11 +3008,11 @@ const handleShapeMouseDown = (shapeId: string, event: MouseEvent) => {
     mode: 'move',
     shapeId,
     anchor: point,
-    initialRect: { ...shape.rect },
+    initialPoints: clonePoints(shape.points),
   });
 };
 
-const handleResizeMouseDown = (shapeId: string, handle: ResizeHandleKey, event: MouseEvent) => {
+const handleShapePointMouseDown = (shapeId: string, pointIndex: number, event: MouseEvent) => {
   if (!currentDoc.value || toolMode.value === 'draw' || event.button !== 0) return;
   const point = getPointerInImage(event);
   const shape = getShapeById(shapeId);
@@ -2095,11 +3020,11 @@ const handleResizeMouseDown = (shapeId: string, handle: ResizeHandleKey, event: 
 
   selectedShapeId.value = shapeId;
   beginDrag({
-    mode: 'resize',
+    mode: 'move-point',
     shapeId,
-    handle,
+    pointIndex,
     anchor: point,
-    initialRect: { ...shape.rect },
+    initialPoints: clonePoints(shape.points),
   });
 };
 
@@ -2122,8 +3047,8 @@ function handleWindowMouseMove(event: MouseEvent) {
   if (!shape) return;
 
   if (activeDrag.value.mode === 'move') {
-    shape.rect = translateRectWithinBounds(
-      activeDrag.value.initialRect,
+    shape.points = translatePointsWithinBounds(
+      activeDrag.value.initialPoints,
       point.x - activeDrag.value.anchor.x,
       point.y - activeDrag.value.anchor.y,
       currentDoc.value.imageWidth,
@@ -2133,14 +3058,16 @@ function handleWindowMouseMove(event: MouseEvent) {
     return;
   }
 
-  if (activeDrag.value.mode === 'resize' && activeDrag.value.handle) {
-    shape.rect = resizeRectFromHandle(
-      activeDrag.value.initialRect,
-      activeDrag.value.handle,
+  if (activeDrag.value.mode === 'move-point' && typeof activeDrag.value.pointIndex === 'number') {
+    const nextPoints = clonePoints(activeDrag.value.initialPoints);
+    const targetPoint = nextPoints[activeDrag.value.pointIndex];
+    if (!targetPoint) return;
+    nextPoints[activeDrag.value.pointIndex] = clampPointWithinBounds(
       point,
       currentDoc.value.imageWidth,
       currentDoc.value.imageHeight
     );
+    shape.points = nextPoints;
     markDirty();
   }
 }
@@ -2159,13 +3086,41 @@ const handleWindowKeyDown = (event: KeyboardEvent) => {
     !!target &&
     (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable);
 
+  if (!isEditingText && event.code === 'Space') {
+    isSpacePressed.value = true;
+    event.preventDefault();
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     event.preventDefault();
     void saveCurrentDocument();
     return;
   }
 
+  if (!isEditingText && (event.ctrlKey || event.metaKey) && !event.altKey) {
+    if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
+      event.preventDefault();
+      zoomIn();
+      return;
+    }
+    if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') {
+      event.preventDefault();
+      zoomOut();
+      return;
+    }
+    if (event.key === '0' || event.code === 'Numpad0') {
+      event.preventDefault();
+      resetZoom();
+      return;
+    }
+  }
+
   if (event.key === 'Escape') {
+    if (stageContextMenu.value.visible) {
+      closeStageContextMenu();
+      return;
+    }
     if (toolMode.value === 'draw' || activeDrag.value?.mode === 'draw') {
       toolMode.value = 'select';
       draftRect.value = null;
@@ -2180,11 +3135,65 @@ const handleWindowKeyDown = (event: KeyboardEvent) => {
   }
 };
 
+const handleWindowKeyUp = (event: KeyboardEvent) => {
+  if (event.code === 'Space') {
+    isSpacePressed.value = false;
+  }
+};
+
+const handleWindowBlur = () => {
+  isSpacePressed.value = false;
+  closeStageContextMenu();
+  stopPan();
+};
+
+function handleDocumentMouseDown(event: MouseEvent) {
+  if (!stageContextMenu.value.visible) return;
+  const target = event.target as Node | null;
+  if (target && stageContextMenuRef.value?.contains(target)) {
+    return;
+  }
+  closeStageContextMenu();
+}
+
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (!isDirty.value) return;
+  if (!currentLabelmeDirty.value) return;
   event.preventDefault();
   event.returnValue = '';
 }
+
+watch(annotationItems, () => {
+  annotationContentSearchLoadVersion += 1;
+  isLoadingAnnotationContentSearch.value = false;
+  if (includeAnnotationContentSearch.value && keyword.value.trim()) {
+    void loadAnnotationSearchContent();
+  }
+});
+
+watch(includeAnnotationContentSearch, (nextValue) => {
+  if (!nextValue) {
+    annotationContentSearchLoadVersion += 1;
+    isLoadingAnnotationContentSearch.value = false;
+    return;
+  }
+  if (keyword.value.trim()) {
+    void loadAnnotationSearchContent();
+  }
+});
+
+watch(
+  () => keyword.value.trim(),
+  (nextKeyword) => {
+    if (!nextKeyword) {
+      annotationContentSearchLoadVersion += 1;
+      isLoadingAnnotationContentSearch.value = false;
+      return;
+    }
+    if (includeAnnotationContentSearch.value) {
+      void loadAnnotationSearchContent();
+    }
+  }
+);
 
 watch(selectedPath, (nextPath) => {
   persistSelectedPath(selectedEntryId.value, nextPath || DEVICE_ROOT_SENTINEL);
@@ -2196,6 +3205,47 @@ watch(directoryPageCount, (nextPageCount) => {
     currentDirectoryPage.value = nextPageCount;
   }
 });
+
+watch(fileListPageCount, (nextPageCount) => {
+  if (currentFileListPage.value > nextPageCount) {
+    currentFileListPage.value = nextPageCount;
+  }
+});
+
+watch(currentFilteredIndex, (nextIndex) => {
+  if (nextIndex < 0) {
+    currentFileListPage.value = 1;
+    return;
+  }
+  currentFileListPage.value = Math.floor(nextIndex / FILE_LIST_PAGE_SIZE) + 1;
+});
+
+watch(
+  () => [currentItemId.value, annotationSourceMode.value],
+  () => {
+    closeStageContextMenu();
+  }
+);
+
+watch(stageScrollRef, () => {
+  bindStageResizeObserver();
+});
+
+watch(
+  () => [
+    currentDoc.value?.imageWidth ?? 0,
+    currentDoc.value?.imageHeight ?? 0,
+    stageViewportSize.value.width,
+    stageViewportSize.value.height,
+    zoomMode.value,
+  ] as const,
+  ([imageWidth, imageHeight, viewportWidth, viewportHeight, nextZoomMode]) => {
+    if (!imageWidth || !imageHeight || !viewportWidth || !viewportHeight || nextZoomMode !== 'fit') {
+      return;
+    }
+    void fitStageToViewport();
+  }
+);
 
 watch(
   () => [route.query.entry_id, route.query.path],
@@ -2212,6 +3262,7 @@ watch(
 );
 
 watch(selectedEntryId, async (nextEntryId) => {
+  persistSelectedEntryId(nextEntryId);
   listing.value = null;
   annotationItems.value = [];
   clearCurrentDocument();
@@ -2230,13 +3281,16 @@ watch(selectedEntryId, async (nextEntryId) => {
 });
 
 onBeforeRouteLeave(() => {
-  if (!isDirty.value) return true;
-  return window.confirm('当前标注未保存，离开页面会丢失修改。是否继续？');
+  if (!currentLabelmeDirty.value) return true;
+  return window.confirm('当前真实标注未保存，离开页面会丢失修改。是否继续？');
 });
 
 if (typeof window !== 'undefined') {
   window.addEventListener('keydown', handleWindowKeyDown);
+  window.addEventListener('keyup', handleWindowKeyUp);
+  window.addEventListener('blur', handleWindowBlur);
   window.addEventListener('beforeunload', handleBeforeUnload);
+  document.addEventListener('mousedown', handleDocumentMouseDown);
 }
 
 onMounted(async () => {
@@ -2264,19 +3318,26 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopPan();
   stopDrag();
+  stageResizeObserver?.disconnect();
+  stageResizeObserver = null;
   if (currentImageUrl.value) {
     URL.revokeObjectURL(currentImageUrl.value);
   }
   if (typeof window !== 'undefined') {
     window.removeEventListener('keydown', handleWindowKeyDown);
+    window.removeEventListener('keyup', handleWindowKeyUp);
+    window.removeEventListener('blur', handleWindowBlur);
     window.removeEventListener('beforeunload', handleBeforeUnload);
+    document.removeEventListener('mousedown', handleDocumentMouseDown);
   }
 });
 </script>
 
 <style scoped>
 .device-file-page {
+  --annotation-editor-height: 80vh;
   min-height: 100%;
   padding: 24px;
   box-sizing: border-box;
@@ -2575,11 +3636,23 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-.annotation-layout {
-  flex: 1;
+.annotation-file-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.annotation-file-pagination {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.annotation-editor-layout {
+  flex: 0 0 auto;
   min-height: 0;
+  height: var(--annotation-editor-height);
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 320px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   gap: 16px;
 }
 
@@ -2598,6 +3671,15 @@ onBeforeUnmount(() => {
   gap: 12px;
 }
 
+.annotation-source-switch {
+  flex: 0 0 auto;
+}
+
+.annotation-source-switch :deep(.el-radio-button__inner) {
+  min-width: 64px;
+  padding-inline: 12px;
+}
+
 .section-kicker {
   color: #64748b;
   font-size: 12px;
@@ -2607,7 +3689,7 @@ onBeforeUnmount(() => {
 
 .panel-section-head h3,
 .annotation-main-empty h3 {
-  margin: 4px 0 0;
+  margin: 0;
   color: #0f172a;
   font-size: 22px;
   line-height: 1.15;
@@ -2615,6 +3697,26 @@ onBeforeUnmount(() => {
 
 .annotation-search :deep(.el-input__wrapper) {
   border-radius: 14px;
+}
+
+.annotation-search-options {
+  margin-top: 8px;
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.annotation-search-options :deep(.el-checkbox) {
+  height: auto;
+  margin-right: 0;
+}
+
+.annotation-search-loading {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .annotation-item-list,
@@ -2626,21 +3728,38 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.annotation-item-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  overflow: visible;
+}
+
 .annotation-item-card,
 .shape-card {
   border: 1px solid #dbe4ea;
-  border-radius: 16px;
+  border-radius: 14px;
   background: #ffffff;
-  padding: 12px;
+  padding: 10px;
   cursor: pointer;
   text-align: left;
+  transition: border-color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .annotation-item-card {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  gap: 12px;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 8px;
   align-items: center;
+  min-height: 52px;
+}
+
+.annotation-item-card:hover,
+.annotation-item-card:focus-visible,
+.shape-card:hover,
+.shape-card:focus-visible {
+  border-color: #c8d4dc;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.06);
 }
 
 .annotation-item-card.is-active,
@@ -2665,10 +3784,13 @@ onBeforeUnmount(() => {
 
 .annotation-item-main {
   min-width: 0;
+  display: block;
 }
 
 .annotation-item-name,
 .shape-card-label {
+  display: block;
+  min-width: 0;
   font-size: 14px;
   font-weight: 700;
   color: #163042;
@@ -2677,18 +3799,20 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-.annotation-item-path,
-.shape-card-meta,
 .annotation-inline-empty {
-  margin-top: 4px;
+  margin-top: 2px;
   color: #728392;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.4;
 }
 
 .annotation-stage-panel {
   padding: 0;
   overflow: hidden;
+}
+
+.annotation-inspector-panel {
+  min-height: 0;
 }
 
 .stage-toolbar {
@@ -2725,12 +3849,23 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.stage-meta {
+  margin-top: 4px;
+  color: #8a99a6;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .stage-toolbar-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.zoom-fit-button {
+  padding-inline: 4px;
 }
 
 .zoom-control {
@@ -2765,6 +3900,35 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.stage-context-menu {
+  position: fixed;
+  z-index: 2200;
+  min-width: 132px;
+  padding: 6px;
+  border: 1px solid rgba(209, 221, 232, 0.92);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+.stage-context-menu-item {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  padding: 9px 12px;
+  text-align: left;
+  color: #173042;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.stage-context-menu-item:hover {
+  background: rgba(64, 158, 255, 0.08);
+}
+
 .stage-scroll {
   flex: 1;
   min-height: 0;
@@ -2776,9 +3940,28 @@ onBeforeUnmount(() => {
   padding: 16px;
 }
 
+.stage-scroll.is-pan-ready,
+.stage-scroll.is-pan-ready * {
+  cursor: grab !important;
+}
+
+.stage-scroll.is-panning,
+.stage-scroll.is-panning * {
+  cursor: grabbing !important;
+}
+
+.stage-workspace {
+  min-width: 100%;
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
 .annotation-stage {
   position: relative;
-  margin: 0 auto;
+  flex: 0 0 auto;
   user-select: none;
 }
 
@@ -2795,18 +3978,36 @@ onBeforeUnmount(() => {
   object-fit: contain;
 }
 
-.annotation-rect {
+.annotation-shape {
   fill: rgba(27, 132, 232, 0.12);
   stroke: #1b84e8;
   cursor: move;
 }
 
-.annotation-rect.is-selected {
+.annotation-shape.is-selected {
   fill: rgba(211, 95, 26, 0.18);
   stroke: #d35f1a;
 }
 
-.annotation-rect.is-draw-mode {
+.annotation-shape.is-draw-mode {
+  pointer-events: none;
+}
+
+.annotation-shape--line,
+.annotation-shape--linestrip {
+  fill: none;
+  pointer-events: none;
+}
+
+.annotation-hit-stroke {
+  fill: none;
+  stroke: rgba(27, 132, 232, 0.001);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  cursor: move;
+}
+
+.annotation-hit-stroke.is-draw-mode {
   pointer-events: none;
 }
 
@@ -2814,7 +4015,7 @@ onBeforeUnmount(() => {
   fill: #ffffff;
   stroke: #d35f1a;
   stroke-width: 2px;
-  cursor: nwse-resize;
+  cursor: move;
 }
 
 .annotation-draft {
@@ -2887,10 +4088,77 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.coordinate-grid {
+.shape-points-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shape-points-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shape-point-columns,
+.shape-point-item {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: 28px minmax(0, 1fr) minmax(0, 1fr) 24px;
+  column-gap: 8px;
+  align-items: center;
+}
+
+.shape-point-columns {
+  padding: 0 8px;
+}
+
+.shape-point-column-label {
+  color: #627482;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.shape-point-item {
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid #dbe4ea;
+  background: #ffffff;
+}
+
+.shape-point-index {
+  width: 28px;
+  height: 28px;
+  border-radius: 10px;
+  background: #eef3f7;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #435867;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shape-point-axis {
+  min-width: 0;
+}
+
+.shape-point-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.shape-point-axis :deep(.el-input-number) {
+  width: 100%;
+}
+
+.shape-point-axis :deep(.el-input__wrapper) {
+  border-radius: 10px;
+}
+
+.shape-point-delete {
+  justify-self: center;
+  min-width: 24px;
 }
 
 .label-fields-list {
@@ -2901,8 +4169,9 @@ onBeforeUnmount(() => {
 
 .label-field-item {
   display: grid;
-  grid-template-columns: auto minmax(96px, 1fr) 104px minmax(0, 1.3fr) auto;
-  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  column-gap: 8px;
+  row-gap: 8px;
   align-items: start;
   padding: 10px;
   border-radius: 14px;
@@ -2916,12 +4185,29 @@ onBeforeUnmount(() => {
 }
 
 .label-field-key,
-.label-field-type,
 .label-field-value {
   width: 100%;
 }
 
+.label-field-item :deep(.sortable-order-handle) {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  align-self: start;
+}
+
+.label-field-key,
 .label-field-value-shell {
+  min-width: 0;
+}
+
+.label-field-key {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.label-field-value-shell {
+  grid-column: 2 / 3;
+  grid-row: 2;
   min-width: 0;
 }
 
@@ -2931,6 +4217,10 @@ onBeforeUnmount(() => {
 }
 
 .label-field-delete {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+  justify-self: center;
   min-width: 24px;
 }
 
@@ -2938,14 +4228,6 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.coordinate-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  color: #627482;
-  font-size: 12px;
 }
 
 .shape-card-top {
@@ -2959,17 +4241,18 @@ onBeforeUnmount(() => {
     grid-template-columns: 1fr;
   }
 
-  .annotation-layout {
-    grid-template-columns: 300px minmax(0, 1fr);
+  .annotation-editor-layout {
+    grid-template-columns: 1fr;
   }
 
-  .annotation-inspector-panel {
-    grid-column: 1 / -1;
+  .annotation-item-list-grid {
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   }
 }
 
 @media (max-width: 980px) {
   .device-file-page {
+    --annotation-editor-height: 80vh;
     padding: 16px;
   }
 
@@ -2993,7 +4276,11 @@ onBeforeUnmount(() => {
     margin-left: 0;
   }
 
-  .annotation-layout {
+  .annotation-item-list-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .annotation-editor-layout {
     grid-template-columns: 1fr;
   }
 
@@ -3005,13 +4292,5 @@ onBeforeUnmount(() => {
     width: 100%;
   }
 
-  .label-field-item {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-  }
-
-  .label-field-type,
-  .label-field-value-shell {
-    grid-column: 2 / 3;
-  }
 }
 </style>

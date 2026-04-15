@@ -1,10 +1,18 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select
 from backend.db import get_session
 from backend.models import NoteNode, User
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.fanxiu_status import (
+    derive_status_snapshot,
+    load_status_payload,
+    resolve_status_path_config,
+    save_status_payload,
+    save_status_config,
+)
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_KIND_FANXIU_CHAR,
@@ -27,6 +35,70 @@ FANXIU_USERNAME = "凡修手游"
 FANXIU_CHAR_TYPE = "memo"
 FANXIU_CHAR_KIND = NOTE_KIND_FANXIU_CHAR
 CODE4101_USERNAME = "code4101"
+
+
+class FanxiuTaskStatusItem(BaseModel):
+    name: str
+    scheduled_at: str
+    due: bool
+    seconds_until_due: int
+    is_next: bool = False
+
+
+class FanxiuAccountStatusItem(BaseModel):
+    name: str
+    phone: Optional[str] = None
+    is_current: bool = False
+    has_due_task: bool = False
+    due_count: int = 0
+    task_count: int = 0
+    next_task_name: Optional[str] = None
+    next_task_at: Optional[str] = None
+    tasks: List[FanxiuTaskStatusItem] = Field(default_factory=list)
+
+
+class FanxiuRuntimeTimerItem(BaseModel):
+    name: str
+    scheduled_at: str
+    due: bool
+    seconds_until_due: int
+
+
+class FanxiuStatusConfigRead(BaseModel):
+    status_path: Optional[str] = None
+    auto_detected_path: Optional[str] = None
+    effective_path: Optional[str] = None
+    mode: str
+    file_exists: bool = False
+
+
+class FanxiuStatusConfigUpdate(BaseModel):
+    status_path: Optional[str] = None
+
+
+class FanxiuStatusParseRequest(BaseModel):
+    raw_status: dict[str, Any]
+
+
+class FanxiuStatusUpdateRequest(BaseModel):
+    raw_status: dict[str, Any]
+
+
+class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
+    loaded_at: str
+    error: Optional[str] = None
+    current_account: Optional[str] = None
+    recommended_account: Optional[str] = None
+    next_task_path: Optional[str] = None
+    next_task_name: Optional[str] = None
+    next_task_at: Optional[str] = None
+    next_task_seconds_until_due: Optional[int] = None
+    program_initialized: bool = False
+    all_tasks_completed: bool = False
+    watchdog_hash: Optional[str] = None
+    runtime_timers: List[FanxiuRuntimeTimerItem] = Field(default_factory=list)
+    accounts: List[FanxiuAccountStatusItem] = Field(default_factory=list)
+    raw_status: Optional[dict[str, Any]] = None
 
 def get_fanxiu_user(session: Session) -> User:
     statement = select(User).where(User.username == FANXIU_USERNAME)
@@ -58,6 +130,113 @@ def get_fanxiu_user(session: Session) -> User:
             session.refresh(user)
             
     return user
+
+
+def ensure_fanxiu_write_permission(current_user: User, session: Session) -> None:
+    fanxiu_user = get_fanxiu_user(session)
+    if current_user.id != fanxiu_user.id and not current_user.is_superuser:
+        raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
+
+
+@router.get("/status/config", response_model=FanxiuStatusConfigRead)
+def get_fanxiu_status_config():
+    return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
+
+
+@router.put("/status/config", response_model=FanxiuStatusConfigRead)
+def update_fanxiu_status_config(
+    payload: FanxiuStatusConfigUpdate,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    save_status_config(payload.status_path)
+    return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
+
+
+@router.get("/status", response_model=FanxiuStatusSnapshot)
+def get_fanxiu_status_snapshot():
+    payload = load_status_payload()
+    raw_status = payload.pop("raw_status", None)
+    snapshot: dict[str, Any] = {
+        **payload,
+        "loaded_at": "",
+        "runtime_timers": [],
+        "accounts": [],
+        "current_account": None,
+        "recommended_account": None,
+        "next_task_path": None,
+        "next_task_name": None,
+        "next_task_at": None,
+        "next_task_seconds_until_due": None,
+        "program_initialized": False,
+        "all_tasks_completed": False,
+        "watchdog_hash": None,
+        "raw_status": raw_status,
+    }
+    if raw_status is not None:
+        snapshot.update(derive_status_snapshot(raw_status))
+    else:
+        snapshot["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    return FanxiuStatusSnapshot.model_validate(snapshot)
+
+
+@router.post("/status/parse", response_model=FanxiuStatusSnapshot)
+def parse_fanxiu_status_snapshot(payload: FanxiuStatusParseRequest):
+    snapshot: dict[str, Any] = {
+        "status_path": None,
+        "auto_detected_path": None,
+        "effective_path": None,
+        "mode": "unset",
+        "file_exists": False,
+        "error": None,
+    }
+    snapshot.update(derive_status_snapshot(payload.raw_status))
+    return FanxiuStatusSnapshot.model_validate(snapshot)
+
+
+@router.put("/status", response_model=FanxiuStatusSnapshot)
+def update_fanxiu_status_snapshot(
+    payload: FanxiuStatusUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        saved_payload = save_status_payload(payload.raw_status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except NotADirectoryError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"保存状态文件失败：{exc}") from exc
+
+    raw_status = saved_payload.pop("raw_status", None)
+    snapshot: dict[str, Any] = {
+        **saved_payload,
+        "loaded_at": "",
+        "runtime_timers": [],
+        "accounts": [],
+        "current_account": None,
+        "recommended_account": None,
+        "next_task_path": None,
+        "next_task_name": None,
+        "next_task_at": None,
+        "next_task_seconds_until_due": None,
+        "program_initialized": False,
+        "all_tasks_completed": False,
+        "watchdog_hash": None,
+        "raw_status": raw_status,
+    }
+    if raw_status is not None:
+        snapshot.update(derive_status_snapshot(raw_status))
+    else:
+        snapshot["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    return FanxiuStatusSnapshot.model_validate(snapshot)
 
 @router.get("/chars", response_model=List[NoteRead])
 def read_chars(
@@ -114,9 +293,8 @@ def update_char(
     # Even 'code4101' cannot edit directly via this API unless logged in as 'fanxiu_official'.
     # This enforces data ownership isolation.
     
+    ensure_fanxiu_write_permission(current_user, session)
     fanxiu_user = get_fanxiu_user(session)
-    if current_user.id != fanxiu_user.id and not current_user.is_superuser:
-         raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
     
     statement = select(NoteNode).where(
         NoteNode.user_id == fanxiu_user.id,

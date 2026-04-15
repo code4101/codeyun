@@ -46,6 +46,12 @@ const routes: Array<RouteRecordRaw> = [
         meta: { requiresAuth: false },
       },
       {
+        path: 'fanxiu/task-status',
+        name: 'FanxiuTaskStatus',
+        component: () => import('@/views/fanxiu/TaskStatus.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
         path: 'fanxiu/recharge',
         name: 'FanxiuRecharge',
         component: () => import('@/views/fanxiu/Recharge.vue'),
@@ -55,6 +61,12 @@ const routes: Array<RouteRecordRaw> = [
         path: 'fanxiu/xianzhou-race',
         name: 'XianzhouRace',
         component: () => import('@/views/fanxiu/XianzhouRace.vue'),
+        meta: { requiresAuth: false },
+      },
+      {
+        path: 'fanxiu/cuijian-trial',
+        name: 'CuijianTrial',
+        component: () => import('@/views/fanxiu/CuijianTrial.vue'),
         meta: { requiresAuth: false },
       },
       {

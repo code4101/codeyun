@@ -444,6 +444,33 @@ def _resolve_ollama_model_request(
     return runtime_model, display_model, extra_payload
 
 
+def _build_ollama_chat_payload(
+    *,
+    messages: list[dict[str, Any]],
+    model: str | None,
+    system_prompt: str | None,
+    temperature: float | None,
+    response_format: Any,
+    default_model: str,
+    stream: bool,
+) -> tuple[dict[str, Any], str | None]:
+    runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
+        model,
+        default_model,
+    )
+    payload: dict[str, Any] = {
+        "model": runtime_model,
+        "messages": _build_ollama_messages(messages, system_prompt),
+        "stream": stream,
+    }
+    if temperature is not None:
+        payload["options"] = {"temperature": temperature}
+    if response_format is not None:
+        payload["format"] = response_format
+    payload.update(extra_payload)
+    return payload, display_model
+
+
 def _chat_with_ollama(
     provider: AiProviderConfig,
     *,
@@ -454,26 +481,42 @@ def _chat_with_ollama(
     response_format: Any = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
-    runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
-        model,
-        provider.default_model,
-    )
-    payload: dict[str, Any] = {
-        "model": runtime_model,
-        "messages": _build_ollama_messages(messages, system_prompt),
-        "stream": False,
-    }
-    if temperature is not None:
-        payload["options"] = {"temperature": temperature}
     if response_format is not None:
-        payload["format"] = response_format
-    payload.update(extra_payload)
+        return _collect_chat_with_ollama_stream_response(
+            provider,
+            messages=messages,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
+        )
+
+    payload, display_model = _build_ollama_chat_payload(
+        messages=messages,
+        model=model,
+        system_prompt=system_prompt,
+        temperature=temperature,
+        response_format=response_format,
+        default_model=provider.default_model,
+        stream=False,
+    )
 
     try:
         response = requests.post(
             f"{provider.base_url}/api/chat",
             json=payload,
             timeout=timeout_seconds or provider.timeout_seconds,
+        )
+    except requests.ReadTimeout:
+        return _collect_chat_with_ollama_stream_response(
+            provider,
+            messages=messages,
+            model=model,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
         )
     except requests.RequestException as exc:
         raise OllamaClientError(f"请求 Ollama 失败：{exc}") from exc
@@ -501,25 +544,24 @@ def _stream_chat_with_ollama(
     model: str | None,
     system_prompt: str | None,
     temperature: float | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
 ) -> Iterator[dict[str, Any]]:
-    runtime_model, display_model, extra_payload = _resolve_ollama_model_request(
-        model,
-        provider.default_model,
+    payload, display_model = _build_ollama_chat_payload(
+        messages=messages,
+        model=model,
+        system_prompt=system_prompt,
+        temperature=temperature,
+        response_format=response_format,
+        default_model=provider.default_model,
+        stream=True,
     )
-    payload: dict[str, Any] = {
-        "model": runtime_model,
-        "messages": _build_ollama_messages(messages, system_prompt),
-        "stream": True,
-    }
-    if temperature is not None:
-        payload["options"] = {"temperature": temperature}
-    payload.update(extra_payload)
 
     try:
         with requests.post(
             f"{provider.base_url}/api/chat",
             json=payload,
-            timeout=provider.timeout_seconds,
+            timeout=timeout_seconds or provider.timeout_seconds,
             stream=True,
         ) as response:
             if response.status_code >= 400:
@@ -572,6 +614,35 @@ def _stream_chat_with_ollama(
                 raise OllamaClientError("Ollama 流式响应提前结束")
     except requests.RequestException as exc:
         raise OllamaClientError(f"请求 Ollama 失败：{exc}") from exc
+
+
+def _collect_chat_with_ollama_stream_response(
+    provider: AiProviderConfig,
+    *,
+    messages: list[dict[str, Any]],
+    model: str | None,
+    system_prompt: str | None,
+    temperature: float | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    final_payload: dict[str, Any] | None = None
+    for event in _stream_chat_with_ollama(
+        provider,
+        messages=messages,
+        model=model,
+        system_prompt=system_prompt,
+        temperature=temperature,
+        response_format=response_format,
+        timeout_seconds=timeout_seconds,
+    ):
+        if event.get("type") == "done":
+            final_payload = dict(event)
+            final_payload.pop("type", None)
+
+    if final_payload is None:
+        raise OllamaClientError("Ollama 流式聊天没有返回完成结果")
+    return final_payload
 
 
 def _build_openai_headers(provider: AiProviderConfig) -> dict[str, str]:
@@ -671,6 +742,8 @@ def _stream_chat_with_openai_compatible(
     model: str | None,
     system_prompt: str | None,
     temperature: float | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
 ) -> Iterator[dict[str, Any]]:
     payload: dict[str, Any] = {
         "model": (model or provider.default_model).strip() or provider.default_model,
@@ -679,13 +752,24 @@ def _stream_chat_with_openai_compatible(
     }
     if temperature is not None:
         payload["temperature"] = temperature
+    if response_format is not None:
+        if response_format == "json":
+            payload["response_format"] = {"type": "json_object"}
+        elif isinstance(response_format, dict):
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_response",
+                    "schema": response_format,
+                },
+            }
 
     try:
         with requests.post(
             f"{provider.base_url}/chat/completions",
             json=payload,
             headers=_build_openai_headers(provider),
-            timeout=provider.timeout_seconds,
+            timeout=timeout_seconds or provider.timeout_seconds,
             stream=True,
         ) as response:
             if response.status_code >= 400:
@@ -830,6 +914,8 @@ def stream_chat_with_provider(
     model: str | None = None,
     system_prompt: str | None = None,
     temperature: float | None = None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
     extra_providers: tuple[AiProviderConfig, ...] = (),
 ) -> Iterator[dict[str, Any]]:
     provider = get_ai_provider(
@@ -850,6 +936,8 @@ def stream_chat_with_provider(
             model=model,
             system_prompt=system_prompt,
             temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
         )
         return
 
@@ -860,6 +948,8 @@ def stream_chat_with_provider(
             model=model,
             system_prompt=system_prompt,
             temperature=temperature,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
         )
         return
 

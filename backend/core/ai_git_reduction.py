@@ -286,6 +286,22 @@ def _build_reduce_system_prompt(*, style: str, include_body: bool) -> str:
         if style == "conventional"
         else "candidate_subject 必须是自然中文总结，不要带 Conventional Commit 前缀。"
     )
+    body_text = (
+        "candidate_body 必须是 2 到 4 条中文短句数组，每条只保留归并后的高价值变化。"
+        if include_body
+        else "candidate_body 必须返回空数组。"
+    )
+    return (
+        "你是一个严谨的 Git 归并摘要助手。"
+        "你会收到多个下层结构化摘要，需要把它们压缩成更高层的统一结果。"
+        "你只能输出 JSON，不要输出 Markdown、解释、代码块或额外文本。"
+        "JSON 结构固定为："
+        '{"topic":"", "summary":"", "key_points": [], "risk_points": [], "candidate_subject":"", "candidate_body": [], "should_split": false, "reason": ""}。'
+        "summary 应该是归并后的整体概括，而不是罗列原文。"
+        f"{style_text}"
+        f"{body_text}"
+        "只有在这些下层摘要仍然明显属于多个独立主题时，才把 should_split 设为 true。"
+    )
 
 
 def _build_git_json_repair_system_prompt() -> str:
@@ -428,22 +444,6 @@ def _resolve_git_response_format(provider_id: str, schema: Any) -> Any:
     if normalized == "ollama":
         return schema
     return None
-    body_text = (
-        "candidate_body 必须是 2 到 4 条中文短句数组，每条只保留归并后的高价值变化。"
-        if include_body
-        else "candidate_body 必须返回空数组。"
-    )
-    return (
-        "你是一个严谨的 Git 归并摘要助手。"
-        "你会收到多个下层结构化摘要，需要把它们压缩成更高层的统一结果。"
-        "你只能输出 JSON，不要输出 Markdown、解释、代码块或额外文本。"
-        "JSON 结构固定为："
-        '{"topic":"", "summary":"", "key_points": [], "risk_points": [], "candidate_subject":"", "candidate_body": [], "should_split": false, "reason": ""}。'
-        "summary 应该是归并后的整体概括，而不是罗列原文。"
-        f"{style_text}"
-        f"{body_text}"
-        "只有在这些下层摘要仍然明显属于多个独立主题时，才把 should_split 设为 true。"
-    )
 
 
 def _build_leaf_user_prompt(*, chunk: ReductionChunk, style: str, include_body: bool) -> str:
