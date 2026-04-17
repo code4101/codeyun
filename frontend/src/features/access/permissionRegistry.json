@@ -1,0 +1,403 @@
+{
+  "version": 1,
+  "nodes": [
+    {
+      "key": "home",
+      "title": "首页",
+      "node_type": "feature",
+      "sort_order": 10,
+      "route_paths": ["/"],
+      "menu_paths": ["/"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools",
+      "title": "综合工具",
+      "node_type": "group",
+      "sort_order": 20,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.password-generator",
+      "title": "随机密码",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 10,
+      "route_paths": ["/tools/password-generator"],
+      "menu_paths": ["/tools/password-generator"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.image-browser",
+      "title": "文件浏览",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 20,
+      "route_paths": ["/tools/image-browser"],
+      "menu_paths": ["/tools/image-browser"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.color-tools",
+      "title": "颜色工具",
+      "node_type": "feature",
+      "parent_key": "tools",
+      "sort_order": 30,
+      "route_paths": ["/tools/color-tools"],
+      "menu_paths": ["/tools/color-tools"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "ai-tools",
+      "title": "AI工具",
+      "node_type": "group",
+      "sort_order": 30,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": ["ai-tools.discovery"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.ai-config",
+      "title": "配置",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 10,
+      "route_paths": ["/tools/ai-config"],
+      "menu_paths": ["/tools/ai-config"],
+      "api_scopes": ["ai-tools.config"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.ai-chat",
+      "title": "AI聊天",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 20,
+      "route_paths": ["/tools/ai-chat"],
+      "menu_paths": ["/tools/ai-chat"],
+      "api_scopes": ["ai-tools.chat"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "tools.ai-reduction",
+      "title": "AI归纳",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 30,
+      "route_paths": ["/tools/ai-reduction"],
+      "menu_paths": ["/tools/ai-reduction"],
+      "api_scopes": ["ai-tools.reduction"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "tools.ai-git-commit",
+      "title": "AI提交",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 40,
+      "route_paths": ["/tools/ai-git-commit"],
+      "menu_paths": ["/tools/ai-git-commit"],
+      "api_scopes": ["ai-tools.git-commit"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance-tools",
+      "title": "禅寺考勤",
+      "node_type": "group",
+      "sort_order": 40,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": ["attendance-tools"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.configs",
+      "title": "考勤配置",
+      "node_type": "feature",
+      "parent_key": "attendance-tools",
+      "sort_order": 10,
+      "route_paths": ["/attendance/configs"],
+      "menu_paths": ["/attendance/configs"],
+      "api_scopes": ["attendance-tools.configs"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.wjx-templates",
+      "title": "问卷星模版",
+      "node_type": "feature",
+      "parent_key": "attendance-tools",
+      "sort_order": 20,
+      "route_paths": ["/attendance/wjx-templates"],
+      "menu_paths": ["/attendance/wjx-templates"],
+      "api_scopes": ["attendance-tools.wjx-templates"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "game-tools",
+      "title": "游戏工具",
+      "node_type": "group",
+      "sort_order": 50,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu",
+      "title": "凡修手游",
+      "node_type": "group",
+      "parent_key": "game-tools",
+      "sort_order": 10,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": ["fanxiu"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.calculator",
+      "title": "兽魂计算器",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 10,
+      "route_paths": ["/fanxiu/calculator"],
+      "menu_paths": ["/fanxiu/calculator"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.draw-calc",
+      "title": "活动抽数计算",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 20,
+      "route_paths": ["/fanxiu/draw-calc"],
+      "menu_paths": ["/fanxiu/draw-calc"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.discount",
+      "title": "凡修优惠券",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 30,
+      "route_paths": ["/fanxiu/discount"],
+      "menu_paths": ["/fanxiu/discount"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.task-status",
+      "title": "任务状态",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 40,
+      "route_paths": ["/fanxiu/task-status"],
+      "menu_paths": ["/fanxiu/task-status"],
+      "api_scopes": ["fanxiu.task-status"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.recharge",
+      "title": "充值礼包(Beta)",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 50,
+      "route_paths": ["/fanxiu/recharge"],
+      "menu_paths": ["/fanxiu/recharge"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.xianzhou-race",
+      "title": "仙舟竞速",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 60,
+      "route_paths": ["/fanxiu/xianzhou-race"],
+      "menu_paths": ["/fanxiu/xianzhou-race"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.cuijian-trial",
+      "title": "淬剑试炼",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 70,
+      "route_paths": ["/fanxiu/cuijian-trial"],
+      "menu_paths": ["/fanxiu/cuijian-trial"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "dsp.calculator",
+      "title": "戴森球计划",
+      "node_type": "feature",
+      "parent_key": "game-tools",
+      "sort_order": 20,
+      "route_paths": ["/dsp/calculator"],
+      "menu_paths": ["/dsp/calculator"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "magic-craft",
+      "title": "魔法工艺",
+      "node_type": "group",
+      "parent_key": "game-tools",
+      "sort_order": 30,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "magic-craft.xor-matrix",
+      "title": "点灯解谜",
+      "node_type": "feature",
+      "parent_key": "magic-craft",
+      "sort_order": 10,
+      "route_paths": ["/magic-craft/xor-matrix"],
+      "menu_paths": ["/magic-craft/xor-matrix"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "note-tools",
+      "title": "笔记工具",
+      "node_type": "group",
+      "sort_order": 60,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": ["note-tools"],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "notes.center",
+      "title": "星图笔记",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 10,
+      "route_paths": ["/notes/center", "/notes/star-map", "/notes/calendar"],
+      "menu_paths": ["/notes/star-map"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "notes.infinite-canvas",
+      "title": "无限画布",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 20,
+      "route_paths": ["/notes/infinite-canvas"],
+      "menu_paths": ["/notes/infinite-canvas"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "private-tools",
+      "title": "私有工具",
+      "node_type": "group",
+      "sort_order": 70,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "private.media-sync",
+      "title": "图像采集",
+      "node_type": "feature",
+      "parent_key": "private-tools",
+      "sort_order": 10,
+      "route_paths": ["/private/media-sync"],
+      "menu_paths": ["/private/media-sync"],
+      "api_scopes": ["private.media-sync"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster-tools",
+      "title": "集群管理",
+      "node_type": "group",
+      "sort_order": 80,
+      "route_paths": ["/cluster"],
+      "menu_paths": [],
+      "api_scopes": ["cluster-tools"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.tasks",
+      "title": "设备任务",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 10,
+      "route_paths": ["/cluster/tasks", "/cluster"],
+      "menu_paths": ["/cluster/tasks"],
+      "api_scopes": ["cluster-tools.tasks"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.files",
+      "title": "浏览文件",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 20,
+      "route_paths": ["/cluster/files", "/cluster/media", "/cluster/images"],
+      "menu_paths": ["/cluster/files"],
+      "api_scopes": ["cluster-tools.files"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.labelme",
+      "title": "图片标注",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 30,
+      "route_paths": ["/cluster/labelme", "/tools/labelme-lite"],
+      "menu_paths": ["/cluster/labelme"],
+      "api_scopes": ["cluster-tools.labelme"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "admin-tools",
+      "title": "系统管理",
+      "node_type": "group",
+      "sort_order": 90,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": ["admin-tools"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "admin.accounts",
+      "title": "账号管理",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 10,
+      "route_paths": ["/admin/accounts"],
+      "menu_paths": ["/admin/accounts"],
+      "api_scopes": ["admin-tools.accounts"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "admin.images",
+      "title": "存储维护",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 20,
+      "route_paths": ["/admin/images"],
+      "menu_paths": ["/admin/images"],
+      "api_scopes": ["admin-tools.images"],
+      "default_anonymous_allow": false
+    }
+  ]
+}

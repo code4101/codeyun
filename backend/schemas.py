@@ -15,16 +15,34 @@ class TokenRefresh(BaseModel):
 class UserCreate(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     username: str
+    nickname: Optional[str] = None
+    phone: Optional[str] = None
     password: str
     email: Optional[str] = None
+    is_active: bool = True
 
 class UserRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     username: str
+    nickname: str
     email: Optional[str] = None
+    phone: Optional[str] = None
     is_active: bool
     is_superuser: bool
+
+
+class AdminAccountRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    username: str
+    nickname: str
+    email: Optional[str] = None
+    phone: Optional[str] = None
+    password_plain: str
+    is_active: bool
+    is_superuser: bool
+    created_at: float
 
 class UserLogin(BaseModel):
     model_config = ConfigDict(from_attributes=True)

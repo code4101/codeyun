@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from backend.app import app
 from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_ai_provider_status, stream_chat_with_provider
+from backend.core import settings as settings_module
 from backend.core.ai_chat_user_config import build_ai_chat_provider_config_key, save_user_ai_chat_provider_config
 from backend.core.auth import get_current_active_superuser
 from backend.core.ollama_access_keys import create_ollama_access_key
@@ -24,6 +25,10 @@ def _override_superuser():
     )
     app.dependency_overrides[get_current_active_superuser] = lambda: admin_user
     return admin_user
+
+
+def _clear_settings_cache():
+    settings_module.get_settings.cache_clear()
 
 
 def test_ai_chat_status_success(client, session):
@@ -123,6 +128,24 @@ def test_ai_chat_providers(client):
     assert payload["items"][1]["requires_api_key"] is True
 
 
+def test_ai_chat_providers_anonymous_hide_server_managed_cloud_config(client, monkeypatch):
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_AI_DEFAULT_PROVIDER", "deepseek")
+    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
+    _clear_settings_cache()
+    try:
+        response = client.get("/api/ai-chat/providers")
+    finally:
+        _clear_settings_cache()
+
+    assert response.status_code == 200
+    payload = response.json()
+    provider_map = {item["id"]: item for item in payload["items"]}
+    assert payload["default_provider"] == "ollama"
+    assert provider_map["ollama"]["requires_api_key"] is True
+    assert provider_map["deepseek"]["configured"] is False
+
+
 def test_ai_chat_can_create_custom_provider(client, auth_user):
     response = client.post(
         "/api/ai-chat/custom-providers",
@@ -154,6 +177,52 @@ def test_ai_chat_saved_configs_anonymous_returns_empty(client):
         "signed_in": False,
         "items": [],
     }
+
+
+def test_ai_chat_status_anonymous_does_not_inherit_server_managed_cloud_api_key(client, monkeypatch):
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
+    _clear_settings_cache()
+    try:
+        response = client.post(
+            "/api/ai-chat/status",
+            json={
+                "provider": "deepseek",
+            },
+        )
+    finally:
+        _clear_settings_cache()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "deepseek"
+    assert payload["available"] is False
+    assert payload["configured"] is False
+    assert "未填写 API Key" in payload["error"]
+
+
+def test_ai_chat_anonymous_chat_does_not_inherit_server_managed_cloud_api_key(client, monkeypatch):
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+    monkeypatch.setenv("CODEYUN_DEEPSEEK_API_KEY", "server-deepseek-key")
+    _clear_settings_cache()
+    try:
+        response = client.post(
+            "/api/ai-chat/chat",
+            json={
+                "provider": "deepseek",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "你好",
+                    }
+                ],
+            },
+        )
+    finally:
+        _clear_settings_cache()
+
+    assert response.status_code == 502
+    assert "未填写 API Key" in response.json()["detail"]
 
 
 def test_ai_chat_admin_can_manage_ollama_access_keys(client):

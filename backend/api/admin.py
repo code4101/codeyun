@@ -5,18 +5,20 @@ import time
 from typing import List, Set, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select, func, text
+from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel
 
 from backend.db import get_session, engine
+from backend.core.auth import get_current_active_superuser, get_password_hash
 from backend.core.device import get_device_id
 from backend.models import AppSetting, User, NoteNode
-from backend.core.auth import get_current_active_superuser
 from backend.core.settings import get_settings
 from backend.core.storage import (
     ATTACHMENT_URL_PATTERN,
     build_attachment_url,
     get_attachments_dir,
 )
+from backend.schemas import AdminAccountRead
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -205,7 +207,149 @@ class DeviceControlIdentityResponse(BaseModel):
     device_token_enabled: bool
     data_dir: str
 
+
+class ResetAccountPasswordRequest(BaseModel):
+    password: str
+
+
+class CreateAccountRequest(BaseModel):
+    username: str
+    password: str
+    nickname: str = ""
+    is_superuser: bool = False
+    is_active: bool = True
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class UpdateAccountProfileRequest(BaseModel):
+    nickname: str
+    is_superuser: bool
+    is_active: bool = True
+    password: Optional[str] = None
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
 # --- Endpoints ---
+
+@router.get("/accounts", response_model=List[AdminAccountRead])
+def list_accounts(session: Session = Depends(get_session)):
+    statement = (
+        select(User)
+        .order_by(User.is_superuser.desc(), User.created_at.asc(), User.id.asc())
+    )
+    return session.exec(statement).all()
+
+
+@router.post("/accounts", response_model=AdminAccountRead)
+def create_account(
+    payload: CreateAccountRequest,
+    session: Session = Depends(get_session),
+):
+    username = payload.username.strip()
+    if username == "":
+        raise HTTPException(status_code=400, detail="账号不能为空")
+    if payload.password == "":
+        raise HTTPException(status_code=400, detail="密码不能为空")
+
+    existing_user = session.exec(select(User).where(User.username == username)).first()
+    if existing_user is not None:
+        raise HTTPException(status_code=400, detail="账号已存在")
+
+    user = User(
+        username=username,
+        nickname=payload.nickname.strip(),
+        email=(payload.email or "").strip() or None,
+        phone=(payload.phone or "").strip() or None,
+        hashed_password=get_password_hash(payload.password),
+        password_plain=payload.password,
+        is_superuser=payload.is_superuser,
+        is_active=payload.is_active,
+    )
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+@router.post("/accounts/{user_id}/password", response_model=AdminAccountRead)
+def reset_account_password(
+    user_id: int,
+    payload: ResetAccountPasswordRequest,
+    session: Session = Depends(get_session),
+):
+    if payload.password == "":
+        raise HTTPException(status_code=400, detail="密码不能为空")
+
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    user.hashed_password = get_password_hash(payload.password)
+    user.password_plain = payload.password
+    user.updated_at = time.time()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+@router.post("/accounts/{user_id}/profile", response_model=AdminAccountRead)
+def update_account_profile(
+    user_id: int,
+    payload: UpdateAccountProfileRequest,
+    session: Session = Depends(get_session),
+):
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    if user.is_superuser and not payload.is_superuser:
+        superuser_count = session.exec(
+            select(func.count()).select_from(User).where(User.is_superuser == True)
+        ).one()
+        if superuser_count <= 1:
+            raise HTTPException(status_code=400, detail="至少保留一个超级管理员账号")
+
+    user.nickname = payload.nickname.strip()
+    user.is_superuser = payload.is_superuser
+    user.is_active = payload.is_active
+    if payload.password is not None and payload.password != "":
+        user.hashed_password = get_password_hash(payload.password)
+        user.password_plain = payload.password
+    user.email = (payload.email or "").strip() or None
+    user.phone = (payload.phone or "").strip() or None
+    user.updated_at = time.time()
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
+
+
+@router.delete("/accounts/{user_id}")
+def delete_account(
+    user_id: int,
+    session: Session = Depends(get_session),
+):
+    user = session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    if user.is_superuser:
+        superuser_count = session.exec(
+            select(func.count()).select_from(User).where(User.is_superuser == True)
+        ).one()
+        if superuser_count <= 1:
+            raise HTTPException(status_code=400, detail="至少保留一个超级管理员账号")
+
+    try:
+        session.delete(user)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=400, detail="该账号下存在关联数据，无法直接删除")
+
+    return {"success": True}
 
 @router.get("/storage/dashboard", response_model=StorageDashboardStats)
 def get_storage_dashboard(session: Session = Depends(get_session)):

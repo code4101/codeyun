@@ -14,12 +14,15 @@ from backend.core.ai_git_repos import (
     touch_user_ai_git_repo,
 )
 from backend.core.auth import get_current_user_from_token
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.git_tools import GitToolError, inspect_git_repository
 from backend.db import get_session
 from backend.models import User, UserDevice
 
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("tools.ai-git-commit"))],
+)
 
 
 class AiGitSavedRepo(BaseModel):

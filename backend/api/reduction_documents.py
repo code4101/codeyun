@@ -32,11 +32,14 @@ from backend.core.document_reduction_storage import (
     sha256_hexdigest,
 )
 from backend.core.auth import get_current_user_from_token
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.db import get_session
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun, User
 
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("tools.ai-reduction"))],
+)
 
 MAX_DOCUMENT_UPLOAD_BYTES = 20 * 1024 * 1024
 ALLOWED_TEXT_FILE_EXTENSIONS = {

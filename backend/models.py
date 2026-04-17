@@ -11,8 +11,11 @@ class User(SQLModel, table=True):
     __table_args__ = {'extend_existing': True}
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(index=True, unique=True)
+    nickname: str = Field(default="")
     email: Optional[str] = Field(default=None, index=True)
+    phone: Optional[str] = Field(default=None, index=True)
     hashed_password: str
+    password_plain: str = Field(default="未知")
     is_active: bool = Field(default=True)
     is_superuser: bool = Field(default=False)
     created_at: float = Field(default_factory=time.time)
@@ -118,6 +121,19 @@ class AppSetting(SQLModel, table=True):
     key: str = Field(primary_key=True)
     value: dict = Field(default_factory=dict, sa_column=Column(JSON))
     updated_at: float = Field(default_factory=time.time)
+
+
+class FeatureAccessPolicy(SQLModel, table=True):
+    __tablename__ = "featureaccesspolicy"
+    __table_args__ = {'extend_existing': True}
+
+    subject_key: str = Field(primary_key=True)
+    subject_type: str = Field(index=True)
+    subject_user_id: Optional[int] = Field(default=None, index=True)
+    overrides: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    updated_by_user_id: Optional[int] = Field(default=None, index=True)
 
 
 class DocumentAsset(SQLModel, table=True):

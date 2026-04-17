@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { findPermissionKeyByMenuPath } from '@/features/access/permissionRegistry';
 import {
   findPrivateMenuIndex,
   getDefaultPrivateOpeneds,
   isPrivateMenuItemVisible,
   privateMenuSections,
 } from '@/private';
+import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
 import {
   Document,
@@ -27,6 +29,7 @@ import {
 
 const route = useRoute();
 const router = useRouter();
+const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
 
@@ -48,21 +51,110 @@ const activeMenu = computed(() => {
   return route.path;
 });
 
+const canAccessFeature = (key: string) => featureAccessStore.isAllowed(key);
+
+const canAccessMenuPath = (path: string) => {
+  const permissionKey = findPermissionKeyByMenuPath(path);
+  return featureAccessStore.isAllowed(permissionKey);
+};
+
 const visiblePrivateMenuSections = computed(() =>
   privateMenuSections
     .map((section) => ({
       ...section,
       items: section.items.filter((item) =>
-        isPrivateMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin),
+        isPrivateMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin)
+        && canAccessMenuPath(item.path),
       ),
     }))
-    .filter((section) => section.items.length > 0),
+    .filter((section) => canAccessFeature(section.key) && section.items.length > 0),
+);
+
+const toolsMenuVisible = computed(() =>
+  canAccessFeature('tools')
+  && [
+    '/tools/password-generator',
+    '/tools/image-browser',
+    '/tools/color-tools',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const aiToolsMenuVisible = computed(() =>
+  canAccessFeature('ai-tools')
+  && [
+    '/tools/ai-config',
+    '/tools/ai-chat',
+    '/tools/ai-reduction',
+    '/tools/ai-git-commit',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const attendanceMenuVisible = computed(() =>
+  canAccessFeature('attendance-tools')
+  && [
+    '/attendance/configs',
+    '/attendance/wjx-templates',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const fanxiuMenuVisible = computed(() =>
+  canAccessFeature('fanxiu')
+  && [
+    '/fanxiu/calculator',
+    '/fanxiu/draw-calc',
+    '/fanxiu/discount',
+    '/fanxiu/task-status',
+    '/fanxiu/recharge',
+    '/fanxiu/xianzhou-race',
+    '/fanxiu/cuijian-trial',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const magicCraftMenuVisible = computed(() =>
+  canAccessFeature('magic-craft')
+  && canAccessMenuPath('/magic-craft/xor-matrix'),
+);
+
+const gameToolsMenuVisible = computed(() =>
+  canAccessFeature('game-tools')
+  && (
+    fanxiuMenuVisible.value
+    || magicCraftMenuVisible.value
+    || canAccessMenuPath('/dsp/calculator')
+  ),
+);
+
+const noteToolsMenuVisible = computed(() =>
+  canAccessFeature('note-tools')
+  && [
+    '/notes/star-map',
+    '/notes/infinite-canvas',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const clusterMenuVisible = computed(() =>
+  canAccessFeature('cluster-tools')
+  && [
+    '/cluster/tasks',
+    '/cluster/files',
+    '/cluster/labelme',
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const adminMenuVisible = computed(() =>
+  userStore.isAdmin
+  && canAccessFeature('admin-tools')
+  && [
+    '/admin/accounts',
+    '/admin/images',
+  ].some((path) => canAccessMenuPath(path)),
 );
 
 const defaultOpeneds = computed(() => {
   const openeds: string[] = [];
   if (route.path === '/cluster') return ['cluster-tools'];
   if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
+  if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
   if (route.path.startsWith('/attendance/')) openeds.push('attendance-tools');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
@@ -103,71 +195,71 @@ const handleLogin = () => {
             <template #title>首页</template>
           </el-menu-item>
 
-          <el-sub-menu index="tools">
+          <el-sub-menu v-if="toolsMenuVisible" index="tools">
             <template #title>
               <el-icon><Box /></el-icon>
               <span>综合工具</span>
             </template>
-            <el-menu-item index="/tools/password-generator">随机密码</el-menu-item>
-            <el-menu-item index="/tools/image-browser">文件浏览</el-menu-item>
-            <el-menu-item index="/tools/color-tools">颜色工具</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/password-generator')" index="/tools/password-generator">随机密码</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/image-browser')" index="/tools/image-browser">文件浏览</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/color-tools')" index="/tools/color-tools">颜色工具</el-menu-item>
           </el-sub-menu>
 
-          <el-sub-menu index="ai-tools">
+          <el-sub-menu v-if="aiToolsMenuVisible" index="ai-tools">
             <template #title>
               <el-icon><ChatDotRound /></el-icon>
               <span>AI工具</span>
             </template>
-            <el-menu-item index="/tools/ai-config">配置</el-menu-item>
-            <el-menu-item index="/tools/ai-chat">AI聊天</el-menu-item>
-            <el-menu-item index="/tools/ai-reduction">AI归纳</el-menu-item>
-            <el-menu-item index="/tools/ai-git-commit">AI提交</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/ai-config')" index="/tools/ai-config">配置</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/ai-chat')" index="/tools/ai-chat">AI聊天</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/ai-reduction')" index="/tools/ai-reduction">AI归纳</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/tools/ai-git-commit')" index="/tools/ai-git-commit">AI提交</el-menu-item>
           </el-sub-menu>
 
-          <el-sub-menu index="attendance-tools" v-if="userStore.isAdmin">
+          <el-sub-menu v-if="attendanceMenuVisible" index="attendance-tools">
             <template #title>
               <el-icon><Document /></el-icon>
               <span>禅寺考勤</span>
             </template>
-            <el-menu-item index="/attendance/configs">考勤配置</el-menu-item>
-            <el-menu-item index="/attendance/wjx-templates">问卷星模版</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/attendance/configs')" index="/attendance/configs">考勤配置</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/attendance/wjx-templates')" index="/attendance/wjx-templates">问卷星模版</el-menu-item>
           </el-sub-menu>
           
-          <el-sub-menu index="game-tools">
+          <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
             <template #title>
               <el-icon><MagicStick /></el-icon>
               <span>游戏工具</span>
             </template>
-            <el-sub-menu index="fanxiu">
+            <el-sub-menu v-if="fanxiuMenuVisible" index="fanxiu">
               <template #title>
                 <span>凡修手游</span>
               </template>
-              <el-menu-item index="/fanxiu/calculator">兽魂计算器</el-menu-item>
-              <el-menu-item index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
-              <el-menu-item index="/fanxiu/discount">凡修优惠券</el-menu-item>
-              <el-menu-item index="/fanxiu/task-status">任务状态</el-menu-item>
-              <el-menu-item index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
-              <el-menu-item index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
-              <el-menu-item index="/fanxiu/cuijian-trial">淬剑试炼</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/calculator')" index="/fanxiu/calculator">兽魂计算器</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/draw-calc')" index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/discount')" index="/fanxiu/discount">凡修优惠券</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/task-status')" index="/fanxiu/task-status">任务状态</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/recharge')" index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/xianzhou-race')" index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/fanxiu/cuijian-trial')" index="/fanxiu/cuijian-trial">淬剑试炼</el-menu-item>
             </el-sub-menu>
-            <el-menu-item index="/dsp/calculator">
+            <el-menu-item v-if="canAccessMenuPath('/dsp/calculator')" index="/dsp/calculator">
               <span>戴森球计划</span>
             </el-menu-item>
-            <el-sub-menu index="magic-craft">
+            <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
               <template #title>
                 <span>魔法工艺</span>
               </template>
-              <el-menu-item index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/magic-craft/xor-matrix')" index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
             </el-sub-menu>
           </el-sub-menu>
 
-          <el-sub-menu index="note-tools">
+          <el-sub-menu v-if="noteToolsMenuVisible" index="note-tools">
             <template #title>
               <el-icon><Document /></el-icon>
               <span>笔记工具</span>
             </template>
-            <el-menu-item index="/notes/star-map">星图笔记</el-menu-item>
-            <el-menu-item index="/notes/infinite-canvas">无限画布</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/notes/star-map')" index="/notes/star-map">星图笔记</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/notes/infinite-canvas')" index="/notes/infinite-canvas">无限画布</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu
@@ -188,22 +280,25 @@ const handleLogin = () => {
             </el-menu-item>
           </el-sub-menu>
 
-          <el-sub-menu index="cluster-tools" v-if="userStore.isAuthenticated">
+          <el-sub-menu v-if="clusterMenuVisible" index="cluster-tools">
             <template #title>
               <el-icon><Monitor /></el-icon>
               <span>集群管理</span>
             </template>
-            <el-menu-item index="/cluster/tasks">设备任务</el-menu-item>
-            <el-menu-item index="/cluster/files">浏览文件</el-menu-item>
-            <el-menu-item index="/cluster/labelme">图片标注</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/cluster/tasks')" index="/cluster/tasks">设备任务</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/cluster/files')" index="/cluster/files">浏览文件</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/cluster/labelme')" index="/cluster/labelme">图片标注</el-menu-item>
           </el-sub-menu>
 
-          <el-sub-menu index="admin-tools" v-if="userStore.isAdmin">
+          <el-sub-menu v-if="adminMenuVisible" index="admin-tools">
             <template #title>
               <el-icon><Setting /></el-icon>
               <span>系统管理</span>
             </template>
-            <el-menu-item index="/admin/images">
+            <el-menu-item v-if="canAccessMenuPath('/admin/accounts')" index="/admin/accounts">
+              <span>账号管理</span>
+            </el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath('/admin/images')" index="/admin/images">
               <span>存储维护</span>
             </el-menu-item>
           </el-sub-menu>

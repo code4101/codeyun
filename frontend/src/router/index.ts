@@ -1,4 +1,6 @@
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router';
+import { findPermissionKeyByRoutePath } from '@/features/access/permissionRegistry';
+import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
 import MainLayout from '@/layout/MainLayout.vue';
 import { privateRoutes } from '@/private';
@@ -184,19 +186,25 @@ const routes: Array<RouteRecordRaw> = [
         path: 'attendance/configs',
         name: 'AttendanceConfigs',
         component: () => import('@/views/attendance/AttendanceConfigs.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true },
+        meta: { requiresAuth: true },
       },
       {
         path: 'attendance/wjx-templates',
         name: 'AttendanceWjxTemplates',
         component: () => import('@/views/attendance/AttendanceWjxTemplates.vue'),
-        meta: { requiresAuth: true, requiresAdmin: true },
+        meta: { requiresAuth: true },
       },
       {
         path: 'cluster/logs/:id',
         name: 'TaskLogs',
         component: () => import('@/views/TaskLogs.vue'),
         meta: { requiresAuth: true }, // Logs require login
+      },
+      {
+        path: 'admin/accounts',
+        name: 'AccountManager',
+        component: () => import('@/views/admin/AccountManager.vue'),
+        meta: { requiresAuth: true, requiresAdmin: true },
       },
       {
         path: 'admin/images',
@@ -216,6 +224,7 @@ const router = createRouter({
 
 router.beforeEach(async (to, _from, next) => {
   const userStore = useUserStore();
+  const featureAccessStore = useFeatureAccessStore();
   
   // Check if route requires auth
   if (to.matched.some(record => record.meta.requiresAuth)) {
@@ -241,10 +250,23 @@ router.beforeEach(async (to, _from, next) => {
     // If route doesn't require auth (login/register)
     if (userStore.isAuthenticated && (to.name === 'Login' || to.name === 'Register')) {
       next({ name: 'Home' });
-    } else {
-      next();
+      return;
     }
   }
+
+  try {
+    await featureAccessStore.ensureLoaded();
+  } catch (error) {
+    console.warn('Failed to ensure feature access context:', error);
+  }
+
+  const permissionKey = findPermissionKeyByRoutePath(to.path);
+  if (permissionKey && !featureAccessStore.isAllowed(permissionKey)) {
+    next({ name: 'Home' });
+    return;
+  }
+
+  next();
 });
 
 export default router;

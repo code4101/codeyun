@@ -1078,6 +1078,95 @@ def v24_add_device_file_visual_hash_fields(session: Session):
     session.commit()
     print(f"  Added {len(statements)} devicefile visual hash columns.")
 
+
+def v25_add_user_plain_password_field(session: Session):
+    """
+    Migration V25: Add plaintext password storage for user accounts.
+    Old users without recoverable plaintext are marked as '未知'.
+    """
+    print("Running System Upgrade V25: Add user plaintext password field...")
+    columns = _get_table_columns(session, "user")
+    if "id" not in columns:
+        print("  Table 'user' missing, skipping.")
+        return
+
+    if "password_plain" not in columns:
+        session.exec(
+            text("ALTER TABLE user ADD COLUMN password_plain VARCHAR NOT NULL DEFAULT '未知'")
+        )
+        session.commit()
+        print("  Added user.password_plain column.")
+
+    updated = session.exec(
+        text(
+            """
+            UPDATE user
+            SET password_plain = '未知'
+            WHERE password_plain IS NULL OR TRIM(password_plain) = ''
+            """
+        )
+    )
+    session.commit()
+    print(f"  Backfilled plaintext password for {updated.rowcount or 0} users.")
+
+
+def v26_add_user_nickname_field(session: Session):
+    """
+    Migration V26: Add optional nickname field for user notes/remarks.
+    """
+    print("Running System Upgrade V26: Add user nickname field...")
+    columns = _get_table_columns(session, "user")
+    if "id" not in columns:
+        print("  Table 'user' missing, skipping.")
+        return
+
+    if "nickname" not in columns:
+        session.exec(
+            text("ALTER TABLE user ADD COLUMN nickname VARCHAR NOT NULL DEFAULT ''")
+        )
+        session.commit()
+        print("  Added user.nickname column.")
+
+    updated = session.exec(
+        text(
+            """
+            UPDATE user
+            SET nickname = ''
+            WHERE nickname IS NULL
+            """
+        )
+    )
+    session.commit()
+    print(f"  Backfilled nickname for {updated.rowcount or 0} users.")
+
+
+def v27_add_user_phone_field(session: Session):
+    """
+    Migration V27: Add optional phone field for users.
+    """
+    print("Running System Upgrade V27: Add user phone field...")
+    columns = _get_table_columns(session, "user")
+    if "id" not in columns:
+        print("  Table 'user' missing, skipping.")
+        return
+
+    if "phone" not in columns:
+        session.exec(text("ALTER TABLE user ADD COLUMN phone VARCHAR"))
+        session.commit()
+        print("  Added user.phone column.")
+
+    updated = session.exec(
+        text(
+            """
+            UPDATE user
+            SET phone = NULL
+            WHERE TRIM(COALESCE(phone, '')) = ''
+            """
+        )
+    )
+    session.commit()
+    print(f"  Normalized phone for {updated.rowcount or 0} users.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1105,6 +1194,9 @@ MIGRATIONS = [
     (22, "Add document reduction progress fields", v22_add_document_reduction_progress_fields),
     (23, "Add git reduction run table", v23_add_git_reduction_run_table),
     (24, "Add device file visual hash fields", v24_add_device_file_visual_hash_fields),
+    (25, "Add user plaintext password field", v25_add_user_plain_password_field),
+    (26, "Add user nickname field", v26_add_user_nickname_field),
+    (27, "Add user phone field", v27_add_user_phone_field),
 ]
 
 def get_current_version(session: Session) -> int:

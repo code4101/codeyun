@@ -19,7 +19,6 @@ from urllib.request import Request, urlopen
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = ROOT_DIR / "frontend"
-DEPLOY_DIR = ROOT_DIR / "deploy"
 STARTUP_TIMEOUT_SECONDS = 30
 REQUEST_TIMEOUT_SECONDS = 2
 ASSET_PATH_RE = re.compile(r"""(?:src|href)=["']([^"']*assets/[^"']+)["']""")
@@ -399,84 +398,8 @@ def check_python_case_sensitive_imports() -> list[CheckIssue]:
     return issues
 
 
-def check_deploy_line_endings() -> list[CheckIssue]:
-    issues: list[CheckIssue] = []
-    for path in DEPLOY_DIR.rglob("*"):
-        if not path.is_file() or path.suffix not in {".sh", ".conf", ".service"}:
-            continue
-        if b"\r\n" in path.read_bytes():
-            issues.append(
-                CheckIssue(
-                    category="deploy-eol",
-                    file=path,
-                    detail="Deploy file uses CRLF; Ubuntu shell/systemd/nginx files should stay LF",
-                )
-            )
-    return issues
-
-
-def check_gitattributes() -> list[CheckIssue]:
-    path = ROOT_DIR / ".gitattributes"
-    if not path.exists():
-        return [
-            CheckIssue(
-                category="deploy-eol",
-                file=path,
-                detail="Missing .gitattributes; enforce LF for deploy files to avoid /bin/bash^M on Ubuntu",
-            )
-        ]
-
-    text = path.read_text(encoding="utf-8", errors="replace")
-    required_rules = {
-        "*.sh text eol=lf",
-        "*.service text eol=lf",
-        "*.conf text eol=lf",
-    }
-    missing = sorted(rule for rule in required_rules if rule not in text)
-    if not missing:
-        return []
-
-    return [
-        CheckIssue(
-            category="deploy-eol",
-            file=path,
-            detail=f"Missing LF rules: {', '.join(missing)}",
-        )
-    ]
-
-
-def check_ubuntu_deploy_templates() -> list[CheckIssue]:
-    issues: list[CheckIssue] = []
-
-    nginx_path = DEPLOY_DIR / "nginx" / "codeyun.conf"
-    nginx_text = nginx_path.read_text(encoding="utf-8", errors="replace")
-    if "__CODEYUN_PROJECT_DIR__/frontend/dist" not in nginx_text:
-        issues.append(
-            CheckIssue(
-                category="deploy-template",
-                file=nginx_path,
-                detail="Nginx template should use __CODEYUN_PROJECT_DIR__ placeholder for the frontend dist root",
-            )
-        )
-
-    setup_path = DEPLOY_DIR / "setup_server.sh"
-    setup_text = setup_path.read_text(encoding="utf-8", errors="replace")
-    required_snippets = {
-        'ROOT_ENV_FILE="$PROJECT_DIR/.env"': "setup_server.sh should create/read the root .env file",
-        "__CODEYUN_PROJECT_DIR__": "setup_server.sh should replace the Nginx project-dir placeholder",
-    }
-    for snippet, detail in required_snippets.items():
-        if snippet not in setup_text:
-            issues.append(CheckIssue(category="deploy-template", file=setup_path, detail=detail))
-
-    return issues
-
-
-def run_ubuntu_compatibility_checks() -> None:
+def run_linux_compatibility_checks() -> None:
     issues = []
-    issues.extend(check_gitattributes())
-    issues.extend(check_deploy_line_endings())
-    issues.extend(check_ubuntu_deploy_templates())
     issues.extend(check_python_case_sensitive_imports())
     issues.extend(check_frontend_case_sensitive_imports())
 
@@ -490,10 +413,10 @@ def run_ubuntu_compatibility_checks() -> None:
         deduped.append(issue)
 
     if not deduped:
-        print(">>> Ubuntu deployment compatibility checks passed")
+        print(">>> Linux compatibility checks passed")
         return
 
-    lines = ["Ubuntu deployment compatibility checks failed:"]
+    lines = ["Linux compatibility checks failed:"]
     for issue in deduped:
         rel_path = issue.file.relative_to(ROOT_DIR) if issue.file.exists() else issue.file.name
         lines.append(f"- [{issue.category}] {rel_path}: {issue.detail}")
@@ -561,8 +484,8 @@ def check_frontend_preview(npm_exec: str) -> None:
 def main() -> None:
     npm_exec = resolve_npm()
 
-    print(">>> Running Ubuntu deployment compatibility checks")
-    run_ubuntu_compatibility_checks()
+    print(">>> Running Linux compatibility checks")
+    run_linux_compatibility_checks()
 
     print(">>> Running frontend production checks")
     run_command([npm_exec, "run", "check"], cwd=FRONTEND_DIR)

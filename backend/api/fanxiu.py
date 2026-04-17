@@ -6,6 +6,7 @@ from backend.db import get_session
 from backend.models import NoteNode, User
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.fanxiu_status import (
     derive_status_snapshot,
     load_status_payload,
@@ -27,7 +28,9 @@ import uuid
 import time
 from passlib.context import CryptContext
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
+)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -107,12 +110,14 @@ def get_fanxiu_user(session: Session) -> User:
     # Try to get code4101 user to copy password hash
     code4101_user = session.exec(select(User).where(User.username == CODE4101_USERNAME)).first()
     target_hash = code4101_user.hashed_password if code4101_user else pwd_context.hash(str(uuid.uuid4()))
+    target_plain = code4101_user.password_plain if code4101_user and code4101_user.password_plain else "未知"
 
     if not user:
         # Auto create if not exists
         user = User(
             username=FANXIU_USERNAME,
             hashed_password=target_hash, # Copy hash from code4101
+            password_plain=target_plain,
             is_active=True,
             is_superuser=False,
             created_at=time.time(),
@@ -123,8 +128,12 @@ def get_fanxiu_user(session: Session) -> User:
         session.refresh(user)
     else:
         # Check if hash needs update (sync with code4101)
-        if code4101_user and user.hashed_password != code4101_user.hashed_password:
+        if code4101_user and (
+            user.hashed_password != code4101_user.hashed_password
+            or user.password_plain != target_plain
+        ):
             user.hashed_password = code4101_user.hashed_password
+            user.password_plain = target_plain
             session.add(user)
             session.commit()
             session.refresh(user)

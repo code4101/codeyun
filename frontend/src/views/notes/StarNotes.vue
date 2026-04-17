@@ -91,7 +91,7 @@ import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
-import { ElMessage, ElMessageBox } from 'element-plus';
+import { ElMessageBox } from 'element-plus';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
@@ -204,7 +204,6 @@ const currentNoteId = ref<string>('');
 const editorRefreshVersion = ref(0);
 const isRefreshing = ref(false);
 const isGraphUpdating = ref(false);
-const aiCategorizingMap = ref<Record<string, boolean>>({});
 let graphFilterQueued = false;
 let graphRelayoutQueued = false;
 let graphFilterTimer: ReturnType<typeof setTimeout> | null = null;
@@ -885,10 +884,6 @@ const buildGraphNodeData = (note: NoteNode) => ({
   completion_progress: note.completion_progress,
   created_at: note.created_at,
   start_at: note.start_at,
-  is_ai_categorizing: Boolean(aiCategorizingMap.value[note.id]),
-  on_ai_categorize: () => {
-    void handleAiCategorizeNote(note.id);
-  }
 });
 
 const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {
@@ -986,48 +981,6 @@ const selectNote = async (noteId: string) => {
   currentNoteId.value = noteId;
 };
 
-const updateGraphNodeAiState = (noteId: string, loading: boolean) => {
-  if (loading) {
-    aiCategorizingMap.value = {
-      ...aiCategorizingMap.value,
-      [noteId]: true
-    };
-  } else {
-    const { [noteId]: _removed, ...rest } = aiCategorizingMap.value;
-    aiCategorizingMap.value = rest;
-  }
-
-  const node = nodes.value.find(item => String(item.id) === String(noteId));
-  if (node?.data) {
-    node.data.is_ai_categorizing = loading;
-  }
-};
-
-const handleAiCategorizeNote = async (noteId: string) => {
-  if (!checkAuth()) {
-    return;
-  }
-  if (aiCategorizingMap.value[noteId]) {
-    return;
-  }
-
-  updateGraphNodeAiState(noteId, true);
-  try {
-    const result = await noteStore.aiCategorizeNote(noteId);
-    if (!result) {
-      return;
-    }
-
-    handleNoteUpdate(result.note);
-    if (currentNoteId.value === noteId) {
-      editorRefreshVersion.value += 1;
-    }
-    ElMessage.success(result.summary || '已完成 AI 分类');
-  } finally {
-    updateGraphNodeAiState(noteId, false);
-  }
-};
-
 const handleNoteUpdate = (note: NoteNode) => {
     // Update graph node data
     const node = nodes.value.find(n => n.id === note.id);
@@ -1078,8 +1031,6 @@ const handleNoteCreate = (note: NoteNode) => {
 
 const handleNoteDelete = (noteId: string) => {
     nodes.value = nodes.value.filter(n => n.id !== noteId);
-    const { [noteId]: _removedAiState, ...restAiState } = aiCategorizingMap.value;
-    aiCategorizingMap.value = restAiState;
     const { [noteId]: _removedNodePosition, ...restNodePositions } = nodePositionCache.value;
     nodePositionCache.value = restNodePositions;
     if (currentNoteId.value === noteId) {

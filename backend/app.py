@@ -7,6 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.api.admin import init_storage_scheduler, router as admin_router
+from backend.api.admin_feature_access import router as admin_feature_access_router
+from backend.api.access import router as access_router
 from backend.api.attendance import router as attendance_router
 from backend.api.ai_chat import router as ai_chat_router
 from backend.api.ai_git_repos import router as ai_git_repos_router
@@ -75,6 +77,7 @@ app.add_middleware(CORSMiddleware, **cors_kwargs)
 
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
+app.include_router(access_router, prefix="/api/access", tags=["access"])
 app.include_router(device_router, prefix="/api/devices", tags=["devices"]) # User protected inside
 app.include_router(device_entries_router, prefix="/api/device-entries", tags=["device-entries"])
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
@@ -93,6 +96,11 @@ app.include_router(notes_router, prefix="/api/notes", tags=["notes"])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(fanxiu_router, prefix="/api/fanxiu", tags=["fanxiu"])
 app.include_router(admin_router, prefix="/api/admin", tags=["admin"])
+app.include_router(
+    admin_feature_access_router,
+    prefix="/api/admin/feature-access",
+    tags=["admin-feature-access"],
+)
 app.include_router(attendance_router, prefix="/api/attendance", tags=["attendance"])
 app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
 app.include_router(ai_git_repos_router, prefix="/api/ai-git-repos", tags=["ai-git-repos"])

@@ -28,8 +28,47 @@ const privateModules = Object.values(privateModuleFiles)
   .map((file) => file.default)
   .filter((module): module is PrivateFrontendModule => Boolean(module));
 
-export const privateRoutes = privateModules.flatMap((module) => module.routes ?? []);
-export const privateMenuSections = privateModules.flatMap((module) => module.menuSections ?? []);
+function normalizePrivateRoute(route: RouteRecordRaw): RouteRecordRaw {
+  const meta = {
+    ...(route.meta ?? {}),
+  };
+  const requiresAdmin = meta.requiresAdmin ?? false;
+  const requiresAuth = meta.requiresAuth ?? true;
+
+  return {
+    ...route,
+    meta: {
+      ...meta,
+      requiresAuth,
+      requiresAdmin,
+    },
+    children: route.children?.map((child) => normalizePrivateRoute(child)),
+  };
+}
+
+function normalizePrivateMenuItem(item: PrivateMenuItem): PrivateMenuItem {
+  const requiresAdmin = item.requiresAdmin ?? false;
+  const requiresAuth = item.requiresAuth ?? true;
+  return {
+    ...item,
+    requiresAuth,
+    requiresAdmin,
+  };
+}
+
+function normalizePrivateMenuSection(section: PrivateMenuSection): PrivateMenuSection {
+  return {
+    ...section,
+    items: section.items.map((item) => normalizePrivateMenuItem(item)),
+  };
+}
+
+export const privateRoutes = privateModules.flatMap((module) =>
+  (module.routes ?? []).map((route) => normalizePrivateRoute(route)),
+);
+export const privateMenuSections = privateModules.flatMap((module) =>
+  (module.menuSections ?? []).map((section) => normalizePrivateMenuSection(section)),
+);
 
 function pathMatches(menuPath: string, currentPath: string): boolean {
   return currentPath === menuPath || currentPath.startsWith(`${menuPath}/`);
