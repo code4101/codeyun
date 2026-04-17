@@ -21,18 +21,11 @@
 
 ## 部署运维约定（重要）
 
-- GitHub Actions 自动部署的真实入口是 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh`，排查部署问题时优先看这两处，不要只看文档描述。
-- 当前服务器使用的是系统级 `systemd` 服务：`codeyun-backend`，不是 `systemctl --user`。
+- 仓库内的 GitHub Actions 自动部署链路已于 `2026-04-16` 移除，不要再假设 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh` 仍然存在。
+- 如需恢复旧方案，唯一参考文档是：`docs/自动部署恢复档案.md`。
+- 当前服务器历史口径仍是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；但相关模板文件已从仓库移除。
 - 服务器运行时 `.env` 只负责应用配置，不负责存 SSH 登录信息。
-- SSH 部署相关信息应放在：
-  - 本地 `.env`：仅用于本地运维脚本/人工登录
-  - GitHub Actions Secrets：`DEPLOY_SSH_HOST / PORT / USER / PRIVATE_KEY / APP_DIR`
 - `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认回落到 `backend/data/`。
-- GitHub Action 绿勾不等于“前端一定是最新静态产物”。部署后如怀疑页面未更新，要同时核对：
-  - 服务器仓库 HEAD 是否已对齐最新提交
-  - `codeyun-backend` 是否刚重启成功
-  - `frontend/dist/` 的构建时间或 `dist/.codeyun-build-commit`
-- 更细的部署排障经验见：`docs/部署运维备忘.md`
 
 ## DSP 静态同步约定
 

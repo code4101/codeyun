@@ -1,4 +1,5 @@
 from datetime import timedelta
+import time
 from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -16,6 +17,16 @@ from ..models import User
 from ..schemas import Token, UserCreate, UserRead, UserLogin
 
 router = APIRouter()
+
+
+def _sync_plain_password(session: Session, user: User, plain_password: str) -> None:
+    if user.password_plain == plain_password:
+        return
+
+    user.password_plain = plain_password
+    user.updated_at = time.time()
+    session.add(user)
+    session.commit()
 
 @router.post("/login", response_model=Token)
 def login_for_access_token(
@@ -36,6 +47,8 @@ def login_for_access_token(
         
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
+
+    _sync_plain_password(session, user, form_data.password)
         
     # 3. Create access token
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
@@ -62,6 +75,8 @@ def login_json(
     
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Inactive user")
+
+    _sync_plain_password(session, user, login_data.password)
         
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
@@ -88,8 +103,12 @@ def register_user(
     hashed_password = get_password_hash(user_in.password)
     db_user = User(
         username=user_in.username,
+        nickname=(user_in.nickname or "").strip(),
+        phone=((user_in.phone or "").strip() or None),
         hashed_password=hashed_password,
+        password_plain=user_in.password,
         email=user_in.email,
+        is_active=user_in.is_active,
         is_superuser=False
     )
     

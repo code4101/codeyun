@@ -84,6 +84,77 @@ export interface ScheduleConfig {
   cron_expression: string;
 }
 
+export interface AdminAccountSummary {
+  id: number;
+  username: string;
+  nickname: string;
+  email: string | null;
+  phone: string | null;
+  password_plain: string;
+  is_active: boolean;
+  is_superuser: boolean;
+  created_at: number;
+}
+
+export const fetchAdminAccounts = async (): Promise<AdminAccountSummary[]> => {
+  const response = await api.get('/admin/accounts');
+  return response.data;
+};
+
+export const createAdminAccount = async (payload: {
+  username: string;
+  password: string;
+  nickname: string;
+  isSuperuser: boolean;
+  isActive: boolean;
+  email: string;
+  phone: string;
+}): Promise<AdminAccountSummary> => {
+  const response = await api.post('/admin/accounts', {
+    username: payload.username,
+    password: payload.password,
+    nickname: payload.nickname,
+    is_superuser: payload.isSuperuser,
+    is_active: payload.isActive,
+    email: payload.email,
+    phone: payload.phone,
+  });
+  return response.data;
+};
+
+export const resetAdminAccountPassword = async (
+  userId: number,
+  password: string,
+): Promise<AdminAccountSummary> => {
+  const response = await api.post(`/admin/accounts/${userId}/password`, { password });
+  return response.data;
+};
+
+export const updateAdminAccountProfile = async (
+  userId: number,
+  nickname: string,
+  isSuperuser: boolean,
+  isActive: boolean,
+  password: string,
+  email: string,
+  phone: string,
+): Promise<AdminAccountSummary> => {
+  const response = await api.post(`/admin/accounts/${userId}/profile`, {
+    nickname,
+    is_superuser: isSuperuser,
+    is_active: isActive,
+    password,
+    email,
+    phone,
+  });
+  return response.data;
+};
+
+export const deleteAdminAccount = async (userId: number): Promise<{ success: boolean }> => {
+  const response = await api.delete(`/admin/accounts/${userId}`);
+  return response.data;
+};
+
 export const fetchStorageDashboard = async (): Promise<StorageDashboardStats> => {
   const response = await api.get('/admin/storage/dashboard');
   return response.data;

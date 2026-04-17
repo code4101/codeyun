@@ -45,12 +45,16 @@ from backend.core.ai_chat_user_config import (
     save_user_ai_chat_provider_config,
 )
 from backend.core.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.settings import get_settings
 from backend.db import get_session
 from backend.models import User
 
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("ai-tools"))],
+)
+ANONYMOUS_DEFAULT_PROVIDER_ID = "ollama"
 
 
 class AiChatImageInput(BaseModel):
@@ -322,6 +326,52 @@ def _apply_ollama_access_policy_to_provider_item(item: dict[str, object]) -> dic
     return next_item
 
 
+def _apply_anonymous_provider_policy(item: dict[str, object]) -> dict[str, object]:
+    normalized_id = str(item.get("id") or "").strip().lower()
+    if normalized_id == "ollama":
+        return item
+    if not bool(item.get("requires_api_key")):
+        return item
+
+    next_item = dict(item)
+    next_item["configured"] = False
+    return next_item
+
+
+def _get_default_provider_id_for_request(
+    current_user: Optional[User],
+    provider_items: list[dict[str, object]],
+) -> str:
+    provider_ids = [
+        str(item.get("id") or "").strip().lower()
+        for item in provider_items
+        if str(item.get("id") or "").strip()
+    ]
+
+    if current_user is None and ANONYMOUS_DEFAULT_PROVIDER_ID in provider_ids:
+        return ANONYMOUS_DEFAULT_PROVIDER_ID
+
+    preferred = get_default_ai_provider_id().strip().lower()
+    if preferred in provider_ids:
+        preferred_item = next(
+            (item for item in provider_items if str(item.get("id") or "").strip().lower() == preferred),
+            None,
+        )
+        if preferred_item and bool(preferred_item.get("configured")):
+            return preferred
+
+    for item in provider_items:
+        provider_id = str(item.get("id") or "").strip().lower()
+        if provider_id and bool(item.get("configured")):
+            return provider_id
+
+    if preferred in provider_ids:
+        return preferred
+    if provider_ids:
+        return provider_ids[0]
+    return ANONYMOUS_DEFAULT_PROVIDER_ID
+
+
 def _resolve_runtime_provider_config(
     *,
     provider: Optional[str],
@@ -330,14 +380,21 @@ def _resolve_runtime_provider_config(
     current_user: Optional[User],
     session: Session,
 ) -> tuple[str, Optional[str], Optional[str]]:
-    resolved_provider = (provider or get_default_ai_provider_id()).strip().lower() or get_default_ai_provider_id()
+    resolved_provider = (provider or "").strip().lower()
+    if not resolved_provider:
+        resolved_provider = (
+            ANONYMOUS_DEFAULT_PROVIDER_ID
+            if current_user is None
+            else get_default_ai_provider_id().strip().lower()
+        ) or ANONYMOUS_DEFAULT_PROVIDER_ID
     resolved_base_url = (base_url or "").strip()
     resolved_api_key = (api_key or "").strip()
 
     if current_user is None:
         if _ollama_requires_access_key(resolved_provider):
             ensure_ollama_access_key_allowed(session, resolved_api_key)
-        return resolved_provider, resolved_base_url or None, resolved_api_key or None
+            return resolved_provider, resolved_base_url or None, resolved_api_key or None
+        return resolved_provider, resolved_base_url or None, resolved_api_key
 
     saved_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
     resolved_api_key = resolved_api_key or saved_config["api_key"] or None
@@ -472,12 +529,16 @@ def get_ai_chat_providers(
 ):
     _ensure_ai_chat_access(current_user)
     extra_providers = _get_extra_providers(current_user, session)
+    provider_items = [
+        _apply_ollama_access_policy_to_provider_item(item)
+        for item in list_ai_provider_summaries(extra_providers=extra_providers)
+    ]
+    if current_user is None:
+        provider_items = [_apply_anonymous_provider_policy(item) for item in provider_items]
+
     return AiChatProvidersResponse(
-        default_provider=get_default_ai_provider_id(),
-        items=[
-            AiChatProviderSummary.model_validate(_apply_ollama_access_policy_to_provider_item(item))
-            for item in list_ai_provider_summaries(extra_providers=extra_providers)
-        ],
+        default_provider=_get_default_provider_id_for_request(current_user, provider_items),
+        items=[AiChatProviderSummary.model_validate(item) for item in provider_items],
     )
 
 

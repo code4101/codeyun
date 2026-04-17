@@ -21,6 +21,7 @@ def ensure_bootstrap_admin() -> None:
             user = User(
                 username=username,
                 hashed_password=get_password_hash(password),
+                password_plain=password,
                 email=None,
                 is_active=True,
                 is_superuser=True,
@@ -38,6 +39,7 @@ def ensure_bootstrap_admin() -> None:
             changed = True
         if settings.bootstrap_admin_force_reset_password:
             user.hashed_password = get_password_hash(password)
+            user.password_plain = password
             changed = True
 
         if changed:

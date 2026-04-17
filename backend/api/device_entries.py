@@ -76,6 +76,7 @@ from backend.core.ai_git_commit import (
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.device import BaseDevice, device_manager, get_device_id
+from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.device_file_cover import (
     DeviceFileMetadataSnapshot,
     resolve_device_cover_path,
@@ -113,6 +114,34 @@ def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> Us
     if not entry.is_active:
         raise HTTPException(status_code=400, detail="Device entry is inactive")
     return entry
+
+
+def _get_entry_with_feature_or_404(
+    session: Session,
+    current_user: User,
+    entry_id: str,
+    feature_key: str,
+) -> UserDevice:
+    ensure_feature_access(
+        session,
+        feature_key=feature_key,
+        current_user=current_user,
+    )
+    return _get_entry_or_404(session, current_user, entry_id)
+
+
+def _get_entry_with_any_feature_or_404(
+    session: Session,
+    current_user: User,
+    entry_id: str,
+    *feature_keys: str,
+) -> UserDevice:
+    ensure_any_feature_access(
+        session,
+        feature_keys=tuple(feature_keys),
+        current_user=current_user,
+    )
+    return _get_entry_or_404(session, current_user, entry_id)
 
 
 def _ensure_local_entry(entry: UserDevice) -> None:

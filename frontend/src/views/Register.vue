@@ -21,6 +21,14 @@
             prefix-icon="User"
           />
         </el-form-item>
+
+        <el-form-item prop="nickname">
+          <el-input
+            v-model="form.nickname"
+            placeholder="昵称 (可选)"
+            prefix-icon="Edit"
+          />
+        </el-form-item>
         
         <el-form-item prop="password">
           <el-input 
@@ -39,6 +47,15 @@
             placeholder="确认密码" 
             prefix-icon="Lock"
             show-password
+          />
+        </el-form-item>
+
+        <el-form-item prop="phone">
+          <el-input
+            v-model="form.phone"
+            type="tel"
+            placeholder="手机号 (可选)"
+            prefix-icon="Phone"
           />
         </el-form-item>
         
@@ -93,8 +110,10 @@ const registerFormRef = ref<FormInstance>();
 
 const form = reactive({
   username: '',
+  nickname: '',
   password: '',
   confirmPassword: '',
+  phone: '',
   email: '',
 });
 
@@ -120,7 +139,13 @@ const handleRegister = async () => {
   
   await registerFormRef.value.validate(async (valid) => {
     if (valid) {
-      const success = await userStore.register(form.username, form.password, form.email);
+      const success = await userStore.register(
+        form.username,
+        form.password,
+        form.email,
+        form.nickname,
+        form.phone,
+      );
       if (success) {
         router.push('/');
       }

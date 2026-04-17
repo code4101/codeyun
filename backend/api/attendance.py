@@ -32,10 +32,13 @@ from backend.core.attendance_service import (
 from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
 from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.db import get_session
 from backend.models import AttendanceAccountAsset, AttendanceRun, AttendanceTemplateAsset, User, UserDevice
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("attendance-tools"))],
+)
 
 FIXED_WJX_TEMPLATE_ID = "wjx-course-catalog"
 FIXED_WJX_TEMPLATE_NAME = "课程清单问卷"

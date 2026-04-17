@@ -26,7 +26,7 @@ uv run dev.py
 - `CODEYUN_DEV_BACKEND_RELOAD_MODE`
 
 如需切回 `uvicorn --reload`，可执行 `uv run dev.py --backend-reload-mode uvicorn`。
-生产部署使用 `deploy/` 下的 `systemd + nginx` 配置，不走 `dev.py`。
+仓库内原有的 GitHub Actions 自动部署链路已移除；如需恢复旧方案，参考 [docs/自动部署恢复档案.md](docs/自动部署恢复档案.md)。当前生产部署不依赖仓库内的 `deploy/` 目录或自动 workflow。
 
 ## Run Convention
 
@@ -49,7 +49,7 @@ uv run python -m uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000
 # 前端生产检查（类型检查 + vite build）
 npm run check --prefix frontend
 
-# 本地生产式检查（含 Ubuntu 部署兼容性预检查）
+# 本地生产式检查（含 Linux 大小写兼容性预检查）
 uv run python scripts/check_prod.py
 ```
 
@@ -81,7 +81,7 @@ npm run check --prefix frontend
 uv run python scripts/check_prod.py
 ```
 
-这样能提前发现只会在构建产物、生产式启动、或 Ubuntu 部署时暴露的问题，比如资源路径、打包异常、生产 CORS、docs 暴露、部署脚本换行符、大小写路径在 Linux 下失效等。
+这样能提前发现只会在构建产物、生产式启动或 Linux 环境下暴露的问题，比如资源路径、打包异常、生产 CORS、docs 暴露、以及大小写路径在 Linux 下失效等。
 
 ## Project Layout
 

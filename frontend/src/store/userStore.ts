@@ -5,6 +5,8 @@ import api from '@/api';
 interface User {
   id: number;
   username: string;
+  nickname: string;
+  phone?: string | null;
   email?: string;
   is_superuser: boolean;
 }
@@ -52,11 +54,11 @@ export const useUserStore = defineStore('user', {
       }
     },
 
-    async register(username: string, password: string, email?: string) {
+    async register(username: string, password: string, email?: string, nickname?: string, phone?: string) {
       this.loading = true;
       this.error = null;
       try {
-        await api.post('/auth/register', { username, password, email });
+        await api.post('/auth/register', { username, password, email, nickname, phone });
         // 注册成功后自动登录
         return await this.login(username, password);
       } catch (err: any) {

@@ -36,6 +36,7 @@ from backend.core.ai_chat_user_config import (
 )
 from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
 from backend.core.auth import get_current_active_user
+from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
@@ -73,7 +74,9 @@ from backend.core.note_walker import NoteGraphContext, NoteWalker
 import time
 import uuid
 
-router = APIRouter()
+router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("note-tools"))],
+)
 
 ALLOWED_ORDER_FIELDS = {"updated_at", "created_at", "start_at", "weight", "title", "private_level"}
 NOTE_AI_APP_ID = "note-taxonomy"
