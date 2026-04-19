@@ -305,6 +305,78 @@ class AttendanceRun(SQLModel, table=True):
     finished_at: Optional[float] = Field(default=None, index=True)
     updated_at: float = Field(default_factory=time.time)
 
+
+class AttendanceOrderRefundHistory(SQLModel, table=True):
+    __tablename__ = "attendanceorderrefundhistory"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    requested_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    operator_username: str = Field(default="", index=True)
+    operator_nickname: str = Field(default="", index=True)
+    execution_device_entry_id: Optional[str] = Field(default=None, index=True)
+    student_name: str = Field(default="", index=True)
+    wechat_order_id: str = Field(default="", index=True)
+    merchant_order_id: str = Field(default="", index=True)
+    order_amount: str = Field(default="")
+    refunded_amount: str = Field(default="")
+    remaining_amount: str = Field(default="")
+    refund_amount: str = Field(default="")
+    refund_reason: str = Field(default="")
+    result_text: str = Field(default="")
+    raw_row_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class AttendanceWjxDataSyncState(SQLModel, table=True):
+    __tablename__ = "attendancewjxdatasyncstate"
+    __table_args__ = {"extend_existing": True}
+
+    activity_id: str = Field(primary_key=True)
+    template_id: str = Field(default="wjx-course-catalog", index=True)
+    last_max_seq: int = Field(default=0)
+    last_incremental_count: int = Field(default=0)
+    stored_count: int = Field(default=0)
+    last_used_all_pages: bool = Field(default=False)
+    last_sync_at: Optional[float] = Field(default=None, index=True)
+    last_success_at: Optional[float] = Field(default=None, index=True)
+    last_error: Optional[str] = Field(default=None)
+    execution_device_entry_id: Optional[str] = Field(default=None, index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class AttendanceWjxDataEntry(SQLModel, table=True):
+    __tablename__ = "attendancewjxdataentry"
+    __table_args__ = (
+        UniqueConstraint("activity_id", "seq", name="uq_attendancewjxdataentry_activity_seq"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    activity_id: str = Field(index=True)
+    seq: int = Field(index=True)
+    submitted_at_text: str = Field(default="", index=True)
+    duration_text: str = Field(default="")
+    source: str = Field(default="", index=True)
+    source_detail: str = Field(default="")
+    source_ip: str = Field(default="", index=True)
+    course_name: str = Field(default="", index=True)
+    student_id_text: str = Field(default="", index=True)
+    student_name: str = Field(default="", index=True)
+    correction_request: str = Field(default="")
+    extra_note: str = Field(default="")
+    process_status: str = Field(default="", index=True)
+    process_note: str = Field(default="")
+    match_result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    revision_result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    raw_row_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    synced_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
 # --- Note Models ---
 
 class NoteNode(SQLModel, table=True):

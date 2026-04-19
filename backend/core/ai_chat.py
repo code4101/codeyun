@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Iterator
 
 import requests
@@ -12,6 +18,11 @@ from backend.core.settings import get_settings
 
 class OllamaClientError(RuntimeError):
     """Raised when an AI provider request cannot be completed."""
+
+
+CODEX_CLI_DEFAULT_COMMAND = "codex"
+CODEX_CLI_DEFAULT_MODEL = "gpt-5.4"
+CODEX_CLI_WORKSPACE_DIRNAME = "codex-cli-workspace"
 
 
 @dataclass(frozen=True)
@@ -29,6 +40,8 @@ class AiProviderConfig:
     configured: bool
     models: tuple[str, ...]
     is_custom: bool = False
+    sharing_mode: str = "builtin"
+    can_manage: bool = False
 
 
 OLLAMA_MODEL_ALIASES: dict[str, dict[str, Any]] = {
@@ -131,7 +144,9 @@ def _apply_provider_overrides(
     base_url: str | None = None,
     api_key: str | None = None,
 ) -> AiProviderConfig:
-    resolved_base_url = provider.base_url if base_url is None else base_url.strip().rstrip("/")
+    resolved_base_url = provider.base_url if base_url is None else (
+        base_url.strip() if provider.kind == "codex_cli" else base_url.strip().rstrip("/")
+    )
     resolved_api_key = provider.api_key if api_key is None else api_key.strip()
     configured = bool(resolved_base_url) and (not provider.requires_api_key or bool(resolved_api_key))
     return replace(
@@ -188,6 +203,8 @@ def _serialize_provider(provider: AiProviderConfig) -> dict[str, Any]:
         "supports_vision": provider.supports_vision,
         "requires_api_key": provider.requires_api_key,
         "is_custom": provider.is_custom,
+        "sharing_mode": provider.sharing_mode,
+        "can_manage": provider.can_manage,
     }
 
 
@@ -225,6 +242,13 @@ def get_ai_provider_status(
             payload["available"] = False
             payload["error"] = str(exc)
             return payload
+    elif provider.kind == "codex_cli":
+        try:
+            _probe_codex_cli(provider)
+        except OllamaClientError as exc:
+            payload["available"] = False
+            payload["error"] = str(exc)
+            return payload
 
     payload["available"] = True
     payload["error"] = None
@@ -233,10 +257,219 @@ def get_ai_provider_status(
 
 def _get_unconfigured_provider_message(provider: AiProviderConfig) -> str:
     if not provider.base_url.strip():
+        if provider.kind == "codex_cli":
+            return f"{provider.label} 未填写命令"
         return f"{provider.label} 未填写地址"
     if provider.requires_api_key and not provider.api_key.strip():
+        if provider.kind == "codex_cli":
+            return f"{provider.label} 未填写访问 Token"
         return f"{provider.label} 未填写 API Key"
     return f"{provider.label} 未配置"
+
+
+def _split_command_line(command_line: str) -> list[str]:
+    payload = command_line.strip()
+    if not payload:
+        return []
+    try:
+        return shlex.split(payload, posix=os.name != "nt")
+    except ValueError as exc:
+        raise OllamaClientError(f"命令格式无效：{exc}") from exc
+
+
+def _resolve_command_path(command: list[str]) -> list[str]:
+    if not command or os.name != "nt":
+        return command
+
+    executable = command[0].strip()
+    if not executable:
+        return command
+
+    # On Windows, `subprocess.run(["codex", ...])` may hit an extensionless shim
+    # before the real `.cmd/.exe` launcher. Resolve once up front to the concrete
+    # runnable path that `shutil.which()` selects.
+    resolved_executable = shutil.which(executable)
+    if resolved_executable:
+        return [resolved_executable, *command[1:]]
+    return command
+
+
+def _build_codex_workspace_dir() -> Path:
+    path = get_settings().data_dir / CODEX_CLI_WORKSPACE_DIRNAME
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _summarize_process_output(*segments: str) -> str:
+    lines: list[str] = []
+    for segment in segments:
+        for line in segment.splitlines():
+            normalized = line.strip()
+            if normalized:
+                lines.append(normalized)
+    if not lines:
+        return "没有可用输出"
+    return lines[-1]
+
+
+def _probe_codex_cli(provider: AiProviderConfig) -> None:
+    command = _resolve_command_path(_split_command_line(provider.base_url))
+    if not command:
+        raise OllamaClientError("Codex CLI 未填写命令")
+
+    try:
+        completed = subprocess.run(
+            [*command, "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=min(15.0, max(1.0, provider.timeout_seconds)),
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OllamaClientError("检测 Codex CLI 超时") from exc
+    except OSError as exc:
+        raise OllamaClientError(f"启动 Codex CLI 失败：{exc}") from exc
+
+    if completed.returncode != 0:
+        detail = _summarize_process_output(completed.stderr, completed.stdout)
+        raise OllamaClientError(f"检测 Codex CLI 失败：{detail}")
+
+
+def _build_codex_cli_prompt(
+    *,
+    messages: list[dict[str, Any]],
+    system_prompt: str | None,
+    response_format: Any,
+) -> str:
+    sections = [
+        "你正在通过 CodeYun 调用本机 Codex CLI 响应请求。",
+        "运行环境：",
+        "- 当前来源默认拥有完整的命令执行与文件系统访问权限。",
+        "- 你可以根据用户请求读取文件、遍历目录、运行 shell 命令并直接给出结果。",
+        "- 当前工作目录由 CodeYun 指定；如果用户提供了绝对路径，你可以直接访问该路径。",
+        "- 不要暴露内部思考或执行计划。",
+    ]
+
+    if response_format == "json":
+        sections.append("- 最终只输出一个 JSON 对象，不要使用 Markdown 代码块。")
+    elif isinstance(response_format, dict):
+        sections.append("- 最终只输出一个满足下方 JSON Schema 的 JSON 对象，不要使用 Markdown 代码块。")
+        sections.append("")
+        sections.append("JSON Schema:")
+        sections.append(json.dumps(response_format, ensure_ascii=False, indent=2))
+
+    if system_prompt and system_prompt.strip():
+        sections.extend([
+            "",
+            "系统提示：",
+            system_prompt.strip(),
+        ])
+
+    sections.extend([
+        "",
+        "对话历史：",
+    ])
+
+    for message in messages:
+        role = str(message.get("role") or "").strip().lower() or "user"
+        content = str(message.get("content") or "")
+        sections.extend([
+            "",
+            f"[{role}]",
+            content,
+        ])
+
+    sections.extend([
+        "",
+        "请直接给出最终回答。",
+    ])
+    return "\n".join(sections).strip()
+
+
+def _chat_with_codex_cli(
+    provider: AiProviderConfig,
+    *,
+    messages: list[dict[str, Any]],
+    model: str | None,
+    system_prompt: str | None,
+    response_format: Any = None,
+    timeout_seconds: float | None = None,
+) -> dict[str, Any]:
+    command = _resolve_command_path(_split_command_line(provider.base_url))
+    if not command:
+        raise OllamaClientError("Codex CLI 未填写命令")
+
+    workspace_dir = _build_codex_workspace_dir()
+    prompt = _build_codex_cli_prompt(
+        messages=messages,
+        system_prompt=system_prompt,
+        response_format=response_format,
+    )
+    resolved_model = (model or provider.default_model).strip() or provider.default_model
+
+    with tempfile.TemporaryDirectory(prefix="codeyun-codex-cli-") as temp_dir:
+        output_path = Path(temp_dir) / "last-message.txt"
+        command_args = [
+            *command,
+            "exec",
+            "--skip-git-repo-check",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--color",
+            "never",
+            "-c",
+            "shell_environment_policy.inherit=none",
+            "--cd",
+            os.fspath(workspace_dir),
+            "--output-last-message",
+            os.fspath(output_path),
+        ]
+        if resolved_model:
+            command_args.extend(["--model", resolved_model])
+        command_args.append("-")
+
+        try:
+            completed = subprocess.run(
+                command_args,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=os.fspath(workspace_dir),
+                timeout=timeout_seconds or provider.timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise OllamaClientError(f"未找到 Codex CLI 命令：{command[0]}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise OllamaClientError(f"Codex CLI 响应超时（>{timeout_seconds or provider.timeout_seconds:.0f}s）") from exc
+        except OSError as exc:
+            raise OllamaClientError(f"启动 Codex CLI 失败：{exc}") from exc
+
+        content = ""
+        if output_path.exists():
+            content = output_path.read_text(encoding="utf-8").strip()
+
+    if completed.returncode != 0:
+        detail = _summarize_process_output(completed.stderr, completed.stdout, content)
+        raise OllamaClientError(f"Codex CLI 调用失败：{detail}")
+    if not content:
+        detail = _summarize_process_output(completed.stderr, completed.stdout)
+        raise OllamaClientError(f"Codex CLI 没有返回有效内容：{detail}")
+
+    return {
+        "model": resolved_model,
+        "content": content,
+        "created_at": datetime.now(tz=timezone.utc).isoformat(),
+        "done_reason": "stop",
+        "prompt_eval_count": None,
+        "eval_count": None,
+        "total_duration": None,
+    }
 
 
 def _normalize_base64_image(value: str) -> str:
@@ -902,6 +1135,16 @@ def chat_with_provider(
             timeout_seconds=timeout_seconds,
         )
 
+    if provider.kind == "codex_cli":
+        return _chat_with_codex_cli(
+            provider,
+            messages=messages,
+            model=model,
+            system_prompt=system_prompt,
+            response_format=response_format,
+            timeout_seconds=timeout_seconds,
+        )
+
     raise OllamaClientError(f"未实现的 AI 来源类型：{provider.kind}")
 
 
@@ -951,6 +1194,20 @@ def stream_chat_with_provider(
             response_format=response_format,
             timeout_seconds=timeout_seconds,
         )
+        return
+
+    if provider.kind == "codex_cli":
+        yield {
+            "type": "done",
+            **_chat_with_codex_cli(
+                provider,
+                messages=messages,
+                model=model,
+                system_prompt=system_prompt,
+                response_format=response_format,
+                timeout_seconds=timeout_seconds,
+            ),
+        }
         return
 
     raise OllamaClientError(f"未实现的 AI 来源类型：{provider.kind}")

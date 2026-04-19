@@ -2,13 +2,16 @@ import os
 import socket
 import subprocess
 import sys
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 import psutil
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+from backend.core.attendance_service import apply_attendance_order_operation_password_env
 from backend.core.auth import verify_api_token
+from backend.core.attendance_order import OrderAutomationError, execute_order_action
+from backend.core.attendance_wjx_data import WjxDataSyncError, execute_wjx_data_sync
 from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
 from backend.core.device import (
     build_background_popen_kwargs,
@@ -16,6 +19,7 @@ from backend.core.device import (
     get_device_id,
     match_cmdline,
 )
+from backend.core.ui_automation import ensure_ui_automation_thread_context
 
 router = APIRouter(dependencies=[Depends(verify_api_token)])
 
@@ -172,15 +176,64 @@ class AttendanceWjxExecuteRequest(BaseModel):
 @router.post("/attendance/wjx/execute")
 def execute_attendance_wjx(req: AttendanceWjxExecuteRequest):
     try:
-        return execute_wjx_template_action(
-            login_username=req.login_username,
-            password=req.password,
-            activity_id=req.activity_id,
-            action=req.action,
-            hide_names=req.hide_names,
-            add_names=req.add_names,
-        )
+        with ensure_ui_automation_thread_context():
+            return execute_wjx_template_action(
+                login_username=req.login_username,
+                password=req.password,
+                activity_id=req.activity_id,
+                action=req.action,
+                hide_names=req.hide_names,
+                add_names=req.add_names,
+            )
     except WjxAutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class AttendanceOrderExecuteRequest(BaseModel):
+    action: Literal["inspect", "refund"]
+    rows: List[dict[str, Any]] = Field(default_factory=list)
+    login_users: List[str] = Field(default_factory=list)
+    lookup_mode: Literal["hybrid", "db_only", "browser_only"] = "browser_only"
+    operation_password: Optional[str] = None
+
+
+@router.post("/attendance/order/execute")
+def execute_attendance_order(req: AttendanceOrderExecuteRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            with apply_attendance_order_operation_password_env(req.operation_password):
+                return execute_order_action(
+                    action=req.action,
+                    rows=req.rows,
+                    weipay_login_users=req.login_users,
+                    lookup_mode=req.lookup_mode,
+                )
+    except OrderAutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+class AttendanceWjxDataExecuteRequest(BaseModel):
+    login_username: str
+    password: str
+    activity_id: str
+    exist_max_id: int = 0
+
+
+@router.post("/attendance/wjx-data/execute")
+def execute_attendance_wjx_data(req: AttendanceWjxDataExecuteRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            return execute_wjx_data_sync(
+                login_username=req.login_username,
+                password=req.password,
+                activity_id=req.activity_id,
+                exist_max_id=req.exist_max_id,
+            )
+    except WjxDataSyncError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

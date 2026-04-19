@@ -56,6 +56,7 @@ def test_build_reduce_system_prompt_contains_reduce_specific_guidance():
     assert "Git 归并摘要助手" in prompt
     assert "summary 应该是归并后的整体概括" in prompt
     assert "candidate_body 必须是 2 到 4 条中文短句数组" in prompt
+    assert "自动格式化成 1、2、3 编号正文" in prompt
 
 
 def test_generate_ai_git_commit_draft_hierarchical_returns_final_draft_and_reduction_meta(tmp_path, monkeypatch):

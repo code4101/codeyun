@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.api.admin import init_storage_scheduler, router as admin_router
 from backend.api.admin_feature_access import router as admin_feature_access_router
 from backend.api.access import router as access_router
-from backend.api.attendance import router as attendance_router
+from backend.api.attendance import public_router as attendance_public_router, router as attendance_router
 from backend.api.ai_chat import router as ai_chat_router
 from backend.api.ai_git_repos import router as ai_git_repos_router
 from backend.api.auth import router as auth_router
@@ -101,6 +101,7 @@ app.include_router(
     prefix="/api/admin/feature-access",
     tags=["admin-feature-access"],
 )
+app.include_router(attendance_public_router, prefix="/api/attendance", tags=["attendance"])
 app.include_router(attendance_router, prefix="/api/attendance", tags=["attendance"])
 app.include_router(ai_chat_router, prefix="/api/ai-chat", tags=["ai-chat"])
 app.include_router(ai_git_repos_router, prefix="/api/ai-git-repos", tags=["ai-git-repos"])

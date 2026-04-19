@@ -3,6 +3,29 @@ from backend.core.auth import get_current_active_superuser
 from backend.models import User
 
 
+EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
+    "home",
+    "tools",
+    "tools.password-generator",
+    "tools.image-browser",
+    "tools.color-tools",
+    "game-tools",
+    "fanxiu",
+    "fanxiu.calculator",
+    "fanxiu.draw-calc",
+    "fanxiu.discount",
+    "fanxiu.recharge",
+    "fanxiu.xianzhou-race",
+    "fanxiu.cuijian-trial",
+    "dsp.calculator",
+    "magic-craft",
+    "magic-craft.xor-matrix",
+    "note-tools",
+    "notes.center",
+    "notes.infinite-canvas",
+}
+
+
 def _override_superuser():
     admin_user = User(
         id=999,
@@ -29,11 +52,17 @@ def test_access_context_anonymous_uses_registry_defaults(client):
         "user_id": None,
         "username": None,
     }
+    assert set(payload["overrides"]) == EXPECTED_DEFAULT_ANONYMOUS_KEYS
+    assert set(payload["overrides"].values()) == {"allow"}
     assert flat_items["home"]["effective_value"] is True
-    assert flat_items["tools.ai-chat"]["effective_value"] is True
+    assert flat_items["tools.password-generator"]["effective_value"] is True
+    assert flat_items["tools.ai-chat"]["effective_value"] is False
+    assert flat_items["fanxiu.calculator"]["effective_value"] is True
+    assert flat_items["fanxiu.task-status"]["effective_value"] is False
+    assert flat_items["notes.center"]["effective_value"] is True
     assert flat_items["cluster.tasks"]["effective_value"] is False
     assert flat_items["admin.accounts"]["effective_value"] is False
-    assert "home" in payload["effective_keys"]
+    assert set(payload["effective_keys"]) == EXPECTED_DEFAULT_ANONYMOUS_KEYS
     assert "admin.accounts" not in payload["effective_keys"]
 
 
@@ -47,11 +76,16 @@ def test_access_context_user_inherits_anonymous_defaults(client, auth_user):
     assert payload["subject"]["kind"] == "user"
     assert payload["subject"]["user_id"] == auth_user.id
     assert flat_items["home"]["effective_value"] is True
-    assert flat_items["tools.ai-chat"]["effective_value"] is True
+    assert flat_items["home"]["source"] == "inherit_anonymous"
+    assert flat_items["tools.password-generator"]["effective_value"] is True
+    assert flat_items["tools.ai-chat"]["effective_value"] is False
+    assert flat_items["fanxiu.calculator"]["effective_value"] is True
+    assert flat_items["fanxiu.task-status"]["effective_value"] is False
     assert flat_items["cluster-tools"]["effective_value"] is False
     assert flat_items["cluster-tools"]["source"] == "inherit_anonymous"
     assert flat_items["cluster.tasks"]["effective_value"] is False
     assert flat_items["cluster.tasks"]["source"] == "ancestor_denied"
+    assert set(payload["effective_keys"]) == EXPECTED_DEFAULT_ANONYMOUS_KEYS
 
 
 def test_admin_feature_access_anonymous_parent_deny_forces_descendants_off(client):

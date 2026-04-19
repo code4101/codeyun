@@ -1,12 +1,32 @@
 <template>
   <div class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
-    <Toolbar
-      v-if="showToolbar && !readOnly"
-      class="editor-toolbar"
-      :editor="editorRef"
-      :defaultConfig="toolbarConfig"
-      :mode="mode"
-    />
+    <div v-if="showToolbar && !readOnly" class="editor-toolbar-row">
+      <Toolbar
+        class="editor-toolbar"
+        :editor="editorRef"
+        :defaultConfig="toolbarConfig"
+        :mode="mode"
+      />
+      <el-tooltip content="上传附件并插入链接" placement="bottom">
+        <el-button
+          size="small"
+          class="attachment-upload-button"
+          :icon="Upload"
+          :loading="attachmentUploading"
+          @click.stop="openAttachmentPicker"
+        >
+          附件
+        </el-button>
+      </el-tooltip>
+      <input
+        ref="attachmentInputRef"
+        class="attachment-input"
+        type="file"
+        multiple
+        @change="handleAttachmentInputChange"
+        @click.stop
+      />
+    </div>
     <!-- Extra Toolbar Items Slot -->
     <div v-if="showToolbar && !readOnly && $slots.extra" class="editor-toolbar-extra">
       <slot name="extra"></slot>
@@ -77,6 +97,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, onMounted, watch, toRef } f
 import { Editor, Toolbar } from '@wangeditor/editor-for-vue'
 import { type IDomEditor, SlateEditor, SlateElement } from '@wangeditor/editor'
 import { ElMessage } from 'element-plus'
+import { Upload } from '@element-plus/icons-vue'
 import api from '@/api'
 import { mergeImagesToPngDataUrl } from '@/utils/imageMerge'
 import { registerWangEditorPlugins } from '@/utils/wangEditorPlugins'
@@ -130,6 +151,11 @@ const mergeGap = ref(0)
 const detectedImages = ref<string[]>([])
 const mergedImageResult = ref('')
 const merging = ref(false)
+const attachmentInputRef = ref<HTMLInputElement | null>(null)
+const attachmentUploading = ref(false)
+
+const MAX_ATTACHMENT_UPLOAD_BYTES = 100 * 1024 * 1024
+const ATTACHMENT_UPLOAD_TIMEOUT_MS = 120 * 1000
 
 const editorStyle = computed(() => {
     if (props.layout !== 'flow' || typeof props.minHeight !== 'number' || props.minHeight <= 0) {
@@ -181,6 +207,43 @@ interface UploadImageResponse {
   data?: UploadedImageData | UploadedImageData[]
 }
 
+interface UploadedAttachmentData {
+  url?: string
+  filename?: string
+  original_filename?: string
+  name?: string
+  content_type?: string
+  size?: number
+}
+
+interface UploadAttachmentResponse {
+  errno?: number
+  message?: string
+  data?: UploadedAttachmentData
+}
+
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;',
+}
+
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => HTML_ESCAPE_MAP[char] || char)
+
+const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value >= 10 || unitIndex === 0 ? Math.round(value) : value.toFixed(1)} ${units[unitIndex]}`
+}
+
 const uploadEditorImage = async (
   file: File,
   insertFn: (src: string, alt: string, href: string) => void
@@ -209,6 +272,81 @@ const uploadEditorImage = async (
     const message = error?.response?.data?.detail || error?.message || '图片上传失败'
     ElMessage.error(message)
     throw error
+  }
+}
+
+const openAttachmentPicker = () => {
+  if (attachmentUploading.value) return
+  attachmentInputRef.value?.click()
+}
+
+const uploadAttachmentFile = async (file: File): Promise<UploadedAttachmentData> => {
+  if (file.size > MAX_ATTACHMENT_UPLOAD_BYTES) {
+    throw new Error(`${file.name} 超过 ${formatBytes(MAX_ATTACHMENT_UPLOAD_BYTES)}`)
+  }
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const response = await api.post<UploadAttachmentResponse>('/upload/file', formData, {
+    timeout: ATTACHMENT_UPLOAD_TIMEOUT_MS
+  })
+  const { errno = 1, data, message } = response.data || {}
+
+  if (errno !== 0 || !data?.url) {
+    throw new Error(message || `${file.name} 上传失败`)
+  }
+
+  return {
+    ...data,
+    name: data.name || data.original_filename || file.name
+  }
+}
+
+const buildAttachmentLinkHtml = (attachment: UploadedAttachmentData) => {
+  const url = String(attachment.url || '')
+  const label = String(attachment.name || attachment.original_filename || attachment.filename || '附件')
+  if (!url) return ''
+  return `<p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" download="${escapeHtml(label)}" data-codeyun-attachment="true">${escapeHtml(label)}</a></p>`
+}
+
+const insertAttachmentLinks = (attachments: UploadedAttachmentData[]) => {
+  const editor = editorRef.value as IDomEditor | undefined
+  if (!editor) {
+    ElMessage.error('编辑器还未准备好')
+    return
+  }
+
+  const html = attachments
+    .map(buildAttachmentLinkHtml)
+    .filter(Boolean)
+    .join('')
+
+  if (!html) return
+  editor.focus()
+  editor.dangerouslyInsertHtml(html)
+  syncValueFromEditor()
+}
+
+const handleAttachmentInputChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files || [])
+  input.value = ''
+  if (!files.length) return
+
+  attachmentUploading.value = true
+  try {
+    const uploaded: UploadedAttachmentData[] = []
+    for (const file of files) {
+      uploaded.push(await uploadAttachmentFile(file))
+    }
+    insertAttachmentLinks(uploaded)
+    ElMessage.success(uploaded.length === 1 ? '已插入附件' : `已插入 ${uploaded.length} 个附件`)
+  } catch (error: any) {
+    const message = error?.response?.data?.detail || error?.message || '附件上传失败'
+    ElMessage.error(message)
+  } finally {
+    attachmentUploading.value = false
   }
 }
 
@@ -417,9 +555,27 @@ const confirmInsertMergedImage = () => {
     min-height: var(--editor-flow-min-height, 320px);
 }
 
-.editor-toolbar {
+.editor-toolbar-row {
+    display: flex;
+    align-items: center;
     border-bottom: 1px solid #ccc;
+    background: #fff;
     flex-shrink: 0;
+    min-width: 0;
+}
+
+.editor-toolbar {
+    flex: 1;
+    min-width: 0;
+}
+
+.attachment-upload-button {
+    flex: 0 0 auto;
+    margin-right: 8px;
+}
+
+.attachment-input {
+    display: none;
 }
 
 .editor-content-area {

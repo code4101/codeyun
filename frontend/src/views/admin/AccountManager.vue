@@ -112,7 +112,7 @@
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="120" align="center">
+          <el-table-column label="操作" width="108" align="center">
             <template #default="{ row }">
               <div class="action-cell">
                 <el-button
@@ -121,7 +121,7 @@
                   size="small"
                   @click.stop="openProfileDialog(row)"
                 >
-                  编辑资料
+                  编辑
                 </el-button>
                 <el-button
                   text
@@ -906,12 +906,13 @@ onMounted(() => {
   align-items: center;
   justify-content: center;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: 4px;
   white-space: nowrap;
 }
 
 .action-cell :deep(.el-button) {
   margin-left: 0;
+  flex: 0 0 auto;
 }
 
 .permission-panel {

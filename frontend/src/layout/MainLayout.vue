@@ -32,6 +32,8 @@ const router = useRouter();
 const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
+const expandedAsideWidth = 'clamp(152px, 40vw, 200px)';
+const asideWidth = computed(() => (isCollapse.value ? '64px' : expandedAsideWidth));
 
 const toggleCollapse = () => {
   isCollapse.value = !isCollapse.value;
@@ -45,18 +47,44 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/cluster/labelme')) {
     return '/cluster/labelme';
   }
+  if (route.path.startsWith('/attendance/questionnaire/feedback') || route.path.startsWith('/attendance/wjx/feedback')) {
+    return '/attendance/questionnaire/feedback';
+  }
+  if (route.path.startsWith('/attendance/questionnaire/data') || route.path.startsWith('/attendance/wjx/data')) {
+    return '/attendance/questionnaire/data';
+  }
+  if (
+    route.path.startsWith('/attendance/questionnaire')
+    || route.path.startsWith('/attendance/wjx')
+  ) {
+    return '/attendance/questionnaire/feedback';
+  }
   if (route.path.startsWith('/cluster/')) return '/cluster/tasks';
   const privateMenuIndex = findPrivateMenuIndex(route.path);
   if (privateMenuIndex) return privateMenuIndex;
   return route.path;
 });
 
+const GREEN_CHANNEL_MENU_PATHS = new Set<string>([
+  '/attendance/questionnaire/feedback',
+])
+
 const canAccessFeature = (key: string) => featureAccessStore.isAllowed(key);
 
 const canAccessMenuPath = (path: string) => {
+  if (GREEN_CHANNEL_MENU_PATHS.has(path)) {
+    return true
+  }
   const permissionKey = findPermissionKeyByMenuPath(path);
+  if (!permissionKey) {
+    return false;
+  }
   return featureAccessStore.isAllowed(permissionKey);
 };
+
+const attendanceFeedbackGreenChannelVisible = computed(() =>
+  canAccessMenuPath('/attendance/questionnaire/feedback'),
+)
 
 const visiblePrivateMenuSections = computed(() =>
   privateMenuSections
@@ -90,11 +118,24 @@ const aiToolsMenuVisible = computed(() =>
 );
 
 const attendanceMenuVisible = computed(() =>
-  canAccessFeature('attendance-tools')
-  && [
-    '/attendance/configs',
-    '/attendance/wjx-templates',
-  ].some((path) => canAccessMenuPath(path)),
+  attendanceFeedbackGreenChannelVisible.value
+  || (
+    canAccessFeature('attendance-tools')
+    && [
+      '/attendance/configs',
+      '/attendance/questionnaire/feedback',
+      '/attendance/questionnaire/data',
+      '/attendance/orders',
+    ].some((path) => canAccessMenuPath(path))
+  ),
+);
+
+const attendanceWjxMenuVisible = computed(() =>
+  attendanceFeedbackGreenChannelVisible.value
+  || (
+    canAccessFeature('attendance.wjx')
+    && ['/attendance/questionnaire/feedback', '/attendance/questionnaire/data'].some((path) => canAccessMenuPath(path))
+  ),
 );
 
 const fanxiuMenuVisible = computed(() =>
@@ -157,6 +198,7 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
   if (route.path.startsWith('/attendance/')) openeds.push('attendance-tools');
+  if (route.path.startsWith('/attendance/questionnaire') || route.path.startsWith('/attendance/wjx')) openeds.push('attendance-questionnaire');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
@@ -178,7 +220,7 @@ const handleLogin = () => {
 <template>
   <div class="common-layout">
     <el-container>
-      <el-aside :width="isCollapse ? '64px' : '200px'" class="main-aside">
+      <el-aside :width="asideWidth" class="main-aside">
         <div class="toggle-button" :class="{ 'collapsed': isCollapse }" @click="toggleCollapse">
           <el-icon v-if="isCollapse"><Expand /></el-icon>
           <el-icon v-else><Fold /></el-icon>
@@ -190,7 +232,7 @@ const handleLogin = () => {
           :collapse="isCollapse"
           router
         >
-          <el-menu-item index="/">
+          <el-menu-item v-if="canAccessFeature('home')" index="/">
             <el-icon><icon-menu /></el-icon>
             <template #title>首页</template>
           </el-menu-item>
@@ -222,7 +264,14 @@ const handleLogin = () => {
               <span>禅寺考勤</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath('/attendance/configs')" index="/attendance/configs">考勤配置</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/attendance/wjx-templates')" index="/attendance/wjx-templates">问卷星模版</el-menu-item>
+            <el-sub-menu v-if="attendanceWjxMenuVisible" index="attendance-questionnaire">
+              <template #title>
+                <span>问卷</span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath('/attendance/questionnaire/feedback')" index="/attendance/questionnaire/feedback">配置</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath('/attendance/questionnaire/data')" index="/attendance/questionnaire/data">数据</el-menu-item>
+            </el-sub-menu>
+            <el-menu-item v-if="canAccessMenuPath('/attendance/orders')" index="/attendance/orders">订单操作</el-menu-item>
           </el-sub-menu>
           
           <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
@@ -230,6 +279,15 @@ const handleLogin = () => {
               <el-icon><MagicStick /></el-icon>
               <span>游戏工具</span>
             </template>
+            <el-menu-item v-if="canAccessMenuPath('/dsp/calculator')" index="/dsp/calculator">
+              <span>戴森球计划</span>
+            </el-menu-item>
+            <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
+              <template #title>
+                <span>魔法工艺</span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath('/magic-craft/xor-matrix')" index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
+            </el-sub-menu>
             <el-sub-menu v-if="fanxiuMenuVisible" index="fanxiu">
               <template #title>
                 <span>凡修手游</span>
@@ -241,15 +299,6 @@ const handleLogin = () => {
               <el-menu-item v-if="canAccessMenuPath('/fanxiu/recharge')" index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath('/fanxiu/xianzhou-race')" index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath('/fanxiu/cuijian-trial')" index="/fanxiu/cuijian-trial">淬剑试炼</el-menu-item>
-            </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath('/dsp/calculator')" index="/dsp/calculator">
-              <span>戴森球计划</span>
-            </el-menu-item>
-            <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
-              <template #title>
-                <span>魔法工艺</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath('/magic-craft/xor-matrix')" index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
             </el-sub-menu>
           </el-sub-menu>
 
