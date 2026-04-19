@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AttendanceFeedbackFormCard: typeof import('./components/attendance/AttendanceFeedbackFormCard.vue')['default']
     BatchNoteEditDialog: typeof import('./components/BatchNoteEditDialog.vue')['default']
     CustomNode: typeof import('./components/CustomNode.vue')['default']
     DocPage: typeof import('./components/DocPage.vue')['default']
@@ -58,6 +59,7 @@ declare module 'vue' {
     ElResult: typeof import('element-plus/es')['ElResult']
     ElRow: typeof import('element-plus/es')['ElRow']
     ElScrollbar: typeof import('element-plus/es')['ElScrollbar']
+    ElSegmented: typeof import('element-plus/es')['ElSegmented']
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElSlider: typeof import('element-plus/es')['ElSlider']
     ElSubMenu: typeof import('element-plus/es')['ElSubMenu']

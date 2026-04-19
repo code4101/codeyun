@@ -390,6 +390,8 @@ export const useAiProviderStore = defineStore('aiProvider', {
         label: status.label || current.label,
         kind: status.kind || current.kind,
         is_custom: status.is_custom,
+        sharing_mode: status.sharing_mode || current.sharing_mode,
+        can_manage: status.can_manage,
         configured: status.configured,
         requires_api_key: status.requires_api_key,
         base_url: status.base_url || current.base_url,

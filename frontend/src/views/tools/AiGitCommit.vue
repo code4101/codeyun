@@ -211,8 +211,8 @@
                     <stop offset="100%" stop-color="#2563eb" stop-opacity="0.08" />
                   </linearGradient>
                   <linearGradient :id="`${historyChartIdPrefix}-deleted`" x1="0%" x2="0%" y1="0%" y2="100%">
-                    <stop offset="0%" stop-color="#ef4444" stop-opacity="0.4" />
-                    <stop offset="100%" stop-color="#ef4444" stop-opacity="0.06" />
+                    <stop offset="0%" stop-color="#ef4444" stop-opacity="0.06" />
+                    <stop offset="100%" stop-color="#ef4444" stop-opacity="0.36" />
                   </linearGradient>
                 </defs>
 
@@ -241,22 +241,22 @@
                 <line
                   :x1="HISTORY_CHART_PADDING.left"
                   :x2="historyChartModel.chartWidth - HISTORY_CHART_PADDING.right"
-                  :y1="historyChartModel.bottomY"
-                  :y2="historyChartModel.bottomY"
+                  :y1="historyChartModel.baselineY"
+                  :y2="historyChartModel.baselineY"
                   class="history-chart-baseline"
-                />
-                <path
-                  :d="historyChartModel.deletedAreaPath"
-                  :fill="`url(#${historyChartIdPrefix}-deleted)`"
-                  class="history-chart-area"
                 />
                 <path
                   :d="historyChartModel.addedAreaPath"
                   :fill="`url(#${historyChartIdPrefix}-added)`"
                   class="history-chart-area"
                 />
+                <path
+                  :d="historyChartModel.deletedAreaPath"
+                  :fill="`url(#${historyChartIdPrefix}-deleted)`"
+                  class="history-chart-area"
+                />
+                <path :d="historyChartModel.addedLinePath" class="history-chart-line is-added" />
                 <path :d="historyChartModel.deletedLinePath" class="history-chart-line is-deleted" />
-                <path :d="historyChartModel.totalLinePath" class="history-chart-line is-total" />
 
                 <text
                   v-for="tick in historyChartModel.xTicks"
@@ -533,7 +533,7 @@
                 v-model="draftBodyText"
                 type="textarea"
                 :rows="6"
-                placeholder="每行一条，会自动格式化成 commit body"
+                placeholder="每行一条，提交时会自动格式化为 1、2、3 编号正文"
               />
             </el-form-item>
           </el-form>
@@ -663,19 +663,19 @@ interface GitHistoryRangeOption {
 interface GitHistoryChartPoint {
   date: string
   x: number
+  addedY: number
   deletedY: number
-  totalY: number
 }
 
 interface GitHistoryChartModel {
   viewBox: string
   chartWidth: number
   chartHeight: number
-  bottomY: number
-  deletedAreaPath: string
+  baselineY: number
   addedAreaPath: string
+  deletedAreaPath: string
+  addedLinePath: string
   deletedLinePath: string
-  totalLinePath: string
   xTicks: Array<{ key: string; x: number; label: string }>
   yGuides: Array<{ key: string; y: number; label: string }>
   hasActivity: boolean
@@ -834,6 +834,10 @@ const selectedFileDiffLoading = computed(() => {
   const path = selectedChangedFile.value?.path
   return Boolean(path && loadingFileDiffPath.value === path)
 })
+const commitBodyPrefixPattern = /^(?:[-*•]\s*|\d{1,2}[、）)]\s*|\d{1,2}[.．](?!\d)\s*)/
+function formatCommitBodyLines(lines: string[]) {
+  return lines.map((line, index) => `${index + 1}、${line}`)
+}
 
 const canInspect = computed(() => Boolean(form.entryId && form.cwd.trim()))
 const canGenerate = computed(() => Boolean(form.entryId && form.cwd.trim() && form.providerId && form.model.trim()))
@@ -857,7 +861,7 @@ const historyChartModel = computed<GitHistoryChartModel | null>(() => buildGitHi
 const normalizedBodyLines = computed(() =>
   draftBodyText.value
     .split(/\r?\n/)
-    .map(line => line.trim().replace(/^[-*•]\s*/, ''))
+    .map(line => line.trim().replace(commitBodyPrefixPattern, ''))
     .filter(Boolean),
 )
 const canCommit = computed(() => Boolean(form.entryId && form.cwd.trim() && draftSubject.value.trim()))
@@ -869,7 +873,7 @@ const commitPreview = computed(() => {
   if (!normalizedBodyLines.value.length) {
     return subject
   }
-  return `${subject}\n\n${normalizedBodyLines.value.map(line => `- ${line}`).join('\n')}`
+  return `${subject}\n\n${formatCommitBodyLines(normalizedBodyLines.value).join('\n')}`
 })
 const reductionLevelItems = computed(() =>
   (reductionMeta.value?.levels || []).map(level => ({
@@ -1342,31 +1346,19 @@ function buildPathCommand(x: number, y: number) {
   return `${x.toFixed(1)} ${y.toFixed(1)}`
 }
 
-function buildAreaPath(points: GitHistoryChartPoint[], baselineY: number) {
+function buildAreaPath(
+  points: GitHistoryChartPoint[],
+  baselineY: number,
+  yField: 'addedY' | 'deletedY',
+) {
   if (!points.length) {
     return ''
   }
   const commands = [`M ${buildPathCommand(points[0].x, baselineY)}`]
   for (const point of points) {
-    commands.push(`L ${buildPathCommand(point.x, point.deletedY)}`)
+    commands.push(`L ${buildPathCommand(point.x, point[yField])}`)
   }
   commands.push(`L ${buildPathCommand(points[points.length - 1].x, baselineY)}`)
-  commands.push('Z')
-  return commands.join(' ')
-}
-
-function buildBandPath(points: GitHistoryChartPoint[]) {
-  if (!points.length) {
-    return ''
-  }
-  const commands = [`M ${buildPathCommand(points[0].x, points[0].deletedY)}`]
-  for (const point of points) {
-    commands.push(`L ${buildPathCommand(point.x, point.totalY)}`)
-  }
-  for (let index = points.length - 1; index >= 0; index -= 1) {
-    const point = points[index]
-    commands.push(`L ${buildPathCommand(point.x, point.deletedY)}`)
-  }
   commands.push('Z')
   return commands.join(' ')
 }
@@ -1406,41 +1398,41 @@ function buildGitHistoryChartModel(stats: GitHistoryStatsResponse | null): GitHi
   const chartHeight = HISTORY_CHART_HEIGHT
   const plotWidth = chartWidth - HISTORY_CHART_PADDING.left - HISTORY_CHART_PADDING.right
   const plotHeight = chartHeight - HISTORY_CHART_PADDING.top - HISTORY_CHART_PADDING.bottom
-  const bottomY = HISTORY_CHART_PADDING.top + plotHeight
-  const peakChurn = Math.max(
-    ...stats.points.map(point => point.added_line_count + point.deleted_line_count),
+  const baselineY = HISTORY_CHART_PADDING.top + plotHeight / 2
+  const halfPlotHeight = plotHeight / 2
+  const peakMagnitude = Math.max(
+    ...stats.points.map(point => Math.max(point.added_line_count, point.deleted_line_count)),
     0,
   )
-  const normalizedPeak = Math.max(peakChurn, 1)
+  const peakChurn = peakMagnitude
+  const normalizedPeak = Math.max(peakMagnitude, 1)
   const chartPoints = stats.points.map((point, index) => {
     const x = stats.points.length === 1
       ? HISTORY_CHART_PADDING.left + plotWidth / 2
       : HISTORY_CHART_PADDING.left + (plotWidth * index) / (stats.points.length - 1)
-    const deletedTotal = point.deleted_line_count
-    const churnTotal = point.deleted_line_count + point.added_line_count
     return {
       date: point.date,
       x,
-      deletedY: HISTORY_CHART_PADDING.top + plotHeight - (deletedTotal / normalizedPeak) * plotHeight,
-      totalY: HISTORY_CHART_PADDING.top + plotHeight - (churnTotal / normalizedPeak) * plotHeight,
+      addedY: baselineY - (point.added_line_count / normalizedPeak) * halfPlotHeight,
+      deletedY: baselineY + (point.deleted_line_count / normalizedPeak) * halfPlotHeight,
     }
   })
-  const yGuideRatios = [0.25, 0.5, 0.75, 1]
+  const yGuideRatios = [1, 0.5, -0.5, -1]
 
   return {
     viewBox: `0 0 ${chartWidth} ${chartHeight}`,
     chartWidth,
     chartHeight,
-    bottomY,
-    deletedAreaPath: buildAreaPath(chartPoints, bottomY),
-    addedAreaPath: buildBandPath(chartPoints),
+    baselineY,
+    addedAreaPath: buildAreaPath(chartPoints, baselineY, 'addedY'),
+    deletedAreaPath: buildAreaPath(chartPoints, baselineY, 'deletedY'),
+    addedLinePath: buildLinePath(chartPoints.map(point => ({ x: point.x, y: point.addedY }))),
     deletedLinePath: buildLinePath(chartPoints.map(point => ({ x: point.x, y: point.deletedY }))),
-    totalLinePath: buildLinePath(chartPoints.map(point => ({ x: point.x, y: point.totalY }))),
     xTicks: buildHistoryXTicks(chartPoints),
     yGuides: yGuideRatios.map(ratio => ({
       key: String(ratio),
-      y: HISTORY_CHART_PADDING.top + plotHeight - ratio * plotHeight,
-      label: formatHistoryNumber(Math.round(normalizedPeak * ratio)),
+      y: baselineY - ratio * halfPlotHeight,
+      label: `${ratio > 0 ? '+' : '-'}${formatHistoryNumber(Math.round(normalizedPeak * Math.abs(ratio)))}`,
     })),
     hasActivity: peakChurn > 0,
     peakChurn,
@@ -2128,7 +2120,7 @@ function getErrorMessage(error: any) {
 }
 
 .history-chart-baseline {
-  stroke: rgba(148, 163, 184, 0.45);
+  stroke: rgba(100, 116, 139, 0.52);
   stroke-width: 1;
 }
 
@@ -2147,7 +2139,7 @@ function getErrorMessage(error: any) {
   stroke: rgba(220, 38, 38, 0.9);
 }
 
-.history-chart-line.is-total {
+.history-chart-line.is-added {
   stroke: rgba(29, 78, 216, 0.96);
 }
 

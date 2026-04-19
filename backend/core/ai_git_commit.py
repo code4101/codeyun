@@ -17,7 +17,7 @@ from backend.core.ai_chat_user_config import (
     list_user_ai_chat_custom_provider_configs,
 )
 from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
-from backend.core.git_tools import format_git_commit_message
+from backend.core.git_tools import format_git_commit_message, normalize_commit_body_lines
 from backend.models import User
 
 
@@ -67,7 +67,7 @@ def _build_system_prompt(style: str, include_body: bool) -> str:
         else "提交标题必须是自然中文总结，不要使用 Conventional Commit 前缀。"
     )
     body_text = (
-        "body 必须是 2 到 4 条中文短句数组，每条只描述一个关键变化，不要带项目符号前缀。"
+        "body 必须是 2 到 4 条中文短句数组，每条只描述一个关键变化，不要自己带编号或项目符号前缀，系统会自动格式化成 1、2、3 编号正文。"
         if include_body
         else "body 必须返回空数组。"
     )
@@ -128,16 +128,7 @@ def _normalize_body_lines(value: object, *, include_body: bool) -> list[str]:
         return []
     if not isinstance(value, list):
         return []
-
-    lines: list[str] = []
-    for item in value:
-        line = str(item or "").strip()
-        if not line:
-            continue
-        if line.startswith(("-", "*", "•")):
-            line = line[1:].strip()
-        lines.append(line)
-    return lines[:4]
+    return normalize_commit_body_lines([str(item or "") for item in value])[:4]
 
 
 def generate_ai_git_commit_draft(

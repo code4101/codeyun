@@ -42,6 +42,8 @@ export interface AiChatStatusResponse {
   label: string
   kind: string
   is_custom: boolean
+  sharing_mode: string
+  can_manage: boolean
   available: boolean
   requires_auth: boolean
   configured: boolean
@@ -59,6 +61,8 @@ export interface AiChatProviderSummary {
   label: string
   kind: string
   is_custom: boolean
+  sharing_mode: string
+  can_manage: boolean
   configured: boolean
   requires_api_key: boolean
   base_url: string
@@ -114,6 +118,27 @@ export interface AiChatCreateOllamaAccessKeyRequest {
 }
 
 export interface AiChatOllamaAccessKeyDetail extends AiChatOllamaAccessKeySummary {
+  plaintext_value: string
+}
+
+export interface AiChatCodexAccessKeySummary {
+  id: string
+  label: string
+  masked_value: string
+  created_at?: number | null
+  updated_at?: number | null
+  created_by_user_id?: number | null
+}
+
+export interface AiChatCodexAccessKeysResponse {
+  items: AiChatCodexAccessKeySummary[]
+}
+
+export interface AiChatCreateCodexAccessKeyRequest {
+  label?: string | null
+}
+
+export interface AiChatCodexAccessKeyDetail extends AiChatCodexAccessKeySummary {
   plaintext_value: string
 }
 
@@ -200,6 +225,8 @@ export interface AiChatSavedApiKeySummary {
 
 export interface AiChatCreateCustomProviderRequest {
   label: string
+  kind?: 'openai_compatible' | 'codex_cli' | null
+  visibility?: 'private' | 'public' | null
   base_url: string
   default_model?: string | null
   models?: string[]
@@ -258,6 +285,25 @@ export async function revealAiChatOllamaAccessKey(keyId: string) {
 
 export async function deleteAiChatOllamaAccessKey(keyId: string) {
   await api.delete(`/ai-chat/ollama-access-keys/${keyId}`)
+}
+
+export async function fetchAiChatCodexAccessKeys() {
+  const response = await api.get<AiChatCodexAccessKeysResponse>('/ai-chat/codex-access-keys')
+  return response.data
+}
+
+export async function createAiChatCodexAccessKey(payload: AiChatCreateCodexAccessKeyRequest = {}) {
+  const response = await api.post<AiChatCodexAccessKeyDetail>('/ai-chat/codex-access-keys', payload)
+  return response.data
+}
+
+export async function revealAiChatCodexAccessKey(keyId: string) {
+  const response = await api.get<AiChatCodexAccessKeyDetail>(`/ai-chat/codex-access-keys/${keyId}`)
+  return response.data
+}
+
+export async function deleteAiChatCodexAccessKey(keyId: string) {
+  await api.delete(`/ai-chat/codex-access-keys/${keyId}`)
 }
 
 export async function fetchAiChatPromptCards() {

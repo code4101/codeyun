@@ -89,6 +89,9 @@
               <el-tag v-if="savingProviderConfig" type="info" effect="plain">
                 保存中
               </el-tag>
+              <el-tag v-if="currentProviderSharingLabel" type="info" effect="plain">
+                {{ currentProviderSharingLabel }}
+              </el-tag>
               <el-tag v-if="isAuthenticated && currentProviderHasSavedConfig" type="info" effect="plain">
                 账号已保存
               </el-tag>
@@ -101,7 +104,7 @@
                 检查连接
               </el-button>
               <el-button
-                v-if="isAuthenticated && currentProvider?.is_custom"
+                v-if="isAuthenticated && currentProvider?.is_custom && currentProviderCanManage"
                 text
                 type="danger"
                 @click="deleteCurrentCustomProvider"
@@ -112,16 +115,36 @@
           </div>
 
           <el-form label-position="top" class="settings-form">
-            <el-form-item label="地址">
+            <el-form-item :label="currentProviderConnectionFieldLabel">
               <el-input
                 v-model="currentBaseUrl"
                 clearable
-                placeholder="例如 http://127.0.0.1:11434 或 https://api.deepseek.com/v1"
+                :disabled="currentProviderConnectionReadonly"
+                :placeholder="currentProviderConnectionPlaceholder"
                 @change="handleProviderBaseUrlChange"
               />
             </el-form-item>
+            <el-form-item v-if="currentProviderIsCodex">
+              <el-alert
+                :title="currentProviderCanManage
+                  ? '这不是 HTTP API。CodeYun 会默认以完全权限调用本机 Codex CLI。'
+                  : '这是管理员共享的 Codex CLI 来源。普通用户不能改命令；拿到访问 Token 后会按默认完全权限调用。'"
+                type="info"
+                :closable="false"
+              />
+            </el-form-item>
+            <div v-if="isAuthenticated && currentProviderHasSavedConfig && !currentProviderRequiresApiKey" class="account-config-row">
+              <el-button
+                text
+                size="small"
+                :loading="removingProviderConfig"
+                @click="removeCurrentProviderConfig"
+              >
+                清除账号保存
+              </el-button>
+            </div>
 
-            <el-form-item :label="currentProviderKeyFieldLabel">
+            <el-form-item v-if="currentProviderRequiresApiKey" :label="currentProviderKeyFieldLabel">
               <el-input
                 v-if="isAuthenticated"
                 v-model="currentApiKeyLabelInput"
@@ -205,6 +228,13 @@
                   :closable="false"
                 />
               </div>
+              <div v-if="currentProviderNeedsCodexToken" class="ollama-access-hint">
+                <el-alert
+                  title="这里填写的是 CodeYun 分发的 Codex 访问 Token，不是 Codex 自带认证。"
+                  type="info"
+                  :closable="false"
+                />
+              </div>
               <div v-if="currentProviderIsOllama && isAdmin" class="ollama-system-key-section">
                 <div class="saved-key-header">
                   <span class="saved-key-title">系统访问 Key</span>
@@ -268,6 +298,71 @@
                 </div>
                 <div v-else class="model-list-empty">
                   还没有系统访问 Key，先生成一把。
+                </div>
+              </div>
+              <div v-if="currentProviderIsCodex && isAdmin && currentProviderCanManage" class="ollama-system-key-section">
+                <div class="saved-key-header">
+                  <span class="saved-key-title">系统访问 Token</span>
+                  <span class="saved-key-note">管理员可直接调用；需要分发给其他用户时，再生成一把 Token 给对方保存。</span>
+                </div>
+                <div class="ollama-system-key-toolbar">
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="generatingCodexAccessKey"
+                    @click="createCodexAccessKeyWithPrompt"
+                  >
+                    生成新 Token
+                  </el-button>
+                  <el-tag v-if="codexAccessKeysLoading" size="small" type="info" effect="plain">
+                    加载中
+                  </el-tag>
+                </div>
+                <div v-if="codexAccessKeys.length" class="saved-key-list">
+                  <div
+                    v-for="accessKey in codexAccessKeys"
+                    :key="accessKey.id"
+                    class="saved-key-item ollama-system-key-item"
+                  >
+                    <div class="saved-key-meta">
+                      <span class="saved-key-label">{{ accessKey.label }}</span>
+                      <span class="saved-key-mask">{{ accessKey.masked_value }}</span>
+                    </div>
+                    <div class="saved-key-actions">
+                      <el-button
+                        text
+                        size="small"
+                        :loading="revealingCodexAccessKeyId === accessKey.id"
+                        @click="revealCurrentCodexAccessKey(accessKey.id)"
+                      >
+                        查看明文
+                      </el-button>
+                      <el-button
+                        text
+                        size="small"
+                        type="danger"
+                        :loading="deletingCodexAccessKeyId === accessKey.id"
+                        @click="deleteCurrentCodexAccessKey(accessKey.id)"
+                      >
+                        删除
+                      </el-button>
+                    </div>
+                    <div v-if="getCodexAccessKeyPlaintext(accessKey.id)" class="ollama-plaintext-row">
+                      <el-input
+                        :model-value="getCodexAccessKeyPlaintext(accessKey.id)"
+                        readonly
+                        type="password"
+                        show-password
+                      />
+                      <el-button text @click="copyCodexAccessKeyPlaintext(accessKey.id)">
+                        复制
+                      </el-button>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="model-list-empty">
+                  还没有系统访问 Token，先生成一把。
                 </div>
               </div>
             </el-form-item>
@@ -410,18 +505,30 @@
 
     <el-dialog
       v-model="customProviderDialogVisible"
-      title="新增自定义来源"
+      title="新增来源"
       width="460px"
     >
       <el-form label-position="top">
-        <el-form-item label="名称">
-          <el-input v-model="customProviderDraft.label" placeholder="例如我的中转站" />
+        <el-form-item label="类型">
+          <el-segmented
+            v-model="customProviderDraft.kind"
+            :options="customProviderKindOptions"
+          />
         </el-form-item>
-        <el-form-item label="地址">
-          <el-input v-model="customProviderDraft.baseUrl" placeholder="例如 https://example.com/v1" />
+        <el-form-item label="名称">
+          <el-input v-model="customProviderDraft.label" :placeholder="customProviderNamePlaceholder" />
+        </el-form-item>
+        <el-form-item :label="customProviderConnectionLabel">
+          <el-input v-model="customProviderDraft.baseUrl" :placeholder="customProviderConnectionPlaceholder" />
         </el-form-item>
         <el-form-item label="默认模型">
-          <el-input v-model="customProviderDraft.defaultModel" placeholder="可选，留空后再在配置页单独填写" />
+          <el-input v-model="customProviderDraft.defaultModel" :placeholder="customProviderDefaultModelPlaceholder" />
+        </el-form-item>
+        <el-form-item label="权限">
+          <el-segmented
+            v-model="customProviderDraft.visibility"
+            :options="customProviderVisibilityOptions"
+          />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -440,11 +547,16 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { RefreshRight } from '@element-plus/icons-vue'
 
 import {
+  createAiChatCodexAccessKey,
   createAiChatOllamaAccessKey,
+  deleteAiChatCodexAccessKey,
   deleteAiChatOllamaAccessKey,
+  fetchAiChatCodexAccessKeys,
   fetchAiChatOllamaAccessKeys,
   fetchAiChatStatus,
+  revealAiChatCodexAccessKey,
   revealAiChatOllamaAccessKey,
+  type AiChatCodexAccessKeySummary,
   type AiChatOllamaAccessKeySummary,
   type AiChatStatusResponse,
 } from '@/api/aiChat'
@@ -456,6 +568,8 @@ import { useSortableList } from '@/utils/useSortableList'
 
 interface CustomProviderDraft {
   label: string
+  kind: 'openai_compatible' | 'codex_cli'
+  visibility: 'private' | 'public'
   baseUrl: string
   defaultModel: string
 }
@@ -472,6 +586,8 @@ const status = reactive<AiChatStatusResponse>({
   label: 'Ollama',
   kind: 'ollama',
   is_custom: false,
+  sharing_mode: 'builtin',
+  can_manage: false,
   available: false,
   requires_auth: false,
   configured: true,
@@ -488,6 +604,12 @@ const savingProviderConfig = ref(false)
 const removingProviderConfig = ref(false)
 const activatingProviderKeyId = ref('')
 const deletingProviderKeyId = ref('')
+const codexAccessKeys = ref<AiChatCodexAccessKeySummary[]>([])
+const codexAccessKeyPlaintexts = reactive<Record<string, string>>({})
+const codexAccessKeysLoading = ref(false)
+const generatingCodexAccessKey = ref(false)
+const revealingCodexAccessKeyId = ref('')
+const deletingCodexAccessKeyId = ref('')
 const ollamaAccessKeys = ref<AiChatOllamaAccessKeySummary[]>([])
 const ollamaAccessKeyPlaintexts = reactive<Record<string, string>>({})
 const ollamaAccessKeysLoading = ref(false)
@@ -503,9 +625,14 @@ const modelListRef = ref<HTMLElement | null>(null)
 
 const customProviderDraft = reactive<CustomProviderDraft>({
   label: '',
+  kind: 'openai_compatible',
+  visibility: 'private',
   baseUrl: '',
   defaultModel: '',
 })
+
+const DEFAULT_CODEX_COMMAND = 'codex'
+const DEFAULT_CODEX_MODEL = 'gpt-5.4'
 
 const isAuthenticated = computed(() => userStore.isAuthenticated)
 const isAdmin = computed(() => userStore.isAdmin)
@@ -514,22 +641,90 @@ const visibleAssets = computed(() => assetMode.value === 'providers' ? providers
 const selectedAssetId = computed(() => assetMode.value === 'providers' ? selectedProviderId.value : selectedAppId.value)
 const currentProvider = computed(() => aiProviderStore.getProviderById(selectedProviderId.value))
 const currentProviderConfig = computed(() => aiProviderStore.getProviderConfig(selectedProviderId.value))
+const currentProviderCanManage = computed(() => currentProvider.value?.can_manage ?? false)
+const currentProviderSharingMode = computed(() => currentProvider.value?.sharing_mode || 'builtin')
 const currentProviderRequiresApiKey = computed(() => currentProvider.value?.requires_api_key ?? status.requires_api_key)
 const currentProviderHasSavedConfig = computed(() => currentProviderConfig.value.hasAccountConfig)
 const currentProviderSavedKeys = computed(() => currentProviderConfig.value.savedKeys)
 const currentProviderIsOllama = computed(() => (selectedProviderId.value || '').trim().toLowerCase() === 'ollama')
-const currentProviderKeyFieldLabel = computed(() => currentProviderIsOllama.value ? '访问 Key' : 'API Key')
+const currentProviderIsCodex = computed(() => (currentProvider.value?.kind || '').trim().toLowerCase() === 'codex_cli')
+const currentProviderNeedsCodexToken = computed(() => currentProviderIsCodex.value && currentProviderRequiresApiKey.value)
+const currentProviderConnectionReadonly = computed(() => currentProviderIsCodex.value && !currentProviderCanManage.value)
+const currentProviderConnectionFieldLabel = computed(() => currentProviderIsCodex.value ? '命令' : '地址')
+const currentProviderConnectionPlaceholder = computed(() => {
+  if (currentProviderIsCodex.value) {
+    return '例如 codex 或 codex -p myprofile'
+  }
+  return '例如 http://127.0.0.1:11434 或 https://api.deepseek.com/v1'
+})
+const currentProviderKeyFieldLabel = computed(() => {
+  if (currentProviderNeedsCodexToken.value) {
+    return '访问 Token'
+  }
+  return currentProviderIsOllama.value ? '访问 Key' : 'API Key'
+})
 const currentProviderKeyInputPlaceholder = computed(() => {
   if (currentProviderIsOllama.value) {
     return '输入管理员分发的 CodeYun Ollama 访问 Key'
   }
+  if (currentProviderNeedsCodexToken.value) {
+    return '输入管理员分发的 CodeYun Codex 访问 Token'
+  }
   return currentProviderRequiresApiKey.value ? '输入新 Key 后点击保存' : '可留空'
 })
-const currentProviderSavedKeyTitle = computed(() => currentProviderIsOllama.value ? '已保存访问 Key' : '已保存 API Key')
-const currentProviderSavedKeyNote = computed(() => currentProviderIsOllama.value
-  ? '每次只会使用其中一把激活项；这里保存的是 CodeYun 分发的访问 Key'
-  : '每次只会使用其中一把激活项'
-)
+const currentProviderSavedKeyTitle = computed(() => {
+  if (currentProviderIsOllama.value) {
+    return '已保存访问 Key'
+  }
+  if (currentProviderNeedsCodexToken.value) {
+    return '已保存访问 Token'
+  }
+  return '已保存 API Key'
+})
+const currentProviderSavedKeyNote = computed(() => {
+  if (currentProviderIsOllama.value) {
+    return '每次只会使用其中一把激活项；这里保存的是 CodeYun 分发的访问 Key'
+  }
+  if (currentProviderNeedsCodexToken.value) {
+    return '每次只会使用其中一把激活项；这里保存的是管理员分发的 Codex 访问 Token'
+  }
+  return '每次只会使用其中一把激活项'
+})
+const currentProviderSharingLabel = computed(() => {
+  if (currentProviderSharingMode.value === 'public') {
+    return '向所有登录用户开放'
+  }
+  if (currentProvider.value?.is_custom) {
+    return '仅自己'
+  }
+  return ''
+})
+const customProviderKindOptions = computed(() => {
+  const items = [{ label: 'OpenAI兼容', value: 'openai_compatible' }]
+  if (isAdmin.value) {
+    items.push({ label: 'Codex CLI', value: 'codex_cli' })
+  }
+  return items
+})
+const customProviderVisibilityOptions = [
+  { label: '仅自己', value: 'private' },
+  { label: '全开放', value: 'public' },
+]
+const customProviderConnectionLabel = computed(() => customProviderDraft.kind === 'codex_cli' ? '命令' : '地址')
+const customProviderConnectionPlaceholder = computed(() => {
+  if (customProviderDraft.kind === 'codex_cli') {
+    return `默认 ${DEFAULT_CODEX_COMMAND}，也可以填 codex -p myprofile`
+  }
+  return '例如 https://example.com/v1'
+})
+const customProviderNamePlaceholder = computed(() => (
+  customProviderDraft.kind === 'codex_cli' ? '例如我的 Codex' : '例如我的中转站'
+))
+const customProviderDefaultModelPlaceholder = computed(() => (
+  customProviderDraft.kind === 'codex_cli'
+    ? `默认已填 ${DEFAULT_CODEX_MODEL}`
+    : '可选，留空后再在配置页单独填写'
+))
 const currentAppDefinition = computed(() => aiAppStore.getDefinition(selectedAppId.value))
 const currentAppConfig = computed(() => aiAppStore.getAppConfig(selectedAppId.value))
 const resolvedCurrentAppProviderId = computed(() =>
@@ -606,6 +801,21 @@ watch(
   () => [isAuthenticated.value, isAdmin.value],
   async () => {
     await loadProvidersAndStatus()
+  }
+)
+
+watch(
+  () => customProviderDraft.kind,
+  kind => {
+    if (kind !== 'codex_cli') {
+      return
+    }
+    if (!customProviderDraft.baseUrl.trim()) {
+      customProviderDraft.baseUrl = DEFAULT_CODEX_COMMAND
+    }
+    if (!customProviderDraft.defaultModel.trim()) {
+      customProviderDraft.defaultModel = DEFAULT_CODEX_MODEL
+    }
   }
 )
 
@@ -698,7 +908,7 @@ async function loadProvidersAndStatus() {
     getApiKeyDraft(selectedProviderId.value)
     getApiKeyLabelDraft(selectedProviderId.value)
     getNewModelDraft(selectedProviderId.value)
-    await syncOllamaAccessKeysForSelection()
+    await syncSystemAccessKeysForSelection()
     await refreshStatus(selectedProviderId.value)
   } catch (error) {
     const message = getErrorMessage(error)
@@ -804,7 +1014,7 @@ async function handleProviderChange(providerId: string) {
   getApiKeyDraft(providerId)
   getApiKeyLabelDraft(providerId)
   getNewModelDraft(providerId)
-  await syncOllamaAccessKeysForSelection()
+  await syncSystemAccessKeysForSelection()
   await refreshStatus(providerId)
 }
 
@@ -815,12 +1025,32 @@ function clearOllamaAccessKeyState() {
   }
 }
 
+function clearCodexAccessKeyState() {
+  codexAccessKeys.value = []
+  for (const keyId of Object.keys(codexAccessKeyPlaintexts)) {
+    delete codexAccessKeyPlaintexts[keyId]
+  }
+}
+
+async function syncSystemAccessKeysForSelection() {
+  await syncOllamaAccessKeysForSelection()
+  await syncCodexAccessKeysForSelection()
+}
+
 async function syncOllamaAccessKeysForSelection() {
   if (!isAdmin.value || !currentProviderIsOllama.value) {
     clearOllamaAccessKeyState()
     return
   }
   await loadOllamaAccessKeys()
+}
+
+async function syncCodexAccessKeysForSelection() {
+  if (!isAdmin.value || !currentProviderIsCodex.value || !currentProviderCanManage.value) {
+    clearCodexAccessKeyState()
+    return
+  }
+  await loadCodexAccessKeys()
 }
 
 async function loadOllamaAccessKeys() {
@@ -841,8 +1071,30 @@ async function loadOllamaAccessKeys() {
   }
 }
 
+async function loadCodexAccessKeys() {
+  if (!isAdmin.value || !currentProviderIsCodex.value || !currentProviderCanManage.value) {
+    clearCodexAccessKeyState()
+    return
+  }
+
+  codexAccessKeysLoading.value = true
+  try {
+    const payload = await fetchAiChatCodexAccessKeys()
+    codexAccessKeys.value = payload.items
+  } catch (error) {
+    clearCodexAccessKeyState()
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    codexAccessKeysLoading.value = false
+  }
+}
+
 function getOllamaAccessKeyPlaintext(keyId: string) {
   return ollamaAccessKeyPlaintexts[keyId] || ''
+}
+
+function getCodexAccessKeyPlaintext(keyId: string) {
+  return codexAccessKeyPlaintexts[keyId] || ''
 }
 
 async function createOllamaAccessKeyWithPrompt() {
@@ -878,6 +1130,39 @@ async function createOllamaAccessKeyWithPrompt() {
   }
 }
 
+async function createCodexAccessKeyWithPrompt() {
+  if (!isAdmin.value || !currentProviderCanManage.value) {
+    return
+  }
+
+  let promptValue = ''
+  try {
+    const result = await ElMessageBox.prompt('可选，用于标记分发对象，例如自己、测试号、同事名。', '生成系统访问 Token', {
+      confirmButtonText: '生成',
+      cancelButtonText: '取消',
+      inputPlaceholder: '留空则自动编号',
+    })
+    promptValue = result.value || ''
+  } catch {
+    return
+  }
+
+  generatingCodexAccessKey.value = true
+  try {
+    const created = await createAiChatCodexAccessKey({
+      label: promptValue.trim() || undefined,
+    })
+    codexAccessKeyPlaintexts[created.id] = created.plaintext_value
+    currentApiKeyInput.value = created.plaintext_value
+    await loadCodexAccessKeys()
+    ElMessage.success('已生成新的系统访问 Token，并填入当前输入框')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    generatingCodexAccessKey.value = false
+  }
+}
+
 async function revealCurrentOllamaAccessKey(keyId: string) {
   if (!isAdmin.value || !keyId) {
     return
@@ -894,6 +1179,22 @@ async function revealCurrentOllamaAccessKey(keyId: string) {
   }
 }
 
+async function revealCurrentCodexAccessKey(keyId: string) {
+  if (!isAdmin.value || !keyId) {
+    return
+  }
+
+  revealingCodexAccessKeyId.value = keyId
+  try {
+    const detail = await revealAiChatCodexAccessKey(keyId)
+    codexAccessKeyPlaintexts[keyId] = detail.plaintext_value
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    revealingCodexAccessKeyId.value = ''
+  }
+}
+
 async function copyOllamaAccessKeyPlaintext(keyId: string) {
   const value = getOllamaAccessKeyPlaintext(keyId)
   if (!value) {
@@ -903,6 +1204,20 @@ async function copyOllamaAccessKeyPlaintext(keyId: string) {
   try {
     await navigator.clipboard.writeText(value)
     ElMessage.success('已复制明文 Key')
+  } catch {
+    ElMessage.warning('当前环境无法自动复制，请手动查看并复制')
+  }
+}
+
+async function copyCodexAccessKeyPlaintext(keyId: string) {
+  const value = getCodexAccessKeyPlaintext(keyId)
+  if (!value) {
+    return
+  }
+
+  try {
+    await navigator.clipboard.writeText(value)
+    ElMessage.success('已复制明文 Token')
   } catch {
     ElMessage.warning('当前环境无法自动复制，请手动查看并复制')
   }
@@ -933,6 +1248,34 @@ async function deleteCurrentOllamaAccessKey(keyId: string) {
     ElMessage.error(getErrorMessage(error))
   } finally {
     deletingOllamaAccessKeyId.value = ''
+  }
+}
+
+async function deleteCurrentCodexAccessKey(keyId: string) {
+  if (!isAdmin.value || !keyId) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm('将删除这把系统访问 Token。已经分发出去的用户将无法继续使用它。', '删除系统访问 Token', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+
+  deletingCodexAccessKeyId.value = keyId
+  try {
+    await deleteAiChatCodexAccessKey(keyId)
+    delete codexAccessKeyPlaintexts[keyId]
+    await loadCodexAccessKeys()
+    ElMessage.success('已删除系统访问 Token')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    deletingCodexAccessKeyId.value = ''
   }
 }
 
@@ -967,6 +1310,9 @@ async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; sil
 }
 
 async function handleProviderBaseUrlChange() {
+  if (currentProviderConnectionReadonly.value) {
+    return
+  }
   if (isAuthenticated.value) {
     await saveCurrentProviderConfig({
       includeApiKey: false,
@@ -1162,6 +1508,8 @@ async function refreshStatus(providerId = selectedProviderId.value) {
     status.label = providerMeta?.label || providerId || '当前来源'
     status.kind = providerMeta?.kind || 'unknown'
     status.is_custom = providerMeta?.is_custom ?? false
+    status.sharing_mode = providerMeta?.sharing_mode || 'builtin'
+    status.can_manage = providerMeta?.can_manage ?? false
     status.available = false
     status.configured = false
     status.supports_stream = providerMeta?.supports_stream ?? true
@@ -1183,6 +1531,8 @@ function openCustomProviderDialog() {
   }
 
   customProviderDraft.label = ''
+  customProviderDraft.kind = 'openai_compatible'
+  customProviderDraft.visibility = 'private'
   customProviderDraft.baseUrl = ''
   customProviderDraft.defaultModel = ''
   customProviderDialogVisible.value = true
@@ -1198,7 +1548,7 @@ async function createCustomProvider() {
     return
   }
   if (!customProviderDraft.baseUrl.trim()) {
-    ElMessage.warning('请先填写自定义来源地址')
+    ElMessage.warning(customProviderDraft.kind === 'codex_cli' ? '请先填写 Codex 命令' : '请先填写自定义来源地址')
     return
   }
 
@@ -1206,6 +1556,8 @@ async function createCustomProvider() {
   try {
     const created = await aiProviderStore.createCustomProvider({
       label: customProviderDraft.label.trim(),
+      kind: customProviderDraft.kind,
+      visibility: customProviderDraft.visibility,
       base_url: customProviderDraft.baseUrl.trim(),
       default_model: customProviderDraft.defaultModel.trim() || undefined,
       models: [],
@@ -1217,7 +1569,7 @@ async function createCustomProvider() {
     setApiKeyLabelDraft(created.id, '')
     setNewModelDraft(created.id, '')
     await refreshStatus(created.id)
-    ElMessage.success('已新增自定义来源')
+    ElMessage.success('已新增来源')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1226,7 +1578,7 @@ async function createCustomProvider() {
 }
 
 async function deleteCurrentCustomProvider() {
-  if (!isAuthenticated.value || !currentProvider.value?.is_custom) {
+  if (!isAuthenticated.value || !currentProvider.value?.is_custom || !currentProviderCanManage.value) {
     return
   }
 

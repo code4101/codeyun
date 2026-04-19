@@ -1,15 +1,108 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
-import shutil
 import os
+import re
 import uuid
-import time
+
+from fastapi import APIRouter, UploadFile, File, HTTPException
+
 from backend.core.storage import build_attachment_url, get_attachments_dir
 
 router = APIRouter()
 
-ATTACHMENTS_DIR = os.fspath(get_attachments_dir())
-if not os.path.exists(ATTACHMENTS_DIR):
-    os.makedirs(ATTACHMENTS_DIR)
+MAX_IMAGE_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_ATTACHMENT_UPLOAD_BYTES = 100 * 1024 * 1024
+UPLOAD_CHUNK_SIZE = 1024 * 1024
+SAFE_EXTENSION_RE = re.compile(r"^\.[a-zA-Z0-9]{1,16}$")
+DANGEROUS_ATTACHMENT_EXTENSIONS = {
+    ".bat",
+    ".cmd",
+    ".com",
+    ".cpl",
+    ".dll",
+    ".exe",
+    ".hta",
+    ".htm",
+    ".html",
+    ".jar",
+    ".js",
+    ".jse",
+    ".lnk",
+    ".mjs",
+    ".msi",
+    ".ps1",
+    ".reg",
+    ".scr",
+    ".sh",
+    ".svg",
+    ".vbs",
+    ".wsf",
+    ".xhtml",
+    ".xml",
+}
+
+
+def _normalize_original_filename(filename: str | None, fallback: str) -> str:
+    normalized = (filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
+    return normalized or fallback
+
+
+def _safe_upload_extension(original_filename: str, default_ext: str) -> str:
+    ext = os.path.splitext(original_filename)[1].lower()
+    if not ext or not SAFE_EXTENSION_RE.match(ext) or ext in DANGEROUS_ATTACHMENT_EXTENSIONS:
+        return default_ext
+    return ext
+
+
+def _format_size_limit(max_bytes: int) -> str:
+    if max_bytes >= 1024 * 1024:
+        return f"{max_bytes // 1024 // 1024}MB"
+    if max_bytes >= 1024:
+        return f"{max_bytes // 1024}KB"
+    return f"{max_bytes}B"
+
+
+def _save_uploaded_file(
+    file: UploadFile,
+    *,
+    default_ext: str,
+    max_bytes: int,
+    fallback_original_name: str,
+) -> dict:
+    original_filename = _normalize_original_filename(file.filename, fallback_original_name)
+    ext = _safe_upload_extension(original_filename, default_ext)
+    filename = f"{uuid.uuid4().hex}{ext}"
+    attachments_dir = get_attachments_dir()
+    file_path = attachments_dir / filename
+
+    size = 0
+    try:
+        with file_path.open("wb") as buffer:
+            while True:
+                chunk = file.file.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件超过 {_format_size_limit(max_bytes)}",
+                    )
+                buffer.write(chunk)
+    except Exception:
+        try:
+            file_path.unlink(missing_ok=True)
+        finally:
+            raise
+
+    url = build_attachment_url(filename)
+    return {
+        "url": url,
+        "filename": filename,
+        "original_filename": original_filename,
+        "name": original_filename,
+        "content_type": file.content_type or "application/octet-stream",
+        "size": size,
+    }
+
 
 @router.post("/image")
 async def upload_image(file: UploadFile = File(...)):
@@ -27,32 +120,30 @@ async def upload_image(file: UploadFile = File(...)):
     """
     try:
         # Validate file type
-        if not file.content_type.startswith("image/"):
+        if not (file.content_type or "").startswith("image/"):
             raise HTTPException(status_code=400, detail="File must be an image")
-            
-        # Generate unique filename
-        ext = os.path.splitext(file.filename)[1]
-        if not ext:
-            ext = ".png" # Default
-            
-        filename = f"{uuid.uuid4().hex}{ext}"
-        file_path = os.path.join(ATTACHMENTS_DIR, filename)
-        
-        # Save file
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
+
+        uploaded = _save_uploaded_file(
+            file,
+            default_ext=".png",
+            max_bytes=MAX_IMAGE_UPLOAD_BYTES,
+            fallback_original_name="image.png",
+        )
+
         # Construct URL (Relative path for frontend proxy to handle, or absolute if needed)
         # Frontend proxy: /api -> http://localhost:8000
         # Static mount exposes the data-dir attachments at /static/attachments.
-        url = build_attachment_url(filename)
+        url = uploaded["url"]
         
         return {
             "errno": 0,
             "data": {
                 "url": url,
-                "alt": file.filename,
-                "href": url
+                "alt": uploaded["original_filename"],
+                "href": url,
+                "filename": uploaded["filename"],
+                "size": uploaded["size"],
+                "content_type": uploaded["content_type"],
             }
         }
     except Exception as e:
@@ -61,3 +152,17 @@ async def upload_image(file: UploadFile = File(...)):
             "errno": 1,
             "message": str(e)
         }
+
+
+@router.post("/file")
+async def upload_file(file: UploadFile = File(...)):
+    uploaded = _save_uploaded_file(
+        file,
+        default_ext=".bin",
+        max_bytes=MAX_ATTACHMENT_UPLOAD_BYTES,
+        fallback_original_name="attachment",
+    )
+    return {
+        "errno": 0,
+        "data": uploaded,
+    }

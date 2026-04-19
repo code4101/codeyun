@@ -263,7 +263,7 @@ def _build_leaf_system_prompt(*, style: str, include_body: bool) -> str:
         else "candidate_subject 必须是自然中文总结，不要带 Conventional Commit 前缀。"
     )
     body_text = (
-        "candidate_body 必须是 2 到 4 条中文短句数组，每条只描述一个关键变化。"
+        "candidate_body 必须是 2 到 4 条中文短句数组，每条只描述一个关键变化，不要自己带编号或项目符号前缀，系统会自动格式化成 1、2、3 编号正文。"
         if include_body
         else "candidate_body 必须返回空数组。"
     )
@@ -287,7 +287,7 @@ def _build_reduce_system_prompt(*, style: str, include_body: bool) -> str:
         else "candidate_subject 必须是自然中文总结，不要带 Conventional Commit 前缀。"
     )
     body_text = (
-        "candidate_body 必须是 2 到 4 条中文短句数组，每条只保留归并后的高价值变化。"
+        "candidate_body 必须是 2 到 4 条中文短句数组，每条只保留归并后的高价值变化，不要自己带编号或项目符号前缀，系统会自动格式化成 1、2、3 编号正文。"
         if include_body
         else "candidate_body 必须返回空数组。"
     )

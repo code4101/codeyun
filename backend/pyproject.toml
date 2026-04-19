@@ -13,6 +13,7 @@ dependencies = [
     "psutil>=5.9.0",
     "apscheduler>=3.10.0,<4.0.0",
     "DrissionPage>=4.1.1.2",
+    "pyxllib[kq5034]",
     "beautifulsoup4>=4.14.3",
     "pillow>=10.0.0",
     "cryptography>=46.0.0",
@@ -36,3 +37,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
+
+[tool.uv.sources]
+pyxllib = { path = "../../pyxllib", editable = true }

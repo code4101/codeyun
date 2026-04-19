@@ -9,11 +9,11 @@ from functools import lru_cache
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from backend.core.ai_chat import AiProviderConfig
+from backend.core.ai_chat import AiProviderConfig, CODEX_CLI_DEFAULT_COMMAND, CODEX_CLI_DEFAULT_MODEL
 from backend.core.settings import get_settings
-from backend.models import AppSetting
+from backend.models import AppSetting, User
 
 
 class AiChatUserConfigError(RuntimeError):
@@ -22,6 +22,66 @@ class AiChatUserConfigError(RuntimeError):
 
 def build_ai_chat_provider_config_key(user_id: int) -> str:
     return f"user:{user_id}:ai_chat_provider_configs"
+
+
+CUSTOM_PROVIDER_KIND_OPENAI = "openai_compatible"
+CUSTOM_PROVIDER_KIND_CODEX = "codex_cli"
+CUSTOM_PROVIDER_VISIBILITY_PRIVATE = "private"
+CUSTOM_PROVIDER_VISIBILITY_PUBLIC = "public"
+
+
+def _normalize_custom_provider_kind(value: str | None) -> str:
+    normalized = (value or CUSTOM_PROVIDER_KIND_OPENAI).strip().lower()
+    if normalized not in {CUSTOM_PROVIDER_KIND_OPENAI, CUSTOM_PROVIDER_KIND_CODEX}:
+        raise AiChatUserConfigError("暂不支持的自定义来源类型")
+    return normalized
+
+
+def _normalize_custom_provider_visibility(value: str | None) -> str:
+    normalized = (value or CUSTOM_PROVIDER_VISIBILITY_PRIVATE).strip().lower()
+    if normalized not in {CUSTOM_PROVIDER_VISIBILITY_PRIVATE, CUSTOM_PROVIDER_VISIBILITY_PUBLIC}:
+        raise AiChatUserConfigError("暂不支持的来源权限模式")
+    return normalized
+
+
+def _build_public_custom_provider_id(owner_user_id: int, local_provider_id: str) -> str:
+    return f"shared-u{owner_user_id}-{local_provider_id}"
+
+
+def _parse_public_custom_provider_id(provider_id: str | None) -> tuple[int, str] | None:
+    normalized = (provider_id or "").strip().lower()
+    match = re.fullmatch(r"shared-u(\d+)-(.+)", normalized)
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2)
+
+
+def _extract_user_id_from_setting_key(setting_key: str | None) -> int | None:
+    match = re.fullmatch(r"user:(\d+):ai_chat_provider_configs", (setting_key or "").strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _get_custom_provider_capabilities(kind: str) -> dict[str, Any]:
+    normalized_kind = _normalize_custom_provider_kind(kind)
+    if normalized_kind == CUSTOM_PROVIDER_KIND_CODEX:
+        return {
+            "supports_stream": False,
+            "supports_vision": False,
+            "requires_api_key": False,
+            "default_base_url": CODEX_CLI_DEFAULT_COMMAND,
+            "default_model": CODEX_CLI_DEFAULT_MODEL,
+            "timeout_seconds": 600.0,
+        }
+    return {
+        "supports_stream": True,
+        "supports_vision": False,
+        "requires_api_key": True,
+        "default_base_url": "",
+        "default_model": "",
+        "timeout_seconds": 120.0,
+    }
 
 
 @lru_cache(maxsize=1)
@@ -246,6 +306,106 @@ def _load_saved_api_keys(raw_item: dict[str, Any]) -> tuple[dict[str, dict[str, 
     return api_keys, normalized_active_key_id
 
 
+def _normalize_custom_provider_item(provider_id: str, raw_item: dict[str, Any]) -> dict[str, Any] | None:
+    label = raw_item.get("label")
+    if not isinstance(label, str) or not label.strip():
+        return None
+
+    try:
+        kind = _normalize_custom_provider_kind(str(raw_item.get("kind") or CUSTOM_PROVIDER_KIND_OPENAI))
+        visibility = _normalize_custom_provider_visibility(
+            str(raw_item.get("visibility") or raw_item.get("sharing_mode") or CUSTOM_PROVIDER_VISIBILITY_PRIVATE)
+        )
+    except AiChatUserConfigError:
+        return None
+
+    capabilities = _get_custom_provider_capabilities(kind)
+    base_url = raw_item.get("base_url")
+    default_model = raw_item.get("default_model")
+    models = raw_item.get("models")
+    updated_at = raw_item.get("updated_at")
+
+    normalized_models = tuple(
+        item.strip()
+        for item in (models or [])
+        if isinstance(item, str) and item.strip()
+    )
+    resolved_base_url = base_url.strip() if isinstance(base_url, str) else str(capabilities["default_base_url"])
+    resolved_default_model = (
+        default_model.strip()
+        if isinstance(default_model, str) and default_model.strip()
+        else str(capabilities["default_model"])
+    )
+
+    return {
+        "id": provider_id,
+        "label": label.strip(),
+        "kind": kind,
+        "visibility": visibility,
+        "base_url": resolved_base_url,
+        "default_model": resolved_default_model,
+        "models": normalized_models,
+        "supports_stream": bool(capabilities["supports_stream"]),
+        "supports_vision": bool(capabilities["supports_vision"]),
+        "requires_api_key": bool(capabilities["requires_api_key"]),
+        "timeout_seconds": float(capabilities["timeout_seconds"]),
+        "updated_at": float(updated_at) if isinstance(updated_at, (int, float)) else None,
+    }
+
+
+def _build_custom_provider_summary_item(
+    item: dict[str, Any],
+    *,
+    provider_id: str,
+    label: str | None = None,
+    can_manage: bool,
+    sharing_mode: str,
+) -> dict[str, Any]:
+    return {
+        "id": provider_id,
+        "label": label or item["label"],
+        "kind": item["kind"],
+        "configured": False,
+        "base_url": item["base_url"],
+        "default_model": item["default_model"],
+        "models": list(item["models"]),
+        "supports_stream": item["supports_stream"],
+        "supports_vision": item["supports_vision"],
+        "requires_api_key": item["requires_api_key"],
+        "is_custom": True,
+        "sharing_mode": sharing_mode,
+        "can_manage": can_manage,
+        "updated_at": item["updated_at"],
+    }
+
+
+def _build_custom_provider_runtime_config(
+    item: dict[str, Any],
+    *,
+    provider_id: str,
+    label: str | None = None,
+    can_manage: bool,
+    sharing_mode: str,
+) -> AiProviderConfig:
+    return AiProviderConfig(
+        id=provider_id,
+        label=label or item["label"],
+        kind=item["kind"],
+        base_url=item["base_url"],
+        default_model=item["default_model"],
+        timeout_seconds=item["timeout_seconds"],
+        api_key="",
+        supports_stream=item["supports_stream"],
+        supports_vision=item["supports_vision"],
+        requires_api_key=item["requires_api_key"],
+        configured=False,
+        models=item["models"],
+        is_custom=True,
+        sharing_mode=sharing_mode,
+        can_manage=can_manage,
+    )
+
+
 def _load_provider_map(session: Session, user_id: int) -> dict[str, dict[str, Any]]:
     row = session.get(AppSetting, build_ai_chat_provider_config_key(user_id))
     if not row or not isinstance(row.value, dict):
@@ -298,31 +458,10 @@ def _load_custom_provider_map(session: Session, user_id: int) -> dict[str, dict[
         if not isinstance(raw_item, dict):
             continue
 
-        label = raw_item.get("label")
-        base_url = raw_item.get("base_url")
-        default_model = raw_item.get("default_model")
-        models = raw_item.get("models")
-        updated_at = raw_item.get("updated_at")
-        if not isinstance(label, str) or not label.strip():
+        normalized_item = _normalize_custom_provider_item(normalized_id, raw_item)
+        if normalized_item is None:
             continue
-
-        normalized_models = tuple(
-            item.strip()
-            for item in (models or [])
-            if isinstance(item, str) and item.strip()
-        )
-        providers[normalized_id] = {
-            "id": normalized_id,
-            "label": label.strip(),
-            "kind": "openai_compatible",
-            "base_url": base_url.strip() if isinstance(base_url, str) else "",
-            "default_model": default_model.strip() if isinstance(default_model, str) else "",
-            "models": normalized_models,
-            "supports_stream": True,
-            "supports_vision": False,
-            "requires_api_key": True,
-            "updated_at": float(updated_at) if isinstance(updated_at, (int, float)) else None,
-        }
+        providers[normalized_id] = normalized_item
     return providers
 
 
@@ -408,20 +547,12 @@ def list_user_ai_chat_custom_providers(session: Session, user_id: int) -> list[d
     for provider_id in sorted(providers):
         item = providers[provider_id]
         items.append(
-            {
-                "id": item["id"],
-                "label": item["label"],
-                "kind": item["kind"],
-                "configured": False,
-                "base_url": item["base_url"],
-                "default_model": item["default_model"],
-                "models": list(item["models"]),
-                "supports_stream": item["supports_stream"],
-                "supports_vision": item["supports_vision"],
-                "requires_api_key": item["requires_api_key"],
-                "is_custom": True,
-                "updated_at": item["updated_at"],
-            }
+            _build_custom_provider_summary_item(
+                item,
+                provider_id=item["id"],
+                can_manage=True,
+                sharing_mode=item["visibility"],
+            )
         )
     return items
 
@@ -429,23 +560,94 @@ def list_user_ai_chat_custom_providers(session: Session, user_id: int) -> list[d
 def list_user_ai_chat_custom_provider_configs(session: Session, user_id: int) -> tuple[AiProviderConfig, ...]:
     providers = _load_custom_provider_map(session, user_id)
     return tuple(
-        AiProviderConfig(
-            id=item["id"],
-            label=item["label"],
-            kind=item["kind"],
-            base_url=item["base_url"],
-            default_model=item["default_model"],
-            timeout_seconds=120.0,
-            api_key="",
-            supports_stream=item["supports_stream"],
-            supports_vision=item["supports_vision"],
-            requires_api_key=item["requires_api_key"],
-            configured=False,
-            models=item["models"],
-            is_custom=True,
+        _build_custom_provider_runtime_config(
+            item,
+            provider_id=item["id"],
+            can_manage=True,
+            sharing_mode=item["visibility"],
         )
         for item in providers.values()
     )
+
+
+def list_public_ai_chat_custom_providers(session: Session, user_id: int) -> list[dict[str, Any]]:
+    rows = session.exec(
+        select(AppSetting).where(AppSetting.key.like("user:%:ai_chat_provider_configs"))
+    ).all()
+    items: list[dict[str, Any]] = []
+    owner_rows: dict[int, User | None] = {}
+
+    for row in rows:
+        owner_user_id = _extract_user_id_from_setting_key(row.key)
+        if owner_user_id is None or owner_user_id == user_id or not isinstance(row.value, dict):
+            continue
+
+        raw_providers = row.value.get("custom_providers")
+        if not isinstance(raw_providers, dict):
+            continue
+
+        owner = owner_rows.get(owner_user_id)
+        if owner_user_id not in owner_rows:
+            owner = session.get(User, owner_user_id)
+            owner_rows[owner_user_id] = owner
+
+        owner_label = ""
+        if owner is not None:
+            owner_label = owner.nickname.strip() or owner.username.strip()
+
+        for provider_id, raw_item in raw_providers.items():
+            try:
+                local_provider_id = _normalize_provider_id(provider_id)
+            except AiChatUserConfigError:
+                continue
+            if not isinstance(raw_item, dict):
+                continue
+
+            item = _normalize_custom_provider_item(local_provider_id, raw_item)
+            if item is None or item["visibility"] != CUSTOM_PROVIDER_VISIBILITY_PUBLIC:
+                continue
+            if item["kind"] == CUSTOM_PROVIDER_KIND_CODEX and (owner is None or not owner.is_superuser):
+                continue
+
+            exposed_provider_id = _build_public_custom_provider_id(owner_user_id, local_provider_id)
+            label = item["label"] if not owner_label else f"{item['label']} @ {owner_label}"
+            items.append(
+                _build_custom_provider_summary_item(
+                    item,
+                    provider_id=exposed_provider_id,
+                    label=label,
+                    can_manage=False,
+                    sharing_mode=CUSTOM_PROVIDER_VISIBILITY_PUBLIC,
+                )
+            )
+
+    return sorted(items, key=lambda item: (str(item["label"]).lower(), str(item["id"])))
+
+
+def list_public_ai_chat_custom_provider_configs(session: Session, user_id: int) -> tuple[AiProviderConfig, ...]:
+    rows = list_public_ai_chat_custom_providers(session, user_id)
+    runtime_configs: list[AiProviderConfig] = []
+    for row in rows:
+        runtime_configs.append(
+            AiProviderConfig(
+                id=str(row["id"]),
+                label=str(row["label"]),
+                kind=str(row["kind"]),
+                base_url=str(row["base_url"]),
+                default_model=str(row["default_model"]),
+                timeout_seconds=600.0 if str(row["kind"]) == CUSTOM_PROVIDER_KIND_CODEX else 120.0,
+                api_key="",
+                supports_stream=bool(row["supports_stream"]),
+                supports_vision=bool(row["supports_vision"]),
+                requires_api_key=bool(row["requires_api_key"]),
+                configured=False,
+                models=tuple(str(item).strip() for item in row["models"] if str(item).strip()),
+                is_custom=True,
+                sharing_mode=str(row["sharing_mode"]),
+                can_manage=bool(row["can_manage"]),
+            )
+        )
+    return tuple(runtime_configs)
 
 
 def get_user_ai_chat_provider_runtime_config(
@@ -621,13 +823,18 @@ def save_user_ai_chat_custom_provider(
     user_id: int,
     *,
     label: str,
+    kind: str | None,
+    visibility: str | None,
     base_url: str,
     default_model: str | None = None,
     models: list[str] | None = None,
 ) -> dict[str, Any]:
     normalized_label = label.strip()
-    normalized_base_url = base_url.strip().rstrip("/")
-    normalized_default_model = (default_model or "").strip()
+    normalized_kind = _normalize_custom_provider_kind(kind)
+    normalized_visibility = _normalize_custom_provider_visibility(visibility)
+    capabilities = _get_custom_provider_capabilities(normalized_kind)
+    normalized_base_url = base_url.strip().rstrip("/") if normalized_kind != CUSTOM_PROVIDER_KIND_CODEX else base_url.strip()
+    normalized_default_model = (default_model or "").strip() or str(capabilities["default_model"])
     normalized_models = [
         item.strip()
         for item in (models or [])
@@ -636,7 +843,7 @@ def save_user_ai_chat_custom_provider(
     if not normalized_label:
         raise AiChatUserConfigError("自定义来源名称不能为空")
     if not normalized_base_url:
-        raise AiChatUserConfigError("自定义来源地址不能为空")
+        raise AiChatUserConfigError("自定义来源连接信息不能为空")
 
     providers = _load_provider_map(session, user_id)
     custom_providers = _load_custom_provider_map(session, user_id)
@@ -648,33 +855,28 @@ def save_user_ai_chat_custom_provider(
     custom_providers[provider_id] = {
         "id": provider_id,
         "label": normalized_label,
-        "kind": "openai_compatible",
+        "kind": normalized_kind,
+        "visibility": normalized_visibility,
         "base_url": normalized_base_url,
         "default_model": normalized_default_model,
         "models": tuple(normalized_models),
-        "supports_stream": True,
-        "supports_vision": False,
-        "requires_api_key": True,
         "updated_at": updated_at,
     }
     _save_all_maps(session, user_id, providers, custom_providers)
-    return {
-        "id": provider_id,
-        "label": normalized_label,
-        "kind": "openai_compatible",
-        "configured": False,
-        "base_url": normalized_base_url,
-        "default_model": normalized_default_model,
-        "models": normalized_models,
-        "supports_stream": True,
-        "supports_vision": False,
-        "requires_api_key": True,
-        "is_custom": True,
-        "updated_at": updated_at,
-    }
+    normalized_item = _normalize_custom_provider_item(provider_id, custom_providers[provider_id])
+    if normalized_item is None:
+        raise AiChatUserConfigError("自定义来源保存失败")
+    return _build_custom_provider_summary_item(
+        normalized_item,
+        provider_id=provider_id,
+        can_manage=True,
+        sharing_mode=normalized_visibility,
+    )
 
 
 def delete_user_ai_chat_custom_provider(session: Session, user_id: int, provider_id: str | None) -> None:
+    if _parse_public_custom_provider_id(provider_id):
+        raise AiChatUserConfigError("共享来源不能在这里删除，请删除你自己的原始来源")
     normalized_id = _normalize_provider_id(provider_id)
     providers = _load_provider_map(session, user_id)
     custom_providers = _load_custom_provider_map(session, user_id)

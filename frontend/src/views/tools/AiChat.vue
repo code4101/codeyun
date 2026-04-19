@@ -480,6 +480,8 @@ const status = reactive<AiChatStatusResponse>({
   label: 'Ollama',
   kind: 'ollama',
   is_custom: false,
+  sharing_mode: 'builtin',
+  can_manage: false,
   available: false,
   requires_auth: false,
   configured: true,
@@ -634,7 +636,7 @@ const canSend = computed(() => {
 
 const composerNote = computed(() => {
   if (!chatModelOptions.value.length) {
-    return '请先到配置页完成来源、地址、API Key 和模型列表。'
+    return '请先到配置页完成来源、连接信息和模型列表。'
   }
   if (!selectedModelOptions.value.length) {
     return '请先添加至少一个模型'
@@ -1220,6 +1222,8 @@ async function refreshStatus(providerId = settings.providerId, forceModel = fals
     status.label = providerMeta?.label || providerId || '当前来源'
     status.kind = providerMeta?.kind || 'unknown'
     status.is_custom = providerMeta?.is_custom ?? false
+    status.sharing_mode = providerMeta?.sharing_mode || 'builtin'
+    status.can_manage = providerMeta?.can_manage ?? false
     status.available = false
     status.configured = false
     status.supports_stream = providerMeta?.supports_stream ?? true
@@ -2426,7 +2430,7 @@ function getErrorMessage(error: unknown) {
   white-space: pre-wrap;
   word-break: break-word;
   color: #0f172a;
-  line-height: 1.7;
+  line-height: 1;
   font-size: 15px;
 }
 
@@ -2439,14 +2443,14 @@ function getErrorMessage(error: unknown) {
 }
 
 :deep(.message-markdown p) {
-  margin: 0 0 1em;
+  margin: 0 0 0.55em;
 }
 
 :deep(.message-markdown h1),
 :deep(.message-markdown h2),
 :deep(.message-markdown h3),
 :deep(.message-markdown h4) {
-  margin: 1.1em 0 0.55em;
+  margin: 0.9em 0 0.4em;
   line-height: 1.3;
   color: #0f172a;
 }
@@ -2465,17 +2469,17 @@ function getErrorMessage(error: unknown) {
 
 :deep(.message-markdown ul),
 :deep(.message-markdown ol) {
-  margin: 0 0 1em 1.4em;
+  margin: 0 0 0.65em 1.25em;
   padding: 0;
 }
 
 :deep(.message-markdown li + li) {
-  margin-top: 0.35em;
+  margin-top: 0.15em;
 }
 
 :deep(.message-markdown blockquote) {
-  margin: 1em 0;
-  padding: 0.8em 1em;
+  margin: 0.7em 0;
+  padding: 0.65em 0.9em;
   border-left: 4px solid rgba(59, 130, 246, 0.35);
   background: rgba(239, 246, 255, 0.7);
   color: #334155;
@@ -2483,7 +2487,7 @@ function getErrorMessage(error: unknown) {
 }
 
 :deep(.message-markdown hr) {
-  margin: 1.2em 0;
+  margin: 0.9em 0;
   border: none;
   border-top: 1px solid rgba(148, 163, 184, 0.28);
 }
@@ -2497,7 +2501,7 @@ function getErrorMessage(error: unknown) {
 }
 
 :deep(.message-markdown pre) {
-  margin: 1em 0;
+  margin: 0.75em 0;
   padding: 14px 16px;
   border-radius: 16px;
   overflow: auto;
@@ -2518,7 +2522,7 @@ function getErrorMessage(error: unknown) {
 :deep(.message-markdown table) {
   width: 100%;
   border-collapse: collapse;
-  margin: 1em 0;
+  margin: 0.75em 0;
 }
 
 :deep(.message-markdown th),

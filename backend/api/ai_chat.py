@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,10 +13,18 @@ from backend.core.ai_chat import (
     AiProviderConfig,
     OllamaClientError,
     chat_with_provider,
+    get_ai_provider,
     get_ai_provider_status,
     get_default_ai_provider_id,
     list_ai_provider_summaries,
     stream_chat_with_provider,
+)
+from backend.core.codex_access_keys import (
+    create_codex_access_key,
+    delete_codex_access_key,
+    ensure_codex_access_key_allowed,
+    list_codex_access_keys,
+    reveal_codex_access_key,
 )
 from backend.core.ai_chat_prompt_cards import (
     list_user_ai_chat_prompt_cards,
@@ -39,6 +48,7 @@ from backend.core.ai_chat_user_config import (
     delete_user_ai_chat_provider_api_key,
     delete_user_ai_chat_provider_config,
     get_user_ai_chat_provider_runtime_config,
+    list_public_ai_chat_custom_provider_configs,
     list_user_ai_chat_custom_provider_configs,
     list_user_ai_chat_provider_configs,
     save_user_ai_chat_custom_provider,
@@ -95,6 +105,8 @@ class AiChatStatusResponse(BaseModel):
     label: str
     kind: str
     is_custom: bool
+    sharing_mode: str = "builtin"
+    can_manage: bool = False
     available: bool
     requires_auth: bool
     configured: bool
@@ -112,6 +124,8 @@ class AiChatProviderSummary(BaseModel):
     label: str
     kind: str
     is_custom: bool
+    sharing_mode: str = "builtin"
+    can_manage: bool = False
     configured: bool
     requires_api_key: bool
     base_url: str
@@ -175,6 +189,27 @@ class AiChatCreateOllamaAccessKeyRequest(BaseModel):
 
 
 class AiChatOllamaAccessKeyDetail(AiChatOllamaAccessKeySummary):
+    plaintext_value: str
+
+
+class AiChatCodexAccessKeySummary(BaseModel):
+    id: str
+    label: str
+    masked_value: str
+    created_at: Optional[float] = None
+    updated_at: Optional[float] = None
+    created_by_user_id: Optional[int] = None
+
+
+class AiChatCodexAccessKeysResponse(BaseModel):
+    items: list[AiChatCodexAccessKeySummary] = Field(default_factory=list)
+
+
+class AiChatCreateCodexAccessKeyRequest(BaseModel):
+    label: Optional[str] = None
+
+
+class AiChatCodexAccessKeyDetail(AiChatCodexAccessKeySummary):
     plaintext_value: str
 
 
@@ -257,6 +292,8 @@ class AiChatDeleteSavedConfigResponse(BaseModel):
 
 class AiChatCreateCustomProviderRequest(BaseModel):
     label: str
+    kind: Literal["openai_compatible", "codex_cli"] = "openai_compatible"
+    visibility: Literal["private", "public"] = "private"
     base_url: str
     default_model: Optional[str] = None
     models: list[str] = Field(default_factory=list)
@@ -309,7 +346,18 @@ def _encode_stream_event(payload: dict[str, object]) -> bytes:
 def _get_extra_providers(current_user: Optional[User], session: Session) -> tuple[AiProviderConfig, ...]:
     if current_user is None:
         return ()
-    return list_user_ai_chat_custom_provider_configs(session, current_user.id)
+    items: list[AiProviderConfig] = []
+    for provider in (
+        *list_user_ai_chat_custom_provider_configs(session, current_user.id),
+        *list_public_ai_chat_custom_provider_configs(session, current_user.id),
+    ):
+        if provider.kind == "codex_cli":
+            if provider.can_manage and not current_user.is_superuser:
+                continue
+            if not current_user.is_superuser and not provider.can_manage and provider.sharing_mode == "public":
+                provider = replace(provider, requires_api_key=True, configured=False)
+        items.append(provider)
+    return tuple(items)
 
 
 def _ollama_requires_access_key(provider_id: Optional[str]) -> bool:
@@ -379,6 +427,7 @@ def _resolve_runtime_provider_config(
     api_key: Optional[str],
     current_user: Optional[User],
     session: Session,
+    extra_providers: tuple[AiProviderConfig, ...],
 ) -> tuple[str, Optional[str], Optional[str]]:
     resolved_provider = (provider or "").strip().lower()
     if not resolved_provider:
@@ -389,17 +438,24 @@ def _resolve_runtime_provider_config(
         ) or ANONYMOUS_DEFAULT_PROVIDER_ID
     resolved_base_url = (base_url or "").strip()
     resolved_api_key = (api_key or "").strip()
+    provider_config = get_ai_provider(resolved_provider, extra_providers=extra_providers)
 
     if current_user is None:
         if _ollama_requires_access_key(resolved_provider):
             ensure_ollama_access_key_allowed(session, resolved_api_key)
             return resolved_provider, resolved_base_url or None, resolved_api_key or None
+        if provider_config.kind == "codex_cli" and provider_config.requires_api_key:
+            ensure_codex_access_key_allowed(session, resolved_api_key)
         return resolved_provider, resolved_base_url or None, resolved_api_key
 
     saved_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
     resolved_api_key = resolved_api_key or saved_config["api_key"] or None
     if _ollama_requires_access_key(resolved_provider):
         ensure_ollama_access_key_allowed(session, resolved_api_key)
+    if provider_config.kind == "codex_cli" and provider_config.requires_api_key:
+        ensure_codex_access_key_allowed(session, resolved_api_key)
+    if provider_config.kind == "codex_cli" and not provider_config.can_manage:
+        resolved_base_url = provider_config.base_url
     return (
         resolved_provider,
         resolved_base_url or saved_config["base_url"] or None,
@@ -417,14 +473,15 @@ def _build_ai_chat_status_response(
     session: Session,
 ) -> AiChatStatusResponse:
     saved_runtime_config: dict[str, object] | None = None
+    extra_providers = _get_extra_providers(current_user, session)
     try:
-        extra_providers = _get_extra_providers(current_user, session)
         resolved_provider, resolved_base_url, resolved_api_key = _resolve_runtime_provider_config(
             provider=provider,
             base_url=base_url,
             api_key=api_key,
             current_user=current_user,
             session=session,
+            extra_providers=extra_providers,
         )
         provider_status = get_ai_provider_status(
             provider_id=resolved_provider,
@@ -435,19 +492,33 @@ def _build_ai_chat_status_response(
         if current_user is not None:
             saved_runtime_config = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
     except (OllamaClientError, AiChatUserConfigError) as exc:
+        fallback_provider: AiProviderConfig | None = None
+        try:
+            fallback_provider = get_ai_provider(provider, extra_providers=extra_providers)
+        except OllamaClientError:
+            fallback_provider = None
         return AiChatStatusResponse(
-            provider=(provider or get_default_ai_provider_id()),
-            label=(provider or get_default_ai_provider_id()),
-            kind="unknown",
-            is_custom=False,
+            provider=fallback_provider.id if fallback_provider is not None else (provider or get_default_ai_provider_id()),
+            label=fallback_provider.label if fallback_provider is not None else (provider or get_default_ai_provider_id()),
+            kind=fallback_provider.kind if fallback_provider is not None else "unknown",
+            is_custom=fallback_provider.is_custom if fallback_provider is not None else False,
+            sharing_mode=fallback_provider.sharing_mode if fallback_provider is not None else "builtin",
+            can_manage=fallback_provider.can_manage if fallback_provider is not None else False,
             available=False,
             requires_auth=settings.is_production,
             configured=False,
-            supports_stream=True,
-            supports_vision=False,
-            requires_api_key=_ollama_requires_access_key(provider or get_default_ai_provider_id()),
-            base_url=base_url or "",
-            default_model="",
+            supports_stream=fallback_provider.supports_stream if fallback_provider is not None else True,
+            supports_vision=fallback_provider.supports_vision if fallback_provider is not None else False,
+            requires_api_key=(
+                True
+                if _ollama_requires_access_key(
+                    fallback_provider.id if fallback_provider is not None else (provider or get_default_ai_provider_id())
+                )
+                else (fallback_provider.requires_api_key if fallback_provider is not None else False)
+            ),
+            base_url=base_url or (fallback_provider.base_url if fallback_provider is not None else ""),
+            default_model=fallback_provider.default_model if fallback_provider is not None else "",
+            models=list(fallback_provider.models) if fallback_provider is not None else [],
             error=str(exc),
         )
 
@@ -473,6 +544,8 @@ def _build_ai_chat_status_response(
         label=provider_status["label"],
         kind=provider_status["kind"],
         is_custom=provider_status["is_custom"],
+        sharing_mode=str(provider_status.get("sharing_mode") or "builtin"),
+        can_manage=bool(provider_status.get("can_manage")),
         available=provider_status["available"],
         requires_auth=settings.is_production,
         configured=provider_status["configured"],
@@ -587,7 +660,7 @@ def post_ai_chat_ollama_access_key(
             created_by_user_id=current_user.id,
             label=payload.label,
         )
-    except AiChatUserConfigError as exc:
+    except (AiChatUserConfigError, OllamaClientError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return AiChatOllamaAccessKeyDetail.model_validate(created)
 
@@ -701,16 +774,20 @@ def post_ai_chat_custom_provider(
     session: Session = Depends(get_session),
 ):
     _ensure_ai_chat_access(current_user)
+    if payload.kind == "codex_cli" and not current_user.is_superuser:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="只有管理员可以新增 Codex CLI 来源")
     try:
         custom_provider = save_user_ai_chat_custom_provider(
             session,
             current_user.id,
             label=payload.label,
+            kind=payload.kind,
+            visibility=payload.visibility,
             base_url=payload.base_url,
             default_model=payload.default_model,
             models=payload.models,
         )
-    except AiChatUserConfigError as exc:
+    except (AiChatUserConfigError, OllamaClientError) as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return AiChatProviderSummary.model_validate(custom_provider)
@@ -723,7 +800,10 @@ def delete_ai_chat_custom_provider(
     session: Session = Depends(get_session),
 ):
     _ensure_ai_chat_access(current_user)
-    delete_user_ai_chat_custom_provider(session, current_user.id, provider_id)
+    try:
+        delete_user_ai_chat_custom_provider(session, current_user.id, provider_id)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     return AiChatDeleteSavedConfigResponse()
 
 
@@ -736,11 +816,13 @@ def put_ai_chat_saved_config(
 ):
     _ensure_ai_chat_access(current_user)
     try:
+        extra_providers = _get_extra_providers(current_user, session)
+        provider_config = get_ai_provider(provider_id, extra_providers=extra_providers)
         saved_config = save_user_ai_chat_provider_config(
             session,
             current_user.id,
             provider_id,
-            base_url=payload.base_url,
+            base_url="" if provider_config.kind == "codex_cli" and not provider_config.can_manage else payload.base_url,
             preferred_model=payload.preferred_model,
             preferred_models=payload.preferred_models,
             api_key=payload.api_key,
@@ -751,6 +833,66 @@ def put_ai_chat_saved_config(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     return AiChatSavedProviderConfig.model_validate(saved_config)
+
+
+@router.get("/codex-access-keys", response_model=AiChatCodexAccessKeysResponse)
+def get_ai_chat_codex_access_keys(
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    return AiChatCodexAccessKeysResponse(
+        items=[
+            AiChatCodexAccessKeySummary.model_validate(item)
+            for item in list_codex_access_keys(session)
+        ],
+    )
+
+
+@router.post("/codex-access-keys", response_model=AiChatCodexAccessKeyDetail)
+def post_ai_chat_codex_access_key(
+    payload: AiChatCreateCodexAccessKeyRequest,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        created = create_codex_access_key(
+            session,
+            created_by_user_id=current_user.id,
+            label=payload.label,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return AiChatCodexAccessKeyDetail.model_validate(created)
+
+
+@router.get("/codex-access-keys/{key_id}", response_model=AiChatCodexAccessKeyDetail)
+def get_ai_chat_codex_access_key_detail(
+    key_id: str,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        item = reveal_codex_access_key(session, key_id)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AiChatCodexAccessKeyDetail.model_validate(item)
+
+
+@router.delete("/codex-access-keys/{key_id}", response_model=AiChatDeleteSavedConfigResponse)
+def delete_ai_chat_codex_access_key(
+    key_id: str,
+    current_user: User = Depends(get_current_active_superuser),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        delete_codex_access_key(session, key_id)
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return AiChatDeleteSavedConfigResponse()
 
 
 @router.post("/saved-configs/{provider_id}/keys/{key_id}/activate", response_model=AiChatSavedProviderConfig)
@@ -823,6 +965,7 @@ def post_ai_chat(
             api_key=payload.api_key,
             current_user=current_user,
             session=session,
+            extra_providers=extra_providers,
         )
         resolved_model = (payload.model or "").strip()
         if not resolved_model and current_user is not None:
@@ -867,6 +1010,7 @@ def post_ai_chat_stream(
             api_key=payload.api_key,
             current_user=current_user,
             session=session,
+            extra_providers=extra_providers,
         )
         resolved_model = (payload.model or "").strip()
         if not resolved_model and current_user is not None:

@@ -73,3 +73,28 @@ export function findPermissionKeyByRoutePath(path: string): string | null {
 export function findPermissionKeyByMenuPath(path: string): string | null {
   return menuPathPermissionKeyMap.get(path) ?? null
 }
+
+export function buildPermissionTitleSegments(
+  permissionKey: string,
+  options?: {
+    omitRoot?: boolean
+  },
+): string[] {
+  const omitRoot = options?.omitRoot ?? true
+  const segments: string[] = []
+  let currentKey: string | undefined = permissionKey
+
+  while (currentKey) {
+    const node = permissionRegistryMap.get(currentKey)
+    if (!node) {
+      break
+    }
+    segments.unshift(node.title)
+    currentKey = node.parent_key
+  }
+
+  if (omitRoot && segments.length > 1) {
+    return segments.slice(1)
+  }
+  return segments
+}

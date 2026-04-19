@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from collections import defaultdict
@@ -104,6 +105,8 @@ MIN_HISTORY_WINDOW_DAYS = 7
 MAX_HISTORY_WINDOW_DAYS = 365
 GIT_HISTORY_LOG_TIMEOUT = 60
 GIT_HISTORY_MARKER = "__CODEYUN_HISTORY__"
+COMMIT_BODY_BULLET_PREFIX_RE = re.compile(r"^[-*•]\s*")
+COMMIT_BODY_NUMBER_PREFIX_RE = re.compile(r"^(?:\d{1,2}[、）)]\s*|\d{1,2}[.．](?!\d)\s*)")
 
 
 class GitToolError(RuntimeError):
@@ -955,10 +958,16 @@ def normalize_commit_body_lines(body: list[str]) -> list[str]:
         line = str(item or "").strip()
         if not line:
             continue
-        if line.startswith(("-", "*", "•")):
-            line = line[1:].strip()
+        line = COMMIT_BODY_BULLET_PREFIX_RE.sub("", line)
+        line = COMMIT_BODY_NUMBER_PREFIX_RE.sub("", line).strip()
+        if not line:
+            continue
         normalized.append(line)
     return normalized
+
+
+def _format_commit_body_lines(body: list[str]) -> list[str]:
+    return [f"{index}、{line}" for index, line in enumerate(body, start=1)]
 
 
 def format_git_commit_message(subject: str, body: list[str]) -> str:
@@ -970,8 +979,8 @@ def format_git_commit_message(subject: str, body: list[str]) -> str:
     if not normalized_body:
         return normalized_subject
 
-    bullet_lines = [f"- {line}" for line in normalized_body]
-    return normalized_subject + "\n\n" + "\n".join(bullet_lines)
+    numbered_lines = _format_commit_body_lines(normalized_body)
+    return normalized_subject + "\n\n" + "\n".join(numbered_lines)
 
 
 def create_git_commit(
@@ -992,7 +1001,7 @@ def create_git_commit(
     normalized_body = normalize_commit_body_lines(body)
     commit_args = ["commit", "-m", (subject or "").strip()]
     if normalized_body:
-        commit_args.extend(["-m", "\n".join(f"- {line}" for line in normalized_body)])
+        commit_args.extend(["-m", "\n".join(_format_commit_body_lines(normalized_body))])
     _run_git(repo_root, commit_args, timeout=60)
 
     commit_hash = _run_git(repo_root, ["rev-parse", "HEAD"])

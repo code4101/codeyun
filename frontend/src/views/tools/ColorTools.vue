@@ -53,23 +53,31 @@ interface PersistedColorToolsState {
   }>
 }
 
-const currentColor = reactive(createRgbColor(123, 45, 84))
+const DEFAULT_CURRENT_HEX = '#87CEEB'
+const LEGACY_DEFAULT_CURRENT_HEX = '#7B2D54'
+const DEFAULT_MIX_FILL_HEX = DEFAULT_CURRENT_HEX
+const LEGACY_DEFAULT_MIX_FILL_HEX = '#FFFFFF'
+const DEFAULT_CURRENT_COLOR = fromHex(DEFAULT_CURRENT_HEX)
+
+const currentColor = reactive(
+  createRgbColor(DEFAULT_CURRENT_COLOR.r, DEFAULT_CURRENT_COLOR.g, DEFAULT_CURRENT_COLOR.b),
+)
 const activePalette = ref<ColorGroupId>('core-zh')
 const paletteSearch = ref('')
-const hexDraft = ref('#7B2D54')
+const hexDraft = ref(DEFAULT_CURRENT_HEX)
 const vbaPositiveDraft = ref('')
 const vbaNegativeDraft = ref('')
 const VBA_COLOR_SPACE = 256 ** 3
 const COLOR_TOOLS_STATE_STORAGE_KEY = 'color_tools_state_v1'
 let mixComposerEntrySeed = 0
-const createMixComposerEntry = (hex = '#FFFFFF', weight = 100): MixComposerEntry => ({
+const createMixComposerEntry = (hex = DEFAULT_MIX_FILL_HEX, weight = 100): MixComposerEntry => ({
   id: `mix-${++mixComposerEntrySeed}`,
   hex: toHex(fromHex(hex)),
   weight,
 })
-const mixEntries = ref<MixComposerEntry[]>([createMixComposerEntry('#7B2D54', 100)])
+const mixEntries = ref<MixComposerEntry[]>([createMixComposerEntry(DEFAULT_CURRENT_HEX, 100)])
 const activeMixEntryPickerId = ref<string | null>(null)
-const mixFillHex = ref('#FFFFFF')
+const mixFillHex = ref(DEFAULT_MIX_FILL_HEX)
 const mixFillPickerVisible = ref(false)
 
 const analysisGroupIds = ref<ColorGroupId[]>(COLOR_GROUPS.map(group => group.id))
@@ -169,6 +177,38 @@ const normalizeMixWeight = (value: unknown) => {
   const numeric = typeof value === 'number' ? value : Number(value)
   if (!Number.isFinite(numeric)) return 0
   return Math.max(0, Math.min(100, Math.round(numeric)))
+}
+
+function createDefaultPersistedColorToolsState(): PersistedColorToolsState {
+  return {
+    version: 1,
+    currentHex: DEFAULT_CURRENT_HEX,
+    mixFillHex: DEFAULT_MIX_FILL_HEX,
+    mixEntries: [{
+      hex: DEFAULT_CURRENT_HEX,
+      weight: 100,
+    }],
+  }
+}
+
+function isLegacyDefaultPersistedState(state: Partial<PersistedColorToolsState>): boolean {
+  const sourceEntries = Array.isArray(state.mixEntries) ? state.mixEntries : []
+  if (sourceEntries.length !== 1) return false
+
+  try {
+    const normalizedCurrentHex = toHex(fromHex(state.currentHex || LEGACY_DEFAULT_CURRENT_HEX))
+    const normalizedMixFillHex = toHex(fromHex(state.mixFillHex || LEGACY_DEFAULT_MIX_FILL_HEX))
+    const normalizedEntryHex = toHex(fromHex(sourceEntries[0]?.hex || ''))
+
+    return (
+      (normalizedCurrentHex === LEGACY_DEFAULT_CURRENT_HEX || normalizedCurrentHex === DEFAULT_CURRENT_HEX)
+      && normalizedMixFillHex === LEGACY_DEFAULT_MIX_FILL_HEX
+      && normalizedEntryHex === normalizedCurrentHex
+      && normalizeMixWeight(sourceEntries[0]?.weight) === 100
+    )
+  } catch {
+    return false
+  }
 }
 
 const resolvedMixEntries = computed<ResolvedMixComposerEntry[]>(() => (
@@ -338,14 +378,19 @@ function loadPersistedColorToolsState(): PersistedColorToolsState | null {
       return null
     }
 
-    const currentHex = toHex(fromHex(parsed.currentHex || '#7B2D54'))
-    const mixFillHex = toHex(fromHex(parsed.mixFillHex || '#FFFFFF'))
+    if (isLegacyDefaultPersistedState(parsed)) {
+      window.localStorage.removeItem(COLOR_TOOLS_STATE_STORAGE_KEY)
+      return createDefaultPersistedColorToolsState()
+    }
+
+    const currentHex = toHex(fromHex(parsed.currentHex || DEFAULT_CURRENT_HEX))
+    const mixFillHex = toHex(fromHex(parsed.mixFillHex || DEFAULT_MIX_FILL_HEX))
     const sourceEntries = Array.isArray(parsed.mixEntries) ? parsed.mixEntries : []
     const mixEntries = sourceEntries
       .map((entry) => {
         try {
           return {
-            hex: toHex(fromHex(entry?.hex || '#FFFFFF')),
+            hex: toHex(fromHex(entry?.hex || DEFAULT_MIX_FILL_HEX)),
             weight: normalizeMixWeight(entry?.weight),
           }
         } catch {

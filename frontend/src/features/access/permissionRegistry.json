@@ -62,7 +62,7 @@
       "route_paths": [],
       "menu_paths": [],
       "api_scopes": ["ai-tools.discovery"],
-      "default_anonymous_allow": true
+      "default_anonymous_allow": false
     },
     {
       "key": "tools.ai-config",
@@ -73,7 +73,7 @@
       "route_paths": ["/tools/ai-config"],
       "menu_paths": ["/tools/ai-config"],
       "api_scopes": ["ai-tools.config"],
-      "default_anonymous_allow": true
+      "default_anonymous_allow": false
     },
     {
       "key": "tools.ai-chat",
@@ -84,7 +84,7 @@
       "route_paths": ["/tools/ai-chat"],
       "menu_paths": ["/tools/ai-chat"],
       "api_scopes": ["ai-tools.chat"],
-      "default_anonymous_allow": true
+      "default_anonymous_allow": false
     },
     {
       "key": "tools.ai-reduction",
@@ -116,7 +116,7 @@
       "route_paths": [],
       "menu_paths": [],
       "api_scopes": ["attendance-tools"],
-      "default_anonymous_allow": false
+      "default_anonymous_allow": true
     },
     {
       "key": "attendance.configs",
@@ -130,14 +130,58 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "attendance.wjx-templates",
-      "title": "问卷星模版",
-      "node_type": "feature",
+      "key": "attendance.wjx",
+      "title": "问卷",
+      "node_type": "group",
       "parent_key": "attendance-tools",
       "sort_order": 20,
-      "route_paths": ["/attendance/wjx-templates"],
-      "menu_paths": ["/attendance/wjx-templates"],
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "attendance.wjx-templates",
+      "title": "课程清单维护",
+      "node_type": "feature",
+      "parent_key": "attendance.wjx",
+      "sort_order": 10,
+      "route_paths": ["/attendance/questionnaire/design", "/attendance/wjx/templates", "/attendance/wjx-templates"],
+      "menu_paths": [],
       "api_scopes": ["attendance-tools.wjx-templates"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.wjx-feedback",
+      "title": "配置",
+      "node_type": "feature",
+      "parent_key": "attendance.wjx",
+      "sort_order": 20,
+      "route_paths": ["/attendance/questionnaire/feedback", "/attendance/wjx/feedback", "/attendance-feedback", "/f/attendance-feedback"],
+      "menu_paths": ["/attendance/questionnaire/feedback"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "attendance.wjx-data",
+      "title": "数据",
+      "node_type": "feature",
+      "parent_key": "attendance.wjx",
+      "sort_order": 30,
+      "route_paths": ["/attendance/questionnaire/data", "/attendance/wjx/data"],
+      "menu_paths": ["/attendance/questionnaire/data"],
+      "api_scopes": ["attendance-tools.wjx-data"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.orders",
+      "title": "订单操作",
+      "node_type": "feature",
+      "parent_key": "attendance-tools",
+      "sort_order": 30,
+      "route_paths": ["/attendance/orders"],
+      "menu_paths": ["/attendance/orders"],
+      "api_scopes": ["attendance-tools.orders"],
       "default_anonymous_allow": false
     },
     {
@@ -155,7 +199,7 @@
       "title": "凡修手游",
       "node_type": "group",
       "parent_key": "game-tools",
-      "sort_order": 10,
+      "sort_order": 40,
       "route_paths": [],
       "menu_paths": [],
       "api_scopes": ["fanxiu"],
@@ -203,7 +247,7 @@
       "route_paths": ["/fanxiu/task-status"],
       "menu_paths": ["/fanxiu/task-status"],
       "api_scopes": ["fanxiu.task-status"],
-      "default_anonymous_allow": true
+      "default_anonymous_allow": false
     },
     {
       "key": "fanxiu.recharge",

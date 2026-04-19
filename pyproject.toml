@@ -16,6 +16,7 @@ members = ["backend"]
 
 [tool.uv.sources]
 codeyun-backend = { workspace = true }
+pyxllib = { path = "../pyxllib", editable = true }
 
 [dependency-groups]
 dev = [
