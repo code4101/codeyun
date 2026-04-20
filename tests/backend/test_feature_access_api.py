@@ -1,5 +1,8 @@
+import json
+
 from backend.app import app
 from backend.core.auth import get_current_active_superuser
+from backend.core import feature_access as feature_access_module
 from backend.models import User
 
 
@@ -9,6 +12,9 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "tools.password-generator",
     "tools.image-browser",
     "tools.color-tools",
+    "attendance-tools",
+    "attendance.wjx",
+    "attendance.wjx-feedback",
     "game-tools",
     "fanxiu",
     "fanxiu.calculator",
@@ -283,3 +289,34 @@ def test_feature_access_denied_fanxiu_api_returns_403(client):
 
     assert response.status_code == 403
     assert response.json()["detail"] == "当前账号无权访问该功能"
+
+
+def test_feature_access_registry_reloads_when_registry_file_changes(tmp_path, monkeypatch):
+    registry_path = tmp_path / "permissionRegistry.json"
+    registry_payload = {
+        "version": 1,
+        "nodes": [
+            {
+                "key": "attendance.orders",
+                "title": "订单操作",
+                "node_type": "feature",
+                "sort_order": 10,
+                "route_paths": ["/attendance/orders"],
+                "menu_paths": ["/attendance/orders"],
+                "api_scopes": ["attendance-tools.orders"],
+                "default_anonymous_allow": False,
+            }
+        ],
+    }
+    registry_path.write_text(json.dumps(registry_payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(feature_access_module, "FEATURE_ACCESS_REGISTRY_PATH", registry_path)
+    feature_access_module.clear_feature_access_registry_cache()
+
+    initial_registry = feature_access_module.load_feature_access_registry()
+    assert initial_registry.node_map["attendance.orders"].title == "订单操作"
+
+    registry_payload["nodes"][0]["title"] = "订单"
+    registry_path.write_text(json.dumps(registry_payload, ensure_ascii=False), encoding="utf-8")
+
+    reloaded_registry = feature_access_module.load_feature_access_registry()
+    assert reloaded_registry.node_map["attendance.orders"].title == "订单"

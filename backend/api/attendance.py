@@ -1278,11 +1278,14 @@ def get_attendance_feedback_form_meta(
     return _build_attendance_feedback_form_meta(session)
 
 
-@public_router.put("/wjx-feedback-form", response_model=AttendanceFeedbackFormMeta)
+@router.put("/wjx-feedback-form", response_model=AttendanceFeedbackFormMeta)
 def update_attendance_feedback_form_meta(
     payload: AttendanceFeedbackFormMetaUpdateRequest,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-templates")),
 ):
+    current_user = ensure_can_use_attendance_service(current_user, session)
     update_attendance_service_extra_config(
         session,
         feedback_course_names=_resolve_feedback_course_names_or_400(payload.course_names),

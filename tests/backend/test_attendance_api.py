@@ -245,25 +245,29 @@ def test_attendance_feedback_form_meta_is_public_and_tracks_course_catalog_updat
     assert updated_payload["template"]["fill_url"] == "https://www.wjx.cn/vm/PbkKDaK.aspx"
 
 
-def test_attendance_feedback_form_meta_update_bypasses_user_feature_access_policy(client: TestClient, session, auth_user):
-    save_feature_access_policy_overrides(
-        session,
-        subject_type=FEATURE_ACCESS_SUBJECT_USER,
-        subject_user_id=auth_user.id,
-        overrides={
-            "attendance-tools": "deny",
-            "attendance.wjx": "deny",
-            "attendance.wjx-feedback": "deny",
-            "attendance.wjx-templates": "deny",
-        },
-    )
+def test_attendance_feedback_form_meta_update_requires_manage_feature(client: TestClient, session, auth_user):
+    config = get_or_create_attendance_service_config(session)
+    config.granted_user_ids = [auth_user.id]
+    session.add(config)
+    session.commit()
 
-    response = client.put(
+    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-feedback")
+
+    denied_response = client.put(
+        "/api/attendance/wjx-feedback-form",
+        json={"course_names": ["20260415第46届觉观"]},
+    )
+    assert denied_response.status_code == 403
+    assert denied_response.json()["detail"] == "当前账号无权访问该功能"
+
+    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-templates")
+
+    allowed_response = client.put(
         "/api/attendance/wjx-feedback-form",
         json={"course_names": ["20260415第46届觉观", "20260420梵呗初阶"]},
     )
-    assert response.status_code == 200
-    assert response.json()["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
+    assert allowed_response.status_code == 200
+    assert allowed_response.json()["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
 
 
 def test_attendance_feedback_public_endpoints_bypass_feature_access_policy(client: TestClient, session):
@@ -282,17 +286,10 @@ def test_attendance_feedback_public_endpoints_bypass_feature_access_policy(clien
     assert meta_response.status_code == 200
     assert meta_response.json()["course_names"] == DEFAULT_FEEDBACK_COURSE_NAMES
 
-    update_response = client.put(
-        "/api/attendance/wjx-feedback-form",
-        json={"course_names": ["20260415第46届觉观", "20260420梵呗初阶"]},
-    )
-    assert update_response.status_code == 200
-    assert update_response.json()["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
-
     submit_response = client.post(
         "/api/attendance/wjx-feedback/submissions",
         json={
-            "course_name": "20260415第46届觉观",
+            "course_name": DEFAULT_FEEDBACK_COURSE_NAMES[0],
             "student_id_text": "1",
             "student_name": "游客测试",
             "correction_request": "公开入口仍可提交",

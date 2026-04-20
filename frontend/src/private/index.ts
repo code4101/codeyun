@@ -1,93 +1,82 @@
-import type { RouteRecordRaw } from 'vue-router';
+import type { PrivatePageDefinition } from '@/router/pageRegistryTypes'
 
 export interface PrivateMenuItem {
-  key: string;
-  title: string;
-  path: string;
-  requiresAuth?: boolean;
-  requiresAdmin?: boolean;
+  key: string
+  title: string
+  path: string
+  requiresAuth?: boolean
+  requiresAdmin?: boolean
 }
 
 export interface PrivateMenuSection {
-  key: string;
-  title: string;
-  items: PrivateMenuItem[];
+  key: string
+  title: string
+  items: PrivateMenuItem[]
 }
 
 export interface PrivateFrontendModule {
-  routes?: RouteRecordRaw[];
-  menuSections?: PrivateMenuSection[];
+  pages?: PrivatePageDefinition[]
 }
 
 const privateModuleFiles = import.meta.glob<{ default?: PrivateFrontendModule }>(
   './modules/*/index.ts',
   { eager: true },
-);
+)
 
 const privateModules = Object.values(privateModuleFiles)
   .map((file) => file.default)
-  .filter((module): module is PrivateFrontendModule => Boolean(module));
+  .filter((module): module is PrivateFrontendModule => Boolean(module))
 
-function normalizePrivateRoute(route: RouteRecordRaw): RouteRecordRaw {
-  const meta = {
-    ...(route.meta ?? {}),
-  };
-  const requiresAdmin = meta.requiresAdmin ?? false;
-  const requiresAuth = meta.requiresAuth ?? true;
-
+function normalizePrivatePage(page: PrivatePageDefinition): PrivatePageDefinition {
   return {
-    ...route,
-    meta: {
-      ...meta,
-      requiresAuth,
-      requiresAdmin,
-    },
-    children: route.children?.map((child) => normalizePrivateRoute(child)),
-  };
+    ...page,
+    requiresAuth: page.requiresAuth ?? true,
+    requiresAdmin: page.requiresAdmin ?? false,
+    menuPath: page.menuPath ?? page.canonicalPath,
+  }
 }
 
-function normalizePrivateMenuItem(item: PrivateMenuItem): PrivateMenuItem {
-  const requiresAdmin = item.requiresAdmin ?? false;
-  const requiresAuth = item.requiresAuth ?? true;
-  return {
-    ...item,
-    requiresAuth,
-    requiresAdmin,
-  };
-}
+export const privatePageRegistry = privateModules.flatMap((module) =>
+  (module.pages ?? []).map((page) => normalizePrivatePage(page)),
+)
 
-function normalizePrivateMenuSection(section: PrivateMenuSection): PrivateMenuSection {
-  return {
-    ...section,
-    items: section.items.map((item) => normalizePrivateMenuItem(item)),
-  };
-}
+const privateMenuSectionMap = privatePageRegistry.reduce((sections, page) => {
+  const section = sections.get(page.menuSectionKey) ?? {
+    key: page.menuSectionKey,
+    title: page.menuSectionTitle,
+    items: [] as PrivateMenuItem[],
+  }
+  section.items.push({
+    key: page.menuItemKey,
+    title: page.menuItemTitle,
+    path: page.menuPath ?? page.canonicalPath,
+    requiresAuth: page.requiresAuth,
+    requiresAdmin: page.requiresAdmin,
+  })
+  sections.set(page.menuSectionKey, section)
+  return sections
+}, new Map<string, PrivateMenuSection>())
 
-export const privateRoutes = privateModules.flatMap((module) =>
-  (module.routes ?? []).map((route) => normalizePrivateRoute(route)),
-);
-export const privateMenuSections = privateModules.flatMap((module) =>
-  (module.menuSections ?? []).map((section) => normalizePrivateMenuSection(section)),
-);
+export const privateMenuSections = Array.from(privateMenuSectionMap.values())
 
 function pathMatches(menuPath: string, currentPath: string): boolean {
-  return currentPath === menuPath || currentPath.startsWith(`${menuPath}/`);
+  return currentPath === menuPath || currentPath.startsWith(`${menuPath}/`)
 }
 
 export function findPrivateMenuIndex(currentPath: string): string | null {
   for (const section of privateMenuSections) {
-    const matchedItem = section.items.find((item) => pathMatches(item.path, currentPath));
+    const matchedItem = section.items.find((item) => pathMatches(item.path, currentPath))
     if (matchedItem) {
-      return matchedItem.path;
+      return matchedItem.path
     }
   }
-  return null;
+  return null
 }
 
 export function getDefaultPrivateOpeneds(currentPath: string): string[] {
   return privateMenuSections
     .filter((section) => section.items.some((item) => pathMatches(item.path, currentPath)))
-    .map((section) => section.key);
+    .map((section) => section.key)
 }
 
 export function isPrivateMenuItemVisible(
@@ -96,10 +85,10 @@ export function isPrivateMenuItemVisible(
   isAdmin: boolean,
 ): boolean {
   if (item.requiresAdmin) {
-    return isAdmin;
+    return isAdmin
   }
   if (item.requiresAuth) {
-    return isAuthenticated;
+    return isAuthenticated
   }
-  return true;
+  return true
 }

@@ -188,11 +188,21 @@ const refreshCompanions = () => {
           <div class="stage-grid">
             <div class="field-block">
               <span class="field-label">第1关难度</span>
-              <el-input-number v-model="state.hardScore" :min="0" :controls="false" />
+              <el-input-number
+                v-model="state.hardScore"
+                :min="0"
+                :step="1"
+                controls-position="right"
+              />
             </div>
               <div class="field-block">
                 <span class="field-label">第2关难度</span>
-                <el-input-number v-model="state.easyScore" :min="0" :controls="false" />
+                <el-input-number
+                  v-model="state.easyScore"
+                  :min="0"
+                  :step="1"
+                  controls-position="right"
+                />
               </div>
               <div class="field-block">
               <span class="field-label">容差</span>
@@ -497,7 +507,7 @@ const refreshCompanions = () => {
 }
 
 .field-block :deep(.el-input-number) {
-  width: 136px;
+  width: 100%;
 }
 
 .strategy-cell {

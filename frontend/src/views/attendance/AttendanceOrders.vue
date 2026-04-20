@@ -64,6 +64,9 @@ const REFUND_READONLY_COLUMNS = new Set(REFUND_TABLE_COLUMNS)
 const ORDER_DRAFT_STORAGE_KEY_PREFIX = 'attendance.orders.v2'
 const HOT_TABLE_HEADER_HEIGHT = 34
 const HOT_TABLE_ROW_HEIGHT = 28
+const HOT_TABLE_MAX_VISIBLE_ROWS = 12
+const INPUT_TABLE_MIN_VISIBLE_ROWS = 6
+const QUERY_TABLE_MIN_VISIBLE_ROWS = 4
 const REFUND_HISTORY_PAGE_SIZE_OPTIONS = [10, 20, 50]
 
 const loading = ref(false)
@@ -74,6 +77,8 @@ const config = ref<AttendanceConfigResponse | null>(null)
 const inputHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const queryHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const refundHotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
+const inputMeasuredHeight = ref<number | null>(null)
+const queryMeasuredHeight = ref<number | null>(null)
 const inputRows = ref<InputOrderRow[]>([createEmptyInputRow()])
 const queryRows = ref<QueryOrderRow[]>([])
 const refundRows = ref<RefundResultRow[]>([])
@@ -98,6 +103,17 @@ const hasOrderPageData = computed(() => (
   || hasQueryRows.value
   || hasRefundRows.value
 ))
+const inputFallbackTableHeight = computed(() => getAdaptiveTableHeight(inputRows.value.length, {
+  minVisibleRows: INPUT_TABLE_MIN_VISIBLE_ROWS,
+  maxVisibleRows: Number.POSITIVE_INFINITY,
+  extraVisibleRows: 1,
+}))
+const queryFallbackTableHeight = computed(() => getAdaptiveTableHeight(queryRows.value.length, {
+  minVisibleRows: QUERY_TABLE_MIN_VISIBLE_ROWS,
+  maxVisibleRows: Number.POSITIVE_INFINITY,
+}))
+const inputTableHeight = computed(() => inputMeasuredHeight.value ?? inputFallbackTableHeight.value)
+const queryTableHeight = computed(() => queryMeasuredHeight.value ?? queryFallbackTableHeight.value)
 const refundTableHeight = computed(() => getAdaptiveTableHeight(refundRows.value.length))
 
 const inputColumns: ColumnSettings[] = [
@@ -158,8 +174,21 @@ function createEmptyRefundRow(): RefundResultRow {
   }
 }
 
-function getAdaptiveTableHeight(rowCount: number): number {
-  const visibleRows = Math.max(rowCount, 1)
+function getAdaptiveTableHeight(
+  rowCount: number,
+  options?: {
+    minVisibleRows?: number
+    maxVisibleRows?: number
+    extraVisibleRows?: number
+  },
+): number {
+  const minVisibleRows = options?.minVisibleRows ?? 1
+  const maxVisibleRows = options?.maxVisibleRows ?? HOT_TABLE_MAX_VISIBLE_ROWS
+  const extraVisibleRows = options?.extraVisibleRows ?? 0
+  const visibleRows = Math.min(
+    Math.max(rowCount + extraVisibleRows, minVisibleRows),
+    maxVisibleRows,
+  )
   return HOT_TABLE_HEADER_HEIGHT + visibleRows * HOT_TABLE_ROW_HEIGHT
 }
 
@@ -303,6 +332,30 @@ function getQueryHotInstance() {
 
 function getRefundHotInstance() {
   return refundHotTableRef.value?.hotInstance ?? null
+}
+
+function measureRenderedTableHeight(hot: Handsontable | null, extraVisibleRows = 0): number | null {
+  if (!hot) return null
+
+  const rowCount = hot.countRows()
+  let totalHeight = HOT_TABLE_HEADER_HEIGHT + 2
+  for (let rowIndex = 0; rowIndex < rowCount; rowIndex += 1) {
+    totalHeight += hot.getRowHeight(rowIndex) ?? HOT_TABLE_ROW_HEIGHT
+  }
+  totalHeight += extraVisibleRows * HOT_TABLE_ROW_HEIGHT
+  return totalHeight
+}
+
+function refreshInputTableHeight() {
+  requestAnimationFrame(() => {
+    inputMeasuredHeight.value = measureRenderedTableHeight(getInputHotInstance(), 1)
+  })
+}
+
+function refreshQueryTableHeight() {
+  requestAnimationFrame(() => {
+    queryMeasuredHeight.value = measureRenderedTableHeight(getQueryHotInstance())
+  })
 }
 
 function syncInputRowsFromGrid() {
@@ -634,8 +687,13 @@ function handleInputAfterChange(_changes: unknown, source?: string) {
   syncInputRowsFromGrid()
 }
 
+function handleInputAfterRender() {
+  refreshInputTableHeight()
+}
+
 function handleInputAfterCreateRow() {
   syncInputRowsFromGrid()
+  refreshInputTableHeight()
 }
 
 function handleInputAfterRemoveRow() {
@@ -643,11 +701,16 @@ function handleInputAfterRemoveRow() {
   if (!inputRows.value.length) {
     loadInputRowsToGrid([createEmptyInputRow()])
   }
+  refreshInputTableHeight()
 }
 
 function handleQueryAfterChange(_changes: unknown, source?: string) {
   if (source === 'loadData' || source === 'external-update') return
   syncQueryRowsFromGrid()
+}
+
+function handleQueryAfterRender() {
+  refreshQueryTableHeight()
 }
 
 function handleRefundAfterChange(_changes: unknown, source?: string) {
@@ -661,7 +724,7 @@ async function loadPageData() {
     const configData = await fetchAttendanceConfig()
     config.value = configData
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '加载订单操作页失败')
+    ElMessage.error(error.response?.data?.detail || '加载订单页失败')
   } finally {
     loading.value = false
   }
@@ -909,7 +972,7 @@ onMounted(() => {
 <template>
   <div class="attendance-page">
     <header class="page-header">
-      <h1>订单操作</h1>
+      <h1>订单</h1>
     </header>
 
     <div class="orders-layout">
@@ -931,8 +994,11 @@ onMounted(() => {
             :manual-row-resize="true"
             :copy-paste="true"
             :context-menu="true"
+            :auto-row-size="true"
             :min-spare-rows="1"
+            :render-all-rows="true"
             :stretch-h="'none'"
+            :height="inputTableHeight"
             :auto-wrap-row="true"
             :auto-wrap-col="true"
             :selection-mode="'multiple'"
@@ -942,6 +1008,7 @@ onMounted(() => {
             :after-change="handleInputAfterChange"
             :after-create-row="handleInputAfterCreateRow"
             :after-remove-row="handleInputAfterRemoveRow"
+            :after-render="handleInputAfterRender"
           />
         </div>
 
@@ -973,8 +1040,11 @@ onMounted(() => {
             :manual-row-resize="true"
             :copy-paste="true"
             :context-menu="true"
+            :auto-row-size="true"
             :min-spare-rows="0"
+            :render-all-rows="true"
             :stretch-h="'none'"
+            :height="queryTableHeight"
             :auto-wrap-row="true"
             :auto-wrap-col="true"
             :selection-mode="'multiple'"
@@ -983,6 +1053,7 @@ onMounted(() => {
             :license-key="'non-commercial-and-evaluation'"
             :cells="queryCells"
             :after-change="handleQueryAfterChange"
+            :after-render="handleQueryAfterRender"
           />
         </div>
 

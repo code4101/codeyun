@@ -74,6 +74,34 @@ export function findPermissionKeyByMenuPath(path: string): string | null {
   return menuPathPermissionKeyMap.get(path) ?? null
 }
 
+export function getPermissionTitle(permissionKey: string): string | null {
+  return permissionRegistryMap.get(permissionKey)?.title ?? null
+}
+
+export function requirePermissionTitle(permissionKey: string): string {
+  const title = getPermissionTitle(permissionKey)
+  if (!title) {
+    throw new Error(`未找到权限标题定义：${permissionKey}`)
+  }
+  return title
+}
+
+export function getPermissionTitleByMenuPath(path: string): string | null {
+  const permissionKey = findPermissionKeyByMenuPath(path)
+  if (!permissionKey) {
+    return null
+  }
+  return getPermissionTitle(permissionKey)
+}
+
+export function requirePermissionTitleByMenuPath(path: string): string {
+  const title = getPermissionTitleByMenuPath(path)
+  if (!title) {
+    throw new Error(`未找到菜单标题定义：${path}`)
+  }
+  return title
+}
+
 export function buildPermissionTitleSegments(
   permissionKey: string,
   options?: {
