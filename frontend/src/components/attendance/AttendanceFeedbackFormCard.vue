@@ -10,6 +10,8 @@ import {
   updateAttendanceFeedbackFormMeta,
   type AttendanceFeedbackFormMeta,
 } from '@/api/attendance'
+import { requirePageCanonicalPath } from '@/router/pageRegistry'
+import { toStandalonePath } from '@/router/standalone'
 import { useSortableList } from '@/utils/useSortableList'
 
 type FeedbackFormMode = 'workspace' | 'public'
@@ -25,6 +27,7 @@ type FeedbackDraft = {
 type PersistedFeedbackDraft = Pick<FeedbackDraft, 'course' | 'studentId' | 'studentName'>
 
 const FEEDBACK_FORM_STORAGE_KEY = 'codeyun-attendance-feedback-draft'
+const ATTENDANCE_WJX_COLLECT_STANDALONE_PATH = toStandalonePath(requirePageCanonicalPath('AttendanceWjxCollect'))
 
 const props = withDefaults(
   defineProps<{
@@ -33,7 +36,6 @@ const props = withDefaults(
   }>(),
   {
     mode: 'workspace',
-    standalonePath: '/attendance-feedback',
   },
 )
 
@@ -64,7 +66,8 @@ const displayCourseOptions = computed(() => (
   canManageCourseCatalog.value ? editableCourseNames.value : courseOptions.value
 ))
 const validCourseOptions = computed(() => new Set(displayCourseOptions.value))
-const pageTitle = computed(() => (isWorkspaceMode.value ? '考勤问题配置' : '考勤问题反馈表'))
+const pageTitle = computed(() => (isWorkspaceMode.value ? '采集配置' : '考勤问题反馈表'))
+const resolvedStandalonePath = computed(() => props.standalonePath ?? ATTENDANCE_WJX_COLLECT_STANDALONE_PATH)
 
 function normalizeStoredText(value: unknown) {
   return typeof value === 'string' ? value : ''
@@ -101,7 +104,7 @@ async function loadFeedbackFormMeta(showError = true) {
     }
   } catch (error: any) {
     if (showError) {
-      ElMessage.error(error.response?.data?.detail || '加载课程清单失败')
+      ElMessage.error(error.response?.data?.detail || '加载采集配置失败')
     }
   } finally {
     loadingFormMeta.value = false
@@ -138,7 +141,7 @@ async function saveCourseCatalog(nextCourseNames: string[]) {
     if (previousSelectedCourse && previousCourseNames.includes(previousSelectedCourse)) {
       form.course = previousSelectedCourse
     }
-    ElMessage.error(error.response?.data?.detail || '保存课程清单失败')
+    ElMessage.error(error.response?.data?.detail || '保存采集配置失败')
     return false
   } finally {
     savingCourseCatalog.value = false
@@ -378,12 +381,12 @@ useSortableList({
       <div class="banner-copy">
         <h1>{{ pageTitle }}</h1>
         <p v-if="isWorkspaceMode" class="banner-description">
-          这里只维护反馈表第 1 题的课程清单，真实采集请打开右上角的采集页面。
+          这里配置采集表模板，目前先维护反馈表第 1 题使用的课程清单。真实采集请打开右上角的采集页面。
         </p>
       </div>
       <RouterLink
         v-if="props.mode === 'workspace'"
-        :to="props.standalonePath"
+        :to="resolvedStandalonePath"
         class="banner-link"
       >
         采集页面
@@ -394,8 +397,8 @@ useSortableList({
       <section v-if="isWorkspaceMode" class="config-section">
         <div class="config-header">
           <div>
-            <h2>所属课程清单</h2>
-            <p>反馈表第 1 题会直接读取这里的顺序；支持拖拽排序、双击重命名、删除，并在末尾追加新课程。</p>
+            <h2>配置</h2>
+            <p>反馈表第 1 题的“所属课程”会直接读取这里的顺序；支持拖拽排序、双击重命名、删除，并在末尾追加新课程。</p>
           </div>
           <span v-if="canManageCourseCatalog && savingCourseCatalog" class="config-status">保存中...</span>
         </div>

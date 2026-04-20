@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Literal, Optional
 
 from sqlmodel import Session
@@ -35,6 +35,9 @@ FEATURE_ACCESS_REGISTRY_PATH = (
     / "access"
     / "permissionRegistry.json"
 )
+_feature_access_registry_cache_lock = threading.Lock()
+_feature_access_registry_cache: "FeatureAccessRegistry | None" = None
+_feature_access_registry_cache_signature: tuple[int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -79,80 +82,106 @@ def _read_feature_access_registry_payload() -> dict[str, Any]:
         return json.load(handle)
 
 
-@lru_cache(maxsize=1)
+def _get_feature_access_registry_signature() -> tuple[int, int]:
+    stat = FEATURE_ACCESS_REGISTRY_PATH.stat()
+    return stat.st_mtime_ns, stat.st_size
+
+
+def clear_feature_access_registry_cache() -> None:
+    global _feature_access_registry_cache, _feature_access_registry_cache_signature
+    with _feature_access_registry_cache_lock:
+        _feature_access_registry_cache = None
+        _feature_access_registry_cache_signature = None
+
+
 def load_feature_access_registry() -> FeatureAccessRegistry:
-    payload = _read_feature_access_registry_payload()
-    if not isinstance(payload, dict):
-        raise RuntimeError("权限注册表格式错误")
+    global _feature_access_registry_cache, _feature_access_registry_cache_signature
+    signature = _get_feature_access_registry_signature()
+    cached_registry = _feature_access_registry_cache
+    if cached_registry is not None and _feature_access_registry_cache_signature == signature:
+        return cached_registry
 
-    raw_version = payload.get("version")
-    if not isinstance(raw_version, int) or raw_version <= 0:
-        raise RuntimeError("权限注册表缺少合法版本号")
+    with _feature_access_registry_cache_lock:
+        signature = _get_feature_access_registry_signature()
+        cached_registry = _feature_access_registry_cache
+        if cached_registry is not None and _feature_access_registry_cache_signature == signature:
+            return cached_registry
 
-    raw_nodes = payload.get("nodes")
-    if not isinstance(raw_nodes, list) or not raw_nodes:
-        raise RuntimeError("权限注册表缺少节点定义")
+        payload = _read_feature_access_registry_payload()
+        if not isinstance(payload, dict):
+            raise RuntimeError("权限注册表格式错误")
 
-    node_map: dict[str, FeatureAccessRegistryNode] = {}
-    for raw_node in raw_nodes:
-        if not isinstance(raw_node, dict):
-            raise RuntimeError("权限注册表节点格式错误")
+        raw_version = payload.get("version")
+        if not isinstance(raw_version, int) or raw_version <= 0:
+            raise RuntimeError("权限注册表缺少合法版本号")
 
-        key = str(raw_node.get("key") or "").strip()
-        title = str(raw_node.get("title") or "").strip()
-        node_type = str(raw_node.get("node_type") or "").strip()
-        parent_key = str(raw_node.get("parent_key") or "").strip() or None
-        sort_order = raw_node.get("sort_order", 0)
+        raw_nodes = payload.get("nodes")
+        if not isinstance(raw_nodes, list) or not raw_nodes:
+            raise RuntimeError("权限注册表缺少节点定义")
 
-        if not key or not title:
-            raise RuntimeError("权限注册表节点缺少 key 或 title")
-        if node_type not in {"group", "feature"}:
-            raise RuntimeError(f"权限注册表节点 {key} 的 node_type 非法")
-        if key in node_map:
-            raise RuntimeError(f"权限注册表节点 key 重复：{key}")
-        if not isinstance(sort_order, int):
-            raise RuntimeError(f"权限注册表节点 {key} 的 sort_order 非法")
+        node_map: dict[str, FeatureAccessRegistryNode] = {}
+        for raw_node in raw_nodes:
+            if not isinstance(raw_node, dict):
+                raise RuntimeError("权限注册表节点格式错误")
 
-        def _normalize_string_list(value: Any, field_name: str) -> tuple[str, ...]:
-            if value is None:
-                return ()
-            if not isinstance(value, list):
-                raise RuntimeError(f"权限注册表节点 {key} 的 {field_name} 必须为数组")
-            normalized_items: list[str] = []
-            for item in value:
-                if not isinstance(item, str) or not item.strip():
-                    raise RuntimeError(f"权限注册表节点 {key} 的 {field_name} 含非法项")
-                normalized_items.append(item.strip())
-            return tuple(normalized_items)
+            key = str(raw_node.get("key") or "").strip()
+            title = str(raw_node.get("title") or "").strip()
+            node_type = str(raw_node.get("node_type") or "").strip()
+            parent_key = str(raw_node.get("parent_key") or "").strip() or None
+            sort_order = raw_node.get("sort_order", 0)
 
-        default_anonymous_allow = bool(raw_node.get("default_anonymous_allow", False))
-        node_map[key] = FeatureAccessRegistryNode(
-            key=key,
-            title=title,
-            node_type=node_type,  # type: ignore[arg-type]
-            parent_key=parent_key,
-            sort_order=sort_order,
-            route_paths=_normalize_string_list(raw_node.get("route_paths"), "route_paths"),
-            menu_paths=_normalize_string_list(raw_node.get("menu_paths"), "menu_paths"),
-            api_scopes=_normalize_string_list(raw_node.get("api_scopes"), "api_scopes"),
-            default_anonymous_allow=default_anonymous_allow,
+            if not key or not title:
+                raise RuntimeError("权限注册表节点缺少 key 或 title")
+            if node_type not in {"group", "feature"}:
+                raise RuntimeError(f"权限注册表节点 {key} 的 node_type 非法")
+            if key in node_map:
+                raise RuntimeError(f"权限注册表节点 key 重复：{key}")
+            if not isinstance(sort_order, int):
+                raise RuntimeError(f"权限注册表节点 {key} 的 sort_order 非法")
+
+            def _normalize_string_list(value: Any, field_name: str) -> tuple[str, ...]:
+                if value is None:
+                    return ()
+                if not isinstance(value, list):
+                    raise RuntimeError(f"权限注册表节点 {key} 的 {field_name} 必须为数组")
+                normalized_items: list[str] = []
+                for item in value:
+                    if not isinstance(item, str) or not item.strip():
+                        raise RuntimeError(f"权限注册表节点 {key} 的 {field_name} 含非法项")
+                    normalized_items.append(item.strip())
+                return tuple(normalized_items)
+
+            default_anonymous_allow = bool(raw_node.get("default_anonymous_allow", False))
+            node_map[key] = FeatureAccessRegistryNode(
+                key=key,
+                title=title,
+                node_type=node_type,  # type: ignore[arg-type]
+                parent_key=parent_key,
+                sort_order=sort_order,
+                route_paths=_normalize_string_list(raw_node.get("route_paths"), "route_paths"),
+                menu_paths=_normalize_string_list(raw_node.get("menu_paths"), "menu_paths"),
+                api_scopes=_normalize_string_list(raw_node.get("api_scopes"), "api_scopes"),
+                default_anonymous_allow=default_anonymous_allow,
+            )
+
+        children_map: dict[str | None, list[str]] = {}
+        for key, node in node_map.items():
+            if node.parent_key and node.parent_key not in node_map:
+                raise RuntimeError(f"权限注册表节点 {key} 的父节点不存在：{node.parent_key}")
+            children_map.setdefault(node.parent_key, []).append(key)
+
+        registry = FeatureAccessRegistry(
+            version=raw_version,
+            node_map=node_map,
+            root_keys=_sort_registry_nodes(children_map.get(None, []), node_map),
+            children_map={
+                parent_key: _sort_registry_nodes(child_keys, node_map)
+                for parent_key, child_keys in children_map.items()
+            },
         )
-
-    children_map: dict[str | None, list[str]] = {}
-    for key, node in node_map.items():
-        if node.parent_key and node.parent_key not in node_map:
-            raise RuntimeError(f"权限注册表节点 {key} 的父节点不存在：{node.parent_key}")
-        children_map.setdefault(node.parent_key, []).append(key)
-
-    return FeatureAccessRegistry(
-        version=raw_version,
-        node_map=node_map,
-        root_keys=_sort_registry_nodes(children_map.get(None, []), node_map),
-        children_map={
-            parent_key: _sort_registry_nodes(child_keys, node_map)
-            for parent_key, child_keys in children_map.items()
-        },
-    )
+        _feature_access_registry_cache = registry
+        _feature_access_registry_cache_signature = signature
+        return registry
 
 
 def build_feature_access_subject_key(

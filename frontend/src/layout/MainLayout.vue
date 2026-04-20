@@ -1,13 +1,23 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { findPermissionKeyByMenuPath } from '@/features/access/permissionRegistry';
+import {
+  findPermissionKeyByMenuPath,
+  requirePermissionTitle,
+  requirePermissionTitleByMenuPath,
+} from '@/features/access/permissionRegistry';
 import {
   findPrivateMenuIndex,
   getDefaultPrivateOpeneds,
   isPrivateMenuItemVisible,
   privateMenuSections,
 } from '@/private';
+import {
+  getMatchedMenuPath,
+  requirePageCanonicalPath,
+  requirePageMenuPath,
+} from '@/router/pageRegistry';
+import { buildStandaloneRouteLocation } from '@/router/standalone';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
 import {
@@ -34,57 +44,97 @@ const userStore = useUserStore();
 const isCollapse = ref(false);
 const expandedAsideWidth = 'clamp(152px, 40vw, 200px)';
 const asideWidth = computed(() => (isCollapse.value ? '64px' : expandedAsideWidth));
+const HOME_PATH = requirePageMenuPath('Home');
+const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
+const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
+const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
+const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
+const AI_CHAT_PATH = requirePageMenuPath('AiChat');
+const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
+const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
+const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
+const ATTENDANCE_WJX_CATALOG_PATH = requirePageMenuPath('AttendanceWjxCatalog');
+const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
+const ATTENDANCE_WJX_DATA_PATH = requirePageMenuPath('AttendanceWjxData');
+const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
+const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
+const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
+const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
+const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
+const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
+const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
+const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
+const FANXIU_XIANZHOU_RACE_PATH = requirePageMenuPath('XianzhouRace');
+const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
+const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
+const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
+const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
+const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
+const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
+const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
+const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
+const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
+const HOME_TITLE = requirePermissionTitle('home');
+const TOOLS_TITLE = requirePermissionTitle('tools');
+const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
+const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH);
+const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
+const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
+const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
+const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
+const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
+const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
+const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
+const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
+const ATTENDANCE_WJX_TITLE = requirePermissionTitle('attendance.wjx');
+const ATTENDANCE_WJX_CATALOG_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_CATALOG_PATH);
+const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
+const ATTENDANCE_WJX_DATA_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_DATA_PATH);
+const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDERS_PATH);
+const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
+const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
+const MAGIC_CRAFT_TITLE = requirePermissionTitle('magic-craft');
+const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH);
+const FANXIU_TITLE = requirePermissionTitle('fanxiu');
+const FANXIU_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(FANXIU_CALCULATOR_PATH);
+const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC_PATH);
+const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
+const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_STATUS_PATH);
+const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_PATH);
+const FANXIU_XIANZHOU_RACE_TITLE = requirePermissionTitleByMenuPath(FANXIU_XIANZHOU_RACE_PATH);
+const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
+const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
+const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
+const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
+const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
+const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
+const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
+const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
+const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
+const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
+const ADMIN_IMAGES_TITLE = requirePermissionTitleByMenuPath(ADMIN_IMAGES_PATH);
 
 const toggleCollapse = () => {
   isCollapse.value = !isCollapse.value;
 };
 
 const activeMenu = computed(() => {
-  if (route.path === '/cluster') return '/cluster/tasks';
-  if (route.path.startsWith('/cluster/files') || route.path.startsWith('/cluster/media') || route.path.startsWith('/cluster/images')) {
-    return '/cluster/files';
-  }
-  if (route.path.startsWith('/cluster/labelme')) {
-    return '/cluster/labelme';
-  }
-  if (route.path.startsWith('/attendance/questionnaire/feedback') || route.path.startsWith('/attendance/wjx/feedback')) {
-    return '/attendance/questionnaire/feedback';
-  }
-  if (route.path.startsWith('/attendance/questionnaire/data') || route.path.startsWith('/attendance/wjx/data')) {
-    return '/attendance/questionnaire/data';
-  }
-  if (
-    route.path.startsWith('/attendance/questionnaire')
-    || route.path.startsWith('/attendance/wjx')
-  ) {
-    return '/attendance/questionnaire/feedback';
-  }
-  if (route.path.startsWith('/cluster/')) return '/cluster/tasks';
+  const matchedMenuPath = getMatchedMenuPath(route);
+  if (matchedMenuPath) return matchedMenuPath;
   const privateMenuIndex = findPrivateMenuIndex(route.path);
   if (privateMenuIndex) return privateMenuIndex;
   return route.path;
 });
 
-const GREEN_CHANNEL_MENU_PATHS = new Set<string>([
-  '/attendance/questionnaire/feedback',
-])
-
 const canAccessFeature = (key: string) => featureAccessStore.isAllowed(key);
 
 const canAccessMenuPath = (path: string) => {
-  if (GREEN_CHANNEL_MENU_PATHS.has(path)) {
-    return true
-  }
   const permissionKey = findPermissionKeyByMenuPath(path);
   if (!permissionKey) {
     return false;
   }
   return featureAccessStore.isAllowed(permissionKey);
 };
-
-const attendanceFeedbackGreenChannelVisible = computed(() =>
-  canAccessMenuPath('/attendance/questionnaire/feedback'),
-)
 
 const visiblePrivateMenuSections = computed(() =>
   privateMenuSections
@@ -101,59 +151,58 @@ const visiblePrivateMenuSections = computed(() =>
 const toolsMenuVisible = computed(() =>
   canAccessFeature('tools')
   && [
-    '/tools/password-generator',
-    '/tools/image-browser',
-    '/tools/color-tools',
+    PASSWORD_GENERATOR_PATH,
+    IMAGE_BROWSER_PATH,
+    COLOR_TOOLS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
 const aiToolsMenuVisible = computed(() =>
   canAccessFeature('ai-tools')
   && [
-    '/tools/ai-config',
-    '/tools/ai-chat',
-    '/tools/ai-reduction',
-    '/tools/ai-git-commit',
+    AI_CONFIG_PATH,
+    AI_CHAT_PATH,
+    AI_REDUCTION_PATH,
+    AI_GIT_COMMIT_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
 const attendanceMenuVisible = computed(() =>
-  attendanceFeedbackGreenChannelVisible.value
-  || (
-    canAccessFeature('attendance-tools')
-    && [
-      '/attendance/configs',
-      '/attendance/questionnaire/feedback',
-      '/attendance/questionnaire/data',
-      '/attendance/orders',
-    ].some((path) => canAccessMenuPath(path))
-  ),
+  canAccessFeature('attendance-tools')
+  && [
+    ATTENDANCE_CONFIGS_PATH,
+    ATTENDANCE_WJX_CATALOG_PATH,
+    ATTENDANCE_WJX_COLLECT_PATH,
+    ATTENDANCE_WJX_DATA_PATH,
+    ATTENDANCE_ORDERS_PATH,
+  ].some((path) => canAccessMenuPath(path)),
 );
 
 const attendanceWjxMenuVisible = computed(() =>
-  attendanceFeedbackGreenChannelVisible.value
-  || (
-    canAccessFeature('attendance.wjx')
-    && ['/attendance/questionnaire/feedback', '/attendance/questionnaire/data'].some((path) => canAccessMenuPath(path))
-  ),
+  canAccessFeature('attendance.wjx')
+  && [
+    ATTENDANCE_WJX_CATALOG_PATH,
+    ATTENDANCE_WJX_COLLECT_PATH,
+    ATTENDANCE_WJX_DATA_PATH,
+  ].some((path) => canAccessMenuPath(path)),
 );
 
 const fanxiuMenuVisible = computed(() =>
   canAccessFeature('fanxiu')
   && [
-    '/fanxiu/calculator',
-    '/fanxiu/draw-calc',
-    '/fanxiu/discount',
-    '/fanxiu/task-status',
-    '/fanxiu/recharge',
-    '/fanxiu/xianzhou-race',
-    '/fanxiu/cuijian-trial',
+    FANXIU_CALCULATOR_PATH,
+    FANXIU_DRAW_CALC_PATH,
+    FANXIU_DISCOUNT_PATH,
+    FANXIU_TASK_STATUS_PATH,
+    FANXIU_RECHARGE_PATH,
+    FANXIU_XIANZHOU_RACE_PATH,
+    FANXIU_CUIJIAN_TRIAL_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
 const magicCraftMenuVisible = computed(() =>
   canAccessFeature('magic-craft')
-  && canAccessMenuPath('/magic-craft/xor-matrix'),
+  && canAccessMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH),
 );
 
 const gameToolsMenuVisible = computed(() =>
@@ -161,24 +210,24 @@ const gameToolsMenuVisible = computed(() =>
   && (
     fanxiuMenuVisible.value
     || magicCraftMenuVisible.value
-    || canAccessMenuPath('/dsp/calculator')
+    || canAccessMenuPath(DSP_CALCULATOR_PATH)
   ),
 );
 
 const noteToolsMenuVisible = computed(() =>
   canAccessFeature('note-tools')
   && [
-    '/notes/star-map',
-    '/notes/infinite-canvas',
+    NOTES_CENTER_MENU_PATH,
+    NOTES_INFINITE_CANVAS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
 const clusterMenuVisible = computed(() =>
   canAccessFeature('cluster-tools')
   && [
-    '/cluster/tasks',
-    '/cluster/files',
-    '/cluster/labelme',
+    CLUSTER_TASKS_PATH,
+    CLUSTER_FILES_PATH,
+    CLUSTER_LABELME_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -186,18 +235,19 @@ const adminMenuVisible = computed(() =>
   userStore.isAdmin
   && canAccessFeature('admin-tools')
   && [
-    '/admin/accounts',
-    '/admin/images',
+    ADMIN_ACCOUNTS_PATH,
+    ADMIN_IMAGES_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
 const defaultOpeneds = computed(() => {
   const openeds: string[] = [];
+  if (route.path === ATTENDANCE_PATH_PREFIX) return ['attendance-tools'];
   if (route.path === '/cluster') return ['cluster-tools'];
   if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
-  if (route.path.startsWith('/attendance/')) openeds.push('attendance-tools');
+  if (route.path.startsWith(ATTENDANCE_PATH_PREFIX)) openeds.push('attendance-tools');
   if (route.path.startsWith('/attendance/questionnaire') || route.path.startsWith('/attendance/wjx')) openeds.push('attendance-questionnaire');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
@@ -215,6 +265,13 @@ const handleLogout = () => {
 const handleLogin = () => {
   router.push('/login');
 };
+
+const standaloneRouteTarget = computed(() => buildStandaloneRouteLocation(route));
+const standaloneRouteHref = computed(() => (
+  standaloneRouteTarget.value
+    ? router.resolve(standaloneRouteTarget.value).href
+    : ''
+));
 </script>
 
 <template>
@@ -232,83 +289,84 @@ const handleLogin = () => {
           :collapse="isCollapse"
           router
         >
-          <el-menu-item v-if="canAccessFeature('home')" index="/">
+          <el-menu-item v-if="canAccessFeature('home')" :index="HOME_PATH">
             <el-icon><icon-menu /></el-icon>
-            <template #title>首页</template>
+            <template #title>{{ HOME_TITLE }}</template>
           </el-menu-item>
 
           <el-sub-menu v-if="toolsMenuVisible" index="tools">
             <template #title>
               <el-icon><Box /></el-icon>
-              <span>综合工具</span>
+              <span>{{ TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/tools/password-generator')" index="/tools/password-generator">随机密码</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/tools/image-browser')" index="/tools/image-browser">文件浏览</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/tools/color-tools')" index="/tools/color-tools">颜色工具</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(PASSWORD_GENERATOR_PATH)" :index="PASSWORD_GENERATOR_PATH">{{ PASSWORD_GENERATOR_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(IMAGE_BROWSER_PATH)" :index="IMAGE_BROWSER_PATH">{{ IMAGE_BROWSER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(COLOR_TOOLS_PATH)" :index="COLOR_TOOLS_PATH">{{ COLOR_TOOLS_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="aiToolsMenuVisible" index="ai-tools">
             <template #title>
               <el-icon><ChatDotRound /></el-icon>
-              <span>AI工具</span>
+              <span>{{ AI_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/tools/ai-config')" index="/tools/ai-config">配置</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/tools/ai-chat')" index="/tools/ai-chat">AI聊天</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/tools/ai-reduction')" index="/tools/ai-reduction">AI归纳</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/tools/ai-git-commit')" index="/tools/ai-git-commit">AI提交</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="attendanceMenuVisible" index="attendance-tools">
             <template #title>
               <el-icon><Document /></el-icon>
-              <span>禅寺考勤</span>
+              <span>{{ ATTENDANCE_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/attendance/configs')" index="/attendance/configs">考勤配置</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_CONFIGS_PATH)" :index="ATTENDANCE_CONFIGS_PATH">{{ ATTENDANCE_CONFIGS_TITLE }}</el-menu-item>
             <el-sub-menu v-if="attendanceWjxMenuVisible" index="attendance-questionnaire">
               <template #title>
-                <span>问卷</span>
+                <span>{{ ATTENDANCE_WJX_TITLE }}</span>
               </template>
-              <el-menu-item v-if="canAccessMenuPath('/attendance/questionnaire/feedback')" index="/attendance/questionnaire/feedback">配置</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/attendance/questionnaire/data')" index="/attendance/questionnaire/data">数据</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_CATALOG_PATH)" :index="ATTENDANCE_WJX_CATALOG_PATH">{{ ATTENDANCE_WJX_CATALOG_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_COLLECT_PATH)" :index="ATTENDANCE_WJX_COLLECT_PATH">{{ ATTENDANCE_WJX_COLLECT_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_DATA_PATH)" :index="ATTENDANCE_WJX_DATA_PATH">{{ ATTENDANCE_WJX_DATA_TITLE }}</el-menu-item>
             </el-sub-menu>
-            <el-menu-item v-if="canAccessMenuPath('/attendance/orders')" index="/attendance/orders">订单操作</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
           </el-sub-menu>
           
           <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
             <template #title>
               <el-icon><MagicStick /></el-icon>
-              <span>游戏工具</span>
+              <span>{{ GAME_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/dsp/calculator')" index="/dsp/calculator">
-              <span>戴森球计划</span>
+            <el-menu-item v-if="canAccessMenuPath(DSP_CALCULATOR_PATH)" :index="DSP_CALCULATOR_PATH">
+              <span>{{ DSP_CALCULATOR_TITLE }}</span>
             </el-menu-item>
             <el-sub-menu v-if="magicCraftMenuVisible" index="magic-craft">
               <template #title>
-                <span>魔法工艺</span>
+                <span>{{ MAGIC_CRAFT_TITLE }}</span>
               </template>
-              <el-menu-item v-if="canAccessMenuPath('/magic-craft/xor-matrix')" index="/magic-craft/xor-matrix">点灯解谜</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(MAGIC_CRAFT_XOR_MATRIX_PATH)" :index="MAGIC_CRAFT_XOR_MATRIX_PATH">{{ MAGIC_CRAFT_XOR_MATRIX_TITLE }}</el-menu-item>
             </el-sub-menu>
             <el-sub-menu v-if="fanxiuMenuVisible" index="fanxiu">
               <template #title>
-                <span>凡修手游</span>
+                <span>{{ FANXIU_TITLE }}</span>
               </template>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/calculator')" index="/fanxiu/calculator">兽魂计算器</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/draw-calc')" index="/fanxiu/draw-calc">活动抽数计算</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/discount')" index="/fanxiu/discount">凡修优惠券</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/task-status')" index="/fanxiu/task-status">任务状态</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/recharge')" index="/fanxiu/recharge">充值礼包(Beta)</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/xianzhou-race')" index="/fanxiu/xianzhou-race">仙舟竞速</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath('/fanxiu/cuijian-trial')" index="/fanxiu/cuijian-trial">淬剑试炼</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_CALCULATOR_PATH)" :index="FANXIU_CALCULATOR_PATH">{{ FANXIU_CALCULATOR_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_DRAW_CALC_PATH)" :index="FANXIU_DRAW_CALC_PATH">{{ FANXIU_DRAW_CALC_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_DISCOUNT_PATH)" :index="FANXIU_DISCOUNT_PATH">{{ FANXIU_DISCOUNT_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_RECHARGE_PATH)" :index="FANXIU_RECHARGE_PATH">{{ FANXIU_RECHARGE_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_XIANZHOU_RACE_PATH)" :index="FANXIU_XIANZHOU_RACE_PATH">{{ FANXIU_XIANZHOU_RACE_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_CUIJIAN_TRIAL_PATH)" :index="FANXIU_CUIJIAN_TRIAL_PATH">{{ FANXIU_CUIJIAN_TRIAL_TITLE }}</el-menu-item>
             </el-sub-menu>
           </el-sub-menu>
 
           <el-sub-menu v-if="noteToolsMenuVisible" index="note-tools">
             <template #title>
               <el-icon><Document /></el-icon>
-              <span>笔记工具</span>
+              <span>{{ NOTE_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/notes/star-map')" index="/notes/star-map">星图笔记</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/notes/infinite-canvas')" index="/notes/infinite-canvas">无限画布</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH)" :index="NOTES_CENTER_MENU_PATH">{{ NOTES_CENTER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu
@@ -332,23 +390,23 @@ const handleLogin = () => {
           <el-sub-menu v-if="clusterMenuVisible" index="cluster-tools">
             <template #title>
               <el-icon><Monitor /></el-icon>
-              <span>集群管理</span>
+              <span>{{ CLUSTER_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/cluster/tasks')" index="/cluster/tasks">设备任务</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/cluster/files')" index="/cluster/files">浏览文件</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/cluster/labelme')" index="/cluster/labelme">图片标注</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_FILES_PATH)" :index="CLUSTER_FILES_PATH">{{ CLUSTER_FILES_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_LABELME_PATH)" :index="CLUSTER_LABELME_PATH">{{ CLUSTER_LABELME_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="adminMenuVisible" index="admin-tools">
             <template #title>
               <el-icon><Setting /></el-icon>
-              <span>系统管理</span>
+              <span>{{ ADMIN_TOOLS_TITLE }}</span>
             </template>
-            <el-menu-item v-if="canAccessMenuPath('/admin/accounts')" index="/admin/accounts">
-              <span>账号管理</span>
+            <el-menu-item v-if="canAccessMenuPath(ADMIN_ACCOUNTS_PATH)" :index="ADMIN_ACCOUNTS_PATH">
+              <span>{{ ADMIN_ACCOUNTS_TITLE }}</span>
             </el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath('/admin/images')" index="/admin/images">
-              <span>存储维护</span>
+            <el-menu-item v-if="canAccessMenuPath(ADMIN_IMAGES_PATH)" :index="ADMIN_IMAGES_PATH">
+              <span>{{ ADMIN_IMAGES_TITLE }}</span>
             </el-menu-item>
           </el-sub-menu>
         </el-menu>
@@ -370,7 +428,20 @@ const handleLogin = () => {
       <el-container>
         <el-header>
           <div class="header-content">
-            <!-- <h2>CodeYun</h2> -->
+            <a
+              v-if="standaloneRouteTarget"
+              :href="standaloneRouteHref"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="header-link-button"
+            >
+              <el-button
+                size="small"
+                plain
+              >
+                单独打开本页
+              </el-button>
+            </a>
           </div>
           <div class="header-actions">
             <template v-if="userStore.isAuthenticated">
@@ -450,6 +521,16 @@ const handleLogin = () => {
   justify-content: space-between; /* Space out title and actions */
   padding: 0 20px; /* Adjust padding */
   flex-shrink: 0;
+}
+.header-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.header-link-button {
+  display: inline-flex;
+  text-decoration: none;
 }
 .header-actions {
   display: flex;
