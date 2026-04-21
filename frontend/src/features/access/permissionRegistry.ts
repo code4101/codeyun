@@ -1,29 +1,34 @@
 import rawPermissionRegistry from './permissionRegistry.json'
+import { pluginPermissionNodes } from '@/plugins'
+import type {
+  FeaturePermissionNodeDefinition,
+  FeaturePermissionRegistryDefinition,
+  FeaturePermissionTreeNode,
+} from './permissionRegistryTypes'
 
-export type FeaturePermissionNodeType = 'group' | 'feature'
+const basePermissionRegistry = rawPermissionRegistry as FeaturePermissionRegistryDefinition
 
-export interface FeaturePermissionNodeDefinition {
-  key: string
-  title: string
-  node_type: FeaturePermissionNodeType
-  parent_key?: string
-  sort_order: number
-  route_paths: string[]
-  menu_paths: string[]
-  api_scopes: string[]
-  default_anonymous_allow: boolean
+function assertNoDuplicatePermissionKeys(nodes: FeaturePermissionNodeDefinition[]) {
+  const seenKeys = new Set<string>()
+  for (const node of nodes) {
+    if (seenKeys.has(node.key)) {
+      throw new Error(`权限节点 key 重复：${node.key}`)
+    }
+    seenKeys.add(node.key)
+  }
 }
 
-export interface FeaturePermissionRegistryDefinition {
-  version: number
-  nodes: FeaturePermissionNodeDefinition[]
-}
+const mergedPermissionNodes = [
+  ...basePermissionRegistry.nodes,
+  ...pluginPermissionNodes,
+]
 
-export interface FeaturePermissionTreeNode extends FeaturePermissionNodeDefinition {
-  children: FeaturePermissionTreeNode[]
-}
+assertNoDuplicatePermissionKeys(mergedPermissionNodes)
 
-export const permissionRegistry = rawPermissionRegistry as FeaturePermissionRegistryDefinition
+export const permissionRegistry: FeaturePermissionRegistryDefinition = {
+  ...basePermissionRegistry,
+  nodes: mergedPermissionNodes,
+}
 
 export const permissionRegistryMap = new Map(
   permissionRegistry.nodes.map((node) => [node.key, node] as const),

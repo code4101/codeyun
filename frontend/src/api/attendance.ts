@@ -1,3 +1,5 @@
+import axios from 'axios'
+
 import api from '@/api'
 
 export type AttendanceOrderLookupMode = 'hybrid' | 'db_only' | 'browser_only'
@@ -319,9 +321,69 @@ export interface AttendanceWjxDataUpdateRequest {
   revision_result?: Record<string, unknown>
 }
 
+export interface AttendanceSheetDocument {
+  id: string
+  scope: string
+  owner_type: string
+  owner_key: string
+  sheet_key: string
+  title: string
+  engine: string
+  document_json: Record<string, unknown>
+  version: number
+  created_by_user_id?: number | null
+  updated_by_user_id?: number | null
+  created_at: number
+  updated_at: number
+}
+
+export interface AttendanceSheetDocumentUpsertRequest {
+  owner_type: string
+  owner_key: string
+  sheet_key: string
+  title?: string
+  engine?: 'handsontable'
+  document_json: Record<string, unknown>
+}
+
 export async function fetchAttendanceConfig() {
   const response = await api.get<AttendanceConfigResponse>('/attendance/config')
   return response.data
+}
+
+export async function fetchAttendanceSheetDocumentByOwner(params: {
+  owner_type: string
+  owner_key: string
+  sheet_key: string
+}) {
+  try {
+    const response = await api.get<AttendanceSheetDocument>('/attendance/sheets/by-owner', {
+      params,
+    })
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
+}
+
+export async function upsertAttendanceSheetDocument(payload: AttendanceSheetDocumentUpsertRequest) {
+  const response = await api.put<AttendanceSheetDocument>('/attendance/sheets', payload)
+  return response.data
+}
+
+export async function fetchAttendanceSheetDocumentById(sheetId: string) {
+  try {
+    const response = await api.get<AttendanceSheetDocument>(`/attendance/sheets/${sheetId}`)
+    return response.data
+  } catch (error) {
+    if (axios.isAxiosError(error) && error.response?.status === 404) {
+      return null
+    }
+    throw error
+  }
 }
 
 export async function fetchAttendanceFeedbackFormMeta() {

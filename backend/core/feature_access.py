@@ -8,6 +8,7 @@ from typing import Any, Literal, Optional
 
 from sqlmodel import Session
 
+from backend.plugins.discovery import iter_plugin_permission_registry_files
 from backend.core.settings import ROOT_DIR
 from backend.models import FeatureAccessPolicy, User
 
@@ -37,7 +38,7 @@ FEATURE_ACCESS_REGISTRY_PATH = (
 )
 _feature_access_registry_cache_lock = threading.Lock()
 _feature_access_registry_cache: "FeatureAccessRegistry | None" = None
-_feature_access_registry_cache_signature: tuple[int, int] | None = None
+_feature_access_registry_cache_signature: tuple[tuple[str, int, int], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -79,12 +80,45 @@ def _sort_registry_nodes(
 
 def _read_feature_access_registry_payload() -> dict[str, Any]:
     with FEATURE_ACCESS_REGISTRY_PATH.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+        payload = json.load(handle)
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("权限注册表格式错误")
+
+    raw_nodes = payload.get("nodes")
+    if not isinstance(raw_nodes, list):
+        raise RuntimeError("权限注册表缺少节点定义")
+
+    merged_nodes = list(raw_nodes)
+    for registry_file in iter_plugin_permission_registry_files():
+        with registry_file.open("r", encoding="utf-8") as handle:
+            plugin_payload = json.load(handle)
+
+        if isinstance(plugin_payload, dict):
+            plugin_nodes = plugin_payload.get("nodes", [])
+        elif isinstance(plugin_payload, list):
+            plugin_nodes = plugin_payload
+        else:
+            raise RuntimeError(f"插件权限注册表格式错误：{registry_file}")
+
+        if not isinstance(plugin_nodes, list):
+            raise RuntimeError(f"插件权限注册表节点格式错误：{registry_file}")
+
+        merged_nodes.extend(plugin_nodes)
+
+    return {
+        **payload,
+        "nodes": merged_nodes,
+    }
 
 
-def _get_feature_access_registry_signature() -> tuple[int, int]:
-    stat = FEATURE_ACCESS_REGISTRY_PATH.stat()
-    return stat.st_mtime_ns, stat.st_size
+def _get_feature_access_registry_signature() -> tuple[tuple[str, int, int], ...]:
+    files = (FEATURE_ACCESS_REGISTRY_PATH, *iter_plugin_permission_registry_files())
+    signatures: list[tuple[str, int, int]] = []
+    for file_path in files:
+        stat = file_path.stat()
+        signatures.append((str(file_path), stat.st_mtime_ns, stat.st_size))
+    return tuple(signatures)
 
 
 def clear_feature_access_registry_cache() -> None:

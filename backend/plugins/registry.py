@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import importlib.util
+import logging
+import sys
+import types
+from pathlib import Path
+from types import ModuleType
+
+from fastapi import FastAPI
+
+from .discovery import BACKEND_PLUGIN_MODULES_DIR, iter_backend_plugin_module_dirs
+
+
+logger = logging.getLogger(__name__)
+
+
+def _ensure_plugin_namespace(base_dir: Path) -> None:
+    package_name = "backend.plugins.modules"
+    package = sys.modules.get(package_name)
+
+    if package is None:
+        package = types.ModuleType(package_name)
+        package.__path__ = [str(base_dir)]
+        sys.modules[package_name] = package
+        return
+
+    existing_paths = list(getattr(package, "__path__", []))
+    base_dir_str = str(base_dir)
+    if base_dir_str not in existing_paths:
+        existing_paths.append(base_dir_str)
+        package.__path__ = existing_paths
+
+
+def _load_plugin_module(module_dir: Path) -> ModuleType:
+    module_name = f"backend.plugins.modules.{module_dir.name}"
+    init_file = module_dir / "__init__.py"
+
+    _ensure_plugin_namespace(module_dir.parent)
+
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        init_file,
+        submodule_search_locations=[str(module_dir)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to create import spec for {init_file}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
+
+
+def register_plugin_modules(app: FastAPI, base_dir: Path | None = None) -> tuple[str, ...]:
+    modules_dir = base_dir or BACKEND_PLUGIN_MODULES_DIR
+    loaded_names: list[str] = []
+
+    for module_dir in iter_backend_plugin_module_dirs(modules_dir):
+        try:
+            module = _load_plugin_module(module_dir)
+        except Exception:
+            logger.exception("Failed to import plugin module '%s'", module_dir.name)
+            continue
+
+        register = getattr(module, "register", None)
+        if not callable(register):
+            logger.warning(
+                "Skipping plugin module '%s' because register(app) is missing",
+                module_dir.name,
+            )
+            continue
+
+        try:
+            register(app)
+        except Exception:
+            logger.exception("Failed to register plugin module '%s'", module_dir.name)
+            continue
+
+        loaded_names.append(module_dir.name)
+
+    if loaded_names:
+        logger.info("Loaded plugin modules: %s", ", ".join(loaded_names))
+
+    return tuple(loaded_names)

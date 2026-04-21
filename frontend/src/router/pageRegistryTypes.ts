@@ -10,10 +10,3 @@ export interface AppPageDefinition {
   standaloneEnabled?: boolean
   menuPath?: string | null
 }
-
-export interface PrivatePageDefinition extends AppPageDefinition {
-  menuSectionKey: string
-  menuSectionTitle: string
-  menuItemKey: string
-  menuItemTitle: string
-}

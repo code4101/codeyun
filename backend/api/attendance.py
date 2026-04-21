@@ -63,6 +63,7 @@ from backend.models import (
     AttendanceTemplateAsset,
     AttendanceWjxDataEntry,
     AttendanceWjxDataSyncState,
+    SheetDocument,
     User,
     UserDevice,
 )
@@ -265,9 +266,76 @@ class AttendanceFeedbackFormMetaUpdateRequest(BaseModel):
     course_names: list[str] = Field(default_factory=list)
 
 
+class AttendanceSheetDocumentResponse(BaseModel):
+    id: str
+    scope: str
+    owner_type: str
+    owner_key: str
+    sheet_key: str
+    title: str
+    engine: str
+    document_json: dict[str, Any] = Field(default_factory=dict)
+    version: int
+    created_by_user_id: Optional[int] = None
+    updated_by_user_id: Optional[int] = None
+    created_at: float
+    updated_at: float
+
+
+class AttendanceSheetDocumentUpsertRequest(BaseModel):
+    owner_type: str
+    owner_key: str
+    sheet_key: str
+    title: str = ""
+    engine: Literal["handsontable"] = "handsontable"
+    document_json: dict[str, Any] = Field(default_factory=dict)
+
+
 def _normalize_optional_id(value: Optional[str]) -> str | None:
     normalized = (value or "").strip()
     return normalized or None
+
+
+def _normalize_sheet_locator_part(value: str, *, field_name: str, lower: bool = False) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"{field_name} 不能为空")
+    return normalized.lower() if lower else normalized
+
+
+def _serialize_sheet_document(document: SheetDocument) -> dict[str, Any]:
+    return {
+        "id": document.id,
+        "scope": document.scope,
+        "owner_type": document.owner_type,
+        "owner_key": document.owner_key,
+        "sheet_key": document.sheet_key,
+        "title": document.title,
+        "engine": document.engine,
+        "document_json": dict(document.document_json or {}),
+        "version": int(document.version or 1),
+        "created_by_user_id": document.created_by_user_id,
+        "updated_by_user_id": document.updated_by_user_id,
+        "created_at": float(document.created_at or 0.0),
+        "updated_at": float(document.updated_at or 0.0),
+    }
+
+
+def _get_attendance_sheet_document_by_owner(
+    session: Session,
+    *,
+    owner_type: str,
+    owner_key: str,
+    sheet_key: str,
+) -> SheetDocument | None:
+    statement = (
+        select(SheetDocument)
+        .where(SheetDocument.scope == "attendance")
+        .where(SheetDocument.owner_type == owner_type)
+        .where(SheetDocument.owner_key == owner_key)
+        .where(SheetDocument.sheet_key == sheet_key)
+    )
+    return session.exec(statement).first()
 
 
 def _normalize_order_history_text(value: Any) -> str:
@@ -1252,6 +1320,104 @@ def _attendance_run_worker(
             run.updated_at = now
             session.add(run)
             session.commit()
+
+
+@router.get("/sheets/by-owner", response_model=AttendanceSheetDocumentResponse)
+def get_attendance_sheet_document_by_owner(
+    owner_type: str = Query(...),
+    owner_key: str = Query(...),
+    sheet_key: str = Query(...),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+
+    document = _get_attendance_sheet_document_by_owner(
+        session,
+        owner_type=_normalize_sheet_locator_part(owner_type, field_name="owner_type", lower=True),
+        owner_key=_normalize_sheet_locator_part(owner_key, field_name="owner_key"),
+        sheet_key=_normalize_sheet_locator_part(sheet_key, field_name="sheet_key", lower=True),
+    )
+    if document is None:
+        raise HTTPException(status_code=404, detail="表格文档不存在")
+    return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
+
+
+@router.put("/sheets", response_model=AttendanceSheetDocumentResponse)
+def upsert_attendance_sheet_document(
+    payload: AttendanceSheetDocumentUpsertRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+):
+    current_user = ensure_can_use_attendance_service(current_user, session)
+    owner_type = _normalize_sheet_locator_part(payload.owner_type, field_name="owner_type", lower=True)
+    owner_key = _normalize_sheet_locator_part(payload.owner_key, field_name="owner_key")
+    sheet_key = _normalize_sheet_locator_part(payload.sheet_key, field_name="sheet_key", lower=True)
+    title = str(payload.title or "").strip() or sheet_key
+    document_json = dict(payload.document_json or {})
+
+    document = _get_attendance_sheet_document_by_owner(
+        session,
+        owner_type=owner_type,
+        owner_key=owner_key,
+        sheet_key=sheet_key,
+    )
+
+    if document is None:
+        now = time.time()
+        document = SheetDocument(
+            scope="attendance",
+            owner_type=owner_type,
+            owner_key=owner_key,
+            sheet_key=sheet_key,
+            title=title,
+            engine=payload.engine,
+            document_json=document_json,
+            version=1,
+            created_by_user_id=current_user.id,
+            updated_by_user_id=current_user.id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+        return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
+
+    if (
+        document.title == title
+        and document.engine == payload.engine
+        and dict(document.document_json or {}) == document_json
+    ):
+        return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
+
+    document.title = title
+    document.engine = payload.engine
+    document.document_json = document_json
+    document.version = max(int(document.version or 1), 1) + 1
+    document.updated_by_user_id = current_user.id
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+    return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
+
+
+@router.get("/sheets/{sheet_id}", response_model=AttendanceSheetDocumentResponse)
+def get_attendance_sheet_document_by_id(
+    sheet_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    normalized_sheet_id = _normalize_sheet_locator_part(sheet_id, field_name="sheet_id")
+    document = session.get(SheetDocument, normalized_sheet_id)
+    if document is None or document.scope != "attendance":
+        raise HTTPException(status_code=404, detail="表格文档不存在")
+    return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
 
 
 @router.get("/config")

@@ -56,10 +56,10 @@ backend/data/
 .env.*.local
 /backend/static
 /frontend/.codeyun-state/
-/backend/private_modules/*
-!/backend/private_modules/__init__.py
-/backend/private_modules/*/tests/
-/backend/private_modules/*/tests/**
-/frontend/src/private/modules/
-/tests/private/
+/backend/plugins/modules/*
+!/backend/plugins/modules/__init__.py
+/backend/plugins/modules/*/tests/
+/backend/plugins/modules/*/tests/**
+/frontend/src/plugins/modules/*
+!/frontend/src/plugins/modules/.gitkeep
 /.tmp-dev-observe

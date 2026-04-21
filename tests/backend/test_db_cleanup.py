@@ -1,7 +1,7 @@
 from sqlalchemy.pool import StaticPool
 from sqlmodel import create_engine
 
-from backend.db_cleanup import cleanup_legacy_sqlite_artifacts
+from backend.maintenance.db_cleanup import cleanup_legacy_sqlite_artifacts
 
 
 def test_cleanup_legacy_sqlite_artifacts_drops_legacy_tables_when_replacements_exist():

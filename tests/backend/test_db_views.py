@@ -1,7 +1,7 @@
 from sqlalchemy.pool import StaticPool
 from sqlmodel import SQLModel, Session, create_engine, text
 
-from backend.db_views import refresh_sqlite_readable_views
+from backend.maintenance.db_views import refresh_sqlite_readable_views
 from backend.models import NoteNode
 
 

@@ -31,6 +31,12 @@ from passlib.context import CryptContext
 router = APIRouter(
     dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
 )
+status_router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
+)
+chars_router = APIRouter(
+    dependencies=[Depends(require_feature_access_dependency("fanxiu"))],
+)
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -147,12 +153,12 @@ def ensure_fanxiu_write_permission(current_user: User, session: Session) -> None
         raise HTTPException(status_code=403, detail="Only the owner account or a superuser can edit this data.")
 
 
-@router.get("/status/config", response_model=FanxiuStatusConfigRead)
+@status_router.get("/status/config", response_model=FanxiuStatusConfigRead)
 def get_fanxiu_status_config():
     return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
 
 
-@router.put("/status/config", response_model=FanxiuStatusConfigRead)
+@status_router.put("/status/config", response_model=FanxiuStatusConfigRead)
 def update_fanxiu_status_config(
     payload: FanxiuStatusConfigUpdate,
     current_user: User = Depends(get_current_active_user),
@@ -163,7 +169,7 @@ def update_fanxiu_status_config(
     return FanxiuStatusConfigRead.model_validate(resolve_status_path_config())
 
 
-@router.get("/status", response_model=FanxiuStatusSnapshot)
+@status_router.get("/status", response_model=FanxiuStatusSnapshot)
 def get_fanxiu_status_snapshot():
     payload = load_status_payload()
     raw_status = payload.pop("raw_status", None)
@@ -191,7 +197,7 @@ def get_fanxiu_status_snapshot():
     return FanxiuStatusSnapshot.model_validate(snapshot)
 
 
-@router.post("/status/parse", response_model=FanxiuStatusSnapshot)
+@status_router.post("/status/parse", response_model=FanxiuStatusSnapshot)
 def parse_fanxiu_status_snapshot(payload: FanxiuStatusParseRequest):
     snapshot: dict[str, Any] = {
         "status_path": None,
@@ -205,7 +211,7 @@ def parse_fanxiu_status_snapshot(payload: FanxiuStatusParseRequest):
     return FanxiuStatusSnapshot.model_validate(snapshot)
 
 
-@router.put("/status", response_model=FanxiuStatusSnapshot)
+@status_router.put("/status", response_model=FanxiuStatusSnapshot)
 def update_fanxiu_status_snapshot(
     payload: FanxiuStatusUpdateRequest,
     current_user: User = Depends(get_current_active_user),
@@ -247,7 +253,7 @@ def update_fanxiu_status_snapshot(
 
     return FanxiuStatusSnapshot.model_validate(snapshot)
 
-@router.get("/chars", response_model=List[NoteRead])
+@chars_router.get("/chars", response_model=List[NoteRead])
 def read_chars(
     current_user: Optional[User] = Depends(get_optional_current_user_from_token),
     session: Session = Depends(get_session)
@@ -264,7 +270,7 @@ def read_chars(
     notes = session.exec(statement).all()
     return [note_to_response_dict(note, current_user) for note in notes]
 
-@router.get("/chars/{char_name}", response_model=NoteRead)
+@chars_router.get("/chars/{char_name}", response_model=NoteRead)
 def read_char(
     char_name: str,
     current_user: Optional[User] = Depends(get_optional_current_user_from_token),
@@ -287,7 +293,7 @@ def read_char(
         
     return note_to_response_dict(note, current_user)
 
-@router.put("/chars/{char_name}", response_model=NoteRead)
+@chars_router.put("/chars/{char_name}", response_model=NoteRead)
 def update_char(
     char_name: str,
     note_in: NoteUpdate,
@@ -411,3 +417,7 @@ def update_char(
     session.commit()
     session.refresh(db_note)
     return note_to_response_dict(db_note, current_user)
+
+
+router.include_router(status_router)
+router.include_router(chars_router)

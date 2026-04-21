@@ -6,6 +6,7 @@ import subprocess
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Optional
 
 
 LOCKFILE_NAMES = {
@@ -86,12 +87,76 @@ BINARY_LIKE_SUFFIXES = {
     ".zip",
 }
 
+CLEAR_IGNORE_DIR_PARTS = {
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".cache",
+    ".turbo",
+    ".next",
+    ".nuxt",
+    ".venv",
+    "venv",
+    "node_modules",
+    "dist",
+    "build",
+    "coverage",
+    ".codeyun-state",
+    "logs",
+    "log",
+    "tmp",
+    "temp",
+}
+
+CLEAR_IGNORE_FILENAMES = {
+    ".ds_store",
+    "thumbs.db",
+}
+
+CLEAR_IGNORE_SUFFIXES = {
+    ".cache",
+    ".log",
+    ".pid",
+    ".pyc",
+    ".pyo",
+    ".temp",
+    ".tmp",
+}
+
+WARNING_DATA_SUFFIXES = {
+    ".7z",
+    ".bak",
+    ".bin",
+    ".csv",
+    ".db",
+    ".feather",
+    ".gz",
+    ".joblib",
+    ".npy",
+    ".npz",
+    ".parquet",
+    ".pkl",
+    ".rar",
+    ".sqlite",
+    ".sqlite3",
+    ".tar",
+    ".tsv",
+    ".xls",
+    ".xlsx",
+    ".zip",
+}
+
 MAX_CONTEXT_CHARS = 18_000
 MAX_FILE_SECTION_CHARS = 4_000
 MAX_FILE_PREVIEW_CHARS = 24_000
 MAX_REDUCTION_UNIT_CHARS = 2_400
 MAX_PREVIEW_BYTES = 8_192
 MAX_PREVIEW_LINES = 120
+MAX_SENSITIVE_SCAN_BYTES = 256 * 1024
+MAX_SENSITIVE_ISSUES_PER_FILE = 5
+PRECHECK_CONTEXT_RADIUS = 2
+PRECHECK_MAX_PREVIEW_LINE_LENGTH = 240
 SPLIT_RECOMMENDED_FILE_THRESHOLD = 40
 SPLIT_RECOMMENDED_LINE_THRESHOLD = 8_000
 OVERSIZED_FILE_THRESHOLD = 80
@@ -102,11 +167,42 @@ MAX_OVERVIEW_PATHS = 20
 UNTRACKED_LINE_COUNT_CAP = OVERSIZED_LINE_THRESHOLD + 1_000
 DEFAULT_HISTORY_WINDOW_DAYS = 180
 MIN_HISTORY_WINDOW_DAYS = 7
-MAX_HISTORY_WINDOW_DAYS = 365
+MAX_HISTORY_WINDOW_DAYS = 365 * 5
+ALL_HISTORY_WINDOW_DAYS = 0
 GIT_HISTORY_LOG_TIMEOUT = 60
 GIT_HISTORY_MARKER = "__CODEYUN_HISTORY__"
+LARGE_FILE_WARNING_BYTES = 1_000_000
 COMMIT_BODY_BULLET_PREFIX_RE = re.compile(r"^[-*•]\s*")
 COMMIT_BODY_NUMBER_PREFIX_RE = re.compile(r"^(?:\d{1,2}[、）)]\s*|\d{1,2}[.．](?!\d)\s*)")
+PRIVATE_KEY_RE = re.compile(r"-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----")
+OPENAI_KEY_RE = re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")
+AWS_ACCESS_KEY_RE = re.compile(r"\bAKIA[0-9A-Z]{16}\b")
+GITHUB_TOKEN_RE = re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")
+JWT_TOKEN_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]{8,}\.[A-Za-z0-9._-]{8,}\b")
+URL_CREDENTIAL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]{1,64}:[^@\s]{3,128}@")
+AUTH_HEADER_RE = re.compile(r"\bAuthorization\b\s*[:=]\s*[\"']?(?:Bearer|Basic)\s+[A-Za-z0-9._\-+/=]{12,}")
+GENERIC_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?P<lhs>['\"\w.\-\[\]]*"
+    r"(?P<keyword>password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|client[_-]?secret|authorization)"
+    r"['\"\w.\-\[\]]*)\s*(?:=|:)\s*(?P<quote>[\"']?)(?P<value>[^\"'\s,#}{]{4,}|.+?)(?P=quote)(?:\s*(?:,|\#|//|/\*).*)?$",
+    re.IGNORECASE,
+)
+PLACEHOLDER_VALUE_HINTS = {
+    "",
+    "***",
+    "******",
+    "changeme",
+    "example",
+    "fake",
+    "none",
+    "null",
+    "placeholder",
+    "sample",
+    "test",
+    "token",
+    "your-key",
+    "your-secret",
+}
 
 
 class GitToolError(RuntimeError):
@@ -259,6 +355,501 @@ def _parse_branch_name(branch_text: str, branch_status: str) -> str:
     return "HEAD"
 
 
+def _is_new_changed_file(item: dict[str, object]) -> bool:
+    status = str(item.get("status") or "").upper()
+    return bool(item.get("untracked")) or "A" in status
+
+
+def _format_file_size(size: int) -> str:
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
+
+
+def _is_probably_binary_file(path: Path) -> bool:
+    try:
+        data = path.read_bytes()[:4096]
+    except OSError:
+        return False
+    return _looks_binary(path, data)
+
+
+def _build_ignore_suggestion(path: str, *, matched_dir_part: Optional[str] = None) -> str:
+    pure_path = Path(path)
+    if matched_dir_part:
+        prefix_parts: list[str] = []
+        for part in pure_path.parts:
+            prefix_parts.append(part)
+            if part.lower() == matched_dir_part:
+                return "/".join(prefix_parts) + "/"
+    return path
+
+
+def _is_env_candidate(name_lower: str) -> bool:
+    if name_lower == ".env":
+        return True
+    if not name_lower.startswith(".env."):
+        return False
+    return not (
+        name_lower.endswith(".example")
+        or name_lower.endswith(".sample")
+        or name_lower.endswith(".template")
+        or name_lower.endswith(".local.example")
+    )
+
+
+def _build_ignore_candidate_issue(repo_root: Path, item: dict[str, object]) -> Optional[dict[str, object]]:
+    if not _is_new_changed_file(item):
+        return None
+
+    path = str(item.get("path") or "").strip()
+    if not path:
+        return None
+
+    pure_path = Path(path)
+    parts_lower = [part.lower() for part in pure_path.parts]
+    name_lower = pure_path.name.lower()
+    suffix = pure_path.suffix.lower()
+    file_path = (repo_root / pure_path).resolve()
+
+    if _is_env_candidate(name_lower):
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "error",
+            "blocking": True,
+            "path": path,
+            "line": None,
+            "message": "疑似本地环境配置文件，通常不应直接提交。",
+            "suggestion": _build_ignore_suggestion(path),
+        }
+
+    for part in parts_lower:
+        if part in CLEAR_IGNORE_DIR_PARTS:
+            return {
+                "issue_type": "ignore_candidate",
+                "severity": "error",
+                "blocking": True,
+                "path": path,
+                "line": None,
+                "message": "疑似本地生成目录、缓存目录或日志目录产物，建议加入 .gitignore。",
+                "suggestion": _build_ignore_suggestion(path, matched_dir_part=part),
+            }
+
+    if name_lower in CLEAR_IGNORE_FILENAMES:
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "error",
+            "blocking": True,
+            "path": path,
+            "line": None,
+            "message": "疑似系统临时文件，通常不应进入版本库。",
+            "suggestion": pure_path.name,
+        }
+
+    if suffix in CLEAR_IGNORE_SUFFIXES:
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "error",
+            "blocking": True,
+            "path": path,
+            "line": None,
+            "message": "疑似日志、缓存或临时文件，建议加入 .gitignore。",
+            "suggestion": f"*{suffix}",
+        }
+
+    try:
+        file_size = file_path.stat().st_size
+    except OSError:
+        file_size = 0
+
+    if suffix in WARNING_DATA_SUFFIXES and file_size >= 128 * 1024:
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "warning",
+            "blocking": False,
+            "path": path,
+            "line": None,
+            "message": f"新文件像数据产物或归档文件，体积约 {_format_file_size(file_size)}，请确认是否真的需要提交。",
+            "suggestion": _build_ignore_suggestion(path),
+        }
+
+    if file_size >= LARGE_FILE_WARNING_BYTES and _is_probably_binary_file(file_path):
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "warning",
+            "blocking": False,
+            "path": path,
+            "line": None,
+            "message": f"新二进制文件体积约 {_format_file_size(file_size)}，请确认不是误提交的构建产物或数据文件。",
+            "suggestion": _build_ignore_suggestion(path),
+        }
+
+    return None
+
+
+def _extract_added_lines_from_patch(patch_text: str) -> list[tuple[Optional[int], str]]:
+    added_lines: list[tuple[Optional[int], str]] = []
+    current_new_line: Optional[int] = None
+
+    for raw_line in patch_text.splitlines():
+        if raw_line.startswith("@@"):
+            match = re.search(r"\+(\d+)(?:,(\d+))?", raw_line)
+            current_new_line = int(match.group(1)) if match else None
+            continue
+        if raw_line.startswith("+++ ") or raw_line.startswith("--- "):
+            continue
+        if raw_line.startswith("+"):
+            added_lines.append((current_new_line, raw_line[1:]))
+            if current_new_line is not None:
+                current_new_line += 1
+            continue
+        if raw_line.startswith(" "):
+            if current_new_line is not None:
+                current_new_line += 1
+            continue
+        if raw_line.startswith("-"):
+            continue
+
+    return added_lines
+
+
+def _read_text_lines_for_scan(file_path: Path) -> list[tuple[Optional[int], str]]:
+    try:
+        raw = file_path.read_bytes()
+    except OSError:
+        return []
+
+    if not raw or _looks_binary(file_path, raw[:4096]):
+        return []
+
+    text = raw[:MAX_SENSITIVE_SCAN_BYTES].decode("utf-8", errors="replace")
+    return [(index, line) for index, line in enumerate(text.splitlines(), start=1)]
+
+
+def _prepare_precheck_preview_text(text: str) -> str:
+    if len(text) > PRECHECK_MAX_PREVIEW_LINE_LENGTH:
+        return text[: PRECHECK_MAX_PREVIEW_LINE_LENGTH - 1] + "…"
+    return text
+
+
+def _build_precheck_context_lines(
+    preview_lines: list[tuple[Optional[int], str]],
+    *,
+    line_number: Optional[int],
+    matched_content: Optional[str] = None,
+) -> list[dict[str, object]]:
+    if line_number is None:
+        return []
+
+    target_index: Optional[int] = None
+    for index, (current_line_number, _) in enumerate(preview_lines):
+        if current_line_number == line_number:
+            target_index = index
+            break
+
+    if target_index is None:
+        if matched_content is None:
+            return []
+        return [
+            {
+                "line_number": line_number,
+                "text": _prepare_precheck_preview_text(matched_content),
+                "is_match": True,
+            }
+        ]
+
+    start = max(0, target_index - PRECHECK_CONTEXT_RADIUS)
+    end = min(len(preview_lines), target_index + PRECHECK_CONTEXT_RADIUS + 1)
+    context_lines: list[dict[str, object]] = []
+    for current_line_number, content in preview_lines[start:end]:
+        context_lines.append(
+            {
+                "line_number": current_line_number,
+                "text": _prepare_precheck_preview_text(content),
+                "is_match": current_line_number == line_number,
+            }
+        )
+    return context_lines
+
+
+def _normalize_secret_value(value: str) -> str:
+    return value.strip().strip("\"'").strip(",").strip()
+
+
+def _looks_like_placeholder_secret(value: str) -> bool:
+    normalized = _normalize_secret_value(value).lower()
+    if normalized in PLACEHOLDER_VALUE_HINTS:
+        return True
+    if not normalized:
+        return True
+    if normalized.startswith("${") or normalized.startswith("{{") or normalized.startswith("<"):
+        return True
+    if normalized.endswith("}") and (normalized.startswith("${") or normalized.startswith("{{")):
+        return True
+    if normalized.endswith(">") and normalized.startswith("<"):
+        return True
+    if re.fullmatch(r"[*xX•-]{4,}", normalized):
+        return True
+    return any(hint in normalized for hint in ("example", "sample", "dummy", "placeholder", "your_", "your-"))
+
+
+def _should_flag_generic_secret(keyword: str, raw_value: str) -> bool:
+    value = _normalize_secret_value(raw_value)
+    if _looks_like_placeholder_secret(value):
+        return False
+    if len(value) < 4:
+        return False
+    if any(char.isspace() for char in value):
+        return False
+
+    lowered_keyword = keyword.lower()
+    if lowered_keyword in {"password", "passwd", "pwd"}:
+        return len(value) >= 4
+    if lowered_keyword in {"authorization"}:
+        return len(value) >= 12
+    return len(value) >= 8
+
+
+def _build_sensitive_issue(
+    *,
+    path: str,
+    line: Optional[int],
+    message: str,
+    context_lines: Optional[list[dict[str, object]]] = None,
+) -> dict[str, object]:
+    return {
+        "issue_type": "sensitive_content",
+        "severity": "warning",
+        "blocking": False,
+        "path": path,
+        "line": line,
+        "message": message,
+        "suggestion": "",
+        "context_lines": context_lines or [],
+    }
+
+
+def _collect_sensitive_scan_lines(
+    repo_root: Path,
+    item: dict[str, object],
+    *,
+    add_all: Optional[bool],
+) -> list[tuple[Optional[int], str]]:
+    path = str(item.get("path") or "").strip()
+    if not path:
+        return []
+
+    file_path = (repo_root / path).resolve()
+    is_new_file = _is_new_changed_file(item)
+    use_worktree_scope = add_all is not False
+
+    if is_new_file and use_worktree_scope:
+        return _read_text_lines_for_scan(file_path)
+
+    if use_worktree_scope:
+        diff_text = _run_git(
+            repo_root,
+            ["--no-pager", "diff", "HEAD", "--unified=0", "--no-color", "--", path],
+            timeout=20,
+            check=False,
+        )
+    else:
+        if not bool(item.get("staged")):
+            return []
+        diff_text = _run_git(
+            repo_root,
+            ["--no-pager", "diff", "--cached", "HEAD", "--unified=0", "--no-color", "--", path],
+            timeout=20,
+            check=False,
+        )
+
+    return _extract_added_lines_from_patch(diff_text)
+
+
+def _scan_sensitive_content(
+    repo_root: Path,
+    item: dict[str, object],
+    *,
+    add_all: Optional[bool],
+) -> list[dict[str, object]]:
+    path = str(item.get("path") or "").strip()
+    if not path:
+        return []
+
+    file_path = (repo_root / path).resolve()
+    preview_lines = _read_text_lines_for_scan(file_path)
+    issues: list[dict[str, object]] = []
+    for line_number, content in _collect_sensitive_scan_lines(repo_root, item, add_all=add_all):
+        stripped = content.strip()
+        if not stripped:
+            continue
+
+        context_lines = _build_precheck_context_lines(
+            preview_lines,
+            line_number=line_number,
+            matched_content=content,
+        )
+
+        if PRIVATE_KEY_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似提交了私钥内容。",
+                    context_lines=context_lines,
+                )
+            )
+        elif OPENAI_KEY_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似包含 OpenAI 风格访问密钥。",
+                    context_lines=context_lines,
+                )
+            )
+        elif AWS_ACCESS_KEY_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似包含 AWS Access Key。",
+                    context_lines=context_lines,
+                )
+            )
+        elif GITHUB_TOKEN_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似包含 GitHub Token。",
+                    context_lines=context_lines,
+                )
+            )
+        elif URL_CREDENTIAL_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似在连接串里明文携带账号密码。",
+                    context_lines=context_lines,
+                )
+            )
+        elif AUTH_HEADER_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似包含明文 Authorization 凭证。",
+                    context_lines=context_lines,
+                )
+            )
+        elif JWT_TOKEN_RE.search(content):
+            issues.append(
+                _build_sensitive_issue(
+                    path=path,
+                    line=line_number,
+                    message="疑似包含完整 JWT Token。",
+                    context_lines=context_lines,
+                )
+            )
+        else:
+            match = GENERIC_SECRET_ASSIGNMENT_RE.search(content)
+            if match and _should_flag_generic_secret(str(match.group("keyword") or ""), str(match.group("value") or "")):
+                issues.append(
+                    _build_sensitive_issue(
+                        path=path,
+                        line=line_number,
+                        message=f"疑似存在明文 {match.group('keyword')} 配置。",
+                        context_lines=context_lines,
+                    )
+                )
+
+        if len(issues) >= MAX_SENSITIVE_ISSUES_PER_FILE:
+            break
+
+    return issues
+
+
+def _precheck_issue_sort_key(issue: dict[str, object]) -> tuple[int, str, int]:
+    severity = str(issue.get("severity") or "")
+    line_number = int(issue.get("line") or 0)
+    return (0 if severity == "error" else 1, str(issue.get("path") or ""), line_number)
+
+
+def _build_precheck_report(
+    repo_root: Path,
+    changed_files: list[dict[str, object]],
+    *,
+    add_all: Optional[bool] = None,
+) -> dict[str, object]:
+    checked_items: list[dict[str, object]] = []
+    for item in changed_files:
+        if not isinstance(item, dict):
+            continue
+        if add_all is False and not bool(item.get("staged")):
+            continue
+        checked_items.append(item)
+
+    issues: list[dict[str, object]] = []
+    seen_issue_keys: set[tuple[str, str, int, str]] = set()
+    for item in checked_items:
+        ignore_issue = _build_ignore_candidate_issue(repo_root, item)
+        if ignore_issue is not None:
+            key = (
+                str(ignore_issue.get("issue_type") or ""),
+                str(ignore_issue.get("path") or ""),
+                int(ignore_issue.get("line") or 0),
+                str(ignore_issue.get("message") or ""),
+            )
+            if key not in seen_issue_keys:
+                issues.append(ignore_issue)
+                seen_issue_keys.add(key)
+
+        for sensitive_issue in _scan_sensitive_content(repo_root, item, add_all=add_all):
+            key = (
+                str(sensitive_issue.get("issue_type") or ""),
+                str(sensitive_issue.get("path") or ""),
+                int(sensitive_issue.get("line") or 0),
+                str(sensitive_issue.get("message") or ""),
+            )
+            if key not in seen_issue_keys:
+                issues.append(sensitive_issue)
+                seen_issue_keys.add(key)
+
+    issues.sort(key=_precheck_issue_sort_key)
+    warning_count = sum(1 for issue in issues if str(issue.get("severity") or "") == "warning")
+    error_count = sum(1 for issue in issues if str(issue.get("severity") or "") == "error")
+    blocking_issue_count = sum(1 for issue in issues if bool(issue.get("blocking")))
+    return {
+        "checked_file_count": len(checked_items),
+        "issue_count": len(issues),
+        "warning_count": warning_count,
+        "error_count": error_count,
+        "blocking_issue_count": blocking_issue_count,
+        "has_blocking_issues": blocking_issue_count > 0,
+        "issues": issues,
+    }
+
+
+def _raise_for_blocking_precheck_issues(repo_root: Path, changed_files: list[dict[str, object]], *, add_all: bool) -> None:
+    report = _build_precheck_report(repo_root, changed_files, add_all=add_all)
+    if not report["has_blocking_issues"]:
+        return
+
+    blocking_issues = [issue for issue in report["issues"] if bool(issue.get("blocking"))]
+    preview = "；".join(
+        f"{issue['path']}：{issue['message']}"
+        for issue in blocking_issues[:3]
+    )
+    raise GitToolError(
+        f"提交前预检未通过，发现 {report['blocking_issue_count']} 条阻断项。"
+        f"{preview}"
+    )
+
+
 def inspect_git_repository(cwd: str) -> dict[str, object]:
     requested_cwd, repo_root = _resolve_repo_root(cwd)
     branch_status_output = _run_git(repo_root, ["status", "--short", "--branch"])
@@ -299,16 +890,40 @@ def inspect_git_repository(cwd: str) -> dict[str, object]:
         "added_line_count": added_line_count,
         "deleted_line_count": deleted_line_count,
         "suggested_split_groups": _build_split_groups(changed_paths),
+        "precheck": _build_precheck_report(repo_root, changed_files),
         **scope_summary,
     }
 
 
-def _normalize_history_window_days(days: int) -> int:
+def _normalize_history_window_days(days: int) -> int | None:
     try:
         value = int(days)
     except (TypeError, ValueError):
         return DEFAULT_HISTORY_WINDOW_DAYS
+    if value <= ALL_HISTORY_WINDOW_DAYS:
+        return None
     return max(MIN_HISTORY_WINDOW_DAYS, min(MAX_HISTORY_WINDOW_DAYS, value))
+
+
+def _read_first_commit_date(repo_root: Path) -> date | None:
+    output = _run_git(
+        repo_root,
+        [
+            "log",
+            "--max-parents=0",
+            "--date=short",
+            "--pretty=format:%cd",
+            "HEAD",
+        ],
+        timeout=GIT_HISTORY_LOG_TIMEOUT,
+        check=False,
+    ).strip()
+    if not output:
+        return None
+    try:
+        return date.fromisoformat(output)
+    except ValueError:
+        return None
 
 
 def _build_empty_history_points(start_date: date, end_date: date) -> list[dict[str, object]]:
@@ -327,20 +942,28 @@ def _build_empty_history_points(start_date: date, end_date: date) -> list[dict[s
     return items
 
 
-def _collect_git_history_points(repo_root: Path, *, start_date: date, end_date: date) -> list[dict[str, object]]:
+def _collect_git_history_points(
+    repo_root: Path,
+    *,
+    start_date: date,
+    end_date: date,
+    since_date: date | None = None,
+) -> list[dict[str, object]]:
     points = _build_empty_history_points(start_date, end_date)
     point_map = {str(item["date"]): item for item in points}
+    log_args = [
+        "log",
+        "--no-merges",
+        "--date=short",
+        f"--pretty=format:{GIT_HISTORY_MARKER}%x09%cd",
+        "--numstat",
+        "HEAD",
+    ]
+    if since_date is not None:
+        log_args.insert(2, f"--since={since_date.isoformat()}")
     output = _run_git(
         repo_root,
-        [
-            "log",
-            "--no-merges",
-            f"--since={start_date.isoformat()}",
-            "--date=short",
-            f"--pretty=format:{GIT_HISTORY_MARKER}%x09%cd",
-            "--numstat",
-            "HEAD",
-        ],
+        log_args,
         timeout=GIT_HISTORY_LOG_TIMEOUT,
         check=False,
     )
@@ -376,7 +999,10 @@ def collect_git_history_stats(cwd: str, *, days: int = DEFAULT_HISTORY_WINDOW_DA
     requested_cwd, repo_root = _resolve_repo_root(cwd)
     normalized_days = _normalize_history_window_days(days)
     end_date = date.today()
-    start_date = end_date - timedelta(days=normalized_days - 1)
+    if normalized_days is None:
+        start_date = _read_first_commit_date(repo_root) or end_date
+    else:
+        start_date = end_date - timedelta(days=normalized_days - 1)
     branch_status_output = _run_git(repo_root, ["status", "--short", "--branch"])
     branch_status_lines = branch_status_output.splitlines()
     branch_status = branch_status_lines[0].strip() if branch_status_lines else ""
@@ -385,17 +1011,19 @@ def collect_git_history_stats(cwd: str, *, days: int = DEFAULT_HISTORY_WINDOW_DA
         repo_root,
         start_date=start_date,
         end_date=end_date,
+        since_date=start_date if normalized_days is not None else None,
     )
 
     total_added_line_count = sum(int(item["added_line_count"]) for item in points)
     total_deleted_line_count = sum(int(item["deleted_line_count"]) for item in points)
     total_commit_count = sum(int(item["commit_count"]) for item in points)
+    covered_days = (end_date - start_date).days + 1
 
     return {
         "cwd": str(requested_cwd),
         "repo_root": str(repo_root),
         "branch": _parse_branch_name(branch_text, branch_status),
-        "days": normalized_days,
+        "days": covered_days,
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "total_added_line_count": total_added_line_count,
@@ -991,6 +1619,16 @@ def create_git_commit(
     add_all: bool = True,
 ) -> dict[str, object]:
     _, repo_root = _resolve_repo_root(cwd)
+    preflight_inspect = inspect_git_repository(str(repo_root))
+    if bool(preflight_inspect["clean"]):
+        raise GitToolError("当前工作区没有可提交的变更")
+
+    _raise_for_blocking_precheck_issues(
+        repo_root,
+        list(preflight_inspect.get("changed_files") or []),
+        add_all=add_all,
+    )
+
     if add_all:
         _run_git(repo_root, ["add", "-A"], timeout=30)
 
