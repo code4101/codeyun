@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   findPermissionKeyByMenuPath,
@@ -7,11 +7,11 @@ import {
   requirePermissionTitleByMenuPath,
 } from '@/features/access/permissionRegistry';
 import {
-  findPrivateMenuIndex,
-  getDefaultPrivateOpeneds,
-  isPrivateMenuItemVisible,
-  privateMenuSections,
-} from '@/private';
+  findPluginMenuIndex,
+  getDefaultPluginOpeneds,
+  isPluginMenuItemVisible,
+  pluginMenuSections,
+} from '@/plugins';
 import {
   getMatchedMenuPath,
   requirePageCanonicalPath,
@@ -42,8 +42,20 @@ const router = useRouter();
 const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
-const expandedAsideWidth = 'clamp(152px, 40vw, 200px)';
-const asideWidth = computed(() => (isCollapse.value ? '64px' : expandedAsideWidth));
+const isResizingAside = ref(false);
+const asideRef = ref<HTMLElement | null>(null);
+const COLLAPSED_ASIDE_WIDTH = 64;
+const MIN_EXPANDED_ASIDE_WIDTH = 200;
+const MAX_EXPANDED_ASIDE_WIDTH = 420;
+const ASIDE_WIDTH_STORAGE_KEY = 'layout.mainAsideWidthPx';
+const expandedAsideWidthPx = ref(MIN_EXPANDED_ASIDE_WIDTH);
+const manualExpandedAsideWidthPx = ref<number | null>(null);
+const asideWidth = computed(() => (
+  isCollapse.value
+    ? `${COLLAPSED_ASIDE_WIDTH}px`
+    : `${(manualExpandedAsideWidthPx.value ?? expandedAsideWidthPx.value)}px`
+));
+let pendingAsideMeasureFrame = 0;
 const HOME_PATH = requirePageMenuPath('Home');
 const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
@@ -53,16 +65,23 @@ const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
+const ATTENDANCE_COURSES_PATH = requirePageMenuPath('AttendanceCourses');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jie');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jieRegistration');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jieAttendance');
 const ATTENDANCE_WJX_CATALOG_PATH = requirePageMenuPath('AttendanceWjxCatalog');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_WJX_DATA_PATH = requirePageMenuPath('AttendanceWjxData');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
+const ATTENDANCE_COURSES_SUBMENU_INDEX = 'attendance-courses';
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX = 'attendance-course-20260412-chanzong-12qi-1jie';
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
 const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
 const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
 const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
 const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
+const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
 const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
 const FANXIU_XIANZHOU_RACE_PATH = requirePageMenuPath('XianzhouRace');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
@@ -70,10 +89,14 @@ const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
+const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
+const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
 const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
+const ATTENDANCE_COURSES_PATH_PREFIX = requirePageCanonicalPath('AttendanceCourses');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH_PREFIX = requirePageCanonicalPath('AttendanceCourse20260412Chanzong12qi1jie');
 const HOME_TITLE = requirePermissionTitle('home');
 const TOOLS_TITLE = requirePermissionTitle('tools');
 const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
@@ -86,6 +109,10 @@ const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
+const ATTENDANCE_COURSES_TITLE = requirePermissionTitle('attendance.courses');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_TITLE = requirePermissionTitle('attendance.courses.20260412-chanzong-12qi-1jie');
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH);
+const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH);
 const ATTENDANCE_WJX_TITLE = requirePermissionTitle('attendance.wjx');
 const ATTENDANCE_WJX_CATALOG_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_CATALOG_PATH);
 const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
@@ -100,6 +127,7 @@ const FANXIU_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(FANXIU_CALCULAT
 const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC_PATH);
 const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
 const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_STATUS_PATH);
+const FANXIU_LABELME_TITLE = requirePermissionTitleByMenuPath(FANXIU_LABELME_PATH);
 const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_PATH);
 const FANXIU_XIANZHOU_RACE_TITLE = requirePermissionTitleByMenuPath(FANXIU_XIANZHOU_RACE_PATH);
 const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
@@ -109,20 +137,113 @@ const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFIN
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
+const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
 const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
 const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
 const ADMIN_IMAGES_TITLE = requirePermissionTitleByMenuPath(ADMIN_IMAGES_PATH);
+const BUILTIN_MENU_SECTION_KEYS = new Set([
+  'tools',
+  'ai-tools',
+  'attendance-tools',
+  'attendance-questionnaire',
+  'game-tools',
+  'fanxiu',
+  'magic-craft',
+  'note-tools',
+  'cluster-tools',
+  'admin-tools',
+]);
 
 const toggleCollapse = () => {
   isCollapse.value = !isCollapse.value;
 };
 
+const getExpandedAsideViewportMaxWidth = () => Math.min(
+  MAX_EXPANDED_ASIDE_WIDTH,
+  Math.max(MIN_EXPANDED_ASIDE_WIDTH, Math.floor(window.innerWidth * 0.72)),
+);
+
+const clampExpandedAsideWidth = (width: number) => Math.min(
+  Math.max(Math.round(width), MIN_EXPANDED_ASIDE_WIDTH),
+  getExpandedAsideViewportMaxWidth(),
+);
+
+const persistManualAsideWidth = (width: number | null) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (width == null) {
+    window.localStorage.removeItem(ASIDE_WIDTH_STORAGE_KEY);
+    return;
+  }
+
+  window.localStorage.setItem(ASIDE_WIDTH_STORAGE_KEY, String(width));
+};
+
+const applyManualAsideWidth = (width: number) => {
+  const nextWidth = clampExpandedAsideWidth(width);
+  manualExpandedAsideWidthPx.value = nextWidth;
+  persistManualAsideWidth(nextWidth);
+};
+
+const measureExpandedAsideWidth = () => {
+  if (isCollapse.value || manualExpandedAsideWidthPx.value != null) {
+    return;
+  }
+
+  const asideElement = asideRef.value;
+  if (!asideElement) {
+    return;
+  }
+
+  const menuEntries = Array.from(
+    asideElement.querySelectorAll<HTMLElement>('.el-menu-item, .el-sub-menu__title'),
+  ).filter((element) => element.offsetParent !== null);
+
+  if (!menuEntries.length) {
+    expandedAsideWidthPx.value = MIN_EXPANDED_ASIDE_WIDTH;
+    return;
+  }
+
+  const contentWidth = menuEntries.reduce(
+    (maxWidth, element) => Math.max(maxWidth, Math.ceil(element.scrollWidth)),
+    0,
+  );
+  const nextWidth = Math.min(
+    Math.max(contentWidth + 12, MIN_EXPANDED_ASIDE_WIDTH),
+    getExpandedAsideViewportMaxWidth(),
+  );
+
+  expandedAsideWidthPx.value = nextWidth;
+};
+
+const scheduleAsideWidthMeasure = () => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  if (pendingAsideMeasureFrame) {
+    window.cancelAnimationFrame(pendingAsideMeasureFrame);
+  }
+
+  pendingAsideMeasureFrame = window.requestAnimationFrame(() => {
+    pendingAsideMeasureFrame = 0;
+    void nextTick(() => {
+      measureExpandedAsideWidth();
+    });
+  });
+};
+
 const activeMenu = computed(() => {
   const matchedMenuPath = getMatchedMenuPath(route);
+  if (matchedMenuPath === CLUSTER_FILES_PATH) return CLUSTER_FILES_SUBMENU_INDEX;
+  if (matchedMenuPath === ATTENDANCE_COURSES_PATH) return ATTENDANCE_COURSES_SUBMENU_INDEX;
+  if (matchedMenuPath === ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH) return ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX;
   if (matchedMenuPath) return matchedMenuPath;
-  const privateMenuIndex = findPrivateMenuIndex(route.path);
-  if (privateMenuIndex) return privateMenuIndex;
+  const pluginMenuIndex = findPluginMenuIndex(route.path);
+  if (pluginMenuIndex) return pluginMenuIndex;
   return route.path;
 });
 
@@ -136,16 +257,26 @@ const canAccessMenuPath = (path: string) => {
   return featureAccessStore.isAllowed(permissionKey);
 };
 
-const visiblePrivateMenuSections = computed(() =>
-  privateMenuSections
+const visiblePluginMenuSections = computed(() =>
+  pluginMenuSections
     .map((section) => ({
       ...section,
       items: section.items.filter((item) =>
-        isPrivateMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin)
+        isPluginMenuItemVisible(item, userStore.isAuthenticated, userStore.isAdmin)
         && canAccessMenuPath(item.path),
       ),
     }))
-    .filter((section) => canAccessFeature(section.key) && section.items.length > 0),
+    .filter((section) => canAccessFeature(section.permissionKey ?? section.key) && section.items.length > 0),
+);
+
+const visibleStandalonePluginMenuSections = computed(() =>
+  visiblePluginMenuSections.value.filter((section) => !BUILTIN_MENU_SECTION_KEYS.has(section.key)),
+);
+
+const clusterPluginMenuItems = computed(() =>
+  visiblePluginMenuSections.value
+    .filter((section) => section.key === 'cluster-tools')
+    .flatMap((section) => section.items),
 );
 
 const toolsMenuVisible = computed(() =>
@@ -171,10 +302,33 @@ const attendanceMenuVisible = computed(() =>
   canAccessFeature('attendance-tools')
   && [
     ATTENDANCE_CONFIGS_PATH,
+    ATTENDANCE_COURSES_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
     ATTENDANCE_WJX_CATALOG_PATH,
     ATTENDANCE_WJX_COLLECT_PATH,
     ATTENDANCE_WJX_DATA_PATH,
     ATTENDANCE_ORDERS_PATH,
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const attendanceCoursesMenuVisible = computed(() =>
+  canAccessFeature('attendance.courses')
+  && [
+    ATTENDANCE_COURSES_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const attendanceCourse20260412Chanzong12qi1jieMenuVisible = computed(() =>
+  canAccessFeature('attendance.courses.20260412-chanzong-12qi-1jie')
+  && [
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
+    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -190,10 +344,11 @@ const attendanceWjxMenuVisible = computed(() =>
 const fanxiuMenuVisible = computed(() =>
   canAccessFeature('fanxiu')
   && [
+    FANXIU_TASK_STATUS_PATH,
+    FANXIU_LABELME_PATH,
     FANXIU_CALCULATOR_PATH,
     FANXIU_DRAW_CALC_PATH,
     FANXIU_DISCOUNT_PATH,
-    FANXIU_TASK_STATUS_PATH,
     FANXIU_RECHARGE_PATH,
     FANXIU_XIANZHOU_RACE_PATH,
     FANXIU_CUIJIAN_TRIAL_PATH,
@@ -222,13 +377,24 @@ const noteToolsMenuVisible = computed(() =>
   ].some((path) => canAccessMenuPath(path)),
 );
 
+const clusterFilesMenuVisible = computed(() =>
+  canAccessMenuPath(CLUSTER_FILES_PATH) || canAccessMenuPath(CLUSTER_VIEW_MN_PATH),
+);
+
+const clusterFilesMenuEntryPath = computed(() =>
+  canAccessMenuPath(CLUSTER_FILES_PATH) ? CLUSTER_FILES_PATH : CLUSTER_VIEW_MN_PATH,
+);
+
 const clusterMenuVisible = computed(() =>
   canAccessFeature('cluster-tools')
-  && [
-    CLUSTER_TASKS_PATH,
-    CLUSTER_FILES_PATH,
-    CLUSTER_LABELME_PATH,
-  ].some((path) => canAccessMenuPath(path)),
+  && (
+    [
+      CLUSTER_TASKS_PATH,
+      CLUSTER_LABELME_PATH,
+    ].some((path) => canAccessMenuPath(path))
+    || clusterFilesMenuVisible.value
+    || clusterPluginMenuItems.value.length > 0
+  ),
 );
 
 const adminMenuVisible = computed(() =>
@@ -245,15 +411,22 @@ const defaultOpeneds = computed(() => {
   if (route.path === ATTENDANCE_PATH_PREFIX) return ['attendance-tools'];
   if (route.path === '/cluster') return ['cluster-tools'];
   if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
+  if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
+    openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
+  }
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
   if (route.path.startsWith(ATTENDANCE_PATH_PREFIX)) openeds.push('attendance-tools');
+  if (route.path.startsWith(ATTENDANCE_COURSES_PATH_PREFIX)) openeds.push(ATTENDANCE_COURSES_SUBMENU_INDEX);
+  if (route.path.startsWith(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH_PREFIX)) {
+    openeds.push(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX);
+  }
   if (route.path.startsWith('/attendance/questionnaire') || route.path.startsWith('/attendance/wjx')) openeds.push('attendance-questionnaire');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
-  openeds.push(...getDefaultPrivateOpeneds(route.path));
+  openeds.push(...getDefaultPluginOpeneds(route.path));
   return Array.from(new Set(openeds));
 });
 
@@ -272,12 +445,125 @@ const standaloneRouteHref = computed(() => (
     ? router.resolve(standaloneRouteTarget.value).href
     : ''
 ));
+
+const handleMenuTitleNavigate = (path: string) => {
+  if (route.path !== path) {
+    void router.push(path);
+  }
+};
+
+const resetAsideWidth = () => {
+  manualExpandedAsideWidthPx.value = null;
+  persistManualAsideWidth(null);
+  scheduleAsideWidthMeasure();
+};
+
+const handleAsideResizeMove = (event: MouseEvent) => {
+  applyManualAsideWidth(event.clientX);
+};
+
+const stopAsideResize = () => {
+  if (!isResizingAside.value) {
+    return;
+  }
+  isResizingAside.value = false;
+  document.body.style.userSelect = '';
+  window.removeEventListener('mousemove', handleAsideResizeMove);
+  window.removeEventListener('mouseup', stopAsideResize);
+};
+
+const startAsideResize = (event: MouseEvent) => {
+  if (isCollapse.value) {
+    return;
+  }
+
+  event.preventDefault();
+  isResizingAside.value = true;
+  document.body.style.userSelect = 'none';
+  window.addEventListener('mousemove', handleAsideResizeMove);
+  window.addEventListener('mouseup', stopAsideResize);
+};
+
+const handleMenuStructureChange = () => {
+  scheduleAsideWidthMeasure();
+};
+
+const handleWindowResize = () => {
+  if (manualExpandedAsideWidthPx.value != null) {
+    manualExpandedAsideWidthPx.value = clampExpandedAsideWidth(manualExpandedAsideWidthPx.value);
+    persistManualAsideWidth(manualExpandedAsideWidthPx.value);
+    return;
+  }
+  scheduleAsideWidthMeasure();
+};
+
+onMounted(() => {
+  const rawStoredWidth = window.localStorage.getItem(ASIDE_WIDTH_STORAGE_KEY);
+  if (rawStoredWidth) {
+    const parsedWidth = Number(rawStoredWidth);
+    if (Number.isFinite(parsedWidth)) {
+      manualExpandedAsideWidthPx.value = clampExpandedAsideWidth(parsedWidth);
+      persistManualAsideWidth(manualExpandedAsideWidthPx.value);
+    } else {
+      persistManualAsideWidth(null);
+    }
+  }
+  scheduleAsideWidthMeasure();
+  window.addEventListener('resize', handleWindowResize);
+});
+
+onBeforeUnmount(() => {
+  stopAsideResize();
+  if (pendingAsideMeasureFrame) {
+    window.cancelAnimationFrame(pendingAsideMeasureFrame);
+  }
+  window.removeEventListener('resize', handleWindowResize);
+});
+
+watch(
+  [
+    activeMenu,
+    defaultOpeneds,
+    isCollapse,
+    () => featureAccessStore.loaded,
+    () => userStore.isAuthenticated,
+    () => userStore.isAdmin,
+  ],
+  () => {
+    scheduleAsideWidthMeasure();
+  },
+  { flush: 'post', immediate: true },
+);
+
+watch(
+  () => isCollapse.value,
+  (collapsed) => {
+    if (!collapsed && manualExpandedAsideWidthPx.value != null) {
+      manualExpandedAsideWidthPx.value = clampExpandedAsideWidth(manualExpandedAsideWidthPx.value);
+      persistManualAsideWidth(manualExpandedAsideWidthPx.value);
+    }
+  },
+);
+
+watch(
+  () => route.path,
+  () => {
+    if (manualExpandedAsideWidthPx.value == null) {
+      scheduleAsideWidthMeasure();
+    }
+  },
+);
 </script>
 
 <template>
   <div class="common-layout">
     <el-container>
-      <el-aside :width="asideWidth" class="main-aside">
+      <el-aside
+        ref="asideRef"
+        :width="asideWidth"
+        class="main-aside"
+        :class="{ 'is-resizing': isResizingAside }"
+      >
         <div class="toggle-button" :class="{ 'collapsed': isCollapse }" @click="toggleCollapse">
           <el-icon v-if="isCollapse"><Expand /></el-icon>
           <el-icon v-else><Fold /></el-icon>
@@ -288,6 +574,8 @@ const standaloneRouteHref = computed(() => (
           class="el-menu-vertical-demo"
           :collapse="isCollapse"
           router
+          @open="handleMenuStructureChange"
+          @close="handleMenuStructureChange"
         >
           <el-menu-item v-if="canAccessFeature('home')" :index="HOME_PATH">
             <el-icon><icon-menu /></el-icon>
@@ -330,6 +618,38 @@ const standaloneRouteHref = computed(() => (
               <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_DATA_PATH)" :index="ATTENDANCE_WJX_DATA_PATH">{{ ATTENDANCE_WJX_DATA_TITLE }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
+            <el-sub-menu v-if="attendanceCoursesMenuVisible" :index="ATTENDANCE_COURSES_SUBMENU_INDEX">
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(ATTENDANCE_COURSES_PATH)">
+                  {{ ATTENDANCE_COURSES_TITLE }}
+                </span>
+              </template>
+              <el-sub-menu
+                v-if="attendanceCourse20260412Chanzong12qi1jieMenuVisible"
+                :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX"
+              >
+                <template #title>
+                  <span
+                    class="menu-submenu-route-title"
+                    @click.stop="handleMenuTitleNavigate(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH)"
+                  >
+                    {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_TITLE }}
+                  </span>
+                </template>
+                <el-menu-item
+                  v-if="canAccessMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH)"
+                  :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH"
+                >
+                  {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH)"
+                  :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH"
+                >
+                  {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_TITLE }}
+                </el-menu-item>
+              </el-sub-menu>
+            </el-sub-menu>
           </el-sub-menu>
           
           <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
@@ -350,10 +670,11 @@ const standaloneRouteHref = computed(() => (
               <template #title>
                 <span>{{ FANXIU_TITLE }}</span>
               </template>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_LABELME_PATH)" :index="FANXIU_LABELME_PATH">{{ FANXIU_LABELME_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_CALCULATOR_PATH)" :index="FANXIU_CALCULATOR_PATH">{{ FANXIU_CALCULATOR_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_DRAW_CALC_PATH)" :index="FANXIU_DRAW_CALC_PATH">{{ FANXIU_DRAW_CALC_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_DISCOUNT_PATH)" :index="FANXIU_DISCOUNT_PATH">{{ FANXIU_DISCOUNT_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_RECHARGE_PATH)" :index="FANXIU_RECHARGE_PATH">{{ FANXIU_RECHARGE_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_XIANZHOU_RACE_PATH)" :index="FANXIU_XIANZHOU_RACE_PATH">{{ FANXIU_XIANZHOU_RACE_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_CUIJIAN_TRIAL_PATH)" :index="FANXIU_CUIJIAN_TRIAL_PATH">{{ FANXIU_CUIJIAN_TRIAL_TITLE }}</el-menu-item>
@@ -370,7 +691,7 @@ const standaloneRouteHref = computed(() => (
           </el-sub-menu>
 
           <el-sub-menu
-            v-for="section in visiblePrivateMenuSections"
+            v-for="section in visibleStandalonePluginMenuSections"
             :key="section.key"
             :index="section.key"
           >
@@ -393,7 +714,21 @@ const standaloneRouteHref = computed(() => (
               <span>{{ CLUSTER_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_FILES_PATH)" :index="CLUSTER_FILES_PATH">{{ CLUSTER_FILES_TITLE }}</el-menu-item>
+            <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterFilesMenuEntryPath)">
+                  {{ CLUSTER_FILES_TITLE }}
+                </span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
+            </el-sub-menu>
+            <el-menu-item
+              v-for="item in clusterPluginMenuItems"
+              :key="item.key"
+              :index="item.path"
+            >
+              {{ item.title }}
+            </el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_LABELME_PATH)" :index="CLUSTER_LABELME_PATH">{{ CLUSTER_LABELME_TITLE }}</el-menu-item>
           </el-sub-menu>
 
@@ -424,6 +759,13 @@ const standaloneRouteHref = computed(() => (
             </div>
           </el-tooltip>
         </div>
+        <div
+          v-if="!isCollapse"
+          class="aside-resize-handle"
+          title="拖拽调整侧边栏宽度，双击恢复自动宽度"
+          @mousedown="startAsideResize"
+          @dblclick.stop="resetAsideWidth"
+        />
       </el-aside>
       <el-container>
         <el-header>
@@ -461,7 +803,7 @@ const standaloneRouteHref = computed(() => (
             </template>
           </div>
         </el-header>
-        <el-main>
+        <el-main class="page-shell-main">
           <router-view />
         </el-main>
       </el-container>
@@ -494,6 +836,11 @@ const standaloneRouteHref = computed(() => (
 
 .main-aside {
   min-height: 0;
+  position: relative;
+}
+
+.main-aside.is-resizing {
+  transition: none;
 }
 
 .toggle-button {
@@ -558,6 +905,41 @@ const standaloneRouteHref = computed(() => (
   overflow-x: hidden;
 }
 
+:deep(.el-menu-vertical-demo:not(.el-menu--collapse) .el-menu-item),
+:deep(.el-menu-vertical-demo:not(.el-menu--collapse) .el-sub-menu__title) {
+  height: auto;
+  min-height: 42px;
+  padding-top: 10px;
+  padding-bottom: 10px;
+  box-sizing: border-box;
+  line-height: 1.35;
+  white-space: normal;
+}
+
+:deep(.el-menu-vertical-demo:not(.el-menu--collapse) .el-menu-item > span),
+:deep(.el-menu-vertical-demo:not(.el-menu--collapse) .el-sub-menu__title > span) {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.menu-submenu-route-title {
+  display: block;
+  min-width: 0;
+  width: 100%;
+  cursor: pointer;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.menu-submenu-route-title:hover {
+  color: var(--el-menu-active-color);
+}
+
 .aside-disclaimer {
   padding: 15px;
   border-top: 1px solid #e6e6e6;
@@ -583,5 +965,31 @@ const standaloneRouteHref = computed(() => (
   font-size: 14px;
   flex-shrink: 0;
   margin-top: 2px;
+}
+
+.aside-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 4;
+}
+
+.aside-resize-handle::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 2px;
+  height: 100%;
+  background: transparent;
+  transition: background-color 0.18s ease;
+}
+
+.aside-resize-handle:hover::before,
+.main-aside.is-resizing .aside-resize-handle::before {
+  background: rgba(64, 158, 255, 0.7);
 }
 </style>

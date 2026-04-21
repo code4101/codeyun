@@ -4,8 +4,8 @@ from sqlmodel import SQLModel, Session, create_engine, text
 
 from backend.core.settings import get_settings
 import backend.models  # Ensure table metadata is registered before create_all.
-from backend.db_cleanup import cleanup_legacy_sqlite_artifacts
-from backend.db_views import refresh_sqlite_readable_views
+from backend.maintenance.db_cleanup import cleanup_legacy_sqlite_artifacts
+from backend.maintenance.db_views import refresh_sqlite_readable_views
 
 settings = get_settings()
 DATA_DIR = os.fspath(settings.data_dir)

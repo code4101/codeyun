@@ -34,6 +34,33 @@ class GitSuggestedSplitGroup(BaseModel):
     sample_paths: list[str] = Field(default_factory=list)
 
 
+class GitPrecheckContextLine(BaseModel):
+    line_number: Optional[int] = None
+    text: str = ""
+    is_match: bool = False
+
+
+class GitPrecheckIssue(BaseModel):
+    issue_type: Literal["ignore_candidate", "sensitive_content"]
+    severity: Literal["warning", "error"]
+    blocking: bool = False
+    path: str
+    line: Optional[int] = None
+    message: str
+    suggestion: str = ""
+    context_lines: list[GitPrecheckContextLine] = Field(default_factory=list)
+
+
+class GitPrecheckReport(BaseModel):
+    checked_file_count: int = 0
+    issue_count: int = 0
+    warning_count: int = 0
+    error_count: int = 0
+    blocking_issue_count: int = 0
+    has_blocking_issues: bool = False
+    issues: list[GitPrecheckIssue] = Field(default_factory=list)
+
+
 class GitReductionSourceUnit(BaseModel):
     unit_id: str
     path: str
@@ -53,7 +80,7 @@ class GitToolContextRequest(BaseModel):
 
 class GitToolHistoryStatsRequest(BaseModel):
     cwd: str
-    days: int = Field(default=180, ge=7, le=365)
+    days: int = Field(default=180, ge=0, le=1825)
 
 
 class GitToolFileDiffRequest(BaseModel):
@@ -79,6 +106,7 @@ class GitToolInspectResponse(BaseModel):
     split_reason: str = ""
     oversized: bool = False
     suggested_split_groups: list[GitSuggestedSplitGroup] = Field(default_factory=list)
+    precheck: GitPrecheckReport = Field(default_factory=GitPrecheckReport)
 
 
 class GitToolContextResponse(GitToolInspectResponse):

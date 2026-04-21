@@ -109,3 +109,29 @@ def test_collect_git_history_stats_normalizes_window_days_for_empty_repo(tmp_pat
     assert payload["total_added_line_count"] == 0
     assert payload["total_deleted_line_count"] == 0
     assert all(item["commit_count"] == 0 for item in payload["points"])
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git is not available")
+def test_collect_git_history_stats_supports_all_history_window(tmp_path: Path) -> None:
+    repo_root = tmp_path / "all-history-repo"
+    _init_repo(repo_root)
+
+    today = date.today()
+    first_day = today - timedelta(days=420)
+    second_day = today - timedelta(days=35)
+
+    _commit_file(repo_root, "demo.txt", "one\n", first_day, "init demo")
+    _commit_file(repo_root, "demo.txt", "two\nthree\n", second_day, "rewrite demo")
+
+    payload = git_tools.collect_git_history_stats(str(repo_root), days=0)
+
+    expected_days = (today - first_day).days + 1
+    assert payload["days"] == expected_days
+    assert payload["start_date"] == first_day.isoformat()
+    assert payload["end_date"] == today.isoformat()
+    assert len(payload["points"]) == expected_days
+    assert payload["total_commit_count"] == 2
+
+    point_map = {item["date"]: item for item in payload["points"]}
+    assert point_map[first_day.isoformat()]["commit_count"] == 1
+    assert point_map[second_day.isoformat()]["commit_count"] == 1

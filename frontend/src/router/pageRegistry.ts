@@ -4,9 +4,9 @@ import type {
 } from 'vue-router'
 
 import { findPermissionKeyByRoutePath } from '@/features/access/permissionRegistry'
-import { privatePageRegistry } from '@/private'
+import { pluginPageRegistry } from '@/plugins'
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
-import Home from '@/views/Home.vue'
+import { standardPageRegistry } from '@/standard'
 import { getStandaloneRouteName, toStandalonePath } from '@/router/standalone'
 
 export interface LegacyRouteRedirectDefinition {
@@ -19,183 +19,9 @@ export interface LegacyRouteRedirectDefinition {
   skipFeatureAccess?: boolean
 }
 
-export const corePageRegistry: AppPageDefinition[] = [
-  {
-    routeName: 'Home',
-    canonicalPath: '/',
-    component: Home,
-    permissionKey: 'home',
-  },
-  {
-    routeName: 'BeastSoulCalculator',
-    canonicalPath: '/fanxiu/calculator',
-    component: () => import('@/views/fanxiu/Calculator.vue'),
-  },
-  {
-    routeName: 'DrawCalculator',
-    canonicalPath: '/fanxiu/draw-calc',
-    component: () => import('@/views/fanxiu/DrawCalculator.vue'),
-  },
-  {
-    routeName: 'FanxiuDiscountGuide',
-    canonicalPath: '/fanxiu/discount',
-    component: () => import('@/views/fanxiu/DiscountGuide.vue'),
-  },
-  {
-    routeName: 'FanxiuTaskStatus',
-    canonicalPath: '/fanxiu/task-status',
-    component: () => import('@/views/fanxiu/TaskStatus.vue'),
-  },
-  {
-    routeName: 'FanxiuRecharge',
-    canonicalPath: '/fanxiu/recharge',
-    component: () => import('@/views/fanxiu/Recharge.vue'),
-  },
-  {
-    routeName: 'XianzhouRace',
-    canonicalPath: '/fanxiu/xianzhou-race',
-    component: () => import('@/views/fanxiu/XianzhouRace.vue'),
-  },
-  {
-    routeName: 'CuijianTrial',
-    canonicalPath: '/fanxiu/cuijian-trial',
-    component: () => import('@/views/fanxiu/CuijianTrial.vue'),
-  },
-  {
-    routeName: 'DspCalculator',
-    canonicalPath: '/dsp/calculator',
-    component: () => import('@/views/dsp/DspStatic.vue'),
-  },
-  {
-    routeName: 'XorMatrix',
-    canonicalPath: '/magic-craft/xor-matrix',
-    component: () => import('@/views/magic-craft/XorMatrix.vue'),
-  },
-  {
-    routeName: 'NotesCenter',
-    canonicalPath: '/notes/center',
-    component: () => import('@/views/notes/NotesCenter.vue'),
-    menuPath: '/notes/star-map',
-  },
-  {
-    routeName: 'InfiniteCanvas',
-    canonicalPath: '/notes/infinite-canvas',
-    component: () => import('@/views/tools/InfiniteCanvas.vue'),
-  },
-  {
-    routeName: 'DeviceTasks',
-    canonicalPath: '/cluster/tasks',
-    component: () => import('@/views/TaskManager.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'DeviceFileBrowser',
-    canonicalPath: '/cluster/files',
-    component: () => import('@/views/cluster/DeviceFileBrowser.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'DeviceLabelmeBrowser',
-    canonicalPath: '/cluster/labelme',
-    component: () => import('@/views/cluster/DeviceLabelmeBrowser.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'PasswordGenerator',
-    canonicalPath: '/tools/password-generator',
-    component: () => import('@/views/tools/PasswordGenerator.vue'),
-  },
-  {
-    routeName: 'ColorTools',
-    canonicalPath: '/tools/color-tools',
-    component: () => import('@/views/tools/ColorTools.vue'),
-  },
-  {
-    routeName: 'ImageBrowser',
-    canonicalPath: '/tools/image-browser',
-    component: () => import('@/views/tools/ImageBrowser.vue'),
-  },
-  {
-    routeName: 'AiConfig',
-    canonicalPath: '/tools/ai-config',
-    component: () => import('@/views/tools/AiConfig.vue'),
-  },
-  {
-    routeName: 'AiChat',
-    canonicalPath: '/tools/ai-chat',
-    component: () => import('@/views/tools/AiChat.vue'),
-  },
-  {
-    routeName: 'AiReduction',
-    canonicalPath: '/tools/ai-reduction',
-    component: () => import('@/views/tools/AiReduction.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'AiGitCommit',
-    canonicalPath: '/tools/ai-git-commit',
-    component: () => import('@/views/tools/AiGitCommit.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'AttendanceConfigs',
-    canonicalPath: '/attendance/configs',
-    component: () => import('@/views/attendance/AttendanceConfigs.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'AttendanceWjxCatalog',
-    canonicalPath: '/attendance/questionnaire/catalog',
-    component: () => import('@/views/attendance/AttendanceWjxCatalog.vue'),
-    requiresAuth: true,
-    permissionKey: 'attendance.wjx-templates',
-  },
-  {
-    routeName: 'AttendanceWjxCollect',
-    canonicalPath: '/attendance/questionnaire/collect',
-    component: () => import('@/views/attendance/AttendanceWjxCollect.vue'),
-    permissionKey: 'attendance.wjx-feedback',
-  },
-  {
-    routeName: 'AttendanceWjxData',
-    canonicalPath: '/attendance/questionnaire/data',
-    component: () => import('@/views/attendance/AttendanceWjxData.vue'),
-    requiresAuth: true,
-    permissionKey: 'attendance.wjx-data',
-  },
-  {
-    routeName: 'AttendanceOrders',
-    canonicalPath: '/attendance/orders',
-    component: () => import('@/views/attendance/AttendanceOrders.vue'),
-    requiresAuth: true,
-  },
-  {
-    routeName: 'TaskLogs',
-    canonicalPath: '/cluster/logs/:id',
-    component: () => import('@/views/TaskLogs.vue'),
-    requiresAuth: true,
-    permissionKey: 'cluster.tasks',
-    menuPath: '/cluster/tasks',
-  },
-  {
-    routeName: 'AccountManager',
-    canonicalPath: '/admin/accounts',
-    component: () => import('@/views/admin/AccountManager.vue'),
-    requiresAuth: true,
-    requiresAdmin: true,
-  },
-  {
-    routeName: 'StorageManager',
-    canonicalPath: '/admin/images',
-    component: () => import('@/views/admin/StorageManager.vue'),
-    requiresAuth: true,
-    requiresAdmin: true,
-  },
-]
-
 export const pageRegistry: AppPageDefinition[] = [
-  ...corePageRegistry,
-  ...privatePageRegistry,
+  ...standardPageRegistry,
+  ...pluginPageRegistry,
 ]
 
 export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [

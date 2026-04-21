@@ -130,6 +130,50 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "attendance.courses",
+      "title": "课程",
+      "node_type": "group",
+      "parent_key": "attendance-tools",
+      "sort_order": 40,
+      "route_paths": ["/attendance/courses"],
+      "menu_paths": ["/attendance/courses"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.courses.20260412-chanzong-12qi-1jie",
+      "title": "20260412禅宗12期一阶",
+      "node_type": "group",
+      "parent_key": "attendance.courses",
+      "sort_order": 10,
+      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie"],
+      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.courses.20260412-chanzong-12qi-1jie.registration",
+      "title": "报名表",
+      "node_type": "feature",
+      "parent_key": "attendance.courses.20260412-chanzong-12qi-1jie",
+      "sort_order": 10,
+      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/registration"],
+      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/registration"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "attendance.courses.20260412-chanzong-12qi-1jie.attendance",
+      "title": "考勤表",
+      "node_type": "feature",
+      "parent_key": "attendance.courses.20260412-chanzong-12qi-1jie",
+      "sort_order": 20,
+      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/attendance"],
+      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/attendance"],
+      "api_scopes": [],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "attendance.wjx",
       "title": "问卷",
       "node_type": "group",
@@ -243,11 +287,22 @@
       "title": "任务状态",
       "node_type": "feature",
       "parent_key": "fanxiu",
-      "sort_order": 40,
+      "sort_order": 5,
       "route_paths": ["/fanxiu/task-status"],
       "menu_paths": ["/fanxiu/task-status"],
       "api_scopes": ["fanxiu.task-status"],
       "default_anonymous_allow": false
+    },
+    {
+      "key": "fanxiu.labelme",
+      "title": "图片标注",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 8,
+      "route_paths": ["/fanxiu/labelme"],
+      "menu_paths": ["/fanxiu/labelme"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
     },
     {
       "key": "fanxiu.recharge",
@@ -348,27 +403,6 @@
       "default_anonymous_allow": true
     },
     {
-      "key": "private-tools",
-      "title": "私有工具",
-      "node_type": "group",
-      "sort_order": 70,
-      "route_paths": [],
-      "menu_paths": [],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "private.media-sync",
-      "title": "图像采集",
-      "node_type": "feature",
-      "parent_key": "private-tools",
-      "sort_order": 10,
-      "route_paths": ["/private/media-sync"],
-      "menu_paths": ["/private/media-sync"],
-      "api_scopes": ["private.media-sync"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "cluster-tools",
       "title": "集群管理",
       "node_type": "group",
@@ -398,6 +432,17 @@
       "route_paths": ["/cluster/files", "/cluster/media", "/cluster/images"],
       "menu_paths": ["/cluster/files"],
       "api_scopes": ["cluster-tools.files"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.view-mn",
+      "title": "查看图片",
+      "node_type": "feature",
+      "parent_key": "cluster.files",
+      "sort_order": 25,
+      "route_paths": ["/cluster/view-mn"],
+      "menu_paths": ["/cluster/view-mn"],
+      "api_scopes": [],
       "default_anonymous_allow": false
     },
     {

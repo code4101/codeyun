@@ -24,11 +24,17 @@ from apscheduler.triggers.cron import CronTrigger
 
 settings = get_settings()
 
-router = APIRouter(
-    tags=["admin"],
-    dependencies=[Depends(get_current_active_superuser)],
-    responses={404: {"description": "Not found"}},
-)
+def _create_admin_router() -> APIRouter:
+    return APIRouter(
+        tags=["admin"],
+        dependencies=[Depends(get_current_active_superuser)],
+        responses={404: {"description": "Not found"}},
+    )
+
+
+router = _create_admin_router()
+accounts_router = _create_admin_router()
+images_router = _create_admin_router()
 
 ATTACHMENTS_ABS_PATH = os.fspath(get_attachments_dir())
 LEGACY_STORAGE_CONFIG_FILE = os.path.join(
@@ -232,7 +238,7 @@ class UpdateAccountProfileRequest(BaseModel):
 
 # --- Endpoints ---
 
-@router.get("/accounts", response_model=List[AdminAccountRead])
+@accounts_router.get("/accounts", response_model=List[AdminAccountRead])
 def list_accounts(session: Session = Depends(get_session)):
     statement = (
         select(User)
@@ -241,7 +247,7 @@ def list_accounts(session: Session = Depends(get_session)):
     return session.exec(statement).all()
 
 
-@router.post("/accounts", response_model=AdminAccountRead)
+@accounts_router.post("/accounts", response_model=AdminAccountRead)
 def create_account(
     payload: CreateAccountRequest,
     session: Session = Depends(get_session),
@@ -272,7 +278,7 @@ def create_account(
     return user
 
 
-@router.post("/accounts/{user_id}/password", response_model=AdminAccountRead)
+@accounts_router.post("/accounts/{user_id}/password", response_model=AdminAccountRead)
 def reset_account_password(
     user_id: int,
     payload: ResetAccountPasswordRequest,
@@ -294,7 +300,7 @@ def reset_account_password(
     return user
 
 
-@router.post("/accounts/{user_id}/profile", response_model=AdminAccountRead)
+@accounts_router.post("/accounts/{user_id}/profile", response_model=AdminAccountRead)
 def update_account_profile(
     user_id: int,
     payload: UpdateAccountProfileRequest,
@@ -326,7 +332,7 @@ def update_account_profile(
     return user
 
 
-@router.delete("/accounts/{user_id}")
+@accounts_router.delete("/accounts/{user_id}")
 def delete_account(
     user_id: int,
     session: Session = Depends(get_session),
@@ -351,7 +357,7 @@ def delete_account(
 
     return {"success": True}
 
-@router.get("/storage/dashboard", response_model=StorageDashboardStats)
+@images_router.get("/storage/dashboard", response_model=StorageDashboardStats)
 def get_storage_dashboard(session: Session = Depends(get_session)):
     """
     Get quick overview stats for the dashboard.
@@ -384,7 +390,7 @@ def get_storage_dashboard(session: Session = Depends(get_session)):
         health_score=98      # Mock
     )
 
-@router.get("/storage/analysis", response_model=StorageAnalysisResponse)
+@images_router.get("/storage/analysis", response_model=StorageAnalysisResponse)
 def get_storage_analysis(session: Session = Depends(get_session)):
     """
     Deep analysis: Top 50 files, Top 50 nodes.
@@ -447,7 +453,7 @@ def get_storage_analysis(session: Session = Depends(get_session)):
         file_type_distribution=file_types
     )
 
-@router.get("/storage/maintenance", response_model=MaintenanceStatusResponse)
+@images_router.get("/storage/maintenance", response_model=MaintenanceStatusResponse)
 def get_maintenance_status(session: Session = Depends(get_session)):
     """
     Get orphan files and dead links.
@@ -512,7 +518,7 @@ def get_maintenance_status(session: Session = Depends(get_session)):
         fixable_links=fixable_links
     )
 
-@router.get("/images/orphans", response_model=OrphanImageResponse)
+@images_router.get("/images/orphans", response_model=OrphanImageResponse)
 def get_orphan_images(session: Session = Depends(get_session)):
     """
     Legacy/Specific endpoint for the Orphan Table detail view
@@ -562,7 +568,7 @@ def get_orphan_images(session: Session = Depends(get_session)):
         orphans=orphans
     )
 
-@router.get("/storage/schedule", response_model=ScheduleConfig)
+@images_router.get("/storage/schedule", response_model=ScheduleConfig)
 def get_schedule_config():
     config = load_config()
     return ScheduleConfig(
@@ -570,7 +576,7 @@ def get_schedule_config():
         cron_expression=config.get("cron_expression", "0 3 * * *")
     )
 
-@router.post("/storage/schedule", response_model=ScheduleConfig)
+@images_router.post("/storage/schedule", response_model=ScheduleConfig)
 def set_schedule_config(config: ScheduleConfig):
     save_config(config.dict())
     
@@ -591,7 +597,7 @@ def set_schedule_config(config: ScheduleConfig):
     return config
 
 
-@router.get("/device-control/identity", response_model=DeviceControlIdentityResponse)
+@images_router.get("/device-control/identity", response_model=DeviceControlIdentityResponse)
 def get_device_control_identity():
     return DeviceControlIdentityResponse(
         device_id=get_device_id(),
@@ -599,7 +605,7 @@ def get_device_control_identity():
         data_dir=os.fspath(settings.data_dir),
     )
 
-@router.post("/storage/fix-links", response_model=dict)
+@images_router.post("/storage/fix-links", response_model=dict)
 def fix_broken_links(session: Session = Depends(get_session)):
     """
     Automatically fix broken links.
@@ -694,7 +700,7 @@ class OptimizedPreview(BaseModel):
     saved_bytes: int
     preview_url: str # data url or temp url
 
-@router.post("/images/optimize-preview", response_model=OptimizedPreview)
+@images_router.post("/images/optimize-preview", response_model=OptimizedPreview)
 def preview_optimized_image(request: OptimizeImageRequest):
     """
     Generate an optimized version of the image for preview.
@@ -734,7 +740,7 @@ def preview_optimized_image(request: OptimizeImageRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Image processing failed: {str(e)}")
 
-@router.post("/images/optimize-confirm", response_model=dict)
+@images_router.post("/images/optimize-confirm", response_model=dict)
 def confirm_image_optimization(request: OptimizeImageRequest):
     """
     Overwrite the original image with the optimized version.
@@ -801,7 +807,7 @@ def confirm_image_optimization(request: OptimizeImageRequest):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
 
-@router.post("/images/optimize-confirm-with-db", response_model=dict)
+@images_router.post("/images/optimize-confirm-with-db", response_model=dict)
 def confirm_image_optimization_with_db(request: OptimizeImageRequest):
     """
     Optimize image.
@@ -850,7 +856,7 @@ def confirm_image_optimization_with_db(request: OptimizeImageRequest):
             os.remove(temp_path)
         raise HTTPException(status_code=500, detail=f"Optimization failed: {str(e)}")
 
-@router.post("/images/delete", response_model=dict)
+@images_router.post("/images/delete", response_model=dict)
 def delete_orphan_images(request: DeleteImagesRequest):
     """
     Delete specified orphan images.
@@ -877,3 +883,7 @@ def delete_orphan_images(request: DeleteImagesRequest):
         "deleted_count": deleted_count,
         "errors": errors
     }
+
+
+router.include_router(accounts_router)
+router.include_router(images_router)

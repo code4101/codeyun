@@ -188,6 +188,79 @@ def test_git_tools_inspect_marks_large_untracked_file_as_split_recommended(clien
     assert payload["estimated_changed_line_count"] >= 9000
 
 
+def test_git_tools_inspect_reports_precheck_findings(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-repo"
+    _init_git_repo(repo_path)
+    (repo_path / "app.py").write_text(
+        "DATABASE_URL = 'postgresql://demo:secret123@example.com/demo'\n",
+        encoding="utf-8",
+    )
+    (repo_path / ".env").write_text(
+        "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890\n",
+        encoding="utf-8",
+    )
+    (repo_path / "logs").mkdir(parents=True, exist_ok=True)
+    (repo_path / "logs" / "app.log").write_text("runtime log\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["precheck"]["issue_count"] >= 3
+    assert payload["precheck"]["has_blocking_issues"] is True
+    assert {item["issue_type"] for item in payload["precheck"]["issues"]} == {
+        "ignore_candidate",
+        "sensitive_content",
+    }
+    assert any(item["path"] == ".env" for item in payload["precheck"]["issues"])
+    assert any(item["path"] == "app.py" for item in payload["precheck"]["issues"])
+    assert any(item["path"] == "logs/app.log" for item in payload["precheck"]["issues"])
+
+    app_issue = next(
+        item for item in payload["precheck"]["issues"]
+        if item["path"] == "app.py" and item["issue_type"] == "sensitive_content"
+    )
+    assert app_issue["blocking"] is False
+    assert app_issue["severity"] == "warning"
+    assert app_issue["line"] == 1
+    assert app_issue["context_lines"]
+    assert any(line["is_match"] for line in app_issue["context_lines"])
+    assert any("secret123" in line["text"] for line in app_issue["context_lines"])
+
+    env_issue = next(
+        item for item in payload["precheck"]["issues"]
+        if item["path"] == ".env" and item["issue_type"] == "sensitive_content"
+    )
+    assert env_issue["context_lines"]
+    assert any("abcdefghijklmnopqrstuvwxyz1234567890" in line["text"] for line in env_issue["context_lines"])
+
+
+def test_git_tools_precheck_does_not_treat_route_password_path_as_secret_assignment(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-route-repo"
+    _init_git_repo(repo_path)
+    (repo_path / "admin.py").write_text(
+        '@accounts_router.post("/accounts/{user_id}/password", response_model=UserRead)\n',
+        encoding="utf-8",
+    )
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert not any(
+        item["path"] == "admin.py" and item["issue_type"] == "sensitive_content"
+        for item in payload["precheck"]["issues"]
+    )
+
+
 def test_local_entry_git_generate_message_uses_ai_draft(client, auth_user, test_device, tmp_path, monkeypatch):
     repo_path = tmp_path / "git-generate-repo"
     _init_git_repo(repo_path)
@@ -518,6 +591,81 @@ def test_local_entry_git_commit_creates_commit(client, auth_user, test_device, t
     assert payload["clean"] is True
     assert payload["commit_hash"]
     assert _run_git(repo_path, "log", "-1", "--pretty=%s") == "新增 Git 提交工具测试"
+
+
+def test_local_entry_git_commit_allows_sensitive_precheck_warnings_when_add_all_enabled(client, auth_user, test_device, tmp_path):
+    repo_path = tmp_path / "git-commit-precheck-warning-repo"
+    _init_git_repo(repo_path)
+    (repo_path / "app.py").write_text(
+        "DATABASE_URL = 'postgresql://demo:secret123@example.com/demo'\n",
+        encoding="utf-8",
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/git/commit",
+        json={
+            "cwd": str(repo_path),
+            "subject": "敏感预检仅提醒",
+            "body": ["保留提示，但不再阻断提交"],
+            "add_all": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"] == "敏感预检仅提醒"
+    assert payload["clean"] is True
+    assert _run_git(repo_path, "log", "-1", "--pretty=%s") == "敏感预检仅提醒"
+
+
+def test_local_entry_git_commit_only_checks_staged_scope_when_add_all_disabled(client, auth_user, test_device, tmp_path):
+    repo_path = tmp_path / "git-commit-staged-scope-repo"
+    _init_git_repo(repo_path)
+    (repo_path / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    _run_git(repo_path, "add", "feature.txt")
+    (repo_path / ".env").write_text(
+        "OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890\n",
+        encoding="utf-8",
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/git/commit",
+        json={
+            "cwd": str(repo_path),
+            "subject": "仅提交已暂存改动",
+            "body": ["未暂存的敏感文件不应阻断这次提交"],
+            "add_all": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"] == "仅提交已暂存改动"
+    assert payload["clean"] is False
+    assert _run_git(repo_path, "log", "-1", "--pretty=%s") == "仅提交已暂存改动"
+    assert "?? .env" in _run_git(repo_path, "status", "--short")
 
 
 def test_local_entry_git_generate_and_commit_runs_end_to_end(client, auth_user, test_device, tmp_path, monkeypatch):

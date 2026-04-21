@@ -4,6 +4,14 @@ from sqlalchemy import Column, JSON, String, UniqueConstraint
 import time
 import socket
 import uuid
+import secrets
+
+
+_SHEET_DOCUMENT_ID_ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+
+def generate_sheet_document_id(length: int = 12) -> str:
+    return "".join(secrets.choice(_SHEET_DOCUMENT_ID_ALPHABET) for _ in range(length))
 
 # --- User Models ---
 
@@ -326,6 +334,28 @@ class AttendanceOrderRefundHistory(SQLModel, table=True):
     result_text: str = Field(default="")
     raw_row_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
     created_at: float = Field(default_factory=time.time, index=True)
+
+
+class SheetDocument(SQLModel, table=True):
+    __tablename__ = "sheetdocument"
+    __table_args__ = (
+        UniqueConstraint("scope", "owner_type", "owner_key", "sheet_key", name="uq_sheetdocument_owner_locator"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
+    scope: str = Field(default="", index=True)
+    owner_type: str = Field(default="", index=True)
+    owner_key: str = Field(default="", index=True)
+    sheet_key: str = Field(default="", index=True)
+    title: str = Field(default="")
+    engine: str = Field(default="handsontable", index=True)
+    document_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    version: int = Field(default=1)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
 
 
 class AttendanceWjxDataSyncState(SQLModel, table=True):

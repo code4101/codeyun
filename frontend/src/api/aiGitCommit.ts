@@ -40,6 +40,33 @@ export interface GitSuggestedSplitGroup {
   sample_paths: string[]
 }
 
+export interface GitPrecheckContextLine {
+  line_number: number | null
+  text: string
+  is_match: boolean
+}
+
+export interface GitPrecheckIssue {
+  issue_type: 'ignore_candidate' | 'sensitive_content'
+  severity: 'warning' | 'error'
+  blocking: boolean
+  path: string
+  line: number | null
+  message: string
+  suggestion: string
+  context_lines: GitPrecheckContextLine[]
+}
+
+export interface GitPrecheckReport {
+  checked_file_count: number
+  issue_count: number
+  warning_count: number
+  error_count: number
+  blocking_issue_count: number
+  has_blocking_issues: boolean
+  issues: GitPrecheckIssue[]
+}
+
 export interface GitInspectResponse {
   cwd: string
   repo_root: string
@@ -58,6 +85,7 @@ export interface GitInspectResponse {
   split_reason: string
   oversized: boolean
   suggested_split_groups: GitSuggestedSplitGroup[]
+  precheck: GitPrecheckReport
 }
 
 export interface GitInspectRequest {
