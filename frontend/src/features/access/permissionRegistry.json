@@ -130,50 +130,6 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "attendance.courses",
-      "title": "课程",
-      "node_type": "group",
-      "parent_key": "attendance-tools",
-      "sort_order": 40,
-      "route_paths": ["/attendance/courses"],
-      "menu_paths": ["/attendance/courses"],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "attendance.courses.20260412-chanzong-12qi-1jie",
-      "title": "20260412禅宗12期一阶",
-      "node_type": "group",
-      "parent_key": "attendance.courses",
-      "sort_order": 10,
-      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie"],
-      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie"],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "attendance.courses.20260412-chanzong-12qi-1jie.registration",
-      "title": "报名表",
-      "node_type": "feature",
-      "parent_key": "attendance.courses.20260412-chanzong-12qi-1jie",
-      "sort_order": 10,
-      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/registration"],
-      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/registration"],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "attendance.courses.20260412-chanzong-12qi-1jie.attendance",
-      "title": "考勤表",
-      "node_type": "feature",
-      "parent_key": "attendance.courses.20260412-chanzong-12qi-1jie",
-      "sort_order": 20,
-      "route_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/attendance"],
-      "menu_paths": ["/attendance/courses/20260412-chanzong-12qi-1jie/attendance"],
-      "api_scopes": [],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "attendance.wjx",
       "title": "问卷",
       "node_type": "group",
@@ -283,6 +239,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "fanxiu.lottery-model",
+      "title": "抽奖期望模型",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 25,
+      "route_paths": ["/fanxiu/lottery-model"],
+      "menu_paths": ["/fanxiu/lottery-model"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "fanxiu.task-status",
       "title": "任务状态",
       "node_type": "feature",
@@ -292,6 +259,138 @@
       "menu_paths": ["/fanxiu/task-status"],
       "api_scopes": ["fanxiu.task-status"],
       "default_anonymous_allow": false
+    },
+    {
+      "key": "fanxiu.activity-list",
+      "title": "活动列表",
+      "node_type": "group",
+      "parent_key": "fanxiu",
+      "sort_order": 6,
+      "route_paths": ["/fanxiu/activity-list"],
+      "menu_paths": ["/fanxiu/activity-list"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.kunlun-secret",
+      "title": "昆仑秘藏",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 10,
+      "route_paths": ["/fanxiu/activity-list/kunlun-secret"],
+      "menu_paths": ["/fanxiu/activity-list/kunlun-secret"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.modao-invasion",
+      "title": "魔道入侵",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 20,
+      "route_paths": ["/fanxiu/activity-list/modao-invasion"],
+      "menu_paths": ["/fanxiu/activity-list/modao-invasion"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.shouyuan-exploration",
+      "title": "兽渊探秘",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 25,
+      "route_paths": ["/fanxiu/activity-list/shouyuan-exploration"],
+      "menu_paths": ["/fanxiu/activity-list/shouyuan-exploration"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.divine-resource",
+      "title": "神物资源",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 30,
+      "route_paths": ["/fanxiu/activity-list/divine-resource"],
+      "menu_paths": ["/fanxiu/activity-list/divine-resource"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.xianzhou-marathon",
+      "title": "仙舟马拉松",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 40,
+      "route_paths": ["/fanxiu/activity-list/xianzhou-marathon"],
+      "menu_paths": ["/fanxiu/activity-list/xianzhou-marathon"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.region-data",
+      "title": "区服",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 7,
+      "route_paths": ["/fanxiu/region-data"],
+      "menu_paths": ["/fanxiu/region-data"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory",
+      "title": "道具仓库",
+      "node_type": "group",
+      "parent_key": "fanxiu",
+      "sort_order": 9,
+      "route_paths": [],
+      "menu_paths": [],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory.wardrobe-hall",
+      "title": "1 衣装阁",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 10,
+      "route_paths": ["/fanxiu/inventory/wardrobe-hall"],
+      "menu_paths": ["/fanxiu/inventory/wardrobe-hall"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory.spirit-beast-hall",
+      "title": "2 灵兽",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 20,
+      "route_paths": ["/fanxiu/inventory/spirit-beast-hall"],
+      "menu_paths": ["/fanxiu/inventory/spirit-beast-hall"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory.magic-treasure-hall",
+      "title": "3 法宝",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 30,
+      "route_paths": ["/fanxiu/inventory/magic-treasure-hall"],
+      "menu_paths": ["/fanxiu/inventory/magic-treasure-hall"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory.magic-treasure-formations",
+      "title": "阵图",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 31,
+      "route_paths": ["/fanxiu/inventory/magic-treasure-hall/formations"],
+      "menu_paths": ["/fanxiu/inventory/magic-treasure-hall/formations"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
     },
     {
       "key": "fanxiu.labelme",
@@ -312,17 +411,6 @@
       "sort_order": 50,
       "route_paths": ["/fanxiu/recharge"],
       "menu_paths": ["/fanxiu/recharge"],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
-      "key": "fanxiu.xianzhou-race",
-      "title": "仙舟竞速",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 60,
-      "route_paths": ["/fanxiu/xianzhou-race"],
-      "menu_paths": ["/fanxiu/xianzhou-race"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -403,6 +491,17 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "notes.sheets",
+      "title": "表格管理",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 30,
+      "route_paths": ["/notes/sheets"],
+      "menu_paths": ["/notes/sheets"],
+      "api_scopes": ["note-tools.sheets"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster-tools",
       "title": "集群管理",
       "node_type": "group",
@@ -432,6 +531,17 @@
       "route_paths": ["/cluster/files", "/cluster/media", "/cluster/images"],
       "menu_paths": ["/cluster/files"],
       "api_scopes": ["cluster-tools.files"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.codex",
+      "title": "Codex",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 25,
+      "route_paths": ["/cluster/codex", "/cluster/codex/daily-summary"],
+      "menu_paths": ["/cluster/codex", "/cluster/codex/daily-summary"],
+      "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false
     },
     {

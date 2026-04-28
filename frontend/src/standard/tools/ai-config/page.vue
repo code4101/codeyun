@@ -2,7 +2,6 @@
   <div class="ai-config-page">
     <section class="hero-panel">
       <div class="hero-copy">
-        <div class="eyebrow">AI工具 / 配置</div>
         <h1>AI配置</h1>
       </div>
     </section>
@@ -10,64 +9,61 @@
     <div class="workspace-grid">
       <aside class="provider-panel">
         <section class="panel-card">
-          <div class="panel-header">
-            <div>
-              <p class="panel-kicker">{{ assetMode === 'providers' ? '来源资产' : '应用配置' }}</p>
-              <h2>{{ assetMode === 'providers' ? '来源列表' : '应用列表' }}</h2>
-            </div>
-            <div class="panel-header-actions">
-              <el-radio-group v-model="assetMode" size="small" class="asset-mode-switch">
-                <el-radio-button label="providers">来源</el-radio-button>
-                <el-radio-button label="apps">应用</el-radio-button>
-              </el-radio-group>
-              <el-tag
-                v-if="assetMode === 'providers' && !isAuthenticated"
-                type="info"
-                effect="plain"
-              >
-                本地保存
-              </el-tag>
-              <el-tag
-                v-else-if="assetMode === 'providers'"
-                type="success"
-                effect="plain"
-              >
-                账号资产
-              </el-tag>
-              <el-tag v-else type="info" effect="plain">
-                本地设置
-              </el-tag>
-              <el-button
-                v-if="assetMode === 'providers' && isAuthenticated"
-                size="small"
-                @click="openCustomProviderDialog"
-              >
-                新增来源
-              </el-button>
-            </div>
-          </div>
-
           <div class="provider-list">
             <button
-              v-for="provider in visibleAssets"
+              v-for="provider in providers"
               :key="provider.id"
               type="button"
               class="provider-item"
-              :class="{ active: selectedAssetId === provider.id }"
-              @click="handleAssetChange(provider.id)"
+              :class="{ active: assetMode === 'providers' && selectedProviderId === provider.id }"
+              @click="handleProviderAssetChange(provider.id)"
             >
               <div class="provider-item-main">
                 <span class="provider-item-label">{{ provider.label }}</span>
                 <span class="provider-item-model">
-                  {{ assetMode === 'providers' ? getProviderSummaryModel(provider.id) : getAppSummaryModel(provider.id) }}
+                  {{ getProviderSummaryModel(provider.id) }}
                 </span>
               </div>
               <div class="provider-item-meta">
                 <span
                   class="provider-item-state"
-                  :class="assetMode === 'providers' ? getProviderStateClass(provider.id) : getAppStateClass(provider.id)"
+                  :class="getProviderStateClass(provider.id)"
                 >
-                  {{ assetMode === 'providers' ? getProviderStateLabel(provider.id) : getAppStateLabel(provider.id) }}
+                  {{ getProviderStateLabel(provider.id) }}
+                </span>
+              </div>
+            </button>
+          </div>
+          <div v-if="isAuthenticated" class="provider-footer">
+            <el-button
+              class="asset-add-button"
+              size="large"
+              @click="openCustomProviderDialog"
+            >
+              新增
+            </el-button>
+          </div>
+          <div v-if="aiAppStore.appDefinitions.length" class="provider-list app-list">
+            <button
+              v-for="appDefinition in aiAppStore.appDefinitions"
+              :key="appDefinition.id"
+              type="button"
+              class="provider-item"
+              :class="{ active: assetMode === 'apps' && selectedAppId === appDefinition.id }"
+              @click="handleAppAssetChange(appDefinition.id)"
+            >
+              <div class="provider-item-main">
+                <span class="provider-item-label">{{ appDefinition.label }}</span>
+                <span class="provider-item-model">
+                  {{ getAppSummaryModel(appDefinition.id) }}
+                </span>
+              </div>
+              <div class="provider-item-meta">
+                <span
+                  class="provider-item-state"
+                  :class="getAppStateClass(appDefinition.id)"
+                >
+                  {{ getAppStateLabel(appDefinition.id) }}
                 </span>
               </div>
             </button>
@@ -77,32 +73,17 @@
 
       <section class="editor-panel">
         <section v-if="assetMode === 'providers'" class="panel-card">
-          <div class="panel-header">
-            <div>
-              <p class="panel-kicker">连接与模型</p>
-              <h2>{{ currentProvider?.label || '来源配置' }}</h2>
-            </div>
+          <div
+            v-if="savingProviderConfig || currentProviderSharingLabel || (isAuthenticated && currentProvider?.is_custom && currentProviderCanManage)"
+            class="panel-header editor-header"
+          >
             <div class="panel-header-actions">
-              <el-tag :type="status.available ? 'success' : (statusLoading ? 'info' : 'warning')" effect="light">
-                {{ statusLoading ? '检查中' : (status.available ? '已连接' : '未连接') }}
-              </el-tag>
               <el-tag v-if="savingProviderConfig" type="info" effect="plain">
                 保存中
               </el-tag>
               <el-tag v-if="currentProviderSharingLabel" type="info" effect="plain">
                 {{ currentProviderSharingLabel }}
               </el-tag>
-              <el-tag v-if="isAuthenticated && currentProviderHasSavedConfig" type="info" effect="plain">
-                账号已保存
-              </el-tag>
-              <el-button
-                text
-                :icon="RefreshRight"
-                :loading="statusLoading"
-                @click="refreshStatus()"
-              >
-                检查连接
-              </el-button>
               <el-button
                 v-if="isAuthenticated && currentProvider?.is_custom && currentProviderCanManage"
                 text
@@ -115,8 +96,101 @@
           </div>
 
           <el-form label-position="top" class="settings-form">
-            <el-form-item :label="currentProviderConnectionFieldLabel">
+            <el-form-item>
+              <template #label>
+                <div class="form-section-label">
+                  <div class="form-section-label-main">
+                    <span>{{ currentProviderConnectionFieldLabel }}</span>
+                    <el-button
+                      v-if="isAuthenticated && !currentProviderConnectionReadonly"
+                      class="section-add-button"
+                      text
+                      :icon="Plus"
+                      :disabled="savingProviderConfig"
+                      :title="`新增${currentProviderConnectionFieldLabel}`"
+                      @click="openAddCurrentProviderBaseUrlDialog"
+                    />
+                  </div>
+                  <el-button
+                    class="section-check-button"
+                    text
+                    :icon="RefreshRight"
+                    :loading="statusLoading"
+                    @click="refreshStatus()"
+                  >
+                    检查连接
+                  </el-button>
+                </div>
+              </template>
+              <div
+                v-if="isAuthenticated && !currentProviderConnectionReadonly"
+                class="base-url-editor"
+              >
+                <div v-if="currentProviderSavedBaseUrls.length" class="saved-key-section saved-base-url-section">
+                  <div class="saved-key-list">
+                    <div
+                      v-for="savedBaseUrl in currentProviderSavedBaseUrls"
+                      :key="savedBaseUrl.id"
+                      class="saved-key-item saved-choice-item"
+                      :class="{ active: savedBaseUrl.is_active }"
+                      role="radio"
+                      :aria-checked="savedBaseUrl.is_active"
+                      tabindex="0"
+                      @click="!savedBaseUrl.is_active && activateCurrentProviderBaseUrl(savedBaseUrl.id)"
+                      @keydown.enter.prevent="!savedBaseUrl.is_active && activateCurrentProviderBaseUrl(savedBaseUrl.id)"
+                      @keydown.space.prevent="!savedBaseUrl.is_active && activateCurrentProviderBaseUrl(savedBaseUrl.id)"
+                    >
+                      <input
+                        class="saved-choice-radio"
+                        type="radio"
+                        :name="`provider-base-url-${selectedProviderId}`"
+                        :checked="savedBaseUrl.is_active"
+                        :disabled="activatingProviderBaseUrlId === savedBaseUrl.id || deletingProviderBaseUrlId === savedBaseUrl.id || savingProviderBaseUrlId === savedBaseUrl.id"
+                        @click.stop
+                        @change="activateCurrentProviderBaseUrl(savedBaseUrl.id)"
+                      >
+                      <div class="saved-key-meta saved-base-url-meta">
+                        <el-input
+                          v-if="isEditingCurrentProviderBaseUrl(savedBaseUrl.id)"
+                          v-model="providerBaseUrlEditDraft"
+                          class="saved-inline-edit"
+                          autofocus
+                          clearable
+                          :disabled="savingProviderBaseUrlId === savedBaseUrl.id"
+                          @click.stop
+                          @dblclick.stop
+                          @keyup.enter="finishEditCurrentProviderBaseUrl(savedBaseUrl.id)"
+                          @keyup.esc="cancelEditCurrentProviderBaseUrl(savedBaseUrl.id)"
+                          @blur="finishEditCurrentProviderBaseUrl(savedBaseUrl.id)"
+                        />
+                        <span
+                          v-else
+                          class="saved-base-url-value editable-list-value"
+                          @dblclick.stop="startEditCurrentProviderBaseUrl(savedBaseUrl)"
+                        >
+                          {{ savedBaseUrl.value }}
+                        </span>
+                      </div>
+                      <div class="saved-key-actions">
+                        <el-button
+                          class="row-remove-button"
+                          text
+                          size="small"
+                          type="danger"
+                          :icon="Minus"
+                          :disabled="savingProviderBaseUrlId === savedBaseUrl.id"
+                          :loading="deletingProviderBaseUrlId === savedBaseUrl.id"
+                          title="删除地址"
+                          aria-label="删除地址"
+                          @click.stop="deleteCurrentProviderBaseUrl(savedBaseUrl.id)"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
               <el-input
+                v-else
                 v-model="currentBaseUrl"
                 clearable
                 :disabled="currentProviderConnectionReadonly"
@@ -124,16 +198,10 @@
                 @change="handleProviderBaseUrlChange"
               />
             </el-form-item>
-            <el-form-item v-if="currentProviderIsCodex">
-              <el-alert
-                :title="currentProviderCanManage
-                  ? '这不是 HTTP API。CodeYun 会默认以完全权限调用本机 Codex CLI。'
-                  : '这是管理员共享的 Codex CLI 来源。普通用户不能改命令；拿到访问 Token 后会按默认完全权限调用。'"
-                type="info"
-                :closable="false"
-              />
-            </el-form-item>
-            <div v-if="isAuthenticated && currentProviderHasSavedConfig && !currentProviderRequiresApiKey" class="account-config-row">
+            <div
+              v-if="isAuthenticated && currentProviderHasSavedConfig && !currentProviderRequiresApiKey && !currentProviderUsesSystemAccessKeys"
+              class="account-config-row"
+            >
               <el-button
                 text
                 size="small"
@@ -144,17 +212,191 @@
               </el-button>
             </div>
 
-            <el-form-item v-if="currentProviderRequiresApiKey" :label="currentProviderKeyFieldLabel">
-              <el-input
-                v-if="isAuthenticated"
-                v-model="currentApiKeyLabelInput"
-                clearable
-                class="api-key-label-input"
-                placeholder="Key 名称（可选，不填则自动编号）"
-              />
-              <div class="api-key-input-row">
+            <el-form-item v-if="currentProviderHasKeySection">
+              <template #label>
+                <div class="form-section-label">
+                  <div class="form-section-label-main">
+                    <span>{{ currentProviderKeyFieldLabel }}</span>
+                    <el-popover
+                      v-if="currentProviderKeyHelpVisible"
+                      trigger="click"
+                      placement="right-start"
+                      :width="360"
+                      popper-class="ai-config-key-help-popover"
+                    >
+                      <template #reference>
+                        <el-button
+                          class="section-help-button"
+                          text
+                          :icon="QuestionFilled"
+                          title="访问 Key 说明"
+                          aria-label="访问 Key 说明"
+                        />
+                      </template>
+                      <div class="key-help-content">
+                        <div class="key-help-title">{{ currentProviderKeyHelpTitle }}</div>
+                        <p>{{ currentProviderNativeKeyHelpText }}</p>
+                        <p>{{ currentProviderAccessPolicyHelpText }}</p>
+                      </div>
+                    </el-popover>
+                    <el-button
+                      class="section-add-button"
+                      text
+                      :icon="Plus"
+                      :disabled="savingProviderConfig || generatingOllamaAccessKey || generatingCodexAccessKey"
+                      :title="`新增${currentProviderKeyFieldLabel}`"
+                      @click="handleAddCurrentProviderKey"
+                    />
+                  </div>
+                </div>
+              </template>
+              <div
+                v-if="!currentProviderUsesSystemAccessKeys && isAuthenticated && currentProviderHasSavedConfig && !currentProviderSavedKeys.length"
+                class="account-config-row"
+              >
+                <el-button
+                  text
+                  size="small"
+                  :loading="removingProviderConfig"
+                  @click="removeCurrentProviderConfig"
+                >
+                  清除账号保存
+                </el-button>
+              </div>
+              <div v-if="currentProviderUsesSystemAccessKeys" class="saved-key-section">
+                <div v-if="currentProviderSystemAccessKeys.length" class="saved-key-list">
+                  <div
+                    v-for="accessKey in currentProviderSystemAccessKeys"
+                    :key="accessKey.id"
+                    class="saved-key-item saved-choice-item"
+                    :class="{ active: isCurrentSystemAccessKeyActive(accessKey) }"
+                    role="radio"
+                    :aria-checked="isCurrentSystemAccessKeyActive(accessKey)"
+                    tabindex="0"
+                    @click="!isCurrentSystemAccessKeyActive(accessKey) && activateCurrentSystemAccessKeyForCurrentProvider(accessKey)"
+                    @keydown.enter.prevent="!isCurrentSystemAccessKeyActive(accessKey) && activateCurrentSystemAccessKeyForCurrentProvider(accessKey)"
+                    @keydown.space.prevent="!isCurrentSystemAccessKeyActive(accessKey) && activateCurrentSystemAccessKeyForCurrentProvider(accessKey)"
+                  >
+                    <input
+                      class="saved-choice-radio"
+                      type="radio"
+                      :name="`provider-key-${selectedProviderId}`"
+                      :checked="isCurrentSystemAccessKeyActive(accessKey)"
+                      :disabled="activatingProviderKeyId === accessKey.id || isCurrentSystemAccessKeyDeleting(accessKey.id)"
+                      @click.stop
+                      @change="activateCurrentSystemAccessKeyForCurrentProvider(accessKey)"
+                      >
+                    <div class="saved-key-meta">
+                      <span class="saved-key-mask">
+                        {{ getCurrentSystemAccessKeyDisplayValue(accessKey.id, accessKey.masked_value) }}
+                      </span>
+                      <el-button
+                        class="saved-key-eye-button"
+                        text
+                        size="small"
+                        :icon="isCurrentSystemAccessKeyPlaintextVisible(accessKey.id) ? View : Hide"
+                        :loading="isCurrentSystemAccessKeyRevealing(accessKey.id)"
+                        :title="isCurrentSystemAccessKeyPlaintextVisible(accessKey.id) ? '隐藏明文' : '查看明文'"
+                        @click.stop="toggleCurrentSystemAccessKeyPlaintext(accessKey.id)"
+                      />
+                    </div>
+                    <div class="saved-key-actions">
+                      <el-button
+                        class="row-remove-button"
+                        text
+                        size="small"
+                        type="danger"
+                        :icon="Minus"
+                        :loading="isCurrentSystemAccessKeyDeleting(accessKey.id)"
+                        :title="`删除${currentProviderKeyFieldLabel}`"
+                        :aria-label="`删除${currentProviderKeyFieldLabel}`"
+                        @click.stop="deleteCurrentSystemAccessKey(accessKey)"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <div v-else-if="currentProviderSystemAccessKeysLoading" class="model-list-empty">
+                  加载中
+                </div>
+              </div>
+              <div v-else-if="isAuthenticated && currentProviderSavedKeys.length" class="saved-key-section">
+                <div class="saved-key-list">
+                  <div
+                    v-for="savedKey in currentProviderSavedKeys"
+                    :key="savedKey.id"
+                    class="saved-key-item saved-choice-item"
+                    :class="{ active: savedKey.is_active }"
+                    role="radio"
+                    :aria-checked="savedKey.is_active"
+                    tabindex="0"
+                    @click="!savedKey.is_active && activateCurrentProviderKey(savedKey.id)"
+                    @keydown.enter.prevent="!savedKey.is_active && activateCurrentProviderKey(savedKey.id)"
+                    @keydown.space.prevent="!savedKey.is_active && activateCurrentProviderKey(savedKey.id)"
+                  >
+                    <input
+                      class="saved-choice-radio"
+                      type="radio"
+                      :name="`provider-key-${selectedProviderId}`"
+                      :checked="savedKey.is_active"
+                      :disabled="activatingProviderKeyId === savedKey.id || deletingProviderKeyId === savedKey.id || savingProviderKeyId === savedKey.id"
+                      @click.stop
+                      @change="activateCurrentProviderKey(savedKey.id)"
+                      >
+                    <div class="saved-key-meta">
+                      <el-input
+                        v-if="isEditingCurrentProviderKey(savedKey.id)"
+                        v-model="providerKeyEditDraft"
+                        class="saved-inline-edit saved-key-edit-input"
+                        type="password"
+                        show-password
+                        autofocus
+                        clearable
+                        :disabled="savingProviderKeyId === savedKey.id"
+                        @click.stop
+                        @dblclick.stop
+                        @keyup.enter="finishEditCurrentProviderKey(savedKey.id)"
+                        @keyup.esc="cancelEditCurrentProviderKey(savedKey.id)"
+                        @blur="finishEditCurrentProviderKey(savedKey.id)"
+                      />
+                      <template v-else>
+                        <span
+                          class="saved-key-mask editable-list-value"
+                          @dblclick.stop="startEditCurrentProviderKey(savedKey)"
+                        >
+                          {{ getCurrentProviderKeyDisplayValue(savedKey.id, savedKey.masked_value) }}
+                        </span>
+                        <el-button
+                          class="saved-key-eye-button"
+                          text
+                          size="small"
+                          :icon="isCurrentProviderKeyPlaintextVisible(savedKey.id) ? View : Hide"
+                          :loading="revealingProviderKeyId === savedKey.id"
+                          :title="isCurrentProviderKeyPlaintextVisible(savedKey.id) ? '隐藏明文' : '查看明文'"
+                          @click.stop="toggleCurrentProviderKeyPlaintext(savedKey.id)"
+                        />
+                      </template>
+                    </div>
+                    <div class="saved-key-actions">
+                      <el-button
+                        class="row-remove-button"
+                        text
+                        size="small"
+                        type="danger"
+                        :icon="Minus"
+                        :disabled="savingProviderKeyId === savedKey.id"
+                        :loading="deletingProviderKeyId === savedKey.id"
+                        title="删除 API Key"
+                        aria-label="删除 API Key"
+                        @click.stop="deleteCurrentProviderKey(savedKey.id)"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-if="!isAuthenticated" class="api-key-input-row">
                 <el-input
                   v-model="currentApiKeyInput"
+                  class="api-key-secret-input"
                   type="password"
                   show-password
                   clearable
@@ -170,204 +412,24 @@
                   保存
                 </el-button>
               </div>
-              <div v-if="isAuthenticated && currentProviderHasSavedConfig" class="account-config-row">
-                <el-button
-                  text
-                  size="small"
-                  :loading="removingProviderConfig"
-                  @click="removeCurrentProviderConfig"
-                >
-                  清除账号保存
-                </el-button>
-              </div>
-              <div v-if="isAuthenticated && currentProviderSavedKeys.length" class="saved-key-section">
-                <div class="saved-key-header">
-                  <span class="saved-key-title">{{ currentProviderSavedKeyTitle }}</span>
-                  <span class="saved-key-note">{{ currentProviderSavedKeyNote }}</span>
-                </div>
-                <div class="saved-key-list">
-                  <div
-                    v-for="savedKey in currentProviderSavedKeys"
-                    :key="savedKey.id"
-                    class="saved-key-item"
-                  >
-                    <div class="saved-key-meta">
-                      <span class="saved-key-label">{{ savedKey.label }}</span>
-                      <span class="saved-key-mask">{{ savedKey.masked_value }}</span>
-                      <el-tag v-if="savedKey.is_active" size="small" type="success" effect="plain">
-                        已激活
-                      </el-tag>
-                    </div>
-                    <div class="saved-key-actions">
-                      <el-button
-                        v-if="!savedKey.is_active"
-                        text
-                        size="small"
-                        :loading="activatingProviderKeyId === savedKey.id"
-                        @click="activateCurrentProviderKey(savedKey.id)"
-                      >
-                        设为激活
-                      </el-button>
-                      <el-button
-                        text
-                        size="small"
-                        type="danger"
-                        :loading="deletingProviderKeyId === savedKey.id"
-                        @click="deleteCurrentProviderKey(savedKey.id)"
-                      >
-                        删除
-                      </el-button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div v-if="currentProviderIsOllama" class="ollama-access-hint">
-                <el-alert
-                  title="这里填写的是 CodeYun 分发的访问 Key，不是 Ollama 原生鉴权。"
-                  type="info"
-                  :closable="false"
-                />
-              </div>
-              <div v-if="currentProviderNeedsCodexToken" class="ollama-access-hint">
-                <el-alert
-                  title="这里填写的是 CodeYun 分发的 Codex 访问 Token，不是 Codex 自带认证。"
-                  type="info"
-                  :closable="false"
-                />
-              </div>
-              <div v-if="currentProviderIsOllama && isAdmin" class="ollama-system-key-section">
-                <div class="saved-key-header">
-                  <span class="saved-key-title">系统访问 Key</span>
-                  <span class="saved-key-note">管理员生成后可分发给其他用户，用户再保存到自己的来源配置里。</span>
-                </div>
-                <div class="ollama-system-key-toolbar">
-                  <el-button
-                    size="small"
-                    type="primary"
-                    plain
-                    :loading="generatingOllamaAccessKey"
-                    @click="createOllamaAccessKeyWithPrompt"
-                  >
-                    生成新 Key
-                  </el-button>
-                  <el-tag v-if="ollamaAccessKeysLoading" size="small" type="info" effect="plain">
-                    加载中
-                  </el-tag>
-                </div>
-                <div v-if="ollamaAccessKeys.length" class="saved-key-list">
-                  <div
-                    v-for="accessKey in ollamaAccessKeys"
-                    :key="accessKey.id"
-                    class="saved-key-item ollama-system-key-item"
-                  >
-                    <div class="saved-key-meta">
-                      <span class="saved-key-label">{{ accessKey.label }}</span>
-                      <span class="saved-key-mask">{{ accessKey.masked_value }}</span>
-                    </div>
-                    <div class="saved-key-actions">
-                      <el-button
-                        text
-                        size="small"
-                        :loading="revealingOllamaAccessKeyId === accessKey.id"
-                        @click="revealCurrentOllamaAccessKey(accessKey.id)"
-                      >
-                        查看明文
-                      </el-button>
-                      <el-button
-                        text
-                        size="small"
-                        type="danger"
-                        :loading="deletingOllamaAccessKeyId === accessKey.id"
-                        @click="deleteCurrentOllamaAccessKey(accessKey.id)"
-                      >
-                        删除
-                      </el-button>
-                    </div>
-                    <div v-if="getOllamaAccessKeyPlaintext(accessKey.id)" class="ollama-plaintext-row">
-                      <el-input
-                        :model-value="getOllamaAccessKeyPlaintext(accessKey.id)"
-                        readonly
-                        type="password"
-                        show-password
-                      />
-                      <el-button text @click="copyOllamaAccessKeyPlaintext(accessKey.id)">
-                        复制
-                      </el-button>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="model-list-empty">
-                  还没有系统访问 Key，先生成一把。
-                </div>
-              </div>
-              <div v-if="currentProviderIsCodex && isAdmin && currentProviderCanManage" class="ollama-system-key-section">
-                <div class="saved-key-header">
-                  <span class="saved-key-title">系统访问 Token</span>
-                  <span class="saved-key-note">管理员可直接调用；需要分发给其他用户时，再生成一把 Token 给对方保存。</span>
-                </div>
-                <div class="ollama-system-key-toolbar">
-                  <el-button
-                    size="small"
-                    type="primary"
-                    plain
-                    :loading="generatingCodexAccessKey"
-                    @click="createCodexAccessKeyWithPrompt"
-                  >
-                    生成新 Token
-                  </el-button>
-                  <el-tag v-if="codexAccessKeysLoading" size="small" type="info" effect="plain">
-                    加载中
-                  </el-tag>
-                </div>
-                <div v-if="codexAccessKeys.length" class="saved-key-list">
-                  <div
-                    v-for="accessKey in codexAccessKeys"
-                    :key="accessKey.id"
-                    class="saved-key-item ollama-system-key-item"
-                  >
-                    <div class="saved-key-meta">
-                      <span class="saved-key-label">{{ accessKey.label }}</span>
-                      <span class="saved-key-mask">{{ accessKey.masked_value }}</span>
-                    </div>
-                    <div class="saved-key-actions">
-                      <el-button
-                        text
-                        size="small"
-                        :loading="revealingCodexAccessKeyId === accessKey.id"
-                        @click="revealCurrentCodexAccessKey(accessKey.id)"
-                      >
-                        查看明文
-                      </el-button>
-                      <el-button
-                        text
-                        size="small"
-                        type="danger"
-                        :loading="deletingCodexAccessKeyId === accessKey.id"
-                        @click="deleteCurrentCodexAccessKey(accessKey.id)"
-                      >
-                        删除
-                      </el-button>
-                    </div>
-                    <div v-if="getCodexAccessKeyPlaintext(accessKey.id)" class="ollama-plaintext-row">
-                      <el-input
-                        :model-value="getCodexAccessKeyPlaintext(accessKey.id)"
-                        readonly
-                        type="password"
-                        show-password
-                      />
-                      <el-button text @click="copyCodexAccessKeyPlaintext(accessKey.id)">
-                        复制
-                      </el-button>
-                    </div>
-                  </div>
-                </div>
-                <div v-else class="model-list-empty">
-                  还没有系统访问 Token，先生成一把。
-                </div>
-              </div>
             </el-form-item>
 
-            <el-form-item label="预设模型列表">
+            <el-form-item>
+              <template #label>
+                <div class="form-section-label">
+                  <div class="form-section-label-main">
+                    <span>预设模型</span>
+                    <el-button
+                      class="section-add-button"
+                      text
+                      :icon="Plus"
+                      :disabled="savingProviderConfig"
+                      title="新增模型"
+                      @click="openAddPreferredModelDialog"
+                    />
+                  </div>
+                </div>
+              </template>
               <div class="model-list-editor">
                 <div v-if="currentPreferredModels.length" ref="modelListRef" class="model-list">
                   <div
@@ -378,33 +440,45 @@
                     <SortableOrderHandle
                       :index="index"
                       :total="currentPreferredModels.length"
+                      size="xs"
                     />
                     <el-input
-                      :model-value="modelName"
+                      v-if="isEditingPreferredModel(index)"
+                      v-model="preferredModelEditDraft"
+                      class="model-inline-edit"
+                      autofocus
+                      clearable
                       placeholder="输入模型名"
-                      @change="value => updatePreferredModel(index, value)"
+                      :disabled="savingPreferredModelIndex === index"
+                      @click.stop
+                      @dblclick.stop
+                      @keyup.enter="finishEditPreferredModel(index)"
+                      @keyup.esc="cancelEditPreferredModel(index)"
+                      @blur="finishEditPreferredModel(index)"
                     />
+                    <span
+                      v-else
+                      class="model-name-text editable-list-value"
+                      @dblclick.stop="startEditPreferredModel(index, modelName)"
+                    >
+                      {{ modelName }}
+                    </span>
                     <div class="model-list-actions">
-                      <el-button text size="small" type="danger" @click="removePreferredModel(index)">
-                        删除
-                      </el-button>
+                      <el-button
+                        class="row-remove-button"
+                        text
+                        size="small"
+                        type="danger"
+                        :icon="Minus"
+                        title="删除模型"
+                        aria-label="删除模型"
+                        @click="removePreferredModel(index)"
+                      />
                     </div>
                   </div>
                 </div>
                 <div v-else class="model-list-empty">
-                  还没有预设模型，先新增一个。
-                </div>
-
-                <div class="model-add-row">
-                  <el-input
-                    v-model="currentNewModelInput"
-                    clearable
-                    placeholder="新增一个模型名，例如 deepseek-chat"
-                    @keyup.enter="addPreferredModel"
-                  />
-                  <el-button type="primary" plain :disabled="!currentNewModelInput.trim()" @click="addPreferredModel">
-                    新增
-                  </el-button>
+                  暂无预设模型
                 </div>
               </div>
             </el-form-item>
@@ -487,7 +561,7 @@
           </el-form>
 
           <el-alert
-            title="会读取当前节点的标题和正文，并自动回写分类、形态、阶段。"
+            title="会读取当前节点标题，并参考已有条目的标题、分类、形态、阶段，自动回写分类、形态、阶段。"
             type="info"
             :closable="false"
             class="status-alert"
@@ -544,7 +618,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { RefreshRight } from '@element-plus/icons-vue'
+import { Hide, Minus, Plus, QuestionFilled, RefreshRight, View } from '@element-plus/icons-vue'
 
 import {
   createAiChatCodexAccessKey,
@@ -556,8 +630,11 @@ import {
   fetchAiChatStatus,
   revealAiChatCodexAccessKey,
   revealAiChatOllamaAccessKey,
+  revealAiChatProviderKey,
   type AiChatCodexAccessKeySummary,
   type AiChatOllamaAccessKeySummary,
+  type AiChatSavedApiKeySummary,
+  type AiChatSavedBaseUrlSummary,
   type AiChatStatusResponse,
 } from '@/api/aiChat'
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
@@ -573,6 +650,8 @@ interface CustomProviderDraft {
   baseUrl: string
   defaultModel: string
 }
+
+type AiChatSystemAccessKeySummary = AiChatOllamaAccessKeySummary | AiChatCodexAccessKeySummary
 
 const aiProviderStore = useAiProviderStore()
 const aiAppStore = useAiAppStore()
@@ -602,26 +681,45 @@ const status = reactive<AiChatStatusResponse>({
 const statusLoading = ref(false)
 const savingProviderConfig = ref(false)
 const removingProviderConfig = ref(false)
+const activatingProviderBaseUrlId = ref('')
+const deletingProviderBaseUrlId = ref('')
+const editingProviderBaseUrlId = ref('')
+const savingProviderBaseUrlId = ref('')
+const providerBaseUrlEditDraft = ref('')
+const providerBaseUrlEditOriginal = ref('')
 const activatingProviderKeyId = ref('')
+const revealingProviderKeyId = ref('')
 const deletingProviderKeyId = ref('')
+const editingProviderKeyId = ref('')
+const savingProviderKeyId = ref('')
+const providerKeyEditDraft = ref('')
+const providerKeyEditOriginal = ref('')
+const providerApiKeyPlaintexts = reactive<Record<string, string>>({})
+const providerApiKeyPlaintextVisible = reactive<Record<string, boolean>>({})
 const codexAccessKeys = ref<AiChatCodexAccessKeySummary[]>([])
 const codexAccessKeyPlaintexts = reactive<Record<string, string>>({})
+const codexAccessKeyPlaintextVisible = reactive<Record<string, boolean>>({})
 const codexAccessKeysLoading = ref(false)
 const generatingCodexAccessKey = ref(false)
 const revealingCodexAccessKeyId = ref('')
 const deletingCodexAccessKeyId = ref('')
 const ollamaAccessKeys = ref<AiChatOllamaAccessKeySummary[]>([])
 const ollamaAccessKeyPlaintexts = reactive<Record<string, string>>({})
+const ollamaAccessKeyPlaintextVisible = reactive<Record<string, boolean>>({})
 const ollamaAccessKeysLoading = ref(false)
 const generatingOllamaAccessKey = ref(false)
 const revealingOllamaAccessKeyId = ref('')
 const deletingOllamaAccessKeyId = ref('')
 const customProviderDialogVisible = ref(false)
 const creatingCustomProvider = ref(false)
+const baseUrlDrafts = reactive<Record<string, string>>({})
 const apiKeyDrafts = reactive<Record<string, string>>({})
-const apiKeyLabelDrafts = reactive<Record<string, string>>({})
 const newModelDrafts = reactive<Record<string, string>>({})
 const modelListRef = ref<HTMLElement | null>(null)
+const editingPreferredModelIndex = ref<number | null>(null)
+const savingPreferredModelIndex = ref<number | null>(null)
+const preferredModelEditDraft = ref('')
+const preferredModelEditOriginal = ref('')
 
 const customProviderDraft = reactive<CustomProviderDraft>({
   label: '',
@@ -637,18 +735,34 @@ const DEFAULT_CODEX_MODEL = 'gpt-5.4'
 const isAuthenticated = computed(() => userStore.isAuthenticated)
 const isAdmin = computed(() => userStore.isAdmin)
 const providers = computed(() => aiProviderStore.providers)
-const visibleAssets = computed(() => assetMode.value === 'providers' ? providers.value : aiAppStore.appDefinitions)
-const selectedAssetId = computed(() => assetMode.value === 'providers' ? selectedProviderId.value : selectedAppId.value)
 const currentProvider = computed(() => aiProviderStore.getProviderById(selectedProviderId.value))
 const currentProviderConfig = computed(() => aiProviderStore.getProviderConfig(selectedProviderId.value))
 const currentProviderCanManage = computed(() => currentProvider.value?.can_manage ?? false)
 const currentProviderSharingMode = computed(() => currentProvider.value?.sharing_mode || 'builtin')
 const currentProviderRequiresApiKey = computed(() => currentProvider.value?.requires_api_key ?? status.requires_api_key)
 const currentProviderHasSavedConfig = computed(() => currentProviderConfig.value.hasAccountConfig)
+const currentProviderSavedBaseUrls = computed(() => currentProviderConfig.value.savedBaseUrls)
 const currentProviderSavedKeys = computed(() => currentProviderConfig.value.savedKeys)
 const currentProviderIsOllama = computed(() => (selectedProviderId.value || '').trim().toLowerCase() === 'ollama')
+const currentProviderUsesSystemOllamaKeys = computed(() => currentProviderIsOllama.value && isAdmin.value)
 const currentProviderIsCodex = computed(() => (currentProvider.value?.kind || '').trim().toLowerCase() === 'codex_cli')
-const currentProviderNeedsCodexToken = computed(() => currentProviderIsCodex.value && currentProviderRequiresApiKey.value)
+const currentProviderUsesSystemCodexKeys = computed(() => currentProviderIsCodex.value && isAdmin.value && currentProviderCanManage.value)
+const currentProviderUsesSystemAccessKeys = computed(() => currentProviderUsesSystemOllamaKeys.value || currentProviderUsesSystemCodexKeys.value)
+const currentProviderSystemAccessKeys = computed<AiChatSystemAccessKeySummary[]>(() => {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    return codexAccessKeys.value
+  }
+  if (currentProviderUsesSystemOllamaKeys.value) {
+    return ollamaAccessKeys.value
+  }
+  return []
+})
+const currentProviderSystemAccessKeysLoading = computed(() => (
+  currentProviderUsesSystemCodexKeys.value
+    ? codexAccessKeysLoading.value
+    : ollamaAccessKeysLoading.value
+))
+const currentProviderHasKeySection = computed(() => currentProviderRequiresApiKey.value || currentProviderUsesSystemAccessKeys.value)
 const currentProviderConnectionReadonly = computed(() => currentProviderIsCodex.value && !currentProviderCanManage.value)
 const currentProviderConnectionFieldLabel = computed(() => currentProviderIsCodex.value ? '命令' : '地址')
 const currentProviderConnectionPlaceholder = computed(() => {
@@ -658,7 +772,7 @@ const currentProviderConnectionPlaceholder = computed(() => {
   return '例如 http://127.0.0.1:11434 或 https://api.deepseek.com/v1'
 })
 const currentProviderKeyFieldLabel = computed(() => {
-  if (currentProviderNeedsCodexToken.value) {
+  if (currentProviderIsCodex.value) {
     return '访问 Token'
   }
   return currentProviderIsOllama.value ? '访问 Key' : 'API Key'
@@ -667,29 +781,23 @@ const currentProviderKeyInputPlaceholder = computed(() => {
   if (currentProviderIsOllama.value) {
     return '输入管理员分发的 CodeYun Ollama 访问 Key'
   }
-  if (currentProviderNeedsCodexToken.value) {
+  if (currentProviderIsCodex.value) {
     return '输入管理员分发的 CodeYun Codex 访问 Token'
   }
   return currentProviderRequiresApiKey.value ? '输入新 Key 后点击保存' : '可留空'
 })
-const currentProviderSavedKeyTitle = computed(() => {
-  if (currentProviderIsOllama.value) {
-    return '已保存访问 Key'
-  }
-  if (currentProviderNeedsCodexToken.value) {
-    return '已保存访问 Token'
-  }
-  return '已保存 API Key'
-})
-const currentProviderSavedKeyNote = computed(() => {
-  if (currentProviderIsOllama.value) {
-    return '每次只会使用其中一把激活项；这里保存的是 CodeYun 分发的访问 Key'
-  }
-  if (currentProviderNeedsCodexToken.value) {
-    return '每次只会使用其中一把激活项；这里保存的是管理员分发的 Codex 访问 Token'
-  }
-  return '每次只会使用其中一把激活项'
-})
+const currentProviderKeyHelpVisible = computed(() => currentProviderIsOllama.value || currentProviderIsCodex.value)
+const currentProviderKeyHelpTitle = computed(() => currentProviderIsCodex.value ? 'Codex CLI 访问 Token' : 'Ollama 访问 Key')
+const currentProviderNativeKeyHelpText = computed(() => (
+  currentProviderIsCodex.value
+    ? 'Codex CLI 本身不需要这里的 Token。'
+    : 'Ollama 原生接口本身不需要这里的 Key。'
+))
+const currentProviderAccessPolicyHelpText = computed(() => (
+  currentProviderIsCodex.value
+    ? '这是 CodeYun 在分发调用本机 Codex CLI 时增加的一层权限控制。管理员维护有效 Token，用户保存分发到自己的 Token。'
+    : '这是 CodeYun 在调用本机 Ollama 前增加的一层权限控制。管理员维护有效 Key，用户保存分发到自己的 Key。'
+))
 const currentProviderSharingLabel = computed(() => {
   if (currentProviderSharingMode.value === 'public') {
     return '向所有登录用户开放'
@@ -775,17 +883,17 @@ const currentBaseUrl = computed({
   },
 })
 
+const currentBaseUrlInput = computed({
+  get: () => getBaseUrlDraft(selectedProviderId.value),
+  set: (value: string) => {
+    setBaseUrlDraft(selectedProviderId.value, value)
+  },
+})
+
 const currentApiKeyInput = computed({
   get: () => getApiKeyDraft(selectedProviderId.value),
   set: (value: string) => {
     setApiKeyDraft(selectedProviderId.value, value)
-  },
-})
-
-const currentApiKeyLabelInput = computed({
-  get: () => getApiKeyLabelDraft(selectedProviderId.value),
-  set: (value: string) => {
-    setApiKeyLabelDraft(selectedProviderId.value, value)
   },
 })
 
@@ -841,13 +949,31 @@ function ensureSelectedProvider() {
   selectedProviderId.value = providers.value[0]?.id || aiProviderStore.defaultProviderId || 'ollama'
 }
 
-function handleAssetChange(id: string) {
-  if (assetMode.value === 'providers') {
-    void handleProviderChange(id)
+function handleProviderAssetChange(id: string) {
+  assetMode.value = 'providers'
+  void handleProviderChange(id)
+}
+
+function handleAppAssetChange(id: string) {
+  assetMode.value = 'apps'
+  selectedAppId.value = id as 'note-taxonomy'
+}
+
+function getBaseUrlDraft(providerId: string) {
+  if (!providerId) {
+    return ''
+  }
+  if (!(providerId in baseUrlDrafts)) {
+    baseUrlDrafts[providerId] = ''
+  }
+  return baseUrlDrafts[providerId]
+}
+
+function setBaseUrlDraft(providerId: string, value: string) {
+  if (!providerId) {
     return
   }
-
-  selectedAppId.value = id as 'note-taxonomy'
+  baseUrlDrafts[providerId] = value
 }
 
 function getApiKeyDraft(providerId: string) {
@@ -865,23 +991,6 @@ function setApiKeyDraft(providerId: string, value: string) {
     return
   }
   apiKeyDrafts[providerId] = value
-}
-
-function getApiKeyLabelDraft(providerId: string) {
-  if (!providerId) {
-    return ''
-  }
-  if (!(providerId in apiKeyLabelDrafts)) {
-    apiKeyLabelDrafts[providerId] = ''
-  }
-  return apiKeyLabelDrafts[providerId]
-}
-
-function setApiKeyLabelDraft(providerId: string, value: string) {
-  if (!providerId) {
-    return
-  }
-  apiKeyLabelDrafts[providerId] = value
 }
 
 function getNewModelDraft(providerId: string) {
@@ -905,8 +1014,8 @@ async function loadProvidersAndStatus() {
   try {
     await aiProviderStore.loadProviders(isAuthenticated.value)
     ensureSelectedProvider()
+    getBaseUrlDraft(selectedProviderId.value)
     getApiKeyDraft(selectedProviderId.value)
-    getApiKeyLabelDraft(selectedProviderId.value)
     getNewModelDraft(selectedProviderId.value)
     await syncSystemAccessKeysForSelection()
     await refreshStatus(selectedProviderId.value)
@@ -947,7 +1056,7 @@ function getAppSummaryModel(appId: string) {
 
 function getProviderStateLabel(providerId: string) {
   if (currentProvider.value?.id === providerId && status.available) {
-    return '已连接'
+    return '可用'
   }
   if (aiProviderStore.hasEffectiveConnection(providerId) && aiProviderStore.getEffectiveModels(providerId).length) {
     return '可用'
@@ -957,9 +1066,6 @@ function getProviderStateLabel(providerId: string) {
 
 function getProviderStateClass(providerId: string) {
   const label = getProviderStateLabel(providerId)
-  if (label === '已连接') {
-    return 'is-connected'
-  }
   if (label === '可用') {
     return 'is-ready'
   }
@@ -1010,9 +1116,10 @@ function clearCurrentAppModel() {
 }
 
 async function handleProviderChange(providerId: string) {
+  clearInlineEditState()
   selectedProviderId.value = providerId
+  getBaseUrlDraft(providerId)
   getApiKeyDraft(providerId)
-  getApiKeyLabelDraft(providerId)
   getNewModelDraft(providerId)
   await syncSystemAccessKeysForSelection()
   await refreshStatus(providerId)
@@ -1023,12 +1130,18 @@ function clearOllamaAccessKeyState() {
   for (const keyId of Object.keys(ollamaAccessKeyPlaintexts)) {
     delete ollamaAccessKeyPlaintexts[keyId]
   }
+  for (const keyId of Object.keys(ollamaAccessKeyPlaintextVisible)) {
+    delete ollamaAccessKeyPlaintextVisible[keyId]
+  }
 }
 
 function clearCodexAccessKeyState() {
   codexAccessKeys.value = []
   for (const keyId of Object.keys(codexAccessKeyPlaintexts)) {
     delete codexAccessKeyPlaintexts[keyId]
+  }
+  for (const keyId of Object.keys(codexAccessKeyPlaintextVisible)) {
+    delete codexAccessKeyPlaintextVisible[keyId]
   }
 }
 
@@ -1093,8 +1206,335 @@ function getOllamaAccessKeyPlaintext(keyId: string) {
   return ollamaAccessKeyPlaintexts[keyId] || ''
 }
 
+function isOllamaAccessKeyPlaintextVisible(keyId: string) {
+  return Boolean(ollamaAccessKeyPlaintextVisible[keyId])
+}
+
+function isCodexAccessKeyPlaintextVisible(keyId: string) {
+  return Boolean(codexAccessKeyPlaintextVisible[keyId])
+}
+
+function getOllamaAccessKeyDisplayValue(keyId: string, maskedValue: string) {
+  return isOllamaAccessKeyPlaintextVisible(keyId)
+    ? getOllamaAccessKeyPlaintext(keyId) || maskedValue
+    : maskedValue
+}
+
+function getCodexAccessKeyDisplayValue(keyId: string, maskedValue: string) {
+  return isCodexAccessKeyPlaintextVisible(keyId)
+    ? getCodexAccessKeyPlaintext(keyId) || maskedValue
+    : maskedValue
+}
+
+function getCurrentSystemAccessKeyDisplayValue(keyId: string, maskedValue: string) {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    return getCodexAccessKeyDisplayValue(keyId, maskedValue)
+  }
+  return getOllamaAccessKeyDisplayValue(keyId, maskedValue)
+}
+
+function getCurrentProviderActiveSavedKey() {
+  return currentProviderSavedKeys.value.find(savedKey => savedKey.is_active) || null
+}
+
+function findCurrentProviderSavedKeyByMask(maskedValue: string) {
+  const normalizedMask = maskedValue.trim()
+  if (!normalizedMask) {
+    return null
+  }
+  const matches = currentProviderSavedKeys.value.filter(savedKey => savedKey.masked_value === normalizedMask)
+  if (!matches.length) {
+    return null
+  }
+  return [...matches].sort((left, right) => (right.updated_at || 0) - (left.updated_at || 0))[0] || null
+}
+
+function isOllamaAccessKeyActive(accessKey: AiChatOllamaAccessKeySummary) {
+  return getCurrentProviderActiveSavedKey()?.masked_value === accessKey.masked_value
+}
+
+function isCodexAccessKeyActive(accessKey: AiChatCodexAccessKeySummary) {
+  return getCurrentProviderActiveSavedKey()?.masked_value === accessKey.masked_value
+}
+
+function isCurrentSystemAccessKeyActive(accessKey: AiChatSystemAccessKeySummary) {
+  return getCurrentProviderActiveSavedKey()?.masked_value === accessKey.masked_value
+}
+
+function isCurrentSystemAccessKeyPlaintextVisible(keyId: string) {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    return isCodexAccessKeyPlaintextVisible(keyId)
+  }
+  return isOllamaAccessKeyPlaintextVisible(keyId)
+}
+
+function isCurrentSystemAccessKeyRevealing(keyId: string) {
+  return currentProviderUsesSystemCodexKeys.value
+    ? revealingCodexAccessKeyId.value === keyId
+    : revealingOllamaAccessKeyId.value === keyId
+}
+
+function isCurrentSystemAccessKeyDeleting(keyId: string) {
+  return currentProviderUsesSystemCodexKeys.value
+    ? deletingCodexAccessKeyId.value === keyId
+    : deletingOllamaAccessKeyId.value === keyId
+}
+
 function getCodexAccessKeyPlaintext(keyId: string) {
   return codexAccessKeyPlaintexts[keyId] || ''
+}
+
+function buildProviderApiKeyPlaintextKey(providerId: string, keyId: string) {
+  return `${providerId}::${keyId}`
+}
+
+function getProviderApiKeyPlaintext(providerId: string, keyId: string) {
+  return providerApiKeyPlaintexts[buildProviderApiKeyPlaintextKey(providerId, keyId)] || ''
+}
+
+function getCurrentProviderKeyPlaintext(keyId: string) {
+  return getProviderApiKeyPlaintext(selectedProviderId.value, keyId)
+}
+
+function isProviderKeyPlaintextVisible(providerId: string, keyId: string) {
+  return Boolean(providerApiKeyPlaintextVisible[buildProviderApiKeyPlaintextKey(providerId, keyId)])
+}
+
+function isCurrentProviderKeyPlaintextVisible(keyId: string) {
+  return isProviderKeyPlaintextVisible(selectedProviderId.value, keyId)
+}
+
+function getCurrentProviderKeyDisplayValue(keyId: string, maskedValue: string) {
+  return isCurrentProviderKeyPlaintextVisible(keyId)
+    ? getCurrentProviderKeyPlaintext(keyId) || maskedValue
+    : maskedValue
+}
+
+function clearCurrentProviderApiKeyPlaintexts() {
+  const prefix = `${selectedProviderId.value}::`
+  for (const key of Object.keys(providerApiKeyPlaintexts)) {
+    if (key.startsWith(prefix)) {
+      delete providerApiKeyPlaintexts[key]
+    }
+  }
+  for (const key of Object.keys(providerApiKeyPlaintextVisible)) {
+    if (key.startsWith(prefix)) {
+      delete providerApiKeyPlaintextVisible[key]
+    }
+  }
+}
+
+function clearInlineEditState() {
+  editingProviderBaseUrlId.value = ''
+  savingProviderBaseUrlId.value = ''
+  providerBaseUrlEditDraft.value = ''
+  providerBaseUrlEditOriginal.value = ''
+  editingProviderKeyId.value = ''
+  savingProviderKeyId.value = ''
+  providerKeyEditDraft.value = ''
+  providerKeyEditOriginal.value = ''
+  editingPreferredModelIndex.value = null
+  savingPreferredModelIndex.value = null
+  preferredModelEditDraft.value = ''
+  preferredModelEditOriginal.value = ''
+}
+
+function isEditingCurrentProviderBaseUrl(baseUrlId: string) {
+  return editingProviderBaseUrlId.value === baseUrlId
+}
+
+function startEditCurrentProviderBaseUrl(savedBaseUrl: AiChatSavedBaseUrlSummary) {
+  if (!isAuthenticated.value || currentProviderConnectionReadonly.value || !savedBaseUrl.id) {
+    return
+  }
+
+  editingProviderKeyId.value = ''
+  editingPreferredModelIndex.value = null
+  providerBaseUrlEditOriginal.value = savedBaseUrl.value
+  providerBaseUrlEditDraft.value = savedBaseUrl.value
+  editingProviderBaseUrlId.value = savedBaseUrl.id
+}
+
+function cancelEditCurrentProviderBaseUrl(baseUrlId?: string) {
+  if (baseUrlId && editingProviderBaseUrlId.value !== baseUrlId) {
+    return
+  }
+  editingProviderBaseUrlId.value = ''
+  providerBaseUrlEditDraft.value = ''
+  providerBaseUrlEditOriginal.value = ''
+}
+
+async function finishEditCurrentProviderBaseUrl(baseUrlId: string) {
+  if (!isAuthenticated.value || !selectedProviderId.value || editingProviderBaseUrlId.value !== baseUrlId) {
+    return
+  }
+  if (savingProviderBaseUrlId.value === baseUrlId) {
+    return
+  }
+
+  const normalizedBaseUrl = providerBaseUrlEditDraft.value.trim()
+  if (!normalizedBaseUrl) {
+    ElMessage.warning('地址不能为空')
+    return
+  }
+  if (normalizedBaseUrl === providerBaseUrlEditOriginal.value.trim()) {
+    cancelEditCurrentProviderBaseUrl(baseUrlId)
+    return
+  }
+
+  const providerId = selectedProviderId.value
+  let saved = false
+  savingProviderBaseUrlId.value = baseUrlId
+  try {
+    await aiProviderStore.updateProviderBaseUrl(providerId, baseUrlId, normalizedBaseUrl)
+    saved = true
+    ElMessage.success('已更新地址')
+    await refreshStatus(providerId)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    savingProviderBaseUrlId.value = ''
+    if (saved) {
+      cancelEditCurrentProviderBaseUrl(baseUrlId)
+    }
+  }
+}
+
+function isEditingCurrentProviderKey(keyId: string) {
+  return editingProviderKeyId.value === keyId
+}
+
+async function startEditCurrentProviderKey(savedKey: AiChatSavedApiKeySummary) {
+  const providerId = selectedProviderId.value
+  if (!isAuthenticated.value || !providerId || !savedKey.id) {
+    return
+  }
+  if (revealingProviderKeyId.value === savedKey.id) {
+    return
+  }
+
+  editingProviderBaseUrlId.value = ''
+  editingPreferredModelIndex.value = null
+  revealingProviderKeyId.value = savedKey.id
+  try {
+    const detail = await revealAiChatProviderKey(providerId, savedKey.id)
+    if (selectedProviderId.value !== providerId) {
+      return
+    }
+    const plaintextKey = buildProviderApiKeyPlaintextKey(providerId, savedKey.id)
+    providerApiKeyPlaintexts[plaintextKey] = detail.plaintext_value
+    providerKeyEditOriginal.value = detail.plaintext_value
+    providerKeyEditDraft.value = detail.plaintext_value
+    editingProviderKeyId.value = savedKey.id
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    revealingProviderKeyId.value = ''
+  }
+}
+
+function cancelEditCurrentProviderKey(keyId?: string) {
+  if (keyId && editingProviderKeyId.value !== keyId) {
+    return
+  }
+  editingProviderKeyId.value = ''
+  providerKeyEditDraft.value = ''
+  providerKeyEditOriginal.value = ''
+}
+
+async function finishEditCurrentProviderKey(keyId: string) {
+  if (!isAuthenticated.value || !selectedProviderId.value || editingProviderKeyId.value !== keyId) {
+    return
+  }
+  if (savingProviderKeyId.value === keyId) {
+    return
+  }
+
+  const normalizedApiKey = providerKeyEditDraft.value.trim()
+  if (!normalizedApiKey) {
+    ElMessage.warning('API Key 不能为空')
+    return
+  }
+  if (normalizedApiKey === providerKeyEditOriginal.value.trim()) {
+    cancelEditCurrentProviderKey(keyId)
+    return
+  }
+
+  const providerId = selectedProviderId.value
+  let saved = false
+  savingProviderKeyId.value = keyId
+  try {
+    await aiProviderStore.updateProviderKey(providerId, keyId, normalizedApiKey)
+    const plaintextKey = buildProviderApiKeyPlaintextKey(providerId, keyId)
+    delete providerApiKeyPlaintexts[plaintextKey]
+    delete providerApiKeyPlaintextVisible[plaintextKey]
+    saved = true
+    ElMessage.success('已更新 API Key')
+    await refreshStatus(providerId)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    savingProviderKeyId.value = ''
+    if (saved) {
+      cancelEditCurrentProviderKey(keyId)
+    }
+  }
+}
+
+function isEditingPreferredModel(index: number) {
+  return editingPreferredModelIndex.value === index
+}
+
+function startEditPreferredModel(index: number, modelName: string) {
+  if (!selectedProviderId.value) {
+    return
+  }
+
+  editingProviderBaseUrlId.value = ''
+  editingProviderKeyId.value = ''
+  preferredModelEditOriginal.value = modelName
+  preferredModelEditDraft.value = modelName
+  editingPreferredModelIndex.value = index
+}
+
+function cancelEditPreferredModel(index?: number) {
+  if (typeof index === 'number' && editingPreferredModelIndex.value !== index) {
+    return
+  }
+  editingPreferredModelIndex.value = null
+  preferredModelEditDraft.value = ''
+  preferredModelEditOriginal.value = ''
+}
+
+async function finishEditPreferredModel(index: number) {
+  if (!selectedProviderId.value || editingPreferredModelIndex.value !== index) {
+    return
+  }
+  if (savingPreferredModelIndex.value === index) {
+    return
+  }
+
+  const normalizedModelName = preferredModelEditDraft.value.trim()
+  if (!normalizedModelName) {
+    ElMessage.warning('模型名不能为空')
+    return
+  }
+  if (normalizedModelName === preferredModelEditOriginal.value.trim()) {
+    cancelEditPreferredModel(index)
+    return
+  }
+
+  let saved = false
+  savingPreferredModelIndex.value = index
+  try {
+    await updatePreferredModel(index, normalizedModelName)
+    saved = true
+  } finally {
+    savingPreferredModelIndex.value = null
+    if (saved) {
+      cancelEditPreferredModel(index)
+    }
+  }
 }
 
 async function createOllamaAccessKeyWithPrompt() {
@@ -1102,27 +1542,13 @@ async function createOllamaAccessKeyWithPrompt() {
     return
   }
 
-  let promptValue = ''
-  try {
-    const result = await ElMessageBox.prompt('可选，用于标记分发对象，例如自己、测试号、同事名。', '生成系统访问 Key', {
-      confirmButtonText: '生成',
-      cancelButtonText: '取消',
-      inputPlaceholder: '留空则自动编号',
-    })
-    promptValue = result.value || ''
-  } catch {
-    return
-  }
-
   generatingOllamaAccessKey.value = true
   try {
-    const created = await createAiChatOllamaAccessKey({
-      label: promptValue.trim() || undefined,
-    })
+    const created = await createAiChatOllamaAccessKey()
     ollamaAccessKeyPlaintexts[created.id] = created.plaintext_value
-    currentApiKeyInput.value = created.plaintext_value
+    ollamaAccessKeyPlaintextVisible[created.id] = false
     await loadOllamaAccessKeys()
-    ElMessage.success('已生成新的系统访问 Key，并填入当前输入框')
+    ElMessage.success('已生成新的访问 Key')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1135,27 +1561,13 @@ async function createCodexAccessKeyWithPrompt() {
     return
   }
 
-  let promptValue = ''
-  try {
-    const result = await ElMessageBox.prompt('可选，用于标记分发对象，例如自己、测试号、同事名。', '生成系统访问 Token', {
-      confirmButtonText: '生成',
-      cancelButtonText: '取消',
-      inputPlaceholder: '留空则自动编号',
-    })
-    promptValue = result.value || ''
-  } catch {
-    return
-  }
-
   generatingCodexAccessKey.value = true
   try {
-    const created = await createAiChatCodexAccessKey({
-      label: promptValue.trim() || undefined,
-    })
+    const created = await createAiChatCodexAccessKey()
     codexAccessKeyPlaintexts[created.id] = created.plaintext_value
-    currentApiKeyInput.value = created.plaintext_value
+    codexAccessKeyPlaintextVisible[created.id] = false
     await loadCodexAccessKeys()
-    ElMessage.success('已生成新的系统访问 Token，并填入当前输入框')
+    ElMessage.success('已生成新的访问 Token')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1165,66 +1577,113 @@ async function createCodexAccessKeyWithPrompt() {
 
 async function revealCurrentOllamaAccessKey(keyId: string) {
   if (!isAdmin.value || !keyId) {
-    return
+    return ''
+  }
+  if (ollamaAccessKeyPlaintexts[keyId]) {
+    return ollamaAccessKeyPlaintexts[keyId]
   }
 
   revealingOllamaAccessKeyId.value = keyId
   try {
     const detail = await revealAiChatOllamaAccessKey(keyId)
     ollamaAccessKeyPlaintexts[keyId] = detail.plaintext_value
+    return detail.plaintext_value
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
+    return ''
   } finally {
     revealingOllamaAccessKeyId.value = ''
   }
 }
 
-async function revealCurrentCodexAccessKey(keyId: string) {
+async function toggleCurrentOllamaAccessKeyPlaintext(keyId: string) {
   if (!isAdmin.value || !keyId) {
     return
+  }
+  if (ollamaAccessKeyPlaintextVisible[keyId]) {
+    ollamaAccessKeyPlaintextVisible[keyId] = false
+    return
+  }
+  const plaintext = await revealCurrentOllamaAccessKey(keyId)
+  if (plaintext) {
+    ollamaAccessKeyPlaintextVisible[keyId] = true
+  }
+}
+
+async function revealCurrentCodexAccessKey(keyId: string) {
+  if (!isAdmin.value || !keyId) {
+    return ''
+  }
+  if (codexAccessKeyPlaintexts[keyId]) {
+    return codexAccessKeyPlaintexts[keyId]
   }
 
   revealingCodexAccessKeyId.value = keyId
   try {
     const detail = await revealAiChatCodexAccessKey(keyId)
     codexAccessKeyPlaintexts[keyId] = detail.plaintext_value
+    return detail.plaintext_value
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
+    return ''
   } finally {
     revealingCodexAccessKeyId.value = ''
   }
 }
 
-async function copyOllamaAccessKeyPlaintext(keyId: string) {
-  const value = getOllamaAccessKeyPlaintext(keyId)
-  if (!value) {
-    return
-  }
-
-  try {
-    await navigator.clipboard.writeText(value)
-    ElMessage.success('已复制明文 Key')
-  } catch {
-    ElMessage.warning('当前环境无法自动复制，请手动查看并复制')
-  }
-}
-
-async function copyCodexAccessKeyPlaintext(keyId: string) {
-  const value = getCodexAccessKeyPlaintext(keyId)
-  if (!value) {
-    return
-  }
-
-  try {
-    await navigator.clipboard.writeText(value)
-    ElMessage.success('已复制明文 Token')
-  } catch {
-    ElMessage.warning('当前环境无法自动复制，请手动查看并复制')
-  }
-}
-
-async function deleteCurrentOllamaAccessKey(keyId: string) {
+async function toggleCurrentCodexAccessKeyPlaintext(keyId: string) {
   if (!isAdmin.value || !keyId) {
+    return
+  }
+  if (codexAccessKeyPlaintextVisible[keyId]) {
+    codexAccessKeyPlaintextVisible[keyId] = false
+    return
+  }
+  const plaintext = await revealCurrentCodexAccessKey(keyId)
+  if (plaintext) {
+    codexAccessKeyPlaintextVisible[keyId] = true
+  }
+}
+
+async function toggleCurrentSystemAccessKeyPlaintext(keyId: string) {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    await toggleCurrentCodexAccessKeyPlaintext(keyId)
+    return
+  }
+  await toggleCurrentOllamaAccessKeyPlaintext(keyId)
+}
+
+async function toggleCurrentProviderKeyPlaintext(keyId: string) {
+  const providerId = selectedProviderId.value
+  if (!isAuthenticated.value || !providerId || !keyId) {
+    return
+  }
+
+  const plaintextKey = buildProviderApiKeyPlaintextKey(providerId, keyId)
+  if (providerApiKeyPlaintextVisible[plaintextKey]) {
+    providerApiKeyPlaintextVisible[plaintextKey] = false
+    return
+  }
+
+  if (providerApiKeyPlaintexts[plaintextKey]) {
+    providerApiKeyPlaintextVisible[plaintextKey] = true
+    return
+  }
+
+  revealingProviderKeyId.value = keyId
+  try {
+    const detail = await revealAiChatProviderKey(providerId, keyId)
+    providerApiKeyPlaintexts[plaintextKey] = detail.plaintext_value
+    providerApiKeyPlaintextVisible[plaintextKey] = true
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    revealingProviderKeyId.value = ''
+  }
+}
+
+async function deleteCurrentOllamaAccessKey(accessKey: AiChatOllamaAccessKeySummary) {
+  if (!isAdmin.value || !accessKey.id) {
     return
   }
 
@@ -1238,12 +1697,21 @@ async function deleteCurrentOllamaAccessKey(keyId: string) {
     return
   }
 
-  deletingOllamaAccessKeyId.value = keyId
+  const providerId = selectedProviderId.value
+  deletingOllamaAccessKeyId.value = accessKey.id
   try {
-    await deleteAiChatOllamaAccessKey(keyId)
-    delete ollamaAccessKeyPlaintexts[keyId]
+    await deleteAiChatOllamaAccessKey(accessKey.id)
+    delete ollamaAccessKeyPlaintexts[accessKey.id]
+    delete ollamaAccessKeyPlaintextVisible[accessKey.id]
+    if (providerId && currentProviderIsOllama.value) {
+      const savedKeys = currentProviderSavedKeys.value.filter(savedKey => savedKey.masked_value === accessKey.masked_value)
+      for (const savedKey of savedKeys) {
+        await aiProviderStore.deleteProviderKey(providerId, savedKey.id)
+      }
+    }
     await loadOllamaAccessKeys()
     ElMessage.success('已删除系统访问 Key')
+    await refreshStatus(providerId)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1251,8 +1719,8 @@ async function deleteCurrentOllamaAccessKey(keyId: string) {
   }
 }
 
-async function deleteCurrentCodexAccessKey(keyId: string) {
-  if (!isAdmin.value || !keyId) {
+async function deleteCurrentCodexAccessKey(accessKey: AiChatCodexAccessKeySummary) {
+  if (!isAdmin.value || !accessKey.id) {
     return
   }
 
@@ -1266,12 +1734,21 @@ async function deleteCurrentCodexAccessKey(keyId: string) {
     return
   }
 
-  deletingCodexAccessKeyId.value = keyId
+  const providerId = selectedProviderId.value
+  deletingCodexAccessKeyId.value = accessKey.id
   try {
-    await deleteAiChatCodexAccessKey(keyId)
-    delete codexAccessKeyPlaintexts[keyId]
+    await deleteAiChatCodexAccessKey(accessKey.id)
+    delete codexAccessKeyPlaintexts[accessKey.id]
+    delete codexAccessKeyPlaintextVisible[accessKey.id]
+    if (providerId && currentProviderIsCodex.value) {
+      const savedKeys = currentProviderSavedKeys.value.filter(savedKey => savedKey.masked_value === accessKey.masked_value)
+      for (const savedKey of savedKeys) {
+        await aiProviderStore.deleteProviderKey(providerId, savedKey.id)
+      }
+    }
     await loadCodexAccessKeys()
     ElMessage.success('已删除系统访问 Token')
+    await refreshStatus(providerId)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1279,7 +1756,15 @@ async function deleteCurrentCodexAccessKey(keyId: string) {
   }
 }
 
-async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; silent?: boolean; apiKey?: string; apiKeyLabel?: string } = {}) {
+async function deleteCurrentSystemAccessKey(accessKey: AiChatSystemAccessKeySummary) {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    await deleteCurrentCodexAccessKey(accessKey as AiChatCodexAccessKeySummary)
+    return
+  }
+  await deleteCurrentOllamaAccessKey(accessKey as AiChatOllamaAccessKeySummary)
+}
+
+async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; silent?: boolean; apiKey?: string; baseUrl?: string | null } = {}) {
   if (!isAuthenticated.value || !selectedProviderId.value) {
     return
   }
@@ -1287,7 +1772,6 @@ async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; sil
   const includeApiKey = options.includeApiKey ?? true
   const silent = options.silent ?? false
   const normalizedApiKey = includeApiKey ? (options.apiKey ?? '').trim() : ''
-  const normalizedApiKeyLabel = includeApiKey ? (options.apiKeyLabel ?? '').trim() : ''
   if (includeApiKey) {
     aiProviderStore.updateProviderConfig(selectedProviderId.value, { apiKey: normalizedApiKey })
   }
@@ -1296,16 +1780,67 @@ async function saveCurrentProviderConfig(options: { includeApiKey?: boolean; sil
     const hadDraftApiKey = includeApiKey && Boolean(normalizedApiKey)
     await aiProviderStore.saveProviderConfig(selectedProviderId.value, {
       includeApiKey,
-      apiKeyLabel: normalizedApiKeyLabel,
+      baseUrl: options.baseUrl,
     })
     if (!silent) {
-      ElMessage.success(hadDraftApiKey ? '已保存新 Key 到账号，并设为激活' : '已自动保存')
+      ElMessage.success(hadDraftApiKey ? '已保存新 Key 到账号' : '已自动保存')
     }
     await refreshStatus(selectedProviderId.value)
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
     savingProviderConfig.value = false
+  }
+}
+
+async function saveCurrentProviderBaseUrl() {
+  if (!isAuthenticated.value || !selectedProviderId.value || currentProviderConnectionReadonly.value) {
+    return
+  }
+
+  const normalizedBaseUrl = currentBaseUrlInput.value.trim()
+  if (!normalizedBaseUrl) {
+    return
+  }
+
+  savingProviderConfig.value = true
+  try {
+    await aiProviderStore.saveProviderConfig(selectedProviderId.value, {
+      includeApiKey: false,
+      baseUrl: normalizedBaseUrl,
+    })
+    setBaseUrlDraft(selectedProviderId.value, '')
+    ElMessage.success('已保存地址')
+    await refreshStatus(selectedProviderId.value)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    savingProviderConfig.value = false
+  }
+}
+
+async function openAddCurrentProviderBaseUrlDialog() {
+  if (!isAuthenticated.value || !selectedProviderId.value || currentProviderConnectionReadonly.value) {
+    return
+  }
+
+  try {
+    const result = await ElMessageBox.prompt(
+      '',
+      `新增${currentProviderConnectionFieldLabel.value}`,
+      {
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+        customClass: 'ai-config-compact-prompt',
+        inputValue: currentBaseUrlInput.value,
+        inputPlaceholder: currentProviderConnectionPlaceholder.value,
+        inputValidator: (value: string) => Boolean((value || '').trim()) || `${currentProviderConnectionFieldLabel.value}不能为空`,
+      },
+    )
+    currentBaseUrlInput.value = result.value || ''
+    await saveCurrentProviderBaseUrl()
+  } catch {
+    return
   }
 }
 
@@ -1338,16 +1873,146 @@ async function saveCurrentProviderApiKey() {
       includeApiKey: true,
       silent: false,
       apiKey: normalizedApiKey,
-      apiKeyLabel: currentApiKeyLabelInput.value,
     })
     setApiKeyDraft(selectedProviderId.value, '')
-    setApiKeyLabelDraft(selectedProviderId.value, '')
     return
   }
 
   aiProviderStore.updateProviderConfig(selectedProviderId.value, { apiKey: normalizedApiKey })
   ElMessage.success('已保存到本地')
   await refreshStatus(selectedProviderId.value)
+}
+
+async function openAddCurrentProviderApiKeyDialog() {
+  if (!selectedProviderId.value) {
+    return
+  }
+
+  try {
+    const result = await ElMessageBox.prompt(
+      '',
+      `新增${currentProviderKeyFieldLabel.value}`,
+      {
+        confirmButtonText: '保存',
+        cancelButtonText: '取消',
+        customClass: 'ai-config-compact-prompt',
+        inputType: 'password',
+        inputValue: currentApiKeyInput.value,
+        inputPlaceholder: currentProviderKeyInputPlaceholder.value,
+        inputValidator: (value: string) => Boolean((value || '').trim()) || `${currentProviderKeyFieldLabel.value}不能为空`,
+      },
+    )
+    currentApiKeyInput.value = result.value || ''
+    await saveCurrentProviderApiKey()
+  } catch {
+    return
+  }
+}
+
+async function handleAddCurrentProviderKey() {
+  if (currentProviderUsesSystemOllamaKeys.value) {
+    await createOllamaAccessKeyWithPrompt()
+    return
+  }
+  if (currentProviderUsesSystemCodexKeys.value) {
+    await createCodexAccessKeyWithPrompt()
+    return
+  }
+  await openAddCurrentProviderApiKeyDialog()
+}
+
+async function activateOllamaAccessKeyForCurrentProvider(accessKey: AiChatOllamaAccessKeySummary) {
+  const providerId = selectedProviderId.value
+  if (!currentProviderUsesSystemOllamaKeys.value || !isAuthenticated.value || !providerId || !accessKey.id) {
+    return
+  }
+  if (isOllamaAccessKeyActive(accessKey)) {
+    return
+  }
+
+  activatingProviderKeyId.value = accessKey.id
+  try {
+    const existingSavedKey = findCurrentProviderSavedKeyByMask(accessKey.masked_value)
+    if (existingSavedKey) {
+      await aiProviderStore.activateProviderKey(providerId, existingSavedKey.id)
+      ElMessage.success('已切换访问 Key')
+      await refreshStatus(providerId)
+      return
+    }
+
+    const plaintext = await revealCurrentOllamaAccessKey(accessKey.id)
+    if (!plaintext || selectedProviderId.value !== providerId) {
+      return
+    }
+
+    aiProviderStore.updateProviderConfig(providerId, { apiKey: plaintext })
+    await aiProviderStore.saveProviderConfig(providerId, { includeApiKey: true })
+    setApiKeyDraft(providerId, '')
+    if (selectedProviderId.value !== providerId) {
+      return
+    }
+    const savedKey = findCurrentProviderSavedKeyByMask(accessKey.masked_value)
+    if (savedKey) {
+      await aiProviderStore.activateProviderKey(providerId, savedKey.id)
+    }
+    ElMessage.success('已切换访问 Key')
+    await refreshStatus(providerId)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    activatingProviderKeyId.value = ''
+  }
+}
+
+async function activateCodexAccessKeyForCurrentProvider(accessKey: AiChatCodexAccessKeySummary) {
+  const providerId = selectedProviderId.value
+  if (!currentProviderUsesSystemCodexKeys.value || !isAuthenticated.value || !providerId || !accessKey.id) {
+    return
+  }
+  if (isCodexAccessKeyActive(accessKey)) {
+    return
+  }
+
+  activatingProviderKeyId.value = accessKey.id
+  try {
+    const existingSavedKey = findCurrentProviderSavedKeyByMask(accessKey.masked_value)
+    if (existingSavedKey) {
+      await aiProviderStore.activateProviderKey(providerId, existingSavedKey.id)
+      ElMessage.success('已切换访问 Token')
+      await refreshStatus(providerId)
+      return
+    }
+
+    const plaintext = await revealCurrentCodexAccessKey(accessKey.id)
+    if (!plaintext || selectedProviderId.value !== providerId) {
+      return
+    }
+
+    aiProviderStore.updateProviderConfig(providerId, { apiKey: plaintext })
+    await aiProviderStore.saveProviderConfig(providerId, { includeApiKey: true })
+    setApiKeyDraft(providerId, '')
+    if (selectedProviderId.value !== providerId) {
+      return
+    }
+    const savedKey = findCurrentProviderSavedKeyByMask(accessKey.masked_value)
+    if (savedKey) {
+      await aiProviderStore.activateProviderKey(providerId, savedKey.id)
+    }
+    ElMessage.success('已切换访问 Token')
+    await refreshStatus(providerId)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    activatingProviderKeyId.value = ''
+  }
+}
+
+async function activateCurrentSystemAccessKeyForCurrentProvider(accessKey: AiChatSystemAccessKeySummary) {
+  if (currentProviderUsesSystemCodexKeys.value) {
+    await activateCodexAccessKeyForCurrentProvider(accessKey as AiChatCodexAccessKeySummary)
+    return
+  }
+  await activateOllamaAccessKeyForCurrentProvider(accessKey as AiChatOllamaAccessKeySummary)
 }
 
 async function handlePreferredModelsChange() {
@@ -1365,8 +2030,22 @@ async function handlePreferredModelsChange() {
 }
 
 async function updatePreferredModel(index: number, value: string) {
+  if (!selectedProviderId.value) {
+    return
+  }
+
+  const normalizedModelName = value.trim()
+  if (!normalizedModelName) {
+    ElMessage.warning('模型名不能为空')
+    return
+  }
+  const currentModelName = (currentPreferredModels.value[index] || '').trim()
+  if (normalizedModelName === currentModelName) {
+    return
+  }
+
   const nextModels = [...currentPreferredModels.value]
-  nextModels[index] = value
+  nextModels[index] = normalizedModelName
   aiProviderStore.updateProviderConfig(selectedProviderId.value, {
     preferredModels: nextModels,
   })
@@ -1379,6 +2058,7 @@ async function addPreferredModel() {
     return
   }
 
+  cancelEditPreferredModel()
   aiProviderStore.updateProviderConfig(selectedProviderId.value, {
     preferredModels: [...currentPreferredModels.value, modelName],
   })
@@ -1386,10 +2066,32 @@ async function addPreferredModel() {
   await handlePreferredModelsChange()
 }
 
+async function openAddPreferredModelDialog() {
+  if (!selectedProviderId.value) {
+    return
+  }
+
+  try {
+    const result = await ElMessageBox.prompt('', '新增模型', {
+      confirmButtonText: '新增',
+      cancelButtonText: '取消',
+      customClass: 'ai-config-compact-prompt',
+      inputValue: currentNewModelInput.value,
+      inputPlaceholder: '例如 deepseek-chat',
+      inputValidator: (value: string) => Boolean((value || '').trim()) || '模型名不能为空',
+    })
+    currentNewModelInput.value = result.value || ''
+    await addPreferredModel()
+  } catch {
+    return
+  }
+}
+
 async function removePreferredModel(index: number) {
   if (!selectedProviderId.value) {
     return
   }
+  cancelEditPreferredModel()
   aiProviderStore.updateProviderConfig(selectedProviderId.value, {
     preferredModels: currentPreferredModels.value.filter((_, itemIndex) => itemIndex !== index),
   })
@@ -1408,6 +2110,7 @@ async function reorderPreferredModel(oldIndex: number, newIndex: number) {
     return
   }
 
+  cancelEditPreferredModel()
   const nextModels = [...currentPreferredModels.value]
   const [movedModel] = nextModels.splice(oldIndex, 1)
   if (!movedModel) {
@@ -1428,8 +2131,10 @@ async function removeCurrentProviderConfig() {
   removingProviderConfig.value = true
   try {
     await aiProviderStore.deleteProviderConfig(selectedProviderId.value)
+    setBaseUrlDraft(selectedProviderId.value, '')
     setApiKeyDraft(selectedProviderId.value, '')
-    setApiKeyLabelDraft(selectedProviderId.value, '')
+    clearCurrentProviderApiKeyPlaintexts()
+    clearInlineEditState()
     ElMessage.success('已清除账号中的来源配置')
     await refreshStatus(selectedProviderId.value)
   } catch (error) {
@@ -1439,8 +2144,59 @@ async function removeCurrentProviderConfig() {
   }
 }
 
+async function activateCurrentProviderBaseUrl(baseUrlId: string) {
+  if (!isAuthenticated.value || !selectedProviderId.value) {
+    return
+  }
+  if (currentProviderSavedBaseUrls.value.some(item => item.id === baseUrlId && item.is_active)) {
+    return
+  }
+
+  activatingProviderBaseUrlId.value = baseUrlId
+  try {
+    await aiProviderStore.activateProviderBaseUrl(selectedProviderId.value, baseUrlId)
+    ElMessage.success('已切换激活地址')
+    await refreshStatus(selectedProviderId.value)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    activatingProviderBaseUrlId.value = ''
+  }
+}
+
+async function deleteCurrentProviderBaseUrl(baseUrlId: string) {
+  if (!isAuthenticated.value || !selectedProviderId.value) {
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm('将删除这个已保存的地址。', '删除地址', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  } catch {
+    return
+  }
+
+  deletingProviderBaseUrlId.value = baseUrlId
+  try {
+    await aiProviderStore.deleteProviderBaseUrl(selectedProviderId.value, baseUrlId)
+    cancelEditCurrentProviderBaseUrl(baseUrlId)
+    ElMessage.success('已删除保存的地址')
+    await refreshStatus(selectedProviderId.value)
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    deletingProviderBaseUrlId.value = ''
+  }
+}
+
 async function activateCurrentProviderKey(keyId: string) {
   if (!isAuthenticated.value || !selectedProviderId.value) {
+    return
+  }
+  if (currentProviderSavedKeys.value.some(item => item.id === keyId && item.is_active)) {
     return
   }
 
@@ -1474,6 +2230,10 @@ async function deleteCurrentProviderKey(keyId: string) {
   deletingProviderKeyId.value = keyId
   try {
     await aiProviderStore.deleteProviderKey(selectedProviderId.value, keyId)
+    const plaintextKey = buildProviderApiKeyPlaintextKey(selectedProviderId.value, keyId)
+    delete providerApiKeyPlaintexts[plaintextKey]
+    delete providerApiKeyPlaintextVisible[plaintextKey]
+    cancelEditCurrentProviderKey(keyId)
     ElMessage.success('已删除保存的 API Key')
     await refreshStatus(selectedProviderId.value)
   } catch (error) {
@@ -1566,7 +2326,6 @@ async function createCustomProvider() {
     await aiProviderStore.loadProviders(isAuthenticated.value)
     selectedProviderId.value = created.id
     setApiKeyDraft(created.id, '')
-    setApiKeyLabelDraft(created.id, '')
     setNewModelDraft(created.id, '')
     await refreshStatus(created.id)
     ElMessage.success('已新增来源')
@@ -1631,43 +2390,37 @@ function getErrorMessage(error: unknown) {
 <style scoped>
 .ai-config-page {
   min-height: 100%;
-  padding: 24px;
+  padding: 20px;
   box-sizing: border-box;
-  background:
-    radial-gradient(circle at top left, rgba(14, 116, 144, 0.16), transparent 28%),
-    radial-gradient(circle at bottom right, rgba(15, 118, 110, 0.14), transparent 26%),
-    linear-gradient(180deg, #f2f7f7 0%, #eef3f6 100%);
+  background: linear-gradient(180deg, #f7fafc 0%, #eef3f6 100%);
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
 }
 
-.hero-panel,
 .panel-card {
-  border-radius: 28px;
-  border: 1px solid rgba(191, 219, 254, 0.58);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
-  backdrop-filter: blur(10px);
+  border-radius: 8px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
 }
 
 .hero-panel {
-  padding: 28px 32px;
+  padding: 2px 2px 4px;
 }
 
 .eyebrow,
 .panel-kicker {
   margin: 0;
-  font-size: 13px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: 12px;
+  letter-spacing: 0;
   color: #64748b;
 }
 
 .hero-copy h1,
 .panel-header h2 {
-  margin: 6px 0 0;
-  font-size: 24px;
+  margin: 4px 0 0;
+  font-size: 22px;
   line-height: 1.15;
   color: #0f172a;
 }
@@ -1675,7 +2428,7 @@ function getErrorMessage(error: unknown) {
 .workspace-grid {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
-  gap: 18px;
+  gap: 14px;
   min-height: 0;
   flex: 1;
 }
@@ -1686,62 +2439,83 @@ function getErrorMessage(error: unknown) {
 }
 
 .panel-card {
-  padding: 22px;
+  padding: 18px;
   height: 100%;
   box-sizing: border-box;
+}
+
+.provider-panel .panel-card {
+  display: flex;
+  flex-direction: column;
 }
 
 .panel-header {
   display: flex;
   justify-content: space-between;
-  gap: 16px;
+  gap: 12px;
   align-items: flex-start;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
+}
+
+.editor-header {
+  justify-content: flex-end;
 }
 
 .panel-header-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
-.asset-mode-switch :deep(.el-radio-button__inner) {
-  min-width: 60px;
+.asset-add-button {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  font-weight: 600;
 }
 
 .provider-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
+}
+
+.app-list {
+  margin-top: 8px;
+}
+
+.provider-footer {
+  padding: 10px 0 4px;
+  display: flex;
+  justify-content: flex-start;
 }
 
 .provider-item {
   width: 100%;
-  border: 1px solid rgba(191, 219, 254, 0.9);
-  background: linear-gradient(180deg, rgba(240, 249, 255, 0.95), rgba(255, 255, 255, 0.96));
-  border-radius: 18px;
-  padding: 14px 16px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   text-align: left;
   cursor: pointer;
-  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
 }
 
 .provider-item:hover {
-  transform: translateY(-1px);
-  border-color: rgba(59, 130, 246, 0.65);
-  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.1);
+  border-color: rgba(59, 130, 246, 0.58);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.08);
 }
 
 .provider-item.active {
-  border-color: rgba(14, 116, 144, 0.72);
-  box-shadow: 0 12px 24px rgba(14, 116, 144, 0.14);
-  background: linear-gradient(180deg, rgba(224, 242, 254, 0.96), rgba(248, 250, 252, 0.98));
+  border-color: rgba(14, 116, 144, 0.66);
+  box-shadow: inset 3px 0 0 rgba(14, 116, 144, 0.75);
+  background: #f0f9ff;
 }
 
 .provider-item-main {
@@ -1752,7 +2526,7 @@ function getErrorMessage(error: unknown) {
 }
 
 .provider-item-label {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: #0f172a;
 }
@@ -1766,54 +2540,140 @@ function getErrorMessage(error: unknown) {
 .provider-item-state {
   display: inline-flex;
   align-items: center;
-  padding: 4px 10px;
-  border-radius: 999px;
+  padding: 3px 8px;
+  border-radius: 6px;
   font-size: 12px;
   font-weight: 600;
 }
 
 .provider-item-state.is-connected {
   color: #0f766e;
-  background: rgba(204, 251, 241, 0.95);
+  background: #ccfbf1;
 }
 
 .provider-item-state.is-ready {
-  color: #1d4ed8;
-  background: rgba(219, 234, 254, 0.95);
+  color: #15803d;
+  background: #dcfce7;
 }
 
 .provider-item-state.is-pending {
   color: #92400e;
-  background: rgba(254, 243, 199, 0.95);
+  background: #fef3c7;
 }
 
 .provider-item-state.is-neutral {
   color: #475569;
-  background: rgba(226, 232, 240, 0.95);
+  background: #e2e8f0;
 }
 
 .settings-form :deep(.el-form-item) {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
-.api-key-label-input {
-  margin-bottom: 10px;
-}
-
-.api-key-input-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.settings-form :deep(.el-form-item__label) {
   width: 100%;
 }
 
-.api-key-input-row :deep(.el-input) {
+.form-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  color: #475569;
+}
+
+.form-section-label-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.section-add-button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: #2563eb;
+}
+
+.section-add-button :deep(.el-icon) {
+  font-size: 15px;
+}
+
+.section-help-button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: #64748b;
+}
+
+.section-help-button:hover,
+.section-help-button:focus {
+  color: #2563eb;
+}
+
+.section-check-button {
+  min-height: 24px;
+  padding: 0 4px;
+  color: #334155;
+}
+
+.base-url-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.saved-base-url-section {
+  margin-top: 0;
+}
+
+.saved-base-url-meta {
   flex: 1;
 }
 
+.saved-base-url-value {
+  color: #475569;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+.editable-list-value {
+  min-width: 0;
+  cursor: text;
+}
+
+.editable-list-value:hover {
+  color: #1d4ed8;
+}
+
+.saved-inline-edit {
+  flex: 1;
+  min-width: min(100%, 360px);
+}
+
+.saved-key-edit-input {
+  min-width: min(100%, 420px);
+}
+
+.api-key-input-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.api-key-secret-input {
+  min-width: 0;
+}
+
 .api-key-save-button {
-  flex: 0 0 auto;
-  min-width: 88px;
+  min-width: 76px;
 }
 
 .app-toggle-row,
@@ -1838,29 +2698,46 @@ function getErrorMessage(error: unknown) {
 .model-list-editor {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
 }
 
 .model-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
 }
 
 .model-list-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-radius: 16px;
-  background: rgba(248, 250, 252, 0.95);
+  padding: 7px 0;
+  background: transparent;
+}
+
+.model-list-row + .model-list-row {
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
 }
 
 .model-list-row :deep(.el-input) {
   flex: 1;
+}
+
+.model-name-text {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 0;
+  color: #334155;
+  font-size: 14px;
+  line-height: 24px;
+  word-break: break-all;
+}
+
+.model-inline-edit {
+  flex: 1;
+  min-width: 0;
 }
 
 .model-list-actions {
@@ -1870,73 +2747,105 @@ function getErrorMessage(error: unknown) {
   flex-wrap: wrap;
 }
 
+.row-remove-button {
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
+  padding: 0;
+  color: #ef4444;
+}
+
+.row-remove-button:hover,
+.row-remove-button:focus {
+  background: rgba(239, 68, 68, 0.08);
+  color: #dc2626;
+}
+
+.row-remove-button :deep(.el-icon) {
+  font-size: 14px;
+}
+
 .model-list-empty {
-  padding: 14px 16px;
-  border: 1px dashed rgba(191, 219, 254, 0.9);
-  border-radius: 16px;
-  background: rgba(248, 250, 252, 0.7);
+  padding: 10px 12px;
+  border: 1px dashed rgba(203, 213, 225, 0.95);
+  border-radius: 8px;
+  background: #f8fafc;
   color: #64748b;
   font-size: 13px;
-}
-
-.model-add-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-}
-
-.model-add-row :deep(.el-input) {
-  flex: 1;
 }
 
 .account-config-row {
   display: flex;
   justify-content: flex-end;
-  margin-top: 8px;
+  margin-top: 6px;
 }
 
 .saved-key-section {
-  margin-top: 12px;
+  margin-top: 6px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   width: 100%;
-}
-
-.saved-key-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 12px;
-  color: #64748b;
-}
-
-.saved-key-title {
-  color: #0f172a;
-  font-weight: 600;
 }
 
 .saved-key-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
   width: 100%;
 }
 
 .saved-key-item {
-  border-radius: 16px;
-  border: 1px solid rgba(191, 219, 254, 0.78);
-  background: rgba(248, 250, 252, 0.95);
-  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 0;
   width: 100%;
   box-sizing: border-box;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   flex-wrap: wrap;
+}
+
+.saved-key-item + .saved-key-item {
+  border-top: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.saved-choice-item {
+  cursor: pointer;
+  transition: background-color 0.16s ease;
+}
+
+.saved-choice-item:hover {
+  background: #f8fafc;
+}
+
+.saved-choice-item:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.42);
+  outline-offset: 2px;
+}
+
+.saved-choice-item.active {
+  background: transparent;
+}
+
+.saved-choice-item.active .saved-key-label {
+  color: #1d4ed8;
+}
+
+.saved-choice-radio {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.saved-choice-radio:disabled {
+  cursor: default;
 }
 
 .saved-key-meta {
@@ -1944,6 +2853,7 @@ function getErrorMessage(error: unknown) {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .saved-key-label {
@@ -1955,6 +2865,10 @@ function getErrorMessage(error: unknown) {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
   color: #475569;
+  padding: 2px 5px;
+  border-radius: 6px;
+  background: #f8fafc;
+  word-break: break-all;
 }
 
 .saved-key-actions {
@@ -1962,43 +2876,46 @@ function getErrorMessage(error: unknown) {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  margin-left: auto;
 }
 
-.ollama-access-hint,
-.ollama-system-key-section {
-  margin-top: 12px;
+.saved-key-eye-button {
+  color: #64748b;
+  padding: 0 4px;
 }
 
-.ollama-system-key-section {
+.key-help-content {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-}
-
-.ollama-system-key-toolbar {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
-.ollama-system-key-item {
-  align-items: flex-start;
+.key-help-content p {
+  margin: 0;
 }
 
-.ollama-plaintext-row {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.ollama-plaintext-row :deep(.el-input) {
-  flex: 1;
+.key-help-title {
+  color: #0f172a;
+  font-weight: 600;
 }
 
 .status-alert {
   margin-top: 4px;
+}
+
+:global(.ai-config-compact-prompt .el-message-box__message) {
+  display: none;
+}
+
+:global(.ai-config-compact-prompt .el-message-box__input) {
+  padding-top: 0;
+}
+
+:global(.ai-config-key-help-popover) {
+  padding: 12px;
 }
 
 @media (max-width: 980px) {
@@ -2012,42 +2929,28 @@ function getErrorMessage(error: unknown) {
     padding: 16px;
   }
 
-  .hero-panel,
-  .panel-card {
-    border-radius: 22px;
-  }
-
   .hero-panel {
-    padding: 22px;
+    padding: 0;
   }
 
   .panel-card {
-    padding: 18px;
+    border-radius: 8px;
+  }
+
+  .panel-card {
+    padding: 14px;
   }
 
   .api-key-input-row {
-    flex-wrap: wrap;
+    grid-template-columns: 1fr;
   }
 
   .api-key-save-button {
     width: 100%;
   }
 
-  .ollama-plaintext-row {
+  .model-list-row {
     flex-wrap: wrap;
-  }
-
-  .ollama-plaintext-row .el-button {
-    width: 100%;
-  }
-
-  .model-list-row,
-  .model-add-row {
-    flex-wrap: wrap;
-  }
-
-  .model-add-row .el-button {
-    width: 100%;
   }
 }
 </style>

@@ -333,7 +333,14 @@
         </div>
       </div>
 
-      <NoteEditor :key="currentNote.id || 'new'" v-model="currentNote.content" :layout="editorLayout" :readOnly="effectiveReadonly" @change="handleContentChange" />
+      <NoteEditor
+        :key="currentNote.id || 'new'"
+        v-model="currentNote.content"
+        :layout="editorLayout"
+        :readOnly="effectiveReadonly"
+        show-wrap-toggle
+        @change="handleContentChange"
+      />
     </div>
 
     <NodeHelpDialog v-model="showHelpDialog" />
@@ -342,7 +349,7 @@
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onUnmounted, ref, watch } from 'vue';
-import { Calendar, Check, Clock, List, Loading, Plus } from '@element-plus/icons-vue';
+import { Calendar, Check, Clock, Close, List, Loading, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';
@@ -451,6 +458,15 @@ let customFieldKeyResizePointerId: number | null = null;
 let customFieldKeyResizeStartX = 0;
 let customFieldKeyResizeStartWidth = customFieldKeyWidth.value;
 let customFieldKeyMeasureCanvas: HTMLCanvasElement | null = null;
+
+const removeLocalDraftByKey = (draftKey: string | null) => {
+  if (!draftKey || typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
+  try {
+    window.localStorage.removeItem(draftKey);
+  } catch {
+    // Ignore storage access errors. The in-memory autosave state is still reset below when active.
+  }
+};
 
 const sortedHistory = computed(() => currentNote.value?.history ? [...currentNote.value.history].sort((a, b) => b.ts - a.ts) : []);
 const completionProgressExpr = computed(() => normalizeCompletionProgressExpr(currentNote.value?.completion_progress_expr));
@@ -763,6 +779,7 @@ watch(() => props.modelValue, async newVal => {
   if (expiredDraft) ElMessage.info('发现过期本地草稿，已忽略');
 
   if (pendingDraft) {
+    const draftKeyForPrompt = currentDraftKey.value;
     const promptMessage = pendingDraft.hasConflict
       ? `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿，且服务器版本之后还有更新。是否恢复本地草稿？`
       : `检测到 ${formatDateDetailed(pendingDraft.updatedAt)} 的本地草稿。是否恢复继续编辑？`;
@@ -779,6 +796,7 @@ watch(() => props.modelValue, async newVal => {
       activeSnapshot = pendingDraft.snapshot;
       ElMessage.warning(pendingDraft.hasConflict ? '已恢复本地草稿，请留意与服务器版本的差异' : '已恢复本地草稿');
     } catch {
+      removeLocalDraftByKey(draftKeyForPrompt);
       if (requestToken !== loadRequestToken || props.modelValue?.id !== note.id) return;
       autoSave.clearDraft();
     }

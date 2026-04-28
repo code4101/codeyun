@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onBeforeUnmount, onMounted, watch } from 'vue';
+import type { ComponentPublicInstance } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   findPermissionKeyByMenuPath,
@@ -21,6 +22,7 @@ import { buildStandaloneRouteLocation } from '@/router/standalone';
 import { useFeatureAccessStore } from '@/store/featureAccessStore';
 import { useUserStore } from '@/store/userStore';
 import {
+  Calendar,
   Document,
   Menu as IconMenu,
   // Location,
@@ -43,7 +45,7 @@ const featureAccessStore = useFeatureAccessStore();
 const userStore = useUserStore();
 const isCollapse = ref(false);
 const isResizingAside = ref(false);
-const asideRef = ref<HTMLElement | null>(null);
+const asideRef = ref<HTMLElement | ComponentPublicInstance | null>(null);
 const COLLAPSED_ASIDE_WIDTH = 64;
 const MIN_EXPANDED_ASIDE_WIDTH = 200;
 const MAX_EXPANDED_ASIDE_WIDTH = 420;
@@ -65,38 +67,47 @@ const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
-const ATTENDANCE_COURSES_PATH = requirePageMenuPath('AttendanceCourses');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jie');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jieRegistration');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH = requirePageMenuPath('AttendanceCourse20260412Chanzong12qi1jieAttendance');
 const ATTENDANCE_WJX_CATALOG_PATH = requirePageMenuPath('AttendanceWjxCatalog');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_WJX_DATA_PATH = requirePageMenuPath('AttendanceWjxData');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
-const ATTENDANCE_COURSES_SUBMENU_INDEX = 'attendance-courses';
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX = 'attendance-course-20260412-chanzong-12qi-1jie';
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
 const FANXIU_CALCULATOR_PATH = requirePageMenuPath('BeastSoulCalculator');
 const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
+const FANXIU_LOTTERY_MODEL_PATH = requirePageMenuPath('FanxiuLotteryModel');
 const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
 const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
+const FANXIU_ACTIVITY_LIST_PATH = requirePageMenuPath('FanxiuActivityList');
+const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH = requirePageMenuPath('FanxiuKunlunSecret');
+const FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH = requirePageMenuPath('FanxiuModaoInvasion');
+const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH = requirePageMenuPath('FanxiuShouyuanExploration');
+const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH = requirePageMenuPath('FanxiuDivineResource');
+const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH = requirePageMenuPath('FanxiuXianzhouMarathon');
+const FANXIU_REGION_DATA_PATH = requirePageMenuPath('FanxiuRegionData');
+const FANXIU_WARDROBE_HALL_PATH = requirePageMenuPath('FanxiuWardrobeHall');
+const FANXIU_SPIRIT_BEAST_HALL_PATH = requirePageMenuPath('FanxiuSpiritBeastHall');
+const FANXIU_MAGIC_TREASURE_HALL_PATH = requirePageMenuPath('FanxiuMagicTreasureHall');
+const FANXIU_MAGIC_TREASURE_FORMATIONS_PATH = requirePageMenuPath('FanxiuMagicTreasureFormations');
 const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
 const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
-const FANXIU_XIANZHOU_RACE_PATH = requirePageMenuPath('XianzhouRace');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
 const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
+const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
+const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
+const CLUSTER_CODEX_DAILY_SUMMARY_PATH = requirePageMenuPath('ClusterCodexDailySummary');
 const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
 const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
+const CLUSTER_CODEX_SUBMENU_INDEX = 'cluster-codex';
+const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
+const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
 const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
-const ATTENDANCE_COURSES_PATH_PREFIX = requirePageCanonicalPath('AttendanceCourses');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH_PREFIX = requirePageCanonicalPath('AttendanceCourse20260412Chanzong12qi1jie');
 const HOME_TITLE = requirePermissionTitle('home');
 const TOOLS_TITLE = requirePermissionTitle('tools');
 const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
@@ -109,10 +120,6 @@ const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
-const ATTENDANCE_COURSES_TITLE = requirePermissionTitle('attendance.courses');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_TITLE = requirePermissionTitle('attendance.courses.20260412-chanzong-12qi-1jie');
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH);
-const ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH);
 const ATTENDANCE_WJX_TITLE = requirePermissionTitle('attendance.wjx');
 const ATTENDANCE_WJX_CATALOG_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_CATALOG_PATH);
 const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
@@ -125,18 +132,33 @@ const MAGIC_CRAFT_XOR_MATRIX_TITLE = requirePermissionTitleByMenuPath(MAGIC_CRAF
 const FANXIU_TITLE = requirePermissionTitle('fanxiu');
 const FANXIU_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(FANXIU_CALCULATOR_PATH);
 const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC_PATH);
+const FANXIU_LOTTERY_MODEL_TITLE = requirePermissionTitleByMenuPath(FANXIU_LOTTERY_MODEL_PATH);
 const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
 const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_STATUS_PATH);
+const FANXIU_ACTIVITY_LIST_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_PATH);
+const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH);
+const FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH);
+const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH);
+const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH);
+const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH);
+const FANXIU_REGION_DATA_TITLE = requirePermissionTitleByMenuPath(FANXIU_REGION_DATA_PATH);
+const FANXIU_INVENTORY_TITLE = requirePermissionTitle('fanxiu.inventory');
+const FANXIU_WARDROBE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_WARDROBE_HALL_PATH);
+const FANXIU_SPIRIT_BEAST_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH);
+const FANXIU_MAGIC_TREASURE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_HALL_PATH);
+const FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_FORMATIONS_PATH);
 const FANXIU_LABELME_TITLE = requirePermissionTitleByMenuPath(FANXIU_LABELME_PATH);
 const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_PATH);
-const FANXIU_XIANZHOU_RACE_TITLE = requirePermissionTitleByMenuPath(FANXIU_XIANZHOU_RACE_PATH);
 const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
 const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
 const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
+const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
+const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
+const CLUSTER_CODEX_DAILY_SUMMARY_TITLE = '日报总结';
 const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
 const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
@@ -188,12 +210,26 @@ const applyManualAsideWidth = (width: number) => {
   persistManualAsideWidth(nextWidth);
 };
 
+const getAsideElement = () => {
+  const rawAside = asideRef.value;
+  if (!rawAside) {
+    return null;
+  }
+
+  if (rawAside instanceof HTMLElement) {
+    return rawAside;
+  }
+
+  const componentRoot = (rawAside as ComponentPublicInstance).$el;
+  return componentRoot instanceof HTMLElement ? componentRoot : null;
+};
+
 const measureExpandedAsideWidth = () => {
   if (isCollapse.value || manualExpandedAsideWidthPx.value != null) {
     return;
   }
 
-  const asideElement = asideRef.value;
+  const asideElement = getAsideElement();
   if (!asideElement) {
     return;
   }
@@ -239,8 +275,8 @@ const scheduleAsideWidthMeasure = () => {
 const activeMenu = computed(() => {
   const matchedMenuPath = getMatchedMenuPath(route);
   if (matchedMenuPath === CLUSTER_FILES_PATH) return CLUSTER_FILES_SUBMENU_INDEX;
-  if (matchedMenuPath === ATTENDANCE_COURSES_PATH) return ATTENDANCE_COURSES_SUBMENU_INDEX;
-  if (matchedMenuPath === ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH) return ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX;
+  if (matchedMenuPath === FANXIU_ACTIVITY_LIST_PATH) return FANXIU_ACTIVITY_LIST_SUBMENU_INDEX;
+  if (matchedMenuPath === FANXIU_MAGIC_TREASURE_HALL_PATH) return FANXIU_MAGIC_TREASURE_SUBMENU_INDEX;
   if (matchedMenuPath) return matchedMenuPath;
   const pluginMenuIndex = findPluginMenuIndex(route.path);
   if (pluginMenuIndex) return pluginMenuIndex;
@@ -302,33 +338,10 @@ const attendanceMenuVisible = computed(() =>
   canAccessFeature('attendance-tools')
   && [
     ATTENDANCE_CONFIGS_PATH,
-    ATTENDANCE_COURSES_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
     ATTENDANCE_WJX_CATALOG_PATH,
     ATTENDANCE_WJX_COLLECT_PATH,
     ATTENDANCE_WJX_DATA_PATH,
     ATTENDANCE_ORDERS_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const attendanceCoursesMenuVisible = computed(() =>
-  canAccessFeature('attendance.courses')
-  && [
-    ATTENDANCE_COURSES_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const attendanceCourse20260412Chanzong12qi1jieMenuVisible = computed(() =>
-  canAccessFeature('attendance.courses.20260412-chanzong-12qi-1jie')
-  && [
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH,
-    ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -345,14 +358,51 @@ const fanxiuMenuVisible = computed(() =>
   canAccessFeature('fanxiu')
   && [
     FANXIU_TASK_STATUS_PATH,
+    FANXIU_ACTIVITY_LIST_PATH,
+    FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
+    FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
+    FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
+    FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
+    FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
+    FANXIU_REGION_DATA_PATH,
+    FANXIU_WARDROBE_HALL_PATH,
+    FANXIU_SPIRIT_BEAST_HALL_PATH,
+    FANXIU_MAGIC_TREASURE_HALL_PATH,
+    FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
     FANXIU_LABELME_PATH,
     FANXIU_CALCULATOR_PATH,
     FANXIU_DRAW_CALC_PATH,
+    FANXIU_LOTTERY_MODEL_PATH,
     FANXIU_DISCOUNT_PATH,
     FANXIU_RECHARGE_PATH,
-    FANXIU_XIANZHOU_RACE_PATH,
     FANXIU_CUIJIAN_TRIAL_PATH,
   ].some((path) => canAccessMenuPath(path)),
+);
+
+const fanxiuActivityListMenuVisible = computed(() =>
+  canAccessFeature('fanxiu.activity-list')
+  && [
+    FANXIU_ACTIVITY_LIST_PATH,
+    FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
+    FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
+    FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
+    FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
+    FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const fanxiuInventoryMenuVisible = computed(() =>
+  canAccessFeature('fanxiu.inventory')
+  && [
+    FANXIU_WARDROBE_HALL_PATH,
+    FANXIU_SPIRIT_BEAST_HALL_PATH,
+    FANXIU_MAGIC_TREASURE_HALL_PATH,
+    FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
+  ].some((path) => canAccessMenuPath(path)),
+);
+
+const fanxiuMagicTreasureMenuVisible = computed(() =>
+  [FANXIU_MAGIC_TREASURE_HALL_PATH, FANXIU_MAGIC_TREASURE_FORMATIONS_PATH].some((path) => canAccessMenuPath(path)),
 );
 
 const magicCraftMenuVisible = computed(() =>
@@ -373,6 +423,7 @@ const noteToolsMenuVisible = computed(() =>
   canAccessFeature('note-tools')
   && [
     NOTES_CENTER_MENU_PATH,
+    NOTES_SHEETS_MANAGER_PATH,
     NOTES_INFINITE_CANVAS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -385,6 +436,35 @@ const clusterFilesMenuEntryPath = computed(() =>
   canAccessMenuPath(CLUSTER_FILES_PATH) ? CLUSTER_FILES_PATH : CLUSTER_VIEW_MN_PATH,
 );
 
+const clusterCodexMenuVisible = computed(() =>
+  canAccessFeature('cluster.codex')
+  && [CLUSTER_CODEX_PATH, CLUSTER_CODEX_DAILY_SUMMARY_PATH].some((path) => canAccessMenuPath(path)),
+);
+
+const clusterCodexMenuEntryPath = computed(() =>
+  canAccessMenuPath(CLUSTER_CODEX_PATH) ? CLUSTER_CODEX_PATH : CLUSTER_CODEX_DAILY_SUMMARY_PATH,
+);
+
+const fanxiuActivityListMenuEntryPath = computed(() =>
+  canAccessMenuPath(FANXIU_ACTIVITY_LIST_PATH)
+    ? FANXIU_ACTIVITY_LIST_PATH
+    : canAccessMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH)
+      ? FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH
+      : canAccessMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH)
+        ? FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH
+        : canAccessMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH)
+          ? FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH
+          : canAccessMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH)
+            ? FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH
+            : FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
+);
+
+const fanxiuMagicTreasureMenuEntryPath = computed(() =>
+  canAccessMenuPath(FANXIU_MAGIC_TREASURE_HALL_PATH)
+    ? FANXIU_MAGIC_TREASURE_HALL_PATH
+    : FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
+);
+
 const clusterMenuVisible = computed(() =>
   canAccessFeature('cluster-tools')
   && (
@@ -393,6 +473,7 @@ const clusterMenuVisible = computed(() =>
       CLUSTER_LABELME_PATH,
     ].some((path) => canAccessMenuPath(path))
     || clusterFilesMenuVisible.value
+    || clusterCodexMenuVisible.value
     || clusterPluginMenuItems.value.length > 0
   ),
 );
@@ -414,16 +495,22 @@ const defaultOpeneds = computed(() => {
   if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
     openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
   }
+  if ([CLUSTER_CODEX_PATH, CLUSTER_CODEX_DAILY_SUMMARY_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
+    openeds.push(CLUSTER_CODEX_SUBMENU_INDEX);
+  }
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
   if (route.path.startsWith(ATTENDANCE_PATH_PREFIX)) openeds.push('attendance-tools');
-  if (route.path.startsWith(ATTENDANCE_COURSES_PATH_PREFIX)) openeds.push(ATTENDANCE_COURSES_SUBMENU_INDEX);
-  if (route.path.startsWith(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH_PREFIX)) {
-    openeds.push(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX);
-  }
   if (route.path.startsWith('/attendance/questionnaire') || route.path.startsWith('/attendance/wjx')) openeds.push('attendance-questionnaire');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
+  if (route.path === FANXIU_ACTIVITY_LIST_PATH || route.path.startsWith(`${FANXIU_ACTIVITY_LIST_PATH}/`)) {
+    openeds.push(FANXIU_ACTIVITY_LIST_SUBMENU_INDEX);
+  }
+  if (route.path.startsWith('/fanxiu/inventory/')) openeds.push('fanxiu-inventory');
+  if (route.path === FANXIU_MAGIC_TREASURE_HALL_PATH || route.path.startsWith(`${FANXIU_MAGIC_TREASURE_HALL_PATH}/`)) {
+    openeds.push(FANXIU_MAGIC_TREASURE_SUBMENU_INDEX);
+  }
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
   openeds.push(...getDefaultPluginOpeneds(route.path));
@@ -605,7 +692,7 @@ watch(
 
           <el-sub-menu v-if="attendanceMenuVisible" index="attendance-tools">
             <template #title>
-              <el-icon><Document /></el-icon>
+              <el-icon><Calendar /></el-icon>
               <span>{{ ATTENDANCE_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_CONFIGS_PATH)" :index="ATTENDANCE_CONFIGS_PATH">{{ ATTENDANCE_CONFIGS_TITLE }}</el-menu-item>
@@ -618,38 +705,6 @@ watch(
               <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_DATA_PATH)" :index="ATTENDANCE_WJX_DATA_PATH">{{ ATTENDANCE_WJX_DATA_TITLE }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
-            <el-sub-menu v-if="attendanceCoursesMenuVisible" :index="ATTENDANCE_COURSES_SUBMENU_INDEX">
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(ATTENDANCE_COURSES_PATH)">
-                  {{ ATTENDANCE_COURSES_TITLE }}
-                </span>
-              </template>
-              <el-sub-menu
-                v-if="attendanceCourse20260412Chanzong12qi1jieMenuVisible"
-                :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_SUBMENU_INDEX"
-              >
-                <template #title>
-                  <span
-                    class="menu-submenu-route-title"
-                    @click.stop="handleMenuTitleNavigate(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_PATH)"
-                  >
-                    {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_TITLE }}
-                  </span>
-                </template>
-                <el-menu-item
-                  v-if="canAccessMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH)"
-                  :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_PATH"
-                >
-                  {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_REGISTRATION_TITLE }}
-                </el-menu-item>
-                <el-menu-item
-                  v-if="canAccessMenuPath(ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH)"
-                  :index="ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_PATH"
-                >
-                  {{ ATTENDANCE_COURSE_20260412_CHANZONG_12QI_1JIE_ATTENDANCE_TITLE }}
-                </el-menu-item>
-              </el-sub-menu>
-            </el-sub-menu>
           </el-sub-menu>
           
           <el-sub-menu v-if="gameToolsMenuVisible" index="game-tools">
@@ -671,12 +726,70 @@ watch(
                 <span>{{ FANXIU_TITLE }}</span>
               </template>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
+              <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">
+                <template #title>
+                  <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath)">
+                    {{ FANXIU_ACTIVITY_LIST_TITLE }}
+                  </span>
+                </template>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE }}
+                </el-menu-item>
+              </el-sub-menu>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_REGION_DATA_PATH)" :index="FANXIU_REGION_DATA_PATH">{{ FANXIU_REGION_DATA_TITLE }}</el-menu-item>
+              <el-sub-menu v-if="fanxiuInventoryMenuVisible" index="fanxiu-inventory">
+                <template #title>
+                  <span>{{ FANXIU_INVENTORY_TITLE }}</span>
+                </template>
+                <el-menu-item v-if="canAccessMenuPath(FANXIU_WARDROBE_HALL_PATH)" :index="FANXIU_WARDROBE_HALL_PATH">{{ FANXIU_WARDROBE_HALL_TITLE }}</el-menu-item>
+                <el-menu-item v-if="canAccessMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH)" :index="FANXIU_SPIRIT_BEAST_HALL_PATH">{{ FANXIU_SPIRIT_BEAST_HALL_TITLE }}</el-menu-item>
+                <el-sub-menu v-if="fanxiuMagicTreasureMenuVisible" :index="FANXIU_MAGIC_TREASURE_SUBMENU_INDEX">
+                  <template #title>
+                    <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuMagicTreasureMenuEntryPath)">
+                      {{ FANXIU_MAGIC_TREASURE_HALL_TITLE }}
+                    </span>
+                  </template>
+                  <el-menu-item
+                    v-if="canAccessMenuPath(FANXIU_MAGIC_TREASURE_FORMATIONS_PATH)"
+                    :index="FANXIU_MAGIC_TREASURE_FORMATIONS_PATH"
+                  >
+                    {{ FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE }}
+                  </el-menu-item>
+                </el-sub-menu>
+              </el-sub-menu>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_LABELME_PATH)" :index="FANXIU_LABELME_PATH">{{ FANXIU_LABELME_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_CALCULATOR_PATH)" :index="FANXIU_CALCULATOR_PATH">{{ FANXIU_CALCULATOR_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_DRAW_CALC_PATH)" :index="FANXIU_DRAW_CALC_PATH">{{ FANXIU_DRAW_CALC_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_LOTTERY_MODEL_PATH)" :index="FANXIU_LOTTERY_MODEL_PATH">{{ FANXIU_LOTTERY_MODEL_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_DISCOUNT_PATH)" :index="FANXIU_DISCOUNT_PATH">{{ FANXIU_DISCOUNT_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_RECHARGE_PATH)" :index="FANXIU_RECHARGE_PATH">{{ FANXIU_RECHARGE_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_XIANZHOU_RACE_PATH)" :index="FANXIU_XIANZHOU_RACE_PATH">{{ FANXIU_XIANZHOU_RACE_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_CUIJIAN_TRIAL_PATH)" :index="FANXIU_CUIJIAN_TRIAL_PATH">{{ FANXIU_CUIJIAN_TRIAL_TITLE }}</el-menu-item>
             </el-sub-menu>
           </el-sub-menu>
@@ -687,6 +800,7 @@ watch(
               <span>{{ NOTE_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH)" :index="NOTES_CENTER_MENU_PATH">{{ NOTES_CENTER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
 
@@ -721,6 +835,15 @@ watch(
                 </span>
               </template>
               <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
+            </el-sub-menu>
+            <el-sub-menu v-if="clusterCodexMenuVisible" :index="CLUSTER_CODEX_SUBMENU_INDEX">
+              <template #title>
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterCodexMenuEntryPath)">
+                  {{ CLUSTER_CODEX_TITLE }}
+                </span>
+              </template>
+              <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">会话</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_DAILY_SUMMARY_PATH)" :index="CLUSTER_CODEX_DAILY_SUMMARY_PATH">{{ CLUSTER_CODEX_DAILY_SUMMARY_TITLE }}</el-menu-item>
             </el-sub-menu>
             <el-menu-item
               v-for="item in clusterPluginMenuItems"

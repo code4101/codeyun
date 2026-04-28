@@ -38,7 +38,7 @@
       </template>
 
       <template #meta-actions="{ readonly }">
-        <el-tooltip content="根据标题和正文自动识别分类、形态、阶段" placement="top">
+        <el-tooltip content="根据当前标题，并参考已有条目元数据自动识别分类、形态、阶段" placement="top">
           <el-button
             size="small"
             :icon="MagicStick"

@@ -570,6 +570,7 @@ const {
     getResizeBounds: () => ({
         min: 300,
     }),
+    storageKey: 'notes:center:calendar:split-pane-height',
 });
 
 onMounted(() => {

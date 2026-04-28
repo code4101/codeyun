@@ -1,31 +1,40 @@
 <template>
-  <div class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
-    <div v-if="showToolbar && !readOnly" class="editor-toolbar-row">
+  <div ref="editorContainerRef" class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
+    <div v-if="(showToolbar && !readOnly) || showWrapToggle" class="editor-toolbar-row">
       <Toolbar
+        v-if="showToolbar && !readOnly"
         class="editor-toolbar"
         :editor="editorRef"
         :defaultConfig="toolbarConfig"
         :mode="mode"
       />
-      <el-tooltip content="上传附件并插入链接" placement="bottom">
-        <el-button
-          size="small"
-          class="attachment-upload-button"
-          :icon="Upload"
-          :loading="attachmentUploading"
-          @click.stop="openAttachmentPicker"
-        >
-          附件
-        </el-button>
+      <div v-else class="editor-toolbar-spacer"></div>
+      <template v-if="showToolbar && !readOnly">
+        <el-tooltip content="上传附件并插入链接" placement="bottom">
+          <el-button
+            size="small"
+            class="attachment-upload-button"
+            :icon="Upload"
+            :loading="attachmentUploading"
+            @click.stop="openAttachmentPicker"
+          >
+            附件
+          </el-button>
+        </el-tooltip>
+        <input
+          ref="attachmentInputRef"
+          class="attachment-input"
+          type="file"
+          multiple
+          @change="handleAttachmentInputChange"
+          @click.stop
+        />
+      </template>
+      <el-tooltip v-if="showWrapToggle" :content="autoWrapTooltip" placement="bottom">
+        <el-checkbox v-model="autoWrapEnabled" size="small" class="auto-wrap-toggle" @click.stop>
+          自动换行
+        </el-checkbox>
       </el-tooltip>
-      <input
-        ref="attachmentInputRef"
-        class="attachment-input"
-        type="file"
-        multiple
-        @change="handleAttachmentInputChange"
-        @click.stop
-      />
     </div>
     <!-- Extra Toolbar Items Slot -->
     <div v-if="showToolbar && !readOnly && $slots.extra" class="editor-toolbar-extra">
@@ -33,7 +42,7 @@
     </div>
     <Editor
       class="editor-content-area"
-      :class="`is-${layout}`"
+      :class="[`is-${layout}`, { 'is-no-wrap': !autoWrapEnabled }]"
       v-model="valueHtml"
       :defaultConfig="editorConfig"
       :mode="mode"
@@ -100,7 +109,7 @@ import { ElMessage } from 'element-plus'
 import { Upload } from '@element-plus/icons-vue'
 import api from '@/api'
 import { mergeImagesToPngDataUrl } from '@/utils/imageMerge'
-import { registerWangEditorPlugins } from '@/utils/wangEditorPlugins'
+import { decreaseExpandedSelectionIndent, registerWangEditorPlugins } from '@/utils/wangEditorPlugins'
 
 // 注册 WangEditor 插件
 registerWangEditorPlugins()
@@ -133,6 +142,10 @@ const props = defineProps({
   layout: {
     type: String,
     default: 'fill' // 'fill' for split panes, 'flow' for dialogs/standalone blocks
+  },
+  showWrapToggle: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -140,6 +153,8 @@ const emit = defineEmits(['update:modelValue', 'change'])
 
 // 编辑器实例，必须用 shallowRef
 const editorRef = shallowRef()
+const editorContainerRef = ref<HTMLElement | null>(null)
+const detachIndentHotkeysRef = ref<(() => void) | null>(null)
 
 // 内容 HTML，直接使用 props 初始化
 const valueHtml = ref(props.modelValue)
@@ -156,6 +171,22 @@ const attachmentUploading = ref(false)
 
 const MAX_ATTACHMENT_UPLOAD_BYTES = 100 * 1024 * 1024
 const ATTACHMENT_UPLOAD_TIMEOUT_MS = 120 * 1000
+const NOTE_EDITOR_AUTO_WRAP_STORAGE_KEY = 'codeyun.noteEditor.autoWrap'
+
+const canUseLocalStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+
+const loadAutoWrapPreference = () => {
+  if (!canUseLocalStorage()) return true
+  const raw = window.localStorage.getItem(NOTE_EDITOR_AUTO_WRAP_STORAGE_KEY)
+  if (raw == null) return true
+  return raw !== '0'
+}
+
+const autoWrapEnabled = ref(loadAutoWrapPreference())
+const autoWrapTooltip = computed(() => autoWrapEnabled.value
+  ? '长行会在编辑区内自动换行'
+  : '长行保持单行，用横向滚动查看'
+)
 
 const editorStyle = computed(() => {
     if (props.layout !== 'flow' || typeof props.minHeight !== 'number' || props.minHeight <= 0) {
@@ -191,6 +222,11 @@ watch(readOnly, (val) => {
     } else {
         editor.enable()
     }
+})
+
+watch(autoWrapEnabled, value => {
+    if (!canUseLocalStorage()) return
+    window.localStorage.setItem(NOTE_EDITOR_AUTO_WRAP_STORAGE_KEY, value ? '1' : '0')
 })
 
 const toolbarConfig = {}
@@ -264,6 +300,8 @@ const uploadEditorImage = async (
       if (!image?.url) continue
       insertFn(image.url, image.alt || file.name, image.href || image.url)
     }
+    queueMicrotask(syncValueFromEditor)
+    window.setTimeout(syncValueFromEditor, 0)
 
     if (!uploadedImages.some(image => image?.url)) {
       throw new Error('图片上传成功，但未返回可用地址')
@@ -385,13 +423,44 @@ const editorConfig: any = {
 
 // 组件销毁时，也及时销毁编辑器
 onBeforeUnmount(() => {
+    detachIndentHotkeysRef.value?.()
+    detachIndentHotkeysRef.value = null
     const editor = editorRef.value
     if (editor == null) return
     editor.destroy()
 })
 
+const bindIndentHotkeys = (editor: IDomEditor) => {
+    detachIndentHotkeysRef.value?.()
+    detachIndentHotkeysRef.value = null
+
+    const container = editorContainerRef.value
+    if (!container) return
+
+    const handleKeydown = (event: KeyboardEvent) => {
+        if (event.defaultPrevented || event.key !== 'Tab' || !event.shiftKey) return
+
+        const targetNode = event.target
+        if (!(targetNode instanceof Node) || !container.contains(targetNode)) return
+
+        const targetElement = targetNode instanceof HTMLElement ? targetNode : targetNode.parentElement
+        if (!targetElement?.closest('[data-slate-editor]')) return
+
+        if (!decreaseExpandedSelectionIndent(editor)) return
+
+        event.preventDefault()
+        queueMicrotask(syncValueFromEditor)
+    }
+
+    container.addEventListener('keydown', handleKeydown)
+    detachIndentHotkeysRef.value = () => {
+        container.removeEventListener('keydown', handleKeydown)
+    }
+}
+
 const handleCreated = (editor: any) => {
     editorRef.value = editor // 记录 editor 实例，重要！
+    bindIndentHotkeys(editor)
 
     // 监听自定义菜单事件
     editor.on('image-merge-click', () => {
@@ -569,9 +638,25 @@ const confirmInsertMergedImage = () => {
     min-width: 0;
 }
 
+.editor-toolbar-spacer {
+    flex: 1;
+    min-width: 0;
+}
+
 .attachment-upload-button {
     flex: 0 0 auto;
     margin-right: 8px;
+}
+
+.auto-wrap-toggle {
+    flex: 0 0 auto;
+    margin-right: 12px;
+    color: #606266;
+    user-select: none;
+}
+
+.auto-wrap-toggle :deep(.el-checkbox__label) {
+    font-size: 12px;
 }
 
 .attachment-input {
@@ -591,6 +676,12 @@ const confirmInsertMergedImage = () => {
 .editor-content-area.is-flow {
     height: auto;
     min-height: var(--editor-content-min-height, 500px);
+}
+
+.editor-content-area.is-no-wrap {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 /* 确保编辑器区域填满容器，点击空白处也能触发编辑器焦点 */
@@ -630,6 +721,28 @@ const confirmInsertMergedImage = () => {
     overflow-y: auto;
 }
 
+.editor-content-area.is-no-wrap :deep(.w-e-text-container .w-e-scroll) {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto !important;
+    overflow: auto !important;
+}
+
+.editor-content-area.is-no-wrap :deep([data-w-e-textarea='true']) {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.editor-content-area.is-no-wrap :deep(.w-e-text-container) {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
 :deep(.w-e-text-container blockquote),
 :deep(.w-e-text-container li),
 :deep(.w-e-text-container p),
@@ -640,6 +753,21 @@ const confirmInsertMergedImage = () => {
 
 :deep(.w-e-text-container [data-slate-editor] p) {
     margin: 6px 0 !important;
+}
+
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor]) {
+    min-width: max-content;
+    white-space: pre !important;
+    word-break: normal !important;
+    word-wrap: normal !important;
+}
+
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor] blockquote),
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor] li),
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor] p),
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor] td),
+.editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor] th) {
+    white-space: inherit;
 }
 
 .editor-toolbar-extra {

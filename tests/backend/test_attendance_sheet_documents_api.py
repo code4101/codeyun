@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import re
-
 from sqlmodel import Session, select
 
 from backend.app import app
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.models import SheetDocument, User
 
 
@@ -33,8 +32,18 @@ def _create_admin_user(session: Session) -> User:
     return user
 
 
+def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -> None:
+    save_feature_access_policy_overrides(
+        session,
+        subject_type=FEATURE_ACCESS_SUBJECT_USER,
+        subject_user_id=user_id,
+        overrides={feature_key: "allow"},
+    )
+
+
 def test_attendance_sheet_document_upsert_persists_and_reads_by_owner_and_id(client, session):
     admin_user = _create_admin_user(session)
+    _grant_feature_access(session, user_id=admin_user.id, feature_key="notes.sheets")
     _override_user(admin_user)
 
     try:
@@ -54,7 +63,7 @@ def test_attendance_sheet_document_upsert_persists_and_reads_by_owner_and_id(cli
 
         assert response.status_code == 200
         saved = response.json()
-        assert re.fullmatch(r"[0-9a-z]{12}", saved["id"])
+        assert isinstance(saved["id"], int) and saved["id"] > 0
         assert saved["scope"] == "attendance"
         assert saved["owner_type"] == "course_session"
         assert saved["owner_key"] == "20260412-chanzong-12qi-1jie"
@@ -80,9 +89,10 @@ def test_attendance_sheet_document_upsert_persists_and_reads_by_owner_and_id(cli
         assert by_id.json()["id"] == saved["id"]
 
         stored = session.exec(select(SheetDocument)).one()
-        assert stored.id == saved["id"]
+        assert stored.numeric_id == saved["id"]
         assert stored.scope == "attendance"
         assert stored.document_json["rows"] == [["1", "1", "首条"]]
+        assert stored.owner_user_id == admin_user.id
         assert stored.created_by_user_id == admin_user.id
         assert stored.updated_by_user_id == admin_user.id
     finally:
@@ -91,6 +101,7 @@ def test_attendance_sheet_document_upsert_persists_and_reads_by_owner_and_id(cli
 
 def test_attendance_sheet_document_upsert_reuses_existing_locator_and_increments_version(client, session):
     admin_user = _create_admin_user(session)
+    _grant_feature_access(session, user_id=admin_user.id, feature_key="notes.sheets")
     _override_user(admin_user)
 
     try:
@@ -134,7 +145,7 @@ def test_attendance_sheet_document_upsert_reuses_existing_locator_and_increments
 
         stored_items = session.exec(select(SheetDocument)).all()
         assert len(stored_items) == 1
-        assert stored_items[0].id == first_saved["id"]
+        assert stored_items[0].numeric_id == first_saved["id"]
         assert stored_items[0].version == 2
         assert stored_items[0].document_json["rows"] == [["1", "1", "扩展列"]]
     finally:

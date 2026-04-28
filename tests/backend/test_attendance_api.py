@@ -511,31 +511,39 @@ def test_attendance_config_update_requires_configs_feature(client: TestClient, s
     assert response.json()["detail"] == "当前账号无权访问该功能"
 
 
-def test_attendance_wjx_data_requires_data_feature(client: TestClient, session, auth_user):
-    config = get_or_create_attendance_service_config(session)
-    config.granted_user_ids = [auth_user.id]
-    session.add(config)
+def test_attendance_wjx_data_readonly_listing_is_public(client: TestClient, session):
+    save_feature_access_policy_overrides(
+        session,
+        subject_type=FEATURE_ACCESS_SUBJECT_ANONYMOUS,
+        overrides={"attendance-tools": "deny", "attendance.wjx-data": "deny"},
+    )
+    session.add(
+        AttendanceWjxDataEntry(
+            activity_id="264266843",
+            seq=800,
+            submitted_at_text="2026/4/18 08:00:00",
+            course_name="20260401第45届觉观",
+            student_id_text="39",
+            student_name="吴菲",
+            correction_request="补第2课",
+            process_status="",
+            synced_at=1713426373.0,
+            created_at=1713426373.0,
+            updated_at=1713426373.0,
+        )
+    )
     session.commit()
-
-    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-templates")
 
     public_response = client.get("/api/attendance/wjx-data")
     assert public_response.status_code == 200
-    assert public_response.json()["items"] == []
-
-    save_feature_access_policy_overrides(
-        session,
-        subject_type=FEATURE_ACCESS_SUBJECT_USER,
-        subject_user_id=auth_user.id,
-        overrides={"attendance.wjx-data": "allow"},
-    )
-
-    allowed_response = client.get("/api/attendance/wjx-data")
-    assert allowed_response.status_code == 200
-    assert allowed_response.json()["items"] == []
+    payload = public_response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["seq"] == 800
+    assert payload["items"][0]["student_name"] == "吴菲"
+    assert payload["items"][0]["correction_request"] == "补第2课"
 
 
-def test_attendance_wjx_data_public_view_only_returns_pending_sanitized_rows(client: TestClient, session):
+def test_attendance_wjx_data_public_listing_returns_full_rows(client: TestClient, session):
     session.add_all(
         [
             AttendanceWjxDataEntry(
@@ -606,21 +614,30 @@ def test_attendance_wjx_data_public_view_only_returns_pending_sanitized_rows(cli
     assert response.status_code == 200
     payload = response.json()
 
-    assert payload["total"] == 2
+    assert payload["total"] == 3
     assert payload["sync_state"] is None
-    assert [item["seq"] for item in payload["items"]] == [802, 801]
-    assert [item["course_name"] for item in payload["items"]] == ["20260408第39届念住", "20260401第45届觉观"]
+    assert [item["seq"] for item in payload["items"]] == [803, 802, 801]
+    assert [item["course_name"] for item in payload["items"]] == [
+        "20260415梵呗初阶",
+        "20260408第39届念住",
+        "20260401第45届觉观",
+    ]
 
     first = payload["items"][0]
-    assert first["student_id_text"] == ""
-    assert first["student_name"] == ""
-    assert first["source"] == ""
-    assert first["source_ip"] == ""
-    assert first["correction_request"] == ""
-    assert first["extra_note"] == ""
-    assert first["raw_row"] == {}
+    assert first["student_id_text"] == "18"
+    assert first["student_name"] == "赵六"
+    assert first["source"] == "微信"
+    assert first["source_ip"] == "3.3.3.3"
+    assert first["correction_request"] == "已处理记录"
+    assert first["extra_note"] == "备注3"
+    assert first["raw_row"] == {"2、学号": "18"}
     assert first["foreground_colors"]["course"] is not None
-    assert first["foreground_colors"]["student"] is None
+    assert first["foreground_colors"]["student"] is not None
+
+    pending_response = client.get("/api/attendance/wjx-data", params={"process_status": "__empty__"})
+    assert pending_response.status_code == 200
+    assert pending_response.json()["total"] == 2
+    assert [item["seq"] for item in pending_response.json()["items"]] == [802, 801]
 
 
 def test_attendance_feedback_submission_persists_and_keeps_existing_rows(client: TestClient, session):

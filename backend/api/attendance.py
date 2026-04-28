@@ -47,9 +47,8 @@ from backend.core.attendance_wjx_data import (
     execute_wjx_data_sync,
 )
 from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
-from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
+from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
-from backend.core.feature_access import is_feature_access_allowed
 from backend.core.feature_access_guard import (
     require_any_feature_access_dependency,
     require_feature_access_dependency,
@@ -267,7 +266,7 @@ class AttendanceFeedbackFormMetaUpdateRequest(BaseModel):
 
 
 class AttendanceSheetDocumentResponse(BaseModel):
-    id: str
+    id: int
     scope: str
     owner_type: str
     owner_key: str
@@ -303,9 +302,28 @@ def _normalize_sheet_locator_part(value: str, *, field_name: str, lower: bool = 
     return normalized.lower() if lower else normalized
 
 
+def _normalize_sheet_numeric_id(value: str) -> int:
+    try:
+        numeric_id = int(str(value or "").strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="sheet_id 非法") from exc
+    if numeric_id <= 0:
+        raise HTTPException(status_code=400, detail="sheet_id 非法")
+    return numeric_id
+
+
+def _get_next_sheet_numeric_id(session: Session) -> int:
+    current_max = session.exec(
+        select(SheetDocument.numeric_id)
+        .where(SheetDocument.numeric_id.is_not(None))
+        .order_by(SheetDocument.numeric_id.desc())
+    ).first()
+    return max(int(current_max or 0), 0) + 1
+
+
 def _serialize_sheet_document(document: SheetDocument) -> dict[str, Any]:
     return {
-        "id": document.id,
+        "id": int(document.numeric_id or 0),
         "scope": document.scope,
         "owner_type": document.owner_type,
         "owner_key": document.owner_key,
@@ -908,7 +926,6 @@ def _build_attendance_wjx_data_page(
     page_size: int,
     process_status: str | None = None,
     keyword: str | None = None,
-    public_view: bool = False,
 ) -> AttendanceWjxDataPage:
     activity_id = str(template["activity_id"])
     activity_ids = _list_attendance_wjx_data_activity_ids(template)
@@ -957,35 +974,7 @@ def _build_attendance_wjx_data_page(
         .limit(normalized_page_size)
     )
     items = [serialize_attendance_wjx_data_entry(row) for row in session.exec(statement).all()]
-    if public_view:
-        sanitized_items: list[dict[str, Any]] = []
-        for item in items:
-            colors = dict(item.get("foreground_colors") or {})
-            sanitized_items.append(
-                {
-                    **item,
-                    "source": "",
-                    "source_detail": "",
-                    "source_ip": "",
-                    "student_id_text": "",
-                    "student_name": "",
-                    "foreground_colors": {
-                        "submitted": colors.get("submitted"),
-                        "course": colors.get("course"),
-                        "student": None,
-                    },
-                    "correction_request": "",
-                    "extra_note": "",
-                    "process_status": "",
-                    "process_note": "",
-                    "match_result": {},
-                    "revision_result": {},
-                    "raw_row": {},
-                }
-            )
-        items = sanitized_items
-
-    state = None if public_view else session.get(AttendanceWjxDataSyncState, activity_id)
+    state = session.get(AttendanceWjxDataSyncState, activity_id)
     return AttendanceWjxDataPage(
         items=[AttendanceWjxDataItem.model_validate(item) for item in items],
         total=total,
@@ -1329,7 +1318,7 @@ def get_attendance_sheet_document_by_owner(
     sheet_key: str = Query(...),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+    _: User | None = Depends(require_feature_access_dependency("notes.sheets")),
 ):
     ensure_can_use_attendance_service(current_user, session)
 
@@ -1349,7 +1338,7 @@ def upsert_attendance_sheet_document(
     payload: AttendanceSheetDocumentUpsertRequest,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+    _: User | None = Depends(require_feature_access_dependency("notes.sheets")),
 ):
     current_user = ensure_can_use_attendance_service(current_user, session)
     owner_type = _normalize_sheet_locator_part(payload.owner_type, field_name="owner_type", lower=True)
@@ -1368,6 +1357,7 @@ def upsert_attendance_sheet_document(
     if document is None:
         now = time.time()
         document = SheetDocument(
+            numeric_id=_get_next_sheet_numeric_id(session),
             scope="attendance",
             owner_type=owner_type,
             owner_key=owner_key,
@@ -1376,6 +1366,7 @@ def upsert_attendance_sheet_document(
             engine=payload.engine,
             document_json=document_json,
             version=1,
+            owner_user_id=current_user.id,
             created_by_user_id=current_user.id,
             updated_by_user_id=current_user.id,
             created_at=now,
@@ -1396,6 +1387,10 @@ def upsert_attendance_sheet_document(
     document.title = title
     document.engine = payload.engine
     document.document_json = document_json
+    if document.numeric_id is None:
+        document.numeric_id = _get_next_sheet_numeric_id(session)
+    if document.owner_user_id is None:
+        document.owner_user_id = current_user.id
     document.version = max(int(document.version or 1), 1) + 1
     document.updated_by_user_id = current_user.id
     document.updated_at = time.time()
@@ -1410,11 +1405,13 @@ def get_attendance_sheet_document_by_id(
     sheet_id: str,
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.courses")),
+    _: User | None = Depends(require_feature_access_dependency("notes.sheets")),
 ):
     ensure_can_use_attendance_service(current_user, session)
-    normalized_sheet_id = _normalize_sheet_locator_part(sheet_id, field_name="sheet_id")
-    document = session.get(SheetDocument, normalized_sheet_id)
+    normalized_sheet_id = _normalize_sheet_numeric_id(sheet_id)
+    document = session.exec(
+        select(SheetDocument).where(SheetDocument.numeric_id == normalized_sheet_id)
+    ).first()
     if document is None or document.scope != "attendance":
         raise HTTPException(status_code=404, detail="表格文档不存在")
     return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
@@ -1897,7 +1894,7 @@ def sync_attendance_wjx_data(
     }
 
 
-@router.get("/wjx-data", response_model=AttendanceWjxDataPage)
+@public_router.get("/wjx-data", response_model=AttendanceWjxDataPage)
 def list_attendance_wjx_data(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -1905,37 +1902,15 @@ def list_attendance_wjx_data(
     keyword: Optional[str] = None,
     template_id: Optional[str] = None,
     session: Session = Depends(get_session),
-    current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     template = _resolve_wjx_template_payload(template_id)
-    can_use_full_view = bool(
-        current_user
-        and is_feature_access_allowed(
-            session,
-            feature_key="attendance.wjx-data",
-            current_user=current_user,
-        )
-    )
-
-    if can_use_full_view:
-        ensure_can_use_attendance_service(current_user, session)
-        return _build_attendance_wjx_data_page(
-            session,
-            template=template,
-            page=page,
-            page_size=page_size,
-            process_status=process_status,
-            keyword=keyword,
-        )
-
     return _build_attendance_wjx_data_page(
         session,
         template=template,
         page=page,
         page_size=page_size,
-        process_status="__empty__",
-        keyword=None,
-        public_view=True,
+        process_status=process_status,
+        keyword=keyword,
     )
 
 

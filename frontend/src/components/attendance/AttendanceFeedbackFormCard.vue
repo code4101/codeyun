@@ -48,6 +48,7 @@ const form = reactive<FeedbackDraft>({
 })
 
 const lastSubmittedAt = ref('')
+const lastSubmittedDraftKey = ref<string | null>(null)
 const formMeta = ref<AttendanceFeedbackFormMeta | null>(null)
 const loadingFormMeta = ref(false)
 const readyToPersist = ref(false)
@@ -68,6 +69,11 @@ const displayCourseOptions = computed(() => (
 const validCourseOptions = computed(() => new Set(displayCourseOptions.value))
 const pageTitle = computed(() => (isWorkspaceMode.value ? '采集配置' : '考勤问题反馈表'))
 const resolvedStandalonePath = computed(() => props.standalonePath ?? ATTENDANCE_WJX_COLLECT_STANDALONE_PATH)
+const currentNormalizedDraftKey = computed(() => buildFeedbackDraftKey())
+const hasSubmittedCurrentDraft = computed(() => (
+  lastSubmittedDraftKey.value !== null
+  && lastSubmittedDraftKey.value === currentNormalizedDraftKey.value
+))
 
 function normalizeStoredText(value: unknown) {
   return typeof value === 'string' ? value : ''
@@ -93,6 +99,16 @@ function normalizeCourseNames(items: string[]) {
     result.push(text)
   }
   return result
+}
+
+function buildFeedbackDraftKey() {
+  return JSON.stringify({
+    course: hasCourseOption(form.course) ? form.course : form.course.trim(),
+    studentId: form.studentId.trim(),
+    studentName: form.studentName.trim(),
+    correctionRequest: form.correctionRequest.trim(),
+    extraNote: form.extraNote.trim(),
+  } satisfies FeedbackDraft)
 }
 
 async function loadFeedbackFormMeta(showError = true) {
@@ -289,6 +305,13 @@ async function submitForm() {
   const normalizedStudentName = form.studentName.trim()
   const normalizedCorrectionRequest = form.correctionRequest.trim()
   const normalizedExtraNote = form.extraNote.trim()
+  const submittedDraftKey = JSON.stringify({
+    course: normalizedCourse,
+    studentId: normalizedStudentId,
+    studentName: normalizedStudentName,
+    correctionRequest: normalizedCorrectionRequest,
+    extraNote: normalizedExtraNote,
+  } satisfies FeedbackDraft)
 
   submitting.value = true
   try {
@@ -301,6 +324,7 @@ async function submitForm() {
     })
 
     lastSubmittedAt.value = saved.submitted_at_text || new Date().toLocaleString('zh-CN', { hour12: false })
+    lastSubmittedDraftKey.value = submittedDraftKey
 
     form.course = normalizedCourse
     form.studentId = normalizedStudentId
@@ -595,11 +619,19 @@ useSortableList({
       </section>
 
         <div class="action-row">
-          <el-button size="large" type="primary" :loading="submitting" @click="submitForm">提交</el-button>
+          <el-button
+            size="large"
+            type="primary"
+            :loading="submitting"
+            :disabled="hasSubmittedCurrentDraft"
+            @click="submitForm"
+          >
+            提交
+          </el-button>
         </div>
 
         <div v-if="lastSubmittedAt" class="submit-status">
-          {{ lastSubmittedAt }} 已提交
+          {{ lastSubmittedAt }} 已提交{{ hasSubmittedCurrentDraft ? '，修改内容后可再次提交' : '，当前内容已变更，可重新提交' }}
         </div>
       </template>
     </div>

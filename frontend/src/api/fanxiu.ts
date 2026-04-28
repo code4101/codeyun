@@ -63,6 +63,233 @@ export interface FanxiuStatusSnapshot extends FanxiuStatusConfig {
   raw_status?: Record<string, unknown> | null;
 }
 
+export type FanxiuInventoryType = '' | '攻击' | '防御' | '灵力' | '辅助';
+export type FanxiuMagicTreasureCategory = '法宝' | '先天古宝' | '后天古宝';
+
+export interface FanxiuInventoryItem {
+  id: string;
+  name: string;
+  category?: string;
+  rank: number;
+  shenlian: number;
+  type: FanxiuInventoryType;
+  quality: number | null;
+  main_use: string;
+  acquisition: string;
+  date: string;
+  note_id?: string | null;
+}
+
+export type FanxiuWardrobeItem = FanxiuInventoryItem;
+export type FanxiuInventorySectionSnapshot = Record<string, FanxiuInventoryItem[]>;
+
+export interface FanxiuWardrobeHallSnapshot {
+  shizhuang: FanxiuInventoryItem[];
+  wuqi: FanxiuInventoryItem[];
+  huanshen: FanxiuInventoryItem[];
+  beishi: FanxiuInventoryItem[];
+  yuqi: FanxiuInventoryItem[];
+}
+
+export interface FanxiuSpiritBeastHallSnapshot {
+  lingshou: FanxiuInventoryItem[];
+  shengshou: FanxiuInventoryItem[];
+}
+
+export interface FanxiuMagicTreasureHallSnapshot {
+  fabao: FanxiuInventoryItem[];
+  xiantiangubao: FanxiuInventoryItem[];
+  houtiangubao: FanxiuInventoryItem[];
+}
+
+export interface FanxiuMagicTreasureOcrImportResponse {
+  section_key: string;
+  lines: string[];
+  item: FanxiuInventoryItem;
+}
+
+export interface FanxiuFormationRequirementImportItem {
+  text: string;
+  effect_text: string;
+}
+
+export interface FanxiuFormationEffectDetailImportItem {
+  effect_name: string;
+  effect_detail: string;
+}
+
+export interface FanxiuFormationRequirementOcrImportResponse {
+  lines: string[];
+  requirements: FanxiuFormationRequirementImportItem[];
+  effect_details: FanxiuFormationEffectDetailImportItem[];
+}
+
+export interface FanxiuActivityItem {
+  id: string;
+  name: string;
+  cross_count: number;
+  start_date: string;
+  end_date: string;
+  note_id?: string | null;
+}
+
+export interface FanxiuActivityListSnapshot {
+  items: FanxiuActivityItem[];
+}
+
+export interface FanxiuRegionCharacterItem {
+  id: string;
+  region_name: string;
+  server_name: string;
+  guild_name: string;
+  role_name: string;
+  attack: string;
+  cultivation_level: string;
+  recorded_date: string;
+  disabled?: boolean;
+  created_at?: number;
+  updated_at?: number;
+  disabled_at?: number | null;
+}
+
+export interface FanxiuRegionCharacterSnapshot {
+  characters: FanxiuRegionCharacterItem[];
+}
+
+export interface FanxiuRegionCharacterUpdate {
+  guild_name?: string;
+  role_name?: string;
+  attack?: string;
+  cultivation_level?: string;
+  recorded_date?: string;
+  disabled?: boolean;
+}
+
+export interface FanxiuRegionServerItem {
+  id: string;
+  region_name: string;
+  order: number;
+  name: string;
+  open_date: string;
+  mark_type?: string;
+  mark_label?: string;
+  mark_title?: string;
+}
+
+export interface FanxiuRegionAreaItem {
+  id: string;
+  number: number;
+  name: string;
+  start_date: string;
+  end_date: string;
+  known_count: number;
+  servers: FanxiuRegionServerItem[];
+}
+
+export interface FanxiuRegionDataSnapshot {
+  regions: FanxiuRegionAreaItem[];
+}
+
+export interface FanxiuRegionServerCandidate {
+  region_name: string;
+  server_name: string;
+}
+
+export interface FanxiuModaoInvasionExchangeItem {
+  id: string;
+  name: string;
+  magic_crystal_cost: number;
+  purchase_limit: number;
+  checked: boolean;
+}
+
+export interface FanxiuModaoInvasionPersonalRankingItem {
+  id: string;
+  rank: number;
+  name: string;
+  plane: string;
+  merit: number;
+}
+
+export interface FanxiuShouyuanExplorationIncomeSpeedItem {
+  id: string;
+  captured_date: string;
+  search_count: number;
+  beast_crystal: number;
+  score: number;
+  merit: number;
+  remark: string;
+}
+
+export interface FanxiuShouyuanExplorationConsumptionEvaluationItem {
+  id: string;
+  label: string;
+  current: number;
+  target: number;
+  speed: number;
+}
+
+export interface FanxiuModaoInvasionRecord {
+  id: string;
+  activity_id: string;
+  label: string;
+  personal_rankings: FanxiuModaoInvasionPersonalRankingItem[];
+  items: FanxiuModaoInvasionExchangeItem[];
+}
+
+export interface FanxiuModaoInvasionSnapshot {
+  records: FanxiuModaoInvasionRecord[];
+}
+
+export type FanxiuShouyuanExplorationExchangeItem = FanxiuModaoInvasionExchangeItem;
+export type FanxiuShouyuanExplorationPersonalRankingItem = FanxiuModaoInvasionPersonalRankingItem;
+
+export interface FanxiuShouyuanExplorationRecord {
+  id: string;
+  activity_id: string;
+  label: string;
+  personal_rankings: FanxiuShouyuanExplorationPersonalRankingItem[];
+  income_speeds: FanxiuShouyuanExplorationIncomeSpeedItem[];
+  consumption_evaluations: FanxiuShouyuanExplorationConsumptionEvaluationItem[];
+  items: FanxiuShouyuanExplorationExchangeItem[];
+}
+
+export interface FanxiuShouyuanExplorationSnapshot {
+  records: FanxiuShouyuanExplorationRecord[];
+}
+
+export interface FanxiuModaoInvasionOcrImportResponse {
+  lines: string[];
+  items: FanxiuModaoInvasionExchangeItem[];
+}
+
+export interface FanxiuModaoInvasionPersonalRankingOcrImportResponse {
+  lines: string[];
+  items: FanxiuModaoInvasionPersonalRankingItem[];
+}
+
+export interface FanxiuShouyuanExplorationOcrImportResponse {
+  lines: string[];
+  items: FanxiuShouyuanExplorationExchangeItem[];
+}
+
+export interface FanxiuShouyuanExplorationPersonalRankingOcrImportResponse {
+  lines: string[];
+  items: FanxiuShouyuanExplorationPersonalRankingItem[];
+}
+
+export interface FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse {
+  lines: string[];
+  item: FanxiuShouyuanExplorationIncomeSpeedItem;
+}
+
+export interface FanxiuRegionCharacterOcrImportResponse {
+  lines: string[];
+  item: FanxiuRegionCharacterItem;
+  created?: boolean;
+  skipped_reason?: string;
+}
+
 const normalizeFanxiuNote = (raw: any): NoteNode => {
   const normalizeTimestamp = (value: unknown) => {
     const numeric = typeof value === 'number' ? value : Number(value ?? 0);
@@ -149,4 +376,234 @@ export const parseFanxiuStatus = (rawStatus: Record<string, unknown>) => {
 
 export const saveFanxiuStatus = (rawStatus: Record<string, unknown>) => {
   return api.put<FanxiuStatusSnapshot>('/fanxiu/status', { raw_status: rawStatus }).then(res => res.data);
+};
+
+export const getFanxiuWardrobeHall = () => {
+  return api.get<FanxiuWardrobeHallSnapshot>('/fanxiu/inventory/wardrobe-hall').then(res => res.data);
+};
+
+export const saveFanxiuWardrobeHall = (payload: FanxiuWardrobeHallSnapshot) => {
+  return api.put<FanxiuWardrobeHallSnapshot>('/fanxiu/inventory/wardrobe-hall', payload).then(res => res.data);
+};
+
+export const getFanxiuWardrobeNote = (itemId: string) => {
+  return api
+    .get<NoteNode | null>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`)
+    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+};
+
+export const saveFanxiuWardrobeNote = (itemId: string, data: Partial<NoteNode>) => {
+  return api
+    .put<NoteNode>(`/fanxiu/inventory/wardrobe-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+    .then(res => normalizeFanxiuNote(res.data));
+};
+
+export const getFanxiuSpiritBeastHall = () => {
+  return api.get<FanxiuSpiritBeastHallSnapshot>('/fanxiu/inventory/spirit-beast-hall').then(res => res.data);
+};
+
+export const saveFanxiuSpiritBeastHall = (payload: FanxiuSpiritBeastHallSnapshot) => {
+  return api.put<FanxiuSpiritBeastHallSnapshot>('/fanxiu/inventory/spirit-beast-hall', payload).then(res => res.data);
+};
+
+export const getFanxiuSpiritBeastNote = (itemId: string) => {
+  return api
+    .get<NoteNode | null>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`)
+    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+};
+
+export const saveFanxiuSpiritBeastNote = (itemId: string, data: Partial<NoteNode>) => {
+  return api
+    .put<NoteNode>(`/fanxiu/inventory/spirit-beast-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+    .then(res => normalizeFanxiuNote(res.data));
+};
+
+export const getFanxiuMagicTreasureHall = () => {
+  return api.get<FanxiuMagicTreasureHallSnapshot>('/fanxiu/inventory/magic-treasure-hall').then(res => res.data);
+};
+
+export const saveFanxiuMagicTreasureHall = (payload: FanxiuMagicTreasureHallSnapshot) => {
+  return api.put<FanxiuMagicTreasureHallSnapshot>('/fanxiu/inventory/magic-treasure-hall', payload).then(res => res.data);
+};
+
+export const getFanxiuMagicTreasureNote = (itemId: string) => {
+  return api
+    .get<NoteNode | null>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`)
+    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+};
+
+export const saveFanxiuMagicTreasureNote = (itemId: string, data: Partial<NoteNode>) => {
+  return api
+    .put<NoteNode>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+    .then(res => normalizeFanxiuNote(res.data));
+};
+
+export const importFanxiuMagicTreasureFromOcr = (sectionKey: string, image: File) => {
+  const formData = new FormData();
+  formData.append('section_key', sectionKey);
+  formData.append('image', image);
+  return api
+    .post<FanxiuMagicTreasureOcrImportResponse>('/fanxiu/inventory/magic-treasure-import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const importFanxiuFormationRequirementsFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuFormationRequirementOcrImportResponse>('/fanxiu/formations/requirements-import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuActivityList = () => {
+  return api.get<FanxiuActivityListSnapshot>('/fanxiu/activity-list').then(res => res.data);
+};
+
+export const saveFanxiuActivityList = (payload: FanxiuActivityListSnapshot) => {
+  return api.put<FanxiuActivityListSnapshot>('/fanxiu/activity-list', payload).then(res => res.data);
+};
+
+export const getFanxiuRegionData = () => {
+  return api.get<FanxiuRegionDataSnapshot>('/fanxiu/region-data').then(res => res.data);
+};
+
+export const getFanxiuRegionCharacters = () => {
+  return api.get<FanxiuRegionCharacterSnapshot>('/fanxiu/region-data/characters').then(res => res.data);
+};
+
+export const getFanxiuRegionCharacterHistory = (params: Partial<Pick<FanxiuRegionCharacterItem, 'region_name' | 'server_name' | 'guild_name' | 'role_name'>> & { include_disabled?: boolean } = {}) => {
+  return api.get<FanxiuRegionCharacterSnapshot>('/fanxiu/region-data/characters/history', { params }).then(res => res.data);
+};
+
+export const updateFanxiuRegionCharacter = (characterId: string, payload: FanxiuRegionCharacterUpdate) => {
+  return api.patch<FanxiuRegionCharacterItem>(`/fanxiu/region-data/characters/${characterId}`, payload).then(res => res.data);
+};
+
+export const disableFanxiuRegionCharacter = (characterId: string) => {
+  return api.delete<FanxiuRegionCharacterItem>(`/fanxiu/region-data/characters/${characterId}`).then(res => res.data);
+};
+
+export const importFanxiuRegionCharacterFromOcr = (
+  image: File,
+  serverCandidates: FanxiuRegionServerCandidate[] = [],
+  targetServer: FanxiuRegionServerCandidate | null = null,
+) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  formData.append('server_candidates', JSON.stringify(serverCandidates));
+  if (targetServer) {
+    formData.append('target_region_name', targetServer.region_name);
+    formData.append('target_server_name', targetServer.server_name);
+  }
+  return api
+    .post<FanxiuRegionCharacterOcrImportResponse>('/fanxiu/region-data/characters/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuModaoInvasionExchangeList = () => {
+  return api.get<FanxiuModaoInvasionSnapshot>('/fanxiu/activity-list/modao-invasion').then(res => res.data);
+};
+
+export const saveFanxiuModaoInvasionExchangeList = (payload: FanxiuModaoInvasionSnapshot) => {
+  return api.put<FanxiuModaoInvasionSnapshot>('/fanxiu/activity-list/modao-invasion', payload).then(res => res.data);
+};
+
+export const importFanxiuModaoInvasionExchangeListFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuModaoInvasionOcrImportResponse>('/fanxiu/activity-list/modao-invasion/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const importFanxiuModaoInvasionPersonalRankingsFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuModaoInvasionPersonalRankingOcrImportResponse>('/fanxiu/activity-list/modao-invasion/personal-rankings/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuShouyuanExplorationExchangeList = () => {
+  return api.get<FanxiuShouyuanExplorationSnapshot>('/fanxiu/activity-list/shouyuan-exploration').then(res => res.data);
+};
+
+export const saveFanxiuShouyuanExplorationExchangeList = (payload: FanxiuShouyuanExplorationSnapshot) => {
+  return api.put<FanxiuShouyuanExplorationSnapshot>('/fanxiu/activity-list/shouyuan-exploration', payload).then(res => res.data);
+};
+
+export const importFanxiuShouyuanExplorationExchangeListFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuShouyuanExplorationOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const importFanxiuShouyuanExplorationPersonalRankingsFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuShouyuanExplorationPersonalRankingOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/personal-rankings/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const importFanxiuShouyuanExplorationIncomeSpeedFromOcr = (image: File) => {
+  const formData = new FormData();
+  formData.append('image', image);
+  return api
+    .post<FanxiuShouyuanExplorationIncomeSpeedOcrImportResponse>('/fanxiu/activity-list/shouyuan-exploration/income-speeds/import/ocr', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuActivityNote = (itemId: string) => {
+  return api
+    .get<NoteNode | null>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`)
+    .then(res => (res.data ? normalizeFanxiuNote(res.data) : null));
+};
+
+export const saveFanxiuActivityNote = (itemId: string, data: Partial<NoteNode>) => {
+  return api
+    .put<NoteNode>(`/fanxiu/activity-notes/${encodeURIComponent(itemId)}`, toFanxiuPayload(data))
+    .then(res => normalizeFanxiuNote(res.data));
 };

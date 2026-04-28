@@ -19,6 +19,20 @@
 - 安装依赖：`npm install --prefix frontend`
 - 单独启动前端：`npm run dev --prefix frontend`
 
+## 前端页面/菜单挂载约定（重要）
+
+- `frontend/src/standard/**/index.ts` 只负责注册页面路由，不会自动把页面加到侧边栏菜单。
+- 如果新增页面需要在左侧导航里可见，至少要同步检查这几层：
+  - `frontend/src/standard/**/index.ts`：页面路由定义
+  - `frontend/src/features/access/permissionRegistry.json`：补 `route_paths`，需要作为菜单点击项时还要补 `menu_paths`
+  - `frontend/src/layout/MainLayout.vue`：侧边栏菜单是手写结构，必须显式加 `el-menu-item` 或 `el-sub-menu`
+- 如果是“某页面下的新子页面”，不要只复用父页面 `menuPath` 就结束；要先判断用户是否需要在侧边栏直接看到这个子项。
+- 对带子菜单的场景，还要同步检查 `MainLayout.vue` 里的：
+  - 路径常量和标题常量
+  - `*MenuVisible` 之类的显示条件
+  - `defaultOpeneds` 里的默认展开逻辑
+  - 必要时的 submenu 标题点击跳转入口
+
 ## 部署运维约定（重要）
 
 - 仓库内的 GitHub Actions 自动部署链路已于 `2026-04-16` 移除，不要再假设 `.github/workflows/deploy-ubuntu24.yml -> deploy/update.sh` 仍然存在。

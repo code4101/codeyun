@@ -277,7 +277,7 @@ const refreshCompanions = () => {
                         class="cell-number"
                         :min="1"
                         :max="10"
-                        :controls="false"
+                        controls-position="right"
                       />
                     </td>
                     <td class="value-column">

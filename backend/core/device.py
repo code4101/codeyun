@@ -72,6 +72,43 @@ def _get_machine_state_dir() -> str:
     return os.path.join(os.path.expanduser("~"), ".codeyun")
 
 
+def _pid_exists(pid: int) -> bool:
+    try:
+        return psutil.pid_exists(pid)
+    except Exception:
+        return False
+
+
+def _wait_for_pid_exit(pid: int, timeout: float = 3.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pid_exists(pid):
+            return True
+        time.sleep(0.1)
+    return not _pid_exists(pid)
+
+
+def _taskkill_process_tree(pid: int, timeout: float = 8.0) -> bool:
+    if sys.platform != "win32":
+        return False
+
+    try:
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+            creationflags=WINDOWS_CREATE_NO_WINDOW,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return not _pid_exists(pid)
+
+    if result.returncode == 0:
+        return _wait_for_pid_exit(pid, timeout=2.0)
+    return not _pid_exists(pid)
+
+
 MACHINE_STATE_DIR = _get_machine_state_dir()
 MACHINE_IDENTITY_FILE = os.path.join(MACHINE_STATE_DIR, "device_identity.json")
 
@@ -1070,18 +1107,55 @@ class LocalDevice(BaseDevice):
 
     def kill_process_by_pid(self, pid: int) -> bool:
         try:
-            p = psutil.Process(pid)
-            p.terminate()
-            try:
-                p.wait(timeout=2)
-            except psutil.TimeoutExpired:
-                p.kill()
-            return True
+            root = psutil.Process(pid)
         except psutil.NoSuchProcess:
-            return True # Already gone
+            return True
         except Exception as e:
             print(f"Failed to kill {pid}: {e}")
             return False
+
+        try:
+            targets = root.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            targets = []
+
+        targets.append(root)
+        deduped_targets = []
+        seen_pids = set()
+        for proc in targets:
+            if proc.pid in seen_pids:
+                continue
+            seen_pids.add(proc.pid)
+            deduped_targets.append(proc)
+
+        for proc in reversed(deduped_targets):
+            try:
+                proc.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        try:
+            _, alive = psutil.wait_procs(deduped_targets, timeout=2)
+        except psutil.AccessDenied:
+            alive = [proc for proc in deduped_targets if _pid_exists(proc.pid)]
+        for proc in alive:
+            try:
+                proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
+        try:
+            _, alive = psutil.wait_procs(alive, timeout=2)
+        except psutil.AccessDenied:
+            alive = [proc for proc in alive if _pid_exists(proc.pid)]
+        if not alive:
+            return True
+
+        if _taskkill_process_tree(pid):
+            return True
+
+        print(f"Failed to kill {pid}: remaining pids={[proc.pid for proc in alive if _pid_exists(proc.pid)]}")
+        return not any(_pid_exists(proc.pid) for proc in deduped_targets)
 
     def associate_process(self, task_id: str, pid: int) -> Dict[str, Any]:
         with self.lock:
@@ -1225,11 +1299,8 @@ class LocalDevice(BaseDevice):
                 except:
                     create_time = None
 
-                proc.terminate()
-                try:
-                    proc.wait(timeout=2)
-                except psutil.TimeoutExpired:
-                    proc.kill()
+                if not self.kill_process_by_pid(proc.pid):
+                    raise Exception(f"Failed to stop process tree pid={proc.pid}")
                 
                 # Record completion info
                 self.last_run_info[task_id] = {
