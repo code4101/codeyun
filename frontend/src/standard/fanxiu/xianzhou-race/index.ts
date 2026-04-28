@@ -1,8 +1,8 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 const page: AppPageDefinition = {
-  routeName: 'XianzhouRace',
-  canonicalPath: '/fanxiu/xianzhou-race',
+  routeName: 'FanxiuXianzhouMarathon',
+  canonicalPath: '/fanxiu/activity-list/xianzhou-marathon',
   component: () => import('./page.vue'),
 }
 

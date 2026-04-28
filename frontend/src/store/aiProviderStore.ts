@@ -1,18 +1,23 @@
 import { defineStore } from 'pinia'
 
 import {
+  activateAiChatProviderBaseUrl,
   activateAiChatProviderKey,
   createAiChatCustomProvider,
   deleteAiChatCustomProvider,
+  deleteAiChatProviderBaseUrl,
   deleteAiChatProviderConfig,
   deleteAiChatProviderKey,
   fetchAiChatProviders,
   fetchAiChatSavedConfigs,
   saveAiChatProviderConfig,
+  updateAiChatProviderBaseUrl,
+  updateAiChatProviderKey,
   type AiChatCreateCustomProviderRequest,
   type AiChatProviderSummary,
   type AiChatProvidersResponse,
   type AiChatSavedApiKeySummary,
+  type AiChatSavedBaseUrlSummary,
   type AiChatSavedProviderConfig,
   type AiChatStatusResponse,
 } from '@/api/aiChat'
@@ -31,6 +36,8 @@ export interface AiProviderRuntimeConfig {
   preferredModels: string[]
   hasSavedApiKey: boolean
   hasAccountConfig: boolean
+  activeBaseUrlId?: string | null
+  savedBaseUrls: AiChatSavedBaseUrlSummary[]
   activeKeyId?: string | null
   savedKeys: AiChatSavedApiKeySummary[]
   updatedAt?: number | null
@@ -55,6 +62,8 @@ function buildEmptyProviderConfig(): AiProviderRuntimeConfig {
     preferredModels: [],
     hasSavedApiKey: false,
     hasAccountConfig: false,
+    activeBaseUrlId: null,
+    savedBaseUrls: [],
     activeKeyId: null,
     savedKeys: [],
     updatedAt: null,
@@ -249,6 +258,8 @@ export const useAiProviderStore = defineStore('aiProvider', {
           ...current,
           hasSavedApiKey: false,
           hasAccountConfig: false,
+          activeBaseUrlId: null,
+          savedBaseUrls: [],
           activeKeyId: null,
           savedKeys: [],
           updatedAt: null,
@@ -316,7 +327,9 @@ export const useAiProviderStore = defineStore('aiProvider', {
         ),
         apiKey: '',
         hasSavedApiKey: item.has_api_key,
-        hasAccountConfig: Boolean(item.base_url || item.preferred_models?.length || item.preferred_model || item.has_api_key),
+        hasAccountConfig: Boolean(item.base_url || item.base_urls?.length || item.preferred_models?.length || item.preferred_model || item.has_api_key),
+        activeBaseUrlId: item.active_base_url_id ?? null,
+        savedBaseUrls: item.base_urls ?? [],
         activeKeyId: item.active_key_id ?? null,
         savedKeys: item.keys ?? [],
         updatedAt: item.updated_at ?? null,
@@ -474,18 +487,17 @@ export const useAiProviderStore = defineStore('aiProvider', {
       options: {
         includeApiKey?: boolean
         clearApiKey?: boolean
-        apiKeyLabel?: string
+        baseUrl?: string | null
       } = {},
     ) {
       const includeApiKey = options.includeApiKey ?? true
       const clearApiKey = options.clearApiKey ?? false
       const providerConfig = this.getProviderConfig(providerId)
       const saved = await saveAiChatProviderConfig(providerId, {
-        base_url: providerConfig.baseUrl.trim(),
+        base_url: options.baseUrl === undefined ? providerConfig.baseUrl.trim() : (options.baseUrl ?? '').trim(),
         preferred_model: providerConfig.preferredModels[0] ?? null,
         preferred_models: providerConfig.preferredModels,
         api_key: includeApiKey && providerConfig.apiKey.trim() ? providerConfig.apiKey.trim() : undefined,
-        api_key_label: includeApiKey && providerConfig.apiKey.trim() ? (options.apiKeyLabel ?? '').trim() || undefined : undefined,
         clear_api_key: clearApiKey,
       })
       this.applySavedProviderConfig(saved)
@@ -502,6 +514,8 @@ export const useAiProviderStore = defineStore('aiProvider', {
         apiKey: '',
         hasSavedApiKey: false,
         hasAccountConfig: false,
+        activeBaseUrlId: null,
+        savedBaseUrls: [],
         activeKeyId: null,
         savedKeys: [],
         updatedAt: null,
@@ -514,8 +528,32 @@ export const useAiProviderStore = defineStore('aiProvider', {
       return saved
     },
 
+    async activateProviderBaseUrl(providerId: string, baseUrlId: string) {
+      const saved = await activateAiChatProviderBaseUrl(providerId, baseUrlId)
+      this.applySavedProviderConfig(saved)
+      return saved
+    },
+
     async deleteProviderKey(providerId: string, keyId: string) {
       const saved = await deleteAiChatProviderKey(providerId, keyId)
+      this.applySavedProviderConfig(saved)
+      return saved
+    },
+
+    async deleteProviderBaseUrl(providerId: string, baseUrlId: string) {
+      const saved = await deleteAiChatProviderBaseUrl(providerId, baseUrlId)
+      this.applySavedProviderConfig(saved)
+      return saved
+    },
+
+    async updateProviderBaseUrl(providerId: string, baseUrlId: string, baseUrl: string) {
+      const saved = await updateAiChatProviderBaseUrl(providerId, baseUrlId, baseUrl)
+      this.applySavedProviderConfig(saved)
+      return saved
+    },
+
+    async updateProviderKey(providerId: string, keyId: string, apiKey: string) {
+      const saved = await updateAiChatProviderKey(providerId, keyId, apiKey)
       this.applySavedProviderConfig(saved)
       return saved
     },
@@ -528,6 +566,8 @@ export const useAiProviderStore = defineStore('aiProvider', {
         apiKey: '',
         hasSavedApiKey: false,
         hasAccountConfig: false,
+        activeBaseUrlId: null,
+        savedBaseUrls: [],
         activeKeyId: null,
         savedKeys: [],
         updatedAt: null,

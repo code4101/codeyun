@@ -103,8 +103,11 @@ NOTE_AI_LIFECYCLE_OPTIONS = (
     {"key": "done", "label": "完成", "description": "已完成，可按进度展示"},
     {"key": "delete", "label": "废弃", "description": "已取消"},
 )
+NOTE_AI_REFERENCE_SAMPLE_LIMIT = 40
+NOTE_AI_REFERENCE_PER_COMBO_LIMIT = 4
 NOTE_AI_HTML_BREAK_RE = re.compile(r"</?(?:p|div|li|tr|h[1-6]|blockquote)\b[^>]*>|<br\s*/?>", re.IGNORECASE)
 NOTE_AI_HTML_TAG_RE = re.compile(r"<[^>]+>")
+NOTE_AI_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -608,10 +611,214 @@ def _normalize_note_ai_choice(
     return normalized
 
 
+def _normalize_note_ai_title(value: Any, limit: int = 120) -> str:
+    normalized = NOTE_AI_WHITESPACE_RE.sub(" ", str(value or "")).strip()
+    if len(normalized) > limit:
+        normalized = normalized[: max(1, limit - 1)].rstrip() + "…"
+    return normalized
+
+
+def _build_note_ai_title_tokens(title: str) -> set[str]:
+    normalized = str(title or "").casefold()
+    tokens: set[str] = set()
+    for part in NOTE_AI_TITLE_TOKEN_RE.findall(normalized):
+        if re.fullmatch(r"[a-z0-9]+", part):
+            tokens.add(part)
+            continue
+        if len(part) <= 4:
+            tokens.add(part)
+        tokens.update(char for char in part if char.strip())
+        tokens.update(part[index:index + 2] for index in range(len(part) - 1))
+    return {token for token in tokens if token}
+
+
+def _resolve_note_ai_taxonomy_snapshot(
+    *,
+    note_categories: Any,
+    primary_category: Any,
+    note_form: Any,
+    note_scene: Any,
+    lifecycle_stage: Any,
+    note_types: Any,
+    node_type: Any,
+    note_kind: Any,
+    node_status: Any,
+    color: Any,
+) -> dict[str, str]:
+    has_explicit_taxonomy = bool(note_categories or primary_category or note_form or note_scene or lifecycle_stage)
+    if has_explicit_taxonomy:
+        fallback_category = str(primary_category or NOTE_CATEGORY_DEFAULT).strip() or NOTE_CATEGORY_DEFAULT
+        normalized_categories = normalize_note_categories(note_categories, fallback_category=fallback_category)
+        return {
+            "primary_category": derive_primary_category(normalized_categories, fallback_category),
+            "note_form": normalize_note_form(note_form, default=NOTE_FORM_DEFAULT),
+            "note_scene": normalize_note_scene(note_scene or note_kind, default=NOTE_SCENE_DEFAULT),
+            "lifecycle_stage": normalize_lifecycle_stage(
+                lifecycle_stage or node_status,
+                default=NOTE_LIFECYCLE_STAGE_DEFAULT,
+            ),
+        }
+
+    legacy_taxonomy = derive_note_taxonomy_from_legacy(
+        _resolve_effective_note_types_payload(note_types, node_type, color),
+        node_type=str(node_type or NOTE_TYPE_DEFAULT).strip() or NOTE_TYPE_DEFAULT,
+        note_kind=str(note_kind or NOTE_KIND_DEFAULT).strip() or NOTE_KIND_DEFAULT,
+        node_status=str(node_status or NOTE_LIFECYCLE_STAGE_DEFAULT).strip() or NOTE_LIFECYCLE_STAGE_DEFAULT,
+    )
+    return {
+        "primary_category": str(legacy_taxonomy["primary_category"]),
+        "note_form": str(legacy_taxonomy["note_form"]),
+        "note_scene": str(legacy_taxonomy["note_scene"]),
+        "lifecycle_stage": str(legacy_taxonomy["lifecycle_stage"]),
+    }
+
+
+def _score_note_ai_reference_title(current_title: str, current_tokens: set[str], candidate_title: str) -> int:
+    if not current_title or not candidate_title:
+        return 0
+
+    score = 0
+    if candidate_title == current_title:
+        score += 1000
+    elif candidate_title in current_title or current_title in candidate_title:
+        score += 200
+
+    candidate_tokens = _build_note_ai_title_tokens(candidate_title)
+    if current_tokens and candidate_tokens:
+        shared = len(current_tokens & candidate_tokens)
+        score += shared * 20
+        if shared:
+            score += int((shared / max(len(current_tokens), len(candidate_tokens))) * 100)
+
+    return score
+
+
+def _collect_note_ai_reference_lines(
+    note: NoteNode,
+    *,
+    palette_items: list[dict[str, Any]],
+    session: Session,
+    limit: int = NOTE_AI_REFERENCE_SAMPLE_LIMIT,
+) -> list[str]:
+    form_labels = {item["key"]: item["label"] for item in NOTE_AI_FORM_OPTIONS}
+    stage_labels = {item["key"]: item["label"] for item in NOTE_AI_LIFECYCLE_OPTIONS}
+    category_labels = {
+        str(item.get("key") or "").strip(): str(item.get("label") or "").strip() or str(item.get("key") or "").strip()
+        for item in palette_items
+        if str(item.get("key") or "").strip()
+    }
+    current_title = _normalize_note_ai_title(note.title, limit=200).casefold()
+    current_tokens = _build_note_ai_title_tokens(current_title)
+    rows = session.exec(
+        select(
+            NoteNode.id,
+            NoteNode.title,
+            NoteNode.note_categories,
+            NoteNode.primary_category,
+            NoteNode.note_form,
+            NoteNode.note_scene,
+            NoteNode.lifecycle_stage,
+            NoteNode.note_types,
+            NoteNode.node_type,
+            NoteNode.note_kind,
+            NoteNode.node_status,
+            NoteNode.color,
+            NoteNode.updated_at,
+        ).where(
+            NoteNode.user_id == note.user_id,
+            NoteNode.id != note.id,
+            NoteNode.title.is_not(None),
+        )
+    ).all()
+
+    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    seen_lines: set[str] = set()
+    for (
+        _candidate_id,
+        raw_title,
+        note_categories,
+        primary_category_value,
+        note_form_value,
+        note_scene_value,
+        lifecycle_stage_value,
+        note_types,
+        node_type,
+        note_kind,
+        node_status,
+        color,
+        updated_at,
+    ) in rows:
+        title = _normalize_note_ai_title(raw_title)
+        if not title:
+            continue
+
+        taxonomy = _resolve_note_ai_taxonomy_snapshot(
+            note_categories=note_categories,
+            primary_category=primary_category_value,
+            note_form=note_form_value,
+            note_scene=note_scene_value,
+            lifecycle_stage=lifecycle_stage_value,
+            note_types=note_types,
+            node_type=node_type,
+            note_kind=note_kind,
+            node_status=node_status,
+            color=color,
+        )
+        primary_category = taxonomy["primary_category"]
+        note_form = taxonomy["note_form"]
+        lifecycle_stage = taxonomy["lifecycle_stage"]
+        combo_key = (primary_category, note_form, lifecycle_stage)
+        line = (
+            f"- {title} | {primary_category}({category_labels.get(primary_category, primary_category)})"
+            f" | {note_form}({form_labels.get(note_form, note_form)})"
+            f" | {lifecycle_stage}({stage_labels.get(lifecycle_stage, lifecycle_stage)})"
+        )
+        if line in seen_lines:
+            continue
+        seen_lines.add(line)
+        buckets.setdefault(combo_key, []).append({
+            "score": _score_note_ai_reference_title(current_title, current_tokens, title.casefold()),
+            "updated_at": float(updated_at or 0),
+            "title": title.casefold(),
+            "line": line,
+        })
+
+    bucket_entries: list[dict[str, Any]] = []
+    for combo_key, items in buckets.items():
+        items.sort(key=lambda item: (-int(item["score"]), -float(item["updated_at"]), str(item["title"])))
+        bucket_entries.append({
+            "combo_key": combo_key,
+            "items": items[:NOTE_AI_REFERENCE_PER_COMBO_LIMIT],
+            "best_score": int(items[0]["score"]) if items else 0,
+            "best_updated_at": float(items[0]["updated_at"]) if items else 0,
+        })
+
+    bucket_entries.sort(
+        key=lambda bucket: (
+            -int(bucket["best_score"]),
+            str(bucket["combo_key"][0]),
+            str(bucket["combo_key"][1]),
+            str(bucket["combo_key"][2]),
+            -float(bucket["best_updated_at"]),
+        )
+    )
+    selected: list[str] = []
+    for sample_index in range(NOTE_AI_REFERENCE_PER_COMBO_LIMIT):
+        for bucket in bucket_entries:
+            items = bucket["items"]
+            if sample_index >= len(items):
+                continue
+            if len(selected) >= limit:
+                return selected
+            selected.append(str(items[sample_index]["line"]))
+    return selected
+
+
 def _build_note_ai_prompt(
     note: NoteNode,
     *,
     palette_items: list[dict[str, Any]],
+    session: Session,
 ) -> tuple[str, str]:
     def _format_category_line(item: dict[str, Any]) -> str:
         key = str(item.get("key") or "").strip()
@@ -634,16 +841,21 @@ def _build_note_ai_prompt(
         f"- {item['key']} | {item['label']} | {item['description']}"
         for item in NOTE_AI_LIFECYCLE_OPTIONS
     )
-    plain_content = _truncate_note_ai_text(_html_to_plain_text(note.content))
-    plain_title = str(note.title or "").strip()
-    if not plain_title and not plain_content:
-        raise HTTPException(status_code=400, detail="当前节点缺少可供分析的标题或正文")
+    plain_title = _normalize_note_ai_title(note.title, limit=200)
+    if not plain_title:
+        raise HTTPException(status_code=400, detail="当前节点缺少可供分析的标题")
+
+    reference_text = "\n".join(_collect_note_ai_reference_lines(note, palette_items=palette_items, session=session))
+    if not reference_text:
+        reference_text = "(无可用参考样本)"
 
     system_prompt = (
         "你是 CodeYun 星图笔记里的“笔记分类”应用。"
-        "你的任务是根据标题和正文，为单条笔记选择最合适的分类、形态、阶段。"
+        "你的任务是仅根据当前节点标题，并参考其他已有条目的标题、分类、形态、阶段元数据，"
+        "为单条笔记选择最合适的分类、形态、阶段。"
+        "正文不会提供，也不要尝试根据正文推断。"
         "必须严格从候选项中各选 1 个，不得自造值。"
-        "优先根据内容语义判断分类，根据内容载体判断形态，根据推进状态判断阶段。"
+        "优先根据标题语义和已有标注习惯判断分类，根据标题体现的内容载体判断形态，根据推进状态词判断阶段。"
         f"信息不足时，优先使用保守默认值：primary_category={NOTE_CATEGORY_DEFAULT}，note_form={NOTE_FORM_DEFAULT}，lifecycle_stage={NOTE_LIFECYCLE_STAGE_DEFAULT}。"
         "只返回 JSON 对象，不要 Markdown，不要额外解释。"
     )
@@ -656,8 +868,9 @@ def _build_note_ai_prompt(
         f"{stages_text}\n\n"
         "节点标题:\n"
         f"{plain_title or '(空)'}\n\n"
-        "节点正文纯文本摘录:\n"
-        f"{plain_content or '(空)'}\n\n"
+        "已有条目标注样本（仅标题和元数据，格式：标题 | 分类 | 形态 | 阶段）:\n"
+        f"{reference_text}\n\n"
+        "请优先参考与当前标题更接近的样本，但不要机械照抄；如果信息不足，就回退到默认值。\n"
         "请输出严格 JSON，格式如下:\n"
         '{"primary_category":"分类key","note_form":"形态key","lifecycle_stage":"阶段key","reason":"一句话说明","confidence":0.0}'
     )
@@ -1307,7 +1520,7 @@ def ai_categorize_note(
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
 
-    palette_items = _build_note_type_palette_response(current_user.id, session).get("items", [])
+    palette_items = _build_note_type_palette_response(note.user_id, session).get("items", [])
     if not palette_items:
         palette_items = _default_note_type_palette_items()
 
@@ -1318,7 +1531,7 @@ def ai_categorize_note(
     )
     resolved_model = (payload.model or "").strip()
     extra_providers = list_user_ai_chat_custom_provider_configs(session, current_user.id)
-    system_prompt, user_prompt = _build_note_ai_prompt(note, palette_items=palette_items)
+    system_prompt, user_prompt = _build_note_ai_prompt(note, palette_items=palette_items, session=session)
 
     try:
         ai_response = chat_with_provider(

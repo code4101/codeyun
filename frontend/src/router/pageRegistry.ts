@@ -56,6 +56,12 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
+    path: '/fanxiu/xianzhou-race',
+    redirect: '/fanxiu/activity-list/xianzhou-marathon',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
     path: '/attendance/questionnaire/design',
     alias: [
       'attendance/questionnaire/feedback',
@@ -70,6 +76,34 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
     scope: 'main',
     path: '/attendance/wjx/data',
     redirect: '/attendance/questionnaire/data',
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/attendance/courses',
+    redirect: '/notes/sheets',
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/attendance/courses/20260412-chanzong-12qi-1jie',
+    redirect: '/notes/sheets',
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/attendance/courses/20260412-chanzong-12qi-1jie/registration',
+    redirect: '/notes/sheets',
+    requiresAuth: true,
+    skipFeatureAccess: true,
+  },
+  {
+    scope: 'main',
+    path: '/attendance/courses/20260412-chanzong-12qi-1jie/attendance',
+    redirect: '/notes/sheets',
+    requiresAuth: true,
     skipFeatureAccess: true,
   },
   {

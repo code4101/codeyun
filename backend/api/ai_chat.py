@@ -44,15 +44,20 @@ from backend.core.ollama_access_keys import (
 from backend.core.ai_chat_user_config import (
     AiChatUserConfigError,
     activate_user_ai_chat_provider_api_key,
+    activate_user_ai_chat_provider_base_url,
     delete_user_ai_chat_custom_provider,
     delete_user_ai_chat_provider_api_key,
+    delete_user_ai_chat_provider_base_url,
     delete_user_ai_chat_provider_config,
     get_user_ai_chat_provider_runtime_config,
     list_public_ai_chat_custom_provider_configs,
     list_user_ai_chat_custom_provider_configs,
     list_user_ai_chat_provider_configs,
+    reveal_user_ai_chat_provider_api_key,
     save_user_ai_chat_custom_provider,
     save_user_ai_chat_provider_config,
+    update_user_ai_chat_provider_api_key,
+    update_user_ai_chat_provider_base_url,
 )
 from backend.core.auth import get_current_active_superuser, get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.feature_access_guard import require_feature_access_dependency
@@ -154,9 +159,24 @@ class AiChatSavedApiKeySummary(BaseModel):
     updated_at: Optional[float] = None
 
 
+class AiChatSavedApiKeyDetail(AiChatSavedApiKeySummary):
+    plaintext_value: str
+
+
+class AiChatSavedBaseUrlSummary(BaseModel):
+    id: str
+    label: str
+    value: str
+    is_active: bool
+    updated_at: Optional[float] = None
+
+
 class AiChatSavedProviderConfig(BaseModel):
     provider: str
     base_url: str
+    active_base_url_id: Optional[str] = None
+    base_url_count: int = 0
+    base_urls: list[AiChatSavedBaseUrlSummary] = Field(default_factory=list)
     preferred_model: str = ""
     preferred_models: list[str] = Field(default_factory=list)
     has_api_key: bool
@@ -282,12 +302,19 @@ class AiChatSaveProviderConfigRequest(BaseModel):
     preferred_model: Optional[str] = None
     preferred_models: Optional[list[str]] = None
     api_key: Optional[str] = None
-    api_key_label: Optional[str] = None
     clear_api_key: bool = False
 
 
 class AiChatDeleteSavedConfigResponse(BaseModel):
     success: bool = True
+
+
+class AiChatUpdateSavedBaseUrlRequest(BaseModel):
+    base_url: str
+
+
+class AiChatUpdateSavedApiKeyRequest(BaseModel):
+    api_key: str
 
 
 class AiChatCreateCustomProviderRequest(BaseModel):
@@ -826,8 +853,72 @@ def put_ai_chat_saved_config(
             preferred_model=payload.preferred_model,
             preferred_models=payload.preferred_models,
             api_key=payload.api_key,
-            api_key_label=payload.api_key_label,
             clear_api_key=payload.clear_api_key,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return AiChatSavedProviderConfig.model_validate(saved_config)
+
+
+@router.post("/saved-configs/{provider_id}/base-urls/{base_url_id}/activate", response_model=AiChatSavedProviderConfig)
+def post_ai_chat_saved_config_activate_base_url(
+    provider_id: str,
+    base_url_id: str,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        saved_config = activate_user_ai_chat_provider_base_url(
+            session,
+            current_user.id,
+            provider_id,
+            base_url_id,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return AiChatSavedProviderConfig.model_validate(saved_config)
+
+
+@router.delete("/saved-configs/{provider_id}/base-urls/{base_url_id}", response_model=AiChatSavedProviderConfig)
+def delete_ai_chat_saved_config_base_url(
+    provider_id: str,
+    base_url_id: str,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        saved_config = delete_user_ai_chat_provider_base_url(
+            session,
+            current_user.id,
+            provider_id,
+            base_url_id,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return AiChatSavedProviderConfig.model_validate(saved_config)
+
+
+@router.patch("/saved-configs/{provider_id}/base-urls/{base_url_id}", response_model=AiChatSavedProviderConfig)
+def patch_ai_chat_saved_config_base_url(
+    provider_id: str,
+    base_url_id: str,
+    payload: AiChatUpdateSavedBaseUrlRequest,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        saved_config = update_user_ai_chat_provider_base_url(
+            session,
+            current_user.id,
+            provider_id,
+            base_url_id,
+            base_url=payload.base_url,
         )
     except AiChatUserConfigError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
@@ -895,6 +986,27 @@ def delete_ai_chat_codex_access_key(
     return AiChatDeleteSavedConfigResponse()
 
 
+@router.get("/saved-configs/{provider_id}/keys/{key_id}", response_model=AiChatSavedApiKeyDetail)
+def get_ai_chat_saved_config_key_detail(
+    provider_id: str,
+    key_id: str,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        item = reveal_user_ai_chat_provider_api_key(
+            session,
+            current_user.id,
+            provider_id,
+            key_id,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+    return AiChatSavedApiKeyDetail.model_validate(item)
+
+
 @router.post("/saved-configs/{provider_id}/keys/{key_id}/activate", response_model=AiChatSavedProviderConfig)
 def post_ai_chat_saved_config_activate_key(
     provider_id: str,
@@ -930,6 +1042,29 @@ def delete_ai_chat_saved_config_key(
             current_user.id,
             provider_id,
             key_id,
+        )
+    except AiChatUserConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    return AiChatSavedProviderConfig.model_validate(saved_config)
+
+
+@router.patch("/saved-configs/{provider_id}/keys/{key_id}", response_model=AiChatSavedProviderConfig)
+def patch_ai_chat_saved_config_key(
+    provider_id: str,
+    key_id: str,
+    payload: AiChatUpdateSavedApiKeyRequest,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        saved_config = update_user_ai_chat_provider_api_key(
+            session,
+            current_user.id,
+            provider_id,
+            key_id,
+            api_key=payload.api_key,
         )
     except AiChatUserConfigError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

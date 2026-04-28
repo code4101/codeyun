@@ -22,6 +22,7 @@ import asyncio
 router = APIRouter()
 
 _status_broadcaster_task: Optional[asyncio.Task] = None
+DEFAULT_STALE_SCHEDULED_TASK_SECONDS = 12 * 60 * 60
 
 async def start_task_manager_services():
     global _status_broadcaster_task
@@ -106,6 +107,47 @@ class TaskManager:
                 if task.schedule:
                     self.update_schedule(task.id, task.schedule)
 
+    def _get_stale_scheduled_runtime_seconds(self, task: TaskModel) -> int:
+        if task.timeout and task.timeout > 0:
+            return task.timeout
+        return DEFAULT_STALE_SCHEDULED_TASK_SECONDS
+
+    def _stop_stale_scheduled_task(
+        self,
+        task: TaskModel,
+        device: BaseDevice,
+        *,
+        reason: str,
+    ) -> bool:
+        if not task.schedule:
+            return False
+
+        status = device.get_task_status(task.id)
+        if not status.running or not status.started_at:
+            return False
+
+        elapsed = time.time() - status.started_at
+        stale_after = self._get_stale_scheduled_runtime_seconds(task)
+        if elapsed < stale_after:
+            return False
+
+        print(
+            f"Stopping stale scheduled task {task.id} ({task.name}) before {reason}: "
+            f"elapsed={elapsed:.0f}s stale_after={stale_after}s pid={status.pid}"
+        )
+        try:
+            result = device.stop_task(task.id)
+        except Exception as e:
+            print(f"Failed to stop stale scheduled task {task.id}: {e}")
+            return False
+
+        print(f"Stale scheduled task {task.id} stop result: {result}")
+        return result.get("status") in {"stopped", "not_running"}
+
+    def _reap_stale_scheduled_tasks(self, device: BaseDevice, tasks: List[TaskModel], *, reason: str):
+        for task in tasks:
+            self._stop_stale_scheduled_task(task, device, reason=reason)
+
     def update_schedule(self, task_id: str, cron_expression: Optional[str]):
         # Remove existing job if any
         if self.scheduler.get_job(task_id):
@@ -138,7 +180,10 @@ class TaskManager:
         device = device_manager.get_device(local_id)
         if device:
             device.scan_running_tasks(local_tasks)
-            
+
+            if restore_timeouts:
+                self._reap_stale_scheduled_tasks(device, local_tasks, reason="startup scan")
+             
             # Only restore timeouts on startup (explicit request)
             if restore_timeouts:
                 if hasattr(device, 'processes') and hasattr(device, '_watch_timeout'):
@@ -211,12 +256,22 @@ class TaskManager:
         device = device_manager.get_device(target_device_id)
         if not device:
             raise HTTPException(status_code=500, detail=f"Device {target_device_id} unavailable")
-            
+
+        self._stop_stale_scheduled_task(task, device, reason="task start")
+             
         try:
             # Pass command and env from DB
             result = device.start_task(task.id, task.command, task.cwd, env={}, timeout=task.timeout)
             if result.get("status") == "already_running":
-                print(f"Task {task_id} skipped: already running (PID: {result.get('pid')})")
+                status = device.get_task_status(task.id)
+                elapsed = None
+                if status.started_at:
+                    elapsed = time.time() - status.started_at
+                print(
+                    f"Task {task_id} skipped: already running "
+                    f"(PID: {result.get('pid')} elapsed={elapsed:.0f}s)" if elapsed is not None
+                    else f"Task {task_id} skipped: already running (PID: {result.get('pid')})"
+                )
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

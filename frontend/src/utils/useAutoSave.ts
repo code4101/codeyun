@@ -42,12 +42,19 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   let changeVersion = 0;
   let savedVersion = 0;
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let draftPersistTimer: ReturnType<typeof setTimeout> | null = null;
   let activeFlush: Promise<boolean> | null = null;
 
   const clearSaveTimer = () => {
     if (!saveTimer) return;
     clearTimeout(saveTimer);
     saveTimer = null;
+  };
+
+  const clearDraftPersistTimer = () => {
+    if (!draftPersistTimer) return;
+    clearTimeout(draftPersistTimer);
+    draftPersistTimer = null;
   };
 
   const readDraft = (): AutoSaveDraftPayload<T> | null => {
@@ -107,6 +114,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     baselineSnapshot = clone(snapshot);
     latestSnapshot = clone(snapshot);
     saveStatus.value = 'saved';
+    clearDraftPersistTimer();
     clearDraft();
   };
 
@@ -115,6 +123,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     optionsOverride: { draftStrategy?: 'prompt' | 'auto' | 'discard' } = {}
   ) => {
     clearSaveTimer();
+    clearDraftPersistTimer();
     saveStatus.value = 'saved';
     changeVersion = 0;
     savedVersion = 0;
@@ -210,29 +219,57 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
     persistDraft(latestSnapshot);
   };
 
+  const scheduleDraftPersist = (delayMs: number) => {
+    clearDraftPersistTimer();
+
+    if (!latestSnapshot) {
+      clearDraft();
+      return;
+    }
+
+    if (baselineSnapshot && options.equals(latestSnapshot, baselineSnapshot)) {
+      clearDraft();
+      return;
+    }
+
+    draftPersistTimer = setTimeout(() => {
+      if (!latestSnapshot) {
+        clearDraft();
+        return;
+      }
+      if (baselineSnapshot && options.equals(latestSnapshot, baselineSnapshot)) {
+        clearDraft();
+        return;
+      }
+      persistDraft(latestSnapshot);
+    }, Math.max(0, delayMs));
+  };
+
   const markDirty = (snapshot: T | null, markOptions: { immediate?: boolean; delayMs?: number } = {}) => {
     clearSaveTimer();
 
     if (!snapshot) {
       latestSnapshot = null;
       saveStatus.value = 'saved';
+      clearDraftPersistTimer();
       clearDraft();
       return;
     }
 
-    latestSnapshot = clone(snapshot);
+    latestSnapshot = snapshot;
 
     if (baselineSnapshot && options.equals(latestSnapshot, baselineSnapshot)) {
       saveStatus.value = 'saved';
+      clearDraftPersistTimer();
       clearDraft();
       return;
     }
 
     changeVersion += 1;
     saveStatus.value = 'unsaved';
-    persistDraft(latestSnapshot);
 
     const delayMs = markOptions.immediate ? 0 : Math.max(0, markOptions.delayMs ?? debounceMs);
+    scheduleDraftPersist(Math.min(delayMs, 600));
     saveTimer = setTimeout(() => {
       void flush();
     }, delayMs);
@@ -271,10 +308,10 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
           }
 
           saveStatus.value = 'unsaved';
-          persistDraft(latestSnapshot);
+          scheduleDraftPersist(0);
         } catch (error) {
           saveStatus.value = 'unsaved';
-          persistDraft(latestSnapshot);
+          scheduleDraftPersist(0);
           options.onError?.(error);
           return false;
         }
@@ -291,6 +328,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
   };
 
   const persistCurrentDraft = () => {
+    clearDraftPersistTimer();
     if (!latestSnapshot) return;
     if (baselineSnapshot && options.equals(latestSnapshot, baselineSnapshot)) {
       clearDraft();
@@ -322,6 +360,7 @@ export const useAutoSave = <T>(options: UseAutoSaveOptions<T>) => {
 
   onBeforeUnmount(() => {
     clearSaveTimer();
+    clearDraftPersistTimer();
     persistCurrentDraft();
     if (saveStatus.value === 'unsaved') {
       void flush();

@@ -2,6 +2,9 @@ import type { NoteTypeAssignment } from './nodeConfig';
 
 export const NOTE_KIND_DEFAULT = 'note';
 export const NOTE_KIND_FANXIU_CHAR = 'fanxiu_char';
+export const NOTE_KIND_FANXIU_WARDROBE_ITEM = 'fanxiu_wardrobe_item';
+export const NOTE_KIND_FANXIU_ACTIVITY_ITEM = 'fanxiu_activity_item';
+export const NOTE_KIND_FANXIU_SPIRIT_BEAST_ITEM = 'fanxiu_spirit_beast_item';
 
 export const NOTE_WEIGHT_MODE_EXPONENTIAL = 'exponential';
 export const NOTE_WEIGHT_MODE_LINEAR = 'linear';

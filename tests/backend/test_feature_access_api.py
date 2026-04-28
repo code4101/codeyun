@@ -20,8 +20,20 @@ EXPECTED_DEFAULT_ANONYMOUS_KEYS = {
     "fanxiu.calculator",
     "fanxiu.draw-calc",
     "fanxiu.discount",
+    "fanxiu.activity-list",
+    "fanxiu.activity-list.kunlun-secret",
+    "fanxiu.activity-list.modao-invasion",
+    "fanxiu.activity-list.shouyuan-exploration",
+    "fanxiu.activity-list.divine-resource",
+    "fanxiu.activity-list.xianzhou-marathon",
+    "fanxiu.region-data",
+    "fanxiu.inventory",
+    "fanxiu.inventory.wardrobe-hall",
+    "fanxiu.inventory.spirit-beast-hall",
+    "fanxiu.inventory.magic-treasure-hall",
+    "fanxiu.inventory.magic-treasure-formations",
+    "fanxiu.labelme",
     "fanxiu.recharge",
-    "fanxiu.xianzhou-race",
     "fanxiu.cuijian-trial",
     "dsp.calculator",
     "magic-craft",
@@ -310,6 +322,7 @@ def test_feature_access_registry_reloads_when_registry_file_changes(tmp_path, mo
     }
     registry_path.write_text(json.dumps(registry_payload, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(feature_access_module, "FEATURE_ACCESS_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(feature_access_module, "iter_plugin_permission_registry_files", lambda: ())
     feature_access_module.clear_feature_access_registry_cache()
 
     initial_registry = feature_access_module.load_feature_access_registry()

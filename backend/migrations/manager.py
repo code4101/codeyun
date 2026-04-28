@@ -22,6 +22,15 @@ def _get_table_columns(session: Session, table_name: str) -> set[str]:
     return {str(row[1]) for row in session.exec(text(f"PRAGMA table_info({table_name})")).all()}
 
 
+def _get_table_column_types(session: Session, table_name: str) -> dict[str, str]:
+    if not _table_exists(session, table_name):
+        return {}
+    return {
+        str(row[1]): str(row[2] or "").upper()
+        for row in session.exec(text(f"PRAGMA table_info({table_name})")).all()
+    }
+
+
 def _load_json_value(value, default):
     if value is None:
         return default
@@ -1167,6 +1176,487 @@ def v27_add_user_phone_field(session: Session):
     session.commit()
     print(f"  Normalized phone for {updated.rowcount or 0} users.")
 
+
+def v28_add_sheetdocument_owner_user_id(session: Session):
+    """
+    Migration V28: Add 'owner_user_id' column to sheetdocument.
+    """
+    print("Running System Upgrade V28: Add 'owner_user_id' to sheetdocument...")
+    columns = _get_table_columns(session, "sheetdocument")
+    if not columns:
+        print("  Table 'sheetdocument' does not exist yet, skipping.")
+        return
+
+    statements: list[str] = []
+    if "owner_user_id" not in columns:
+        statements.append("ALTER TABLE sheetdocument ADD COLUMN owner_user_id INTEGER")
+    statements.append("CREATE INDEX IF NOT EXISTS ix_sheetdocument_owner_user_id ON sheetdocument (owner_user_id)")
+
+    if not statements:
+        print("  owner_user_id column already exists, skipping.")
+        return
+
+    for statement in statements:
+        session.exec(text(statement))
+    session.commit()
+    print("  Added sheetdocument owner_user_id support.")
+
+
+def v29_migrate_attendance_course_sheets_to_notes_workbook(session: Session):
+    """
+    Migration V29: Move the legacy attendance course sheets into the notes workbook MVP.
+    """
+    print("Running System Upgrade V29: Migrate attendance course sheets to notes workbook...")
+
+    required_tables = {"sheetdocument", "workbookdocument", "workbooksheetlink"}
+    if not all(_table_exists(session, table_name) for table_name in required_tables):
+        print("  Required sheet/workbook tables are not ready yet, skipping.")
+        return
+
+    try:
+        from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
+    except ImportError:
+        print("  Failed to import sheet/workbook models, skipping.")
+        return
+
+    def _get_next_numeric_id(table_name: str) -> int:
+        row = session.exec(
+            text(f"SELECT COALESCE(MAX(numeric_id), 0) FROM {table_name}")
+        ).first()
+        return max(int(_first_scalar(row) or 0), 0) + 1
+
+    course_owner_key = "20260412-chanzong-12qi-1jie"
+    workbook_title = "20260412禅宗12期一阶"
+    target_owner_type = "course_workbook"
+    target_scope = "notes"
+    target_sheet_specs = (
+        (
+            "registration",
+            "报名表",
+            {
+                "schema_version": 1,
+                "columns": [
+                    "组号",
+                    "序号",
+                    "备注",
+                    "提交时间",
+                    "姓名",
+                    "微信昵称",
+                    "手机号",
+                    "错误手机号",
+                    "微信支付订单号",
+                    "订单日期",
+                    "商户订单号",
+                    "订单金额",
+                    "已返款",
+                    "用户ID",
+                    "匹配得分",
+                    "参考信息",
+                ],
+                "rows": [],
+            },
+        ),
+        (
+            "attendance",
+            "考勤表",
+            {
+                "schema_version": 1,
+                "columns": ["列1", "列2", "列3"],
+                "rows": [],
+            },
+        ),
+    )
+    target_sheet_keys = tuple(item[0] for item in target_sheet_specs)
+
+    source_documents = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.scope == "attendance")
+        .where(SheetDocument.owner_type == "course_session")
+        .where(SheetDocument.owner_key == course_owner_key)
+        .where(SheetDocument.sheet_key.in_(target_sheet_keys))
+    ).all()
+    target_documents = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.scope == target_scope)
+        .where(SheetDocument.owner_type == target_owner_type)
+        .where(SheetDocument.owner_key == course_owner_key)
+        .where(SheetDocument.sheet_key.in_(target_sheet_keys))
+    ).all()
+
+    if not source_documents and not target_documents:
+        print("  No legacy attendance course sheet data found, skipping.")
+        return
+
+    source_map = {str(document.sheet_key): document for document in source_documents}
+    target_map = {str(document.sheet_key): document for document in target_documents}
+
+    owner_candidates: list[int] = []
+    for document in [*source_documents, *target_documents]:
+        for candidate in (
+            document.owner_user_id,
+            document.updated_by_user_id,
+            document.created_by_user_id,
+        ):
+            if isinstance(candidate, int) and candidate > 0 and candidate not in owner_candidates:
+                owner_candidates.append(candidate)
+
+    existing_workbook: Any = None
+    if target_documents:
+        target_document_ids = [document.id for document in target_documents]
+        links = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.sheet_id.in_(target_document_ids))
+            .order_by(WorkbookSheetLink.created_at)
+        ).all()
+        if links:
+            workbook_ids = [link.workbook_id for link in links]
+            existing_workbook = session.exec(
+                select(WorkbookDocument)
+                .where(WorkbookDocument.id.in_(workbook_ids))
+                .order_by(WorkbookDocument.created_at)
+            ).first()
+            if existing_workbook is not None and isinstance(existing_workbook.owner_user_id, int):
+                owner_user_id = int(existing_workbook.owner_user_id)
+                if owner_user_id not in owner_candidates:
+                    owner_candidates.insert(0, owner_user_id)
+
+    owner_user_id = owner_candidates[0] if owner_candidates else None
+    if owner_user_id is None:
+        print("  Could not determine workbook owner, skipping.")
+        return
+
+    workbook = existing_workbook
+    if workbook is None:
+        workbook = session.exec(
+            select(WorkbookDocument)
+            .where(WorkbookDocument.owner_user_id == owner_user_id)
+            .where(WorkbookDocument.title == workbook_title)
+            .order_by(WorkbookDocument.created_at)
+        ).first()
+
+    now = time.time()
+    mutated = False
+    if workbook is None:
+        workbook = WorkbookDocument(
+            numeric_id=_get_next_numeric_id("workbookdocument"),
+            title=workbook_title,
+            owner_user_id=owner_user_id,
+            created_by_user_id=owner_user_id,
+            updated_by_user_id=owner_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(workbook)
+        session.flush()
+        mutated = True
+
+    existing_links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    linked_sheet_ids = {link.sheet_id for link in existing_links}
+    next_order_index = max((int(link.order_index or 0) for link in existing_links), default=0)
+
+    for sheet_key, default_title, default_document in target_sheet_specs:
+        target_document = target_map.get(sheet_key)
+        source_document = source_map.get(sheet_key)
+
+        if target_document is None:
+            source_document_json = (
+                dict(source_document.document_json or {})
+                if source_document is not None and isinstance(source_document.document_json, dict)
+                else dict(default_document)
+            )
+            title = str(source_document.title or "").strip() or default_title if source_document is not None else default_title
+            created_by_user_id = (
+                source_document.created_by_user_id
+                if source_document is not None and isinstance(source_document.created_by_user_id, int)
+                else owner_user_id
+            )
+            updated_by_user_id = (
+                source_document.updated_by_user_id
+                if source_document is not None and isinstance(source_document.updated_by_user_id, int)
+                else owner_user_id
+            )
+            created_at = float(source_document.created_at or now) if source_document is not None else now
+            updated_at = float(source_document.updated_at or now) if source_document is not None else now
+
+            target_document = SheetDocument(
+                numeric_id=_get_next_numeric_id("sheetdocument"),
+                scope=target_scope,
+                owner_type=target_owner_type,
+                owner_key=course_owner_key,
+                sheet_key=sheet_key,
+                title=title,
+                engine="handsontable",
+                document_json=source_document_json,
+                version=1,
+                owner_user_id=owner_user_id,
+                created_by_user_id=created_by_user_id,
+                updated_by_user_id=updated_by_user_id,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+            session.add(target_document)
+            session.flush()
+            target_map[sheet_key] = target_document
+            mutated = True
+
+        if target_document.id not in linked_sheet_ids:
+            next_order_index += 10
+            session.add(
+                WorkbookSheetLink(
+                    workbook_id=workbook.id,
+                    sheet_id=target_document.id,
+                    order_index=next_order_index,
+                    created_at=now,
+                )
+            )
+            linked_sheet_ids.add(target_document.id)
+            mutated = True
+
+    if not mutated:
+        print("  Legacy attendance course sheets were already migrated.")
+        return
+
+    workbook.updated_by_user_id = owner_user_id
+    workbook.updated_at = now
+    session.add(workbook)
+    session.commit()
+    print("  Migrated legacy attendance course sheets into the notes workbook.")
+
+
+def v30_add_numeric_sheet_and_workbook_ids(session: Session):
+    """
+    Migration V30: Add sequential numeric ids for sheet/workbook URL access.
+    """
+    print("Running System Upgrade V30: Add numeric sheet/workbook ids...")
+
+    table_names = ("sheetdocument", "workbookdocument")
+    existing_tables = [table_name for table_name in table_names if _table_exists(session, table_name)]
+    if not existing_tables:
+        print("  No sheet/workbook tables found, skipping.")
+        return
+
+    for table_name in existing_tables:
+        columns = _get_table_columns(session, table_name)
+        if "numeric_id" not in columns:
+            session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN numeric_id INTEGER"))
+
+    for table_name in existing_tables:
+        row = session.exec(
+            text(
+                f"""
+                SELECT rowid, created_at
+                FROM {table_name}
+                WHERE numeric_id IS NULL
+                ORDER BY created_at ASC, rowid ASC
+                """
+            )
+        ).all()
+        if not row:
+            continue
+
+        current_max_row = session.exec(
+            text(f"SELECT COALESCE(MAX(numeric_id), 0) FROM {table_name}")
+        ).first()
+        next_numeric_id = max(int(_first_scalar(current_max_row) or 0), 0)
+        for record in row:
+            next_numeric_id += 1
+            session.execute(
+                text(f"UPDATE {table_name} SET numeric_id = :numeric_id WHERE rowid = :rowid"),
+                {
+                    "numeric_id": next_numeric_id,
+                    "rowid": int(record[0]),
+                },
+            )
+
+    if "sheetdocument" in existing_tables:
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_sheetdocument_numeric_id ON sheetdocument (numeric_id)"))
+    if "workbookdocument" in existing_tables:
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_workbookdocument_numeric_id ON workbookdocument (numeric_id)"))
+
+    session.commit()
+    print("  Added numeric sheet/workbook ids.")
+
+
+def v31_finalize_numeric_sheet_id_rollout(session: Session):
+    """
+    Migration V31: Keep numeric id rollout ordering monotonic.
+    """
+    print("Running System Upgrade V31: Finalize numeric sheet/workbook id rollout...")
+    session.commit()
+    print("  Numeric sheet/workbook id rollout finalized.")
+
+
+def v32_add_codex_daily_summary_run_table(session: Session):
+    """
+    Migration V32: Add Codex daily summary run table.
+    """
+    print("Running System Upgrade V32: Add Codex daily summary run table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS codexdailysummaryrun (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                scope_key VARCHAR NOT NULL DEFAULT '',
+                user_id INTEGER,
+                root_key VARCHAR NOT NULL DEFAULT '',
+                root_dir VARCHAR NOT NULL DEFAULT '',
+                summary_date VARCHAR NOT NULL DEFAULT '',
+                timezone VARCHAR NOT NULL DEFAULT 'Asia/Shanghai',
+                provider VARCHAR NOT NULL DEFAULT '',
+                generated_by VARCHAR NOT NULL DEFAULT 'codex_cli',
+                model VARCHAR NOT NULL DEFAULT '',
+                prompt_version VARCHAR NOT NULL DEFAULT '',
+                force_requested BOOLEAN NOT NULL DEFAULT 0,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                stage VARCHAR NOT NULL DEFAULT 'pending',
+                stage_label VARCHAR NOT NULL DEFAULT '等待中',
+                thread_count INTEGER NOT NULL DEFAULT 0,
+                turn_count INTEGER NOT NULL DEFAULT 0,
+                user_message_count INTEGER NOT NULL DEFAULT 0,
+                assistant_message_count INTEGER NOT NULL DEFAULT 0,
+                summary_text VARCHAR NOT NULL DEFAULT '',
+                error_message VARCHAR,
+                result_json JSON NOT NULL DEFAULT '{}',
+                heartbeat_at FLOAT,
+                created_at FLOAT NOT NULL,
+                finished_at FLOAT,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_scope_key ON codexdailysummaryrun (scope_key)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_user_id ON codexdailysummaryrun (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_root_key ON codexdailysummaryrun (root_key)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_root_dir ON codexdailysummaryrun (root_dir)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_summary_date ON codexdailysummaryrun (summary_date)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_provider ON codexdailysummaryrun (provider)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_generated_by ON codexdailysummaryrun (generated_by)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_model ON codexdailysummaryrun (model)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_prompt_version ON codexdailysummaryrun (prompt_version)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_force_requested ON codexdailysummaryrun (force_requested)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_status ON codexdailysummaryrun (status)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_stage ON codexdailysummaryrun (stage)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_heartbeat_at ON codexdailysummaryrun (heartbeat_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_created_at ON codexdailysummaryrun (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_finished_at ON codexdailysummaryrun (finished_at)",
+        "CREATE INDEX IF NOT EXISTS ix_codexdailysummaryrun_scope_root_date_created ON codexdailysummaryrun (scope_key, root_key, summary_date, created_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added codex daily summary run table.")
+
+
+def v33_add_fanxiu_region_data_tables(session: Session):
+    """
+    Migration V33: Add Fanxiu region/server data and character history tables.
+    """
+    print("Running System Upgrade V33: Add Fanxiu region data tables...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiuregionarea (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                number INTEGER NOT NULL,
+                name VARCHAR NOT NULL,
+                start_date VARCHAR NOT NULL DEFAULT '',
+                end_date VARCHAR NOT NULL DEFAULT '',
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_fanxiuregionarea_number UNIQUE (number),
+                CONSTRAINT uq_fanxiuregionarea_name UNIQUE (name)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiuregionserver (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                region_id VARCHAR NOT NULL DEFAULT '',
+                region_name VARCHAR NOT NULL,
+                server_order INTEGER NOT NULL,
+                name VARCHAR NOT NULL,
+                open_date VARCHAR NOT NULL DEFAULT '',
+                mark_type VARCHAR NOT NULL DEFAULT '',
+                mark_label VARCHAR NOT NULL DEFAULT '',
+                mark_title VARCHAR NOT NULL DEFAULT '',
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_fanxiuregionserver_region_order UNIQUE (region_name, server_order),
+                CONSTRAINT uq_fanxiuregionserver_region_name UNIQUE (region_name, name)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiuregioncharacterrecord (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                region_name VARCHAR NOT NULL,
+                server_name VARCHAR NOT NULL,
+                guild_name VARCHAR NOT NULL DEFAULT '',
+                role_name VARCHAR NOT NULL DEFAULT '',
+                attack VARCHAR NOT NULL DEFAULT '',
+                recorded_date VARCHAR NOT NULL DEFAULT '',
+                disabled BOOLEAN NOT NULL DEFAULT 0,
+                disabled_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+
+    for statement in (
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_fanxiuregionarea_number ON fanxiuregionarea (number)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS ux_fanxiuregionarea_name ON fanxiuregionarea (name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionarea_start_date ON fanxiuregionarea (start_date)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_region_id ON fanxiuregionserver (region_id)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_region_name ON fanxiuregionserver (region_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_server_order ON fanxiuregionserver (server_order)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_name ON fanxiuregionserver (name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_open_date ON fanxiuregionserver (open_date)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregionserver_region_order ON fanxiuregionserver (region_name, server_order)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_region_name ON fanxiuregioncharacterrecord (region_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_server_name ON fanxiuregioncharacterrecord (server_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_guild_name ON fanxiuregioncharacterrecord (guild_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_role_name ON fanxiuregioncharacterrecord (role_name)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_recorded_date ON fanxiuregioncharacterrecord (recorded_date)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_disabled ON fanxiuregioncharacterrecord (disabled)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_disabled_at ON fanxiuregioncharacterrecord (disabled_at)",
+        "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_identity ON fanxiuregioncharacterrecord (region_name, server_name, guild_name, role_name)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Fanxiu region data tables.")
+
+
+def v34_add_fanxiu_region_character_cultivation_level(session: Session):
+    """
+    Migration V34: Add cultivation level to Fanxiu region character records.
+    """
+    print("Running System Upgrade V34: Add Fanxiu region character cultivation level...")
+    columns = _get_table_columns(session, "fanxiuregioncharacterrecord")
+    if "cultivation_level" not in columns:
+        session.exec(text("ALTER TABLE fanxiuregioncharacterrecord ADD COLUMN cultivation_level VARCHAR NOT NULL DEFAULT ''"))
+    session.exec(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_fanxiuregioncharacterrecord_cultivation_level "
+            "ON fanxiuregioncharacterrecord (cultivation_level)"
+        )
+    )
+    session.commit()
+    print("  Added Fanxiu region character cultivation level.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1197,6 +1687,13 @@ MIGRATIONS = [
     (25, "Add user plaintext password field", v25_add_user_plain_password_field),
     (26, "Add user nickname field", v26_add_user_nickname_field),
     (27, "Add user phone field", v27_add_user_phone_field),
+    (28, "Add sheetdocument owner_user_id field", v28_add_sheetdocument_owner_user_id),
+    (30, "Add numeric sheet/workbook ids", v30_add_numeric_sheet_and_workbook_ids),
+    (29, "Migrate attendance course sheets to notes workbook", v29_migrate_attendance_course_sheets_to_notes_workbook),
+    (31, "Finalize numeric sheet/workbook id rollout", v31_finalize_numeric_sheet_id_rollout),
+    (32, "Add codex daily summary run table", v32_add_codex_daily_summary_run_table),
+    (33, "Add Fanxiu region data tables", v33_add_fanxiu_region_data_tables),
+    (34, "Add Fanxiu region character cultivation level", v34_add_fanxiu_region_character_cultivation_level),
 ]
 
 def get_current_version(session: Session) -> int:

@@ -91,6 +91,27 @@ def test_superuser_can_update_another_users_note(client, session):
     assert note.title == "Updated By Admin"
 
 
+def test_note_update_serializes_legacy_custom_fields_dict(client, session, auth_user):
+    note = make_note(auth_user, "note-legacy-custom-fields", "Legacy Custom Fields")
+    note.custom_fields = {"priority": "high", "done": False, "count": 2}
+    session.add(note)
+    session.commit()
+
+    response = client.put(
+        f"/api/notes/{note.id}",
+        json={"content": "updated"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"] == "updated"
+    assert payload["custom_fields"] == [
+        ["priority", "string", "high"],
+        ["done", "boolean", False],
+        ["count", "number", 2],
+    ]
+
+
 def test_fanxiu_public_read_returns_can_edit_for_current_viewer(client, session):
     fanxiu_user = get_fanxiu_user(session)
     note = NoteNode(

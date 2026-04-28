@@ -119,7 +119,7 @@ def list_codex_access_keys(session: Session) -> list[dict[str, Any]]:
         for key_id, item in sorted(
             items.items(),
             key=lambda pair: (
-                -(float(pair[1].get("updated_at")) if isinstance(pair[1].get("updated_at"), (int, float)) else 0.0),
+                float(pair[1].get("created_at") or pair[1].get("updated_at") or 0.0),
                 pair[0],
             ),
         )

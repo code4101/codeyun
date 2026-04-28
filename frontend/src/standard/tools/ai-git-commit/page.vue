@@ -1015,6 +1015,13 @@ function formatCommitBodyLines(lines: string[]) {
   return lines.map((line, index) => `${index + 1}、${line}`)
 }
 
+function formatDraftBodyText(lines: string[]) {
+  const normalizedLines = lines
+    .map(line => line.trim().replace(commitBodyPrefixPattern, ''))
+    .filter(Boolean)
+  return formatCommitBodyLines(normalizedLines).join('\n')
+}
+
 const canInspect = computed(() => Boolean(form.entryId && form.cwd.trim()))
 const canGenerate = computed(() => Boolean(form.entryId && form.cwd.trim() && form.providerId && form.model.trim()))
 const requiresReduction = computed(() => Boolean(inspectResult.value?.oversized))
@@ -2344,7 +2351,7 @@ function applyDraftResponse(response: {
   inspectResult.value = response.inspect
   resetFileDiffState({ keepSelection: true })
   draftSubject.value = response.subject
-  draftBodyText.value = response.body.join('\n')
+  draftBodyText.value = formatDraftBodyText(response.body)
   draftNeedsSplit.value = response.needs_split
   draftReason.value = response.reason
   draftModelLabel.value = response.model

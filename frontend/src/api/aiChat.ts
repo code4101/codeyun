@@ -83,9 +83,20 @@ export interface AiChatStatusRequest {
   api_key?: string | null
 }
 
+export interface AiChatSavedBaseUrlSummary {
+  id: string
+  label: string
+  value: string
+  is_active: boolean
+  updated_at?: number | null
+}
+
 export interface AiChatSavedProviderConfig {
   provider: string
   base_url: string
+  active_base_url_id?: string | null
+  base_url_count: number
+  base_urls: AiChatSavedBaseUrlSummary[]
   preferred_model: string
   preferred_models: string[]
   has_api_key: boolean
@@ -211,7 +222,6 @@ export interface AiChatSaveProviderConfigRequest {
   preferred_model?: string | null
   preferred_models?: string[] | null
   api_key?: string | null
-  api_key_label?: string | null
   clear_api_key?: boolean
 }
 
@@ -221,6 +231,10 @@ export interface AiChatSavedApiKeySummary {
   masked_value: string
   is_active: boolean
   updated_at?: number | null
+}
+
+export interface AiChatSavedApiKeyDetail extends AiChatSavedApiKeySummary {
+  plaintext_value: string
 }
 
 export interface AiChatCreateCustomProviderRequest {
@@ -338,6 +352,28 @@ export async function deleteAiChatProviderConfig(providerId: string) {
   await api.delete(`/ai-chat/saved-configs/${providerId}`)
 }
 
+export async function activateAiChatProviderBaseUrl(providerId: string, baseUrlId: string) {
+  const response = await api.post<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/base-urls/${baseUrlId}/activate`)
+  return response.data
+}
+
+export async function deleteAiChatProviderBaseUrl(providerId: string, baseUrlId: string) {
+  const response = await api.delete<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/base-urls/${baseUrlId}`)
+  return response.data
+}
+
+export async function updateAiChatProviderBaseUrl(providerId: string, baseUrlId: string, baseUrl: string) {
+  const response = await api.patch<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/base-urls/${baseUrlId}`, {
+    base_url: baseUrl,
+  })
+  return response.data
+}
+
+export async function revealAiChatProviderKey(providerId: string, keyId: string) {
+  const response = await api.get<AiChatSavedApiKeyDetail>(`/ai-chat/saved-configs/${providerId}/keys/${keyId}`)
+  return response.data
+}
+
 export async function activateAiChatProviderKey(providerId: string, keyId: string) {
   const response = await api.post<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/keys/${keyId}/activate`)
   return response.data
@@ -345,6 +381,13 @@ export async function activateAiChatProviderKey(providerId: string, keyId: strin
 
 export async function deleteAiChatProviderKey(providerId: string, keyId: string) {
   const response = await api.delete<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/keys/${keyId}`)
+  return response.data
+}
+
+export async function updateAiChatProviderKey(providerId: string, keyId: string, apiKey: string) {
+  const response = await api.patch<AiChatSavedProviderConfig>(`/ai-chat/saved-configs/${providerId}/keys/${keyId}`, {
+    api_key: apiKey,
+  })
   return response.data
 }
 

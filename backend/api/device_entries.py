@@ -15,6 +15,11 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 from sqlmodel import Session, select
 
+from backend.api.codex_sessions import (
+    CodexDailySummaryGenerateRequest,
+    CodexDailySummaryRunRead,
+    CodexDailySummaryRunRequest,
+)
 from backend.api.filesystem import (
     DEFAULT_MEDIA_SCAN_LIMIT,
     DeleteEntryRequest,
@@ -73,8 +78,19 @@ from backend.core.ai_git_commit import (
     generate_ai_git_commit_draft,
     resolve_ai_runtime_config,
 )
+from backend.core.ai_chat import OllamaClientError
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
+from backend.core.codex_sessions import (
+    build_codex_daily_summary,
+    build_codex_overview,
+    build_codex_thread_detail,
+    build_codex_thread_message_images,
+    build_codex_workload,
+    get_codex_daily_summary_latest_run,
+    get_codex_daily_summary_run,
+    start_codex_daily_summary_run,
+)
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.device_file_cover import (
@@ -416,6 +432,7 @@ def _proxy_request(
     json_body: Optional[Any] = None,
     forwarded_headers: Optional[Dict[str, str]] = None,
     stream_response: bool = False,
+    timeout: int = 10,
 ) -> Response:
     target_url = f"{_remote_base_url(entry)}/api{path}"
     headers = _proxy_headers(entry)
@@ -428,12 +445,24 @@ def _proxy_request(
             headers=headers,
             params=params,
             json=json_body,
-            timeout=10,
+            timeout=timeout,
             stream=stream_response,
         )
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Failed to reach remote device: {exc}") from exc
     return _proxy_response(resp, stream_response=stream_response)
+
+
+def _raise_codex_http_error(exc: Exception) -> None:
+    if isinstance(exc, FileNotFoundError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, NotADirectoryError):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if isinstance(exc, KeyError):
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if isinstance(exc, (ValueError, OllamaClientError)):
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raise HTTPException(status_code=500, detail=f"读取 Codex 会话失败：{exc}") from exc
 
 
 def _index_device_media_payload(
@@ -1653,6 +1682,193 @@ def generate_and_commit_git_for_entry(
         inspect=inspect_payload,
         commit=GitToolCommitResponse.model_validate(commit_payload),
         **draft,
+    )
+
+
+@router.get("/{entry_id}/codex/overview")
+def get_codex_overview_for_entry(
+    entry_id: str,
+    root_dir: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return build_codex_overview(root_dir, session=session)
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    params = {"root_dir": root_dir} if root_dir else None
+    return _proxy_request(entry, "GET", "/codex/overview", params=params)
+
+
+@router.get("/{entry_id}/codex/threads/{thread_id}")
+def get_codex_thread_detail_for_entry(
+    entry_id: str,
+    thread_id: str,
+    root_dir: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return build_codex_thread_detail(root_dir, thread_id, session=session)
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    params = {"root_dir": root_dir} if root_dir else None
+    return _proxy_request(entry, "GET", f"/codex/threads/{thread_id}", params=params)
+
+
+@router.get("/{entry_id}/codex/threads/{thread_id}/messages/{message_seq}/images")
+def get_codex_thread_message_images_for_entry(
+    entry_id: str,
+    thread_id: str,
+    message_seq: int,
+    root_dir: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return build_codex_thread_message_images(root_dir, thread_id, message_seq, session=session)
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    params = {"root_dir": root_dir} if root_dir else None
+    return _proxy_request(entry, "GET", f"/codex/threads/{thread_id}/messages/{message_seq}/images", params=params)
+
+
+@router.get("/{entry_id}/codex/workload")
+def get_codex_workload_for_entry(
+    entry_id: str,
+    root_dir: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return build_codex_workload(root_dir, session=session)
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    params = {"root_dir": root_dir} if root_dir else None
+    return _proxy_request(entry, "GET", "/codex/workload", params=params)
+
+
+@router.post("/{entry_id}/codex/daily-summary/generate")
+def generate_codex_daily_summary_for_entry(
+    entry_id: str,
+    req: CodexDailySummaryGenerateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return build_codex_daily_summary(
+                req.root_dir,
+                req.date,
+                model=req.model,
+                user_id=current_user.id,
+                session=session,
+            )
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    return _proxy_request(
+        entry,
+        "POST",
+        "/codex/daily-summary/generate",
+        json_body=req.model_dump(),
+        timeout=15 * 60,
+    )
+
+
+@router.get("/{entry_id}/codex/daily-summary/latest", response_model=CodexDailySummaryRunRead)
+def get_latest_codex_daily_summary_for_entry(
+    entry_id: str,
+    date: str,
+    root_dir: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return get_codex_daily_summary_latest_run(
+                f"entry:{entry.entry_id}",
+                root_dir,
+                date,
+                session=session,
+            )
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    params = {"date": date}
+    if root_dir:
+        params["root_dir"] = root_dir
+    return _proxy_request(entry, "GET", "/codex/daily-summary/latest", params=params, timeout=20)
+
+
+@router.post("/{entry_id}/codex/daily-summary/runs", response_model=CodexDailySummaryRunRead)
+def create_codex_daily_summary_run_for_entry(
+    entry_id: str,
+    req: CodexDailySummaryRunRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return start_codex_daily_summary_run(
+                f"entry:{entry.entry_id}",
+                req.root_dir,
+                req.date,
+                model=req.model,
+                user_id=current_user.id,
+                force=req.force,
+                session=session,
+            )
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    return _proxy_request(
+        entry,
+        "POST",
+        "/codex/daily-summary/runs",
+        json_body=req.model_dump(),
+        timeout=20,
+    )
+
+
+@router.get("/{entry_id}/codex/daily-summary/runs/{run_id}", response_model=CodexDailySummaryRunRead)
+def get_codex_daily_summary_run_for_entry(
+    entry_id: str,
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return get_codex_daily_summary_run(
+                f"entry:{entry.entry_id}",
+                run_id,
+                session=session,
+            )
+        except Exception as exc:  # pragma: no cover - translated for HTTP callers
+            _raise_codex_http_error(exc)
+
+    return _proxy_request(
+        entry,
+        "GET",
+        f"/codex/daily-summary/runs/{run_id}",
+        timeout=20,
     )
 
 

@@ -322,7 +322,7 @@ export interface AttendanceWjxDataUpdateRequest {
 }
 
 export interface AttendanceSheetDocument {
-  id: string
+  id: number
   scope: string
   owner_type: string
   owner_key: string
@@ -374,7 +374,7 @@ export async function upsertAttendanceSheetDocument(payload: AttendanceSheetDocu
   return response.data
 }
 
-export async function fetchAttendanceSheetDocumentById(sheetId: string) {
+export async function fetchAttendanceSheetDocumentById(sheetId: number) {
   try {
     const response = await api.get<AttendanceSheetDocument>(`/attendance/sheets/${sheetId}`)
     return response.data

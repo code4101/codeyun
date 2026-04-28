@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Any, Optional, List
 from sqlmodel import Field, SQLModel, Relationship
 from sqlalchemy import Column, JSON, String, UniqueConstraint
 import time
@@ -131,6 +131,62 @@ class AppSetting(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class FanxiuRegionArea(SQLModel, table=True):
+    __tablename__ = "fanxiuregionarea"
+    __table_args__ = (
+        UniqueConstraint("number", name="uq_fanxiuregionarea_number"),
+        UniqueConstraint("name", name="uq_fanxiuregionarea_name"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    number: int = Field(index=True)
+    name: str = Field(index=True)
+    start_date: str = Field(default="", index=True)
+    end_date: str = Field(default="")
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuRegionServer(SQLModel, table=True):
+    __tablename__ = "fanxiuregionserver"
+    __table_args__ = (
+        UniqueConstraint("region_name", "server_order", name="uq_fanxiuregionserver_region_order"),
+        UniqueConstraint("region_name", "name", name="uq_fanxiuregionserver_region_name"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    region_id: str = Field(default="", index=True)
+    region_name: str = Field(index=True)
+    server_order: int = Field(index=True)
+    name: str = Field(index=True)
+    open_date: str = Field(default="", index=True)
+    mark_type: str = Field(default="")
+    mark_label: str = Field(default="")
+    mark_title: str = Field(default="")
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuRegionCharacterRecord(SQLModel, table=True):
+    __tablename__ = "fanxiuregioncharacterrecord"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    region_name: str = Field(index=True)
+    server_name: str = Field(index=True)
+    guild_name: str = Field(default="", index=True)
+    role_name: str = Field(default="", index=True)
+    attack: str = Field(default="")
+    cultivation_level: str = Field(default="", index=True)
+    recorded_date: str = Field(default="", index=True)
+    disabled: bool = Field(default=False, index=True)
+    disabled_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class FeatureAccessPolicy(SQLModel, table=True):
     __tablename__ = "featureaccesspolicy"
     __table_args__ = {'extend_existing': True}
@@ -250,6 +306,38 @@ class GitReductionRun(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class CodexDailySummaryRun(SQLModel, table=True):
+    __tablename__ = "codexdailysummaryrun"
+    __table_args__ = {'extend_existing': True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    scope_key: str = Field(default="", index=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    root_key: str = Field(default="", index=True)
+    root_dir: str = Field(default="", index=True)
+    summary_date: str = Field(default="", index=True)
+    timezone: str = Field(default="Asia/Shanghai")
+    provider: str = Field(default="", index=True)
+    generated_by: str = Field(default="codex_cli", index=True)
+    model: str = Field(default="", index=True)
+    prompt_version: str = Field(default="", index=True)
+    force_requested: bool = Field(default=False, index=True)
+    status: str = Field(default="pending", index=True)
+    stage: str = Field(default="pending", index=True)
+    stage_label: str = Field(default="等待中")
+    thread_count: int = Field(default=0)
+    turn_count: int = Field(default=0)
+    user_message_count: int = Field(default=0)
+    assistant_message_count: int = Field(default=0)
+    summary_text: str = Field(default="")
+    error_message: Optional[str] = Field(default=None)
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class AttendanceServiceConfig(SQLModel, table=True):
     __tablename__ = "attendanceserviceconfig"
     __table_args__ = {"extend_existing": True}
@@ -260,6 +348,100 @@ class AttendanceServiceConfig(SQLModel, table=True):
     granted_user_ids: List[int] = Field(default_factory=list, sa_column=Column(JSON))
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class CodexTextCacheRoot(SQLModel, table=True):
+    __tablename__ = "codextextcacheroot"
+    __table_args__ = {"extend_existing": True}
+
+    root_key: str = Field(primary_key=True)
+    root_dir: str = Field(index=True)
+    default_root_dir: str = Field(default="")
+    state_db_path: str = Field(default="")
+    session_index_path: str = Field(default="")
+    global_state_path: str = Field(default="")
+    workspace_roots: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    state_db_mtime_ns: Optional[int] = Field(default=None)
+    state_db_size: Optional[int] = Field(default=None)
+    session_index_mtime_ns: Optional[int] = Field(default=None)
+    session_index_size: Optional[int] = Field(default=None)
+    global_state_mtime_ns: Optional[int] = Field(default=None)
+    global_state_size: Optional[int] = Field(default=None)
+    refreshed_at: float = Field(default_factory=time.time)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class CodexTextCacheThread(SQLModel, table=True):
+    __tablename__ = "codextextcachethread"
+    __table_args__ = (
+        UniqueConstraint("root_key", "thread_id", name="uq_codextextcachethread_root_thread"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    root_key: str = Field(index=True)
+    thread_id: str = Field(index=True)
+    title: str = Field(default="")
+    preview: Optional[str] = Field(default=None)
+    cwd: Optional[str] = Field(default=None, index=True)
+    original_cwd: Optional[str] = Field(default=None)
+    rollout_path: Optional[str] = Field(default=None)
+    created_at_source: Optional[float] = Field(default=None, index=True)
+    updated_at_source: Optional[float] = Field(default=None, index=True)
+    archived: bool = Field(default=False, index=True)
+    project_label: str = Field(default="", index=True)
+    project_secondary_label: Optional[str] = Field(default=None)
+    workspace_root: Optional[str] = Field(default=None)
+    rollout_mtime_ns: Optional[int] = Field(default=None)
+    rollout_size: Optional[int] = Field(default=None)
+    message_count: int = Field(default=0)
+    user_message_count: int = Field(default=0)
+    assistant_message_count: int = Field(default=0)
+    refreshed_at: float = Field(default_factory=time.time)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class CodexTextCacheMessage(SQLModel, table=True):
+    __tablename__ = "codextextcachemessage"
+    __table_args__ = (
+        UniqueConstraint("root_key", "thread_id", "seq", name="uq_codextextcachemessage_root_thread_seq"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    root_key: str = Field(index=True)
+    thread_id: str = Field(index=True)
+    seq: int = Field(index=True)
+    timestamp: Optional[str] = Field(default=None)
+    role: str = Field(default="", index=True)
+    phase: Optional[str] = Field(default=None, index=True)
+    text: str = Field(default="")
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class CodexTextCacheTurn(SQLModel, table=True):
+    __tablename__ = "codextextcacheturn"
+    __table_args__ = (
+        UniqueConstraint("root_key", "thread_id", "turn_index", name="uq_codextextcacheturn_root_thread_turn"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    root_key: str = Field(index=True)
+    thread_id: str = Field(index=True)
+    turn_index: int = Field(index=True)
+    user_seq: int = Field(default=0)
+    assistant_seq: Optional[int] = Field(default=None)
+    start_at: float = Field(default=0, index=True)
+    end_at: float = Field(default=0, index=True)
+    duration_seconds: float = Field(default=0)
+    completed: bool = Field(default=False, index=True)
+    preview: Optional[str] = Field(default=None)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -344,6 +526,7 @@ class SheetDocument(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
     scope: str = Field(default="", index=True)
     owner_type: str = Field(default="", index=True)
     owner_key: str = Field(default="", index=True)
@@ -352,10 +535,39 @@ class SheetDocument(SQLModel, table=True):
     engine: str = Field(default="handsontable", index=True)
     document_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
     version: int = Field(default=1)
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+
+
+class WorkbookDocument(SQLModel, table=True):
+    __tablename__ = "workbookdocument"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    title: str = Field(default="")
+    owner_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class WorkbookSheetLink(SQLModel, table=True):
+    __tablename__ = "workbooksheetlink"
+    __table_args__ = (
+        UniqueConstraint("workbook_id", "sheet_id", name="uq_workbooksheetlink_workbook_sheet"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    workbook_id: str = Field(foreign_key="workbookdocument.id", index=True)
+    sheet_id: str = Field(foreign_key="sheetdocument.id", index=True)
+    order_index: int = Field(default=0, index=True)
+    created_at: float = Field(default_factory=time.time)
 
 
 class AttendanceWjxDataSyncState(SQLModel, table=True):

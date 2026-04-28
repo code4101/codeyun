@@ -33,7 +33,7 @@ export const AI_APP_DEFINITIONS: AiAppDefinition[] = [
   {
     id: 'note-taxonomy',
     label: '笔记分类',
-    description: '分析标题与正文，回写分类、形态、阶段。',
+    description: '仅分析当前标题，并参考已有条目的标题、分类、形态、阶段后回写结果。',
   },
 ]
 

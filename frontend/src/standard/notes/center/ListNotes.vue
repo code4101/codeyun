@@ -126,21 +126,11 @@
               </template>
             </el-table-column>
 
-            <el-table-column prop="start_at" label="起始时间" width="160" sortable>
+            <el-table-column prop="start_at" label="起始时间" width="176" sortable>
               <template #default="{ row }">
-                {{ formatDate(row.start_at) }}
-              </template>
-            </el-table-column>
-
-            <el-table-column prop="updated_at" label="更新时间" width="160" sortable>
-              <template #default="{ row }">
-                {{ formatDate(row.updated_at) }}
-              </template>
-            </el-table-column>
-
-            <el-table-column prop="created_at" label="创建时间" width="160" sortable>
-              <template #default="{ row }">
-                {{ formatDate(row.created_at) }}
+                <span class="start-at-badge" :style="getStartAtBadgeStyle(row.start_at)">
+                  {{ formatDate(row.start_at) }}
+                </span>
               </template>
             </el-table-column>
           </el-table>
@@ -185,10 +175,11 @@ import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import NoteFormBadge from '@/components/NoteFormBadge.vue';
 import BatchNoteEditDialog from '@/components/BatchNoteEditDialog.vue';
-import { getNodeDisplayStyle, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
+import { getNodeDisplayStyle, getNodeTheme, getNodeTypeConfig, getNodeStatusConfig } from '@/utils/nodeConfig';
 import { formatNoteDateTime } from '@/utils/noteDate';
 import { useResizablePane } from '@/utils/useResizablePane';
 import { resolveCompletionProgressFillRatio } from '@/utils/noteProgress';
+import { getStableBadgeStyle } from '@/utils/stableVisualColor';
 
 const noteStore = useNoteStore();
 const props = defineProps<{
@@ -334,11 +325,52 @@ const formatDate = (ts: number) => {
   return formatNoteDateTime(ts);
 };
 
+const padDatePart = (value: number) => String(value).padStart(2, '0');
+const getMonthKey = (timestamp: number) => {
+  if (!timestamp) return '';
+  const date = new Date(timestamp);
+  return `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}`;
+};
+
+const getStartAtBadgeStyle = (timestamp: number) => {
+  return getStableBadgeStyle(getMonthKey(timestamp));
+};
+
+const mixHexWithWhite = (hex: string, ratio: number) => {
+  const normalized = hex.trim().replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return hex;
+
+  const amount = Math.min(1, Math.max(0, ratio));
+  const mixChannel = (channel: number) => Math.round(channel * (1 - amount) + 255 * amount);
+  const r = Number.parseInt(normalized.slice(0, 2), 16);
+  const g = Number.parseInt(normalized.slice(2, 4), 16);
+  const b = Number.parseInt(normalized.slice(4, 6), 16);
+
+  return `#${[mixChannel(r), mixChannel(g), mixChannel(b)]
+    .map(channel => channel.toString(16).padStart(2, '0'))
+    .join('')}`.toUpperCase();
+};
+
+const getTitleColor = (note: NoteNode) => {
+  const theme = getNodeTheme(
+    note.primary_category ?? note.node_type,
+    note.color,
+    note.note_categories ?? note.note_types
+  );
+  const statusId = getNodeStatusConfig(note.lifecycle_stage ?? note.node_status ?? 'idea').id;
+
+  if (statusId === 'done') {
+    // Keep the hue family but avoid reusing the full fill color on plain text.
+    return mixHexWithWhite(theme.baseColor, 0.32);
+  }
+
+  return theme.baseColor;
+};
+
 const getCategoryLabel = (type: string | null) => getNodeTypeConfig(type || 'general').label;
 const getTitleStyle = (note: NoteNode) => {
-    const config = getNodeDisplayStyle(note.primary_category ?? note.node_type, 'idea', note.color, note.note_categories ?? note.note_types);
     return {
-        color: config.color,
+        color: getTitleColor(note),
         fontWeight: '500',
         display: 'flex',
         alignItems: 'center',
@@ -525,6 +557,16 @@ watch(filteredNotes, async () => {
 .form-badge-wrap {
   display: inline-flex;
   align-items: center;
+}
+
+.start-at-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  line-height: 20px;
+  white-space: nowrap;
 }
 
 .node-badge {
