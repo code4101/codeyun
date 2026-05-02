@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 import time
 import re
 from datetime import datetime
@@ -9,6 +8,7 @@ from typing import Any, Literal, Optional
 import requests
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from pyxllib.cv.rgbfmt import hash_text_to_hex_color
 from sqlalchemy import func, or_
 from sqlmodel import Session, select
 
@@ -21,9 +21,7 @@ from backend.core.attendance_service import (
     ensure_can_use_attendance_service,
     get_attendance_account_or_404,
     get_attendance_wjx_data_entry_or_404,
-    get_attendance_run_or_404,
     get_attendance_service_order_operation_password,
-    get_attendance_template_or_404,
     get_current_account,
     get_current_execution_device,
     get_or_create_attendance_service_config,
@@ -32,21 +30,21 @@ from backend.core.attendance_service import (
     get_user_device_or_404,
     list_attendance_accounts,
     serialize_attendance_order_refund_history,
-    list_attendance_templates,
     serialize_attendance_account,
-    serialize_attendance_run,
-    serialize_attendance_template,
     serialize_attendance_wjx_data_entry,
     serialize_attendance_wjx_data_sync_state,
     serialize_user_device,
     update_attendance_service_extra_config,
 )
-from backend.core.attendance_order import OrderAutomationError, execute_order_action
+from backend.core.attendance_order import (
+    OrderAutomationError,
+    execute_order_action,
+    query_order_refund_details,
+)
 from backend.core.attendance_wjx_data import (
     WjxDataSyncError,
     execute_wjx_data_sync,
 )
-from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
 from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
 from backend.core.feature_access_guard import (
@@ -58,13 +56,14 @@ from backend.db import get_session
 from backend.models import (
     AttendanceAccountAsset,
     AttendanceOrderRefundHistory,
-    AttendanceRun,
-    AttendanceTemplateAsset,
     AttendanceWjxDataEntry,
     AttendanceWjxDataSyncState,
+    ResourceAccessGrant,
     SheetDocument,
     User,
     UserDevice,
+    WorkbookDocument,
+    WorkbookSheetLink,
 )
 
 public_router = APIRouter()
@@ -86,6 +85,33 @@ LOCAL_FEEDBACK_TEMPLATE_ID = "wjx-feedback-local"
 LOCAL_FEEDBACK_SOURCE = "采集系统"
 LOCAL_FEEDBACK_SOURCE_DETAIL = "CodeYun反馈表"
 LOCAL_FEEDBACK_SEQ_START = 645
+ATTENDANCE_WJX_SUBMITTED_AT_DISPLAY_FORMAT = 'case(is_current_year, "mm/dd hh:mm", "yyyy/mm/dd hh:mm")'
+ATTENDANCE_WJX_DATA_WORKBOOK_ID = 2
+ATTENDANCE_WJX_DATA_SHEET_TITLE = "问卷数据"
+ATTENDANCE_WJX_DATA_OWNER_TYPE = "attendance_questionnaire"
+ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
+ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
+ATTENDANCE_WJX_DATA_COLUMNS = [
+    "序号",
+    "提交时间",
+    "来源",
+    "课程",
+    "学号",
+    "姓名",
+    "修正需求",
+    "补充说明",
+    "处理状态",
+]
+FEEDBACK_COURSE_SOURCE_SHEET_ID = 4
+NOTE_SHEET_PUBLIC_RESOURCE_TYPE = "sheet"
+NOTE_SHEET_PUBLIC_SUBJECT_TYPE = "anonymous"
+NOTE_SHEET_PUBLIC_SUBJECT_KEY = "anonymous"
+NOTE_SHEET_PUBLIC_VIEWER_ROLE = "viewer"
+FEEDBACK_COURSE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
+    "course_name": ("课程名称", 1),
+    "online_sheet": ("在线考勤表", 2),
+    "completed_date": ("考勤实际完成结点", 10),
+}
 ORDER_HISTORY_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\s+"
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
@@ -113,28 +139,6 @@ class AttendanceAccountUpdateRequest(BaseModel):
     password: Optional[str] = None
 
 
-class AttendanceTemplateCreateRequest(BaseModel):
-    name: str
-    activity_id: str
-    is_active: bool = True
-
-
-class AttendanceTemplateUpdateRequest(BaseModel):
-    name: Optional[str] = None
-    activity_id: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
-class AttendanceRunCreateRequest(BaseModel):
-    template_id: Optional[str] = None
-    action: Literal["inspect", "apply"]
-    account_id: Optional[str] = None
-    execution_device_entry_id: Optional[str] = None
-    hide: list[str] = Field(default_factory=list)
-    add: list[str] = Field(default_factory=list)
-    persist_global_selection: bool = True
-
-
 class AttendanceOrderExecuteRequest(BaseModel):
     action: Literal["inspect", "refund"]
     rows: list[dict[str, Any]] = Field(default_factory=list)
@@ -143,6 +147,42 @@ class AttendanceOrderExecuteRequest(BaseModel):
     order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = None
     persist_global_selection: bool = True
     operation_password: Optional[str] = None
+
+
+class AttendanceOrderRefundDetailRequest(BaseModel):
+    order_id: str
+    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = "auto"
+    execution_device_entry_id: Optional[str] = None
+    login_users: list[str] = Field(default_factory=list)
+    persist_global_selection: bool = True
+
+
+class AttendanceOrderRefundDetailItem(BaseModel):
+    wechat_order_id: str = ""
+    merchant_order_id: str = ""
+    refund_id: str = ""
+    refund_amount: float = 0.0
+    refund_status: str = ""
+    applicant: str = ""
+    submitted_at: str = ""
+    completed_at: str = ""
+
+
+class AttendanceOrderRefundDetailSummary(BaseModel):
+    order_id: str
+    matched_order_id: str
+    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"]
+    row_count: int = 0
+    refund_amount_total: float = 0.0
+    wechat_order_id: str = ""
+    merchant_order_id: str = ""
+    refund_statuses: list[str] = Field(default_factory=list)
+
+
+class AttendanceOrderRefundDetailResponse(BaseModel):
+    execution_device_entry_id: str
+    summary: AttendanceOrderRefundDetailSummary
+    rows: list[AttendanceOrderRefundDetailItem] = Field(default_factory=list)
 
 
 class AttendanceOrderRefundHistoryItem(BaseModel):
@@ -255,14 +295,22 @@ class AttendanceWjxDataPage(BaseModel):
     template: dict[str, str]
 
 
+class AttendanceWjxDataSheetLocation(BaseModel):
+    workbook_id: int
+    sheet_id: int
+    path: str
+
+
+class AttendanceFeedbackCourseOption(BaseModel):
+    name: str
+    attendance_sheet_url: str = ""
+
+
 class AttendanceFeedbackFormMeta(BaseModel):
     course_names: list[str] = Field(default_factory=list)
+    course_options: list[AttendanceFeedbackCourseOption] = Field(default_factory=list)
     course_names_updated_at: Optional[float] = None
-    template: dict[str, str]
-
-
-class AttendanceFeedbackFormMetaUpdateRequest(BaseModel):
-    course_names: list[str] = Field(default_factory=list)
+    data_sheet_url: str = ""
 
 
 class AttendanceSheetDocumentResponse(BaseModel):
@@ -321,6 +369,719 @@ def _get_next_sheet_numeric_id(session: Session) -> int:
     return max(int(current_max or 0), 0) + 1
 
 
+def _get_next_workbook_link_order(session: Session, workbook_id: str) -> int:
+    current_max = session.exec(
+        select(func.max(WorkbookSheetLink.order_index))
+        .where(WorkbookSheetLink.workbook_id == workbook_id)
+    ).one()
+    return max(int(current_max or 0), 0) + 10
+
+
+def _build_public_note_sheet_url(document: SheetDocument | None) -> str:
+    if document is None or document.numeric_id is None:
+        return ""
+    return f"/sheet/{int(document.numeric_id)}"
+
+
+def _ensure_note_sheet_anonymous_viewer(session: Session, document: SheetDocument | None) -> str:
+    if document is None:
+        return ""
+
+    grant = session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == NOTE_SHEET_PUBLIC_RESOURCE_TYPE)
+        .where(ResourceAccessGrant.resource_id == document.id)
+        .where(ResourceAccessGrant.subject_key == NOTE_SHEET_PUBLIC_SUBJECT_KEY)
+    ).first()
+    now = time.time()
+    mutated = False
+    if grant is None:
+        grant = ResourceAccessGrant(
+            resource_type=NOTE_SHEET_PUBLIC_RESOURCE_TYPE,
+            resource_id=document.id,
+            subject_key=NOTE_SHEET_PUBLIC_SUBJECT_KEY,
+            subject_type=NOTE_SHEET_PUBLIC_SUBJECT_TYPE,
+            role=NOTE_SHEET_PUBLIC_VIEWER_ROLE,
+            created_at=now,
+            updated_at=now,
+        )
+        mutated = True
+    elif (
+        grant.role != NOTE_SHEET_PUBLIC_VIEWER_ROLE
+        or grant.subject_type != NOTE_SHEET_PUBLIC_SUBJECT_TYPE
+        or grant.subject_user_id is not None
+    ):
+        grant.role = NOTE_SHEET_PUBLIC_VIEWER_ROLE
+        grant.subject_type = NOTE_SHEET_PUBLIC_SUBJECT_TYPE
+        grant.subject_user_id = None
+        grant.updated_at = now
+        mutated = True
+
+    if mutated:
+        session.add(grant)
+        session.commit()
+    return _build_public_note_sheet_url(document)
+
+
+def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "columns": list(ATTENDANCE_WJX_DATA_COLUMNS),
+        "rows": [],
+        "column_configs": {
+            "序号": {"value_type": "number", "allow_empty": False, "display_mode": "single_line"},
+            "提交时间": {
+                "value_type": "date",
+                "display_format": ATTENDANCE_WJX_SUBMITTED_AT_DISPLAY_FORMAT,
+                "display_mode": "single_line",
+            },
+            "来源": {"display_mode": "single_line"},
+            "学号": {"display_mode": "single_line"},
+            "姓名": {"display_mode": "single_line"},
+        },
+        "view_settings": {
+            "show_row_numbers": True,
+            "row_marker_numbering": "page",
+            "show_column_markers": True,
+            "column_marker_style": "letters",
+            "pagination": {
+                "enabled": True,
+                "page_size": 100,
+            },
+        },
+    }
+
+
+def _normalize_attendance_wjx_sheet_cell(value: Any) -> str:
+    return _normalize_wjx_data_text(value)
+
+
+def _normalize_attendance_wjx_sheet_columns(value: Any) -> list[str]:
+    columns: list[str] = []
+    seen: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            header = str(item or "").strip()
+            if header and header not in seen:
+                columns.append(header)
+                seen.add(header)
+    for header in ATTENDANCE_WJX_DATA_COLUMNS:
+        if header not in seen:
+            columns.append(header)
+            seen.add(header)
+    return columns
+
+
+def _normalize_attendance_wjx_sheet_row(row: Any, columns: list[str]) -> list[str]:
+    if isinstance(row, dict):
+        values = [_normalize_attendance_wjx_sheet_cell(row.get(column, "")) for column in columns]
+    elif isinstance(row, list):
+        values = [_normalize_attendance_wjx_sheet_cell(cell) for cell in row]
+    else:
+        values = []
+    if len(values) < len(columns):
+        values.extend([""] * (len(columns) - len(values)))
+    return values[:len(columns)]
+
+
+def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
+    source = dict(value) if isinstance(value, dict) else {}
+    columns = _normalize_attendance_wjx_sheet_columns(source.get("columns"))
+    rows_source = source.get("rows")
+    rows = [
+        _normalize_attendance_wjx_sheet_row(row, columns)
+        for row in (rows_source if isinstance(rows_source, list) else [])
+    ]
+
+    default_document = _create_default_attendance_wjx_sheet_document()
+    column_configs = dict(source.get("column_configs") if isinstance(source.get("column_configs"), dict) else {})
+    for header, config in default_document["column_configs"].items():
+        if not isinstance(column_configs.get(header), dict):
+            column_configs[header] = dict(config)
+            continue
+        merged_config = dict(config)
+        merged_config.update(column_configs[header])
+        column_configs[header] = merged_config
+
+    view_settings = dict(source.get("view_settings") if isinstance(source.get("view_settings"), dict) else {})
+    view_settings.setdefault("show_row_numbers", True)
+    view_settings.setdefault("row_marker_numbering", "page")
+    view_settings.setdefault("show_column_markers", True)
+    view_settings.setdefault("column_marker_style", "letters")
+    pagination = dict(view_settings.get("pagination") if isinstance(view_settings.get("pagination"), dict) else {})
+    pagination.setdefault("enabled", True)
+    pagination.setdefault("page_size", 100)
+    view_settings["pagination"] = pagination
+
+    return {
+        **source,
+        "schema_version": 1,
+        "columns": columns,
+        "rows": rows,
+        "column_configs": column_configs,
+        "view_settings": view_settings,
+    }
+
+
+def _get_attendance_wjx_sheet_column_index(columns: list[str], header: str) -> int:
+    try:
+        return columns.index(header)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=f"问卷数据表缺少字段：{header}") from exc
+
+
+def _get_attendance_wjx_sheet_cell(row: list[str], columns: list[str], header: str) -> str:
+    index = _get_attendance_wjx_sheet_column_index(columns, header)
+    return row[index] if index < len(row) else ""
+
+
+def _set_attendance_wjx_sheet_cell_link(
+    document_json: dict[str, Any],
+    *,
+    row_index: int,
+    column_index: int,
+    url: str,
+) -> bool:
+    cell_meta = dict(document_json.get("cell_meta") if isinstance(document_json.get("cell_meta"), dict) else {})
+    key = f"{row_index}:{column_index}"
+    entry = dict(cell_meta.get(key) if isinstance(cell_meta.get(key), dict) else {})
+    normalized_url = _normalize_attendance_wjx_sheet_cell(url)
+
+    if normalized_url:
+        current_link = entry.get("link") if isinstance(entry.get("link"), dict) else {}
+        if _normalize_attendance_wjx_sheet_cell(current_link.get("url")) == normalized_url:
+            return False
+        entry["link"] = {"url": normalized_url}
+        cell_meta[key] = entry
+    else:
+        if "link" not in entry:
+            return False
+        entry.pop("link", None)
+        if entry:
+            cell_meta[key] = entry
+        else:
+            cell_meta.pop(key, None)
+
+    document_json["cell_meta"] = cell_meta
+    return True
+
+
+def _sync_attendance_wjx_sheet_course_link_for_row(
+    document_json: dict[str, Any],
+    *,
+    row_index: int,
+    row: list[str],
+    columns: list[str],
+    course_link_map: dict[str, str] | None,
+) -> bool:
+    if course_link_map is None:
+        return False
+
+    course_column_index = _get_attendance_wjx_sheet_column_index(columns, "课程")
+    course_name = _normalize_attendance_wjx_sheet_cell(row[course_column_index] if course_column_index < len(row) else "")
+    return _set_attendance_wjx_sheet_cell_link(
+        document_json,
+        row_index=row_index,
+        column_index=course_column_index,
+        url=course_link_map.get(course_name, ""),
+    )
+
+
+def _apply_attendance_wjx_sheet_course_links(
+    document_json: dict[str, Any],
+    course_link_map: dict[str, str] | None,
+) -> tuple[dict[str, Any], bool]:
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    if course_link_map is None:
+        return document, False
+
+    columns = list(document["columns"])
+    changed = False
+    for row_index, row in enumerate(document["rows"]):
+        changed = _sync_attendance_wjx_sheet_course_link_for_row(
+            document,
+            row_index=row_index,
+            row=row,
+            columns=columns,
+            course_link_map=course_link_map,
+        ) or changed
+    return document, changed
+
+
+def _set_attendance_wjx_sheet_cell(row: list[str], columns: list[str], header: str, value: Any) -> None:
+    index = _get_attendance_wjx_sheet_column_index(columns, header)
+    if len(row) < len(columns):
+        row.extend([""] * (len(columns) - len(row)))
+    row[index] = _normalize_attendance_wjx_sheet_cell(value)
+
+
+def _parse_attendance_wjx_sheet_seq(value: Any) -> int | None:
+    text = _normalize_attendance_wjx_sheet_cell(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d+(?:\.0+)?", text):
+        return int(float(text))
+    return None
+
+
+def _find_attendance_wjx_sheet_row_index(document_json: dict[str, Any], seq: int) -> int | None:
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    columns = list(document["columns"])
+    rows = list(document["rows"])
+    for index, row in enumerate(rows):
+        current_seq = _parse_attendance_wjx_sheet_seq(
+            _get_attendance_wjx_sheet_cell(row, columns, "序号")
+        )
+        if current_seq == seq:
+            return index
+    return None
+
+
+def _get_next_attendance_wjx_sheet_seq(document_json: dict[str, Any]) -> int:
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    columns = list(document["columns"])
+    max_seq = LOCAL_FEEDBACK_SEQ_START - 1
+    for row in document["rows"]:
+        seq = _parse_attendance_wjx_sheet_seq(_get_attendance_wjx_sheet_cell(row, columns, "序号"))
+        if seq is not None:
+            max_seq = max(max_seq, seq)
+    return max_seq + 1
+
+
+def _entry_to_attendance_wjx_sheet_values(
+    entry: AttendanceWjxDataEntry,
+    *,
+    process_status: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "序号": entry.seq,
+        "提交时间": entry.submitted_at_text,
+        "来源": entry.source,
+        "课程": entry.course_name,
+        "学号": entry.student_id_text,
+        "姓名": entry.student_name,
+        "修正需求": entry.correction_request,
+        "补充说明": entry.extra_note,
+        "处理状态": process_status if process_status is not None else (entry.process_note or entry.process_status),
+    }
+
+
+def _wjx_raw_row_to_attendance_wjx_sheet_values(row: dict[str, Any]) -> dict[str, Any] | None:
+    seq = _parse_attendance_wjx_sheet_seq(row.get("序号"))
+    if seq is None:
+        return None
+    return {
+        "序号": seq,
+        "提交时间": _normalize_wjx_data_text(row.get("提交答卷时间")),
+        "来源": _normalize_wjx_data_text(row.get("来源")),
+        "课程": _normalize_wjx_data_text(row.get("1、所属课程")),
+        "学号": _normalize_wjx_data_text(row.get("2、学号")),
+        "姓名": _normalize_wjx_data_text(row.get("3、姓名")),
+        "修正需求": _normalize_wjx_data_text(row.get("4、修正需求")),
+        "补充说明": _normalize_wjx_data_text(row.get("5、其他补充说明")),
+        "处理状态": "",
+    }
+
+
+def _upsert_attendance_wjx_sheet_values(
+    document_json: dict[str, Any],
+    values: dict[str, Any],
+    *,
+    preserve_process_status: bool = True,
+    course_link_map: dict[str, str] | None = None,
+) -> tuple[dict[str, Any], bool, bool]:
+    seq = _parse_attendance_wjx_sheet_seq(values.get("序号"))
+    if seq is None:
+        return _normalize_attendance_wjx_sheet_document(document_json), False, False
+
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    columns = list(document["columns"])
+    rows = list(document["rows"])
+    row_index = _find_attendance_wjx_sheet_row_index(document, seq)
+    inserted = row_index is None
+    if inserted:
+        row = [""] * len(columns)
+        rows.append(row)
+        row_index = len(rows) - 1
+    else:
+        row = list(rows[row_index])
+
+    original_row = list(row)
+    existing_process_status = _get_attendance_wjx_sheet_cell(row, columns, "处理状态")
+    for header in ATTENDANCE_WJX_DATA_COLUMNS:
+        if header == "处理状态" and preserve_process_status and existing_process_status:
+            continue
+        if header in values:
+            _set_attendance_wjx_sheet_cell(row, columns, header, values.get(header))
+
+    if not inserted:
+        rows[row_index] = row
+    document["rows"] = rows
+    link_changed = _sync_attendance_wjx_sheet_course_link_for_row(
+        document,
+        row_index=row_index,
+        row=row,
+        columns=columns,
+        course_link_map=course_link_map,
+    )
+    return document, inserted, inserted or row != original_row or link_changed
+
+
+def _remove_attendance_wjx_sheet_row(
+    document_json: dict[str, Any],
+    *,
+    seq: int,
+) -> tuple[dict[str, Any], bool]:
+    document = _normalize_attendance_wjx_sheet_document(document_json)
+    row_index = _find_attendance_wjx_sheet_row_index(document, seq)
+    if row_index is None:
+        return document, False
+    rows = list(document["rows"])
+    rows.pop(row_index)
+    document["rows"] = rows
+    return document, True
+
+
+def _get_attendance_wjx_data_workbook(session: Session) -> WorkbookDocument | None:
+    return session.exec(
+        select(WorkbookDocument).where(WorkbookDocument.numeric_id == ATTENDANCE_WJX_DATA_WORKBOOK_ID)
+    ).first()
+
+
+def _find_attendance_wjx_sheet_document(
+    session: Session,
+    workbook: WorkbookDocument,
+) -> SheetDocument | None:
+    document = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.scope == "notes")
+        .where(SheetDocument.owner_type == ATTENDANCE_WJX_DATA_OWNER_TYPE)
+        .where(SheetDocument.owner_key == ATTENDANCE_WJX_DATA_OWNER_KEY)
+        .where(SheetDocument.sheet_key == ATTENDANCE_WJX_DATA_SHEET_KEY)
+    ).first()
+    if document is not None:
+        return document
+
+    links = session.exec(
+        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)
+    ).all()
+    if not links:
+        return None
+
+    linked_sheet_ids = [link.sheet_id for link in links]
+    return session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.id.in_(linked_sheet_ids))
+        .where(SheetDocument.title == ATTENDANCE_WJX_DATA_SHEET_TITLE)
+    ).first()
+
+
+def _ensure_attendance_wjx_sheet_document(
+    session: Session,
+    *,
+    create: bool,
+) -> SheetDocument | None:
+    workbook = _get_attendance_wjx_data_workbook(session)
+    if workbook is None:
+        return None
+
+    document = _find_attendance_wjx_sheet_document(session, workbook)
+    now = time.time()
+    mutated = False
+    created_document = False
+    owner_user_id = workbook.owner_user_id or workbook.created_by_user_id or workbook.updated_by_user_id
+
+    if document is None:
+        if not create:
+            return None
+        document = SheetDocument(
+            numeric_id=_get_next_sheet_numeric_id(session),
+            scope="notes",
+            owner_type=ATTENDANCE_WJX_DATA_OWNER_TYPE,
+            owner_key=ATTENDANCE_WJX_DATA_OWNER_KEY,
+            sheet_key=ATTENDANCE_WJX_DATA_SHEET_KEY,
+            title=ATTENDANCE_WJX_DATA_SHEET_TITLE,
+            engine="handsontable",
+            document_json=_create_default_attendance_wjx_sheet_document(),
+            version=1,
+            owner_user_id=owner_user_id,
+            created_by_user_id=owner_user_id,
+            updated_by_user_id=owner_user_id,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(document)
+        session.flush()
+        mutated = True
+        created_document = True
+    else:
+        if document.numeric_id is None:
+            document.numeric_id = _get_next_sheet_numeric_id(session)
+            mutated = True
+        if document.owner_type != ATTENDANCE_WJX_DATA_OWNER_TYPE:
+            document.owner_type = ATTENDANCE_WJX_DATA_OWNER_TYPE
+            mutated = True
+        if document.owner_key != ATTENDANCE_WJX_DATA_OWNER_KEY:
+            document.owner_key = ATTENDANCE_WJX_DATA_OWNER_KEY
+            mutated = True
+        if document.sheet_key != ATTENDANCE_WJX_DATA_SHEET_KEY:
+            document.sheet_key = ATTENDANCE_WJX_DATA_SHEET_KEY
+            mutated = True
+        if document.owner_user_id is None and owner_user_id is not None:
+            document.owner_user_id = owner_user_id
+            mutated = True
+
+    link = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .where(WorkbookSheetLink.sheet_id == document.id)
+    ).first()
+    if link is None:
+        session.add(
+            WorkbookSheetLink(
+                workbook_id=workbook.id,
+                sheet_id=document.id,
+                order_index=_get_next_workbook_link_order(session, workbook.id),
+                created_at=now,
+            )
+        )
+        workbook.updated_by_user_id = owner_user_id
+        workbook.updated_at = now
+        session.add(workbook)
+        mutated = True
+
+    normalized_document = _normalize_attendance_wjx_sheet_document(dict(document.document_json or {}))
+    if created_document and not normalized_document["rows"]:
+        normalized_document = _seed_attendance_wjx_sheet_from_entries(session, normalized_document)
+    normalized_document, _links_changed = _sync_attendance_wjx_sheet_course_links(session, normalized_document)
+    if dict(document.document_json or {}) != normalized_document:
+        document.document_json = normalized_document
+        document.version = max(int(document.version or 1), 1) + 1 if not mutated else int(document.version or 1)
+        document.updated_by_user_id = owner_user_id
+        document.updated_at = now
+        mutated = True
+
+    if mutated:
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+    _ensure_note_sheet_anonymous_viewer(session, document)
+    return document
+
+
+def _seed_attendance_wjx_sheet_from_entries(
+    session: Session,
+    document_json: dict[str, Any],
+) -> dict[str, Any]:
+    activity_ids = [FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]
+    entries = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id.in_(activity_ids))
+        .order_by(AttendanceWjxDataEntry.seq.asc(), AttendanceWjxDataEntry.id.asc())
+    ).all()
+    next_document = _normalize_attendance_wjx_sheet_document(document_json)
+    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    for entry in entries:
+        next_document, _inserted, _changed = _upsert_attendance_wjx_sheet_values(
+            next_document,
+            _entry_to_attendance_wjx_sheet_values(entry),
+            preserve_process_status=False,
+            course_link_map=course_link_map,
+        )
+    return next_document
+
+
+def _persist_attendance_wjx_sheet_document(
+    session: Session,
+    document: SheetDocument,
+    next_document: dict[str, Any],
+    *,
+    actor: User | None = None,
+) -> None:
+    normalized = _normalize_attendance_wjx_sheet_document(next_document)
+    if dict(document.document_json or {}) == normalized:
+        return
+    document.document_json = normalized
+    document.version = max(int(document.version or 1), 1) + 1
+    document.updated_by_user_id = actor.id if actor is not None else document.owner_user_id
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    session.refresh(document)
+
+
+def _upsert_attendance_wjx_sheet_entry(
+    session: Session,
+    entry: AttendanceWjxDataEntry,
+    *,
+    actor: User | None = None,
+    preserve_process_status: bool = True,
+) -> None:
+    document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    if document is None:
+        return
+    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+        dict(document.document_json or {}),
+        _entry_to_attendance_wjx_sheet_values(entry),
+        preserve_process_status=preserve_process_status,
+        course_link_map=course_link_map,
+    )
+    if changed:
+        _persist_attendance_wjx_sheet_document(session, document, next_document, actor=actor)
+
+
+def _upsert_attendance_wjx_sheet_raw_rows(
+    session: Session,
+    *,
+    rows: list[dict[str, Any]],
+    actor: User | None = None,
+) -> None:
+    document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    if document is None:
+        return
+
+    next_document = dict(document.document_json or {})
+    changed = False
+    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    for row in rows:
+        values = _wjx_raw_row_to_attendance_wjx_sheet_values(row)
+        if values is None:
+            continue
+        next_document, _inserted, row_changed = _upsert_attendance_wjx_sheet_values(
+            next_document,
+            values,
+            preserve_process_status=True,
+            course_link_map=course_link_map,
+        )
+        changed = changed or row_changed
+    if changed:
+        _persist_attendance_wjx_sheet_document(session, document, next_document, actor=actor)
+
+
+def _build_attendance_wjx_sheet_foreground_colors(item: dict[str, Any]) -> dict[str, str | None]:
+    def resolve(value: str) -> str | None:
+        normalized = _normalize_attendance_wjx_sheet_cell(value)
+        if not normalized:
+            return None
+        return hash_text_to_hex_color(normalized, tone="dark")
+
+    submitted = _normalize_attendance_wjx_sheet_cell(item.get("submitted_at_text"))
+    submitted_day = submitted.split()[0] if submitted else ""
+    return {
+        "submitted": resolve(submitted_day),
+        "course": resolve(_normalize_attendance_wjx_sheet_cell(item.get("course_name"))),
+        "student": resolve(_normalize_attendance_wjx_sheet_cell(item.get("student_name"))),
+    }
+
+
+def _serialize_attendance_wjx_sheet_row(
+    row: list[str],
+    columns: list[str],
+    *,
+    updated_at: float,
+) -> dict[str, Any] | None:
+    seq = _parse_attendance_wjx_sheet_seq(_get_attendance_wjx_sheet_cell(row, columns, "序号"))
+    if seq is None:
+        return None
+
+    source = _get_attendance_wjx_sheet_cell(row, columns, "来源")
+    process_status = _get_attendance_wjx_sheet_cell(row, columns, "处理状态")
+    item = {
+        "id": seq,
+        "activity_id": LOCAL_FEEDBACK_ACTIVITY_ID if source == LOCAL_FEEDBACK_SOURCE else FIXED_WJX_TEMPLATE_ACTIVITY_ID,
+        "seq": seq,
+        "submitted_at_text": _get_attendance_wjx_sheet_cell(row, columns, "提交时间"),
+        "duration_text": "",
+        "source": source,
+        "source_detail": "",
+        "source_ip": "",
+        "course_name": _get_attendance_wjx_sheet_cell(row, columns, "课程"),
+        "student_id_text": _get_attendance_wjx_sheet_cell(row, columns, "学号"),
+        "student_name": _get_attendance_wjx_sheet_cell(row, columns, "姓名"),
+        "correction_request": _get_attendance_wjx_sheet_cell(row, columns, "修正需求"),
+        "extra_note": _get_attendance_wjx_sheet_cell(row, columns, "补充说明"),
+        "process_status": process_status,
+        "process_note": process_status,
+        "match_result": {},
+        "revision_result": {},
+        "raw_row": {},
+        "synced_at": updated_at,
+        "created_at": updated_at,
+        "updated_at": updated_at,
+    }
+    item["foreground_colors"] = _build_attendance_wjx_sheet_foreground_colors(item)
+    return item
+
+
+def _build_attendance_wjx_sheet_data_page(
+    session: Session,
+    *,
+    document: SheetDocument,
+    template: dict[str, str],
+    page: int,
+    page_size: int,
+    process_status: str | None = None,
+    keyword: str | None = None,
+) -> AttendanceWjxDataPage:
+    normalized_page = max(1, int(page or 1))
+    normalized_page_size = min(max(1, int(page_size or 20)), 100)
+    offset = (normalized_page - 1) * normalized_page_size
+    document_json = _normalize_attendance_wjx_sheet_document(dict(document.document_json or {}))
+    columns = list(document_json["columns"])
+    normalized_status = (process_status or "").strip()
+    normalized_keyword = (keyword or "").strip()
+
+    items: list[dict[str, Any]] = []
+    for row in document_json["rows"]:
+        item = _serialize_attendance_wjx_sheet_row(
+            row,
+            columns,
+            updated_at=float(document.updated_at or 0.0),
+        )
+        if item is None:
+            continue
+        item_status = _normalize_attendance_wjx_sheet_cell(item.get("process_status"))
+        if normalized_status == "__empty__" and item_status:
+            continue
+        if normalized_status and normalized_status != "__empty__" and item_status != normalized_status:
+            continue
+        if normalized_keyword:
+            haystack = " ".join(
+                _normalize_attendance_wjx_sheet_cell(item.get(key))
+                for key in (
+                    "submitted_at_text",
+                    "source",
+                    "course_name",
+                    "student_id_text",
+                    "student_name",
+                    "correction_request",
+                    "extra_note",
+                    "process_status",
+                )
+            )
+            if normalized_keyword not in haystack:
+                continue
+        items.append(item)
+
+    items.sort(key=lambda item: int(item["seq"]), reverse=True)
+    total = len(items)
+    paged_items = items[offset : offset + normalized_page_size]
+    state = session.get(AttendanceWjxDataSyncState, str(template["activity_id"]))
+    return AttendanceWjxDataPage(
+        items=[AttendanceWjxDataItem.model_validate(item) for item in paged_items],
+        total=total,
+        page=normalized_page,
+        page_size=normalized_page_size,
+        sync_state=(
+            AttendanceWjxDataSyncStateItem.model_validate(serialize_attendance_wjx_data_sync_state(state))
+            if state is not None
+            else None
+        ),
+        template=template,
+    )
+
+
 def _serialize_sheet_document(document: SheetDocument) -> dict[str, Any]:
     return {
         "id": int(document.numeric_id or 0),
@@ -370,19 +1131,149 @@ def _normalize_order_history_text(value: Any) -> str:
     return str(value).strip()
 
 
-def _normalize_course_name_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
+def _normalize_feedback_sheet_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _normalize_feedback_sheet_columns(document_json: dict[str, Any]) -> list[str]:
+    columns = document_json.get("columns")
+    if not isinstance(columns, list):
+        return []
+    return [str(column or "").strip() for column in columns]
+
+
+def _extract_feedback_sheet_rows(document_json: dict[str, Any]) -> list[Any]:
+    rows = document_json.get("rows")
+    return list(rows) if isinstance(rows, list) else []
+
+
+def _find_feedback_course_column_index(columns: list[str], field_key: str) -> int | None:
+    binding = FEEDBACK_COURSE_FIELD_BINDINGS.get(field_key)
+    if binding is None:
+        return None
+    header, fallback_index = binding
+    for index, column in enumerate(columns):
+        if column == header:
+            return index
+    if 0 <= fallback_index < len(columns):
+        return fallback_index
+    return None
+
+
+def _extract_feedback_sheet_cell(row: Any, column_index: int, columns: list[str]) -> Any:
+    if isinstance(row, list):
+        return row[column_index] if column_index < len(row) else ""
+    if isinstance(row, dict):
+        column_key = columns[column_index] if column_index < len(columns) else ""
+        return row.get(column_key, "")
+    return ""
+
+
+def _extract_feedback_sheet_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict):
+        return ""
+    entry = cell_meta.get(f"{row_index}:{column_index}")
+    if not isinstance(entry, dict):
+        return ""
+    link = entry.get("link")
+    if not isinstance(link, dict):
+        return ""
+    return _normalize_feedback_sheet_text(link.get("url"))
+
+
+def _extract_feedback_course_options_from_sheet(document_json: dict[str, Any]) -> list[AttendanceFeedbackCourseOption]:
+    columns = _normalize_feedback_sheet_columns(document_json)
+    rows = _extract_feedback_sheet_rows(document_json)
+    online_sheet_index = _find_feedback_course_column_index(columns, "online_sheet")
+    course_name_index = _find_feedback_course_column_index(columns, "course_name")
+    completed_index = _find_feedback_course_column_index(columns, "completed_date")
+    if completed_index is None or (online_sheet_index is None and course_name_index is None):
         return []
 
     seen: set[str] = set()
-    result: list[str] = []
-    for item in value:
-        text = _normalize_order_history_text(item)
-        if not text or text in seen:
+    result: list[AttendanceFeedbackCourseOption] = []
+    for row_index, row in enumerate(rows):
+        completed_text = _normalize_feedback_sheet_text(
+            _extract_feedback_sheet_cell(row, completed_index, columns)
+        )
+        if completed_text:
             continue
-        seen.add(text)
-        result.append(text)
+
+        course_name = ""
+        if online_sheet_index is not None:
+            course_name = _normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, online_sheet_index, columns)
+            )
+        if not course_name and course_name_index is not None:
+            course_name = _normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, course_name_index, columns)
+            )
+        if not course_name or course_name in seen:
+            continue
+        seen.add(course_name)
+        attendance_sheet_url = ""
+        if online_sheet_index is not None:
+            attendance_sheet_url = _extract_feedback_sheet_cell_link_url(document_json, row_index, online_sheet_index)
+        result.append(AttendanceFeedbackCourseOption(name=course_name, attendance_sheet_url=attendance_sheet_url))
     return result
+
+
+def _extract_feedback_course_link_map_from_sheet(document_json: dict[str, Any]) -> dict[str, str]:
+    columns = _normalize_feedback_sheet_columns(document_json)
+    rows = _extract_feedback_sheet_rows(document_json)
+    online_sheet_index = _find_feedback_course_column_index(columns, "online_sheet")
+    course_name_index = _find_feedback_course_column_index(columns, "course_name")
+    if online_sheet_index is None and course_name_index is None:
+        return {}
+
+    result: dict[str, str] = {}
+    for row_index, row in enumerate(rows):
+        attendance_sheet_url = ""
+        if online_sheet_index is not None:
+            attendance_sheet_url = _extract_feedback_sheet_cell_link_url(document_json, row_index, online_sheet_index)
+        if not attendance_sheet_url and course_name_index is not None:
+            attendance_sheet_url = _extract_feedback_sheet_cell_link_url(document_json, row_index, course_name_index)
+        if not attendance_sheet_url:
+            continue
+
+        candidates: list[str] = []
+        if online_sheet_index is not None:
+            candidates.append(_normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, online_sheet_index, columns)
+            ))
+        if course_name_index is not None:
+            candidates.append(_normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, course_name_index, columns)
+            ))
+
+        for name in candidates:
+            if name and name not in result:
+                result[name] = attendance_sheet_url
+    return result
+
+
+def _get_feedback_course_link_map_from_summary_sheet(session: Session) -> dict[str, str] | None:
+    source_sheet = session.exec(
+        select(SheetDocument).where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
+    ).first()
+    if source_sheet is None:
+        return None
+    return _extract_feedback_course_link_map_from_sheet(dict(source_sheet.document_json or {}))
+
+
+def _sync_attendance_wjx_sheet_course_links(
+    session: Session,
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    return _apply_attendance_wjx_sheet_course_links(
+        document_json,
+        _get_feedback_course_link_map_from_summary_sheet(session),
+    )
+
+
+def _extract_feedback_course_names_from_sheet(document_json: dict[str, Any]) -> list[str]:
+    return [item.name for item in _extract_feedback_course_options_from_sheet(document_json)]
 
 
 def _coerce_order_history_number(value: Any) -> float | None:
@@ -432,6 +1323,48 @@ def _normalize_attendance_order_execution_result(result: dict[str, Any]) -> dict
         ]
     else:
         normalized["rows"] = []
+    return normalized
+
+
+def _normalize_attendance_order_refund_detail_result(result: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(result or {})
+    rows = normalized.get("rows")
+    normalized_rows: list[dict[str, Any]] = []
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            normalized_rows.append(
+                {
+                    "wechat_order_id": _normalize_attendance_order_id(row.get("wechat_order_id")),
+                    "merchant_order_id": _normalize_attendance_order_id(row.get("merchant_order_id")),
+                    "refund_id": _normalize_attendance_order_id(row.get("refund_id")),
+                    "refund_amount": float(row.get("refund_amount") or 0.0),
+                    "refund_status": _normalize_order_history_text(row.get("refund_status")),
+                    "applicant": _normalize_order_history_text(row.get("applicant")),
+                    "submitted_at": _normalize_order_history_text(row.get("submitted_at")),
+                    "completed_at": _normalize_order_history_text(row.get("completed_at")),
+                }
+            )
+    normalized["rows"] = normalized_rows
+
+    summary = normalized.get("summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    normalized["summary"] = {
+        "order_id": _normalize_attendance_order_id(summary.get("order_id")),
+        "matched_order_id": _normalize_attendance_order_id(summary.get("matched_order_id")),
+        "query_type": str(summary.get("query_type") or "auto"),
+        "row_count": int(summary.get("row_count") or len(normalized_rows)),
+        "refund_amount_total": float(summary.get("refund_amount_total") or 0.0),
+        "wechat_order_id": _normalize_attendance_order_id(summary.get("wechat_order_id")),
+        "merchant_order_id": _normalize_attendance_order_id(summary.get("merchant_order_id")),
+        "refund_statuses": [
+            _normalize_order_history_text(item)
+            for item in (summary.get("refund_statuses") or [])
+            if _normalize_order_history_text(item)
+        ],
+    }
     return normalized
 
 
@@ -744,6 +1677,9 @@ def _resolve_wjx_data_history_max(session: Session) -> int:
 
 
 def _get_next_local_feedback_seq(session: Session) -> int:
+    document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    if document is not None:
+        return _get_next_attendance_wjx_sheet_seq(dict(document.document_json or {}))
     return _resolve_wjx_data_history_max(session) + 1
 
 
@@ -782,24 +1718,30 @@ def _persist_attendance_feedback_submission(
         "5、其他补充说明": extra_note,
     }
 
-    entry = AttendanceWjxDataEntry(
-        activity_id=LOCAL_FEEDBACK_ACTIVITY_ID,
-        seq=seq,
-        submitted_at_text=submitted_at_text,
-        duration_text="",
-        source=LOCAL_FEEDBACK_SOURCE,
-        source_detail=LOCAL_FEEDBACK_SOURCE_DETAIL,
-        source_ip=source_ip,
-        course_name=course_name,
-        student_id_text=student_id_text,
-        student_name=student_name,
-        correction_request=correction_request,
-        extra_note=extra_note,
-        raw_row_json=raw_row,
-        synced_at=now,
-        created_at=now,
-        updated_at=now,
-    )
+    entry = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id == LOCAL_FEEDBACK_ACTIVITY_ID)
+        .where(AttendanceWjxDataEntry.seq == seq)
+    ).first()
+    if entry is None:
+        entry = AttendanceWjxDataEntry(
+            activity_id=LOCAL_FEEDBACK_ACTIVITY_ID,
+            seq=seq,
+            created_at=now,
+        )
+    entry.submitted_at_text = submitted_at_text
+    entry.duration_text = ""
+    entry.source = LOCAL_FEEDBACK_SOURCE
+    entry.source_detail = LOCAL_FEEDBACK_SOURCE_DETAIL
+    entry.source_ip = source_ip
+    entry.course_name = course_name
+    entry.student_id_text = student_id_text
+    entry.student_name = student_name
+    entry.correction_request = correction_request
+    entry.extra_note = extra_note
+    entry.raw_row_json = raw_row
+    entry.synced_at = now
+    entry.updated_at = now
     session.add(entry)
     state.stored_count = _count_attendance_wjx_data_entries(
         session,
@@ -809,6 +1751,11 @@ def _persist_attendance_feedback_submission(
     session.add(state)
     session.commit()
     session.refresh(entry)
+    _upsert_attendance_wjx_sheet_entry(
+        session,
+        entry,
+        preserve_process_status=False,
+    )
     return entry
 
 
@@ -915,6 +1862,11 @@ def _persist_wjx_data_sync_result(
     session.add(state)
     session.commit()
     session.refresh(state)
+    _upsert_attendance_wjx_sheet_raw_rows(
+        session,
+        rows=[dict(row) for row in rows if isinstance(row, dict)],
+        actor=current_user,
+    )
 
     return state, inserted_count, updated_count
 
@@ -928,6 +1880,18 @@ def _build_attendance_wjx_data_page(
     keyword: str | None = None,
 ) -> AttendanceWjxDataPage:
     activity_id = str(template["activity_id"])
+    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
+    if sheet_document is not None:
+        return _build_attendance_wjx_sheet_data_page(
+            session,
+            document=sheet_document,
+            template=template,
+            page=page,
+            page_size=page_size,
+            process_status=process_status,
+            keyword=keyword,
+        )
+
     activity_ids = _list_attendance_wjx_data_activity_ids(template)
     normalized_page = max(1, int(page or 1))
     normalized_page_size = min(max(1, int(page_size or 20)), 100)
@@ -1017,34 +1981,24 @@ def _resolve_wjx_template_payload(template_id: Optional[str]) -> dict[str, str]:
     return _get_fixed_wjx_template_payload()
 
 
-def _extract_feedback_course_names(run_result: Any) -> list[str]:
-    if not isinstance(run_result, dict):
-        return []
-
-    direct_names = _normalize_course_name_list(run_result.get("visible_names"))
-    if direct_names:
-        return direct_names
-
-    after = run_result.get("after")
-    if isinstance(after, dict):
-        return _normalize_course_name_list(after.get("visible_names"))
-    return []
-
-
 def _build_attendance_feedback_form_meta(session: Session) -> AttendanceFeedbackFormMeta:
-    extra_config = get_attendance_service_extra_config(session)
+    source_sheet = session.exec(
+        select(SheetDocument).where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
+    ).first()
+    course_options: list[AttendanceFeedbackCourseOption] = []
+    updated_at: float | None = None
+    if source_sheet is not None:
+        course_options = _extract_feedback_course_options_from_sheet(dict(source_sheet.document_json or {}))
+        updated_at = source_sheet.updated_at
+
+    data_sheet = _ensure_attendance_wjx_sheet_document(session, create=True)
+    data_sheet_url = _ensure_note_sheet_anonymous_viewer(session, data_sheet)
     return AttendanceFeedbackFormMeta(
-        course_names=list(extra_config.get("feedback_course_names") or []),
-        course_names_updated_at=extra_config.get("feedback_course_names_updated_at"),
-        template=_get_fixed_wjx_template_payload(),
+        course_names=[item.name for item in course_options],
+        course_options=course_options,
+        course_names_updated_at=updated_at,
+        data_sheet_url=data_sheet_url,
     )
-
-
-def _resolve_feedback_course_names_or_400(course_names: list[str]) -> list[str]:
-    normalized = _normalize_course_name_list(course_names)
-    if not normalized:
-        raise HTTPException(status_code=400, detail="至少保留一个所属课程")
-    return normalized
 
 
 def _resolve_config_payload(session: Session) -> dict[str, Any]:
@@ -1067,7 +2021,6 @@ def _resolve_config_payload(session: Session) -> dict[str, Any]:
         },
         "current_account": serialize_attendance_account(current_account, include_password=False) if current_account else None,
         "current_execution_device": serialize_user_device(current_device),
-        "fixed_wjx_template": _get_fixed_wjx_template_payload(),
     }
 
 
@@ -1118,49 +2071,6 @@ def _build_remote_headers(entry: UserDevice) -> dict[str, str]:
         "Authorization": f"Bearer {entry.token}",
         "X-Device-Token": entry.token,
     }
-
-
-def _execute_run_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
-    mode = str(entry_snapshot.get("mode") or "")
-    if mode == "local":
-        local_device_id = get_device_id()
-        if str(entry_snapshot.get("device_id") or "") != local_device_id:
-            raise RuntimeError("所选本地执行设备不属于当前节点")
-        with ensure_ui_automation_thread_context():
-            return execute_wjx_template_action(**execution_payload)
-
-    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
-    token = str(entry_snapshot.get("token") or "")
-    if not server_url or not token:
-        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
-
-    response = requests.post(
-        f"{server_url}/api/device-control/attendance/wjx/execute",
-        json=execution_payload,
-        headers=_build_remote_headers(
-            UserDevice(
-                entry_id=str(entry_snapshot.get("entry_id") or ""),
-                user_id=int(entry_snapshot.get("user_id") or 0),
-                device_id=str(entry_snapshot.get("device_id") or ""),
-                name=str(entry_snapshot.get("name") or ""),
-                mode=str(entry_snapshot.get("mode") or "remote"),
-                server_url=server_url,
-                token=token,
-                is_active=bool(entry_snapshot.get("is_active", True)),
-                order_index=int(entry_snapshot.get("order_index") or 0),
-                created_at=float(entry_snapshot.get("created_at") or 0.0),
-                updated_at=float(entry_snapshot.get("updated_at") or 0.0),
-            )
-        ),
-        timeout=600,
-    )
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail")
-        except Exception:
-            detail = response.text.strip()
-        raise RuntimeError(detail or f"远程执行失败，HTTP {response.status_code}")
-    return response.json()
 
 
 def _execute_wjx_data_sync_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
@@ -1256,59 +2166,51 @@ def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: d
     return response.json()
 
 
-def _attendance_run_worker(
-    *,
-    db_bind,
-    run_id: str,
-    requested_by_user_id: int,
-    account_id: str,
-    execution_device_entry_id: str,
-    entry_snapshot: dict[str, Any],
-    execution_payload: dict[str, Any],
-    persist_global_selection: bool,
-) -> None:
-    with Session(db_bind) as session:
-        run = session.get(AttendanceRun, run_id)
-        if run is None:
-            return
+def _execute_order_refund_details_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
+    mode = str(entry_snapshot.get("mode") or "")
+    if mode == "local":
+        local_device_id = get_device_id()
+        if str(entry_snapshot.get("device_id") or "") != local_device_id:
+            raise RuntimeError("所选本地执行设备不属于当前节点")
+        with ensure_ui_automation_thread_context():
+            return query_order_refund_details(
+                execution_payload.get("order_id"),
+                query_type=execution_payload.get("query_type"),
+                weipay_login_users=execution_payload.get("login_users"),
+            )
 
+    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
+    token = str(entry_snapshot.get("token") or "")
+    if not server_url or not token:
+        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
+
+    response = requests.post(
+        f"{server_url}/api/device-control/attendance/order/refund-details",
+        json=execution_payload,
+        headers=_build_remote_headers(
+            UserDevice(
+                entry_id=str(entry_snapshot.get("entry_id") or ""),
+                user_id=int(entry_snapshot.get("user_id") or 0),
+                device_id=str(entry_snapshot.get("device_id") or ""),
+                name=str(entry_snapshot.get("name") or ""),
+                mode=str(entry_snapshot.get("mode") or "remote"),
+                server_url=server_url,
+                token=token,
+                is_active=bool(entry_snapshot.get("is_active", True)),
+                order_index=int(entry_snapshot.get("order_index") or 0),
+                created_at=float(entry_snapshot.get("created_at") or 0.0),
+                updated_at=float(entry_snapshot.get("updated_at") or 0.0),
+            )
+        ),
+        timeout=600,
+    )
+    if response.status_code >= 400:
         try:
-            result = _execute_run_on_entry(entry_snapshot, execution_payload)
-            now = time.time()
-            run.status = "completed"
-            run.result_json = result
-            run.error_message = None
-            run.finished_at = now
-            run.updated_at = now
-            session.add(run)
-
-            if persist_global_selection:
-                config = get_or_create_attendance_service_config(session)
-                config.current_wjx_account_id = account_id
-                config.execution_device_entry_id = execution_device_entry_id
-                config.updated_by_user_id = requested_by_user_id
-                config.updated_at = now
-                session.add(config)
-
-            session.commit()
-            feedback_course_names = _extract_feedback_course_names(result)
-            if feedback_course_names:
-                try:
-                    update_attendance_service_extra_config(
-                        session,
-                        feedback_course_names=feedback_course_names,
-                        feedback_course_names_updated_at=now,
-                    )
-                except Exception:
-                    pass
-        except Exception as exc:
-            now = time.time()
-            run.status = "failed"
-            run.error_message = str(exc)
-            run.finished_at = now
-            run.updated_at = now
-            session.add(run)
-            session.commit()
+            detail = response.json().get("detail")
+        except Exception:
+            detail = response.text.strip()
+        raise RuntimeError(detail or f"远程执行失败，HTTP {response.status_code}")
+    return response.json()
 
 
 @router.get("/sheets/by-owner", response_model=AttendanceSheetDocumentResponse)
@@ -1424,13 +2326,10 @@ def get_attendance_config(
     _: User | None = Depends(
         require_any_feature_access_dependency(
             "attendance.configs",
-            "attendance.wjx-templates",
             "attendance.orders",
         )
     ),
 ):
-    if not current_user.is_superuser:
-        ensure_can_use_attendance_service(current_user, session)
     return _resolve_config_payload(session)
 
 
@@ -1438,22 +2337,6 @@ def get_attendance_config(
 def get_attendance_feedback_form_meta(
     session: Session = Depends(get_session),
 ):
-    return _build_attendance_feedback_form_meta(session)
-
-
-@router.put("/wjx-feedback-form", response_model=AttendanceFeedbackFormMeta)
-def update_attendance_feedback_form_meta(
-    payload: AttendanceFeedbackFormMetaUpdateRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-templates")),
-):
-    current_user = ensure_can_use_attendance_service(current_user, session)
-    update_attendance_service_extra_config(
-        session,
-        feedback_course_names=_resolve_feedback_course_names_or_400(payload.course_names),
-        feedback_course_names_updated_at=time.time(),
-    )
     return _build_attendance_feedback_form_meta(session)
 
 
@@ -1613,188 +2496,6 @@ def delete_attendance_account(
     return {"ok": True}
 
 
-@router.get("/templates")
-def get_attendance_templates(
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
-):
-    ensure_can_manage_attendance_service(current_user)
-    return {"items": [serialize_attendance_template(item) for item in list_attendance_templates(session)]}
-
-
-@router.post("/templates")
-def create_attendance_template(
-    payload: AttendanceTemplateCreateRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
-):
-    current_user = ensure_can_manage_attendance_service(current_user)
-    name = payload.name.strip()
-    activity_id = payload.activity_id.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="模板名称不能为空")
-    if not activity_id:
-        raise HTTPException(status_code=400, detail="问卷 activity_id 不能为空")
-
-    now = time.time()
-    template = AttendanceTemplateAsset(
-        name=name,
-        activity_id=activity_id,
-        is_active=payload.is_active,
-        created_by_user_id=current_user.id,
-        updated_by_user_id=current_user.id,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(template)
-    session.commit()
-    session.refresh(template)
-    return serialize_attendance_template(template)
-
-
-@router.put("/templates/{template_id}")
-def update_attendance_template(
-    template_id: str,
-    payload: AttendanceTemplateUpdateRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
-):
-    current_user = ensure_can_manage_attendance_service(current_user)
-    template = get_attendance_template_or_404(session, template_id)
-
-    if payload.name is not None:
-        name = payload.name.strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="模板名称不能为空")
-        template.name = name
-    if payload.activity_id is not None:
-        activity_id = payload.activity_id.strip()
-        if not activity_id:
-            raise HTTPException(status_code=400, detail="问卷 activity_id 不能为空")
-        template.activity_id = activity_id
-    if payload.is_active is not None:
-        template.is_active = payload.is_active
-
-    template.updated_by_user_id = current_user.id
-    template.updated_at = time.time()
-    session.add(template)
-    session.commit()
-    session.refresh(template)
-    return serialize_attendance_template(template)
-
-
-@router.delete("/templates/{template_id}")
-def delete_attendance_template(
-    template_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
-):
-    ensure_can_manage_attendance_service(current_user)
-    template = get_attendance_template_or_404(session, template_id)
-    session.delete(template)
-    session.commit()
-    return {"ok": True}
-
-
-@router.post("/wjx-runs")
-def create_attendance_run(
-    payload: AttendanceRunCreateRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-templates")),
-):
-    current_user = ensure_can_use_attendance_service(current_user, session)
-    template = _resolve_wjx_template_payload(payload.template_id)
-
-    config = get_or_create_attendance_service_config(session)
-    account = _resolve_run_account(session, config, account_id=payload.account_id)
-    entry = _resolve_run_device(
-        session,
-        config,
-        execution_device_entry_id=payload.execution_device_entry_id,
-        current_user=current_user,
-    )
-
-    try:
-        password_plain = decrypt_attendance_secret(account.password_encrypted)
-    except AttendanceServiceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    execution_payload = {
-        "login_username": account.login_username,
-        "password": password_plain,
-        "activity_id": template["activity_id"],
-        "action": payload.action,
-        "hide_names": list(payload.hide or []),
-        "add_names": list(payload.add or []),
-    }
-    run_request_payload = {
-        "template": template,
-        "account_id": account.id,
-        "execution_device_entry_id": entry.entry_id,
-        "action": payload.action,
-        "hide": list(payload.hide or []),
-        "add": list(payload.add or []),
-        "persist_global_selection": payload.persist_global_selection,
-    }
-
-    now = time.time()
-    run = AttendanceRun(
-        template_id=template["id"],
-        account_id=account.id,
-        execution_device_entry_id=entry.entry_id,
-        requested_by_user_id=current_user.id,
-        action=payload.action,
-        status="running",
-        request_json=run_request_payload,
-        result_json={},
-        error_message=None,
-        created_at=now,
-        updated_at=now,
-    )
-    session.add(run)
-    session.commit()
-    session.refresh(run)
-    db_bind = session.get_bind()
-
-    worker = threading.Thread(
-        target=_attendance_run_worker,
-        kwargs={
-            "db_bind": db_bind,
-            "run_id": run.id,
-            "requested_by_user_id": current_user.id,
-            "account_id": account.id,
-            "execution_device_entry_id": entry.entry_id,
-            "entry_snapshot": {
-                **serialize_user_device(entry),
-                "token": entry.token,
-            },
-            "execution_payload": execution_payload,
-            "persist_global_selection": payload.persist_global_selection,
-        },
-        daemon=True,
-    )
-    worker.start()
-
-    return serialize_attendance_run(run)
-
-
-@router.get("/wjx-runs/{run_id}")
-def get_attendance_run(
-    run_id: str,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-templates")),
-):
-    ensure_can_use_attendance_service(current_user, session)
-    run = get_attendance_run_or_404(session, run_id)
-    return serialize_attendance_run(run)
-
-
 @public_router.post("/wjx-feedback/submissions", response_model=AttendanceWjxDataItem)
 def submit_attendance_feedback(
     payload: AttendanceFeedbackSubmitRequest,
@@ -1807,6 +2508,25 @@ def submit_attendance_feedback(
         request=request,
     )
     return AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry))
+
+
+@router.get("/wjx-data/sheet", response_model=AttendanceWjxDataSheetLocation)
+def get_attendance_wjx_data_sheet_location(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    if document is None or document.numeric_id is None:
+        raise HTTPException(status_code=404, detail="没有找到工作簿 2，无法创建问卷数据表")
+    sheet_id = int(document.numeric_id)
+    return AttendanceWjxDataSheetLocation(
+        workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
+        sheet_id=sheet_id,
+        path=f"/notes/sheets?workbook={ATTENDANCE_WJX_DATA_WORKBOOK_ID}&sheet={sheet_id}",
+    )
+
 
 @router.post("/wjx-data/sync")
 def sync_attendance_wjx_data(
@@ -1923,6 +2643,63 @@ def update_attendance_wjx_data(
     _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
 ):
     ensure_can_use_attendance_service(current_user, session)
+    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
+    if sheet_document is not None:
+        current_document = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
+        if _find_attendance_wjx_sheet_row_index(current_document, entry_id) is not None:
+            next_status = (
+                payload.process_status
+                if payload.process_status is not None
+                else payload.process_note
+            )
+            if next_status is not None:
+                next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+                    current_document,
+                    {
+                        "序号": entry_id,
+                        "处理状态": (next_status or "").strip(),
+                    },
+                    preserve_process_status=False,
+                )
+                if changed:
+                    _persist_attendance_wjx_sheet_document(
+                        session,
+                        sheet_document,
+                        next_document,
+                        actor=current_user,
+                    )
+                    current_document = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
+
+            legacy_entries = session.exec(
+                select(AttendanceWjxDataEntry)
+                .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
+                .where(AttendanceWjxDataEntry.seq == entry_id)
+            ).all()
+            if legacy_entries:
+                now = time.time()
+                for legacy_entry in legacy_entries:
+                    if next_status is not None:
+                        legacy_entry.process_status = (next_status or "").strip()
+                        legacy_entry.process_note = (next_status or "").strip()
+                    if payload.match_result is not None:
+                        legacy_entry.match_result_json = dict(payload.match_result)
+                    if payload.revision_result is not None:
+                        legacy_entry.revision_result_json = dict(payload.revision_result)
+                    legacy_entry.updated_at = now
+                    session.add(legacy_entry)
+                session.commit()
+
+            row_index = _find_attendance_wjx_sheet_row_index(current_document, entry_id)
+            if row_index is not None:
+                columns = list(current_document["columns"])
+                item = _serialize_attendance_wjx_sheet_row(
+                    current_document["rows"][row_index],
+                    columns,
+                    updated_at=float(sheet_document.updated_at or 0.0),
+                )
+                if item is not None:
+                    return AttendanceWjxDataItem.model_validate(item)
+
     entry = get_attendance_wjx_data_entry_or_404(session, entry_id)
 
     if payload.process_status is not None:
@@ -1951,6 +2728,34 @@ def delete_attendance_wjx_data(
     ensure_can_use_attendance_service(current_user, session)
     if not current_user.is_superuser:
         raise HTTPException(status_code=403, detail="只有超级管理员可以删除问卷数据")
+    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
+    if sheet_document is not None:
+        next_document, removed = _remove_attendance_wjx_sheet_row(
+            dict(sheet_document.document_json or {}),
+            seq=entry_id,
+        )
+        if removed:
+            _persist_attendance_wjx_sheet_document(
+                session,
+                sheet_document,
+                next_document,
+                actor=current_user,
+            )
+            legacy_entries = session.exec(
+                select(AttendanceWjxDataEntry)
+                .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
+                .where(AttendanceWjxDataEntry.seq == entry_id)
+            ).all()
+            for legacy_entry in legacy_entries:
+                session.delete(legacy_entry)
+            if legacy_entries:
+                session.commit()
+            return {
+                "deleted": True,
+                "entry_id": entry_id,
+                "seq": entry_id,
+            }
+
     entry = get_attendance_wjx_data_entry_or_404(session, entry_id)
     activity_id = str(entry.activity_id)
     seq = int(entry.seq)
@@ -1985,7 +2790,6 @@ def execute_attendance_order(
     current_user: User = Depends(get_current_user_from_token),
     _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
 ):
-    current_user = ensure_can_use_attendance_service(current_user, session)
     config = get_or_create_attendance_service_config(session)
     extra_config = get_attendance_service_extra_config(session)
     order_operation_password = ""
@@ -2026,7 +2830,7 @@ def execute_attendance_order(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if payload.persist_global_selection:
+    if payload.persist_global_selection and current_user.is_superuser:
         config.execution_device_entry_id = entry.entry_id
         config.updated_by_user_id = current_user.id
         config.updated_at = time.time()
@@ -2050,6 +2854,55 @@ def execute_attendance_order(
     }
 
 
+@router.post("/order-refund-details", response_model=AttendanceOrderRefundDetailResponse)
+def query_attendance_order_refund_details(
+    payload: AttendanceOrderRefundDetailRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
+):
+    config = get_or_create_attendance_service_config(session)
+    extra_config = get_attendance_service_extra_config(session)
+    entry = _resolve_run_device(
+        session,
+        config,
+        execution_device_entry_id=payload.execution_device_entry_id,
+        current_user=current_user,
+    )
+
+    execution_payload = {
+        "order_id": payload.order_id,
+        "query_type": payload.query_type,
+        "login_users": list(payload.login_users or extra_config.get("scan_reminder_users") or []),
+    }
+
+    try:
+        result = _execute_order_refund_details_on_entry(
+            {
+                **serialize_user_device(entry),
+                "token": entry.token,
+            },
+            execution_payload,
+        )
+        result = _normalize_attendance_order_refund_detail_result(result)
+    except OrderAutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if payload.persist_global_selection and current_user.is_superuser:
+        config.execution_device_entry_id = entry.entry_id
+        config.updated_by_user_id = current_user.id
+        config.updated_at = time.time()
+        session.add(config)
+        session.commit()
+
+    return {
+        "execution_device_entry_id": entry.entry_id,
+        **result,
+    }
+
+
 @router.get("/order-refund-history", response_model=AttendanceOrderRefundHistoryPage)
 def list_attendance_order_refund_history(
     page: int = Query(default=1, ge=1),
@@ -2058,5 +2911,4 @@ def list_attendance_order_refund_history(
     current_user: User = Depends(get_current_user_from_token),
     _: User | None = Depends(require_feature_access_dependency("attendance.orders")),
 ):
-    ensure_can_use_attendance_service(current_user, session)
     return _build_order_refund_history_page(session, page=page, page_size=page_size)

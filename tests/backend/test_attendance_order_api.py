@@ -408,6 +408,53 @@ def test_execute_order_on_entry_initializes_ui_automation_context_for_local_devi
     assert os.getenv("XL_KQ_PAY_PASSWORD") is None
 
 
+def test_order_execute_endpoint_allows_orders_feature_without_service_grant(client, session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="device-local-orders",
+        name="本机订单设备",
+        mode="local",
+        token="device-token",
+        is_active=True,
+        order_index=0,
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    config = get_or_create_attendance_service_config(session)
+    config.execution_device_entry_id = entry.entry_id
+    config.granted_user_ids = []
+    session.add(config)
+    session.commit()
+
+    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.orders")
+
+    monkeypatch.setattr(
+        attendance,
+        "_execute_order_on_entry",
+        lambda entry_snapshot, execution_payload: {
+            "action": "inspect",
+            "rows": [{"商户订单号": "MA2026"}],
+            "summary": {"processed_count": 1},
+        },
+    )
+
+    response = client.post(
+        "/api/attendance/order-execute",
+        json={
+            "action": "inspect",
+            "rows": [{"商户订单号": "MA2026"}],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["execution_device_entry_id"] == entry.entry_id
+
+    history_response = client.get("/api/attendance/order-refund-history")
+    assert history_response.status_code == 200
+
+
 def test_order_execute_endpoint_requires_orders_feature(client, session, auth_user, monkeypatch):
     entry = UserDevice(
         user_id=auth_user.id,
@@ -427,7 +474,7 @@ def test_order_execute_endpoint_requires_orders_feature(client, session, auth_us
     session.add(config)
     session.commit()
 
-    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-templates")
+    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-data")
 
     monkeypatch.setattr(
         attendance,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 import subprocess
 
@@ -12,6 +13,8 @@ from backend.core.ai_chat import (
     AiProviderConfig,
     CODEX_CLI_DEFAULT_MODEL,
     CODEX_CLI_WORKSPACE_DIRNAME,
+    _resolve_command_path,
+    _summarize_process_output,
     chat_with_provider,
     get_ai_provider_status,
 )
@@ -35,7 +38,7 @@ def _build_codex_provider(provider_id: str = "custom-codex") -> AiProviderConfig
         timeout_seconds=600.0,
         api_key="",
         supports_stream=False,
-        supports_vision=False,
+        supports_vision=True,
         requires_api_key=False,
         configured=False,
         models=(CODEX_CLI_DEFAULT_MODEL,),
@@ -62,6 +65,32 @@ def test_codex_cli_status_reports_available_when_version_succeeds(monkeypatch):
     assert status["kind"] == "codex_cli"
     assert status["available"] is True
     assert status["error"] is None
+
+
+def test_codex_cli_command_resolution_skips_incomplete_repo_node_shim(monkeypatch, tmp_path):
+    tools_node_dir = tmp_path / "tools" / "node"
+    tools_node_dir.mkdir(parents=True)
+    broken_shim = tools_node_dir / "codex.cmd"
+    broken_shim.write_text("@echo off\nnode missing-codex.js %*\n", encoding="utf-8")
+    global_shim = tmp_path / "global" / "codex.cmd"
+    global_shim.parent.mkdir()
+    global_shim.write_text("@echo off\necho codex\n", encoding="utf-8")
+
+    monkeypatch.setattr("backend.core.ai_chat._codex_tools_node_dir", lambda: tools_node_dir)
+    monkeypatch.setattr("backend.core.ai_chat._get_preferred_codex_command_candidates", lambda: [broken_shim])
+    monkeypatch.setattr("backend.core.ai_chat.shutil.which", lambda executable: str(global_shim))
+
+    command = _resolve_command_path(["codex", "--version"])
+
+    assert command == [str(global_shim), "--version"]
+
+
+def test_summarize_process_output_skips_trailing_node_version():
+    detail = _summarize_process_output(
+        "Error: Cannot find module 'missing-codex.js'\nNode.js v24.14.0\n"
+    )
+
+    assert detail == "Error: Cannot find module 'missing-codex.js'"
 
 
 def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
@@ -109,6 +138,43 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     assert "hello from CodeYun" in str(captured["input"])
     assert "Reply briefly." in str(captured["input"])
     assert "完整的命令执行与文件系统访问权限" in str(captured["input"])
+
+
+def test_codex_cli_chat_attaches_images(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    image_bytes = b"\x89PNG\r\n\x1a\nfake-png"
+    image_payload = f"data:image/png;base64,{base64.b64encode(image_bytes).decode('ascii')}"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["input"] = kwargs.get("input")
+
+        image_flag_index = command.index("--image")
+        image_path = Path(command[image_flag_index + 1])
+        assert image_path.exists()
+        assert image_path.read_bytes() == image_bytes
+
+        output_flag_index = command.index("--output-last-message")
+        output_path = Path(command[output_flag_index + 1])
+        output_path.write_text("image reply", encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "backend.core.ai_chat._build_codex_workspace_dir",
+        lambda: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,
+    )
+
+    response = chat_with_provider(
+        provider_id="custom-codex",
+        base_url="codex",
+        messages=[{"role": "user", "content": "看图", "images": [image_payload]}],
+        extra_providers=(_build_codex_provider(),),
+    )
+
+    assert response["content"] == "image reply"
+    assert "--image" in captured["command"]
+    assert "附带 1 张图片" in str(captured["input"])
 
 
 def test_public_custom_codex_provider_is_visible_to_other_users():

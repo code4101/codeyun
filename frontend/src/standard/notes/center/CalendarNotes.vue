@@ -62,6 +62,7 @@
               :key="day.dateStr"
               class="day-cell"
               :class="{ 'is-outside': !day.isCurrentMonth }"
+              @contextmenu.prevent.stop="openDayContextMenu($event, day.date)"
             >
               <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
                 <div class="day-left">
@@ -85,6 +86,7 @@
                   class="note-item"
                   :style="getNoteStyle(note)"
                   @click.stop="openNote(note)"
+                  @contextmenu.prevent.stop="openNoteContextMenu($event, note)"
                 >
                   <span v-if="useSplitNoteTitle(note)" class="note-title note-title--split" :style="getNoteTitleStyle(note)">
                     <span class="note-title-layer" :style="getNoteSplitLayerStyle(note, 'fill')">
@@ -117,26 +119,68 @@
         />
       </template>
     </NoteSplitView>
+
+    <div
+      v-if="dayContextMenu.visible"
+      class="day-context-menu"
+      :style="{ left: `${dayContextMenu.x}px`, top: `${dayContextMenu.y}px` }"
+      @click.stop
+    >
+      <button type="button" class="day-context-menu-item" @click="createNoteFromContextMenu">
+        新建节点
+      </button>
+      <button
+        type="button"
+        class="day-context-menu-item"
+        :disabled="codexDiaryImporting"
+        @click="importCodexDiaryFromContextMenu"
+      >
+        添加 Codex 总结日记
+      </button>
+    </div>
+
+    <div
+      v-if="noteContextMenu.visible"
+      class="note-context-menu"
+      :style="{ left: `${noteContextMenu.x}px`, top: `${noteContextMenu.y}px` }"
+      @click.stop
+    >
+      <button type="button" class="note-context-menu-item" @click="openNoteFromContextMenu">
+        打开节点
+      </button>
+      <button
+        type="button"
+        class="note-context-menu-item is-danger"
+        :disabled="noteContextMenu.note?.can_edit === false"
+        @click="deleteNoteFromContextMenu"
+      >
+        <el-icon><Delete /></el-icon>
+        <span>删除节点</span>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import NoteSplitView from '@/components/NoteSplitView.vue';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
   type NoteNode,
+  type CodexDiaryImportRunResponse,
   applyNoteProgramChannelLocally,
   buildScanNoteProgramRequest,
   cloneNoteProgramChannel,
   createFixedRangeProgram,
   createIncludeAllProgram,
-  normalizeNoteProgramChannel
+  normalizeNoteProgramChannel,
+  startCodexDiaryImportRun,
+  fetchCodexDiaryImportRun
 } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
-import { ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
+import { ArrowLeft, ArrowRight, Delete, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
 import { getNodeDisplayStyle } from '@/utils/nodeConfig';
@@ -165,6 +209,19 @@ const viewProgram = ref(normalizeNoteProgramChannel(
 const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 const currentNoteId = ref('');
 const loading = ref(false);
+const codexDiaryImporting = ref(false);
+const dayContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  date: null as Date | null
+});
+const noteContextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  note: null as NoteNode | null
+});
 const formatDateShort = (value: Date | string | number | null | undefined) => formatNoteDateShort(value);
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
@@ -226,6 +283,162 @@ const createNoteForDay = async (date: Date) => {
     currentNoteId.value = newNote.id;
     ElMessage.success('已创建节点');
   }
+};
+
+const openDayContextMenu = (event: MouseEvent, date: Date) => {
+  closeNoteContextMenu();
+  dayContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    date: new Date(date)
+  };
+};
+
+const closeDayContextMenu = () => {
+  dayContextMenu.value.visible = false;
+};
+
+const openNoteContextMenu = (event: MouseEvent, note: NoteNode) => {
+  closeDayContextMenu();
+  currentNoteId.value = note.id;
+  noteContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    note
+  };
+};
+
+const closeNoteContextMenu = () => {
+  noteContextMenu.value.visible = false;
+};
+
+const closeContextMenus = () => {
+  closeDayContextMenu();
+  closeNoteContextMenu();
+};
+
+const createNoteFromContextMenu = async () => {
+  const date = dayContextMenu.value.date;
+  closeDayContextMenu();
+  if (!date) return;
+  await createNoteForDay(date);
+};
+
+const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+
+const waitForCodexDiaryImportRun = async (runId: string): Promise<CodexDiaryImportRunResponse> => {
+  let latest = await fetchCodexDiaryImportRun(runId);
+  for (let i = 0; i < 160 && latest.status === 'running'; i += 1) {
+    await delay(1500);
+    latest = await fetchCodexDiaryImportRun(runId);
+  }
+  return latest;
+};
+
+const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Promise<CodexDiaryImportRunResponse | null> => {
+  try {
+    return await startCodexDiaryImportRun({
+      date: toDateStr(date),
+      confirm_duplicate: confirmDuplicate
+    });
+  } catch (error) {
+    const maybeError = error as {
+      response?: {
+        status?: number;
+        data?: {
+          detail?: string | { message?: string; duplicate_count?: number };
+        };
+      };
+      message?: string;
+    };
+    if (maybeError.response?.status === 409 && !confirmDuplicate) {
+      const detail = maybeError.response.data?.detail;
+      const message = typeof detail === 'object' && detail?.message
+        ? detail.message
+        : '该日期已导入过 Codex 总结日记，继续会重复生成一批新节点。';
+      try {
+        await ElMessageBox.confirm(message, '重复导入确认', {
+          confirmButtonText: '继续导入',
+          cancelButtonText: '取消',
+          type: 'warning'
+        });
+      } catch {
+        return null;
+      }
+      return startCodexDiaryImport(date, true);
+    }
+    ElMessage.error(
+      (typeof maybeError.response?.data?.detail === 'string' && maybeError.response.data.detail)
+      || maybeError.message
+      || 'Codex 总结日记导入失败'
+    );
+    return null;
+  }
+};
+
+const importCodexDiaryForDay = async (date: Date) => {
+  if (!checkAuth() || codexDiaryImporting.value) return;
+  codexDiaryImporting.value = true;
+  const targetDate = new Date(date);
+  try {
+    const startedRun = await startCodexDiaryImport(targetDate);
+    if (!startedRun) return;
+    ElMessage.info('正在导入 Codex 总结日记');
+    const completedRun = await waitForCodexDiaryImportRun(startedRun.id);
+    if (completedRun.status === 'failed') {
+      ElMessage.error(completedRun.error_message || 'Codex 总结日记导入失败');
+      return;
+    }
+    await refreshData({ silent: true });
+    completedRun.created_note_ids.forEach(noteId => noteStore.addNoteToTab(props.tabId, noteId));
+    if (completedRun.created_note_ids.length > 0) {
+      currentNoteId.value = completedRun.created_note_ids[0];
+      ElMessage.success(`已创建 ${completedRun.created_note_ids.length} 个节点`);
+    } else {
+      ElMessage.info('当天没有可导入的 Codex 会话记录');
+    }
+  } finally {
+    codexDiaryImporting.value = false;
+  }
+};
+
+const importCodexDiaryFromContextMenu = async () => {
+  const date = dayContextMenu.value.date;
+  closeDayContextMenu();
+  if (!date) return;
+  await importCodexDiaryForDay(date);
+};
+
+const openNoteFromContextMenu = () => {
+  const note = noteContextMenu.value.note;
+  closeNoteContextMenu();
+  if (!note) return;
+  openNote(note);
+};
+
+const deleteNoteFromContextMenu = async () => {
+  const note = noteContextMenu.value.note;
+  closeNoteContextMenu();
+  if (!note) return;
+  if (note.can_edit === false) {
+    ElMessage.warning('当前节点不可编辑');
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(`确定要删除“${note.title || '未命名节点'}”吗？`, '删除节点', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    });
+  } catch {
+    return;
+  }
+  const deleted = await noteStore.deleteNote(note.id);
+  if (!deleted) return;
+  if (currentNoteId.value === note.id) currentNoteId.value = '';
+  ElMessage.success('已删除节点');
 };
 
 const onMonthChange = (value: Date | string | number | undefined) => {
@@ -574,7 +787,14 @@ const {
 });
 
 onMounted(() => {
-    refreshData({ silent: true });
+  refreshData({ silent: true });
+  window.addEventListener('click', closeContextMenus);
+  window.addEventListener('scroll', closeContextMenus, true);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeContextMenus);
+  window.removeEventListener('scroll', closeContextMenus, true);
 });
 
 watch(currentMonth, (value) => {
@@ -853,5 +1073,50 @@ watch(viewProgram, (value) => {
 
 .note-title-text {
   min-width: 0;
+}
+
+.day-context-menu,
+.note-context-menu {
+  position: fixed;
+  z-index: 2200;
+  min-width: 168px;
+  padding: 4px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+}
+
+.day-context-menu-item,
+.note-context-menu-item {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #303133;
+  font-size: 13px;
+  line-height: 30px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.day-context-menu-item:hover:not(:disabled),
+.note-context-menu-item:hover:not(:disabled) {
+  background: #f5f7fa;
+}
+
+.day-context-menu-item:disabled,
+.note-context-menu-item:disabled {
+  color: #c0c4cc;
+  cursor: not-allowed;
+}
+
+.note-context-menu-item.is-danger {
+  color: #f56c6c;
 }
 </style>

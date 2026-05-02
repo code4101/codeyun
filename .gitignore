@@ -29,6 +29,7 @@ ENV/
 env.bak/
 venv.bak/
 .venv/
+/.uv-cache*/
 
 # PyCharm / VS Code
 .idea/
@@ -66,3 +67,4 @@ backend/data/
 /frontend/src/plugins/modules/*
 !/frontend/src/plugins/modules/.gitkeep
 /.tmp-dev-observe
+/.tmp_git_reduce_debug/

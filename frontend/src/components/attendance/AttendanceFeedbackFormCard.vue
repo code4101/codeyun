@@ -1,20 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Delete, Plus } from '@element-plus/icons-vue'
 
-import SortableOrderHandle from '@/components/SortableOrderHandle.vue'
 import {
   fetchAttendanceFeedbackFormMeta,
   submitAttendanceFeedback,
-  updateAttendanceFeedbackFormMeta,
+  type AttendanceFeedbackCourseOption,
   type AttendanceFeedbackFormMeta,
 } from '@/api/attendance'
-import { requirePageCanonicalPath } from '@/router/pageRegistry'
-import { toStandalonePath } from '@/router/standalone'
-import { useSortableList } from '@/utils/useSortableList'
 
-type FeedbackFormMode = 'workspace' | 'public'
+type FeedbackFormMode = 'public'
 
 type FeedbackDraft = {
   course: string
@@ -27,15 +22,13 @@ type FeedbackDraft = {
 type PersistedFeedbackDraft = Pick<FeedbackDraft, 'course' | 'studentId' | 'studentName'>
 
 const FEEDBACK_FORM_STORAGE_KEY = 'codeyun-attendance-feedback-draft'
-const ATTENDANCE_WJX_COLLECT_STANDALONE_PATH = toStandalonePath(requirePageCanonicalPath('AttendanceWjxCollect'))
 
 const props = withDefaults(
   defineProps<{
     mode?: FeedbackFormMode
-    standalonePath?: string
   }>(),
   {
-    mode: 'workspace',
+    mode: 'public',
   },
 )
 
@@ -53,27 +46,23 @@ const formMeta = ref<AttendanceFeedbackFormMeta | null>(null)
 const loadingFormMeta = ref(false)
 const readyToPersist = ref(false)
 const submitting = ref(false)
-const savingCourseCatalog = ref(false)
-const editableCourseNames = ref<string[]>([])
-const pendingCourseName = ref('')
-const editingCourseIndex = ref<number | null>(null)
-const editingCourseName = ref('')
-const courseListRef = ref<HTMLElement | null>(null)
-const renameInputRef = ref<{ focus?: () => void; select?: () => void } | null>(null)
-const courseOptions = computed(() => formMeta.value?.course_names ?? [])
-const isWorkspaceMode = computed(() => props.mode === 'workspace')
-const canManageCourseCatalog = computed(() => isWorkspaceMode.value)
-const displayCourseOptions = computed(() => (
-  canManageCourseCatalog.value ? editableCourseNames.value : courseOptions.value
-))
-const validCourseOptions = computed(() => new Set(displayCourseOptions.value))
-const pageTitle = computed(() => (isWorkspaceMode.value ? '采集配置' : '考勤问题反馈表'))
-const resolvedStandalonePath = computed(() => props.standalonePath ?? ATTENDANCE_WJX_COLLECT_STANDALONE_PATH)
+const courseOptions = computed(() => {
+  const structuredOptions = formMeta.value?.course_options
+  if (structuredOptions?.length) {
+    return structuredOptions.map(normalizeCourseOption).filter((item) => item.name)
+  }
+  return (formMeta.value?.course_names ?? []).map((name) => ({ name, attendance_sheet_url: '' }))
+})
+const displayCourseOptions = computed(() => courseOptions.value)
+const validCourseOptions = computed(() => new Set(displayCourseOptions.value.map((course) => course.name)))
 const currentNormalizedDraftKey = computed(() => buildFeedbackDraftKey())
 const hasSubmittedCurrentDraft = computed(() => (
   lastSubmittedDraftKey.value !== null
   && lastSubmittedDraftKey.value === currentNormalizedDraftKey.value
 ))
+const publicSheetLinks = computed(() => [
+  { label: '问卷数据', url: formMeta.value?.data_sheet_url || '' },
+].filter((item) => item.url))
 
 function normalizeStoredText(value: unknown) {
   return typeof value === 'string' ? value : ''
@@ -83,22 +72,15 @@ function normalizeStoredCourse(value: unknown) {
   return normalizeStoredText(value)
 }
 
-function hasCourseOption(value: string) {
-  return validCourseOptions.value.has(value)
+function normalizeCourseOption(value: AttendanceFeedbackCourseOption) {
+  return {
+    name: normalizeStoredText(value.name).trim(),
+    attendance_sheet_url: normalizeStoredText(value.attendance_sheet_url).trim(),
+  }
 }
 
-function normalizeCourseNames(items: string[]) {
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const item of items) {
-    const text = item.trim()
-    if (!text || seen.has(text)) {
-      continue
-    }
-    seen.add(text)
-    result.push(text)
-  }
-  return result
+function hasCourseOption(value: string) {
+  return validCourseOptions.value.has(value)
 }
 
 function buildFeedbackDraftKey() {
@@ -120,127 +102,11 @@ async function loadFeedbackFormMeta(showError = true) {
     }
   } catch (error: any) {
     if (showError) {
-      ElMessage.error(error.response?.data?.detail || '加载采集配置失败')
+      ElMessage.error(error.response?.data?.detail || '加载课程清单失败')
     }
   } finally {
     loadingFormMeta.value = false
   }
-}
-
-async function saveCourseCatalog(nextCourseNames: string[]) {
-  if (savingCourseCatalog.value) {
-    return false
-  }
-
-  const previousCourseNames = editableCourseNames.value.slice()
-  const previousSelectedCourse = form.course
-  const normalizedCourseNames = normalizeCourseNames(nextCourseNames)
-  if (!normalizedCourseNames.length) {
-    ElMessage.warning('至少保留一个所属课程')
-    return false
-  }
-
-  editableCourseNames.value = normalizedCourseNames
-  if (form.course && !normalizedCourseNames.includes(form.course)) {
-    form.course = ''
-  }
-
-  savingCourseCatalog.value = true
-  try {
-    formMeta.value = await updateAttendanceFeedbackFormMeta({
-      course_names: normalizedCourseNames,
-    })
-    editableCourseNames.value = (formMeta.value?.course_names ?? []).slice()
-    return true
-  } catch (error: any) {
-    editableCourseNames.value = previousCourseNames
-    if (previousSelectedCourse && previousCourseNames.includes(previousSelectedCourse)) {
-      form.course = previousSelectedCourse
-    }
-    ElMessage.error(error.response?.data?.detail || '保存采集配置失败')
-    return false
-  } finally {
-    savingCourseCatalog.value = false
-  }
-}
-
-async function appendCourseOption() {
-  const nextCourseName = pendingCourseName.value.trim()
-  if (!nextCourseName) {
-    ElMessage.warning('请先输入课程名称，空白内容不会保存')
-    return
-  }
-  if (editableCourseNames.value.includes(nextCourseName)) {
-    ElMessage.warning('该课程已在清单里')
-    return
-  }
-
-  const saved = await saveCourseCatalog([...editableCourseNames.value, nextCourseName])
-  if (saved) {
-    pendingCourseName.value = ''
-  }
-}
-
-function cancelRenameCourse() {
-  editingCourseIndex.value = null
-  editingCourseName.value = ''
-}
-
-async function beginRenameCourse(index: number) {
-  if (savingCourseCatalog.value) {
-    return
-  }
-
-  const currentName = editableCourseNames.value[index]
-  if (!currentName) {
-    return
-  }
-
-  editingCourseIndex.value = index
-  editingCourseName.value = currentName
-  await nextTick()
-  renameInputRef.value?.focus?.()
-  renameInputRef.value?.select?.()
-}
-
-async function commitRenameCourse(index: number) {
-  if (editingCourseIndex.value !== index) {
-    return
-  }
-
-  const originalName = editableCourseNames.value[index]
-  const nextCourseName = editingCourseName.value.trim()
-  cancelRenameCourse()
-
-  if (!originalName || nextCourseName === originalName) {
-    return
-  }
-  if (!nextCourseName) {
-    ElMessage.warning('课程名称不能为空，已保留原名称')
-    return
-  }
-  if (editableCourseNames.value.some((course, courseIndex) => courseIndex !== index && course === nextCourseName)) {
-    ElMessage.warning('该课程已在清单里，已保留原名称')
-    return
-  }
-
-  const nextCourseNames = editableCourseNames.value.slice()
-  nextCourseNames[index] = nextCourseName
-  const shouldKeepSelectedCourse = form.course === originalName
-  const saved = await saveCourseCatalog(nextCourseNames)
-  if (saved && shouldKeepSelectedCourse) {
-    form.course = nextCourseName
-  }
-}
-
-async function removeCourseOption(index: number) {
-  if (editableCourseNames.value.length <= 1) {
-    ElMessage.warning('至少保留一个所属课程')
-    return
-  }
-
-  const nextCourseNames = editableCourseNames.value.filter((_, itemIndex) => itemIndex !== index)
-  await saveCourseCatalog(nextCourseNames)
 }
 
 function persistFormToLocalStorage() {
@@ -348,12 +214,6 @@ onMounted(async () => {
 })
 
 watch(courseOptions, () => {
-  if (!savingCourseCatalog.value) {
-    editableCourseNames.value = courseOptions.value.slice()
-  }
-  if (editingCourseIndex.value !== null) {
-    cancelRenameCourse()
-  }
   if (form.course && !hasCourseOption(form.course)) {
     form.course = ''
   }
@@ -372,168 +232,30 @@ watch(
   },
   { deep: true },
 )
-
-useSortableList({
-  listRef: courseListRef,
-  getDeps: () => [
-    editableCourseNames.value.length,
-    canManageCourseCatalog.value,
-    savingCourseCatalog.value,
-    editingCourseIndex.value,
-  ],
-  isEnabled: () => (
-    canManageCourseCatalog.value
-    && !savingCourseCatalog.value
-    && editingCourseIndex.value === null
-  ),
-  ghostClass: 'course-drag-ghost',
-  onReorder: async (oldIndex, newIndex) => {
-    const nextCourseNames = editableCourseNames.value.slice()
-    const [movedItem] = nextCourseNames.splice(oldIndex, 1)
-    if (!movedItem) {
-      return
-    }
-    nextCourseNames.splice(newIndex, 0, movedItem)
-    await saveCourseCatalog(nextCourseNames)
-  },
-})
 </script>
 
 <template>
   <section class="feedback-card" :class="[`mode-${props.mode}`]">
     <div class="card-banner">
       <div class="banner-copy">
-        <h1>{{ pageTitle }}</h1>
-        <p v-if="isWorkspaceMode" class="banner-description">
-          这里配置采集表模板，目前先维护反馈表第 1 题使用的课程清单。真实采集请打开右上角的采集页面。
-        </p>
+        <h1>考勤问题反馈表</h1>
       </div>
-      <RouterLink
-        v-if="props.mode === 'workspace'"
-        :to="resolvedStandalonePath"
-        class="banner-link"
-      >
-        采集页面
-      </RouterLink>
+      <div v-if="publicSheetLinks.length" class="banner-links">
+        <a
+          v-for="link in publicSheetLinks"
+          :key="link.label"
+          class="banner-sheet-link"
+          :href="link.url"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {{ link.label }}
+        </a>
+      </div>
     </div>
 
     <div class="card-body">
-      <section v-if="isWorkspaceMode" class="config-section">
-        <div class="config-header">
-          <div>
-            <h2>配置</h2>
-            <p>反馈表第 1 题的“所属课程”会直接读取这里的顺序；支持拖拽排序、双击重命名、删除，并在末尾追加新课程。</p>
-          </div>
-          <span v-if="canManageCourseCatalog && savingCourseCatalog" class="config-status">保存中...</span>
-        </div>
-
-        <div v-if="loadingFormMeta" class="course-empty">
-          正在加载课程清单...
-        </div>
-        <template v-else-if="displayCourseOptions.length">
-          <div
-            v-if="canManageCourseCatalog"
-            ref="courseListRef"
-            class="course-editor-list"
-          >
-            <div
-              v-for="(course, index) in editableCourseNames"
-              :key="`${course}-${index}`"
-              class="course-editor-row"
-            >
-              <SortableOrderHandle
-                :index="index"
-                :total="editableCourseNames.length"
-                size="sm"
-                :disabled="savingCourseCatalog"
-              />
-              <el-input
-                v-if="editingCourseIndex === index"
-                ref="renameInputRef"
-                v-model="editingCourseName"
-                class="course-rename-input"
-                size="large"
-                maxlength="80"
-                @keydown.enter.prevent="commitRenameCourse(index)"
-                @keydown.esc.prevent="cancelRenameCourse"
-                @blur="commitRenameCourse(index)"
-              />
-              <button
-                v-else
-                type="button"
-                class="course-config-name course-config-trigger"
-                :disabled="savingCourseCatalog"
-                @dblclick.stop="beginRenameCourse(index)"
-              >
-                {{ course }}
-              </button>
-              <el-button
-                text
-                type="danger"
-                :icon="Delete"
-                :disabled="savingCourseCatalog || editableCourseNames.length <= 1"
-                @click.stop="removeCourseOption(index)"
-              >
-                删除
-              </el-button>
-            </div>
-          </div>
-
-          <div v-else class="course-readonly-list">
-            <div
-              v-for="(course, index) in displayCourseOptions"
-              :key="course"
-              class="course-readonly-row"
-            >
-              <span class="course-order-badge">{{ index + 1 }}</span>
-              <span>{{ course }}</span>
-            </div>
-          </div>
-
-          <div v-if="canManageCourseCatalog" class="course-add-row">
-            <el-input
-              v-model="pendingCourseName"
-              size="large"
-              placeholder="新增课程名称"
-              :disabled="savingCourseCatalog"
-              @keyup.enter="appendCourseOption"
-            />
-            <el-button
-              type="primary"
-              :icon="Plus"
-              :disabled="savingCourseCatalog"
-              @click="appendCourseOption"
-            >
-              新增
-            </el-button>
-          </div>
-        </template>
-        <template v-else>
-          <div class="course-empty">
-            {{ canManageCourseCatalog ? '暂未配置课程清单，请先新增一个课程。' : '暂未配置课程清单。' }}
-          </div>
-          <div v-if="canManageCourseCatalog" class="course-add-row">
-            <el-input
-              v-model="pendingCourseName"
-              size="large"
-              placeholder="新增课程名称"
-              :disabled="savingCourseCatalog"
-              @keyup.enter="appendCourseOption"
-            />
-            <el-button
-              type="primary"
-              :icon="Plus"
-              :disabled="savingCourseCatalog"
-              @click="appendCourseOption"
-            >
-              新增
-            </el-button>
-          </div>
-        </template>
-      </section>
-
-      <template v-else>
-        <section class="question-block">
+      <section class="question-block">
           <div class="question-title">
             <span class="required-star">*</span>
             <span>1. 所属课程</span>
@@ -542,20 +264,30 @@ useSortableList({
             正在加载课程清单...
           </div>
           <div v-else-if="displayCourseOptions.length" class="course-list">
-            <button
+            <div
               v-for="course in displayCourseOptions"
-              :key="course"
-              type="button"
+              :key="course.name"
               class="course-option"
-              :class="{ 'is-selected': form.course === course }"
-              @click="form.course = course"
+              :class="{ 'is-selected': form.course === course.name }"
             >
-              <span class="course-dot" />
-              <span>{{ course }}</span>
-            </button>
+              <button type="button" class="course-select-button" @click="form.course = course.name">
+                <span class="course-dot" />
+                <span class="course-name">{{ course.name }}</span>
+              </button>
+              <a
+                v-if="course.attendance_sheet_url"
+                class="course-attendance-link"
+                :href="course.attendance_sheet_url"
+                target="_blank"
+                rel="noopener noreferrer"
+                @click.stop
+              >
+                考勤表链接
+              </a>
+            </div>
           </div>
           <div v-else class="course-empty">
-            暂未配置课程清单。
+            暂无未完结课程。
           </div>
         </section>
 
@@ -571,7 +303,7 @@ useSortableList({
           placeholder="例如 2-17"
           maxlength="64"
         />
-      </section>
+        </section>
 
         <section class="question-block">
         <div class="question-title">
@@ -633,7 +365,6 @@ useSortableList({
         <div v-if="lastSubmittedAt" class="submit-status">
           {{ lastSubmittedAt }} 已提交{{ hasSubmittedCurrentDraft ? '，修改内容后可再次提交' : '，当前内容已变更，可重新提交' }}
         </div>
-      </template>
     </div>
   </section>
 </template>
@@ -676,30 +407,28 @@ useSortableList({
   font-family: "Source Han Serif SC", "Songti SC", "Noto Serif SC", serif;
 }
 
-.banner-description {
-  margin: 12px 0 0;
-  max-width: 560px;
-  color: var(--feedback-muted);
-  line-height: 1.75;
+.banner-links {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
-.banner-link {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  min-height: 42px;
-  padding: 0 16px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  color: #1f4f7a;
-  font-weight: 600;
+.banner-sheet-link {
+  padding: 6px 10px;
+  border: 1px solid rgba(47, 36, 24, 0.16);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.54);
+  color: #2e77f0;
+  font-size: 14px;
+  line-height: 20px;
   text-decoration: none;
-  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
-.banner-link:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(31, 79, 122, 0.16);
+.banner-sheet-link:hover {
+  border-color: rgba(46, 119, 240, 0.34);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .card-body {
@@ -713,40 +442,6 @@ useSortableList({
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.config-section {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-}
-
-.config-header {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  align-items: flex-start;
-}
-
-.config-header h2 {
-  margin: 0;
-  color: var(--feedback-text);
-  font-size: 28px;
-  line-height: 1.2;
-  font-family: "Source Han Serif SC", "Songti SC", "Noto Serif SC", serif;
-}
-
-.config-header p {
-  margin: 10px 0 0;
-  color: var(--feedback-muted);
-  line-height: 1.75;
-}
-
-.config-status {
-  flex-shrink: 0;
-  color: #1f4f7a;
-  font-weight: 600;
-  line-height: 40px;
 }
 
 .question-title {
@@ -775,79 +470,6 @@ useSortableList({
   gap: 6px;
 }
 
-.course-editor-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.course-editor-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.course-config-name {
-  flex: 1;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  width: 100%;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--feedback-text);
-  font-size: 16px;
-  line-height: 1.7;
-  text-align: left;
-}
-
-.course-config-trigger {
-  cursor: text;
-}
-
-.course-config-trigger:hover {
-  color: #1f4f7a;
-}
-
-.course-rename-input {
-  flex: 1;
-}
-
-.course-rename-input :deep(.el-input__wrapper) {
-  min-height: 40px;
-}
-
-.course-readonly-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.course-readonly-row {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  min-height: 40px;
-  color: var(--feedback-text);
-  font-size: 16px;
-  line-height: 1.7;
-}
-
-.course-order-badge {
-  display: inline-flex;
-  justify-content: center;
-  align-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  background: rgba(31, 79, 122, 0.08);
-  color: #1f4f7a;
-  font-size: 13px;
-  font-weight: 700;
-  flex-shrink: 0;
-}
-
 .course-empty {
   padding: 16px 18px;
   border-radius: 18px;
@@ -858,29 +480,59 @@ useSortableList({
 
 .course-option {
   display: flex;
-  gap: 10px;
   align-items: center;
+  gap: 12px;
   width: 100%;
   padding: 6px 0;
-  border: none;
-  border-radius: 0;
-  background: transparent;
+  color: var(--feedback-text);
+}
+
+.course-select-button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
   color: var(--feedback-text);
   font-size: 16px;
   line-height: 1.7;
   text-align: left;
+  border: none;
+  background: transparent;
   cursor: pointer;
   transition:
     color 0.16s ease,
     opacity 0.16s ease;
 }
 
-.course-option:hover {
+.course-select-button:hover {
   opacity: 0.82;
 }
 
-.course-option.is-selected {
+.course-option.is-selected .course-select-button {
   color: #1f4f7a;
+}
+
+.course-name {
+  min-width: 0;
+}
+
+.course-attendance-link {
+  flex: 0 0 auto;
+  color: #2e77f0;
+  font-size: 14px;
+  line-height: 1.7;
+  text-decoration: none;
+}
+
+.course-attendance-link:hover {
+  text-decoration: underline;
+}
+
+.course-attendance-link:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid rgba(46, 119, 240, 0.24);
+  outline-offset: 2px;
 }
 
 .course-dot {
@@ -897,21 +549,6 @@ useSortableList({
 .course-option.is-selected .course-dot {
   border-color: var(--feedback-accent-strong);
   background: radial-gradient(circle at center, var(--feedback-accent-strong) 0 48%, #fff 54% 100%);
-}
-
-.course-add-row {
-  display: flex;
-  gap: 12px;
-  align-items: stretch;
-}
-
-.course-add-row :deep(.el-input) {
-  flex: 1;
-}
-
-.course-drag-ghost {
-  opacity: 0.55;
-  background: rgba(191, 219, 254, 0.35);
 }
 
 .action-row {
@@ -955,10 +592,6 @@ useSortableList({
   box-shadow: 0 16px 28px rgba(46, 119, 240, 0.22);
 }
 
-:deep(.course-add-row .el-button--primary) {
-  min-width: 120px;
-}
-
 .mode-public {
   border-radius: 32px;
 }
@@ -978,19 +611,22 @@ useSortableList({
     flex-direction: column;
   }
 
+  .banner-links {
+    justify-content: flex-start;
+  }
+
   .question-title {
     font-size: 20px;
   }
 
-  .config-header,
-  .course-editor-row,
-  .course-add-row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .course-option {
     font-size: 16px;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .course-attendance-link {
+    margin-left: 27px;
   }
 
   .action-row {

@@ -7,6 +7,48 @@ export interface WorkbookRefItem {
   title: string
 }
 
+export type NoteSheetResourceRole = 'none' | 'deny' | 'viewer' | 'editor' | 'manager'
+export type NoteSheetResourceType = 'workbook' | 'sheet'
+export type NoteSheetAccessSubjectType = 'anonymous' | 'user'
+
+export interface NoteSheetAccessCapabilities {
+  can_read: boolean
+  can_use_local_view: boolean
+  can_edit_data: boolean
+  editable_data_columns?: number[]
+  can_edit_config: boolean
+  can_run_sheet_actions: boolean
+  can_manage_access: boolean
+}
+
+export interface NoteSheetResourceAccess {
+  role: NoteSheetResourceRole
+  capabilities: NoteSheetAccessCapabilities
+}
+
+export interface NoteSheetResourceAccessGrantItem {
+  subject_type: NoteSheetAccessSubjectType
+  subject_key: string
+  subject_user_id?: number | null
+  username: string
+  nickname: string
+  role: Exclude<NoteSheetResourceRole, 'none'>
+}
+
+export interface NoteSheetResourceAccessGrantUpdate {
+  subject_type: NoteSheetAccessSubjectType
+  username?: string
+  subject_user_id?: number | null
+  role: NoteSheetResourceRole
+}
+
+export interface NoteSheetResourceAccessResponse {
+  resource_type: NoteSheetResourceType
+  resource_id: number
+  access: NoteSheetResourceAccess
+  grants: NoteSheetResourceAccessGrantItem[]
+}
+
 export interface NoteSheetSummary {
   id: number
   title: string
@@ -18,6 +60,7 @@ export interface NoteSheetSummary {
   created_at: number
   updated_at: number
   workbook_items: WorkbookRefItem[]
+  access?: NoteSheetResourceAccess | null
 }
 
 export interface NoteSheetDetail extends NoteSheetSummary {
@@ -47,6 +90,7 @@ export interface WorkbookSummary {
   created_at: number
   updated_at: number
   sheet_count: number
+  access?: NoteSheetResourceAccess | null
 }
 
 export interface WorkbookDetail extends WorkbookSummary {
@@ -75,6 +119,110 @@ export interface NoteSheetSortRequest {
   direction?: 'asc' | 'desc'
 }
 
+export interface AttendanceTemplateActionItem {
+  course_type: string
+  course_name: string
+  target_date: string
+  row_index?: number | null
+  reason: string
+}
+
+export interface AttendanceTemplateGenerationResponse {
+  sheet: NoteSheetDetail
+  generated: AttendanceTemplateActionItem[]
+  skipped: AttendanceTemplateActionItem[]
+}
+
+export interface AttendanceCourseTemplateGenerationRequest {
+  row_index?: number
+  course_type?: string
+  target_date?: string
+  target_year?: number
+  target_month?: number
+}
+
+export interface AttendanceCompletionRequest {
+  row_index: number
+  completion_date?: string
+}
+
+export interface AttendanceCompletionResponse {
+  sheet: NoteSheetDetail
+  row_index: number
+}
+
+export interface AttendanceCourseScriptStatusItem {
+  row_index: number
+  course_type: string
+  course_name: string
+  online_sheet: string
+  url: string
+  target_stem: string
+  target_filename: string
+  exists: boolean
+  existing_path: string
+  can_generate: boolean
+  reason: string
+}
+
+export interface AttendanceCourseScriptStatusesResponse {
+  statuses: AttendanceCourseScriptStatusItem[]
+}
+
+export interface AttendanceCourseScriptGenerationRequest {
+  row_index: number
+}
+
+export interface AttendanceCourseScriptGenerationResponse {
+  status: AttendanceCourseScriptStatusItem
+  source_filename: string
+  source_path: string
+  created_path: string
+}
+
+export interface AttendanceCourseScriptOrganizeItem {
+  row_index: number
+  course_type: string
+  online_sheet: string
+  target_filename: string
+  completed: boolean
+  source_path: string
+  target_path: string
+  reason: string
+}
+
+export interface AttendanceCourseScriptOrganizeResponse {
+  moved: AttendanceCourseScriptOrganizeItem[]
+  skipped: AttendanceCourseScriptOrganizeItem[]
+}
+
+export type AttendanceLinkCountFieldKey = 'lesson_links' | 'clockin_links'
+
+export interface AttendanceLinkCountUpdateRequest {
+  field_key: AttendanceLinkCountFieldKey
+  row_index?: number
+}
+
+export interface AttendanceLinkCountUpdateItem {
+  row_index: number
+  course_name: string
+  lookup_name: string
+  value: string
+  total_count: number
+  linked_count: number
+  reason: string
+}
+
+export interface AttendanceLinkCountUpdateResponse {
+  sheet: NoteSheetDetail
+  updated: AttendanceLinkCountUpdateItem[]
+  skipped: AttendanceLinkCountUpdateItem[]
+}
+
+type NoteSheetResourceRequestOptions = {
+  workbookId?: number | null
+}
+
 export async function fetchNoteSheets() {
   const response = await api.get<NoteSheetSummary[]>('/note-sheets/sheets')
   return response.data
@@ -85,13 +233,17 @@ export async function createNoteSheet(payload: NoteSheetCreateRequest) {
   return response.data
 }
 
-export async function fetchNoteSheet(sheetId: number, options?: { page?: number; pageSize?: number; paginate?: boolean }) {
+export async function fetchNoteSheet(
+  sheetId: number,
+  options?: { page?: number; pageSize?: number; paginate?: boolean; workbookId?: number | null },
+) {
   try {
     const response = await api.get<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, {
       params: {
         page: options?.page,
         page_size: options?.pageSize,
         paginate: options?.paginate,
+        workbook_id: options?.workbookId ?? undefined,
       },
     })
     return response.data
@@ -103,13 +255,141 @@ export async function fetchNoteSheet(sheetId: number, options?: { page?: number;
   }
 }
 
-export async function updateNoteSheet(sheetId: number, payload: NoteSheetUpdateRequest) {
-  const response = await api.put<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, payload)
+export async function updateNoteSheet(
+  sheetId: number,
+  payload: NoteSheetUpdateRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.put<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, payload, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+  })
   return response.data
 }
 
-export async function sortNoteSheet(sheetId: number, payload: NoteSheetSortRequest) {
-  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/sort`, payload)
+export async function sortNoteSheet(
+  sheetId: number,
+  payload: NoteSheetSortRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/sort`, payload, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+  })
+  return response.data
+}
+
+export async function generateAttendanceNextMonthTemplates(sheetId: number, options?: NoteSheetResourceRequestOptions) {
+  const response = await api.post<AttendanceTemplateGenerationResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/generate-next-month-templates`,
+    {},
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function generateAttendanceCourseTemplate(
+  sheetId: number,
+  payload: AttendanceCourseTemplateGenerationRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceTemplateGenerationResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/generate-course-template`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function setAttendanceRowCompleted(
+  sheetId: number,
+  payload: AttendanceCompletionRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceCompletionResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/set-completed`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function fetchAttendanceCourseScriptStatuses(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<AttendanceCourseScriptStatusesResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/course-script-statuses`,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function generateAttendanceCourseScript(
+  sheetId: number,
+  payload: AttendanceCourseScriptGenerationRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceCourseScriptGenerationResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/generate-course-script`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function organizeAttendanceCourseScripts(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceCourseScriptOrganizeResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/organize-course-scripts`,
+    {},
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function updateAttendanceLinkCounts(
+  sheetId: number,
+  payload: AttendanceLinkCountUpdateRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<AttendanceLinkCountUpdateResponse>(
+    `/note-sheets/sheets/${sheetId}/attendance-summary/update-link-counts`,
+    payload,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
   return response.data
 }
 
@@ -148,6 +428,36 @@ export async function fetchWorkbook(workbookId: number) {
     }
     throw error
   }
+}
+
+export async function fetchWorkbookAccess(workbookId: number) {
+  const response = await api.get<NoteSheetResourceAccessResponse>(`/note-sheets/workbooks/${workbookId}/access`)
+  return response.data
+}
+
+export async function updateWorkbookAccess(
+  workbookId: number,
+  grants: NoteSheetResourceAccessGrantUpdate[],
+) {
+  const response = await api.put<NoteSheetResourceAccessResponse>(`/note-sheets/workbooks/${workbookId}/access`, {
+    grants,
+  })
+  return response.data
+}
+
+export async function fetchSheetAccess(sheetId: number) {
+  const response = await api.get<NoteSheetResourceAccessResponse>(`/note-sheets/sheets/${sheetId}/access`)
+  return response.data
+}
+
+export async function updateSheetAccess(
+  sheetId: number,
+  grants: NoteSheetResourceAccessGrantUpdate[],
+) {
+  const response = await api.put<NoteSheetResourceAccessResponse>(`/note-sheets/sheets/${sheetId}/access`, {
+    grants,
+  })
+  return response.data
 }
 
 export async function attachSheetToWorkbook(workbookId: number, sheetId: number) {

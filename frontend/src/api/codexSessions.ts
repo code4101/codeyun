@@ -39,6 +39,10 @@ export interface CodexOverviewResponse {
   total_threads: number;
   archived_threads: number;
   groups: CodexProjectGroup[];
+  thread_offset?: number;
+  thread_limit?: number | null;
+  returned_threads?: number;
+  has_more?: boolean;
 }
 
 export interface CodexThreadMessage {
@@ -121,6 +125,9 @@ export interface CodexDailySummaryThread {
   project_label: string;
   project_secondary_label?: string | null;
   workspace_root?: string | null;
+  source_entry_id?: string | null;
+  source_device_name?: string | null;
+  source_root_dir?: string | null;
   start_at: number;
   end_at: number;
   turn_count: number;
@@ -181,9 +188,26 @@ export interface CodexDailySummaryRunRead {
   updated_at: number;
 }
 
-export async function fetchCodexOverviewForEntry(entryId: string, rootDir?: string) {
+export async function fetchCodexOverviewForEntry(
+  entryId: string,
+  params?: {
+    rootDir?: string;
+    threadOffset?: number;
+    threadLimit?: number;
+  },
+) {
+  const requestParams: Record<string, string | number> = {};
+  if (params?.rootDir?.trim()) {
+    requestParams.root_dir = params.rootDir.trim();
+  }
+  if (params?.threadOffset) {
+    requestParams.thread_offset = params.threadOffset;
+  }
+  if (params?.threadLimit) {
+    requestParams.thread_limit = params.threadLimit;
+  }
   const response = await api.get<CodexOverviewResponse>(getDeviceEntryPath(entryId, '/codex/overview'), {
-    params: rootDir?.trim() ? { root_dir: rootDir.trim() } : undefined,
+    params: Object.keys(requestParams).length ? requestParams : undefined,
   });
   return response.data;
 }
@@ -256,6 +280,24 @@ export async function fetchCodexDailySummaryLatestForEntry(
   return response.data;
 }
 
+export async function fetchCodexDailySummaryLatestForEntries(
+  entryIds: string[],
+  params: {
+    date: string;
+  },
+) {
+  const response = await api.get<CodexDailySummaryRunRead>(
+    '/device-entries/codex/daily-summary/latest',
+    {
+      params: {
+        entry_ids: entryIds.join(','),
+        date: params.date,
+      },
+    },
+  );
+  return response.data;
+}
+
 export async function startCodexDailySummaryRunForEntry(
   entryId: string,
   payload: {
@@ -272,9 +314,36 @@ export async function startCodexDailySummaryRunForEntry(
   return response.data;
 }
 
+export async function startCodexDailySummaryRunForEntries(
+  entryIds: string[],
+  payload: {
+    date: string;
+    model?: string | null;
+    force?: boolean;
+  },
+) {
+  const response = await api.post<CodexDailySummaryRunRead>(
+    '/device-entries/codex/daily-summary/runs',
+    {
+      entry_ids: entryIds,
+      date: payload.date,
+      model: payload.model ?? null,
+      force: payload.force ?? false,
+    },
+  );
+  return response.data;
+}
+
 export async function fetchCodexDailySummaryRunForEntry(entryId: string, runId: string) {
   const response = await api.get<CodexDailySummaryRunRead>(
     getDeviceEntryPath(entryId, `/codex/daily-summary/runs/${runId}`),
+  );
+  return response.data;
+}
+
+export async function fetchCodexDailySummaryRunForEntries(runId: string) {
+  const response = await api.get<CodexDailySummaryRunRead>(
+    `/device-entries/codex/daily-summary/runs/${runId}`,
   );
   return response.data;
 }

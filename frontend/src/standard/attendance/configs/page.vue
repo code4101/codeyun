@@ -229,7 +229,7 @@ onMounted(() => {
         <div class="hero-copy">
           <div class="eyebrow">禅寺考勤 / 考勤配置</div>
           <h1>考勤配置</h1>
-        <p>这里维护唯一问卷账号、全局执行设备、订单扫码提醒对象、操作密码和订单查单模式。“采集配置”页里的课程清单与订单页都会读取这些共享默认值，不再各自维护一套设备和提醒配置。</p>
+        <p>这里维护唯一问卷账号、全局执行设备、订单扫码提醒对象、操作密码和订单查单模式。订单页会读取这些共享默认值；问卷课程清单改由星云表格的未完结课程生成。</p>
       </div>
       <el-button type="primary" :icon="RefreshRight" :loading="loading" @click="loadPageData">
         刷新
@@ -336,7 +336,7 @@ onMounted(() => {
         </div>
 
         <div v-if="!account" class="placeholder-card">
-          <p>还没有配置问卷账号。这里只支持一个全局账号，配置完成后“采集配置”页里的课程清单会直接复用。</p>
+          <p>还没有配置问卷账号。这里只支持一个全局账号；问卷课程清单会从星云表格自动读取。</p>
         </div>
 
         <div v-else class="single-account-card">

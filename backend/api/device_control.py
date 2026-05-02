@@ -10,9 +10,12 @@ from pydantic import BaseModel, Field
 
 from backend.core.attendance_service import apply_attendance_order_operation_password_env
 from backend.core.auth import verify_api_token
-from backend.core.attendance_order import OrderAutomationError, execute_order_action
+from backend.core.attendance_order import (
+    OrderAutomationError,
+    execute_order_action,
+    query_order_refund_details,
+)
 from backend.core.attendance_wjx_data import WjxDataSyncError, execute_wjx_data_sync
-from backend.core.attendance_wjx import WjxAutomationError, execute_wjx_template_action
 from backend.core.device import (
     build_background_popen_kwargs,
     device_manager,
@@ -164,39 +167,18 @@ def update_device_control_config(req: ConfigRequest):
     raise HTTPException(status_code=400, detail="本机运行配置不再支持通过该接口持久化")
 
 
-class AttendanceWjxExecuteRequest(BaseModel):
-    login_username: str
-    password: str
-    activity_id: str
-    action: Literal["inspect", "apply"]
-    hide_names: List[str] = Field(default_factory=list)
-    add_names: List[str] = Field(default_factory=list)
-
-
-@router.post("/attendance/wjx/execute")
-def execute_attendance_wjx(req: AttendanceWjxExecuteRequest):
-    try:
-        with ensure_ui_automation_thread_context():
-            return execute_wjx_template_action(
-                login_username=req.login_username,
-                password=req.password,
-                activity_id=req.activity_id,
-                action=req.action,
-                hide_names=req.hide_names,
-                add_names=req.add_names,
-            )
-    except WjxAutomationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
 class AttendanceOrderExecuteRequest(BaseModel):
     action: Literal["inspect", "refund"]
     rows: List[dict[str, Any]] = Field(default_factory=list)
     login_users: List[str] = Field(default_factory=list)
     lookup_mode: Literal["hybrid", "db_only", "browser_only"] = "browser_only"
     operation_password: Optional[str] = None
+
+
+class AttendanceOrderRefundDetailRequest(BaseModel):
+    order_id: str
+    query_type: Literal["auto", "pay_order", "merchant_order", "refund_id"] = "auto"
+    login_users: List[str] = Field(default_factory=list)
 
 
 @router.post("/attendance/order/execute")
@@ -210,6 +192,21 @@ def execute_attendance_order(req: AttendanceOrderExecuteRequest):
                     weipay_login_users=req.login_users,
                     lookup_mode=req.lookup_mode,
                 )
+    except OrderAutomationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/order/refund-details")
+def query_attendance_order_refund_details(req: AttendanceOrderRefundDetailRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            return query_order_refund_details(
+                req.order_id,
+                query_type=req.query_type,
+                weipay_login_users=req.login_users,
+            )
     except OrderAutomationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

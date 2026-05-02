@@ -84,6 +84,63 @@ export interface ScheduleConfig {
   cron_expression: string;
 }
 
+export interface BackgroundTaskRunSummary {
+  id?: string;
+  name?: string;
+  status?: string;
+  stage?: string;
+  stage_label?: string;
+  trigger_reason?: string;
+  repo_count?: number;
+  changed_repo_count?: number;
+  committed_repo_count?: number;
+  skipped_repo_count?: number;
+  failed_repo_count?: number;
+  sample_count?: number;
+  error_message?: string | null;
+  queued_at?: number;
+  created_at?: number;
+  started_at?: number | null;
+  finished_at?: number | null;
+  updated_at?: number;
+  result?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}
+
+export interface BackgroundTaskItem {
+  key: string;
+  title: string;
+  category: string;
+  description: string;
+  cron_expression: string;
+  enabled: boolean;
+  scheduler_running: boolean;
+  next_run_at: string | null;
+  can_trigger: boolean;
+  trigger_warning: string;
+  active: boolean;
+  latest_run: BackgroundTaskRunSummary | null;
+}
+
+export interface BackgroundTaskQueueSnapshot {
+  is_idle: boolean;
+  running: BackgroundTaskRunSummary | null;
+  pending: BackgroundTaskRunSummary[];
+  recent: BackgroundTaskRunSummary[];
+}
+
+export interface BackgroundTaskStatusResponse {
+  queue: BackgroundTaskQueueSnapshot;
+  tasks: BackgroundTaskItem[];
+}
+
+export interface BackgroundTaskTriggerResponse {
+  task_key: string;
+  queued: boolean;
+  queue_task_id: string | null;
+  run: BackgroundTaskRunSummary | null;
+}
+
 export interface AdminAccountSummary {
   id: number;
   username: string;
@@ -177,6 +234,16 @@ export const fetchScheduleConfig = async (): Promise<ScheduleConfig> => {
 
 export const updateScheduleConfig = async (config: ScheduleConfig): Promise<ScheduleConfig> => {
   const response = await api.post('/admin/storage/schedule', config);
+  return response.data;
+};
+
+export const fetchBackgroundTaskStatus = async (): Promise<BackgroundTaskStatusResponse> => {
+  const response = await api.get('/admin/background-tasks/status');
+  return response.data;
+};
+
+export const triggerBackgroundTask = async (taskKey: string): Promise<BackgroundTaskTriggerResponse> => {
+  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/trigger`);
   return response.data;
 };
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import date
+
 from sqlmodel import Session, select
 
+from backend.api import note_sheets as note_sheets_api
 from backend.app import app
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
@@ -9,7 +12,7 @@ from backend.migrations.manager import (
     v29_migrate_attendance_course_sheets_to_notes_workbook,
     v30_add_numeric_sheet_and_workbook_ids,
 )
-from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
+from backend.models import ResourceAccessGrant, SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 
 def _override_user(user: User) -> None:
@@ -149,6 +152,1209 @@ def test_note_sheet_attach_existing_sheet_to_workbook(client, session):
         assert attach_response.status_code == 200
         detail = attach_response.json()
         assert [item["id"] for item in detail["sheets"]] == [sheet_id]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_resource_access_acl_flow(client, session):
+    owner = _create_user(session, username="note-sheet-acl-owner")
+    editor = _create_user(session, username="note-sheet-acl-editor")
+    superuser = _create_user(session, username="note-sheet-acl-superuser", is_superuser=True)
+
+    workbook = WorkbookDocument(
+        numeric_id=2,
+        title="共享工作簿",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="4",
+        title="共享工作表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名", "金额"],
+            "rows": [["时秋菊", "620"]],
+        },
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.refresh(workbook)
+    session.refresh(sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+    session.commit()
+
+    _override_user(owner)
+    try:
+        owner_response = client.get("/api/note-sheets/workbooks/2")
+        assert owner_response.status_code == 200
+        assert owner_response.json()["access"]["role"] == "manager"
+
+        share_response = client.put(
+            "/api/note-sheets/workbooks/2/access",
+            json={"grants": [{"subject_type": "anonymous", "role": "viewer"}]},
+        )
+        assert share_response.status_code == 200
+    finally:
+        _clear_user_override()
+
+    anonymous_workbook_response = client.get("/api/note-sheets/workbooks/2")
+    assert anonymous_workbook_response.status_code == 200
+    anonymous_workbook = anonymous_workbook_response.json()
+    assert anonymous_workbook["access"]["role"] == "viewer"
+    assert [item["id"] for item in anonymous_workbook["sheets"]] == [4]
+
+    anonymous_sheet_response = client.get("/api/note-sheets/sheets/4", params={"workbook_id": 2})
+    assert anonymous_sheet_response.status_code == 200
+    assert anonymous_sheet_response.json()["access"]["role"] == "viewer"
+
+    anonymous_update_response = client.put(
+        "/api/note-sheets/sheets/4",
+        json={
+            "document_json": {
+                "schema_version": 1,
+                "columns": ["姓名", "金额"],
+                "rows": [["匿名改写", "1"]],
+            },
+        },
+    )
+    assert anonymous_update_response.status_code == 403
+
+    assert client.get("/api/note-sheets/workbooks").status_code == 401
+
+    _override_user(owner)
+    try:
+        sheet_deny_response = client.put(
+            "/api/note-sheets/sheets/4/access",
+            json={"grants": [{"subject_type": "anonymous", "role": "deny"}]},
+        )
+        assert sheet_deny_response.status_code == 200
+    finally:
+        _clear_user_override()
+
+    denied_sheet_response = client.get("/api/note-sheets/sheets/4", params={"workbook_id": 2})
+    assert denied_sheet_response.status_code == 403
+    denied_workbook_response = client.get("/api/note-sheets/workbooks/2")
+    assert denied_workbook_response.status_code == 200
+    assert denied_workbook_response.json()["sheets"] == []
+
+    _override_user(owner)
+    try:
+        editor_share_response = client.put(
+            "/api/note-sheets/sheets/4/access",
+            json={
+                "grants": [
+                    {"subject_type": "anonymous", "role": "deny"},
+                    {"subject_type": "user", "username": editor.username, "role": "editor"},
+                ],
+            },
+        )
+        assert editor_share_response.status_code == 200
+    finally:
+        _clear_user_override()
+
+    _override_user(editor)
+    try:
+        editor_update_response = client.put(
+            "/api/note-sheets/sheets/4",
+            json={
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["姓名", "金额"],
+                    "rows": [["编辑者改写", "999"]],
+                },
+            },
+        )
+        assert editor_update_response.status_code == 200
+        assert editor_update_response.json()["access"]["role"] == "editor"
+    finally:
+        _clear_user_override()
+
+    _override_user(superuser)
+    try:
+        superuser_response = client.get("/api/note-sheets/sheets/4")
+        assert superuser_response.status_code == 200
+        assert superuser_response.json()["access"]["role"] == "manager"
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(client, session):
+    owner = _create_user(session, username="note-sheet-public-status-owner")
+    sheet = SheetDocument(
+        numeric_id=5,
+        scope="notes",
+        owner_type="attendance_questionnaire",
+        owner_key="wjx-data",
+        sheet_key="data",
+        title="问卷数据",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": [
+                "序号",
+                "提交时间",
+                "来源",
+                "课程",
+                "学号",
+                "姓名",
+                "修正需求",
+                "补充说明",
+                "处理状态",
+            ],
+            "rows": [
+                ["651", "2026/4/20", "微信", "课程A", "5组6号", "陈香米", "第一堂视频课", "-", "确认中"],
+                ["650", "2026/4/19", "微信", "课程B", "4--49", "曾玉清", "请问作业", "其实也没什么", "已处理"],
+            ],
+            "view_settings": {
+                "pagination": {
+                    "enabled": True,
+                    "page_size": 100,
+                },
+            },
+        },
+    )
+    session.add(sheet)
+    session.commit()
+    session.refresh(sheet)
+    session.add(ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=sheet.id,
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    detail_response = client.get("/api/note-sheets/sheets/5")
+    assert detail_response.status_code == 200
+    detail = detail_response.json()
+    assert detail["access"]["role"] == "viewer"
+    assert detail["access"]["capabilities"]["can_edit_data"] is False
+    assert detail["access"]["capabilities"]["editable_data_columns"] == [8]
+
+    rows = detail["document_json"]["rows"]
+    rows[0][8] = "用户d问题，已修正"
+    update_response = client.put(
+        "/api/note-sheets/sheets/5",
+        json={
+            "document_json": {
+                **detail["document_json"],
+                "rows": rows,
+            },
+            "page_patch": detail["pagination"],
+        },
+    )
+    assert update_response.status_code == 200
+    session.refresh(sheet)
+    assert sheet.document_json["rows"][0][8] == "用户d问题，已修正"
+    assert sheet.document_json["rows"][0][6] == "第一堂视频课"
+
+    rows[0][6] = "越权修改"
+    forbidden_response = client.put(
+        "/api/note-sheets/sheets/5",
+        json={
+            "document_json": {
+                **detail["document_json"],
+                "rows": rows,
+            },
+            "page_patch": detail["pagination"],
+        },
+    )
+    assert forbidden_response.status_code == 403
+
+
+def test_attendance_questionnaire_sheet_get_backfills_course_links(client, session):
+    owner = _create_user(session, username="note-sheet-questionnaire-link-owner")
+    source_sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="attendance-summary",
+        sheet_key="courses",
+        title="课程",
+        document_json={
+            "schema_version": 1,
+            "columns": [
+                "课程类型",
+                "课程名称",
+                "在线考勤表",
+                "考勤负责人",
+                "课次链接",
+                "打卡链接",
+                "备注",
+                "课程开始日期",
+                "课程结束日期",
+                "考勤实际完成结点",
+            ],
+            "rows": [
+                [
+                    "禅宗5阶",
+                    "20260412禅宗12期一阶",
+                    "20260412禅宗12期一阶",
+                    "陈坤泽",
+                    "",
+                    "",
+                    "",
+                    "04/12",
+                    "06/14",
+                    "",
+                ],
+            ],
+            "cell_meta": {
+                "0:2": {
+                    "link": {
+                        "url": "https://www.kdocs.cn/l/nianzhu12",
+                    },
+                },
+            },
+        },
+    )
+    data_sheet = SheetDocument(
+        numeric_id=5,
+        scope="notes",
+        owner_type="attendance_questionnaire",
+        owner_key="wjx-data",
+        sheet_key="data",
+        title="问卷数据",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        version=1,
+        document_json={
+            "schema_version": 1,
+            "columns": [
+                "序号",
+                "提交时间",
+                "来源",
+                "课程",
+                "学号",
+                "姓名",
+                "修正需求",
+                "补充说明",
+                "处理状态",
+            ],
+            "rows": [
+                [
+                    "651",
+                    "2026/4/20 07:51:46",
+                    "微信",
+                    "20260412禅宗12期一阶",
+                    "5组6号",
+                    "陈香米",
+                    "第一堂视频课",
+                    "-",
+                    "确认中",
+                ],
+            ],
+        },
+    )
+    session.add(source_sheet)
+    session.add(data_sheet)
+    session.commit()
+    session.refresh(data_sheet)
+
+    _override_user(owner)
+    try:
+        response = client.get("/api/note-sheets/sheets/5")
+        assert response.status_code == 200
+        detail = response.json()
+        assert detail["document_json"]["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
+
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 5)).first()
+        assert persisted is not None
+        assert persisted.version == 2
+        assert persisted.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_rejects_default_blank_overwrite(client, session):
+    user = _create_user(session, username="note-sheet-blank-guard-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "课程",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["课程类型", "课程名称", "在线考勤表"],
+                    "rows": [["", "", "20250106念住闯关"]],
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        overwrite_response = client.put(
+            f"/api/note-sheets/sheets/{sheet['id']}",
+            json={
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["列1", "列2", "列3"],
+                    "rows": [],
+                },
+            },
+        )
+        assert overwrite_response.status_code == 409
+        assert overwrite_response.json()["detail"] == "拒绝使用默认空表覆盖已有表格数据"
+
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == sheet["id"])).one()
+        assert persisted.document_json["columns"] == ["课程类型", "课程名称", "在线考勤表"]
+        assert persisted.document_json["rows"] == [["", "", "20250106念住闯关"]]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_sort_shifts_moved_formula_references(client, session):
+    user = _create_user(session, username="note-sheet-formula-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "公式排序表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["名称", "课程", "公式"],
+                    "rows": [
+                        ["b", "课程乙", "=B1 + B2"],
+                        ["a", "课程甲", "=$B2 + B$1 + $B$1"],
+                    ],
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet['id']}/sort",
+            json={"column_index": 0, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+
+        assert sort_response.json()["document_json"]["rows"] == [
+            ["a", "课程甲", "=$B1 + B$2 + $B$2"],
+            ["b", "课程乙", "=B2 + B1"],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_sort_date_formula_uses_typed_date_value(client, session):
+    user = _create_user(session, username="note-sheet-date-formula-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "日期公式排序表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["在线考勤表", "课程开始日期"],
+                    "rows": [
+                        ["20260409梵呗增益", '=DATE_PARSE(A1, "yyyymmdd")'],
+                        ["20250106念住闯关", '=DATE_PARSE(A2, "yyyymmdd")'],
+                        ["20260301禅宗46期五阶", '=DATE_PARSE(A3, "yyyymmdd")'],
+                    ],
+                    "column_configs": {
+                        "课程开始日期": {
+                            "value_type": "date",
+                            "display_format": "m/d",
+                        },
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet['id']}/sort",
+            json={"column_index": 1, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+
+        assert sort_response.json()["document_json"]["rows"] == [
+            ["20250106念住闯关", '=DATE_PARSE(A1, "yyyymmdd")'],
+            ["20260301禅宗46期五阶", '=DATE_PARSE(A2, "yyyymmdd")'],
+            ["20260409梵呗增益", '=DATE_PARSE(A3, "yyyymmdd")'],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_sort_date_offset_formula_uses_referenced_value(client, session):
+    user = _create_user(session, username="note-sheet-date-offset-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "日期偏移排序表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["在线考勤表", "课程开始日期", "课程结束日期"],
+                    "rows": [
+                        ["20260409梵呗增益", '=DATE_PARSE(A1, "yyyymmdd")', "=B1+5.5"],
+                        ["20250106念住闯关", '=DATE_PARSE(A2, "yyyymmdd")', "=B2+5.5"],
+                        ["20260301禅宗46期五阶", '=DATE_PARSE(A3, "yyyymmdd")', "=B3+5.5"],
+                    ],
+                    "column_configs": {
+                        "课程开始日期": {"value_type": "date", "display_format": "m/d"},
+                        "课程结束日期": {"value_type": "date", "display_format": "m/d"},
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet['id']}/sort",
+            json={"column_index": 2, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+
+        assert sort_response.json()["document_json"]["rows"] == [
+            ["20250106念住闯关", '=DATE_PARSE(A1, "yyyymmdd")', "=B1+5.5"],
+            ["20260301禅宗46期五阶", '=DATE_PARSE(A2, "yyyymmdd")', "=B2+5.5"],
+            ["20260409梵呗增益", '=DATE_PARSE(A3, "yyyymmdd")', "=B3+5.5"],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_sort_percent_uses_numeric_ratio(client, session):
+    user = _create_user(session, username="note-sheet-percent-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "百分比排序表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["课程", "返款率"],
+                    "rows": [
+                        ["甲", "75%"],
+                        ["乙", "0.2"],
+                        ["丙", "100%"],
+                    ],
+                    "column_configs": {
+                        "返款率": {"value_type": "percent"},
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet['id']}/sort",
+            json={"column_index": 1, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+
+        assert sort_response.json()["document_json"]["rows"] == [
+            ["乙", "0.2"],
+            ["甲", "75%"],
+            ["丙", "100%"],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_generates_next_month_templates_idempotently(client, session):
+    user = _create_user(session, username="note-sheet-attendance-template-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "备注",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                    "退课人数",
+                    "实际总报名费",
+                    "促学金矫正",
+                    "已返款",
+                    "剩余促学金",
+                    "返款率",
+                ],
+                "rows": [
+                    ["念住闯关", "2025念住闯关第2部分", "20250106念住闯关", "如如, 陈坤泽"],
+                    ["念住", "第39届念住", "20260401第39届念住", "如如, 陈坤泽", "", "每天上午6:14~7:07之后", serial(2026, 4, 1), "=G2+26", "", "620", "7", "=J2*K2"],
+                    ["觉观", "第45届觉观", "20260401第45届觉观", "月上, 陈成, 陈坤泽", "", "每天上午6:00~6:49之后", serial(2026, 4, 1), "=G3+24", "", "499", "54", "=J3*K3"],
+                    ["梵呗初阶", "梵呗初阶", "20260309梵呗初阶", "王秀芹, 乐道行音, 陈坤泽", "", "数据每晚21点更新，次日返款", serial(2026, 3, 9), serial(2026, 3, 24), "", "550", "3", "=J4*K4"],
+                    ["梵呗增益", "梵呗增益", "20260409梵呗增益", "王秀芹, 卓尔不凡, 陈坤泽", "", "数据每晚21点更新，次日返款", serial(2026, 4, 9), serial(2026, 5, 4), "", "500", "0", "=J5*K5"],
+                ],
+                "cell_meta": {
+                    "1:2": {"link": {"url": "https://www.kdocs.cn/l/source-nianzhu"}},
+                    "2:2": {"link": {"url": "https://www.kdocs.cn/l/source-jueguan"}},
+                },
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
+            json={"target_year": 2026, "target_month": 5},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert [item["course_name"] for item in payload["generated"]] == ["第40届念住", "第46届觉观", "梵呗初阶"]
+        rows = payload["sheet"]["document_json"]["rows"]
+        assert rows[0] == [
+            "念住",
+            "第40届念住",
+            "20260501第40届念住",
+            "如如, 陈坤泽",
+            "",
+            "每天上午6:14~7:07之后",
+            serial(2026, 5, 1),
+            "=G1+26",
+            "",
+            "620",
+            "",
+            "=J1*K1",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ]
+        assert rows[1][0:10] == [
+            "觉观",
+            "第46届觉观",
+            "20260501第46届觉观",
+            "月上, 陈成, 陈坤泽",
+            "",
+            "每天上午6:00~6:49之后",
+            serial(2026, 5, 1),
+            "=G2+24",
+            "",
+            "499",
+        ]
+        assert rows[1][10:12] == ["", "=J2*K2"]
+        assert rows[2][0:12] == [
+            "梵呗初阶",
+            "梵呗初阶",
+            "20260501梵呗初阶",
+            "王秀芹, 乐道行音, 陈坤泽",
+            "",
+            "数据每晚21点更新，次日返款",
+            serial(2026, 5, 1),
+            serial(2026, 5, 16),
+            "",
+            "550",
+            "",
+            "=J3*K3",
+        ]
+        assert rows[4][7] == "=G5+26"
+        assert rows[5][7] == "=G6+24"
+
+        persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
+        assert "1:2" not in persisted.document_json["cell_meta"]
+        assert persisted.document_json["cell_meta"]["4:2"]["link"]["url"] == "https://www.kdocs.cn/l/source-nianzhu"
+        assert persisted.document_json["cell_meta"]["5:2"]["link"]["url"] == "https://www.kdocs.cn/l/source-jueguan"
+
+        second_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-next-month-templates",
+            json={"target_year": 2026, "target_month": 5},
+        )
+        assert second_response.status_code == 200
+        second_payload = second_response.json()
+        assert second_payload["generated"] == []
+        assert [item["reason"] for item in second_payload["skipped"]] == ["目标课程已存在", "目标课程已存在", "目标课程已存在"]
+        assert len(second_payload["sheet"]["document_json"]["rows"]) == 8
+
+        fanbei_zengyi_row_index = next(
+            index
+            for index, row in enumerate(second_payload["sheet"]["document_json"]["rows"])
+            if row[0] == "梵呗增益"
+        )
+        generic_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-course-template",
+            json={"row_index": fanbei_zengyi_row_index, "target_date": "2026-06-01"},
+        )
+        assert generic_response.status_code == 200
+        generic_payload = generic_response.json()
+        assert [item["course_name"] for item in generic_payload["generated"]] == ["梵呗增益"]
+        generic_rows = generic_payload["sheet"]["document_json"]["rows"]
+        assert generic_rows[0][0:12] == [
+            "梵呗增益",
+            "梵呗增益",
+            "20260601梵呗增益",
+            "王秀芹, 卓尔不凡, 陈坤泽",
+            "",
+            "数据每晚21点更新，次日返款",
+            serial(2026, 6, 1),
+            serial(2026, 6, 26),
+            "",
+            "500",
+            "",
+            "=J1*K1",
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_course_template_uses_column_binding_fallback(client, session):
+    user = _create_user(session, username="note-sheet-attendance-binding-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "类型别名",
+                    "名称别名",
+                    "考勤链接别名",
+                    "负责人",
+                    "备注",
+                    "返款频次",
+                    "开始日期别名",
+                    "结束日期别名",
+                    "完成日期别名",
+                    "报名费",
+                    "人数别名",
+                    "总报名费",
+                ],
+                "rows": [
+                    [
+                        "禅宗二阶",
+                        "禅宗9期二阶",
+                        "20251026禅宗9期二阶",
+                        "陈坤泽, 王颖",
+                        "",
+                        "周日开课",
+                        serial(2025, 10, 26),
+                        serial(2025, 12, 28),
+                        "",
+                        "910",
+                        "29",
+                        "=J1*K1",
+                    ],
+                ],
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-course-template",
+            json={"row_index": 0, "target_date": "2026-05-03"},
+        )
+        assert response.status_code == 200
+        rows = response.json()["sheet"]["document_json"]["rows"]
+        assert rows[0][0:12] == [
+            "禅宗二阶",
+            "禅宗9期二阶",
+            "20260503禅宗9期二阶",
+            "陈坤泽, 王颖",
+            "",
+            "周日开课",
+            serial(2026, 5, 3),
+            serial(2026, 7, 5),
+            "",
+            "910",
+            "",
+            "=J1*K1",
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_set_completed_moves_row_to_completion_boundary(client, session):
+    user = _create_user(session, username="note-sheet-attendance-complete-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "备注",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                ],
+                "rows": [
+                    ["念住", "第40届念住", "20260501第40届念住", "", "", "", serial(2026, 5, 1), "=G1+26", "", "620", "7", "=J1*K1"],
+                    ["觉观", "第46届觉观", "20260501第46届觉观", "", "", "", serial(2026, 5, 1), "=G2+24", "", "499", "54", "=J2*K2"],
+                    ["梵呗初阶", "梵呗初阶", "20260501梵呗初阶", "", "", "", serial(2026, 5, 1), serial(2026, 5, 16), "", "550", "3", "=J3*K3"],
+                    ["旧完结", "旧完结", "20260401旧完结", "", "", "", serial(2026, 4, 1), serial(2026, 4, 20), serial(2026, 4, 20), "1", "1", "=J4*K4"],
+                ],
+                "cell_meta": {
+                    "1:2": {"link": {"url": "https://example.com/jueguan"}},
+                    "2:2": {"link": {"url": "https://example.com/fanbei"}},
+                },
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/set-completed",
+            json={"row_index": 1, "completion_date": "2026-04-30"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["row_index"] == 2
+        rows = payload["sheet"]["document_json"]["rows"]
+        assert [row[0] for row in rows] == ["念住", "梵呗初阶", "觉观", "旧完结"]
+        assert rows[1][11] == "=J2*K2"
+        assert rows[2][7] == "=G3+24"
+        assert rows[2][8] == serial(2026, 4, 30)
+        assert rows[2][11] == "=J3*K3"
+        cell_meta = payload["sheet"]["document_json"]["cell_meta"]
+        assert cell_meta["2:2"]["link"]["url"] == "https://example.com/jueguan"
+        assert cell_meta["1:2"]["link"]["url"] == "https://example.com/fanbei"
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_generates_course_script_from_nearest_local_template(
+    client,
+    session,
+    tmp_path,
+    monkeypatch,
+):
+    user = _create_user(session, username="note-sheet-attendance-script-user")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    courses_dir = tmp_path / "courses"
+    completed_dir = courses_dir / "已完结"
+    completed_dir.mkdir(parents=True)
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_COURSE_SCRIPT_DIR", courses_dir)
+    completed_source = completed_dir / "d260401第39届念住.py"
+    completed_zen_source = completed_dir / "d251130禅宗7期4点5阶.py"
+    completed_source.write_text(
+        "\n".join([
+            "from xlsln.kq5034.courses.kqcourse import *",
+            "",
+            "",
+            "class 考勤课程(KqCourse):",
+            "",
+            "    def __init__(self):",
+            "        super().__init__(1,",
+            "                         XlPath(__file__).stem,",
+            "                         'oldKdocsToken',",
+            "                         'V2-source-script',",
+            "                         7,",
+            "                         课程商品名='第39届念住禅法（初阶）【中心教室】')",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    completed_zen_source.write_text("# zen source\n", encoding="utf-8")
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "备注",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                ],
+                "rows": [
+                    ["念住", "第39届念住", "20260401第39届念住", "", "", "", serial(2026, 4, 1), "=G1+26", "", "620", "7", "=J1*K1"],
+                    ["念住", "第40届念住", "20260501第40届念住", "", "", "", serial(2026, 5, 1), "=G2+26", "", "620", "", "=J2*K2"],
+                    ["禅宗4.5阶", "禅宗8期4.5阶", "20260503禅宗8期4.5阶.xlsx", "", "", "", serial(2026, 5, 3), serial(2026, 7, 5), "", "1030", "", "=J3*K3"],
+                ],
+                "cell_meta": {
+                    "0:2": {"link": {"url": "https://www.kdocs.cn/l/existingToken"}},
+                    "1:2": {"link": {"url": "https://www.kdocs.cn/l/newKdocsToken"}},
+                    "2:2": {"link": {"url": "https://www.kdocs.cn/l/newZenToken"}},
+                },
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        status_response = client.get("/api/note-sheets/sheets/4/attendance-summary/course-script-statuses")
+        assert status_response.status_code == 200
+        statuses = {item["row_index"]: item for item in status_response.json()["statuses"]}
+        assert statuses[0]["exists"] is True
+        assert statuses[0]["target_filename"] == "d260401第39届念住.py"
+        assert statuses[1]["can_generate"] is True
+        assert statuses[1]["target_filename"] == "d260501第40届念住.py"
+        assert statuses[2]["can_generate"] is True
+        assert statuses[2]["target_filename"] == "d260503禅宗8期4点5阶.py"
+
+        generate_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-course-script",
+            json={"row_index": 1},
+        )
+        assert generate_response.status_code == 200
+        payload = generate_response.json()
+        assert payload["source_filename"] == "d260401第39届念住.py"
+        assert payload["status"]["target_filename"] == "d260501第40届念住.py"
+
+        created_file = courses_dir / "d260501第40届念住.py"
+        assert created_file.exists()
+        created_text = created_file.read_text(encoding="utf-8")
+        assert "'newKdocsToken'" in created_text
+        assert "oldKdocsToken" not in created_text
+        assert "课程商品名='第40届念住禅法（初阶）【中心教室】'" in created_text
+        assert "课程商品名='第39届念住禅法（初阶）【中心教室】'" not in created_text
+        assert "XlPath(__file__).stem" in created_text
+
+        duplicate_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/generate-course-script",
+            json={"row_index": 1},
+        )
+        assert duplicate_response.status_code == 409
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_organizes_course_scripts_by_completion(
+    client,
+    session,
+    tmp_path,
+    monkeypatch,
+):
+    user = _create_user(session, username="note-sheet-attendance-script-organize-user")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    courses_dir = tmp_path / "courses"
+    completed_dir = courses_dir / "已完结"
+    completed_dir.mkdir(parents=True)
+    monkeypatch.setattr(note_sheets_api, "ATTENDANCE_COURSE_SCRIPT_DIR", courses_dir)
+
+    active_completed = courses_dir / "d260401第39届念住.py"
+    completed_active = completed_dir / "d260401第45届觉观.py"
+    active_completed.write_text("# should move to completed\n", encoding="utf-8")
+    completed_active.write_text("# should move to active\n", encoding="utf-8")
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "备注",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                ],
+                "rows": [
+                    ["念住", "第39届念住", "20260401第39届念住", "", "", "", serial(2026, 4, 1), "=G1+26", serial(2026, 4, 30), "620", "7", "=J1*K1"],
+                    ["觉观", "第45届觉观", "20260401第45届觉观", "", "", "", serial(2026, 4, 1), "=G2+24", "", "499", "54", "=J2*K2"],
+                    ["念住", "第40届念住", "20260501第40届念住", "", "", "", serial(2026, 5, 1), "=G3+26", "", "620", "", "=J3*K3"],
+                ],
+                "cell_meta": {
+                    "0:2": {"link": {"url": "https://www.kdocs.cn/l/tokenDone"}},
+                    "1:2": {"link": {"url": "https://www.kdocs.cn/l/tokenActive"}},
+                    "2:2": {"link": {"url": "https://www.kdocs.cn/l/tokenMissing"}},
+                },
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        response = client.post("/api/note-sheets/sheets/4/attendance-summary/organize-course-scripts")
+        assert response.status_code == 200
+        payload = response.json()
+        moved = {item["target_filename"]: item for item in payload["moved"]}
+        skipped = {item["target_filename"]: item for item in payload["skipped"]}
+
+        assert set(moved) == {"d260401第39届念住.py", "d260401第45届觉观.py"}
+        assert moved["d260401第39届念住.py"]["completed"] is True
+        assert moved["d260401第45届觉观.py"]["completed"] is False
+        assert (completed_dir / "d260401第39届念住.py").exists()
+        assert not active_completed.exists()
+        assert (courses_dir / "d260401第45届觉观.py").exists()
+        assert not completed_active.exists()
+        assert skipped["d260501第40届念住.py"]["reason"] == "脚本不存在"
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_updates_link_count_fields(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-attendance-link-count-user")
+    _override_user(user)
+
+    def serial(year: int, month: int, day: int) -> str:
+        return str((date(year, month, day) - date(1970, 1, 1)).days + 25569)
+
+    def fake_query_link_count(field_key: str, course_name: str):
+        assert course_name == "d260401第39届念住"
+        if field_key == "lesson_links":
+            return 21, 21
+        return 4, 3
+
+    monkeypatch.setattr(note_sheets_api, "_query_attendance_link_count", fake_query_link_count)
+
+    try:
+        workbook = WorkbookDocument(
+            numeric_id=2,
+            title="武陵禅寺网课考勤汇总",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+        )
+        sheet = SheetDocument(
+            numeric_id=4,
+            scope="notes",
+            owner_type="note_sheet",
+            owner_key="4",
+            sheet_key="4",
+            title="课程",
+            owner_user_id=user.id,
+            created_by_user_id=user.id,
+            updated_by_user_id=user.id,
+            document_json={
+                "schema_version": 1,
+                "columns": [
+                    "课程类型",
+                    "课程名称",
+                    "在线考勤表",
+                    "考勤负责人",
+                    "备注",
+                    "返款频次",
+                    "课程开始日期",
+                    "课程结束日期",
+                    "考勤实际完成结点",
+                    "报名费",
+                    "报名人数",
+                    "总报名费",
+                ],
+                "rows": [
+                    ["念住", "第39届念住", "20260401第39届念住", "", "", "", serial(2026, 4, 1), "=G1+26", "", "620", "7", "=J1*K1"],
+                ],
+                "header_groups": [[{"label": "课程基本信息", "colspan": 5}, {"label": "时间节点", "colspan": 4}, {"label": "促学金情况", "colspan": 3}]],
+                "cell_meta": {
+                    "0:2": {"link": {"url": "https://www.kdocs.cn/l/token"}},
+                    "0:11": {"style": {"text_color": "#ff0000"}},
+                },
+                "column_widths": [100] * 12,
+            },
+        )
+        session.add(workbook)
+        session.add(sheet)
+        session.commit()
+        session.refresh(workbook)
+        session.refresh(sheet)
+        session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+        session.commit()
+
+        lesson_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/update-link-counts",
+            json={"field_key": "lesson_links"},
+        )
+        assert lesson_response.status_code == 200
+        lesson_payload = lesson_response.json()
+        assert lesson_payload["updated"][0]["lookup_name"] == "d260401第39届念住"
+        assert lesson_payload["updated"][0]["value"] == "21"
+        lesson_document = lesson_payload["sheet"]["document_json"]
+        assert lesson_document["columns"][:7] == [
+            "课程类型",
+            "课程名称",
+            "在线考勤表",
+            "考勤负责人",
+            "课次链接",
+            "打卡链接",
+            "备注",
+        ]
+        assert lesson_document["rows"][0][4] == "21"
+        assert lesson_document["rows"][0][13] == "=L1*M1"
+        assert lesson_document["cell_meta"]["0:13"]["style"]["text_color"] == "#ff0000"
+        assert lesson_document["header_groups"][0][0]["colspan"] == 7
+
+        clockin_response = client.post(
+            "/api/note-sheets/sheets/4/attendance-summary/update-link-counts",
+            json={"field_key": "clockin_links"},
+        )
+        assert clockin_response.status_code == 200
+        clockin_payload = clockin_response.json()
+        assert clockin_payload["updated"][0]["value"] == "3/4"
+        assert clockin_payload["sheet"]["document_json"]["rows"][0][5] == "3/4"
     finally:
         _clear_user_override()
 
@@ -416,6 +1622,10 @@ def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(clien
                         ["", "row-empty"],
                         ["11", "row-11"],
                     ],
+                    "cell_meta": {
+                        "0:1": {"link": {"url": "https://example.com/row-10"}},
+                        "2:1": {"link": {"url": "https://example.com/row-1"}},
+                    },
                     "view_settings": {
                         "pagination": {
                             "enabled": True,
@@ -449,6 +1659,10 @@ def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(clien
             ["1", "row-1"],
             ["2", "row-2"],
         ]
+        assert asc_detail["document_json"]["cell_meta"] == {
+            "0:1": {"link": {"url": "https://example.com/row-1"}},
+            "2:1": {"link": {"url": "https://example.com/row-10"}},
+        }
 
         page2_response = client.get(
             f"/api/note-sheets/sheets/{sheet_id}",
@@ -473,6 +1687,10 @@ def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(clien
             ["11", "row-11"],
             ["10", "row-10"],
         ]
+        assert desc_detail["document_json"]["cell_meta"] == {
+            "1:1": {"link": {"url": "https://example.com/row-10"}},
+            "3:1": {"link": {"url": "https://example.com/row-1"}},
+        }
 
         last_page_response = client.get(
             f"/api/note-sheets/sheets/{sheet_id}",

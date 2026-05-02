@@ -4,14 +4,17 @@ import { useRoute, useRouter } from 'vue-router';
 import { Clock, QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
 
 import {
+  fetchCodexDailySummaryLatestForEntries,
   fetchCodexDailySummaryLatestForEntry,
+  fetchCodexDailySummaryRunForEntries,
   fetchCodexDailySummaryRunForEntry,
+  startCodexDailySummaryRunForEntries,
   startCodexDailySummaryRunForEntry,
   type CodexDailySummaryResponse,
   type CodexDailySummaryRunRead,
   type CodexDailySummaryThread,
 } from '@/api/codexSessions';
-import { taskStore } from '@/store/taskStore';
+import { taskStore, type Device } from '@/store/taskStore';
 
 const route = useRoute();
 const router = useRouter();
@@ -24,6 +27,8 @@ const RUN_STAGE_ORDER = [
   { key: 'completed', label: '完成' },
 ] as const;
 
+const ALL_DEVICES_ENTRY_ID = '__all__';
+
 const isLoadingDevices = ref(false);
 const isLoadingLatest = ref(false);
 const isStartingRun = ref(false);
@@ -35,8 +40,16 @@ const errorMessage = ref('');
 const nowTick = ref(Date.now());
 
 const devices = computed(() => taskStore.devices);
-const canOperate = computed(() => Boolean(selectedEntryId.value && summaryDate.value.trim()));
 const showDeviceEmptyState = computed(() => !isLoadingDevices.value && !devices.value.length);
+const isAllDevicesMode = computed(() => selectedEntryId.value === ALL_DEVICES_ENTRY_ID);
+const selectedDevice = computed(() => (
+  devices.value.find((device) => device.id === selectedEntryId.value) ?? null
+));
+const selectedSourceDevices = computed<Device[]>(() => {
+  if (isAllDevicesMode.value) return devices.value.slice();
+  return selectedDevice.value ? [selectedDevice.value] : [];
+});
+const canOperate = computed(() => Boolean(selectedSourceDevices.value.length && summaryDate.value.trim()));
 const report = computed<CodexDailySummaryResponse | null>(() => summaryRun.value?.result ?? null);
 const isGenerating = computed(() => ['queued', 'running'].includes(summaryRun.value?.status || ''));
 const hasCompletedSummary = computed(() => summaryRun.value?.status === 'completed' && Boolean(summaryRun.value?.result));
@@ -72,6 +85,7 @@ const resolveDefaultSummaryDate = () => {
 };
 
 const normalizeRootDirForRequest = () => {
+  if (isAllDevicesMode.value) return undefined;
   const value = rootDirInput.value.trim();
   return value || undefined;
 };
@@ -84,6 +98,12 @@ const buildCodexRouteQuery = () => ({
 
 const extractErrorMessage = (error: any, fallback: string) =>
   error?.response?.data?.detail || error?.message || fallback;
+
+const formatDeviceLabel = (device?: Pick<Device, 'name' | 'device_id'> | null) => (
+  device?.name || device?.device_id || ''
+);
+
+const getSelectedEntryIds = () => selectedSourceDevices.value.map(device => device.id);
 
 const resolveDateValue = (value?: number | string | null) => {
   if (value === null || value === undefined || value === '') return null;
@@ -162,7 +182,9 @@ const refreshRunSilently = async (entryId: string, runId: string) => {
   if (runPollInFlight) return;
   runPollInFlight = true;
   try {
-    const nextRun = await fetchCodexDailySummaryRunForEntry(entryId, runId);
+    const nextRun = entryId === ALL_DEVICES_ENTRY_ID
+      ? await fetchCodexDailySummaryRunForEntries(runId)
+      : await fetchCodexDailySummaryRunForEntry(entryId, runId);
     summaryRun.value = nextRun;
     if (nextRun.status === 'completed' || nextRun.status === 'failed') {
       stopRunPolling();
@@ -181,7 +203,9 @@ const ensureDevicesLoaded = async () => {
   try {
     await taskStore.fetchDevices();
     if (!selectedEntryId.value && taskStore.devices.length) {
-      selectedEntryId.value = taskStore.devices[0].id;
+      selectedEntryId.value = taskStore.devices.length > 1 ? ALL_DEVICES_ENTRY_ID : taskStore.devices[0].id;
+    } else if (selectedEntryId.value === ALL_DEVICES_ENTRY_ID && taskStore.devices.length < 2) {
+      selectedEntryId.value = taskStore.devices[0]?.id || '';
     }
   } finally {
     isLoadingDevices.value = false;
@@ -201,10 +225,14 @@ const loadLatestSummary = async (options: { silent?: boolean } = {}) => {
   }
   stopRunPolling();
   try {
-    const nextRun = await fetchCodexDailySummaryLatestForEntry(selectedEntryId.value, {
-      date: summaryDate.value.trim(),
-      root_dir: normalizeRootDirForRequest(),
-    });
+    const nextRun = isAllDevicesMode.value
+      ? await fetchCodexDailySummaryLatestForEntries(getSelectedEntryIds(), {
+        date: summaryDate.value.trim(),
+      })
+      : await fetchCodexDailySummaryLatestForEntry(selectedEntryId.value, {
+        date: summaryDate.value.trim(),
+        root_dir: normalizeRootDirForRequest(),
+      });
     summaryRun.value = nextRun;
     if (nextRun.status === 'running' || nextRun.status === 'queued') {
       startRunPolling(selectedEntryId.value, nextRun.id);
@@ -239,11 +267,16 @@ const startRun = async (force = false) => {
   isStartingRun.value = true;
   errorMessage.value = '';
   try {
-    const nextRun = await startCodexDailySummaryRunForEntry(selectedEntryId.value, {
-      date: summaryDate.value.trim(),
-      root_dir: normalizeRootDirForRequest(),
-      force,
-    });
+    const nextRun = isAllDevicesMode.value
+      ? await startCodexDailySummaryRunForEntries(getSelectedEntryIds(), {
+        date: summaryDate.value.trim(),
+        force,
+      })
+      : await startCodexDailySummaryRunForEntry(selectedEntryId.value, {
+        date: summaryDate.value.trim(),
+        root_dir: normalizeRootDirForRequest(),
+        force,
+      });
     summaryRun.value = nextRun;
     if (nextRun.status === 'running' || nextRun.status === 'queued') {
       startRunPolling(selectedEntryId.value, nextRun.id);
@@ -328,7 +361,7 @@ onBeforeUnmount(() => {
         <div class="codex-daily-toolbar-head">
           <div>
             <h2>日报总结</h2>
-            <p>按自然日汇总当天聊天记录，优先参考星图笔记类型归类，再交给本机 `codex` 生成层次日报。</p>
+            <p>按自然日汇总单设备或全部设备的聊天记录，优先参考星图笔记类型归类，再交给本机 `codex` 生成层次日报。</p>
           </div>
           <el-button @click="goToSessions">会话页</el-button>
         </div>
@@ -344,9 +377,15 @@ onBeforeUnmount(() => {
               :disabled="isLoadingDevices || !devices.length"
             >
               <el-option
+                v-if="devices.length > 1"
+                :key="ALL_DEVICES_ENTRY_ID"
+                label="全部设备"
+                :value="ALL_DEVICES_ENTRY_ID"
+              />
+              <el-option
                 v-for="device in devices"
                 :key="device.id"
-                :label="device.name || device.device_id"
+                :label="formatDeviceLabel(device)"
                 :value="device.id"
               />
             </el-select>
@@ -359,7 +398,8 @@ onBeforeUnmount(() => {
               class="codex-daily-field-control"
               size="large"
               clearable
-              placeholder="例如 C:\Users\kzche\.codex"
+              :disabled="isAllDevicesMode"
+              :placeholder="isAllDevicesMode ? '全部设备使用各自默认 .codex' : '例如 C:\Users\kzche\.codex'"
             />
           </label>
 
@@ -492,6 +532,7 @@ onBeforeUnmount(() => {
                   <span>{{ formatDateTime(thread.start_at) }} ~ {{ formatDateTime(thread.end_at) }}</span>
                 </div>
                 <div class="codex-daily-source-item-meta">
+                  <span v-if="isAllDevicesMode && thread.source_device_name">{{ thread.source_device_name }}</span>
                   <span>{{ formatProjectLabel(thread) || '未标记项目' }}</span>
                   <span>{{ thread.turn_count }} 轮</span>
                 </div>

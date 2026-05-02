@@ -34,6 +34,15 @@ export default defineConfig({
             return undefined
           }
 
+          if (
+            normalizedId.includes('/node_modules/hyperformula/')
+            || normalizedId.includes('/node_modules/chevrotain/')
+            || normalizedId.includes('/node_modules/tiny-emitter/')
+            || normalizedId.includes('/node_modules/regexp-to-ast/')
+          ) {
+            return 'formula-vendor'
+          }
+
           if (normalizedId.includes('/node_modules/@element-plus/icons-vue/')) {
             return 'element-icons-vendor'
           }

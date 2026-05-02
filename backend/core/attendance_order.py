@@ -8,6 +8,7 @@ from kq5034.order_ops import (
     find_order_in_db,
     lookup_order,
     process_order_rows,
+    query_order_refund_details,
     sync_kqbook_order_sheet,
 )
 
@@ -19,5 +20,6 @@ __all__ = [
     "find_order_in_db",
     "lookup_order",
     "process_order_rows",
+    "query_order_refund_details",
     "sync_kqbook_order_sheet",
 ]

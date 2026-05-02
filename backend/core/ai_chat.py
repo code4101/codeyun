@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import shlex
@@ -21,8 +23,16 @@ class OllamaClientError(RuntimeError):
 
 
 CODEX_CLI_DEFAULT_COMMAND = "codex"
-CODEX_CLI_DEFAULT_MODEL = "gpt-5.4"
+CODEX_CLI_DEFAULT_MODEL = "gpt-5.5"
 CODEX_CLI_WORKSPACE_DIRNAME = "codex-cli-workspace"
+CODEX_CLI_IMAGE_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
 
 
 @dataclass(frozen=True)
@@ -277,6 +287,35 @@ def _split_command_line(command_line: str) -> list[str]:
         raise OllamaClientError(f"命令格式无效：{exc}") from exc
 
 
+def _codex_tools_node_dir() -> Path:
+    return Path(__file__).resolve().parents[2] / "tools" / "node"
+
+
+def _get_preferred_codex_command_candidates() -> list[Path]:
+    return [
+        _codex_tools_node_dir() / "codex.cmd",
+        Path.home() / "AppData" / "Local" / "OpenAI" / "Codex" / "bin" / "codex.cmd",
+        Path.home() / ".cargo" / "bin" / "codex.cmd",
+    ]
+
+
+def _is_usable_preferred_codex_command(candidate: Path) -> bool:
+    if not candidate.exists():
+        return False
+
+    tools_node_dir = _codex_tools_node_dir()
+    try:
+        is_repo_tools_node_command = candidate.parent.resolve() == tools_node_dir.resolve()
+    except OSError:
+        is_repo_tools_node_command = candidate.parent == tools_node_dir
+
+    if is_repo_tools_node_command:
+        package_script = tools_node_dir / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
+        return package_script.exists()
+
+    return True
+
+
 def _resolve_command_path(command: list[str]) -> list[str]:
     if not command or os.name != "nt":
         return command
@@ -284,6 +323,15 @@ def _resolve_command_path(command: list[str]) -> list[str]:
     executable = command[0].strip()
     if not executable:
         return command
+
+    if os.path.isabs(executable) and Path(executable).exists():
+        return [executable, *command[1:]]
+
+    executable_name = Path(executable).name.lower()
+    if executable_name in {"codex", "codex.cmd", "codex.exe", "codex.ps1"}:
+        for candidate in _get_preferred_codex_command_candidates():
+            if _is_usable_preferred_codex_command(candidate):
+                return [os.fspath(candidate), *command[1:]]
 
     # On Windows, `subprocess.run(["codex", ...])` may hit an extensionless shim
     # before the real `.cmd/.exe` launcher. Resolve once up front to the concrete
@@ -309,6 +357,10 @@ def _summarize_process_output(*segments: str) -> str:
                 lines.append(normalized)
     if not lines:
         return "没有可用输出"
+    for line in reversed(lines):
+        if line.startswith("Node.js v") and len(lines) > 1:
+            continue
+        return line
     return lines[-1]
 
 
@@ -377,6 +429,12 @@ def _build_codex_cli_prompt(
     for message in messages:
         role = str(message.get("role") or "").strip().lower() or "user"
         content = str(message.get("content") or "")
+        image_count = len(message.get("images") or [])
+        if image_count:
+            content = (
+                f"{content.rstrip()}\n\n"
+                f"[本条消息附带 {image_count} 张图片，已随 Codex CLI 调用作为 --image 附件传入。]"
+            ).strip()
         sections.extend([
             "",
             f"[{role}]",
@@ -388,6 +446,40 @@ def _build_codex_cli_prompt(
         "请直接给出最终回答。",
     ])
     return "\n".join(sections).strip()
+
+
+def _parse_image_payload(value: str, index: int) -> tuple[bytes, str]:
+    payload = value.strip()
+    mime_type = "image/png"
+    if payload.startswith("data:"):
+        header, separator, encoded = payload.partition(",")
+        if separator:
+            media_type = header[5:].split(";", 1)[0].strip().lower()
+            if media_type.startswith("image/"):
+                mime_type = media_type
+            payload = encoded
+
+    try:
+        image_bytes = base64.b64decode("".join(payload.split()), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise OllamaClientError(f"第 {index} 张图片不是有效的 base64 数据") from exc
+    if not image_bytes:
+        raise OllamaClientError(f"第 {index} 张图片内容为空")
+    return image_bytes, mime_type
+
+
+def _write_codex_cli_image_files(messages: list[dict[str, Any]], temp_dir: Path) -> list[Path]:
+    image_paths: list[Path] = []
+    for message in messages:
+        for image in message.get("images") or []:
+            if not isinstance(image, str) or not image.strip():
+                continue
+            image_bytes, mime_type = _parse_image_payload(image, len(image_paths) + 1)
+            suffix = CODEX_CLI_IMAGE_EXTENSIONS.get(mime_type, ".png")
+            image_path = temp_dir / f"codex-image-{len(image_paths) + 1}{suffix}"
+            image_path.write_bytes(image_bytes)
+            image_paths.append(image_path)
+    return image_paths
 
 
 def _chat_with_codex_cli(
@@ -412,7 +504,9 @@ def _chat_with_codex_cli(
     resolved_model = (model or provider.default_model).strip() or provider.default_model
 
     with tempfile.TemporaryDirectory(prefix="codeyun-codex-cli-") as temp_dir:
-        output_path = Path(temp_dir) / "last-message.txt"
+        temp_path = Path(temp_dir)
+        output_path = temp_path / "last-message.txt"
+        image_paths = _write_codex_cli_image_files(messages, temp_path)
         command_args = [
             *command,
             "exec",
@@ -429,6 +523,8 @@ def _chat_with_codex_cli(
         ]
         if resolved_model:
             command_args.extend(["--model", resolved_model])
+        for image_path in image_paths:
+            command_args.extend(["--image", os.fspath(image_path)])
         command_args.append("-")
 
         try:

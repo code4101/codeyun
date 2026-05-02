@@ -2,7 +2,7 @@ import os
 import re
 import json
 import time
-from typing import List, Set, Optional, Dict
+from typing import Any, List, Set, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select, func, text
 from sqlalchemy.exc import IntegrityError
@@ -10,7 +10,17 @@ from pydantic import BaseModel
 
 from backend.db import get_session, engine
 from backend.core.auth import get_current_active_superuser, get_password_hash
+from backend.core.auto_git_commit import (
+    AUTO_GIT_COMMIT_CRON,
+    create_auto_git_commit_run,
+    get_auto_git_commit_status,
+)
+from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
+from backend.core.note_metadata_feedback import (
+    create_note_metadata_feedback_optimization_run,
+    get_note_metadata_feedback_status,
+)
 from backend.models import AppSetting, User, NoteNode
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -35,6 +45,7 @@ def _create_admin_router() -> APIRouter:
 router = _create_admin_router()
 accounts_router = _create_admin_router()
 images_router = _create_admin_router()
+tasks_router = _create_admin_router()
 
 ATTACHMENTS_ABS_PATH = os.fspath(get_attachments_dir())
 LEGACY_STORAGE_CONFIG_FILE = os.path.join(
@@ -135,7 +146,7 @@ def init_storage_scheduler():
         try:
             cron = config.get("cron_expression", "0 3 * * *")
             storage_scheduler.add_job(
-                scheduled_analysis_job,
+                lambda: background_task_queue.enqueue("storage_analysis", scheduled_analysis_job),
                 CronTrigger.from_crontab(cron),
                 id="storage_analysis",
                 replace_existing=True
@@ -145,6 +156,64 @@ def init_storage_scheduler():
             print(f"Failed to schedule storage analysis: {e}")
 
 # --- Models ---
+
+
+def _serialize_scheduler_next_run(scheduler: BackgroundScheduler, job_id: str) -> Optional[str]:
+    if not scheduler.running:
+        return None
+    job = scheduler.get_job(job_id)
+    if job is None or job.next_run_time is None:
+        return None
+    return job.next_run_time.isoformat()
+
+
+def _find_queue_snapshot(queue: Dict[str, Any], task_name: str) -> Optional[Dict[str, Any]]:
+    running = queue.get("running")
+    if isinstance(running, dict) and running.get("name") == task_name:
+        return running
+    for item in queue.get("pending") or []:
+        if isinstance(item, dict) and item.get("name") == task_name:
+            return item
+    for item in queue.get("recent") or []:
+        if isinstance(item, dict) and item.get("name") == task_name:
+            return item
+    return None
+
+
+def _queue_task_is_active(queue: Dict[str, Any], task_name: str) -> bool:
+    running = queue.get("running")
+    if isinstance(running, dict) and running.get("name") == task_name:
+        return True
+    return any(
+        isinstance(item, dict) and item.get("name") == task_name
+        for item in queue.get("pending") or []
+    )
+
+
+def _queue_run_payload(queue: Dict[str, Any], task_name: str) -> Optional[Dict[str, Any]]:
+    snapshot = _find_queue_snapshot(queue, task_name)
+    if not snapshot:
+        return None
+    return {
+        "id": snapshot.get("id"),
+        "status": snapshot.get("status"),
+        "stage_label": snapshot.get("error_message") or "",
+        "created_at": snapshot.get("queued_at"),
+        "started_at": snapshot.get("started_at"),
+        "finished_at": snapshot.get("finished_at"),
+        "error_message": snapshot.get("error_message"),
+        "metadata": snapshot.get("metadata") or {},
+    }
+
+
+def _run_is_active(run_payload: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(run_payload, dict):
+        return False
+    return str(run_payload.get("status") or "") in {"pending", "running"}
+
+
+def _without_queue(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in payload.items() if key != "queue"}
 
 class OrphanImage(BaseModel):
     filename: str
@@ -206,6 +275,33 @@ class MaintenanceStatusResponse(BaseModel):
 class ScheduleConfig(BaseModel):
     enabled: bool
     cron_expression: str
+
+
+class BackgroundTaskRead(BaseModel):
+    key: str
+    title: str
+    category: str
+    description: str = ""
+    cron_expression: str = ""
+    enabled: bool = True
+    scheduler_running: bool = False
+    next_run_at: Optional[str] = None
+    can_trigger: bool = True
+    trigger_warning: str = ""
+    active: bool = False
+    latest_run: Optional[Dict[str, Any]] = None
+
+
+class BackgroundTaskStatusResponse(BaseModel):
+    queue: Dict[str, Any]
+    tasks: List[BackgroundTaskRead]
+
+
+class BackgroundTaskTriggerResponse(BaseModel):
+    task_key: str
+    queued: bool = True
+    queue_task_id: Optional[str] = None
+    run: Optional[Dict[str, Any]] = None
 
 
 class DeviceControlIdentityResponse(BaseModel):
@@ -356,6 +452,126 @@ def delete_account(
         raise HTTPException(status_code=400, detail="该账号下存在关联数据，无法直接删除")
 
     return {"success": True}
+
+
+@tasks_router.get("/background-tasks/status", response_model=BackgroundTaskStatusResponse)
+def get_background_task_status(session: Session = Depends(get_session)):
+    from backend.api.note_sheets import attendance_summary_scheduler
+    from backend.core.auto_git_commit import auto_git_commit_scheduler
+    from backend.core.note_metadata_feedback import metadata_feedback_scheduler
+
+    queue = background_task_queue.snapshot()
+    storage_config = load_config()
+    metadata_status = get_note_metadata_feedback_status(session)
+    auto_git_status = get_auto_git_commit_status(session)
+    metadata_latest = metadata_status.get("latest_run") if isinstance(metadata_status, dict) else None
+    auto_git_latest = auto_git_status.get("latest_run") if isinstance(auto_git_status, dict) else None
+
+    tasks = [
+        BackgroundTaskRead(
+            key="auto_git_commit",
+            title="自动 Git 提交",
+            category="Git",
+            description="凌晨检查 pyxllib、xlproject、codeyun，有变更则生成提交信息并提交。",
+            cron_expression=AUTO_GIT_COMMIT_CRON,
+            enabled=True,
+            scheduler_running=auto_git_commit_scheduler.running,
+            next_run_at=_serialize_scheduler_next_run(auto_git_commit_scheduler, "auto_git_commit"),
+            trigger_warning="会直接提交 pyxllib、xlproject、codeyun 的当前工作区变更。",
+            active=_run_is_active(auto_git_status.get("active_run") if isinstance(auto_git_status, dict) else None)
+            or _queue_task_is_active(queue, "auto_git_commit"),
+            latest_run=auto_git_latest if isinstance(auto_git_latest, dict) else None,
+        ),
+        BackgroundTaskRead(
+            key="note_metadata_feedback_optimization",
+            title="元数据反馈优化",
+            category="AI",
+            description="凌晨窗口消费节点元数据修正样本，调用 Codex CLI 优化标题和元标签生成规则。",
+            cron_expression="*/30 0-5 * * *",
+            enabled=True,
+            scheduler_running=metadata_feedback_scheduler.running,
+            next_run_at=_serialize_scheduler_next_run(metadata_feedback_scheduler, "note_metadata_feedback_optimization"),
+            trigger_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
+            active=_run_is_active(metadata_latest if isinstance(metadata_latest, dict) else None)
+            or _queue_task_is_active(queue, "note_metadata_feedback_optimization"),
+            latest_run=metadata_latest if isinstance(metadata_latest, dict) else None,
+        ),
+        BackgroundTaskRead(
+            key="attendance_summary_monthly_templates",
+            title="考勤汇总模板",
+            category="表格",
+            description="每月 27 日凌晨为考勤汇总表补下月模板。",
+            cron_expression="5 0 27 * *",
+            enabled=True,
+            scheduler_running=attendance_summary_scheduler.running,
+            next_run_at=_serialize_scheduler_next_run(attendance_summary_scheduler, "attendance_summary_monthly_templates"),
+            active=_queue_task_is_active(queue, "attendance_summary_monthly_templates"),
+            latest_run=_queue_run_payload(queue, "attendance_summary_monthly_templates"),
+        ),
+        BackgroundTaskRead(
+            key="storage_analysis",
+            title="存储分析",
+            category="存储",
+            description="按配置定期执行附件与死链维护分析。",
+            cron_expression=str(storage_config.get("cron_expression") or DEFAULT_STORAGE_SCHEDULE["cron_expression"]),
+            enabled=bool(storage_config.get("schedule_enabled")),
+            scheduler_running=storage_scheduler.running,
+            next_run_at=_serialize_scheduler_next_run(storage_scheduler, "storage_analysis"),
+            active=_queue_task_is_active(queue, "storage_analysis"),
+            latest_run=_queue_run_payload(queue, "storage_analysis"),
+        ),
+    ]
+    return BackgroundTaskStatusResponse(queue=queue, tasks=tasks)
+
+
+@tasks_router.post("/background-tasks/{task_key}/trigger", response_model=BackgroundTaskTriggerResponse)
+def trigger_background_task(
+    task_key: str,
+    session: Session = Depends(get_session),
+):
+    normalized_key = task_key.strip()
+    if normalized_key == "storage_analysis":
+        queue_task_id = background_task_queue.enqueue("storage_analysis", scheduled_analysis_job)
+        return BackgroundTaskTriggerResponse(task_key=normalized_key, queue_task_id=queue_task_id)
+
+    if normalized_key == "attendance_summary_monthly_templates":
+        from backend.api.note_sheets import run_attendance_summary_template_job
+
+        queue_task_id = background_task_queue.enqueue(
+            "attendance_summary_monthly_templates",
+            run_attendance_summary_template_job,
+        )
+        return BackgroundTaskTriggerResponse(task_key=normalized_key, queue_task_id=queue_task_id)
+
+    if normalized_key == "note_metadata_feedback_optimization":
+        run = create_note_metadata_feedback_optimization_run(
+            session,
+            trigger_reason="manual_admin",
+            enqueue=True,
+            require_auto_conditions=False,
+        )
+        if run is None:
+            raise HTTPException(status_code=409, detail="暂时不满足优化任务触发条件")
+        return BackgroundTaskTriggerResponse(
+            task_key=normalized_key,
+            queue_task_id=run.queue_task_id,
+            run=_without_queue(get_note_metadata_feedback_status(session).get("latest_run") or {}),
+        )
+
+    if normalized_key == "auto_git_commit":
+        run = create_auto_git_commit_run(
+            session,
+            trigger_reason="manual_admin",
+            enqueue=True,
+        )
+        return BackgroundTaskTriggerResponse(
+            task_key=normalized_key,
+            queue_task_id=run.queue_task_id,
+            run=get_auto_git_commit_status(session).get("latest_run"),
+        )
+
+    raise HTTPException(status_code=404, detail="后台任务不存在")
+
 
 @images_router.get("/storage/dashboard", response_model=StorageDashboardStats)
 def get_storage_dashboard(session: Session = Depends(get_session)):
@@ -583,7 +799,7 @@ def set_schedule_config(config: ScheduleConfig):
     if config.enabled:
         try:
             storage_scheduler.add_job(
-                scheduled_analysis_job,
+                lambda: background_task_queue.enqueue("storage_analysis", scheduled_analysis_job),
                 CronTrigger.from_crontab(config.cron_expression),
                 id="storage_analysis",
                 replace_existing=True
@@ -887,3 +1103,4 @@ def delete_orphan_images(request: DeleteImagesRequest):
 
 router.include_router(accounts_router)
 router.include_router(images_router)
+router.include_router(tasks_router)

@@ -1,11 +1,11 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 const page: AppPageDefinition = {
-  routeName: 'AttendanceWjxCatalog',
-  canonicalPath: '/attendance/questionnaire/catalog',
+  routeName: 'BackgroundTasks',
+  canonicalPath: '/admin/background-tasks',
   component: () => import('./page.vue'),
   requiresAuth: true,
-  permissionKey: 'attendance.wjx-templates',
+  requiresAdmin: true,
 }
 
 export default page

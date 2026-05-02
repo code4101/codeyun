@@ -4,7 +4,7 @@ from backend.app import app
 from backend.api.fanxiu import FANXIU_CHAR_KIND, FANXIU_CHAR_TYPE, get_fanxiu_user
 from backend.core.note_semantics import NOTE_WEIGHT_MODE_LINEAR
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
-from backend.models import NoteNode, User
+from backend.models import NoteEdge, NoteNode, User
 
 
 def make_note(owner: User, note_id: str, title: str) -> NoteNode:
@@ -110,6 +110,29 @@ def test_note_update_serializes_legacy_custom_fields_dict(client, session, auth_
         ["done", "boolean", False],
         ["count", "number", 2],
     ]
+
+
+def test_delete_note_removes_connected_edges(client, session, auth_user):
+    source = make_note(auth_user, "note-delete-source", "Delete Source")
+    target = make_note(auth_user, "note-delete-target", "Delete Target")
+    edge = NoteEdge(
+        id="edge-delete-source-target",
+        user_id=auth_user.id,
+        source_id=source.id,
+        target_id=target.id,
+    )
+    session.add(source)
+    session.add(target)
+    session.add(edge)
+    session.commit()
+
+    response = client.delete(f"/api/notes/{source.id}")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert session.get(NoteNode, source.id) is None
+    assert session.get(NoteNode, target.id) is not None
+    assert session.get(NoteEdge, edge.id) is None
 
 
 def test_fanxiu_public_read_returns_can_edit_for_current_viewer(client, session):
