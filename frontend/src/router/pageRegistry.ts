@@ -62,18 +62,6 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
-    path: '/attendance/questionnaire/design',
-    alias: [
-      'attendance/questionnaire/feedback',
-      'attendance/wjx/templates',
-      'attendance/wjx-templates',
-      'attendance/wjx/feedback',
-    ],
-    redirect: '/attendance/questionnaire/catalog',
-    skipFeatureAccess: true,
-  },
-  {
-    scope: 'main',
     path: '/attendance/wjx/data',
     redirect: '/attendance/questionnaire/data',
     skipFeatureAccess: true,

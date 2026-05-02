@@ -200,6 +200,25 @@ class FeatureAccessPolicy(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, index=True)
 
 
+class ResourceAccessGrant(SQLModel, table=True):
+    __tablename__ = "resourceaccessgrant"
+    __table_args__ = (
+        UniqueConstraint("resource_type", "resource_id", "subject_key", name="uq_resourceaccessgrant_resource_subject"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    resource_type: str = Field(index=True)
+    resource_id: str = Field(index=True)
+    subject_key: str = Field(index=True)
+    subject_type: str = Field(index=True)
+    subject_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    role: str = Field(default="viewer", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+
+
 class DocumentAsset(SQLModel, table=True):
     __tablename__ = "documentasset"
     __table_args__ = {'extend_existing': True}
@@ -306,6 +325,31 @@ class GitReductionRun(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class AutoGitCommitRun(SQLModel, table=True):
+    __tablename__ = "autogitcommitrun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    status: str = Field(default="pending", index=True)
+    trigger_reason: str = Field(default="scheduled", index=True)
+    run_date: str = Field(default="", index=True)
+    stage: str = Field(default="pending", index=True)
+    stage_label: str = Field(default="等待中")
+    repo_count: int = Field(default=0)
+    changed_repo_count: int = Field(default=0)
+    committed_repo_count: int = Field(default=0)
+    skipped_repo_count: int = Field(default=0)
+    failed_repo_count: int = Field(default=0)
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    queue_task_id: Optional[str] = Field(default=None, index=True)
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    started_at: Optional[float] = Field(default=None, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class CodexDailySummaryRun(SQLModel, table=True):
     __tablename__ = "codexdailysummaryrun"
     __table_args__ = {'extend_existing': True}
@@ -335,6 +379,91 @@ class CodexDailySummaryRun(SQLModel, table=True):
     heartbeat_at: Optional[float] = Field(default=None, index=True)
     created_at: float = Field(default_factory=time.time, index=True)
     finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class CodexDiaryImportRun(SQLModel, table=True):
+    __tablename__ = "codexdiaryimportrun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    diary_date: str = Field(default="", index=True)
+    timezone: str = Field(default="Asia/Shanghai")
+    scope_key: str = Field(default="", index=True)
+    entry_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    entry_snapshot: list[dict[str, Any]] = Field(default_factory=list, sa_column=Column(JSON))
+    confirm_duplicate: bool = Field(default=False, index=True)
+    status: str = Field(default="pending", index=True)
+    stage: str = Field(default="pending", index=True)
+    stage_label: str = Field(default="等待中")
+    source_thread_count: int = Field(default=0)
+    source_turn_count: int = Field(default=0)
+    source_user_message_count: int = Field(default=0)
+    source_assistant_message_count: int = Field(default=0)
+    created_note_count: int = Field(default=0)
+    created_note_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    duplicate_note_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class NoteMetadataFeedback(SQLModel, table=True):
+    __tablename__ = "notemetadatafeedback"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    note_id: str = Field(index=True)
+    status: str = Field(default="pending", index=True)
+    source_kind: str = Field(default="manual_update", index=True)
+    source_kinds: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    source_ref_id: Optional[str] = Field(default=None, index=True)
+    field_signature: str = Field(default="", index=True)
+    field_names: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    before_snapshot: Optional[dict[str, Any]] = Field(default_factory=dict, sa_column=Column(JSON, nullable=True))
+    after_snapshot: Optional[dict[str, Any]] = Field(default_factory=dict, sa_column=Column(JSON, nullable=True))
+    title_sample: str = Field(default="")
+    content_summary: str = Field(default="")
+    content_hash: str = Field(default="", index=True)
+    content_length: int = Field(default=0)
+    event_count: int = Field(default=1)
+    consumer_run_id: Optional[str] = Field(default=None, index=True)
+    first_event_at: float = Field(default_factory=time.time, index=True)
+    last_event_at: float = Field(default_factory=time.time, index=True)
+    consumed_at: Optional[float] = Field(default=None, index=True)
+    compressed_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class NoteMetadataFeedbackOptimizationRun(SQLModel, table=True):
+    __tablename__ = "notemetadatafeedbackoptimizationrun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    status: str = Field(default="pending", index=True)
+    trigger_reason: str = Field(default="manual", index=True)
+    stage: str = Field(default="pending", index=True)
+    stage_label: str = Field(default="等待中")
+    provider: str = Field(default="codex_cli", index=True)
+    model: str = Field(default="", index=True)
+    sample_count: int = Field(default=0)
+    consumed_feedback_ids: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    changed_files: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    backup_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    result_text: str = Field(default="")
+    test_results: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None)
+    queue_task_id: Optional[str] = Field(default=None, index=True)
+    heartbeat_at: Optional[float] = Field(default=None, index=True)
+    started_at: Optional[float] = Field(default=None, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time, index=True)
     updated_at: float = Field(default_factory=time.time)
 
 
@@ -459,40 +588,6 @@ class AttendanceAccountAsset(SQLModel, table=True):
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-
-class AttendanceTemplateAsset(SQLModel, table=True):
-    __tablename__ = "attendancetemplateasset"
-    __table_args__ = {"extend_existing": True}
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    provider: str = Field(default="wjx", index=True)
-    name: str = Field(index=True)
-    activity_id: str = Field(index=True)
-    is_active: bool = Field(default=True, index=True)
-    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
-    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
-    created_at: float = Field(default_factory=time.time)
-    updated_at: float = Field(default_factory=time.time)
-
-
-class AttendanceRun(SQLModel, table=True):
-    __tablename__ = "attendancerun"
-    __table_args__ = {"extend_existing": True}
-
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    template_id: str = Field(default="", index=True)
-    account_id: str = Field(default="", index=True)
-    execution_device_entry_id: str = Field(default="", index=True)
-    requested_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
-    action: str = Field(default="inspect", index=True)
-    status: str = Field(default="pending", index=True)
-    request_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    error_message: Optional[str] = Field(default=None)
-    created_at: float = Field(default_factory=time.time)
-    finished_at: Optional[float] = Field(default=None, index=True)
     updated_at: float = Field(default_factory=time.time)
 
 
@@ -671,8 +766,8 @@ class NoteNode(SQLModel, table=True):
     # Operation logs: list of {"ts": int, "f": str, "v": any}
     history: List[dict] = Field(default=[], sa_column=Column(JSON))
 
-    # Custom attributes: dictionary of key-value pairs
-    custom_fields: dict = Field(default={}, sa_column=Column(JSON))
+    # Custom attributes: currently stored as list rows [key, type, value], with legacy dict rows tolerated.
+    custom_fields: Any = Field(default_factory=list, sa_column=Column(JSON))
 
 class NoteEdge(SQLModel, table=True):
     """

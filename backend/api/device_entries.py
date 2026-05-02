@@ -1,3 +1,4 @@
+import hashlib
 import shlex
 import subprocess
 import sys
@@ -5,6 +6,7 @@ import threading
 import time
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -82,13 +84,24 @@ from backend.core.ai_chat import OllamaClientError
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.codex_sessions import (
+    annotate_codex_daily_summary_source,
     build_codex_daily_summary,
     build_codex_overview,
     build_codex_thread_detail,
     build_codex_thread_message_images,
     build_codex_workload,
+    cache_remote_codex_overview,
+    cache_remote_codex_thread_detail,
+    cache_remote_codex_workload,
+    collect_cached_codex_daily_summary_source,
+    collect_codex_daily_summary_source,
     get_codex_daily_summary_latest_run,
+    get_codex_daily_summary_latest_run_by_root_key,
     get_codex_daily_summary_run,
+    merge_codex_daily_summary_sources,
+    paginate_codex_overview_payload,
+    resolve_codex_daily_summary_epoch_range,
+    serialize_codex_daily_summary_run,
     start_codex_daily_summary_run,
 )
 from backend.core.device import BaseDevice, device_manager, get_device_id
@@ -111,7 +124,7 @@ from backend.core.git_tools import (
 )
 from backend.db import get_session
 from backend.db import engine
-from backend.models import DeviceFile
+from backend.models import CodexDailySummaryRun, CodexTextCacheTurn, DeviceFile
 from backend.models import GitReductionRun
 from backend.models import Task as TaskModel
 from backend.models import User, UserDevice
@@ -121,6 +134,13 @@ MEDIA_STREAM_TOKEN_SCOPE = "device-media-stream"
 MEDIA_STREAM_TOKEN_EXPIRE_HOURS = 12
 _GIT_REDUCTION_RUN_STATE: Dict[str, Dict[str, Any]] = {}
 _GIT_REDUCTION_RUN_STATE_LOCK = threading.Lock()
+
+
+class CodexDailySummaryMultiRunRequest(BaseModel):
+    entry_ids: List[str] = Field(default_factory=list)
+    date: str
+    model: Optional[str] = None
+    force: bool = False
 
 
 def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
@@ -1689,18 +1709,38 @@ def generate_and_commit_git_for_entry(
 def get_codex_overview_for_entry(
     entry_id: str,
     root_dir: str | None = Query(default=None),
+    thread_offset: int = Query(default=0, ge=0),
+    thread_limit: int | None = Query(default=None, ge=1, le=2000),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         try:
-            return build_codex_overview(root_dir, session=session)
+            return build_codex_overview(
+                root_dir,
+                session=session,
+                thread_offset=thread_offset,
+                thread_limit=thread_limit,
+            )
         except Exception as exc:  # pragma: no cover - translated for HTTP callers
             _raise_codex_http_error(exc)
 
-    params = {"root_dir": root_dir} if root_dir else None
-    return _proxy_request(entry, "GET", "/codex/overview", params=params)
+    params = {
+        **({"root_dir": root_dir} if root_dir else {}),
+        **({"thread_offset": thread_offset} if thread_offset else {}),
+        **({"thread_limit": thread_limit} if thread_limit is not None else {}),
+    } or None
+    payload, error_response = _fetch_remote_json(entry, "GET", "/codex/overview", params=params, timeout=20)
+    if error_response is not None:
+        return _proxy_response(error_response)
+    try:
+        cache_remote_codex_overview(entry.entry_id, payload, session=session)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
+    if "thread_offset" in payload:
+        return payload
+    return paginate_codex_overview_payload(payload, thread_offset=thread_offset, thread_limit=thread_limit)
 
 
 @router.get("/{entry_id}/codex/threads/{thread_id}")
@@ -1719,7 +1759,14 @@ def get_codex_thread_detail_for_entry(
             _raise_codex_http_error(exc)
 
     params = {"root_dir": root_dir} if root_dir else None
-    return _proxy_request(entry, "GET", f"/codex/threads/{thread_id}", params=params)
+    payload, error_response = _fetch_remote_json(entry, "GET", f"/codex/threads/{thread_id}", params=params, timeout=20)
+    if error_response is not None:
+        return _proxy_response(error_response)
+    try:
+        cache_remote_codex_thread_detail(entry.entry_id, payload, session=session)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
+    return payload
 
 
 @router.get("/{entry_id}/codex/threads/{thread_id}/messages/{message_seq}/images")
@@ -1757,7 +1804,265 @@ def get_codex_workload_for_entry(
             _raise_codex_http_error(exc)
 
     params = {"root_dir": root_dir} if root_dir else None
-    return _proxy_request(entry, "GET", "/codex/workload", params=params)
+    payload, error_response = _fetch_remote_json(entry, "GET", "/codex/workload", params=params, timeout=20)
+    if error_response is not None:
+        return _proxy_response(error_response)
+    try:
+        cache_remote_codex_workload(entry.entry_id, payload, session=session)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
+    return payload
+
+
+def _parse_daily_summary_entry_ids(entry_ids: str | None) -> list[str]:
+    ids: list[str] = []
+    seen: set[str] = set()
+    for part in str(entry_ids or "").split(","):
+        entry_id = part.strip()
+        if not entry_id or entry_id in seen:
+            continue
+        ids.append(entry_id)
+        seen.add(entry_id)
+    return ids
+
+
+def _get_daily_summary_entries(
+    session: Session,
+    current_user: User,
+    entry_ids: list[str],
+) -> list[UserDevice]:
+    if not entry_ids:
+        raise HTTPException(status_code=400, detail="请选择至少一个设备")
+
+    rows = session.exec(
+        select(UserDevice).where(
+            UserDevice.user_id == current_user.id,
+            UserDevice.entry_id.in_(entry_ids),
+            UserDevice.is_active == True,  # noqa: E712
+        )
+    ).all()
+    row_map = {row.entry_id: row for row in rows}
+    missing_ids = [entry_id for entry_id in entry_ids if entry_id not in row_map]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"设备不存在或不可用：{', '.join(missing_ids)}")
+    return [row_map[entry_id] for entry_id in entry_ids]
+
+
+def _daily_summary_entry_label(entry: UserDevice | dict[str, Any]) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("name") or entry.get("device_id") or entry.get("entry_id") or "").strip()
+    return str(entry.name or entry.device_id or entry.entry_id).strip()
+
+
+def _snapshot_daily_summary_entries(entries: list[UserDevice]) -> list[dict[str, Any]]:
+    return [
+        {
+            "entry_id": entry.entry_id,
+            "user_id": entry.user_id,
+            "device_id": entry.device_id,
+            "name": _daily_summary_entry_label(entry),
+            "mode": entry.mode,
+            "server_url": entry.server_url,
+            "token": entry.token,
+        }
+        for entry in entries
+    ]
+
+
+def _build_multi_daily_summary_identity(entry_specs: list[dict[str, Any]]) -> tuple[str, dict[str, str]]:
+    entry_ids = [str(entry["entry_id"]) for entry in entry_specs]
+    digest = hashlib.sha1(",".join(entry_ids).encode("utf-8")).hexdigest()[:12]
+    root_dir = f"{len(entry_ids)} 台设备各自默认 .codex"
+    return (
+        f"entries:{','.join(entry_ids)}",
+        {
+            "root_key": f"device-entries:{digest}:default-codex",
+            "root_dir": root_dir,
+            "default_root_dir": "",
+        },
+    )
+
+
+def _collect_remote_entry_daily_summary_source(
+    entry_spec: dict[str, Any],
+    target_date_text: str,
+    *,
+    user_id: int | None,
+    session: Session,
+) -> dict[str, Any]:
+    remote_entry = SimpleNamespace(**entry_spec)
+    workload_payload, workload_error = _fetch_remote_json(remote_entry, "GET", "/codex/workload", timeout=20)
+    if workload_error is not None:
+        _raise_remote_json_error(workload_error)
+    if not isinstance(workload_payload, dict):
+        raise HTTPException(status_code=502, detail="远端 Codex workload 返回格式不正确")
+
+    try:
+        cache_info = cache_remote_codex_workload(entry_spec["entry_id"], workload_payload, session=session)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
+
+    root_key = str(cache_info["root_key"])
+    _, day_start_at, day_end_at = resolve_codex_daily_summary_epoch_range(target_date_text)
+    thread_ids = sorted(
+        {
+            str(thread_id)
+            for thread_id in session.exec(
+                select(CodexTextCacheTurn.thread_id)
+                .where(
+                    CodexTextCacheTurn.root_key == root_key,
+                    CodexTextCacheTurn.end_at > day_start_at,
+                    CodexTextCacheTurn.start_at < day_end_at,
+                )
+            ).all()
+            if str(thread_id or "").strip()
+        }
+    )
+
+    for thread_id in thread_ids:
+        detail_payload, detail_error = _fetch_remote_json(
+            remote_entry,
+            "GET",
+            f"/codex/threads/{thread_id}",
+            timeout=20,
+        )
+        if detail_error is not None:
+            _raise_remote_json_error(detail_error)
+        if not isinstance(detail_payload, dict):
+            raise HTTPException(status_code=502, detail=f"远端 Codex 会话 {thread_id} 返回格式不正确")
+        try:
+            cache_remote_codex_thread_detail(entry_spec["entry_id"], detail_payload, session=session)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"写入远端 Codex 会话缓存失败：{exc}") from exc
+
+    return collect_cached_codex_daily_summary_source(
+        root_key,
+        target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+def _collect_multi_daily_summary_source(
+    entry_specs: list[dict[str, Any]],
+    root_identity: dict[str, str],
+    target_date_text: str,
+    *,
+    user_id: int | None,
+    session: Session,
+) -> dict[str, Any]:
+    sources: list[dict[str, Any]] = []
+    for entry_spec in entry_specs:
+        if entry_spec["mode"] == "local":
+            local_entry = UserDevice(**entry_spec)
+            _ensure_local_entry(local_entry)
+            source = collect_codex_daily_summary_source(
+                None,
+                target_date_text,
+                user_id=user_id,
+                session=session,
+            )
+        else:
+            source = _collect_remote_entry_daily_summary_source(
+                entry_spec,
+                target_date_text,
+                user_id=user_id,
+                session=session,
+            )
+
+        sources.append(
+            annotate_codex_daily_summary_source(
+                source,
+                source_entry_id=str(entry_spec["entry_id"]),
+                source_device_name=_daily_summary_entry_label(entry_spec),
+            )
+        )
+
+    return merge_codex_daily_summary_sources(
+        sources,
+        root_key=root_identity["root_key"],
+        root_dir=root_identity["root_dir"],
+        target_date_text=target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+@router.get("/codex/daily-summary/latest", response_model=CodexDailySummaryRunRead)
+def get_latest_codex_daily_summary_for_entries(
+    entry_ids: str = Query(default=""),
+    date: str = Query(default=""),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entries = _get_daily_summary_entries(
+        session,
+        current_user,
+        _parse_daily_summary_entry_ids(entry_ids),
+    )
+    entry_specs = _snapshot_daily_summary_entries(entries)
+    scope_key, root_identity = _build_multi_daily_summary_identity(entry_specs)
+    try:
+        return get_codex_daily_summary_latest_run_by_root_key(
+            scope_key,
+            root_identity["root_key"],
+            date,
+            session=session,
+        )
+    except Exception as exc:  # pragma: no cover - translated for HTTP callers
+        _raise_codex_http_error(exc)
+
+
+@router.post("/codex/daily-summary/runs", response_model=CodexDailySummaryRunRead)
+def create_codex_daily_summary_run_for_entries(
+    req: CodexDailySummaryMultiRunRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entries = _get_daily_summary_entries(session, current_user, list(req.entry_ids or []))
+    entry_specs = _snapshot_daily_summary_entries(entries)
+    scope_key, root_identity = _build_multi_daily_summary_identity(entry_specs)
+    user_id = current_user.id
+
+    def source_loader(active_session: Session) -> dict[str, Any]:
+        return _collect_multi_daily_summary_source(
+            entry_specs,
+            root_identity,
+            req.date,
+            user_id=user_id,
+            session=active_session,
+        )
+
+    try:
+        return start_codex_daily_summary_run(
+            scope_key,
+            None,
+            req.date,
+            model=req.model,
+            user_id=user_id,
+            force=req.force,
+            session=session,
+            root_identity=root_identity,
+            source_loader=source_loader,
+        )
+    except Exception as exc:  # pragma: no cover - translated for HTTP callers
+        _raise_codex_http_error(exc)
+
+
+@router.get("/codex/daily-summary/runs/{run_id}", response_model=CodexDailySummaryRunRead)
+def get_codex_daily_summary_run_for_entries(
+    run_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    run = session.get(CodexDailySummaryRun, run_id)
+    if (
+        run is None
+        or str(run.scope_key or "").split(":", 1)[0] != "entries"
+        or (run.user_id is not None and run.user_id != current_user.id)
+    ):
+        raise HTTPException(status_code=404, detail="Codex daily summary run not found")
+    return serialize_codex_daily_summary_run(run)
 
 
 @router.post("/{entry_id}/codex/daily-summary/generate")

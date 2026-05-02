@@ -1,12 +1,27 @@
 import html
+import hashlib
 import json
+import threading
 from typing import Any, List, Optional, Tuple
 import re
+from datetime import datetime
+from types import SimpleNamespace
+import requests
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlmodel import Session, select, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
-from backend.models import AppSetting, NoteNode, NoteEdge, User
+from backend.models import (
+    AppSetting,
+    CodexDiaryImportRun,
+    CodexTextCacheTurn,
+    NoteMetadataFeedbackOptimizationRun,
+    NoteNode,
+    NoteEdge,
+    User,
+    UserDevice,
+)
 from backend.schemas import (
     NoteCreate,
     NoteRead,
@@ -28,7 +43,14 @@ from backend.schemas import (
     AiNoteCategorizeRequest,
     AiNoteCategorizeResponse,
 )
-from backend.core.ai_chat import OllamaClientError, chat_with_provider, get_default_ai_provider_id
+from backend.core.ai_chat import (
+    CODEX_CLI_DEFAULT_COMMAND,
+    CODEX_CLI_DEFAULT_MODEL,
+    AiProviderConfig,
+    OllamaClientError,
+    chat_with_provider,
+    get_default_ai_provider_id,
+)
 from backend.core.ai_chat_user_config import (
     AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
@@ -36,6 +58,16 @@ from backend.core.ai_chat_user_config import (
 )
 from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
 from backend.core.auth import get_current_active_user
+from backend.core.codex_sessions import (
+    annotate_codex_daily_summary_source,
+    cache_remote_codex_thread_detail,
+    cache_remote_codex_workload,
+    collect_cached_codex_daily_summary_source,
+    collect_codex_daily_summary_source,
+    merge_codex_daily_summary_sources,
+    resolve_codex_daily_summary_epoch_range,
+)
+from backend.core.device import get_device_id
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
@@ -69,6 +101,13 @@ from backend.core.note_progress import (
     is_note_system_custom_field_key,
     normalize_completion_progress_expr,
     set_completion_progress_expr,
+)
+from backend.core.note_metadata_feedback import (
+    create_note_metadata_feedback_optimization_run,
+    get_note_metadata_feedback_status,
+    record_note_metadata_feedback_for_created_note,
+    record_note_metadata_feedback_for_update,
+    serialize_note_metadata_feedback_optimization_run,
 )
 from backend.core.note_walker import NoteGraphContext, NoteWalker
 import time
@@ -109,6 +148,1261 @@ NOTE_AI_HTML_BREAK_RE = re.compile(r"</?(?:p|div|li|tr|h[1-6]|blockquote)\b[^>]*
 NOTE_AI_HTML_TAG_RE = re.compile(r"<[^>]+>")
 NOTE_AI_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
+CODEX_DIARY_PROVIDER_ID = "codex-diary-import"
+CODEX_DIARY_TIMEOUT_SECONDS = 900.0
+CODEX_DIARY_PROMPT_VERSION = "2026-05-02.codex-cli-diary-draft-v1"
+CODEX_DIARY_RUN_ID_FIELD = "__codex_diary_run_id"
+CODEX_DIARY_DATE_FIELD = "__codex_diary_date"
+CODEX_DIARY_SCOPE_FIELD = "__codex_diary_scope_key"
+CODEX_DIARY_BLOCK_FIELD = "__codex_diary_block_key"
+CODEX_DIARY_SOURCE_THREADS_FIELD = "__codex_source_thread_ids"
+CODEX_DIARY_TARGET_SECONDS = 3600
+CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
+CODEX_DIARY_RESULT_KEYWORDS = (
+    "已",
+    "完成",
+    "实现",
+    "修复",
+    "新增",
+    "优化",
+    "调整",
+    "确认",
+    "定位",
+    "改为",
+    "补充",
+    "接入",
+    "支持",
+    "清理",
+    "验证",
+    "生成",
+    "保留",
+    "避免",
+    "解决",
+)
+CODEX_DIARY_DIALOGUE_PREFIXES = (
+    "我先",
+    "我会",
+    "我已经",
+    "已开始",
+    "正在",
+    "可以去",
+    "你可以",
+    "你确定",
+    "是不是",
+    "是的",
+    "可以",
+    "好的",
+    "对",
+    "没错",
+    "已改完",
+    "已经改完",
+    "已经删了",
+    "已删除",
+)
+CODEX_DIARY_TITLE_BAD_VALUES = {
+    "是的",
+    "可以",
+    "好的",
+    "对",
+    "没错",
+    "已改完",
+    "已经改完",
+    "已经删了",
+    "已删除",
+}
+CODEX_DIARY_TITLE_KEYWORDS = (
+    "接口",
+    "流程",
+    "菜单",
+    "入口",
+    "列表",
+    "视图",
+    "页面",
+    "表格",
+    "字段",
+    "目录",
+    "缓存",
+    "链接",
+    "分页",
+    "权限",
+    "配置",
+    "数据",
+    "节点",
+    "功能",
+    "清单",
+    "明细",
+    "时间线",
+    "退款",
+    "问卷",
+    "课程",
+    "设备",
+    "Codex",
+    "CodeYun",
+    "星云",
+)
+CODEX_DIARY_ITEM_NUMBER_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*"
+)
+CODEX_DIARY_HTML_LI_NUMBER_PREFIX_RE = re.compile(
+    r"(<li\b[^>]*>\s*(?:<(?:span|p|strong|b|code)\b[^>]*>\s*)*)"
+    r"(?:(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*)+",
+    re.IGNORECASE,
+)
+
+
+class CodexDiaryImportRunRequest(BaseModel):
+    date: str
+    entry_ids: List[str] = Field(default_factory=list)
+    confirm_duplicate: bool = False
+
+
+class CodexDiaryImportRunRead(BaseModel):
+    id: str
+    date: str
+    timezone: str
+    scope_key: str
+    entry_ids: List[str] = Field(default_factory=list)
+    entry_snapshot: List[dict[str, Any]] = Field(default_factory=list)
+    confirm_duplicate: bool = False
+    status: str
+    stage: str
+    stage_label: str
+    source_thread_count: int = 0
+    source_turn_count: int = 0
+    source_user_message_count: int = 0
+    source_assistant_message_count: int = 0
+    created_note_count: int = 0
+    created_note_ids: List[str] = Field(default_factory=list)
+    duplicate_note_ids: List[str] = Field(default_factory=list)
+    error_message: Optional[str] = None
+    result: Optional[dict[str, Any]] = None
+    created_notes: List[dict[str, Any]] = Field(default_factory=list)
+    heartbeat_at: Optional[float] = None
+    created_at: float
+    finished_at: Optional[float] = None
+    updated_at: float
+
+
+class NoteMetadataFeedbackOptimizationRunRequest(BaseModel):
+    trigger_reason: str = "manual"
+
+
+def _build_default_codex_diary_provider() -> AiProviderConfig:
+    return AiProviderConfig(
+        id=CODEX_DIARY_PROVIDER_ID,
+        label="Codex CLI",
+        kind="codex_cli",
+        base_url=CODEX_CLI_DEFAULT_COMMAND,
+        default_model=CODEX_CLI_DEFAULT_MODEL,
+        timeout_seconds=CODEX_DIARY_TIMEOUT_SECONDS,
+        api_key="",
+        supports_stream=False,
+        supports_vision=False,
+        requires_api_key=False,
+        configured=True,
+        models=(CODEX_CLI_DEFAULT_MODEL,),
+        is_custom=False,
+    )
+
+
+def _parse_codex_diary_date(value: str) -> tuple[str, float, float]:
+    try:
+        normalized_date, day_start_at, day_end_at = resolve_codex_daily_summary_epoch_range(value)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="日期格式应为 YYYY-MM-DD") from exc
+    return normalized_date, float(day_start_at), float(day_end_at)
+
+
+def _codex_diary_entry_label(entry: UserDevice | dict[str, Any]) -> str:
+    if isinstance(entry, dict):
+        return str(entry.get("name") or entry.get("device_id") or entry.get("entry_id") or "").strip()
+    return str(entry.name or entry.device_id or entry.entry_id).strip()
+
+
+def _get_codex_diary_entries(
+    session: Session,
+    current_user: User,
+    entry_ids: List[str] | None,
+) -> list[UserDevice]:
+    normalized_ids = [
+        str(entry_id or "").strip()
+        for entry_id in (entry_ids or [])
+        if str(entry_id or "").strip()
+    ]
+    if not normalized_ids:
+        return session.exec(
+            select(UserDevice)
+            .where(
+                UserDevice.user_id == current_user.id,
+                UserDevice.is_active == True,  # noqa: E712
+            )
+            .order_by(UserDevice.order_index, UserDevice.created_at, UserDevice.entry_id)
+        ).all()
+
+    rows = session.exec(
+        select(UserDevice).where(
+            UserDevice.user_id == current_user.id,
+            UserDevice.entry_id.in_(normalized_ids),
+            UserDevice.is_active == True,  # noqa: E712
+        )
+    ).all()
+    row_map = {row.entry_id: row for row in rows}
+    missing_ids = [entry_id for entry_id in normalized_ids if entry_id not in row_map]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"设备不存在或不可用：{', '.join(missing_ids)}")
+    return [row_map[entry_id] for entry_id in normalized_ids]
+
+
+def _ensure_codex_diary_local_entry(entry: UserDevice) -> None:
+    if entry.mode != "local":
+        raise HTTPException(status_code=400, detail="This entry is not a local entry")
+    if entry.device_id != get_device_id():
+        raise HTTPException(status_code=409, detail="Local entry device_id does not match current node")
+
+
+def _snapshot_codex_diary_entries(entries: list[UserDevice]) -> list[dict[str, Any]]:
+    return [
+        {
+            "entry_id": entry.entry_id,
+            "user_id": entry.user_id,
+            "device_id": entry.device_id,
+            "name": _codex_diary_entry_label(entry),
+            "mode": entry.mode,
+            "server_url": entry.server_url,
+            "token": entry.token,
+        }
+        for entry in entries
+    ]
+
+
+def _build_codex_diary_scope_identity(entry_specs: list[dict[str, Any]]) -> tuple[str, dict[str, str]]:
+    entry_ids = [str(entry["entry_id"]) for entry in entry_specs]
+    digest = hashlib.sha1(",".join(sorted(entry_ids)).encode("utf-8")).hexdigest()[:12]
+    return (
+        f"entries:{digest}",
+        {
+            "root_key": f"codex-diary:{digest}:default-codex",
+            "root_dir": f"{len(entry_ids)} 台设备各自默认 .codex",
+        },
+    )
+
+
+def _remote_codex_base_url(entry: UserDevice | SimpleNamespace) -> str:
+    if entry.mode != "remote":
+        raise HTTPException(status_code=400, detail="This entry is not a remote entry")
+    if not entry.server_url:
+        raise HTTPException(status_code=400, detail="Remote entry has no server_url configured")
+    return str(entry.server_url).rstrip("/")
+
+
+def _remote_codex_headers(entry: UserDevice | SimpleNamespace) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {entry.token}",
+        "X-Device-Token": str(entry.token),
+    }
+
+
+def _fetch_remote_codex_json(
+    entry: UserDevice | SimpleNamespace,
+    method: str,
+    path: str,
+    *,
+    timeout: int = 20,
+) -> dict[str, Any] | list[Any]:
+    target_url = f"{_remote_codex_base_url(entry)}/api{path}"
+    try:
+        resp = requests.request(
+            method=method,
+            url=target_url,
+            headers=_remote_codex_headers(entry),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"连接远端设备失败：{exc}") from exc
+
+    if resp.status_code >= 400:
+        detail = None
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = None
+        if isinstance(payload, dict):
+            raw_detail = payload.get("detail") or payload.get("message") or payload.get("error")
+            if isinstance(raw_detail, str) and raw_detail.strip():
+                detail = raw_detail.strip()
+        raise HTTPException(
+            status_code=resp.status_code,
+            detail=detail or resp.text.strip() or f"远端请求失败：HTTP {resp.status_code}",
+        )
+
+    content_type = resp.headers.get("content-type", "")
+    if "application/json" not in content_type.lower():
+        raise HTTPException(status_code=502, detail="远端设备返回的不是 JSON 数据")
+    return resp.json()
+
+
+def _collect_remote_codex_diary_source(
+    entry_spec: dict[str, Any],
+    target_date_text: str,
+    *,
+    user_id: int | None,
+    session: Session,
+) -> dict[str, Any]:
+    remote_entry = SimpleNamespace(**entry_spec)
+    workload_payload = _fetch_remote_codex_json(remote_entry, "GET", "/codex/workload", timeout=20)
+    if not isinstance(workload_payload, dict):
+        raise HTTPException(status_code=502, detail="远端 Codex workload 返回格式不正确")
+
+    cache_info = cache_remote_codex_workload(entry_spec["entry_id"], workload_payload, session=session)
+    root_key = str(cache_info["root_key"])
+    _, day_start_at, day_end_at = resolve_codex_daily_summary_epoch_range(target_date_text)
+    thread_ids = sorted(
+        {
+            str(thread_id)
+            for thread_id in session.exec(
+                select(CodexTextCacheTurn.thread_id)
+                .where(
+                    CodexTextCacheTurn.root_key == root_key,
+                    CodexTextCacheTurn.end_at > day_start_at,
+                    CodexTextCacheTurn.start_at < day_end_at,
+                )
+            ).all()
+            if str(thread_id or "").strip()
+        }
+    )
+
+    for thread_id in thread_ids:
+        detail_payload = _fetch_remote_codex_json(
+            remote_entry,
+            "GET",
+            f"/codex/threads/{thread_id}",
+            timeout=20,
+        )
+        if not isinstance(detail_payload, dict):
+            raise HTTPException(status_code=502, detail=f"远端 Codex 会话 {thread_id} 返回格式不正确")
+        cache_remote_codex_thread_detail(entry_spec["entry_id"], detail_payload, session=session)
+
+    return collect_cached_codex_daily_summary_source(
+        root_key,
+        target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+def _collect_codex_diary_source(
+    entry_specs: list[dict[str, Any]],
+    root_identity: dict[str, str],
+    target_date_text: str,
+    *,
+    user_id: int | None,
+    session: Session,
+) -> dict[str, Any]:
+    sources: list[dict[str, Any]] = []
+    for entry_spec in entry_specs:
+        if entry_spec["mode"] == "local":
+            local_entry = UserDevice(**entry_spec)
+            _ensure_codex_diary_local_entry(local_entry)
+            source = collect_codex_daily_summary_source(
+                None,
+                target_date_text,
+                user_id=user_id,
+                session=session,
+            )
+        else:
+            source = _collect_remote_codex_diary_source(
+                entry_spec,
+                target_date_text,
+                user_id=user_id,
+                session=session,
+            )
+
+        sources.append(
+            annotate_codex_daily_summary_source(
+                source,
+                source_entry_id=str(entry_spec["entry_id"]),
+                source_device_name=_codex_diary_entry_label(entry_spec),
+            )
+        )
+
+    return merge_codex_daily_summary_sources(
+        sources,
+        root_key=root_identity["root_key"],
+        root_dir=root_identity["root_dir"],
+        target_date_text=target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+def _get_custom_field_value(custom_fields: Any, key: str) -> Any:
+    if isinstance(custom_fields, dict):
+        return custom_fields.get(key)
+    if isinstance(custom_fields, list):
+        for item in custom_fields:
+            if isinstance(item, (list, tuple)) and len(item) >= 3 and item[0] == key:
+                return item[2]
+            if isinstance(item, dict) and item.get("key") == key:
+                return item.get("value")
+    return None
+
+
+def _find_existing_codex_diary_notes(
+    session: Session,
+    *,
+    user_id: int,
+    diary_date: str,
+    scope_key: str,
+    day_start_at: float,
+    day_end_at: float,
+) -> list[str]:
+    rows = session.exec(
+        select(NoteNode)
+        .where(
+            NoteNode.user_id == user_id,
+            NoteNode.start_at >= day_start_at,
+            NoteNode.start_at < day_end_at,
+        )
+        .order_by(NoteNode.start_at, NoteNode.created_at)
+    ).all()
+    duplicate_ids: list[str] = []
+    for note in rows:
+        if _get_custom_field_value(note.custom_fields, CODEX_DIARY_DATE_FIELD) != diary_date:
+            continue
+        if _get_custom_field_value(note.custom_fields, CODEX_DIARY_SCOPE_FIELD) != scope_key:
+            continue
+        if note.id:
+            duplicate_ids.append(str(note.id))
+    return duplicate_ids
+
+
+def _serialize_codex_diary_import_run(
+    run: CodexDiaryImportRun,
+    *,
+    current_user: User,
+    session: Session,
+) -> dict[str, Any]:
+    created_notes: list[dict[str, Any]] = []
+    for note_id in run.created_note_ids or []:
+        note = session.get(NoteNode, note_id)
+        if note and note.user_id == current_user.id:
+            created_notes.append(_serialize_note_read(note, current_user))
+    return {
+        "id": run.id,
+        "date": run.diary_date,
+        "timezone": run.timezone,
+        "scope_key": run.scope_key,
+        "entry_ids": list(run.entry_ids or []),
+        "entry_snapshot": list(run.entry_snapshot or []),
+        "confirm_duplicate": bool(run.confirm_duplicate),
+        "status": run.status,
+        "stage": run.stage,
+        "stage_label": run.stage_label,
+        "source_thread_count": int(run.source_thread_count or 0),
+        "source_turn_count": int(run.source_turn_count or 0),
+        "source_user_message_count": int(run.source_user_message_count or 0),
+        "source_assistant_message_count": int(run.source_assistant_message_count or 0),
+        "created_note_count": int(run.created_note_count or 0),
+        "created_note_ids": list(run.created_note_ids or []),
+        "duplicate_note_ids": list(run.duplicate_note_ids or []),
+        "error_message": run.error_message,
+        "result": run.result_json or None,
+        "created_notes": created_notes,
+        "heartbeat_at": run.heartbeat_at,
+        "created_at": run.created_at,
+        "finished_at": run.finished_at,
+        "updated_at": run.updated_at,
+    }
+
+
+def _touch_codex_diary_run(
+    session: Session,
+    run: CodexDiaryImportRun,
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    stage_label: str | None = None,
+) -> None:
+    now = time.time()
+    if status is not None:
+        run.status = status
+    if stage is not None:
+        run.stage = stage
+    if stage_label is not None:
+        run.stage_label = stage_label
+    run.heartbeat_at = now
+    run.updated_at = now
+    session.add(run)
+    session.commit()
+
+
+def _normalize_project_palette_token(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", "", text)
+    text = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", text)
+    return text
+
+
+def _collect_project_palette_candidates(*values: Any) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        trimmed = str(value or "").strip()
+        if not trimmed or trimmed in seen:
+            return
+        seen.add(trimmed)
+        candidates.append(trimmed)
+
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        add(text)
+        for part in re.split(r"[|·/\\>＞:：／]+", text):
+            add(part)
+    return candidates
+
+
+def _build_codex_diary_category_lookup(user_id: int, session: Session) -> dict[str, dict[str, Any]]:
+    palette_items = _build_note_type_palette_response(user_id, session).get("items", [])
+    lookup: dict[str, dict[str, Any]] = {}
+    for item in palette_items:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if not key:
+            continue
+        for token in _collect_project_palette_candidates(key, label, key.removeprefix("custom_")):
+            normalized = _normalize_project_palette_token(token)
+            if normalized and normalized not in lookup:
+                lookup[normalized] = item
+    return lookup
+
+
+def _build_codex_diary_note_title_hints(user_id: int, session: Session) -> dict[str, str]:
+    rows = session.exec(
+        select(NoteNode)
+        .where(NoteNode.user_id == user_id)
+        .order_by(NoteNode.updated_at.desc())
+        .limit(5000)
+    ).all()
+    hints: dict[str, str] = {}
+    for note in rows:
+        category_key = str(note.primary_category or "").strip()
+        if not category_key:
+            normalized_categories = normalize_note_categories(note.note_categories, fallback_category=NOTE_CATEGORY_DEFAULT)
+            category_key = str(derive_primary_category(normalized_categories, NOTE_CATEGORY_DEFAULT) or "").strip()
+        if not category_key:
+            continue
+        for token in _collect_project_palette_candidates(note.title):
+            normalized = _normalize_project_palette_token(token)
+            if normalized and normalized not in hints:
+                hints[normalized] = category_key
+    return hints
+
+
+def _resolve_codex_diary_category(
+    turn: dict[str, Any],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+    title_hints: dict[str, str],
+) -> dict[str, Any]:
+    candidates = _collect_project_palette_candidates(
+        turn.get("project_label"),
+        turn.get("thread_title"),
+        turn.get("source_root_dir"),
+    )
+    for candidate in candidates:
+        item = palette_lookup.get(_normalize_project_palette_token(candidate))
+        if item:
+            return {
+                "key": str(item.get("key") or NOTE_CATEGORY_DEFAULT),
+                "label": str(item.get("label") or item.get("key") or "综合"),
+                "color": item.get("color"),
+            }
+    for candidate in candidates:
+        normalized_candidate = _normalize_project_palette_token(candidate)
+        if len(normalized_candidate) < 3:
+            continue
+        scores: dict[str, int] = {}
+        for hint_title, category_key in title_hints.items():
+            if normalized_candidate and normalized_candidate in hint_title:
+                scores[category_key] = scores.get(category_key, 0) + (3 if hint_title.startswith(normalized_candidate) else 1)
+        if scores:
+            best_key = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[0][0]
+            return {"key": best_key, "label": best_key, "color": None}
+    return {"key": NOTE_CATEGORY_DEFAULT, "label": "综合", "color": None}
+
+
+def _codex_diary_turn_duration_seconds(turn: dict[str, Any]) -> float:
+    try:
+        start_at = float(turn.get("start_at") or 0)
+        end_at = float(turn.get("end_at") or 0)
+    except (TypeError, ValueError):
+        return 60.0
+    return max(60.0, end_at - start_at)
+
+
+def _format_codex_diary_time(timestamp: float) -> str:
+    return datetime.fromtimestamp(float(timestamp)).strftime("%H:%M")
+
+
+def _truncate_codex_diary_text(value: Any, limit: int, *, suffix: str = "…") -> str:
+    text = NOTE_AI_WHITESPACE_RE.sub(" ", str(value or "").strip())
+    if len(text) <= limit:
+        return text
+    if not suffix:
+        return text[:limit].rstrip()
+    return text[: max(0, limit - len(suffix))].rstrip() + suffix
+
+
+def _format_codex_diary_inline_html(value: Any) -> str:
+    text = _truncate_codex_diary_text(value, 220, suffix="")
+    escaped = html.escape(text)
+    escaped = re.sub(
+        r"([A-Za-z]:\\[^，。；\s<]+|/[^\s，。；<]+)",
+        r"<code>\1</code>",
+        escaped,
+    )
+    for keyword in ("接口", "缓存", "风险", "错误", "失败", "阻塞", "完成"):
+        escaped = escaped.replace(keyword, f"<strong>{keyword}</strong>")
+    return escaped
+
+
+def _clean_codex_diary_summary_text(value: Any) -> str:
+    text = html.unescape(str(value or "")).replace("\xa0", " ")
+    text = NOTE_AI_HTML_TAG_RE.sub(" ", text)
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"^[#>*\-\s]+", "", text)
+    text = NOTE_AI_WHITESPACE_RE.sub(" ", text).strip()
+    return text
+
+
+def _normalize_codex_diary_compare_text(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).strip()
+
+
+def _is_codex_diary_dialogue_sentence(sentence: str, user_requests: list[str]) -> bool:
+    text = sentence.strip()
+    if not text:
+        return True
+    normalized = _normalize_codex_diary_compare_text(text)
+    if any(normalized == _normalize_codex_diary_compare_text(request) for request in user_requests if request):
+        return True
+    if any(text.startswith(prefix) for prefix in CODEX_DIARY_DIALOGUE_PREFIXES) and not any(keyword in text for keyword in CODEX_DIARY_RESULT_KEYWORDS):
+        return True
+    if ("？" in text or "?" in text) and not any(keyword in text for keyword in CODEX_DIARY_RESULT_KEYWORDS):
+        return True
+    return False
+
+
+def _score_codex_diary_summary_sentence(sentence: str) -> int:
+    score = sum(1 for keyword in CODEX_DIARY_RESULT_KEYWORDS if keyword in sentence)
+    if "。" in sentence or "；" in sentence:
+        score += 1
+    if len(sentence) > 140:
+        score -= 1
+    return score
+
+
+def _join_codex_diary_summary_sentences(sentences: list[str]) -> str:
+    parts = [sentence.strip().rstrip("。；;") for sentence in sentences if sentence.strip()]
+    return "；".join(part for part in parts if part)
+
+
+def _split_codex_diary_summary_sentences(value: Any, *, user_requests: list[str] | None = None) -> list[str]:
+    text = _clean_codex_diary_summary_text(value)
+    if not text:
+        return []
+    parts = re.split(r"(?<=[。！？!?；;])|[\r\n]+|(?:\s+-\s+)", text)
+    sentences: list[str] = []
+    seen: set[str] = set()
+    requests = user_requests or []
+    for part in parts:
+        sentence = part.strip(" \t\r\n-•，,；;")
+        if not sentence or sentence in seen:
+            continue
+        if _is_codex_diary_dialogue_sentence(sentence, requests):
+            continue
+        seen.add(sentence)
+        sentences.append(sentence)
+        if len(sentences) >= 6:
+            break
+    return sentences
+
+
+def _build_codex_diary_record_summary(records: list[dict[str, Any]]) -> str:
+    user_requests = [
+        str(record.get("user_request") or "").strip()
+        for record in records
+        if str(record.get("user_request") or "").strip()
+    ]
+    result_text = " ".join(
+        str(record.get("assistant_result") or "").strip()
+        for record in records
+        if str(record.get("assistant_result") or "").strip()
+    )
+    sentences = _split_codex_diary_summary_sentences(result_text, user_requests=user_requests)
+    if sentences:
+        result_sentences = [sentence for sentence in sentences if _score_codex_diary_summary_sentence(sentence) > 0]
+        selected = result_sentences[:2] or sentences[:2]
+        return _truncate_codex_diary_text(_join_codex_diary_summary_sentences(selected), 220, suffix="")
+
+    return "该事项已有 Codex 处理结果，细节可回到原会话查看。"
+
+
+def _build_codex_diary_entry_title(records: list[dict[str, Any]], summary: str) -> str:
+    phrase = re.split(r"[。！？!?；;，,]", _clean_codex_diary_summary_text(summary), maxsplit=1)[0]
+    phrase = phrase.strip(" ：:，,；;。")
+    if phrase and not _is_codex_diary_dialogue_sentence(phrase, [str(record.get("user_request") or "") for record in records]):
+        return _truncate_codex_diary_text(phrase, 32, suffix="")
+    for record in records:
+        candidate = _clean_codex_diary_summary_text(record.get("thread_title"))
+        if candidate and not _is_codex_diary_dialogue_sentence(candidate, [str(record.get("user_request") or "")]):
+            return _truncate_codex_diary_text(candidate, 32, suffix="")
+    return "Codex 事项"
+
+
+def _build_codex_diary_summary_entries(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: list[dict[str, Any]] = []
+    group_by_thread: dict[str, dict[str, Any]] = {}
+    for record in records:
+        thread_id = str(record.get("thread_id") or record.get("thread_title") or "").strip()
+        if not thread_id:
+            thread_id = f"record:{len(grouped)}"
+        group = group_by_thread.get(thread_id)
+        if group is None:
+            group = {
+                "thread_id": thread_id,
+                "title": _truncate_codex_diary_text(record.get("thread_title") or "Codex 事项", 48, suffix=""),
+                "records": [],
+                "start_at": float(record.get("start_at") or 0),
+                "end_at": float(record.get("end_at") or record.get("start_at") or 0),
+                "devices": set(),
+            }
+            group_by_thread[thread_id] = group
+            grouped.append(group)
+        group["records"].append(record)
+        group["start_at"] = min(float(group["start_at"] or 0), float(record.get("start_at") or 0))
+        group["end_at"] = max(float(group["end_at"] or 0), float(record.get("end_at") or record.get("start_at") or 0))
+        if record.get("source_device_name"):
+            group["devices"].add(str(record.get("source_device_name")))
+
+    entries: list[dict[str, Any]] = []
+    for group in grouped:
+        summary = _build_codex_diary_record_summary(group["records"])
+        entries.append(
+            {
+                "title": _build_codex_diary_entry_title(group["records"], summary),
+                "summary": summary,
+                "devices": sorted(group["devices"]),
+                "start_at": group["start_at"],
+                "end_at": group["end_at"],
+                "turn_count": len(group["records"]),
+            }
+        )
+    return entries
+
+
+def _build_codex_diary_title(block: dict[str, Any]) -> str:
+    records = block["records"]
+    title_parts: list[str] = []
+    seen: set[str] = set()
+    for entry in _build_codex_diary_summary_entries(records):
+        candidate = _truncate_codex_diary_text(entry.get("title"), 16, suffix="")
+        if candidate and candidate not in seen and candidate != "Codex 事项":
+            seen.add(candidate)
+            title_parts.append(candidate)
+        if len(title_parts) >= 2:
+            break
+    title = "、".join(title_parts) or "Codex 日记"
+    return _truncate_codex_diary_text(title, 32, suffix="") or "Codex 日记"
+
+
+def _extract_codex_diary_ai_json(raw_content: Any) -> dict[str, Any]:
+    content = str(raw_content or "").strip()
+    if not content:
+        raise ValueError("Codex CLI 没有返回可解析的日记草案")
+    if content.startswith("```"):
+        fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+        if fence_match:
+            content = fence_match.group(1).strip()
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        match = re.search(r"(\{.*\})", content, re.DOTALL)
+        if not match:
+            raise ValueError("Codex CLI 没有返回 JSON 对象")
+        parsed = json.loads(match.group(1))
+    if not isinstance(parsed, dict):
+        raise ValueError("Codex CLI 日记草案不是 JSON 对象")
+    return parsed
+
+
+def _strip_codex_diary_title_noise(value: Any) -> str:
+    text = _clean_codex_diary_summary_text(value)
+    text = re.sub(r"\[([^\]]{1,80})\]\([^)]+\)", r"\1", text)
+    text = text.replace("`", "")
+    text = text.strip(" ：:，,；;。")
+    changed = True
+    while changed and text:
+        changed = False
+        for prefix in sorted(CODEX_DIARY_TITLE_BAD_VALUES, key=len, reverse=True):
+            if text == prefix:
+                return ""
+            for separator in ("，", ",", "。", "；", ";", "：", ":"):
+                marker = f"{prefix}{separator}"
+                if text.startswith(marker):
+                    text = text[len(marker):].strip(" ：:，,；;。")
+                    changed = True
+                    break
+            if changed:
+                break
+    text = re.sub(r"^(你这个反馈是对的|这个反馈是对的)[，,；;。]*", "", text).strip(" ：:，,；;。")
+    return text
+
+
+def _normalize_codex_diary_ai_title(value: Any) -> str:
+    text = _strip_codex_diary_title_noise(value)
+    text = re.sub(r"^(综合|general|CodeYun/笔记|codeyun|Codex)[：:]\s*", "", text, flags=re.IGNORECASE)
+    text = text.rstrip(".…")
+    if not text or text in CODEX_DIARY_TITLE_BAD_VALUES:
+        return ""
+    if len(text) <= 2 and not any(keyword.lower() in text.lower() for keyword in CODEX_DIARY_TITLE_KEYWORDS):
+        return ""
+    return _truncate_codex_diary_text(text, 32, suffix="")
+
+
+def _strip_codex_diary_item_number_prefix(value: Any) -> str:
+    text = _strip_codex_diary_title_noise(value)
+    previous = None
+    while text and text != previous:
+        previous = text
+        text = CODEX_DIARY_ITEM_NUMBER_PREFIX_RE.sub("", text).strip()
+    return text
+
+
+def _normalize_codex_diary_ai_summary_items(value: Any) -> list[str]:
+    raw_items = value if isinstance(value, list) else [value]
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        text = _strip_codex_diary_item_number_prefix(raw_item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(_truncate_codex_diary_text(text, 260, suffix=""))
+        if len(items) >= 6:
+            break
+    return items
+
+
+def _repair_codex_diary_body_number_prefixes(content: Any) -> str:
+    return CODEX_DIARY_HTML_LI_NUMBER_PREFIX_RE.sub(r"\1", str(content or ""))
+
+
+def _build_codex_diary_ai_system_prompt() -> str:
+    return "\n".join(
+        [
+            "你在为“星图笔记”生成 Codex 总结日记节点草案。",
+            "输入已经按分类和累计约 1 小时工作量预分块；你必须逐块输出，不要新增、删除、合并或拆分 block。",
+            "只根据每条记录的 user_request、assistant_result、thread_title 做语义归纳；assistant_result 优先。",
+            "不要照搬聊天原文，不要输出工具日志、JSON、堆栈、操作记录、文件大段内容。",
+            "标题必须是信息密度高的短名词短语，保留关键对象/动作/接口/页面/字段/路径名；不要带分类前缀。",
+            "标题禁止使用“是的”“可以”“好的”“已改完”“已经删了”这类低信息开头或低信息标题。",
+            "正文条目写成总结性工作记录，每条只讲做了什么、达成什么结果、关键风险或后续点。",
+            "summary_items 返回纯文本数组，每个数组元素不要自带 1.、2.、一、这类编号；编号由星图笔记编辑器自动生成。",
+            "阶段通常为 done；completion_progress 使用 0 到 1 的字符串，已完成任务填 1。",
+            "最终只输出 JSON 对象，不要 Markdown，不要解释。",
+        ]
+    )
+
+
+def _build_codex_diary_ai_user_prompt(source: dict[str, Any], blocks: list[dict[str, Any]]) -> str:
+    payload_blocks: list[dict[str, Any]] = []
+    for block in blocks:
+        records: list[dict[str, Any]] = []
+        for record in block.get("records") or []:
+            records.append(
+                {
+                    "time_range": record.get("time_range"),
+                    "device": record.get("source_device_name"),
+                    "project": record.get("project_label"),
+                    "thread_title": _truncate_codex_diary_text(record.get("thread_title"), 120, suffix=""),
+                    "user_request": _truncate_codex_diary_text(record.get("user_request"), 240, suffix=""),
+                    "assistant_result": _truncate_codex_diary_text(record.get("assistant_result"), 520, suffix=""),
+                }
+            )
+        payload_blocks.append(
+            {
+                "block_key": block.get("block_key"),
+                "category_key": block.get("category_key"),
+                "category_label": block.get("category_label"),
+                "start_time": _format_codex_diary_time(float(block.get("start_at") or 0)),
+                "end_time": _format_codex_diary_time(float(block.get("end_at") or 0)),
+                "duration_minutes": max(1, round(float(block.get("duration_seconds") or 0) / 60)),
+                "records": records,
+            }
+        )
+    request_payload = {
+        "date": source.get("date"),
+        "timezone": getattr(source.get("timezone"), "key", str(source.get("timezone") or "")),
+        "rules": {
+            "block_count_must_equal": len(payload_blocks),
+            "title_max_chars": 32,
+            "summary_item_max_chars": 260,
+        },
+        "blocks": payload_blocks,
+        "expected_response": {
+            "blocks": [
+                {
+                    "block_key": "原样返回输入 block_key",
+                    "title": "短标题",
+                    "summary_items": ["总结性正文条目"],
+                    "lifecycle_stage": "done",
+                    "completion_progress": "1",
+                }
+            ]
+        },
+    }
+    return json.dumps(request_payload, ensure_ascii=False, indent=2)
+
+
+def _draft_codex_diary_blocks_with_ai(source: dict[str, Any], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not blocks:
+        return blocks
+    provider = _build_default_codex_diary_provider()
+    response = chat_with_provider(
+        provider_id=provider.id,
+        model=provider.default_model,
+        system_prompt=_build_codex_diary_ai_system_prompt(),
+        messages=[{"role": "user", "content": _build_codex_diary_ai_user_prompt(source, blocks)}],
+        response_format="json",
+        timeout_seconds=CODEX_DIARY_TIMEOUT_SECONDS,
+        extra_providers=(provider,),
+    )
+    payload = _extract_codex_diary_ai_json(response.get("content"))
+    draft_blocks = payload.get("blocks")
+    if not isinstance(draft_blocks, list):
+        raise ValueError("Codex CLI 日记草案缺少 blocks")
+    draft_by_key: dict[str, dict[str, Any]] = {}
+    for item in draft_blocks:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("block_key") or "").strip()
+        if key:
+            draft_by_key[key] = item
+
+    for block in blocks:
+        block_key = str(block.get("block_key") or "").strip()
+        draft = draft_by_key.get(block_key)
+        if draft is None:
+            raise ValueError(f"Codex CLI 日记草案缺少 block：{block_key}")
+        title = _normalize_codex_diary_ai_title(draft.get("title"))
+        if not title:
+            raise ValueError(f"Codex CLI 日记草案标题无效：{block_key}")
+        summary_items = _normalize_codex_diary_ai_summary_items(draft.get("summary_items"))
+        if not summary_items:
+            raise ValueError(f"Codex CLI 日记草案正文为空：{block_key}")
+        block["title"] = title
+        block["summary_items"] = summary_items
+        block["lifecycle_stage"] = str(draft.get("lifecycle_stage") or "done").strip() or "done"
+        block["completion_progress"] = str(draft.get("completion_progress") or "1").strip() or "1"
+    return blocks
+
+
+def _build_codex_diary_body_html(block: dict[str, Any]) -> str:
+    records = block["records"]
+    device_names = sorted({str(record.get("source_device_name") or "").strip() for record in records if record.get("source_device_name")})
+    start_text = _format_codex_diary_time(block["start_at"])
+    end_text = _format_codex_diary_time(block["end_at"])
+    minutes = max(1, round(float(block["duration_seconds"]) / 60))
+    lines = ["<ol>"]
+    ai_summary_items = [
+        _strip_codex_diary_item_number_prefix(item)
+        for item in (block.get("summary_items") or [])
+        if str(item or "").strip()
+    ]
+    if ai_summary_items:
+        for item in ai_summary_items:
+            lines.append(f"<li><span>{_format_codex_diary_inline_html(item)}</span></li>")
+    else:
+        for entry in _build_codex_diary_summary_entries(records):
+            summary = _format_codex_diary_inline_html(entry["summary"])
+            device_text = "、".join(entry["devices"])
+            time_text = _format_codex_diary_time(float(entry.get("start_at") or block["start_at"]))
+            suffix_parts = [part for part in (device_text, time_text) if part]
+            suffix = f" <small>{html.escape(' '.join(suffix_parts))}</small>" if suffix_parts else ""
+            lines.append(f"<li><span>{summary}</span>{suffix}</li>")
+    lines.extend(
+        [
+            "</ol>",
+            (
+                "<p><strong>来源</strong>："
+                f"{html.escape('、'.join(device_names) or 'Codex')}；"
+                f"{len(records)} 轮；约 {minutes} 分钟；{html.escape(start_text)} - {html.escape(end_text)}</p>"
+            ),
+        ]
+    )
+    return _repair_codex_diary_body_number_prefixes("\n".join(lines))
+
+
+def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: Session) -> list[dict[str, Any]]:
+    palette_lookup = _build_codex_diary_category_lookup(user_id, session)
+    title_hints = _build_codex_diary_note_title_hints(user_id, session)
+    grouped: dict[str, dict[str, Any]] = {}
+    for raw_record in sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
+        record = dict(raw_record)
+        category = _resolve_codex_diary_category(record, palette_lookup=palette_lookup, title_hints=title_hints)
+        category_key = str(category["key"] or NOTE_CATEGORY_DEFAULT)
+        record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
+        record["codex_diary_category"] = category
+        group = grouped.setdefault(
+            category_key,
+            {
+                "category_key": category_key,
+                "category_label": str(category.get("label") or category_key),
+                "records": [],
+            },
+        )
+        group["records"].append(record)
+
+    blocks: list[dict[str, Any]] = []
+    for group in grouped.values():
+        current_records: list[dict[str, Any]] = []
+        current_duration = 0.0
+
+        def close_current() -> None:
+            nonlocal current_records, current_duration
+            if not current_records:
+                return
+            start_at = min(float(record.get("start_at") or 0) for record in current_records)
+            end_at = max(float(record.get("end_at") or record.get("start_at") or 0) for record in current_records)
+            block = {
+                "category_key": group["category_key"],
+                "category_label": group["category_label"],
+                "records": list(current_records),
+                "duration_seconds": current_duration,
+                "start_at": start_at,
+                "end_at": end_at,
+            }
+            block["title"] = _build_codex_diary_title(block)
+            block["block_key"] = hashlib.sha1(
+                json.dumps(
+                    {
+                        "category_key": block["category_key"],
+                        "start_at": block["start_at"],
+                        "end_at": block["end_at"],
+                        "threads": sorted({str(record.get("thread_id") or "") for record in current_records}),
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest()[:16]
+            if (
+                blocks
+                and blocks[-1]["category_key"] == block["category_key"]
+                and block["duration_seconds"] < CODEX_DIARY_TINY_TAIL_SECONDS
+            ):
+                previous = blocks[-1]
+                previous["records"].extend(block["records"])
+                previous["duration_seconds"] += block["duration_seconds"]
+                previous["end_at"] = max(previous["end_at"], block["end_at"])
+                previous["title"] = _build_codex_diary_title(previous)
+            else:
+                blocks.append(block)
+            current_records = []
+            current_duration = 0.0
+
+        for record in sorted(group["records"], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
+            current_records.append(record)
+            current_duration += float(record.get("duration_seconds") or 0)
+            if current_duration >= CODEX_DIARY_TARGET_SECONDS:
+                close_current()
+        close_current()
+
+    return sorted(blocks, key=lambda item: (float(item["start_at"]), str(item["category_label"]), str(item["block_key"])))
+
+
+def _create_codex_diary_note(
+    session: Session,
+    *,
+    current_user: User,
+    run: CodexDiaryImportRun,
+    block: dict[str, Any],
+) -> NoteNode:
+    lifecycle_stage = str(block.get("lifecycle_stage") or "").strip() or (
+        "done" if any(str(record.get("assistant_result") or "").strip() for record in block["records"]) else "doing"
+    )
+    completion_expr = str(block.get("completion_progress") or "").strip() or ("1" if lifecycle_stage == "done" else "0.6")
+    category_key = str(block.get("category_key") or NOTE_CATEGORY_DEFAULT)
+    note_categories = [{"key": category_key, "weight": 100}]
+    taxonomy_fields = _build_legacy_fields_from_taxonomy(
+        note_categories,
+        category_key,
+        "note",
+        NOTE_SCENE_DEFAULT,
+        lifecycle_stage,
+    )
+    source_thread_ids = sorted({str(record.get("thread_id") or "") for record in block["records"] if record.get("thread_id")})
+    custom_fields = [
+        [CODEX_DIARY_RUN_ID_FIELD, "string", run.id],
+        [CODEX_DIARY_DATE_FIELD, "string", run.diary_date],
+        [CODEX_DIARY_SCOPE_FIELD, "string", run.scope_key],
+        [CODEX_DIARY_BLOCK_FIELD, "string", str(block.get("block_key") or "")],
+        [CODEX_DIARY_SOURCE_THREADS_FIELD, "json", source_thread_ids],
+    ]
+    normalized_custom_fields = _apply_completion_progress_expr_to_note_data(
+        {
+            "custom_fields": custom_fields,
+            "completion_progress_expr": completion_expr,
+        },
+        [],
+    ).get("custom_fields", custom_fields)
+    now = time.time()
+    note = NoteNode(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        title=str(block["title"]),
+        content=_build_codex_diary_body_html(block),
+        weight=0,
+        node_type=taxonomy_fields["node_type"],
+        note_types=taxonomy_fields["note_types"],
+        note_categories=taxonomy_fields["note_categories"],
+        primary_category=taxonomy_fields["primary_category"],
+        note_form=taxonomy_fields["note_form"],
+        note_kind=taxonomy_fields["note_kind"],
+        note_scene=taxonomy_fields["note_scene"],
+        node_status=taxonomy_fields["node_status"],
+        lifecycle_stage=taxonomy_fields["lifecycle_stage"],
+        color=None,
+        weight_mode=None,
+        private_level=0,
+        custom_fields=normalized_custom_fields,
+        created_at=now,
+        updated_at=now,
+        start_at=float(block["start_at"]),
+        history=[],
+    )
+    session.add(note)
+    _record_created_note_metadata_feedback_safely(
+        session,
+        note=note,
+        source_kind="codex_diary_import",
+        source_ref_id=run.id,
+    )
+    return note
+
+
+def _run_codex_diary_import_worker(
+    db_bind: Any,
+    *,
+    run_id: str,
+    user_id: int,
+    entry_specs: list[dict[str, Any]],
+    root_identity: dict[str, str],
+) -> None:
+    with Session(db_bind) as session:
+        run = session.get(CodexDiaryImportRun, run_id)
+        user = session.get(User, user_id)
+        if run is None or user is None:
+            return
+        try:
+            _touch_codex_diary_run(session, run, status="running", stage="collecting", stage_label="读取 Codex 来源")
+            source = _collect_codex_diary_source(
+                entry_specs,
+                root_identity,
+                run.diary_date,
+                user_id=user_id,
+                session=session,
+            )
+            run.source_thread_count = int(source.get("thread_count") or 0)
+            run.source_turn_count = int(source.get("turn_count") or 0)
+            run.source_user_message_count = int(source.get("user_message_count") or 0)
+            run.source_assistant_message_count = int(source.get("assistant_message_count") or 0)
+            session.add(run)
+            session.commit()
+
+            if not source.get("turn_records"):
+                run.status = "completed"
+                run.stage = "empty"
+                run.stage_label = "当天没有可导入的 Codex 会话记录"
+                run.result_json = {
+                    "prompt_version": CODEX_DIARY_PROMPT_VERSION,
+                    "source": {
+                        "thread_count": run.source_thread_count,
+                        "turn_count": run.source_turn_count,
+                    },
+                    "blocks": [],
+                }
+                run.finished_at = time.time()
+                run.updated_at = run.finished_at
+                run.heartbeat_at = run.finished_at
+                session.add(run)
+                session.commit()
+                return
+
+            _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按分类和时长拆分节点")
+            blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
+
+            _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 Codex CLI 生成日记草案")
+            blocks = _draft_codex_diary_blocks_with_ai(source, blocks)
+
+            _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
+            created_notes: list[NoteNode] = []
+            for block in blocks:
+                created_notes.append(_create_codex_diary_note(session, current_user=user, run=run, block=block))
+            session.commit()
+            for note in created_notes:
+                session.refresh(note)
+
+            run.created_note_ids = [str(note.id) for note in created_notes if note.id]
+            run.created_note_count = len(run.created_note_ids)
+            run.status = "completed"
+            run.stage = "completed"
+            run.stage_label = f"已创建 {run.created_note_count} 个节点"
+            run.result_json = {
+                "prompt_version": CODEX_DIARY_PROMPT_VERSION,
+                "draft_generator": "codex-cli-json-v1",
+                "source": {
+                    "thread_count": run.source_thread_count,
+                    "turn_count": run.source_turn_count,
+                    "user_message_count": run.source_user_message_count,
+                    "assistant_message_count": run.source_assistant_message_count,
+                },
+                "blocks": [
+                    {
+                        "block_key": block.get("block_key"),
+                        "title": block.get("title"),
+                        "category_key": block.get("category_key"),
+                        "category_label": block.get("category_label"),
+                        "duration_seconds": block.get("duration_seconds"),
+                        "start_at": block.get("start_at"),
+                        "end_at": block.get("end_at"),
+                        "source_thread_ids": sorted({str(record.get("thread_id") or "") for record in block.get("records") or []}),
+                    }
+                    for block in blocks
+                ],
+            }
+            run.finished_at = time.time()
+            run.updated_at = run.finished_at
+            run.heartbeat_at = run.finished_at
+            session.add(run)
+            session.commit()
+        except Exception as exc:
+            run.status = "failed"
+            run.stage = "failed"
+            run.stage_label = "导入失败"
+            run.error_message = str(getattr(exc, "detail", None) or exc)
+            run.finished_at = time.time()
+            run.updated_at = run.finished_at
+            run.heartbeat_at = run.finished_at
+            session.add(run)
+            session.commit()
 
 
 def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> dict[str, Any] | None:
@@ -1023,6 +2317,44 @@ def _append_note_history(db_note: NoteNode, note_data: dict[str, Any], now_ts: i
     return touched_history
 
 
+def _record_note_metadata_feedback_safely(
+    session: Session,
+    *,
+    note: NoteNode,
+    updates: dict[str, Any],
+    source_kind: str,
+    source_ref_id: str | None = None,
+) -> None:
+    try:
+        record_note_metadata_feedback_for_update(
+            session,
+            note=note,
+            updates=updates,
+            source_kind=source_kind,
+            source_ref_id=source_ref_id,
+        )
+    except Exception as exc:
+        print(f"Failed to record note metadata feedback: {exc}")
+
+
+def _record_created_note_metadata_feedback_safely(
+    session: Session,
+    *,
+    note: NoteNode,
+    source_kind: str,
+    source_ref_id: str | None = None,
+) -> None:
+    try:
+        record_note_metadata_feedback_for_created_note(
+            session,
+            note=note,
+            source_kind=source_kind,
+            source_ref_id=source_ref_id,
+        )
+    except Exception as exc:
+        print(f"Failed to record created note metadata feedback: {exc}")
+
+
 def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
     query = select(NoteNode).where(NoteNode.id == note_id)
     if not current_user.is_superuser:
@@ -1490,6 +2822,12 @@ def batch_update_notes(
 
         if _append_note_history(note, changed_fields, now_ts):
             touched_history = True
+        _record_note_metadata_feedback_safely(
+            session,
+            note=note,
+            updates=changed_fields,
+            source_kind="batch_update",
+        )
 
         for key, value in changed_fields.items():
             setattr(note, key, value)
@@ -1586,6 +2924,13 @@ def ai_categorize_note(
     }
     if changed_fields:
         _append_note_history(note, changed_fields, int(time.time()))
+        _record_note_metadata_feedback_safely(
+            session,
+            note=note,
+            updates=changed_fields,
+            source_kind="ai_categorize",
+            source_ref_id=NOTE_AI_APP_ID,
+        )
         for field, value in changed_fields.items():
             setattr(note, field, value)
         note.updated_at = time.time()
@@ -1723,6 +3068,122 @@ def merge_note_category_palette_item(
         session.commit()
 
     return _build_note_type_palette_response(current_user.id, session)
+
+
+@router.post("/codex-diary/import-runs", response_model=CodexDiaryImportRunRead)
+def create_codex_diary_import_run(
+    req: CodexDiaryImportRunRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    diary_date, day_start_at, day_end_at = _parse_codex_diary_date(req.date)
+    entries = _get_codex_diary_entries(session, current_user, req.entry_ids)
+    if not entries:
+        raise HTTPException(status_code=400, detail="没有可用于导入的设备")
+
+    entry_specs = _snapshot_codex_diary_entries(entries)
+    scope_key, root_identity = _build_codex_diary_scope_identity(entry_specs)
+    duplicate_note_ids = _find_existing_codex_diary_notes(
+        session,
+        user_id=current_user.id,
+        diary_date=diary_date,
+        scope_key=scope_key,
+        day_start_at=day_start_at,
+        day_end_at=day_end_at,
+    )
+    if duplicate_note_ids and not req.confirm_duplicate:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "该日期已导入过 Codex 总结日记，继续会重复生成一批新节点。",
+                "duplicate_note_ids": duplicate_note_ids,
+                "duplicate_count": len(duplicate_note_ids),
+            },
+        )
+
+    now = time.time()
+    run = CodexDiaryImportRun(
+        user_id=current_user.id,
+        diary_date=diary_date,
+        scope_key=scope_key,
+        entry_ids=[str(entry["entry_id"]) for entry in entry_specs],
+        entry_snapshot=entry_specs,
+        confirm_duplicate=bool(req.confirm_duplicate),
+        duplicate_note_ids=duplicate_note_ids,
+        status="running",
+        stage="queued",
+        stage_label="已进入队列",
+        heartbeat_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    threading.Thread(
+        target=_run_codex_diary_import_worker,
+        kwargs={
+            "db_bind": session.get_bind(),
+            "run_id": run.id,
+            "user_id": current_user.id,
+            "entry_specs": entry_specs,
+            "root_identity": root_identity,
+        },
+        daemon=True,
+    ).start()
+    return _serialize_codex_diary_import_run(run, current_user=current_user, session=session)
+
+
+@router.get("/codex-diary/import-runs/{run_id}", response_model=CodexDiaryImportRunRead)
+def get_codex_diary_import_run(
+    run_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    run = session.get(CodexDiaryImportRun, run_id)
+    if run is None or run.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Codex diary import run not found")
+    return _serialize_codex_diary_import_run(run, current_user=current_user, session=session)
+
+
+@router.get("/metadata-feedback/status")
+def get_metadata_feedback_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    return get_note_metadata_feedback_status(session)
+
+
+@router.post("/metadata-feedback/optimization-runs")
+def create_metadata_feedback_optimization_run(
+    req: NoteMetadataFeedbackOptimizationRunRequest | None = None,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    trigger_reason = (req.trigger_reason if req else "manual").strip() or "manual"
+    run = create_note_metadata_feedback_optimization_run(
+        session,
+        trigger_reason=trigger_reason,
+        enqueue=True,
+        require_auto_conditions=False,
+    )
+    if run is None:
+        raise HTTPException(status_code=409, detail="暂时不满足优化任务触发条件")
+    return serialize_note_metadata_feedback_optimization_run(run)
+
+
+@router.get("/metadata-feedback/optimization-runs/{run_id}")
+def get_metadata_feedback_optimization_run(
+    run_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    run = session.get(NoteMetadataFeedbackOptimizationRun, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Metadata feedback optimization run not found")
+    return serialize_note_metadata_feedback_optimization_run(run)
+
 
 @router.post("/", response_model=NoteRead)
 def create_note(
@@ -2022,6 +3483,12 @@ def update_note(
     
     note_data = _prepare_note_update_data(db_note, note_in.model_dump(exclude_unset=True))
     _append_note_history(db_note, note_data, int(time.time()))
+    _record_note_metadata_feedback_safely(
+        session,
+        note=db_note,
+        updates=note_data,
+        source_kind="manual_update",
+    )
 
     for key, value in note_data.items():
         setattr(db_note, key, value)
@@ -2044,7 +3511,17 @@ def delete_note(
     db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
-    
+
+    edges = session.exec(
+        select(NoteEdge).where(
+            or_(
+                NoteEdge.source_id == note_id,
+                NoteEdge.target_id == note_id,
+            )
+        )
+    ).all()
+    for edge in edges:
+        session.delete(edge)
     session.delete(db_note)
     session.commit()
     return {"ok": True}

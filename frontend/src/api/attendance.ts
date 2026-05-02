@@ -41,18 +41,6 @@ export interface AttendanceAccount {
   updated_at: number
 }
 
-export interface AttendanceTemplate {
-  id: string
-  provider: string
-  name: string
-  activity_id: string
-  is_active: boolean
-  created_by_user_id?: number | null
-  updated_by_user_id?: number | null
-  created_at: number
-  updated_at: number
-}
-
 export interface AttendanceServicePayload {
   current_wjx_account_id?: string | null
   execution_device_entry_id?: string | null
@@ -70,47 +58,18 @@ export interface AttendanceConfigResponse {
   service: AttendanceServicePayload
   current_account?: AttendanceAccount | null
   current_execution_device?: AttendanceExecutionDeviceSummary | null
-  fixed_wjx_template: {
-    id: string
-    name: string
-    activity_id: string
-    design_url: string
-    view_url: string
-    fill_url: string
-  }
 }
 
-export interface AttendanceRun {
-  id: string
-  template_id: string
-  account_id: string
-  execution_device_entry_id: string
-  requested_by_user_id?: number | null
-  action: 'inspect' | 'apply'
-  status: 'pending' | 'running' | 'completed' | 'failed'
-  request: Record<string, unknown>
-  result: Record<string, unknown>
-  error_message?: string | null
-  created_at: number
-  finished_at?: number | null
-  updated_at: number
+export interface AttendanceFeedbackCourseOption {
+  name: string
+  attendance_sheet_url?: string | null
 }
 
 export interface AttendanceFeedbackFormMeta {
   course_names: string[]
+  course_options?: AttendanceFeedbackCourseOption[]
   course_names_updated_at?: number | null
-  template: {
-    id: string
-    name: string
-    activity_id: string
-    design_url: string
-    view_url: string
-    fill_url: string
-  }
-}
-
-export interface AttendanceFeedbackFormMetaUpdateRequest {
-  course_names: string[]
+  data_sheet_url?: string | null
 }
 
 export interface AttendanceConfigUpdateRequest {
@@ -130,28 +89,6 @@ export interface AttendanceAccountCreateRequest {
 export interface AttendanceAccountUpdateRequest {
   login_username?: string
   password?: string
-}
-
-export interface AttendanceTemplateCreateRequest {
-  name: string
-  activity_id: string
-  is_active?: boolean
-}
-
-export interface AttendanceTemplateUpdateRequest {
-  name?: string
-  activity_id?: string
-  is_active?: boolean
-}
-
-export interface AttendanceRunCreateRequest {
-  template_id?: string | null
-  action: 'inspect' | 'apply'
-  account_id?: string | null
-  execution_device_entry_id?: string | null
-  hide?: string[]
-  add?: string[]
-  persist_global_selection?: boolean
 }
 
 export interface AttendanceOrderRow {
@@ -188,6 +125,44 @@ export interface AttendanceOrderExecuteResponse {
   action: 'inspect' | 'refund'
   rows: AttendanceOrderRow[]
   summary: AttendanceOrderSummary
+}
+
+export type AttendanceOrderRefundQueryType = 'auto' | 'pay_order' | 'merchant_order' | 'refund_id'
+
+export interface AttendanceOrderRefundDetailRequest {
+  order_id: string
+  query_type?: AttendanceOrderRefundQueryType
+  execution_device_entry_id?: string | null
+  login_users?: string[]
+  persist_global_selection?: boolean
+}
+
+export interface AttendanceOrderRefundDetailItem {
+  wechat_order_id: string
+  merchant_order_id: string
+  refund_id: string
+  refund_amount: number
+  refund_status: string
+  applicant: string
+  submitted_at: string
+  completed_at: string
+}
+
+export interface AttendanceOrderRefundDetailSummary {
+  order_id: string
+  matched_order_id: string
+  query_type: AttendanceOrderRefundQueryType
+  row_count: number
+  refund_amount_total: number
+  wechat_order_id: string
+  merchant_order_id: string
+  refund_statuses: string[]
+}
+
+export interface AttendanceOrderRefundDetailResponse {
+  execution_device_entry_id: string
+  summary: AttendanceOrderRefundDetailSummary
+  rows: AttendanceOrderRefundDetailItem[]
 }
 
 export interface AttendanceOrderRefundHistoryForegroundColors {
@@ -284,6 +259,12 @@ export interface AttendanceWjxDataPage {
     view_url: string
     fill_url: string
   }
+}
+
+export interface AttendanceWjxDataSheetLocation {
+  workbook_id: number
+  sheet_id: number
+  path: string
 }
 
 export interface AttendanceWjxDataSyncRequest {
@@ -391,11 +372,6 @@ export async function fetchAttendanceFeedbackFormMeta() {
   return response.data
 }
 
-export async function updateAttendanceFeedbackFormMeta(payload: AttendanceFeedbackFormMetaUpdateRequest) {
-  const response = await api.put<AttendanceFeedbackFormMeta>('/attendance/wjx-feedback-form', payload)
-  return response.data
-}
-
 export async function updateAttendanceConfig(payload: AttendanceConfigUpdateRequest) {
   const response = await api.put<AttendanceConfigResponse>('/attendance/config', payload)
   return response.data
@@ -420,40 +396,43 @@ export async function deleteAttendanceAccount(accountId: string) {
   await api.delete(`/attendance/accounts/${accountId}`)
 }
 
-export async function fetchAttendanceTemplates() {
-  const response = await api.get<{ items: AttendanceTemplate[] }>('/attendance/templates')
-  return response.data.items
-}
-
-export async function createAttendanceTemplate(payload: AttendanceTemplateCreateRequest) {
-  const response = await api.post<AttendanceTemplate>('/attendance/templates', payload)
-  return response.data
-}
-
-export async function updateAttendanceTemplate(templateId: string, payload: AttendanceTemplateUpdateRequest) {
-  const response = await api.put<AttendanceTemplate>(`/attendance/templates/${templateId}`, payload)
-  return response.data
-}
-
-export async function deleteAttendanceTemplate(templateId: string) {
-  await api.delete(`/attendance/templates/${templateId}`)
-}
-
-export async function startAttendanceRun(payload: AttendanceRunCreateRequest) {
-  const response = await api.post<AttendanceRun>('/attendance/wjx-runs', payload)
-  return response.data
-}
-
-export async function fetchAttendanceRun(runId: string) {
-  const response = await api.get<AttendanceRun>(`/attendance/wjx-runs/${runId}`)
-  return response.data
-}
-
 export async function executeAttendanceOrder(payload: AttendanceOrderExecuteRequest) {
   const response = await api.post<AttendanceOrderExecuteResponse>('/attendance/order-execute', payload, {
     timeout: ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS,
   })
   return response.data
+}
+
+export async function fetchAttendanceOrderRefundDetails(payload: AttendanceOrderRefundDetailRequest) {
+  const response = await api.post<AttendanceOrderRefundDetailResponse>('/attendance/order-refund-details', payload, {
+    timeout: ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS,
+  })
+  return {
+    ...response.data,
+    summary: {
+      ...response.data.summary,
+      order_id: normalizeAttendanceOrderId(response.data.summary?.order_id),
+      matched_order_id: normalizeAttendanceOrderId(response.data.summary?.matched_order_id),
+      wechat_order_id: normalizeAttendanceOrderId(response.data.summary?.wechat_order_id),
+      merchant_order_id: normalizeAttendanceOrderId(response.data.summary?.merchant_order_id),
+      refund_amount_total: Number(response.data.summary?.refund_amount_total || 0),
+      row_count: Number(response.data.summary?.row_count || 0),
+      refund_statuses: Array.isArray(response.data.summary?.refund_statuses)
+        ? response.data.summary.refund_statuses.filter((item): item is string => typeof item === 'string' && !!item.trim())
+        : [],
+    },
+    rows: (response.data.rows || []).map((item) => ({
+      ...item,
+      wechat_order_id: normalizeAttendanceOrderId(item.wechat_order_id),
+      merchant_order_id: normalizeAttendanceOrderId(item.merchant_order_id),
+      refund_id: normalizeAttendanceOrderId(item.refund_id),
+      refund_amount: Number(item.refund_amount || 0),
+      refund_status: String(item.refund_status || ''),
+      applicant: String(item.applicant || ''),
+      submitted_at: String(item.submitted_at || ''),
+      completed_at: String(item.completed_at || ''),
+    })),
+  }
 }
 
 export async function fetchAttendanceOrderRefundHistory(params?: { page?: number; page_size?: number }) {
@@ -492,6 +471,11 @@ export async function fetchAttendanceWjxData(params?: {
   template_id?: string | null
 }) {
   const response = await api.get<AttendanceWjxDataPage>('/attendance/wjx-data', { params })
+  return response.data
+}
+
+export async function fetchAttendanceWjxDataSheetLocation() {
+  const response = await api.get<AttendanceWjxDataSheetLocation>('/attendance/wjx-data/sheet')
   return response.data
 }
 

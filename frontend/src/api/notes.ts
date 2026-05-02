@@ -208,6 +208,39 @@ export interface AiNoteCategorizeResponse {
   note: NoteNode;
 }
 
+export interface CodexDiaryImportRunRequest {
+  date: string;
+  entry_ids?: string[];
+  confirm_duplicate?: boolean;
+}
+
+export interface CodexDiaryImportRunResponse {
+  id: string;
+  date: string;
+  timezone: string;
+  scope_key: string;
+  entry_ids: string[];
+  entry_snapshot: Array<Record<string, any>>;
+  confirm_duplicate: boolean;
+  status: 'pending' | 'running' | 'completed' | 'failed' | string;
+  stage: string;
+  stage_label: string;
+  source_thread_count: number;
+  source_turn_count: number;
+  source_user_message_count: number;
+  source_assistant_message_count: number;
+  created_note_count: number;
+  created_note_ids: string[];
+  duplicate_note_ids: string[];
+  error_message?: string | null;
+  result?: Record<string, any> | null;
+  created_notes: NoteNode[];
+  heartbeat_at?: number | null;
+  created_at: number;
+  finished_at?: number | null;
+  updated_at: number;
+}
+
 export interface NoteScopeState {
   titleKeyword: string;
   primaryCategory: string;
@@ -318,6 +351,34 @@ const normalizeEdge = (raw: any): NoteEdge => ({
   target_id: String(raw.target_id),
   created_at: raw.created_at * 1000
 });
+
+const normalizeCodexDiaryImportRun = (raw: any): CodexDiaryImportRunResponse => ({
+  ...raw,
+  id: String(raw.id),
+  entry_ids: Array.isArray(raw.entry_ids) ? raw.entry_ids.map((id: any) => String(id)) : [],
+  entry_snapshot: Array.isArray(raw.entry_snapshot) ? raw.entry_snapshot : [],
+  created_note_ids: Array.isArray(raw.created_note_ids) ? raw.created_note_ids.map((id: any) => String(id)) : [],
+  duplicate_note_ids: Array.isArray(raw.duplicate_note_ids) ? raw.duplicate_note_ids.map((id: any) => String(id)) : [],
+  created_notes: Array.isArray(raw.created_notes) ? raw.created_notes.map((note: any) => normalizeNote(note)) : [],
+  created_at: raw.created_at * 1000,
+  updated_at: raw.updated_at * 1000,
+  finished_at: raw.finished_at ? raw.finished_at * 1000 : null,
+  heartbeat_at: raw.heartbeat_at ? raw.heartbeat_at * 1000 : null
+});
+
+export const startCodexDiaryImportRun = async (
+  payload: CodexDiaryImportRunRequest
+): Promise<CodexDiaryImportRunResponse> => {
+  const response = await api.post('/notes/codex-diary/import-runs', payload);
+  return normalizeCodexDiaryImportRun(response.data);
+};
+
+export const fetchCodexDiaryImportRun = async (
+  runId: string
+): Promise<CodexDiaryImportRunResponse> => {
+  const response = await api.get(`/notes/codex-diary/import-runs/${runId}`);
+  return normalizeCodexDiaryImportRun(response.data);
+};
 
 const patchNoteDetails = (detailMap: Record<string, NoteNode>, incomingNotes: NoteNode[]) => {
   incomingNotes.forEach(note => {
@@ -1652,7 +1713,7 @@ export const useNoteStore = defineStore('notes', () => {
       return true;
     } catch (error) {
       console.error('Failed to delete note:', error);
-      ElMessage.error('删除任务失败');
+      ElMessage.error('删除节点失败');
       return false;
     } finally {
       bumpPending(-1);

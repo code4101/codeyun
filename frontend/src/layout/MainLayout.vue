@@ -66,10 +66,9 @@ const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
+const AI_WECHAT_PATH = requirePageMenuPath('AiWechat');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
-const ATTENDANCE_WJX_CATALOG_PATH = requirePageMenuPath('AttendanceWjxCatalog');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
-const ATTENDANCE_WJX_DATA_PATH = requirePageMenuPath('AttendanceWjxData');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
 const MAGIC_CRAFT_XOR_MATRIX_PATH = requirePageMenuPath('XorMatrix');
@@ -107,6 +106,7 @@ const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
 const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
 const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
+const ADMIN_BACKGROUND_TASKS_PATH = requirePageMenuPath('BackgroundTasks');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
 const HOME_TITLE = requirePermissionTitle('home');
 const TOOLS_TITLE = requirePermissionTitle('tools');
@@ -118,12 +118,10 @@ const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
+const AI_WECHAT_TITLE = requirePermissionTitleByMenuPath(AI_WECHAT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
-const ATTENDANCE_WJX_TITLE = requirePermissionTitle('attendance.wjx');
-const ATTENDANCE_WJX_CATALOG_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_CATALOG_PATH);
 const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
-const ATTENDANCE_WJX_DATA_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_DATA_PATH);
 const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDERS_PATH);
 const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
 const DSP_CALCULATOR_TITLE = requirePermissionTitleByMenuPath(DSP_CALCULATOR_PATH);
@@ -164,11 +162,11 @@ const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_P
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
 const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
 const ADMIN_IMAGES_TITLE = requirePermissionTitleByMenuPath(ADMIN_IMAGES_PATH);
+const ADMIN_BACKGROUND_TASKS_TITLE = requirePermissionTitleByMenuPath(ADMIN_BACKGROUND_TASKS_PATH);
 const BUILTIN_MENU_SECTION_KEYS = new Set([
   'tools',
   'ai-tools',
   'attendance-tools',
-  'attendance-questionnaire',
   'game-tools',
   'fanxiu',
   'magic-craft',
@@ -331,6 +329,7 @@ const aiToolsMenuVisible = computed(() =>
     AI_CHAT_PATH,
     AI_REDUCTION_PATH,
     AI_GIT_COMMIT_PATH,
+    AI_WECHAT_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -338,19 +337,8 @@ const attendanceMenuVisible = computed(() =>
   canAccessFeature('attendance-tools')
   && [
     ATTENDANCE_CONFIGS_PATH,
-    ATTENDANCE_WJX_CATALOG_PATH,
     ATTENDANCE_WJX_COLLECT_PATH,
-    ATTENDANCE_WJX_DATA_PATH,
     ATTENDANCE_ORDERS_PATH,
-  ].some((path) => canAccessMenuPath(path)),
-);
-
-const attendanceWjxMenuVisible = computed(() =>
-  canAccessFeature('attendance.wjx')
-  && [
-    ATTENDANCE_WJX_CATALOG_PATH,
-    ATTENDANCE_WJX_COLLECT_PATH,
-    ATTENDANCE_WJX_DATA_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -484,6 +472,7 @@ const adminMenuVisible = computed(() =>
   && [
     ADMIN_ACCOUNTS_PATH,
     ADMIN_IMAGES_PATH,
+    ADMIN_BACKGROUND_TASKS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -501,7 +490,6 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
   if (route.path.startsWith(ATTENDANCE_PATH_PREFIX)) openeds.push('attendance-tools');
-  if (route.path.startsWith('/attendance/questionnaire') || route.path.startsWith('/attendance/wjx')) openeds.push('attendance-questionnaire');
   if (route.path.startsWith('/tools/')) openeds.push('tools');
   if (route.path.startsWith('/fanxiu/')) openeds.push('game-tools', 'fanxiu');
   if (route.path === FANXIU_ACTIVITY_LIST_PATH || route.path.startsWith(`${FANXIU_ACTIVITY_LIST_PATH}/`)) {
@@ -688,6 +676,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_WECHAT_PATH)" :index="AI_WECHAT_PATH">{{ AI_WECHAT_TITLE }}</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="attendanceMenuVisible" index="attendance-tools">
@@ -696,14 +685,7 @@ watch(
               <span>{{ ATTENDANCE_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_CONFIGS_PATH)" :index="ATTENDANCE_CONFIGS_PATH">{{ ATTENDANCE_CONFIGS_TITLE }}</el-menu-item>
-            <el-sub-menu v-if="attendanceWjxMenuVisible" index="attendance-questionnaire">
-              <template #title>
-                <span>{{ ATTENDANCE_WJX_TITLE }}</span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_CATALOG_PATH)" :index="ATTENDANCE_WJX_CATALOG_PATH">{{ ATTENDANCE_WJX_CATALOG_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_COLLECT_PATH)" :index="ATTENDANCE_WJX_COLLECT_PATH">{{ ATTENDANCE_WJX_COLLECT_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_DATA_PATH)" :index="ATTENDANCE_WJX_DATA_PATH">{{ ATTENDANCE_WJX_DATA_TITLE }}</el-menu-item>
-            </el-sub-menu>
+            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_COLLECT_PATH)" :index="ATTENDANCE_WJX_COLLECT_PATH">{{ ATTENDANCE_WJX_COLLECT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
           </el-sub-menu>
           
@@ -865,6 +847,9 @@ watch(
             </el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(ADMIN_IMAGES_PATH)" :index="ADMIN_IMAGES_PATH">
               <span>{{ ADMIN_IMAGES_TITLE }}</span>
+            </el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(ADMIN_BACKGROUND_TASKS_PATH)" :index="ADMIN_BACKGROUND_TASKS_PATH">
+              <span>{{ ADMIN_BACKGROUND_TASKS_TITLE }}</span>
             </el-menu-item>
           </el-sub-menu>
         </el-menu>

@@ -68,7 +68,7 @@ def _get_custom_provider_capabilities(kind: str) -> dict[str, Any]:
     if normalized_kind == CUSTOM_PROVIDER_KIND_CODEX:
         return {
             "supports_stream": False,
-            "supports_vision": False,
+            "supports_vision": True,
             "requires_api_key": False,
             "default_base_url": CODEX_CLI_DEFAULT_COMMAND,
             "default_model": CODEX_CLI_DEFAULT_MODEL,

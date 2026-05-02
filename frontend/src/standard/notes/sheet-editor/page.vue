@@ -24,7 +24,7 @@ function handleMissing() {
     :sheet-id="sheetId"
     show-back-button
     back-to="/notes/sheets"
-    back-label="返回表格管理"
+    back-label="返回星云表格"
     @missing="handleMissing"
   />
 </template>

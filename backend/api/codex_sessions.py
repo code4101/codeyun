@@ -62,6 +62,10 @@ class CodexOverviewResponse(BaseModel):
     total_threads: int
     archived_threads: int
     groups: list[CodexProjectGroup]
+    thread_offset: int = 0
+    thread_limit: int | None = None
+    returned_threads: int = 0
+    has_more: bool = False
 
 
 class CodexThreadMessage(BaseModel):
@@ -150,6 +154,9 @@ class CodexDailySummaryThread(BaseModel):
     project_label: str
     project_secondary_label: str | None = None
     workspace_root: str | None = None
+    source_entry_id: str | None = None
+    source_device_name: str | None = None
+    source_root_dir: str | None = None
     start_at: float
     end_at: float
     turn_count: int
@@ -229,11 +236,18 @@ def _translate_codex_error(exc: Exception) -> HTTPException:
 @router.get("/overview", response_model=CodexOverviewResponse)
 def get_codex_overview(
     root_dir: str | None = Query(default=None),
+    thread_offset: int = Query(default=0, ge=0),
+    thread_limit: int | None = Query(default=None, ge=1, le=2000),
     session: Session = Depends(get_session),
     _: BaseDevice = Depends(verify_api_token),
 ):
     try:
-        return build_codex_overview(root_dir, session=session)
+        return build_codex_overview(
+            root_dir,
+            session=session,
+            thread_offset=thread_offset,
+            thread_limit=thread_limit,
+        )
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         raise _translate_codex_error(exc) from exc
 

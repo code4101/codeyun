@@ -4,6 +4,7 @@ import json
 import os
 import sqlite3
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlmodel import Session, select
@@ -110,8 +111,12 @@ def _create_codex_root_for_daily_summary(tmp_path: Path) -> Path:
 
     codeyun_root = tmp_path / "codeyun"
     fx_root = tmp_path / "xlproject" / "fx"
+    memories_root = codex_root / "memories"
+    codex_cli_workspace_root = tmp_path / "codex-cli-workspace"
     codeyun_root.mkdir(parents=True, exist_ok=True)
     fx_root.mkdir(parents=True, exist_ok=True)
+    memories_root.mkdir(parents=True, exist_ok=True)
+    codex_cli_workspace_root.mkdir(parents=True, exist_ok=True)
 
     sessions_day_22 = codex_root / "sessions" / "2026" / "04" / "22"
     sessions_day_23 = codex_root / "sessions" / "2026" / "04" / "23"
@@ -120,6 +125,8 @@ def _create_codex_root_for_daily_summary(tmp_path: Path) -> Path:
 
     thread_22a_path = sessions_day_22 / "rollout-thread-22a.jsonl"
     thread_22b_path = sessions_day_22 / "rollout-thread-22b.jsonl"
+    memory_agent_path = sessions_day_22 / "rollout-memory-agent.jsonl"
+    codex_cli_workspace_path = sessions_day_22 / "rollout-codex-cli-workspace.jsonl"
     thread_23_path = sessions_day_23 / "rollout-thread-23.jsonl"
 
     _write_thread_jsonl(
@@ -151,6 +158,26 @@ def _create_codex_root_for_daily_summary(tmp_path: Path) -> Path:
         user_timestamp="2026-04-23T03:00:00.000Z",
         commentary_timestamp="2026-04-23T03:05:00.000Z",
         final_timestamp="2026-04-23T03:10:00.000Z",
+    )
+    _write_thread_jsonl(
+        memory_agent_path,
+        session_id="memory-agent",
+        user_text="## Memory Writing Agent: Phase 2 (Consolidation)\nYou are a Memory Writing Agent. Your job: consolidate memories.",
+        commentary_text="I am consolidating memory entries.",
+        final_text="Memory consolidation complete.",
+        user_timestamp="2026-04-22T09:00:00.000Z",
+        commentary_timestamp="2026-04-22T09:05:00.000Z",
+        final_timestamp="2026-04-22T09:10:00.000Z",
+    )
+    _write_thread_jsonl(
+        codex_cli_workspace_path,
+        session_id="codex-cli-workspace-thread",
+        user_text="你正在通过 CodeYun 调用本机 Codex CLI 响应请求。\n运行环境：当前来源默认拥有完整的命令执行与文件系统访问权限。",
+        commentary_text="我正在生成 Codex 日记草案。",
+        final_text="Codex 日记草案 JSON 已生成。",
+        user_timestamp="2026-04-22T10:00:00.000Z",
+        commentary_timestamp="2026-04-22T10:05:00.000Z",
+        final_timestamp="2026-04-22T10:10:00.000Z",
     )
 
     with sqlite3.connect(codex_root / "state_5.sqlite") as conn:
@@ -199,6 +226,26 @@ def _create_codex_root_for_daily_summary(tmp_path: Path) -> Path:
                 0,
                 "处理 4 月 23 日的任务，不应出现在 4 月 22 日日报里。",
             ),
+            (
+                "memory-agent",
+                str(memory_agent_path),
+                200,
+                220,
+                str(memories_root),
+                "## Memory Writing Agent: Phase 2 (Consolidation)",
+                0,
+                "## Memory Writing Agent: Phase 2 (Consolidation)\nYou are a Memory Writing Agent. Your job: consolidate memories.",
+            ),
+            (
+                "codex-cli-workspace-thread",
+                str(codex_cli_workspace_path),
+                230,
+                250,
+                str(codex_cli_workspace_root),
+                "你正在通过 CodeYun 调用本机 Codex CLI 响应请求。",
+                0,
+                "你正在通过 CodeYun 调用本机 Codex CLI 响应请求。",
+            ),
         ]
         conn.executemany(
             """
@@ -214,6 +261,8 @@ def _create_codex_root_for_daily_summary(tmp_path: Path) -> Path:
             ("thread-22a", "Codex 日报页"),
             ("thread-22b", "Attendance 菜单语义"),
             ("thread-23", "次日任务"),
+            ("memory-agent", "## Memory Writing Agent: Phase 2 (Consolidation)"),
+            ("codex-cli-workspace-thread", "你正在通过 CodeYun 调用本机 Codex CLI 响应请求。"),
         ):
             handle.write(json.dumps({"id": thread_id, "thread_name": title}, ensure_ascii=False) + "\n")
 
@@ -241,6 +290,17 @@ def _wait_for_daily_summary_run(client, entry_id: str, run_id: str) -> dict[str,
             return payload
         time.sleep(0.05)
     raise AssertionError(f"Timed out waiting for daily summary run {run_id}")
+
+
+def _wait_for_multi_daily_summary_run(client, run_id: str) -> dict[str, object]:
+    for _ in range(80):
+        response = client.get(f"/api/device-entries/codex/daily-summary/runs/{run_id}")
+        assert response.status_code == 200
+        payload = response.json()
+        if payload["status"] in {"completed", "failed"}:
+            return payload
+        time.sleep(0.05)
+    raise AssertionError(f"Timed out waiting for multi-device daily summary run {run_id}")
 
 
 def _create_codex_root(tmp_path: Path) -> tuple[Path, dict[str, str]]:
@@ -361,6 +421,8 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
     assert overview["total_groups"] == 2
     assert overview["total_threads"] == 2
     assert overview["archived_threads"] == 1
+    assert overview["returned_threads"] == 2
+    assert overview["has_more"] is False
     assert [item["label"] for item in overview["groups"]] == ["codeyun", "fx"]
 
     fx_group = next(item for item in overview["groups"] if item["label"] == "fx")
@@ -372,6 +434,27 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
     codeyun_group = next(item for item in overview["groups"] if item["label"] == "codeyun")
     assert codeyun_group["secondary_label"] is None
     assert codeyun_group["threads"][0]["archived"] is True
+
+    paged_response = client.get(
+        f"/api/device-entries/{entry_id}/codex/overview",
+        params={"root_dir": str(codex_root), "thread_limit": 1},
+    )
+    assert paged_response.status_code == 200
+    paged_overview = paged_response.json()
+    assert paged_overview["total_threads"] == 2
+    assert paged_overview["returned_threads"] == 1
+    assert paged_overview["has_more"] is True
+    assert [thread["id"] for group in paged_overview["groups"] for thread in group["threads"]] == ["thread-2"]
+
+    second_page_response = client.get(
+        f"/api/device-entries/{entry_id}/codex/overview",
+        params={"root_dir": str(codex_root), "thread_offset": 1, "thread_limit": 1},
+    )
+    assert second_page_response.status_code == 200
+    second_page = second_page_response.json()
+    assert second_page["returned_threads"] == 1
+    assert second_page["has_more"] is False
+    assert [thread["id"] for group in second_page["groups"] for thread in group["threads"]] == ["thread-1"]
 
     detail_response = client.get(
         f"/api/device-entries/{entry_id}/codex/threads/thread-1",
@@ -590,6 +673,10 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert "修一下 Codex 日报页" in prompt
     assert "分析 attendance 菜单命名" in prompt
     assert "处理 4 月 23 日的任务" not in prompt
+    assert "Memory Writing Agent" not in prompt
+    assert "Memory consolidation complete" not in prompt
+    assert "codex-cli-workspace" not in prompt
+    assert "通过 CodeYun 调用本机 Codex CLI" not in prompt
     assert "项目推进（key=project）" in prompt
     assert "2026年4月22日" in captured[0]["system_prompt"]
     assert captured[0]["provider_id"] == "codex-daily-summary"
@@ -604,6 +691,171 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert run_rows[0].summary_date == "2026-04-22"
     assert run_rows[0].summary_text.startswith("1. 项目推进")
     assert run_rows[0].result_json["type_items"][1]["label"] == "项目推进"
+
+
+def test_multi_device_daily_summary_merges_local_and_remote_sources(
+    client,
+    session: Session,
+    auth_user,
+    test_device,
+    tmp_path,
+    monkeypatch,
+):
+    from backend.api import device_entries as device_entries_api
+
+    local_entry_id = _create_local_entry(client)
+    local_codex_root = _create_codex_root_for_daily_summary(tmp_path)
+    monkeypatch.setattr("backend.core.codex_sessions._default_codex_root_dir", lambda: local_codex_root)
+
+    remote_entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-mi15",
+        mode="remote",
+        name="codepc_mi15",
+        server_url="http://remote-device",
+        token="remote-token",
+    )
+    session.add(remote_entry)
+    session.commit()
+    session.refresh(remote_entry)
+
+    remote_start = datetime(2026, 4, 22, 3, 0, tzinfo=timezone.utc).timestamp()
+    remote_end = datetime(2026, 4, 22, 3, 10, tzinfo=timezone.utc).timestamp()
+    remote_root = r"C:\Users\chen\.codex"
+    remote_workload = {
+        "root_dir": remote_root,
+        "default_root_dir": remote_root,
+        "state_db_path": rf"{remote_root}\state_5.sqlite",
+        "session_index_path": rf"{remote_root}\session_index.jsonl",
+        "global_state_path": rf"{remote_root}\.codex-global-state.json",
+        "total_threads": 1,
+        "total_turns": 1,
+        "skipped_threads": 0,
+        "max_concurrency": 1,
+        "time_range_start": remote_start,
+        "time_range_end": remote_end,
+        "turns": [
+            {
+                "id": "remote-thread-1:1",
+                "thread_id": "remote-thread-1",
+                "turn_index": 1,
+                "thread_title": "远端日报任务",
+                "project_label": "codeyun",
+                "project_secondary_label": None,
+                "workspace_root": r"D:\home\chenkunze\slns\codeyun",
+                "group_key": r"D:\home\chenkunze\slns\codeyun",
+                "group_label": "codeyun",
+                "user_seq": 1,
+                "assistant_seq": 2,
+                "start_at": remote_start,
+                "end_at": remote_end,
+                "duration_seconds": remote_end - remote_start,
+                "completed": True,
+                "preview": "远端也要进入日报",
+            }
+        ],
+        "segments": [],
+    }
+    remote_detail = {
+        "root_dir": remote_root,
+        "thread": {
+            "id": "remote-thread-1",
+            "title": "远端日报任务",
+            "preview": "远端也要进入日报",
+            "cwd": r"D:\home\chenkunze\slns\codeyun",
+            "created_at": remote_start,
+            "updated_at": remote_end,
+            "archived": False,
+            "project_label": "codeyun",
+            "project_secondary_label": None,
+            "workspace_root": r"D:\home\chenkunze\slns\codeyun",
+        },
+        "message_count": 2,
+        "user_message_count": 1,
+        "assistant_message_count": 1,
+        "messages": [
+            {
+                "seq": 1,
+                "timestamp": "2026-04-22T03:00:00+00:00",
+                "role": "user",
+                "phase": None,
+                "text": "远端也要进入日报",
+            },
+            {
+                "seq": 2,
+                "timestamp": "2026-04-22T03:10:00+00:00",
+                "role": "assistant",
+                "phase": "final_answer",
+                "text": "远端任务已经完成",
+            },
+        ],
+    }
+
+    remote_calls: list[str] = []
+
+    def fake_fetch_remote_json(remote_entry_arg, method, path, **kwargs):
+        assert remote_entry_arg.entry_id == remote_entry.entry_id
+        assert method == "GET"
+        remote_calls.append(path)
+        if path == "/codex/workload":
+            return remote_workload, None
+        if path == "/codex/threads/remote-thread-1":
+            return remote_detail, None
+        raise AssertionError(f"Unexpected remote path: {path}")
+
+    monkeypatch.setattr(device_entries_api, "_fetch_remote_json", fake_fetch_remote_json)
+
+    captured: list[dict[str, object]] = []
+
+    def fake_chat_with_provider(**kwargs):
+        captured.append(kwargs)
+        return {
+            "model": kwargs.get("model") or "gpt-5.4",
+            "content": "1. 综合\n1.1 已合并本机和远端设备的日报来源。",
+            "created_at": "2026-04-23T12:00:00+00:00",
+            "done_reason": "stop",
+        }
+
+    monkeypatch.setattr("backend.core.codex_sessions.chat_with_provider", fake_chat_with_provider)
+
+    start_response = client.post(
+        "/api/device-entries/codex/daily-summary/runs",
+        json={
+            "entry_ids": [local_entry_id, remote_entry.entry_id],
+            "date": "2026-04-22",
+        },
+    )
+    assert start_response.status_code == 200
+    run_payload = start_response.json()
+    assert run_payload["root_dir"] == "2 台设备各自默认 .codex"
+
+    completed_payload = _wait_for_multi_daily_summary_run(client, run_payload["id"])
+    assert completed_payload["status"] == "completed"
+    assert completed_payload["thread_count"] == 3
+    assert completed_payload["turn_count"] == 3
+    assert completed_payload["result"]["root_dir"] == "2 台设备各自默认 .codex"
+    assert {item["source_device_name"] for item in completed_payload["result"]["threads"]} == {
+        "当前机器",
+        "codepc_mi15",
+    }
+    assert any(item["title"] == "远端日报任务" for item in completed_payload["result"]["threads"])
+    assert remote_calls == ["/codex/workload", "/codex/threads/remote-thread-1"]
+
+    prompt = captured[0]["messages"][0]["content"]
+    assert "设备：当前机器" in prompt
+    assert "设备：codepc_mi15" in prompt
+    assert "远端也要进入日报" in prompt
+    assert "Memory Writing Agent" not in prompt
+
+    latest_response = client.get(
+        "/api/device-entries/codex/daily-summary/latest",
+        params={
+            "entry_ids": ",".join([local_entry_id, remote_entry.entry_id]),
+            "date": "2026-04-22",
+        },
+    )
+    assert latest_response.status_code == 200
+    assert latest_response.json()["id"] == run_payload["id"]
 
 
 def test_remote_device_entry_proxies_codex_requests(client, session: Session, auth_user, monkeypatch):

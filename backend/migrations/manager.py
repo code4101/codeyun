@@ -1657,6 +1657,253 @@ def v34_add_fanxiu_region_character_cultivation_level(session: Session):
     session.commit()
     print("  Added Fanxiu region character cultivation level.")
 
+
+def v35_add_resource_access_grant_table(session: Session):
+    """
+    Migration V35: Add resource-level ACL grants.
+    """
+    print("Running System Upgrade V35: Add resource access grant table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS resourceaccessgrant (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                resource_type VARCHAR NOT NULL,
+                resource_id VARCHAR NOT NULL,
+                subject_key VARCHAR NOT NULL,
+                subject_type VARCHAR NOT NULL,
+                subject_user_id INTEGER,
+                role VARCHAR NOT NULL DEFAULT 'viewer',
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                updated_by_user_id INTEGER,
+                CONSTRAINT uq_resourceaccessgrant_resource_subject
+                    UNIQUE (resource_type, resource_id, subject_key)
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_resource_type ON resourceaccessgrant (resource_type)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_resource_id ON resourceaccessgrant (resource_id)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_subject_key ON resourceaccessgrant (subject_key)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_subject_type ON resourceaccessgrant (subject_type)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_subject_user_id ON resourceaccessgrant (subject_user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_role ON resourceaccessgrant (role)",
+        "CREATE INDEX IF NOT EXISTS ix_resourceaccessgrant_resource_lookup ON resourceaccessgrant (resource_type, resource_id)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added resource access grant table.")
+
+
+def v36_remove_legacy_attendance_questionnaire_config(session: Session):
+    """
+    Migration V36: Remove legacy attendance questionnaire catalog storage.
+    """
+    print("Running System Upgrade V36: Remove legacy attendance questionnaire config...")
+
+    if _table_exists(session, "appsetting"):
+        row = session.execute(
+            text("SELECT value FROM appsetting WHERE key = :key"),
+            {"key": "attendance.service.extra"},
+        ).first()
+        raw_value = _first_scalar(row)
+        payload = _load_json_value(raw_value, {})
+        if isinstance(payload, dict):
+            for obsolete_key in ("feedback_course_names", "feedback_course_names_updated_at"):
+                payload.pop(obsolete_key, None)
+            if payload:
+                session.execute(
+                    text("UPDATE appsetting SET value = :value, updated_at = :updated_at WHERE key = :key"),
+                    {
+                        "key": "attendance.service.extra",
+                        "value": _dump_json_value(payload),
+                        "updated_at": time.time(),
+                    },
+                )
+            else:
+                session.execute(
+                    text("DELETE FROM appsetting WHERE key = :key"),
+                    {"key": "attendance.service.extra"},
+                )
+
+    if _table_exists(session, "featureaccesspolicy"):
+        rows = session.exec(text("SELECT subject_key, overrides FROM featureaccesspolicy")).all()
+        for row in rows:
+            mapping = getattr(row, "_mapping", None)
+            if mapping:
+                subject_key = mapping.get("subject_key")
+                raw_overrides = mapping.get("overrides")
+            else:
+                subject_key = row[0]
+                raw_overrides = row[1]
+            overrides = _load_json_value(raw_overrides, {})
+            if not isinstance(overrides, dict) or "attendance.wjx-templates" not in overrides:
+                continue
+            overrides.pop("attendance.wjx-templates", None)
+            if overrides:
+                session.execute(
+                    text("UPDATE featureaccesspolicy SET overrides = :overrides, updated_at = :updated_at WHERE subject_key = :subject_key"),
+                    {
+                        "subject_key": subject_key,
+                        "overrides": _dump_json_value(overrides),
+                        "updated_at": time.time(),
+                    },
+                )
+            else:
+                session.execute(
+                    text("DELETE FROM featureaccesspolicy WHERE subject_key = :subject_key"),
+                    {"subject_key": subject_key},
+                )
+
+    session.exec(text("DROP TABLE IF EXISTS attendancerun"))
+    session.exec(text("DROP TABLE IF EXISTS attendancetemplateasset"))
+    session.commit()
+    print("  Removed legacy attendance questionnaire config tables and settings.")
+
+
+def v37_add_note_metadata_feedback_tables(session: Session):
+    """
+    Migration V37: Add note metadata feedback and optimization run tables.
+    """
+    print("Running System Upgrade V37: Add note metadata feedback tables...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS notemetadatafeedback (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                user_id INTEGER NOT NULL,
+                note_id VARCHAR NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                source_kind VARCHAR NOT NULL DEFAULT 'manual_update',
+                source_kinds JSON NOT NULL DEFAULT '[]',
+                source_ref_id VARCHAR,
+                field_signature VARCHAR NOT NULL DEFAULT '',
+                field_names JSON NOT NULL DEFAULT '[]',
+                before_snapshot JSON,
+                after_snapshot JSON,
+                title_sample VARCHAR NOT NULL DEFAULT '',
+                content_summary VARCHAR NOT NULL DEFAULT '',
+                content_hash VARCHAR NOT NULL DEFAULT '',
+                content_length INTEGER NOT NULL DEFAULT 0,
+                event_count INTEGER NOT NULL DEFAULT 1,
+                consumer_run_id VARCHAR,
+                first_event_at FLOAT NOT NULL,
+                last_event_at FLOAT NOT NULL,
+                consumed_at FLOAT,
+                compressed_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS notemetadatafeedbackoptimizationrun (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                trigger_reason VARCHAR NOT NULL DEFAULT 'manual',
+                stage VARCHAR NOT NULL DEFAULT 'pending',
+                stage_label VARCHAR NOT NULL DEFAULT '等待中',
+                provider VARCHAR NOT NULL DEFAULT 'codex_cli',
+                model VARCHAR NOT NULL DEFAULT '',
+                sample_count INTEGER NOT NULL DEFAULT 0,
+                consumed_feedback_ids JSON NOT NULL DEFAULT '[]',
+                changed_files JSON NOT NULL DEFAULT '[]',
+                backup_json JSON NOT NULL DEFAULT '{}',
+                result_text VARCHAR NOT NULL DEFAULT '',
+                test_results JSON NOT NULL DEFAULT '{}',
+                error_message VARCHAR,
+                queue_task_id VARCHAR,
+                heartbeat_at FLOAT,
+                started_at FLOAT,
+                finished_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_user_id ON notemetadatafeedback (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_note_id ON notemetadatafeedback (note_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_status ON notemetadatafeedback (status)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_source_kind ON notemetadatafeedback (source_kind)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_source_ref_id ON notemetadatafeedback (source_ref_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_field_signature ON notemetadatafeedback (field_signature)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_content_hash ON notemetadatafeedback (content_hash)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_consumer_run_id ON notemetadatafeedback (consumer_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_first_event_at ON notemetadatafeedback (first_event_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_last_event_at ON notemetadatafeedback (last_event_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_consumed_at ON notemetadatafeedback (consumed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_compressed_at ON notemetadatafeedback (compressed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedback_pending_lookup ON notemetadatafeedback (status, user_id, note_id, field_signature, last_event_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_status ON notemetadatafeedbackoptimizationrun (status)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_trigger_reason ON notemetadatafeedbackoptimizationrun (trigger_reason)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_stage ON notemetadatafeedbackoptimizationrun (stage)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_provider ON notemetadatafeedbackoptimizationrun (provider)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_model ON notemetadatafeedbackoptimizationrun (model)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_queue_task_id ON notemetadatafeedbackoptimizationrun (queue_task_id)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_heartbeat_at ON notemetadatafeedbackoptimizationrun (heartbeat_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_started_at ON notemetadatafeedbackoptimizationrun (started_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_finished_at ON notemetadatafeedbackoptimizationrun (finished_at)",
+        "CREATE INDEX IF NOT EXISTS ix_notemetadatafeedbackoptimizationrun_created_at ON notemetadatafeedbackoptimizationrun (created_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added note metadata feedback tables.")
+
+
+def v38_add_auto_git_commit_run_table(session: Session):
+    """
+    Migration V38: Add automatic Git commit run table.
+    """
+    print("Running System Upgrade V38: Add auto git commit run table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS autogitcommitrun (
+                id VARCHAR PRIMARY KEY NOT NULL,
+                status VARCHAR NOT NULL DEFAULT 'pending',
+                trigger_reason VARCHAR NOT NULL DEFAULT 'scheduled',
+                run_date VARCHAR NOT NULL DEFAULT '',
+                stage VARCHAR NOT NULL DEFAULT 'pending',
+                stage_label VARCHAR NOT NULL DEFAULT '等待中',
+                repo_count INTEGER NOT NULL DEFAULT 0,
+                changed_repo_count INTEGER NOT NULL DEFAULT 0,
+                committed_repo_count INTEGER NOT NULL DEFAULT 0,
+                skipped_repo_count INTEGER NOT NULL DEFAULT 0,
+                failed_repo_count INTEGER NOT NULL DEFAULT 0,
+                result_json JSON NOT NULL DEFAULT '{}',
+                error_message VARCHAR,
+                queue_task_id VARCHAR,
+                heartbeat_at FLOAT,
+                started_at FLOAT,
+                finished_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_status ON autogitcommitrun (status)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_trigger_reason ON autogitcommitrun (trigger_reason)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_run_date ON autogitcommitrun (run_date)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_stage ON autogitcommitrun (stage)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_queue_task_id ON autogitcommitrun (queue_task_id)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_heartbeat_at ON autogitcommitrun (heartbeat_at)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_started_at ON autogitcommitrun (started_at)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_finished_at ON autogitcommitrun (finished_at)",
+        "CREATE INDEX IF NOT EXISTS ix_autogitcommitrun_created_at ON autogitcommitrun (created_at)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added auto git commit run table.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1694,6 +1941,10 @@ MIGRATIONS = [
     (32, "Add codex daily summary run table", v32_add_codex_daily_summary_run_table),
     (33, "Add Fanxiu region data tables", v33_add_fanxiu_region_data_tables),
     (34, "Add Fanxiu region character cultivation level", v34_add_fanxiu_region_character_cultivation_level),
+    (35, "Add resource access grant table", v35_add_resource_access_grant_table),
+    (36, "Remove legacy attendance questionnaire config", v36_remove_legacy_attendance_questionnaire_config),
+    (37, "Add note metadata feedback tables", v37_add_note_metadata_feedback_tables),
+    (38, "Add auto git commit run table", v38_add_auto_git_commit_run_table),
 ]
 
 def get_current_version(session: Session) -> int:

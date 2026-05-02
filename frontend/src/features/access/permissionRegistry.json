@@ -109,6 +109,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "tools.ai-wechat",
+      "title": "CodeClaw",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 50,
+      "route_paths": ["/tools/ai-wechat"],
+      "menu_paths": ["/tools/ai-wechat"],
+      "api_scopes": ["ai-tools.wechat"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "attendance-tools",
       "title": "禅寺考勤",
       "node_type": "group",
@@ -130,32 +141,10 @@
       "default_anonymous_allow": false
     },
     {
-      "key": "attendance.wjx",
-      "title": "问卷",
-      "node_type": "group",
-      "parent_key": "attendance-tools",
-      "sort_order": 20,
-      "route_paths": [],
-      "menu_paths": [],
-      "api_scopes": [],
-      "default_anonymous_allow": true
-    },
-    {
-      "key": "attendance.wjx-templates",
-      "title": "配置",
-      "node_type": "feature",
-      "parent_key": "attendance.wjx",
-      "sort_order": 10,
-      "route_paths": ["/attendance/questionnaire/catalog"],
-      "menu_paths": ["/attendance/questionnaire/catalog"],
-      "api_scopes": ["attendance-tools.wjx-templates"],
-      "default_anonymous_allow": false
-    },
-    {
       "key": "attendance.wjx-feedback",
-      "title": "采集",
+      "title": "问卷采集",
       "node_type": "feature",
-      "parent_key": "attendance.wjx",
+      "parent_key": "attendance-tools",
       "sort_order": 20,
       "route_paths": ["/attendance/questionnaire/collect"],
       "menu_paths": ["/attendance/questionnaire/collect"],
@@ -164,12 +153,12 @@
     },
     {
       "key": "attendance.wjx-data",
-      "title": "数据",
+      "title": "问卷数据",
       "node_type": "feature",
-      "parent_key": "attendance.wjx",
-      "sort_order": 30,
+      "parent_key": "attendance-tools",
+      "sort_order": 21,
       "route_paths": ["/attendance/questionnaire/data"],
-      "menu_paths": ["/attendance/questionnaire/data"],
+      "menu_paths": [],
       "api_scopes": ["attendance-tools.wjx-data"],
       "default_anonymous_allow": false
     },
@@ -492,7 +481,7 @@
     },
     {
       "key": "notes.sheets",
-      "title": "表格管理",
+      "title": "星云表格",
       "node_type": "feature",
       "parent_key": "note-tools",
       "sort_order": 30,
@@ -596,6 +585,17 @@
       "route_paths": ["/admin/images"],
       "menu_paths": ["/admin/images"],
       "api_scopes": ["admin-tools.images"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "admin.background-tasks",
+      "title": "后台任务",
+      "node_type": "feature",
+      "parent_key": "admin-tools",
+      "sort_order": 30,
+      "route_paths": ["/admin/background-tasks"],
+      "menu_paths": ["/admin/background-tasks"],
+      "api_scopes": ["admin-tools.background-tasks"],
       "default_anonymous_allow": false
     }
   ]

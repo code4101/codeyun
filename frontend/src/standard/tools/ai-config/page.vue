@@ -730,7 +730,7 @@ const customProviderDraft = reactive<CustomProviderDraft>({
 })
 
 const DEFAULT_CODEX_COMMAND = 'codex'
-const DEFAULT_CODEX_MODEL = 'gpt-5.4'
+const DEFAULT_CODEX_MODEL = 'gpt-5.5'
 
 const isAuthenticated = computed(() => userStore.isAuthenticated)
 const isAdmin = computed(() => userStore.isAdmin)

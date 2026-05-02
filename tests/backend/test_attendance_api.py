@@ -9,7 +9,6 @@ from backend.app import app
 from backend.api import attendance as attendance_api
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.attendance_service import (
-    DEFAULT_FEEDBACK_COURSE_NAMES,
     encrypt_attendance_secret,
     get_attendance_service_extra_config,
     get_attendance_service_order_operation_password,
@@ -20,17 +19,17 @@ from backend.core.feature_access import (
     FEATURE_ACCESS_SUBJECT_USER,
     save_feature_access_policy_overrides,
 )
-from backend.models import AttendanceAccountAsset, AttendanceOrderRefundHistory, AttendanceWjxDataEntry, User, UserDevice
-
-
-class ImmediateThread:
-    def __init__(self, *, target, kwargs=None, daemon=None):
-        self._target = target
-        self._kwargs = kwargs or {}
-        self.daemon = daemon
-
-    def start(self):
-        self._target(**self._kwargs)
+from backend.models import (
+    AttendanceAccountAsset,
+    AttendanceOrderRefundHistory,
+    AttendanceWjxDataEntry,
+    ResourceAccessGrant,
+    SheetDocument,
+    User,
+    UserDevice,
+    WorkbookDocument,
+    WorkbookSheetLink,
+)
 
 
 def _override_user(user: User):
@@ -66,12 +65,77 @@ def _grant_feature_access(session, *, user_id: int, feature_key: str) -> None:
     )
 
 
+def _create_attendance_summary_course_sheet(
+    session,
+    *,
+    rows: list[list[object]],
+    updated_at: float = 1234.0,
+    cell_meta: dict[str, object] | None = None,
+) -> None:
+    sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="note_sheet",
+        owner_key="attendance-summary",
+        sheet_key="courses",
+        title="课程",
+        document_json={
+            "schema_version": 1,
+            "columns": [
+                "课程类型",
+                "课程名称",
+                "在线考勤表",
+                "考勤负责人",
+                "课次链接",
+                "打卡链接",
+                "备注",
+                "返款频次",
+                "课程开始日期",
+                "课程结束日期",
+                "考勤实际完成结点",
+            ],
+            "rows": rows,
+            "cell_meta": cell_meta or {},
+        },
+        updated_at=updated_at,
+    )
+    session.add(sheet)
+    session.commit()
+
+
+def _create_attendance_workbook(session, owner: User) -> WorkbookDocument:
+    workbook = WorkbookDocument(
+        numeric_id=2,
+        title="武陵禅寺网课考勤汇总",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    session.add(workbook)
+    session.commit()
+    session.refresh(workbook)
+    return workbook
+
+
+def _get_anonymous_sheet_grant(session, sheet: SheetDocument) -> ResourceAccessGrant | None:
+    return session.exec(
+        select(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == "sheet")
+        .where(ResourceAccessGrant.resource_id == sheet.id)
+        .where(ResourceAccessGrant.subject_key == "anonymous")
+    ).first()
+
+
+def _course_row(course_name: str, online_sheet: str, completed_date: object = "") -> list[object]:
+    return ["", course_name, online_sheet, "", "", "", "", "", "", "", completed_date]
+
+
 def test_attendance_config_requires_attendance_access(client: TestClient, auth_user):
     response = client.get("/api/attendance/config")
     assert response.status_code == 403
 
 
-def test_attendance_config_and_template_crud(client: TestClient, session, test_device):
+def test_attendance_config_and_account_crud(client: TestClient, session, test_device):
     admin_user = _create_admin_user(session)
     _override_user(admin_user)
 
@@ -99,18 +163,6 @@ def test_attendance_config_and_template_crud(client: TestClient, session, test_d
         assert account["password"] == "plain-pass"
         assert account["name"] == "18850000000"
 
-        template_resp = client.post(
-            "/api/attendance/templates",
-            json={
-                "name": "问题反馈表",
-                "activity_id": "264266843",
-                "is_active": True,
-            },
-        )
-        assert template_resp.status_code == 200
-        template = template_resp.json()
-        assert template["activity_id"] == "264266843"
-
         config_resp = client.put(
             "/api/attendance/config",
             json={
@@ -130,10 +182,7 @@ def test_attendance_config_and_template_crud(client: TestClient, session, test_d
         assert config["service"]["order_operation_password_configured"] is True
         assert "password" not in config["current_account"]
         assert config["current_execution_device"]["entry_id"] == entry_id
-        assert config["fixed_wjx_template"]["activity_id"] == "264266843"
-        assert config["fixed_wjx_template"]["design_url"] == "https://www.wjx.cn/wjx/design/designstart.aspx?activity=264266843"
-        assert config["fixed_wjx_template"]["view_url"] == "https://www.wjx.cn/vm/PbkKDaK.aspx"
-        assert config["fixed_wjx_template"]["fill_url"] == "https://www.wjx.cn/vm/PbkKDaK.aspx"
+        assert "fixed_wjx_template" not in config
         assert get_attendance_service_extra_config(session)["scan_reminder_users"] == ["考勤后台", "文件传输助手"]
         assert get_attendance_service_extra_config(session)["order_lookup_mode"] == "db_only"
         assert get_attendance_service_extra_config(session)["order_operation_password_configured"] is True
@@ -142,154 +191,110 @@ def test_attendance_config_and_template_crud(client: TestClient, session, test_d
         _clear_user_override()
 
 
-def test_attendance_run_completes_and_persists_global_selection(client: TestClient, session, monkeypatch, test_device):
-    admin_user = _create_admin_user(session)
-    _override_user(admin_user)
-
-    try:
-        add_device_resp = client.post(
-            "/api/devices/add",
-            json={
-                "mode": "local",
-                "token": "attendance-local-token",
-                "alias": "当前考勤设备",
-            },
-        )
-        assert add_device_resp.status_code == 200
-        entry_id = add_device_resp.json()["id"]
-
-        account = client.post(
-            "/api/attendance/accounts",
-            json={
-                "login_username": "18850000001",
-                "password": "plain-pass",
-            },
-        ).json()
-
-        config_resp = client.put(
-            "/api/attendance/config",
-            json={
-                "execution_device_entry_id": entry_id,
-            },
-        )
-        assert config_resp.status_code == 200
-
-        monkeypatch.setattr(
-            "backend.api.attendance._execute_run_on_entry",
-            lambda entry_snapshot, execution_payload: {
-                "action": execution_payload["action"],
-                "visible_names": ["20260301第44届觉观", "20260309梵呗初阶"],
-                "hidden_applied": ["20260301第44届觉观"],
-                "added_applied": ["20260401第45届觉观"],
-            },
-        )
-        monkeypatch.setattr("backend.api.attendance.threading.Thread", ImmediateThread)
-
-        run_resp = client.post(
-            "/api/attendance/wjx-runs",
-            json={
-                "action": "apply",
-                "hide": ["20260301第44届觉观"],
-                "add": ["20260401第45届觉观"],
-            },
-        )
-        assert run_resp.status_code == 200
-        run_id = run_resp.json()["id"]
-
-        fetched_run = client.get(f"/api/attendance/wjx-runs/{run_id}")
-        assert fetched_run.status_code == 200
-        run = fetched_run.json()
-        assert run["status"] == "completed"
-        assert run["template_id"] == "wjx-course-catalog"
-        assert run["result"]["added_applied"] == ["20260401第45届觉观"]
-
-        config_resp = client.get("/api/attendance/config")
-        assert config_resp.status_code == 200
-        config = config_resp.json()
-        assert config["service"]["current_wjx_account_id"] == account["id"]
-        assert config["service"]["execution_device_entry_id"] == entry_id
-    finally:
-        _clear_user_override()
-
-
-def test_attendance_feedback_form_meta_is_public_and_tracks_course_catalog_updates(client: TestClient, session):
+def test_attendance_feedback_form_meta_reads_unfinished_courses_from_summary_sheet(client: TestClient, session):
     initial_meta = client.get("/api/attendance/wjx-feedback-form")
     assert initial_meta.status_code == 200
-    assert initial_meta.json()["course_names"] == DEFAULT_FEEDBACK_COURSE_NAMES
+    assert initial_meta.json()["course_names"] == []
+    assert initial_meta.json()["data_sheet_url"] == ""
 
-    admin_user = _create_admin_user(session)
-    _override_user(admin_user)
-
-    try:
-        update_resp = client.put(
-            "/api/attendance/wjx-feedback-form",
-            json={
-                "course_names": ["20260415第46届觉观", "20260420梵呗初阶", "20260415第46届觉观", "  "],
-            },
-        )
-        assert update_resp.status_code == 200
-        update_payload = update_resp.json()
-        assert update_payload["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
-
-        extra_config = get_attendance_service_extra_config(session)
-        assert extra_config["feedback_course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
-        assert extra_config["feedback_course_names_updated_at"] is not None
-    finally:
-        _clear_user_override()
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[
+            _course_row("2025念住闯关第2部分", "20250106念住闯关"),
+            _course_row("第40届念住", "20260501第40届念住"),
+            _course_row("第39届念住", "20260401第39届念住", "46142"),
+            _course_row("第46届觉观", "20260501第46届觉观"),
+            _course_row("重复课程", "20260501第46届觉观"),
+            _course_row("梵呗初阶", ""),
+        ],
+        cell_meta={
+            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu"}},
+            "1:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu40"}},
+            "3:2": {"link": {"url": "https://www.kdocs.cn/l/jueguan46"}},
+        },
+        updated_at=5678.0,
+    )
 
     updated_meta = client.get("/api/attendance/wjx-feedback-form")
     assert updated_meta.status_code == 200
     updated_payload = updated_meta.json()
-    assert updated_payload["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
-    assert updated_payload["course_names_updated_at"] is not None
-    assert updated_payload["template"]["fill_url"] == "https://www.wjx.cn/vm/PbkKDaK.aspx"
+    assert updated_payload["course_names"] == [
+        "20250106念住闯关",
+        "20260501第40届念住",
+        "20260501第46届觉观",
+        "梵呗初阶",
+    ]
+    assert updated_payload["course_options"] == [
+        {"name": "20250106念住闯关", "attendance_sheet_url": "https://www.kdocs.cn/l/nianzhu"},
+        {"name": "20260501第40届念住", "attendance_sheet_url": "https://www.kdocs.cn/l/nianzhu40"},
+        {"name": "20260501第46届觉观", "attendance_sheet_url": "https://www.kdocs.cn/l/jueguan46"},
+        {"name": "梵呗初阶", "attendance_sheet_url": ""},
+    ]
+    assert updated_payload["course_names_updated_at"] == 5678.0
+    assert updated_payload["data_sheet_url"] == ""
+    assert "template" not in updated_payload
+    assert "summary_sheet_url" not in updated_payload
+    source_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
+    assert _get_anonymous_sheet_grant(session, source_sheet) is None
 
 
-def test_attendance_feedback_form_meta_update_requires_manage_feature(client: TestClient, session, auth_user):
-    config = get_or_create_attendance_service_config(session)
-    config.granted_user_ids = [auth_user.id]
-    session.add(config)
-    session.commit()
+def test_attendance_feedback_form_meta_exposes_public_readonly_data_sheet_link(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[_course_row("第45届觉观", "20260401第45届觉观")],
+    )
 
-    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-feedback")
+    response = client.get("/api/attendance/wjx-feedback-form")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "summary_sheet_url" not in payload
+    assert re.fullmatch(r"/sheet/\d+", payload["data_sheet_url"])
 
-    denied_response = client.put(
+    summary_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
+    data_sheet_id = int(payload["data_sheet_url"].rsplit("/", 1)[-1])
+    data_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == data_sheet_id)).one()
+    assert _get_anonymous_sheet_grant(session, summary_sheet) is None
+    assert _get_anonymous_sheet_grant(session, data_sheet).role == "viewer"
+
+    public_summary_response = client.get("/api/note-sheets/sheets/4")
+    assert public_summary_response.status_code == 403
+    public_data_response = client.get(f"/api/note-sheets/sheets/{data_sheet_id}")
+    assert public_data_response.status_code == 200
+    assert public_data_response.json()["access"]["role"] == "viewer"
+
+
+def test_attendance_feedback_form_meta_is_read_only(client: TestClient, session, auth_user):
+    response = client.put(
         "/api/attendance/wjx-feedback-form",
         json={"course_names": ["20260415第46届觉观"]},
     )
-    assert denied_response.status_code == 403
-    assert denied_response.json()["detail"] == "当前账号无权访问该功能"
-
-    _grant_feature_access(session, user_id=auth_user.id, feature_key="attendance.wjx-templates")
-
-    allowed_response = client.put(
-        "/api/attendance/wjx-feedback-form",
-        json={"course_names": ["20260415第46届觉观", "20260420梵呗初阶"]},
-    )
-    assert allowed_response.status_code == 200
-    assert allowed_response.json()["course_names"] == ["20260415第46届觉观", "20260420梵呗初阶"]
+    assert response.status_code == 405
 
 
 def test_attendance_feedback_public_endpoints_bypass_feature_access_policy(client: TestClient, session):
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[_course_row("第45届觉观", "20260401第45届觉观")],
+    )
     save_feature_access_policy_overrides(
         session,
         subject_type=FEATURE_ACCESS_SUBJECT_ANONYMOUS,
         overrides={
             "attendance-tools": "deny",
-            "attendance.wjx": "deny",
             "attendance.wjx-feedback": "deny",
-            "attendance.wjx-templates": "deny",
         },
     )
 
     meta_response = client.get("/api/attendance/wjx-feedback-form")
     assert meta_response.status_code == 200
-    assert meta_response.json()["course_names"] == DEFAULT_FEEDBACK_COURSE_NAMES
+    assert meta_response.json()["course_names"] == ["20260401第45届觉观"]
 
     submit_response = client.post(
         "/api/attendance/wjx-feedback/submissions",
         json={
-            "course_name": DEFAULT_FEEDBACK_COURSE_NAMES[0],
+            "course_name": "20260401第45届觉观",
             "student_id_text": "1",
             "student_name": "游客测试",
             "correction_request": "公开入口仍可提交",
@@ -437,7 +442,7 @@ def test_attendance_account_is_singleton_and_uses_login_as_name(client: TestClie
         _clear_user_override()
 
 
-def test_attendance_config_allows_granted_order_user_without_password(client: TestClient, session, auth_user):
+def test_attendance_config_allows_order_user_without_service_grant(client: TestClient, session, auth_user):
     account = AttendanceAccountAsset(
         name="18850000088",
         login_username="18850000088",
@@ -463,7 +468,6 @@ def test_attendance_config_allows_granted_order_user_without_password(client: Te
     config = get_or_create_attendance_service_config(session)
     config.current_wjx_account_id = account.id
     config.execution_device_entry_id = device.entry_id
-    config.granted_user_ids = [auth_user.id]
     session.add(config)
     session.commit()
 
@@ -638,6 +642,232 @@ def test_attendance_wjx_data_public_listing_returns_full_rows(client: TestClient
     assert pending_response.status_code == 200
     assert pending_response.json()["total"] == 2
     assert [item["seq"] for item in pending_response.json()["items"]] == [802, 801]
+
+
+def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_entries(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    workbook = _create_attendance_workbook(session, admin_user)
+    session.add(
+        AttendanceWjxDataEntry(
+            activity_id="264266843",
+            seq=801,
+            submitted_at_text="2026/4/18 08:00:00",
+            source="微信",
+            course_name="20260401第45届觉观",
+            student_id_text="39",
+            student_name="吴菲",
+            correction_request="补第2课",
+            extra_note="备注1",
+            process_status="已处理",
+            process_note="已补登",
+            synced_at=1713426373.0,
+            created_at=1713426373.0,
+            updated_at=1713426373.0,
+        )
+    )
+    session.commit()
+    _override_user(admin_user)
+
+    try:
+        response = client.get("/api/attendance/wjx-data/sheet")
+        assert response.status_code == 200
+        payload = response.json()
+    finally:
+        _clear_user_override()
+
+    assert payload["workbook_id"] == 2
+    assert payload["path"] == f"/notes/sheets?workbook=2&sheet={payload['sheet_id']}"
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == payload["sheet_id"])).one()
+    assert sheet.title == "问卷数据"
+    assert sheet.scope == "notes"
+    assert sheet.document_json["columns"] == [
+        "序号",
+        "提交时间",
+        "来源",
+        "课程",
+        "学号",
+        "姓名",
+        "修正需求",
+        "补充说明",
+        "处理状态",
+    ]
+    assert "处理说明" not in sheet.document_json["columns"]
+    assert all(config.get("hidden") is not True for config in sheet.document_json["column_configs"].values())
+    assert sheet.document_json["rows"] == [[
+        "801",
+        "2026/4/18 08:00:00",
+        "微信",
+        "20260401第45届觉观",
+        "39",
+        "吴菲",
+        "补第2课",
+        "备注1",
+        "已补登",
+    ]]
+    link = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .where(WorkbookSheetLink.sheet_id == sheet.id)
+    ).one()
+    assert link.order_index == 10
+    public_grant = _get_anonymous_sheet_grant(session, sheet)
+    assert public_grant is not None
+    assert public_grant.role == "viewer"
+
+
+def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    _override_user(admin_user)
+    try:
+        location = client.get("/api/attendance/wjx-data/sheet").json()
+    finally:
+        _clear_user_override()
+
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    columns = sheet.document_json["columns"]
+    sheet.document_json = {
+        **sheet.document_json,
+        "rows": [[
+            "900",
+            "2026/4/18 08:00:00",
+            "微信",
+            "20260401第45届觉观",
+            "39",
+            "吴菲",
+            "旧问题",
+            "",
+            "人工已处理",
+        ]],
+    }
+    assert columns == sheet.document_json["columns"]
+    session.add(sheet)
+    session.commit()
+
+    submit_response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "20260408第39届念住",
+            "student_id_text": "2-17",
+            "student_name": "薛伟",
+            "correction_request": "今天没有收到退款",
+            "extra_note": "来自公开采集页",
+        },
+    )
+    assert submit_response.status_code == 200
+    assert submit_response.json()["seq"] == 901
+
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    rows_by_seq = {row[0]: row for row in sheet.document_json["rows"]}
+    assert rows_by_seq["901"] == [
+        "901",
+        submit_response.json()["submitted_at_text"],
+        "采集系统",
+        "20260408第39届念住",
+        "2-17",
+        "薛伟",
+        "今天没有收到退款",
+        "来自公开采集页",
+        "",
+    ]
+
+
+def test_attendance_feedback_submission_links_course_cell_from_summary_sheet(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[
+            _course_row("第39届念住", "20260408第39届念住"),
+        ],
+        cell_meta={
+            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
+        },
+    )
+
+    submit_response = client.post(
+        "/api/attendance/wjx-feedback/submissions",
+        json={
+            "course_name": "20260408第39届念住",
+            "student_id_text": "2-17",
+            "student_name": "薛伟",
+            "correction_request": "今天没有收到退款",
+            "extra_note": "来自公开采集页",
+        },
+    )
+    assert submit_response.status_code == 200
+
+    sheet = session.exec(
+        select(SheetDocument).where(SheetDocument.owner_type == attendance_api.ATTENDANCE_WJX_DATA_OWNER_TYPE)
+    ).one()
+    assert sheet.document_json["rows"][0][3] == "20260408第39届念住"
+    assert sheet.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu39"
+
+
+def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _create_attendance_workbook(session, admin_user)
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[
+            _course_row("第39届念住", "20260408第39届念住"),
+        ],
+        cell_meta={
+            "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu39"}},
+        },
+    )
+    _override_user(admin_user)
+    try:
+        location = client.get("/api/attendance/wjx-data/sheet").json()
+    finally:
+        _clear_user_override()
+
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    sheet.document_json = {
+        **sheet.document_json,
+        "rows": [[
+            "10",
+            "2026/4/18 08:00:00",
+            "微信",
+            "旧课程",
+            "39",
+            "吴菲",
+            "旧问题",
+            "",
+            "人工已处理",
+        ]],
+    }
+    session.add(sheet)
+    session.commit()
+
+    attendance_api._upsert_attendance_wjx_sheet_raw_rows(
+        session,
+        rows=[{
+            "序号": 10,
+            "提交答卷时间": "2026/4/19 08:00:00",
+            "来源": "微信",
+            "1、所属课程": "20260408第39届念住",
+            "2、学号": "2-17",
+            "3、姓名": "薛伟",
+            "4、修正需求": "更新后的问题",
+            "5、其他补充说明": "补充",
+        }],
+        actor=admin_user,
+    )
+
+    sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    assert sheet.document_json["rows"] == [[
+        "10",
+        "2026/4/19 08:00:00",
+        "微信",
+        "20260408第39届念住",
+        "2-17",
+        "薛伟",
+        "更新后的问题",
+        "补充",
+        "人工已处理",
+    ]]
+    assert sheet.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu39"
 
 
 def test_attendance_feedback_submission_persists_and_keeps_existing_rows(client: TestClient, session):

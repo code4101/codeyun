@@ -215,7 +215,8 @@ const deleteCurrentNote = async () => {
     });
 
     const noteId = currentNote.value.id;
-    await noteStore.deleteNote(noteId);
+    const deleted = await noteStore.deleteNote(noteId);
+    if (!deleted) return;
     currentNote.value = undefined;
     showCopyDialog.value = false;
     emit('delete', noteId);

@@ -1,20 +1,24 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ChatDotRound, FolderOpened, QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
+import { ChatDotRound, QuestionFilled, RefreshRight } from '@element-plus/icons-vue';
+import api from '@/api';
 import {
   fetchCodexOverviewForEntry,
   fetchCodexThreadDetailForEntry,
   fetchCodexThreadMessageImagesForEntry,
   fetchCodexWorkloadForEntry,
   type CodexOverviewResponse,
+  type CodexProjectGroup,
   type CodexThreadMessage,
   type CodexThreadMessageImage,
   type CodexThreadDetailResponse,
   type CodexThreadSummary,
+  type CodexWorkloadTurn,
   type CodexWorkloadResponse,
 } from '@/api/codexSessions';
-import { taskStore } from '@/store/taskStore';
+import { taskStore, type Device } from '@/store/taskStore';
+import { ensureNoteTypePaletteLoaded, type NoteTypePaletteItem } from '@/utils/nodeConfig';
 import { useResizablePane } from '@/utils/useResizablePane';
 
 const route = useRoute();
@@ -24,9 +28,9 @@ const isLoadingDevices = ref(false);
 const isLoadingOverview = ref(false);
 const isLoadingDetail = ref(false);
 const isLoadingWorkload = ref(false);
-const overview = ref<CodexOverviewResponse | null>(null);
-const threadDetail = ref<CodexThreadDetailResponse | null>(null);
-const workload = ref<CodexWorkloadResponse | null>(null);
+const overview = ref<CodexOverviewView | null>(null);
+const threadDetail = ref<CodexThreadDetailResponseView | null>(null);
+const workload = ref<CodexWorkloadView | null>(null);
 const workloadGranularity = ref<CodexWorkloadGranularity>('day');
 const workloadMetric = ref<CodexWorkloadMetric>('duration');
 const workloadDateRange = ref<[Date, Date] | null>(null);
@@ -36,8 +40,13 @@ const workloadError = ref('');
 const messageImageCache = ref<Record<string, CodexThreadMessageImage[]>>({});
 const messageImageErrors = ref<Record<string, string>>({});
 const messageImageLoading = ref<Record<string, boolean>>({});
+const noteTypePaletteItems = ref<NoteTypePaletteItem[]>([]);
+const noteProjectColorHints = ref<CodexNoteProjectColorHint[]>([]);
 const isProcessExpanded = ref(false);
 const selectedEntryId = ref('');
+const selectedThreadSourceEntryId = ref('');
+const selectedThreadRootDir = ref<string | undefined>();
+const currentThreadPage = ref(1);
 const rootDirInput = ref('');
 const selectedThreadId = ref('');
 const selectedMessageSeq = ref<number | null>(null);
@@ -58,6 +67,8 @@ const WORKLOAD_CHART_PADDING = {
   bottom: 26,
   left: 12,
 };
+const ALL_DEVICES_ENTRY_ID = '__all__';
+const THREAD_PAGE_SIZE = 100;
 const PROJECT_COLOR_PALETTE = [
   '#4f8ff7',
   '#5bb974',
@@ -161,6 +172,51 @@ interface CodexMessageRenderBlock {
   imageIndex?: number;
 }
 
+interface CodexDeviceSource {
+  source_entry_id?: string;
+  source_device_name?: string;
+  source_root_dir?: string;
+}
+
+interface CodexNoteCategoryAssignment {
+  key?: string | null;
+  weight?: number | null;
+}
+
+interface CodexNoteProjectColorHint {
+  title: string;
+  categoryKey: string;
+  updatedAt: number;
+}
+
+interface CodexNoteProjectColorNode {
+  title?: string | null;
+  primary_category?: string | null;
+  note_categories?: CodexNoteCategoryAssignment[] | null;
+  node_type?: string | null;
+  note_types?: CodexNoteCategoryAssignment[] | null;
+  updated_at?: number | null;
+}
+
+type CodexThreadSummaryView = CodexThreadSummary & CodexDeviceSource;
+type CodexThreadDetailResponseView = Omit<CodexThreadDetailResponse, 'thread'> & {
+  thread: CodexThreadDetailResponse['thread'] & CodexDeviceSource;
+};
+type CodexProjectGroupView = Omit<CodexProjectGroup, 'threads'> & {
+  threads: CodexThreadSummaryView[];
+};
+type CodexOverviewView = Omit<CodexOverviewResponse, 'groups'> & {
+  groups: CodexProjectGroupView[];
+  root_dirs?: string[];
+  returned_threads?: number;
+  has_more?: boolean;
+};
+type CodexWorkloadTurnView = CodexWorkloadTurn & CodexDeviceSource;
+type CodexWorkloadView = Omit<CodexWorkloadResponse, 'turns'> & {
+  turns: CodexWorkloadTurnView[];
+  root_dirs?: string[];
+};
+
 type CodexAggregatedWorkloadGranularity = 'day' | 'week' | 'month';
 type CodexWorkloadGranularity = 'detail' | CodexAggregatedWorkloadGranularity;
 type CodexWorkloadMetric = 'concurrency' | 'turn_count' | 'duration';
@@ -173,6 +229,21 @@ let latestWorkloadRequestId = 0;
 const devices = computed(() => taskStore.devices);
 const canLoad = computed(() => Boolean(selectedEntryId.value));
 const showDeviceEmptyState = computed(() => !isLoadingDevices.value && !devices.value.length);
+const isAllDevicesMode = computed(() => selectedEntryId.value === ALL_DEVICES_ENTRY_ID);
+const canOpenDailySummary = computed(() => canLoad.value);
+
+const formatDeviceLabel = (device?: Pick<Device, 'name' | 'device_id'> | null) => (
+  device?.name || device?.device_id || ''
+);
+
+const selectedDevice = computed(() => (
+  devices.value.find((device) => device.id === selectedEntryId.value) ?? null
+));
+
+const selectedSourceDevices = computed<Device[]>(() => {
+  if (isAllDevicesMode.value) return devices.value.slice();
+  return selectedDevice.value ? [selectedDevice.value] : [];
+});
 
 const toTimestamp = (value?: number | string | null) => {
   if (value === null || value === undefined || value === '') return 0;
@@ -187,22 +258,221 @@ const toTimestamp = (value?: number | string | null) => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const allThreads = computed<CodexThreadSummary[]>(() => (
-  (overview.value?.groups ?? [])
-    .flatMap((group) => group.threads)
-    .slice()
-    .sort((left, right) => {
-      const updatedDiff = toTimestamp(right.updated_at) - toTimestamp(left.updated_at);
-      if (updatedDiff !== 0) return updatedDiff;
+const toSecondTimestamp = (value?: number | string | null) => toTimestamp(value) / 1000;
 
-      const createdDiff = toTimestamp(right.created_at) - toTimestamp(left.created_at);
-      if (createdDiff !== 0) return createdDiff;
+const getThreadSourceEntryId = (thread?: CodexDeviceSource | null) => (
+  thread?.source_entry_id || selectedEntryId.value
+);
 
-      return right.id.localeCompare(left.id);
-    })
+const getThreadSourceRootDir = (thread?: CodexDeviceSource | null) => (
+  thread?.source_root_dir || normalizeRootDirForRequest()
+);
+
+const getThreadSelectionKey = (thread: CodexThreadSummaryView) => [
+  getThreadSourceEntryId(thread),
+  thread.id,
+].join('|');
+
+const isSelectedThread = (thread: CodexThreadSummaryView) => (
+  selectedThreadId.value === thread.id
+  && (selectedThreadSourceEntryId.value || selectedEntryId.value) === getThreadSourceEntryId(thread)
+);
+
+const withThreadSource = (
+  thread: CodexThreadSummary,
+  device: Device,
+  rootDir?: string | null,
+): CodexThreadSummaryView => ({
+  ...thread,
+  source_entry_id: device.id,
+  source_device_name: formatDeviceLabel(device),
+  source_root_dir: rootDir || undefined,
+});
+
+const buildOverviewGroupKey = (thread: CodexThreadSummaryView) => [
+  thread.project_label || thread.cwd || thread.id,
+  thread.project_secondary_label || '',
+].join('|');
+
+function getThreadPageOffset(page = currentThreadPage.value) {
+  return Math.max(0, page - 1) * THREAD_PAGE_SIZE;
+}
+
+const sortCodexThreadViews = (threads: CodexThreadSummaryView[]) => (
+  threads.slice().sort((left, right) => {
+    const updatedDiff = toTimestamp(right.updated_at) - toTimestamp(left.updated_at);
+    if (updatedDiff !== 0) return updatedDiff;
+
+    const createdDiff = toTimestamp(right.created_at) - toTimestamp(left.created_at);
+    if (createdDiff !== 0) return createdDiff;
+
+    return getThreadSelectionKey(right).localeCompare(getThreadSelectionKey(left));
+  })
+);
+
+const buildOverviewFromThreads = (
+  sourceThreads: CodexThreadSummaryView[],
+  base: Omit<CodexOverviewView, 'groups'>,
+): CodexOverviewView => {
+  const groupsByKey = new Map<string, CodexProjectGroupView>();
+
+  sourceThreads.forEach((thread) => {
+    const groupKey = buildOverviewGroupKey(thread);
+    const targetGroup = groupsByKey.get(groupKey) ?? {
+      key: groupKey,
+      label: thread.project_label,
+      secondary_label: thread.project_secondary_label,
+      cwd: thread.cwd ?? null,
+      workspace_root: thread.workspace_root ?? null,
+      thread_count: 0,
+      archived_thread_count: 0,
+      latest_updated_at: null,
+      threads: [],
+    };
+    targetGroup.threads.push(thread);
+    groupsByKey.set(groupKey, targetGroup);
+  });
+
+  const groups = Array.from(groupsByKey.values()).map((group) => {
+    const threads = sortCodexThreadViews(group.threads);
+    return {
+      ...group,
+      latest_updated_at: threads[0]?.updated_at ?? null,
+      thread_count: threads.length,
+      archived_thread_count: threads.filter(thread => thread.archived).length,
+      threads,
+    };
+  }).sort((left, right) => {
+    const updatedDiff = toTimestamp(right.latest_updated_at) - toTimestamp(left.latest_updated_at);
+    if (updatedDiff !== 0) return updatedDiff;
+    return right.label.localeCompare(left.label, 'zh-CN');
+  });
+
+  return {
+    ...base,
+    groups,
+  };
+};
+
+const buildMergedOverview = (
+  entries: Array<{ device: Device; overview: CodexOverviewResponse }>,
+  page: number,
+): CodexOverviewView => {
+  const rootDirs = Array.from(new Set(entries.map(item => item.overview.root_dir).filter(Boolean)));
+  const loadedThreads = entries.flatMap(({ device, overview: itemOverview }) => (
+    itemOverview.groups.flatMap(group => (
+      group.threads.map(thread => withThreadSource(thread, device, itemOverview.root_dir))
+    ))
+  ));
+  const totalThreads = entries.reduce((sum, item) => sum + (item.overview.total_threads || 0), 0);
+  const pageOffset = getThreadPageOffset(page);
+  const pageThreads = sortCodexThreadViews(loadedThreads).slice(pageOffset, pageOffset + THREAD_PAGE_SIZE);
+  return buildOverviewFromThreads(pageThreads, {
+    root_dir: rootDirs.length === 1 ? rootDirs[0] : `${entries.length} 台设备各自默认 .codex`,
+    default_root_dir: '',
+    state_db_path: '',
+    session_index_path: '',
+    global_state_path: '',
+    total_groups: entries.reduce((sum, item) => sum + (item.overview.total_groups || 0), 0),
+    total_threads: totalThreads,
+    archived_threads: entries.reduce((sum, item) => sum + (item.overview.archived_threads || 0), 0),
+    thread_offset: pageOffset,
+    thread_limit: THREAD_PAGE_SIZE,
+    returned_threads: pageThreads.length,
+    has_more: pageOffset + pageThreads.length < totalThreads,
+    root_dirs: rootDirs,
+  });
+};
+
+const buildWorkloadSegmentsFromTurns = (turns: CodexWorkloadTurnView[]): CodexWorkloadResponse['segments'] => {
+  if (!turns.length) return [];
+
+  const startCounts = new Map<number, number>();
+  const endCounts = new Map<number, number>();
+  const points = new Set<number>();
+  turns.forEach((turn) => {
+    const startAt = Number(turn.start_at || 0);
+    const endAt = Math.max(Number(turn.end_at || startAt), startAt);
+    startCounts.set(startAt, (startCounts.get(startAt) ?? 0) + 1);
+    endCounts.set(endAt, (endCounts.get(endAt) ?? 0) + 1);
+    points.add(startAt);
+    points.add(endAt);
+  });
+
+  const sortedPoints = Array.from(points).sort((left, right) => left - right);
+  const segments: CodexWorkloadResponse['segments'] = [];
+  let concurrency = 0;
+  sortedPoints.slice(0, -1).forEach((point, index) => {
+    concurrency = Math.max(0, concurrency - (endCounts.get(point) ?? 0) + (startCounts.get(point) ?? 0));
+    const nextPoint = sortedPoints[index + 1];
+    if (nextPoint <= point || concurrency <= 0) return;
+    segments.push({
+      start_at: point,
+      end_at: nextPoint,
+      duration_seconds: nextPoint - point,
+      concurrency,
+    });
+  });
+  return segments;
+};
+
+const buildMergedWorkload = (
+  entries: Array<{ device: Device; workload: CodexWorkloadResponse }>,
+): CodexWorkloadView => {
+  const rootDirs = Array.from(new Set(entries.map(item => item.workload.root_dir).filter(Boolean)));
+  const turns = entries.flatMap(({ device, workload: itemWorkload }) => (
+    itemWorkload.turns.map((turn) => ({
+      ...turn,
+      id: `${device.id}:${turn.id}`,
+      source_entry_id: device.id,
+      source_device_name: formatDeviceLabel(device),
+      source_root_dir: itemWorkload.root_dir || undefined,
+    }))
+  )).sort((left, right) => (
+    toTimestamp(left.start_at) - toTimestamp(right.start_at)
+    || getThreadSourceEntryId(left).localeCompare(getThreadSourceEntryId(right))
+    || left.thread_id.localeCompare(right.thread_id)
+    || left.turn_index - right.turn_index
+  ));
+  const segments = buildWorkloadSegmentsFromTurns(turns);
+  return {
+    root_dir: rootDirs.length === 1 ? rootDirs[0] : `${entries.length} 台设备各自默认 .codex`,
+    total_threads: new Set(turns.map(turn => `${turn.source_entry_id}:${turn.thread_id}`)).size,
+    total_turns: turns.length,
+    skipped_threads: entries.reduce((sum, item) => sum + (item.workload.skipped_threads || 0), 0),
+    max_concurrency: Math.max(0, ...segments.map(segment => segment.concurrency)),
+    time_range_start: turns.length ? Math.min(...turns.map(turn => toSecondTimestamp(turn.start_at))) : null,
+    time_range_end: turns.length ? Math.max(...turns.map(turn => toSecondTimestamp(turn.end_at))) : null,
+    turns,
+    segments,
+    root_dirs: rootDirs,
+  };
+};
+
+const allThreads = computed<CodexThreadSummaryView[]>(() => (
+  sortCodexThreadViews((overview.value?.groups ?? []).flatMap((group) => group.threads))
 ));
 
+const totalThreadCount = computed(() => overview.value?.total_threads ?? allThreads.value.length);
+const totalThreadPages = computed(() => Math.max(1, Math.ceil(totalThreadCount.value / THREAD_PAGE_SIZE)));
+const currentThreadPageStart = computed(() => (
+  totalThreadCount.value > 0 ? getThreadPageOffset() + 1 : 0
+));
+const currentThreadPageEnd = computed(() => Math.min(
+  getThreadPageOffset() + allThreads.value.length,
+  totalThreadCount.value,
+));
+const threadPaneCountLabel = computed(() => {
+  if (!totalThreadCount.value) return '0 条';
+  return `第 ${currentThreadPage.value}/${totalThreadPages.value} 页 · ${formatCount(totalThreadCount.value, ' 条')}`;
+});
+const threadPaginationText = computed(() => {
+  if (!totalThreadCount.value) return '暂无会话';
+  return `${currentThreadPageStart.value}-${currentThreadPageEnd.value} / ${totalThreadCount.value}`;
+});
+
 const normalizeRootDirForRequest = () => {
+  if (isAllDevicesMode.value) return undefined;
   const value = rootDirInput.value.trim();
   return value || undefined;
 };
@@ -250,13 +520,50 @@ const isSameCalendarDay = (
 
 const formatCount = (value?: number | null, suffix = '') => `${value ?? 0}${suffix}`;
 
-const extractErrorMessage = (error: any, fallback: string) =>
-  error?.response?.data?.detail || error?.message || fallback;
+const extractErrorMessage = (error: any, fallback: string) => {
+  const detail = error?.response?.data?.detail;
+  const message = typeof detail === 'string' ? detail : error?.message;
+  return typeof message === 'string' && message.trim() ? message : fallback;
+};
 
-const formatThreadSource = (thread: CodexThreadSummary) => {
+type CodexDeviceRequestFailure = {
+  device: Device;
+  error: unknown;
+};
+
+const createDeviceRequestFailure = (device: Device, error: unknown): CodexDeviceRequestFailure => ({
+  device,
+  error,
+});
+
+const compactFailureReason = (value: string, maxLength = 80) => {
+  const compact = value.replace(/\s+/g, ' ').trim();
+  if (compact.length <= maxLength) return compact;
+  return `${compact.slice(0, maxLength)}...`;
+};
+
+const formatDeviceFailureDetails = (results: PromiseSettledResult<unknown>[], fallback: string) => {
+  const rejected = results.filter((item): item is PromiseRejectedResult => item.status === 'rejected');
+  if (!rejected.length) return '';
+
+  const details = rejected.map((item, index) => {
+    const reason = item.reason as Partial<CodexDeviceRequestFailure> | undefined;
+    const device = reason?.device;
+    const error = reason?.error ?? item.reason;
+    const deviceLabel = formatDeviceLabel(device) || device?.id || `第 ${index + 1} 台设备`;
+    const message = compactFailureReason(extractErrorMessage(error, fallback));
+    return `${deviceLabel}（${message}）`;
+  });
+  return `${rejected.length} 台设备读取失败：${details.join('；')}`;
+};
+
+const formatThreadSource = (thread: CodexThreadSummaryView) => {
   const parts = [thread.project_label];
   if (thread.project_secondary_label) {
     parts.push(thread.project_secondary_label);
+  }
+  if (isAllDevicesMode.value && thread.source_device_name) {
+    parts.push(thread.source_device_name);
   }
   return parts.join(' · ');
 };
@@ -354,8 +661,8 @@ const selectedMessage = computed<CodexThreadMessage | null>(() => selectedSummar
 const hasMessageImagePlaceholder = (message: CodexThreadMessage) => /<image>\s*<\/image>/i.test(message.text);
 
 const buildMessageImageCacheKey = (threadId: string, messageSeq: number) => [
-  selectedEntryId.value,
-  normalizeRootDirForRequest() || '',
+  selectedThreadSourceEntryId.value || selectedEntryId.value,
+  selectedThreadRootDir.value || normalizeRootDirForRequest() || '',
   threadId,
   messageSeq,
 ].join('|');
@@ -445,7 +752,8 @@ const getMessageImagePlaceholderLabel = (message: CodexThreadMessage, threadId =
 };
 
 const loadMessageImages = async (threadId: string, message: CodexThreadMessage) => {
-  if (!selectedEntryId.value || !hasMessageImagePlaceholder(message)) return;
+  const sourceEntryId = selectedThreadSourceEntryId.value || selectedEntryId.value;
+  if (!sourceEntryId || !hasMessageImagePlaceholder(message)) return;
   const cacheKey = buildMessageImageCacheKey(threadId, message.seq);
   if (messageImageCache.value[cacheKey] || messageImageLoading.value[cacheKey]) return;
 
@@ -457,10 +765,10 @@ const loadMessageImages = async (threadId: string, message: CodexThreadMessage) 
 
   try {
     const payload = await fetchCodexThreadMessageImagesForEntry(
-      selectedEntryId.value,
+      sourceEntryId,
       threadId,
       message.seq,
-      normalizeRootDirForRequest(),
+      selectedThreadRootDir.value || normalizeRootDirForRequest(),
     );
     messageImageCache.value = {
       ...messageImageCache.value,
@@ -540,6 +848,128 @@ const hashText = (text: string) => {
     hash = ((hash << 5) - hash + ch.charCodeAt(0)) | 0;
   }
   return Math.abs(hash);
+};
+
+const normalizeProjectPaletteToken = (value?: string | null) => (
+  String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^custom_/, '')
+    .replace(/[\s._\-|·/\\:]+/g, '')
+);
+
+const collectProjectPaletteCandidates = (...values: Array<string | null | undefined>) => {
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const addCandidate = (value?: string | null) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed || seen.has(trimmed)) return;
+    seen.add(trimmed);
+    candidates.push(trimmed);
+  };
+
+  values.forEach((value) => {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) return;
+    addCandidate(trimmed);
+    trimmed.split(/[|·]/).forEach(part => addCandidate(part));
+    const pathParts = trimmed.split(/[\\/]/).filter(Boolean);
+    addCandidate(pathParts[pathParts.length - 1]);
+  });
+  return candidates;
+};
+
+const noteTypePaletteLookup = computed(() => {
+  const lookup = new Map<string, NoteTypePaletteItem>();
+  const addLookup = (key: string, item: NoteTypePaletteItem, replace = false) => {
+    const normalized = normalizeProjectPaletteToken(key);
+    if (normalized && (replace || !lookup.has(normalized))) {
+      lookup.set(normalized, item);
+    }
+  };
+
+  noteTypePaletteItems.value.forEach((item) => {
+    addLookup(item.key, item);
+    addLookup(item.label, item);
+    const shouldPreferCategoryRoot = /(?:综合|总览|整体)$/.test(item.label);
+    item.label
+      .split(/[\/／>＞:：]/)
+      .forEach(part => addLookup(part, item, shouldPreferCategoryRoot));
+    if (item.key.startsWith('custom_')) {
+      addLookup(item.key.slice('custom_'.length), item);
+    }
+  });
+  return lookup;
+});
+
+const noteTypePaletteByKey = computed(() => (
+  noteTypePaletteItems.value.reduce<Record<string, NoteTypePaletteItem>>((result, item) => {
+    result[item.key] = item;
+    return result;
+  }, {})
+));
+
+const noteProjectExactPaletteLookup = computed(() => {
+  const paletteByKey = noteTypePaletteByKey.value;
+  const lookup = new Map<string, NoteTypePaletteItem>();
+  noteProjectColorHints.value.forEach((hint) => {
+    const normalizedTitle = normalizeProjectPaletteToken(hint.title);
+    const paletteItem = paletteByKey[hint.categoryKey];
+    if (normalizedTitle && paletteItem && !lookup.has(normalizedTitle)) {
+      lookup.set(normalizedTitle, paletteItem);
+    }
+  });
+  return lookup;
+});
+
+const resolveNoteProjectPaletteItem = (candidates: string[]) => {
+  const exactLookup = noteProjectExactPaletteLookup.value;
+  for (const candidate of candidates) {
+    const item = exactLookup.get(normalizeProjectPaletteToken(candidate));
+    if (item) return item;
+  }
+
+  const paletteByKey = noteTypePaletteByKey.value;
+  for (const candidate of candidates) {
+    const normalizedCandidate = normalizeProjectPaletteToken(candidate);
+    if (normalizedCandidate.length < 3) continue;
+
+    const categoryScores = new Map<string, { score: number; updatedAt: number }>();
+    noteProjectColorHints.value.forEach((hint) => {
+      const normalizedTitle = normalizeProjectPaletteToken(hint.title);
+      if (!normalizedTitle.includes(normalizedCandidate)) return;
+      const current = categoryScores.get(hint.categoryKey) ?? { score: 0, updatedAt: 0 };
+      current.score += normalizedTitle.startsWith(normalizedCandidate) ? 3 : 1;
+      current.updatedAt = Math.max(current.updatedAt, hint.updatedAt);
+      categoryScores.set(hint.categoryKey, current);
+    });
+
+    const bestCategoryKey = Array.from(categoryScores.entries()).sort((left, right) => {
+      const scoreDiff = right[1].score - left[1].score;
+      if (scoreDiff !== 0) return scoreDiff;
+      return right[1].updatedAt - left[1].updatedAt;
+    })[0]?.[0];
+    const paletteItem = bestCategoryKey ? paletteByKey[bestCategoryKey] : null;
+    if (paletteItem) return paletteItem;
+  }
+  return null;
+};
+
+const resolveProjectPaletteItem = (
+  projectLabel?: string | null,
+  projectSecondaryLabel?: string | null,
+  projectKey?: string | null,
+) => {
+  const candidates = collectProjectPaletteCandidates(projectLabel, projectSecondaryLabel, projectKey);
+  const notePaletteItem = resolveNoteProjectPaletteItem(candidates);
+  if (notePaletteItem) return notePaletteItem;
+
+  const lookup = noteTypePaletteLookup.value;
+  for (const candidate of candidates) {
+    const item = lookup.get(normalizeProjectPaletteToken(candidate));
+    if (item) return item;
+  }
+  return null;
 };
 
 const hexToRgb = (hex: string) => {
@@ -663,13 +1093,26 @@ const buildProjectColorKey = (
   workspaceRoot || fallbackScope,
 ].filter(Boolean).join(' | ');
 
-const resolveProjectBaseColor = (projectKey?: string | null) => {
+const resolveFallbackProjectBaseColor = (projectKey?: string | null) => {
   const paletteIndex = hashText(projectKey || 'codex-default-project') % PROJECT_COLOR_PALETTE.length;
   return PROJECT_COLOR_PALETTE[paletteIndex];
 };
 
-const resolveWorkloadProjectColor = (projectKey?: string | null) => {
-  return resolveProjectBaseColor(projectKey);
+const resolveProjectBaseColor = (
+  projectKey?: string | null,
+  projectLabel?: string | null,
+  projectSecondaryLabel?: string | null,
+) => (
+  resolveProjectPaletteItem(projectLabel, projectSecondaryLabel, projectKey)?.color
+  || resolveFallbackProjectBaseColor(projectKey)
+);
+
+const resolveWorkloadProjectColor = (
+  projectKey?: string | null,
+  projectLabel?: string | null,
+  projectSecondaryLabel?: string | null,
+) => {
+  return resolveProjectBaseColor(projectKey, projectLabel, projectSecondaryLabel);
 };
 
 const resolveMessageSurfaceColor = (message: CodexThreadMessage) => {
@@ -685,7 +1128,14 @@ const resolveMessageSurfaceColor = (message: CodexThreadMessage) => {
     thread?.cwd,
   );
   const fadeFactor = resolveUserFadeFactor(message.timestamp);
-  return mixWithWhite(resolveProjectBaseColor(projectKey), fadeFactor);
+  return mixWithWhite(
+    resolveProjectBaseColor(
+      projectKey,
+      thread?.project_label || thread?.group_label,
+      thread?.project_secondary_label || thread?.group_secondary_label,
+    ),
+    fadeFactor,
+  );
 };
 
 const getMessageSurfaceStyle = (message: CodexThreadMessage) => {
@@ -699,7 +1149,7 @@ const getMessageSurfaceStyle = (message: CodexThreadMessage) => {
   };
 };
 
-const getThreadSurfaceStyle = (thread: CodexThreadSummary) => {
+const getThreadSurfaceStyle = (thread: CodexThreadSummaryView) => {
   const projectKey = buildProjectColorKey(
     thread.project_label,
     thread.project_secondary_label,
@@ -707,7 +1157,7 @@ const getThreadSurfaceStyle = (thread: CodexThreadSummary) => {
     thread.cwd,
   );
   const fadedColor = mixWithWhite(
-    resolveProjectBaseColor(projectKey),
+    resolveProjectBaseColor(projectKey, thread.project_label, thread.project_secondary_label),
     resolveUserFadeFactor(thread.updated_at ?? thread.created_at),
   );
   const textTokens = resolveSurfaceTextTokens(fadedColor);
@@ -1340,6 +1790,8 @@ const buildWorkloadChartModel = (
     startMs: toTimestamp(turn.start_at),
     endMs: toTimestamp(turn.end_at),
     projectKey: buildWorkloadTurnProjectKey(turn),
+    projectPrimaryLabel: turn.project_label || turn.group_label,
+    projectSecondaryLabel: turn.project_secondary_label,
     projectLabel: formatWorkloadProjectLabel(turn.project_label, turn.project_secondary_label),
   }));
 
@@ -1383,7 +1835,7 @@ const buildWorkloadChartModel = (
         key: turn.projectKey,
         label: turn.projectLabel,
         count: 0,
-        fill: resolveWorkloadProjectColor(turn.projectKey),
+        fill: resolveWorkloadProjectColor(turn.projectKey, turn.projectPrimaryLabel, turn.projectSecondaryLabel),
       };
       bucket.projects.set(turn.projectKey, created);
       return created;
@@ -1541,7 +1993,7 @@ const buildWorkloadChartModel = (
           key: turn.projectKey,
           label: turn.projectLabel,
           count: projectContribution,
-          fill: resolveWorkloadProjectColor(turn.projectKey),
+          fill: resolveWorkloadProjectColor(turn.projectKey, turn.projectPrimaryLabel, turn.projectSecondaryLabel),
         });
       });
     const projectSlices = Array.from(activeProjects.values())
@@ -1746,22 +2198,68 @@ const {
   },
 });
 
+const resolveNoteProjectCategoryKey = (note: CodexNoteProjectColorNode) => (
+  note.primary_category
+  || note.note_categories?.find(item => item?.key)?.key
+  || note.node_type
+  || note.note_types?.find(item => item?.key)?.key
+  || ''
+);
+
+const loadNoteProjectColorHints = async () => {
+  try {
+    const response = await api.post<{ nodes: CodexNoteProjectColorNode[] }>('/notes/query', {
+      scope: { mode: 'all' },
+      rules: [],
+      order_by: 'updated_at',
+      order_desc: true,
+      limit: 5000,
+      include_edges: false,
+    });
+    noteProjectColorHints.value = (response.data.nodes || [])
+      .map((note) => ({
+        title: String(note.title || '').trim(),
+        categoryKey: String(resolveNoteProjectCategoryKey(note) || '').trim(),
+        updatedAt: Number(note.updated_at || 0),
+      }))
+      .filter(hint => hint.title && hint.categoryKey);
+  } catch (error) {
+    console.warn('Failed to load note project colors for Codex project colors:', error);
+  }
+};
+
+const loadNoteTypePalette = async (force = false) => {
+  try {
+    noteTypePaletteItems.value = await ensureNoteTypePaletteLoaded(force);
+    await loadNoteProjectColorHints();
+  } catch (error) {
+    console.warn('Failed to load note type palette for Codex project colors:', error);
+  }
+};
+
 const ensureDevicesLoaded = async () => {
   if (isLoadingDevices.value) return;
   isLoadingDevices.value = true;
   try {
     await taskStore.fetchDevices();
     if (!selectedEntryId.value && taskStore.devices.length) {
-      selectedEntryId.value = taskStore.devices[0].id;
+      selectedEntryId.value = taskStore.devices.length > 1 ? ALL_DEVICES_ENTRY_ID : taskStore.devices[0].id;
+    } else if (selectedEntryId.value === ALL_DEVICES_ENTRY_ID && taskStore.devices.length < 2) {
+      selectedEntryId.value = taskStore.devices[0]?.id || '';
     }
   } finally {
     isLoadingDevices.value = false;
   }
 };
 
-const loadThreadDetail = async (threadId: string) => {
-  if (!selectedEntryId.value || !threadId) {
+const loadThreadDetail = async (thread: CodexThreadSummaryView | null) => {
+  const threadId = thread?.id || '';
+  const sourceEntryId = thread ? getThreadSourceEntryId(thread) : selectedEntryId.value;
+  const sourceRootDir = thread ? getThreadSourceRootDir(thread) : normalizeRootDirForRequest();
+  if (!sourceEntryId || !threadId) {
     selectedThreadId.value = '';
+    selectedThreadSourceEntryId.value = '';
+    selectedThreadRootDir.value = undefined;
     selectedMessageSeq.value = null;
     threadDetail.value = null;
     detailError.value = '';
@@ -1770,23 +2268,34 @@ const loadThreadDetail = async (threadId: string) => {
   }
 
   const previousThreadId = selectedThreadId.value;
+  const previousSourceEntryId = selectedThreadSourceEntryId.value;
   const previousMessageSeq = selectedMessageSeq.value;
-  const shouldResetMessageScroll = threadId !== selectedThreadId.value;
+  const shouldResetMessageScroll = threadId !== selectedThreadId.value || sourceEntryId !== selectedThreadSourceEntryId.value;
   selectedThreadId.value = threadId;
+  selectedThreadSourceEntryId.value = sourceEntryId;
+  selectedThreadRootDir.value = sourceRootDir;
   detailError.value = '';
   const requestId = ++latestDetailRequestId;
   isLoadingDetail.value = true;
   try {
     const payload = await fetchCodexThreadDetailForEntry(
-      selectedEntryId.value,
+      sourceEntryId,
       threadId,
-      normalizeRootDirForRequest(),
+      sourceRootDir,
     );
     if (requestId !== latestDetailRequestId) return;
-    threadDetail.value = payload;
+    threadDetail.value = {
+      ...payload,
+      thread: {
+        ...payload.thread,
+        source_entry_id: sourceEntryId,
+        source_device_name: thread?.source_device_name,
+        source_root_dir: sourceRootDir,
+      },
+    };
     const summaryItems = buildMessageSummaryItems(payload.messages);
     const nextSelectedSummary = (
-      threadId === previousThreadId
+      threadId === previousThreadId && sourceEntryId === previousSourceEntryId
         ? summaryItems.find((item) => item.displayMessage.seq === previousMessageSeq)
         : null
     ) ?? summaryItems[0] ?? null;
@@ -1810,7 +2319,8 @@ const loadThreadDetail = async (threadId: string) => {
 };
 
 const loadWorkload = async () => {
-  if (!selectedEntryId.value) {
+  const sourceDevices = selectedSourceDevices.value;
+  if (!sourceDevices.length) {
     workload.value = null;
     workloadError.value = '';
     return;
@@ -1820,7 +2330,29 @@ const loadWorkload = async () => {
   const requestId = ++latestWorkloadRequestId;
   isLoadingWorkload.value = true;
   try {
-    const payload = await fetchCodexWorkloadForEntry(selectedEntryId.value, normalizeRootDirForRequest());
+    const payload = isAllDevicesMode.value
+      ? await (async () => {
+          const results = await Promise.allSettled(
+            sourceDevices.map(async (device) => {
+              try {
+                return {
+                  device,
+                  workload: await fetchCodexWorkloadForEntry(device.id),
+                };
+              } catch (error) {
+                throw createDeviceRequestFailure(device, error);
+              }
+            }),
+          );
+          const fulfilled = results
+            .filter((item): item is PromiseFulfilledResult<{ device: Device; workload: CodexWorkloadResponse }> => item.status === 'fulfilled')
+            .map(item => item.value);
+          if (!fulfilled.length) {
+            throw new Error(formatDeviceFailureDetails(results, '读取 Codex 工作强度失败') || '读取 Codex 工作强度失败');
+          }
+          return buildMergedWorkload(fulfilled);
+        })()
+      : await fetchCodexWorkloadForEntry(sourceDevices[0].id, normalizeRootDirForRequest());
     if (requestId !== latestWorkloadRequestId) return;
     workload.value = payload;
   } catch (error: any) {
@@ -1837,25 +2369,37 @@ const loadWorkload = async () => {
 const syncSelectionAfterOverview = async (preserveThread = true) => {
   const threads = allThreads.value;
   const nextThread = preserveThread
-    ? threads.find((item) => item.id === selectedThreadId.value) ?? threads[0] ?? null
+    ? threads.find((item) => item.id === selectedThreadId.value && getThreadSourceEntryId(item) === selectedThreadSourceEntryId.value) ?? threads[0] ?? null
     : threads[0] ?? null;
 
   if (!nextThread) {
     selectedThreadId.value = '';
+    selectedThreadSourceEntryId.value = '';
+    selectedThreadRootDir.value = undefined;
     selectedMessageSeq.value = null;
     threadDetail.value = null;
     detailError.value = '';
     return;
   }
 
-  await loadThreadDetail(nextThread.id);
+  await loadThreadDetail(nextThread);
 };
 
+const buildOverviewRequestParams = (threadOffset: number, threadLimit = THREAD_PAGE_SIZE) => ({
+  rootDir: normalizeRootDirForRequest(),
+  threadOffset,
+  threadLimit,
+});
+
 const loadOverview = async (preserveThread = true) => {
-  if (!selectedEntryId.value) {
+  if (isLoadingOverview.value) return;
+  const sourceDevices = selectedSourceDevices.value;
+  if (!sourceDevices.length) {
     overview.value = null;
     threadDetail.value = null;
     workload.value = null;
+    selectedThreadSourceEntryId.value = '';
+    selectedThreadRootDir.value = undefined;
     overviewError.value = '';
     detailError.value = '';
     workloadError.value = '';
@@ -1866,14 +2410,47 @@ const loadOverview = async (preserveThread = true) => {
 
   overviewError.value = '';
   const requestId = ++latestOverviewRequestId;
+  const page = currentThreadPage.value;
+  const pageOffset = getThreadPageOffset(page);
+  const pageEnd = pageOffset + THREAD_PAGE_SIZE;
   isLoadingOverview.value = true;
   resetMessageImageState();
   isProcessExpanded.value = false;
   try {
-    const payload = await fetchCodexOverviewForEntry(selectedEntryId.value, normalizeRootDirForRequest());
+    const payload = isAllDevicesMode.value
+      ? await (async () => {
+          const results = await Promise.allSettled(
+            sourceDevices.map(async (device) => {
+              try {
+                const overviewPayload = await fetchCodexOverviewForEntry(device.id, buildOverviewRequestParams(0, pageEnd));
+                return {
+                  device,
+                  overview: overviewPayload,
+                };
+              } catch (error) {
+                throw createDeviceRequestFailure(device, error);
+              }
+            }),
+          );
+          const fulfilled = results
+            .filter((item): item is PromiseFulfilledResult<{ device: Device; overview: CodexOverviewResponse }> => item.status === 'fulfilled')
+            .map(item => item.value);
+          const failureDetails = formatDeviceFailureDetails(results, '读取 Codex 会话失败');
+          if (!fulfilled.length) {
+            throw new Error(failureDetails || '读取 Codex 会话失败');
+          }
+          if (failureDetails) {
+            overviewError.value = `${failureDetails}，已显示其余设备`;
+          }
+          return buildMergedOverview(fulfilled, page);
+        })()
+      : await (async () => {
+          const device = sourceDevices[0];
+          return fetchCodexOverviewForEntry(device.id, buildOverviewRequestParams(pageOffset));
+        })();
     if (requestId !== latestOverviewRequestId) return;
     overview.value = payload;
-    rootDirInput.value = payload.root_dir;
+    rootDirInput.value = isAllDevicesMode.value ? '' : payload.root_dir;
     await Promise.all([
       syncSelectionAfterOverview(preserveThread),
       loadWorkload(),
@@ -1894,22 +2471,38 @@ const loadOverview = async (preserveThread = true) => {
 };
 
 const handleRefresh = async () => {
+  void loadNoteTypePalette(true);
   await loadOverview(true);
 };
 
-const handleDeviceChange = async () => {
+const handleThreadPageChange = async () => {
   selectedThreadId.value = '';
+  selectedThreadSourceEntryId.value = '';
+  selectedThreadRootDir.value = undefined;
+  selectedMessageSeq.value = null;
+  threadDetail.value = null;
+  await loadOverview(false);
+};
+
+const handleDeviceChange = async () => {
+  currentThreadPage.value = 1;
+  selectedThreadId.value = '';
+  selectedThreadSourceEntryId.value = '';
+  selectedThreadRootDir.value = undefined;
   selectedMessageSeq.value = null;
   threadDetail.value = null;
   isProcessExpanded.value = false;
   workloadGranularity.value = 'day';
   workloadMetric.value = 'duration';
   workloadDateRange.value = null;
+  if (isAllDevicesMode.value) {
+    rootDirInput.value = '';
+  }
   await loadOverview(false);
 };
 
-const handleSelectThread = async (thread: CodexThreadSummary) => {
-  await loadThreadDetail(thread.id);
+const handleSelectThread = async (thread: CodexThreadSummaryView) => {
+  await loadThreadDetail(thread);
 };
 
 const handleSelectSummary = async (item: CodexMessageSummaryItem) => {
@@ -1929,6 +2522,7 @@ const goToClusterTasks = () => {
 };
 
 const goToDailySummary = () => {
+  if (!canOpenDailySummary.value) return;
   void router.push({
     path: '/cluster/codex/daily-summary',
     query: buildCodexRouteQuery(),
@@ -2002,6 +2596,7 @@ watch(workloadDateRange, (nextRange) => {
 
 onMounted(async () => {
   applyRouteSeed();
+  void loadNoteTypePalette();
   await ensureDevicesLoaded();
   if (selectedEntryId.value) {
     await loadOverview(false);
@@ -2040,9 +2635,15 @@ watch(
               @change="handleDeviceChange"
             >
               <el-option
+                v-if="devices.length > 1"
+                :key="ALL_DEVICES_ENTRY_ID"
+                label="全部设备"
+                :value="ALL_DEVICES_ENTRY_ID"
+              />
+              <el-option
                 v-for="device in devices"
                 :key="device.id"
-                :label="device.name || device.device_id"
+                :label="formatDeviceLabel(device)"
                 :value="device.id"
               />
             </el-select>
@@ -2065,7 +2666,8 @@ watch(
               class="codex-field-control"
               size="large"
               clearable
-              placeholder="例如 C:\Users\kzche\.codex"
+              :disabled="isAllDevicesMode"
+              :placeholder="isAllDevicesMode ? '全部设备使用各自默认 .codex' : '例如 C:\Users\kzche\.codex'"
               @keyup.enter="handleRefresh"
             />
           </div>
@@ -2073,7 +2675,7 @@ watch(
           <div class="codex-toolbar-actions">
             <el-button
               size="large"
-              :disabled="!canLoad"
+              :disabled="!canOpenDailySummary"
               @click="goToDailySummary"
             >
               <span>日报总结</span>
@@ -2088,21 +2690,6 @@ watch(
               <el-icon><RefreshRight /></el-icon>
               <span>刷新</span>
             </el-button>
-          </div>
-        </div>
-
-        <div class="codex-summary-row">
-          <div class="codex-summary-card">
-            <span class="codex-summary-label">会话</span>
-            <strong>{{ formatCount(overview?.total_threads) }}</strong>
-          </div>
-          <div class="codex-summary-card">
-            <span class="codex-summary-label">已归档</span>
-            <strong>{{ formatCount(overview?.archived_threads) }}</strong>
-          </div>
-          <div class="codex-summary-root" :title="overview?.root_dir || rootDirInput">
-            <el-icon><FolderOpened /></el-icon>
-            <span>{{ overview?.root_dir || rootDirInput || '等待加载根目录' }}</span>
           </div>
         </div>
 
@@ -2322,15 +2909,28 @@ watch(
         <article class="codex-pane codex-pane-threads">
           <header class="codex-pane-header">
             <span>会话</span>
-            <small>{{ formatCount(allThreads.length, ' 条') }}</small>
+            <small>{{ threadPaneCountLabel }}</small>
           </header>
+          <div v-if="totalThreadCount" class="codex-thread-pagination">
+            <span class="codex-thread-pagination-text">{{ threadPaginationText }}</span>
+            <el-pagination
+              v-model:current-page="currentThreadPage"
+              small
+              :pager-count="5"
+              :page-size="THREAD_PAGE_SIZE"
+              :total="totalThreadCount"
+              layout="prev, pager, next"
+              :disabled="isLoadingOverview"
+              @current-change="handleThreadPageChange"
+            />
+          </div>
           <el-scrollbar class="codex-pane-scroll">
             <button
               v-for="thread in allThreads"
-              :key="thread.id"
+              :key="getThreadSelectionKey(thread)"
               type="button"
               class="codex-thread-item"
-              :class="{ 'is-active': thread.id === selectedThreadId }"
+              :class="{ 'is-active': isSelectedThread(thread) }"
               :style="getThreadSurfaceStyle(thread)"
               @click="handleSelectThread(thread)"
             >
@@ -2379,6 +2979,14 @@ watch(
                   </el-tag>
                   <el-tag v-if="threadDetail.thread.archived" size="small" effect="plain" type="info">
                     已归档
+                  </el-tag>
+                  <el-tag
+                    v-if="isAllDevicesMode && threadDetail.thread.source_device_name"
+                    size="small"
+                    effect="plain"
+                    type="warning"
+                  >
+                    {{ threadDetail.thread.source_device_name }}
                   </el-tag>
                 </div>
               </div>
@@ -2667,46 +3275,6 @@ watch(
 .codex-toolbar-actions {
   display: flex;
   align-items: center;
-}
-
-.codex-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.codex-summary-card,
-.codex-summary-root {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 42px;
-  padding: 10px 14px;
-  border-radius: 16px;
-  background: var(--el-fill-color-blank);
-  border: 1px solid var(--el-border-color-lighter);
-}
-
-.codex-summary-card {
-  min-width: 108px;
-  justify-content: space-between;
-}
-
-.codex-summary-label {
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
-}
-
-.codex-summary-root {
-  max-width: 100%;
-  color: var(--el-text-color-secondary);
-}
-
-.codex-summary-root span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .codex-workload-panel {
@@ -3005,6 +3573,28 @@ watch(
 
 .codex-thread-top :deep(.el-tag) {
   flex-shrink: 0;
+}
+
+.codex-thread-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--el-border-color-extra-light);
+}
+
+.codex-thread-pagination-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
+}
+
+.codex-thread-pagination :deep(.el-pagination) {
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .codex-pane-detail {

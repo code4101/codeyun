@@ -47,6 +47,11 @@ _CODEX_DAILY_SUMMARY_HEARTBEAT_INTERVAL_SECONDS = 2.0
 _CODEX_DAILY_SUMMARY_USER_TEXT_LIMIT = 320
 _CODEX_DAILY_SUMMARY_ASSISTANT_TEXT_LIMIT = 320
 _CODEX_DAILY_SUMMARY_PROCESS_TEXT_LIMIT = 180
+_CODEX_DAILY_SUMMARY_IGNORED_THREAD_PATTERNS = (
+    re.compile(r"\bmemory\s+writing\s+agent\b", re.IGNORECASE),
+    re.compile(r"\bcodex-cli-workspace\b", re.IGNORECASE),
+    re.compile(r"通过\s+CodeYun\s+调用本机\s+Codex\s+CLI", re.IGNORECASE),
+)
 
 
 def _default_codex_root_dir() -> Path:
@@ -75,6 +80,21 @@ def _path_match_key(value: str | None) -> str:
     if not text:
         return ""
     return os.path.normcase(os.path.normpath(text))
+
+
+def _remote_path_match_key(value: str | None) -> str:
+    text = _clean_path_text(value)
+    if not text:
+        return ""
+    return re.sub(r"[\\/]+", "/", text.rstrip("\\/")).lower()
+
+
+def build_remote_codex_cache_root_key(device_entry_id: str, root_dir: str | None) -> str:
+    entry_key = str(device_entry_id or "").strip()
+    if not entry_key:
+        raise ValueError("device_entry_id 不能为空")
+    root_key = _remote_path_match_key(root_dir) or "default"
+    return f"device-entry:{entry_key}:{root_key}"
 
 
 def _path_name(value: str | None) -> str:
@@ -582,6 +602,71 @@ def _build_groups_from_threads(thread_rows: list[dict[str, Any]]) -> list[dict[s
     return groups
 
 
+def _sort_codex_threads(thread_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        thread_rows,
+        key=lambda item: (
+            float(item["updated_at"] or 0),
+            float(item["created_at"] or 0),
+            item["id"],
+        ),
+        reverse=True,
+    )
+
+
+def _paginate_codex_threads(
+    thread_rows: list[dict[str, Any]],
+    *,
+    thread_offset: int = 0,
+    thread_limit: int | None = None,
+) -> tuple[list[dict[str, Any]], int, int | None, bool]:
+    offset = max(0, int(thread_offset or 0))
+    limit = int(thread_limit) if thread_limit is not None else None
+    if limit is not None and limit <= 0:
+        limit = None
+
+    sorted_threads = _sort_codex_threads(thread_rows)
+    if limit is None:
+        page_threads = sorted_threads[offset:]
+    else:
+        page_threads = sorted_threads[offset : offset + limit]
+    has_more = offset + len(page_threads) < len(sorted_threads)
+    return page_threads, offset, limit, has_more
+
+
+def paginate_codex_overview_payload(
+    payload: dict[str, Any],
+    *,
+    thread_offset: int = 0,
+    thread_limit: int | None = None,
+) -> dict[str, Any]:
+    """Slice an overview payload by global thread order while preserving total counts."""
+    if not isinstance(payload, dict):
+        raise ValueError("Codex overview 必须是对象")
+
+    threads = _iter_remote_overview_threads(payload)
+    page_threads, offset, limit, has_more = _paginate_codex_threads(
+        threads,
+        thread_offset=thread_offset,
+        thread_limit=thread_limit,
+    )
+    total_threads = int(payload.get("total_threads") or len(threads))
+    archived_threads = int(payload.get("archived_threads") or sum(1 for item in threads if item["archived"]))
+    all_groups = _build_groups_from_threads(threads)
+
+    return {
+        **payload,
+        "total_groups": int(payload.get("total_groups") or len(all_groups)),
+        "total_threads": total_threads,
+        "archived_threads": archived_threads,
+        "groups": _build_groups_from_threads(page_threads),
+        "thread_offset": offset,
+        "thread_limit": limit,
+        "returned_threads": len(page_threads),
+        "has_more": has_more,
+    }
+
+
 def _assign_thread_summary_to_cache_row(
     row: CodexTextCacheThread,
     summary: dict[str, Any],
@@ -680,7 +765,305 @@ def _replace_thread_text_cache(
     session.add(thread_row)
 
 
-def _ensure_codex_text_cache(root_dir: str | None = None, session: Session | None = None) -> dict[str, Any]:
+def _ensure_remote_codex_cache_root(
+    session: Session,
+    *,
+    device_entry_id: str,
+    payload: dict[str, Any],
+    now: float,
+) -> tuple[str, CodexTextCacheRoot]:
+    root_dir = _clean_path_text(payload.get("root_dir")) or _clean_path_text(payload.get("default_root_dir"))
+    if not root_dir:
+        raise ValueError("远端 Codex 结果缺少 root_dir")
+
+    root_key = build_remote_codex_cache_root_key(device_entry_id, root_dir)
+    root_row = session.get(CodexTextCacheRoot, root_key)
+    if root_row is None:
+        root_row = CodexTextCacheRoot(root_key=root_key, created_at=now)
+
+    root_row.root_dir = root_dir
+    root_row.default_root_dir = _clean_path_text(payload.get("default_root_dir")) or root_dir
+    root_row.state_db_path = _clean_path_text(payload.get("state_db_path"))
+    root_row.session_index_path = _clean_path_text(payload.get("session_index_path"))
+    root_row.global_state_path = _clean_path_text(payload.get("global_state_path"))
+    root_row.workspace_roots = list(root_row.workspace_roots or [])
+    root_row.state_db_size = None
+    root_row.state_db_mtime_ns = None
+    root_row.session_index_size = None
+    root_row.session_index_mtime_ns = None
+    root_row.global_state_size = None
+    root_row.global_state_mtime_ns = None
+    root_row.refreshed_at = now
+    root_row.updated_at = now
+    session.add(root_row)
+    return root_key, root_row
+
+
+def _normalize_remote_thread_summary(raw_thread: dict[str, Any]) -> dict[str, Any]:
+    thread_id = str(raw_thread.get("id") or raw_thread.get("thread_id") or "").strip()
+    if not thread_id:
+        raise ValueError("远端 Codex 会话缺少 id")
+
+    title = str(raw_thread.get("title") or raw_thread.get("thread_title") or "").strip() or "未命名会话"
+    cwd = _clean_path_text(raw_thread.get("cwd") or raw_thread.get("group_key")) or None
+    project_label = str(raw_thread.get("project_label") or raw_thread.get("group_label") or "").strip()
+    return {
+        "id": thread_id,
+        "title": title,
+        "preview": raw_thread.get("preview"),
+        "cwd": cwd,
+        "original_cwd": _clean_path_text(raw_thread.get("original_cwd")) or cwd,
+        "rollout_path": _clean_path_text(raw_thread.get("rollout_path")) or None,
+        "created_at": raw_thread.get("created_at"),
+        "updated_at": raw_thread.get("updated_at"),
+        "archived": bool(raw_thread.get("archived")),
+        "project_label": project_label or _path_name(cwd) or title,
+        "project_secondary_label": raw_thread.get("project_secondary_label"),
+        "workspace_root": _clean_path_text(raw_thread.get("workspace_root")) or None,
+    }
+
+
+def _iter_remote_overview_threads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    threads: list[dict[str, Any]] = []
+    for group in payload.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        for raw_thread in group.get("threads") or []:
+            if not isinstance(raw_thread, dict):
+                continue
+            thread = dict(raw_thread)
+            thread.setdefault("project_label", group.get("label"))
+            thread.setdefault("project_secondary_label", group.get("secondary_label"))
+            thread.setdefault("cwd", group.get("cwd") or group.get("key"))
+            thread.setdefault("workspace_root", group.get("workspace_root"))
+            threads.append(_normalize_remote_thread_summary(thread))
+    return threads
+
+
+def cache_remote_codex_overview(
+    device_entry_id: str,
+    payload: dict[str, Any],
+    *,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("远端 Codex overview 必须是对象")
+
+    now = time.time()
+    with _CODEX_CACHE_LOCK:
+        with _session_scope(session) as session:
+            root_key, root_row = _ensure_remote_codex_cache_root(
+                session,
+                device_entry_id=device_entry_id,
+                payload=payload,
+                now=now,
+            )
+            remote_threads = _iter_remote_overview_threads(payload)
+            existing_rows = {
+                row.thread_id: row
+                for row in session.exec(
+                    select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
+                ).all()
+            }
+            seen_thread_ids: set[str] = set()
+            for summary in remote_threads:
+                thread_row = existing_rows.get(summary["id"])
+                if thread_row is None:
+                    thread_row = CodexTextCacheThread(
+                        root_key=root_key,
+                        thread_id=summary["id"],
+                        created_at=now,
+                    )
+                _assign_thread_summary_to_cache_row(thread_row, summary, now=now)
+                session.add(thread_row)
+                seen_thread_ids.add(summary["id"])
+
+            is_complete_overview = (
+                "thread_offset" not in payload
+                or (
+                    int(payload.get("thread_offset") or 0) == 0
+                    and not bool(payload.get("has_more"))
+                    and int(payload.get("returned_threads") or len(remote_threads)) >= int(payload.get("total_threads") or len(remote_threads))
+                )
+            )
+            if is_complete_overview:
+                removed_thread_ids = set(existing_rows) - seen_thread_ids
+                for removed_thread_id in removed_thread_ids:
+                    session.exec(
+                        delete(CodexTextCacheMessage).where(
+                            CodexTextCacheMessage.root_key == root_key,
+                            CodexTextCacheMessage.thread_id == removed_thread_id,
+                        )
+                    )
+                    session.exec(
+                        delete(CodexTextCacheTurn).where(
+                            CodexTextCacheTurn.root_key == root_key,
+                            CodexTextCacheTurn.thread_id == removed_thread_id,
+                        )
+                    )
+                    session.exec(
+                        delete(CodexTextCacheThread).where(
+                            CodexTextCacheThread.root_key == root_key,
+                            CodexTextCacheThread.thread_id == removed_thread_id,
+                        )
+                    )
+
+            root_row.refreshed_at = now
+            root_row.updated_at = now
+            session.add(root_row)
+            session.commit()
+
+    return {"root_key": root_key, "thread_count": len(remote_threads)}
+
+
+def cache_remote_codex_thread_detail(
+    device_entry_id: str,
+    payload: dict[str, Any],
+    *,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("远端 Codex thread detail 必须是对象")
+    raw_thread = payload.get("thread")
+    if not isinstance(raw_thread, dict):
+        raise ValueError("远端 Codex thread detail 缺少 thread")
+
+    now = time.time()
+    with _CODEX_CACHE_LOCK:
+        with _session_scope(session) as session:
+            root_key, root_row = _ensure_remote_codex_cache_root(
+                session,
+                device_entry_id=device_entry_id,
+                payload=payload,
+                now=now,
+            )
+            summary = _normalize_remote_thread_summary(raw_thread)
+            thread_row = session.exec(
+                select(CodexTextCacheThread).where(
+                    CodexTextCacheThread.root_key == root_key,
+                    CodexTextCacheThread.thread_id == summary["id"],
+                )
+            ).first()
+            if thread_row is None:
+                thread_row = CodexTextCacheThread(
+                    root_key=root_key,
+                    thread_id=summary["id"],
+                    created_at=now,
+                )
+            _assign_thread_summary_to_cache_row(thread_row, summary, now=now)
+            messages = [
+                {
+                    "seq": int(message.get("seq") or index + 1),
+                    "timestamp": message.get("timestamp"),
+                    "role": str(message.get("role") or ""),
+                    "phase": message.get("phase"),
+                    "text": str(message.get("text") or ""),
+                }
+                for index, message in enumerate(payload.get("messages") or [])
+                if isinstance(message, dict)
+                and str(message.get("role") or "") in {"user", "assistant"}
+                and str(message.get("text") or "").strip()
+            ]
+            _replace_thread_text_cache(
+                session,
+                root_key=root_key,
+                thread_row=thread_row,
+                rollout_size=None,
+                rollout_mtime_ns=None,
+                messages=messages,
+                now=now,
+            )
+            root_row.refreshed_at = now
+            root_row.updated_at = now
+            session.add(root_row)
+            session.commit()
+
+    return {"root_key": root_key, "thread_id": summary["id"], "message_count": len(messages)}
+
+
+def cache_remote_codex_workload(
+    device_entry_id: str,
+    payload: dict[str, Any],
+    *,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("远端 Codex workload 必须是对象")
+
+    now = time.time()
+    with _CODEX_CACHE_LOCK:
+        with _session_scope(session) as session:
+            root_key, root_row = _ensure_remote_codex_cache_root(
+                session,
+                device_entry_id=device_entry_id,
+                payload=payload,
+                now=now,
+            )
+            session.exec(delete(CodexTextCacheTurn).where(CodexTextCacheTurn.root_key == root_key))
+
+            existing_threads = {
+                row.thread_id: row
+                for row in session.exec(
+                    select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
+                ).all()
+            }
+            for raw_turn in payload.get("turns") or []:
+                if not isinstance(raw_turn, dict):
+                    continue
+                thread_id = str(raw_turn.get("thread_id") or "").strip()
+                if not thread_id:
+                    continue
+                thread_row = existing_threads.get(thread_id)
+                if thread_row is None:
+                    summary = _normalize_remote_thread_summary(
+                        {
+                            "id": thread_id,
+                            "title": raw_turn.get("thread_title"),
+                            "preview": raw_turn.get("preview"),
+                            "cwd": raw_turn.get("group_key"),
+                            "project_label": raw_turn.get("project_label") or raw_turn.get("group_label"),
+                            "project_secondary_label": raw_turn.get("project_secondary_label"),
+                            "workspace_root": raw_turn.get("workspace_root"),
+                            "created_at": raw_turn.get("start_at"),
+                            "updated_at": raw_turn.get("end_at"),
+                        }
+                    )
+                    thread_row = CodexTextCacheThread(root_key=root_key, thread_id=thread_id, created_at=now)
+                    _assign_thread_summary_to_cache_row(thread_row, summary, now=now)
+                    existing_threads[thread_id] = thread_row
+                    session.add(thread_row)
+
+                session.add(
+                    CodexTextCacheTurn(
+                        root_key=root_key,
+                        thread_id=thread_id,
+                        turn_index=int(raw_turn.get("turn_index") or 0),
+                        user_seq=int(raw_turn.get("user_seq") or 0),
+                        assistant_seq=raw_turn.get("assistant_seq"),
+                        start_at=float(raw_turn.get("start_at") or 0),
+                        end_at=float(raw_turn.get("end_at") or raw_turn.get("start_at") or 0),
+                        duration_seconds=float(raw_turn.get("duration_seconds") or 0),
+                        completed=bool(raw_turn.get("completed")),
+                        preview=raw_turn.get("preview"),
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+
+            root_row.refreshed_at = now
+            root_row.updated_at = now
+            session.add(root_row)
+            session.commit()
+
+    return {"root_key": root_key, "turn_count": len(payload.get("turns") or [])}
+
+
+def _ensure_codex_text_cache(
+    root_dir: str | None = None,
+    session: Session | None = None,
+    *,
+    refresh_rollouts: bool = True,
+) -> dict[str, Any]:
     root_path, default_root_dir = _resolve_codex_root_dir(root_dir)
     root_key = _path_match_key(str(root_path)) or str(root_path)
     state_db_path = root_path / "state_5.sqlite"
@@ -786,41 +1169,42 @@ def _ensure_codex_text_cache(root_dir: str | None = None, session: Session | Non
                 session.add(root_row)
                 session.commit()
 
-            thread_rows = session.exec(
-                select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
-            ).all()
             rollout_refreshed = False
             now = time.time()
-            for thread_row in thread_rows:
-                rollout_path_text = thread_row.rollout_path
-                rollout_size = None
-                rollout_mtime_ns = None
-                if rollout_path_text:
-                    rollout_size, rollout_mtime_ns = _file_signature(Path(rollout_path_text))
-                needs_rollout_refresh = thread_row.thread_id in dirty_thread_ids or any(
-                    [
-                        thread_row.rollout_path is None,
-                        thread_row.rollout_size != rollout_size,
-                        thread_row.rollout_mtime_ns != rollout_mtime_ns,
-                    ]
-                )
-                if not needs_rollout_refresh:
-                    continue
+            if refresh_rollouts:
+                thread_rows = session.exec(
+                    select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == root_key)
+                ).all()
+                for thread_row in thread_rows:
+                    rollout_path_text = thread_row.rollout_path
+                    rollout_size = None
+                    rollout_mtime_ns = None
+                    if rollout_path_text:
+                        rollout_size, rollout_mtime_ns = _file_signature(Path(rollout_path_text))
+                    needs_rollout_refresh = thread_row.thread_id in dirty_thread_ids or any(
+                        [
+                            thread_row.rollout_path is None,
+                            thread_row.rollout_size != rollout_size,
+                            thread_row.rollout_mtime_ns != rollout_mtime_ns,
+                        ]
+                    )
+                    if not needs_rollout_refresh:
+                        continue
 
-                if rollout_path_text and rollout_size is not None and rollout_mtime_ns is not None:
-                    messages = _load_rollout_messages(Path(rollout_path_text))
-                else:
-                    messages = []
-                _replace_thread_text_cache(
-                    session,
-                    root_key=root_key,
-                    thread_row=thread_row,
-                    rollout_size=rollout_size,
-                    rollout_mtime_ns=rollout_mtime_ns,
-                    messages=messages,
-                    now=now,
-                )
-                rollout_refreshed = True
+                    if rollout_path_text and rollout_size is not None and rollout_mtime_ns is not None:
+                        messages = _load_rollout_messages(Path(rollout_path_text))
+                    else:
+                        messages = []
+                    _replace_thread_text_cache(
+                        session,
+                        root_key=root_key,
+                        thread_row=thread_row,
+                        rollout_size=rollout_size,
+                        rollout_mtime_ns=rollout_mtime_ns,
+                        messages=messages,
+                        now=now,
+                    )
+                    rollout_refreshed = True
 
             if root_row is None:
                 root_row = session.get(CodexTextCacheRoot, root_key)
@@ -840,14 +1224,26 @@ def _ensure_codex_text_cache(root_dir: str | None = None, session: Session | Non
     }
 
 
-def build_codex_overview(root_dir: str | None = None, session: Session | None = None) -> dict[str, Any]:
-    context = _ensure_codex_text_cache(root_dir, session=session)
+def build_codex_overview(
+    root_dir: str | None = None,
+    session: Session | None = None,
+    *,
+    thread_offset: int = 0,
+    thread_limit: int | None = None,
+) -> dict[str, Any]:
+    context = _ensure_codex_text_cache(root_dir, session=session, refresh_rollouts=False)
     with _session_scope(session) as session:
         thread_rows = session.exec(
             select(CodexTextCacheThread).where(CodexTextCacheThread.root_key == context["root_key"])
         ).all()
         threads = [_serialize_cached_thread_row(row) for row in thread_rows]
-        groups = _build_groups_from_threads(threads)
+        page_threads, offset, limit, has_more = _paginate_codex_threads(
+            threads,
+            thread_offset=thread_offset,
+            thread_limit=thread_limit,
+        )
+        all_groups = _build_groups_from_threads(threads)
+        groups = _build_groups_from_threads(page_threads)
 
     return {
         "root_dir": context["root_dir"],
@@ -855,10 +1251,14 @@ def build_codex_overview(root_dir: str | None = None, session: Session | None = 
         "state_db_path": context["state_db_path"],
         "session_index_path": context["session_index_path"],
         "global_state_path": context["global_state_path"],
-        "total_groups": len(groups),
+        "total_groups": len(all_groups),
         "total_threads": len(threads),
         "archived_threads": sum(1 for item in threads if item["archived"]),
         "groups": groups,
+        "thread_offset": offset,
+        "thread_limit": limit,
+        "returned_threads": len(page_threads),
+        "has_more": has_more,
     }
 
 
@@ -1079,6 +1479,22 @@ def _clean_daily_summary_text(text: str | None, *, limit: int | None = None) -> 
     return cleaned_text
 
 
+def _is_ignored_codex_daily_summary_thread(thread: dict[str, Any]) -> bool:
+    searchable_text = "\n".join(
+        str(thread.get(field) or "")
+        for field in (
+            "title",
+            "preview",
+            "project_label",
+            "project_secondary_label",
+            "cwd",
+            "original_cwd",
+            "rollout_path",
+        )
+    )
+    return any(pattern.search(searchable_text) for pattern in _CODEX_DAILY_SUMMARY_IGNORED_THREAD_PATTERNS)
+
+
 def _format_codex_project_label(project_label: str, secondary_label: str | None = None) -> str:
     return " · ".join(part for part in (project_label, secondary_label) if part)
 
@@ -1232,15 +1648,18 @@ def _build_codex_daily_summary_prompt(
 
     lines.extend(["", "按时间排序的真实工作记录："])
     for index, turn in enumerate(turn_records, start=1):
-        lines.extend(
+        record_lines = [f"{index}. 时间：{turn['time_range']}"]
+        if turn.get("source_device_name"):
+            record_lines.append(f"设备：{turn['source_device_name']}")
+        record_lines.extend(
             [
-                f"{index}. 时间：{turn['time_range']}",
                 f"项目：{turn['project_label']}",
                 f"会话：{turn['thread_title']}",
                 f"用户诉求：{turn['user_request']}",
                 f"结果：{turn['assistant_result'] or '当轮还没有明确结果'}",
             ]
         )
+        lines.extend(record_lines)
         if turn["assistant_process"]:
             lines.append(f"过程：{turn['assistant_process']}")
         lines.append("")
@@ -1263,6 +1682,36 @@ def _collect_codex_daily_summary_source(
     session: Session | None = None,
 ) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session)
+    return _collect_codex_daily_summary_source_from_context(
+        context,
+        target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+def collect_codex_daily_summary_source(
+    root_dir: str | None,
+    target_date_text: str,
+    *,
+    user_id: int | None = None,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    return _collect_codex_daily_summary_source(
+        root_dir,
+        target_date_text,
+        user_id=user_id,
+        session=session,
+    )
+
+
+def _collect_codex_daily_summary_source_from_context(
+    context: dict[str, Any],
+    target_date_text: str,
+    *,
+    user_id: int | None = None,
+    session: Session | None = None,
+) -> dict[str, Any]:
     normalized_date_text, target_date, timezone, day_start_at, day_end_at = _resolve_codex_daily_summary_range(
         target_date_text
     )
@@ -1302,6 +1751,34 @@ def _collect_codex_daily_summary_source(
             )
         ).all()
         thread_map = {row.thread_id: row for row in thread_rows}
+        ignored_thread_ids = {
+            thread_id
+            for thread_id, thread_row in thread_map.items()
+            if _is_ignored_codex_daily_summary_thread(_serialize_cached_thread_row(thread_row))
+        }
+        if ignored_thread_ids:
+            turn_rows = [row for row in turn_rows if row.thread_id not in ignored_thread_ids]
+            thread_map = {
+                thread_id: thread_row
+                for thread_id, thread_row in thread_map.items()
+                if thread_id not in ignored_thread_ids
+            }
+            thread_ids = sorted({row.thread_id for row in turn_rows})
+
+        if not turn_rows:
+            return {
+                "context": context,
+                "date": normalized_date_text,
+                "target_date": target_date,
+                "timezone": timezone,
+                "type_items": type_items,
+                "turn_records": [],
+                "threads": [],
+                "thread_count": 0,
+                "turn_count": 0,
+                "user_message_count": 0,
+                "assistant_message_count": 0,
+            }
 
         message_rows = session.exec(
             select(CodexTextCacheMessage)
@@ -1436,6 +1913,130 @@ def _collect_codex_daily_summary_source(
     }
 
 
+def collect_cached_codex_daily_summary_source(
+    root_key: str,
+    target_date_text: str,
+    *,
+    user_id: int | None = None,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    with _session_scope(session) as active_session:
+        root_row = active_session.get(CodexTextCacheRoot, root_key)
+        if root_row is None:
+            raise KeyError(f"未找到 Codex 缓存根：{root_key}")
+        context = {
+            "root_key": root_row.root_key,
+            "root_dir": root_row.root_dir,
+            "default_root_dir": root_row.default_root_dir,
+            "state_db_path": root_row.state_db_path,
+            "session_index_path": root_row.session_index_path,
+            "global_state_path": root_row.global_state_path,
+        }
+        return _collect_codex_daily_summary_source_from_context(
+            context,
+            target_date_text,
+            user_id=user_id,
+            session=active_session,
+        )
+
+
+def annotate_codex_daily_summary_source(
+    source: dict[str, Any],
+    *,
+    source_entry_id: str,
+    source_device_name: str,
+    source_root_dir: str | None = None,
+) -> dict[str, Any]:
+    annotated = {
+        **source,
+        "turn_records": [],
+        "threads": [],
+    }
+    for turn in source.get("turn_records") or []:
+        annotated["turn_records"].append(
+            {
+                **turn,
+                "thread_id": f"{source_entry_id}:{turn.get('thread_id')}",
+                "source_entry_id": source_entry_id,
+                "source_device_name": source_device_name,
+                "source_root_dir": source_root_dir or source.get("context", {}).get("root_dir"),
+            }
+        )
+    for thread in source.get("threads") or []:
+        annotated["threads"].append(
+            {
+                **thread,
+                "thread_id": f"{source_entry_id}:{thread.get('thread_id')}",
+                "source_entry_id": source_entry_id,
+                "source_device_name": source_device_name,
+                "source_root_dir": source_root_dir or source.get("context", {}).get("root_dir"),
+            }
+        )
+    return annotated
+
+
+def merge_codex_daily_summary_sources(
+    sources: list[dict[str, Any]],
+    *,
+    root_key: str,
+    root_dir: str,
+    target_date_text: str,
+    user_id: int | None = None,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    normalized_date_text, target_date, timezone, _, _ = _resolve_codex_daily_summary_range(target_date_text)
+    with _session_scope(session) as active_session:
+        type_items = _load_codex_daily_summary_type_palette(user_id, active_session)
+
+    turn_records = sorted(
+        [
+            turn
+            for source in sources
+            for turn in (source.get("turn_records") or [])
+        ],
+        key=lambda item: (
+            float(item.get("start_at") or 0),
+            float(item.get("end_at") or 0),
+            str(item.get("source_entry_id") or ""),
+            str(item.get("thread_id") or ""),
+        ),
+    )
+    threads = sorted(
+        [
+            thread
+            for source in sources
+            for thread in (source.get("threads") or [])
+        ],
+        key=lambda item: (
+            float(item.get("start_at") or 0),
+            float(item.get("end_at") or 0),
+            str(item.get("source_entry_id") or ""),
+            str(item.get("thread_id") or ""),
+        ),
+    )
+
+    return {
+        "context": {
+            "root_key": root_key,
+            "root_dir": root_dir,
+            "default_root_dir": "",
+            "state_db_path": "",
+            "session_index_path": "",
+            "global_state_path": "",
+        },
+        "date": normalized_date_text,
+        "target_date": target_date,
+        "timezone": timezone,
+        "type_items": type_items,
+        "turn_records": turn_records,
+        "threads": threads,
+        "thread_count": len(threads),
+        "turn_count": len(turn_records),
+        "user_message_count": sum(int(source.get("user_message_count") or 0) for source in sources),
+        "assistant_message_count": sum(int(source.get("assistant_message_count") or 0) for source in sources),
+    }
+
+
 def _build_codex_daily_summary_result_from_source(
     source: dict[str, Any],
     *,
@@ -1499,6 +2100,19 @@ def _build_codex_daily_summary_result_from_source(
     }
 
 
+def build_codex_daily_summary_result_from_source(
+    source: dict[str, Any],
+    *,
+    model: str | None = None,
+    before_codex_call: Any = None,
+) -> dict[str, Any]:
+    return _build_codex_daily_summary_result_from_source(
+        source,
+        model=model,
+        before_codex_call=before_codex_call,
+    )
+
+
 def build_codex_daily_summary(
     root_dir: str | None,
     target_date_text: str,
@@ -1514,6 +2128,11 @@ def build_codex_daily_summary(
         session=session,
     )
     return _build_codex_daily_summary_result_from_source(source, model=model)
+
+
+def resolve_codex_daily_summary_epoch_range(target_date_text: str) -> tuple[str, float, float]:
+    normalized_date_text, _, _, day_start_at, day_end_at = _resolve_codex_daily_summary_range(target_date_text)
+    return normalized_date_text, day_start_at, day_end_at
 
 
 def _resolve_codex_daily_summary_root_identity(
@@ -1572,6 +2191,14 @@ def _serialize_codex_daily_summary_run(
     }
 
 
+def serialize_codex_daily_summary_run(
+    run: CodexDailySummaryRun,
+    *,
+    reused_existing_run: bool = False,
+) -> dict[str, Any]:
+    return _serialize_codex_daily_summary_run(run, reused_existing_run=reused_existing_run)
+
+
 def _get_codex_daily_summary_latest_row(
     session: Session,
     *,
@@ -1611,6 +2238,7 @@ def _run_codex_daily_summary_worker(
     target_date_text: str,
     user_id: int | None,
     model: str | None,
+    source_loader: Any = None,
 ) -> None:
     heartbeat_stop = threading.Event()
     heartbeat_thread: threading.Thread | None = None
@@ -1673,12 +2301,15 @@ def _run_codex_daily_summary_worker(
     try:
         apply_stage("loading_cache", "读取 Codex 会话缓存")
         with Session(db_engine) as session:
-            source = _collect_codex_daily_summary_source(
-                root_dir,
-                target_date_text,
-                user_id=user_id,
-                session=session,
-            )
+            if callable(source_loader):
+                source = source_loader(session)
+            else:
+                source = _collect_codex_daily_summary_source(
+                    root_dir,
+                    target_date_text,
+                    user_id=user_id,
+                    session=session,
+                )
         apply_stage("building_prompt", "整理类型归类与层次提纲", source=source)
 
         if not source["turn_records"]:
@@ -1746,12 +2377,13 @@ def _run_codex_daily_summary_worker(
     except Exception as exc:
         stop_heartbeat()
         failed_at = time.time()
+        error_message = str(getattr(exc, "detail", None) or exc)
 
         def _mutate_failed(run: CodexDailySummaryRun) -> None:
             run.status = "failed"
             run.stage = "failed"
             run.stage_label = "生成失败"
-            run.error_message = str(exc)
+            run.error_message = error_message
             run.heartbeat_at = failed_at
             run.finished_at = failed_at
             run.updated_at = failed_at
@@ -1784,6 +2416,28 @@ def get_codex_daily_summary_latest_run(
     return _serialize_codex_daily_summary_run(run)
 
 
+def get_codex_daily_summary_latest_run_by_root_key(
+    scope_key: str,
+    root_key: str,
+    target_date_text: str,
+    *,
+    session: Session | None = None,
+) -> dict[str, Any]:
+    normalized_date_text, _, timezone, _, _ = _resolve_codex_daily_summary_range(target_date_text)
+    with _session_scope(session) as session:
+        run = _get_codex_daily_summary_latest_row(
+            session,
+            scope_key=scope_key,
+            root_key=root_key,
+            summary_date=normalized_date_text,
+        )
+    if run is None:
+        raise KeyError(f"未找到 {normalized_date_text} 的 Codex 日报：{root_key}")
+    if not run.timezone:
+        run.timezone = timezone.key
+    return _serialize_codex_daily_summary_run(run)
+
+
 def get_codex_daily_summary_run(
     scope_key: str,
     run_id: str,
@@ -1804,8 +2458,10 @@ def start_codex_daily_summary_run(
     user_id: int | None = None,
     force: bool = False,
     session: Session | None = None,
+    root_identity: dict[str, str] | None = None,
+    source_loader: Any = None,
 ) -> dict[str, Any]:
-    root_identity = _resolve_codex_daily_summary_root_identity(root_dir, require_existing=True)
+    root_identity = root_identity or _resolve_codex_daily_summary_root_identity(root_dir, require_existing=True)
     normalized_date_text, _, timezone, _, _ = _resolve_codex_daily_summary_range(target_date_text)
     db_engine = engine
 
@@ -1862,6 +2518,7 @@ def start_codex_daily_summary_run(
             "target_date_text": normalized_date_text,
             "user_id": user_id,
             "model": (model or "").strip() or None,
+            "source_loader": source_loader,
         },
         daemon=True,
     )

@@ -21,9 +21,7 @@ from backend.core.settings import get_settings
 from backend.models import (
     AttendanceAccountAsset,
     AttendanceOrderRefundHistory,
-    AttendanceRun,
     AttendanceServiceConfig,
-    AttendanceTemplateAsset,
     AttendanceWjxDataEntry,
     AttendanceWjxDataSyncState,
     AppSetting,
@@ -42,16 +40,6 @@ DEFAULT_ORDER_LOOKUP_MODE = "browser_only"
 ORDER_LOOKUP_MODES = {"hybrid", "db_only", "browser_only"}
 ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY = "order_operation_password_encrypted"
 ATTENDANCE_ORDER_OPERATION_PASSWORD_ENV = "XL_KQ_PAY_PASSWORD"
-DEFAULT_FEEDBACK_COURSE_NAMES = [
-    "念住闯关随到随学",
-    "20260104禅宗11期一期",
-    "20260111禅宗10期二阶",
-    "20260301禅宗46期五阶",
-    "20260308禅宗8期4.5阶",
-    "20260308禅宗1至3期五阶",
-    "20260401第39届念住",
-    "20260401第45届觉观",
-]
 SUBMITTED_DAY_PATTERN = re.compile(r"^\s*(\d{4}[/-]\d{1,2}[/-]\d{1,2})")
 
 
@@ -133,17 +121,6 @@ def _normalize_string_list(value: Any) -> list[str]:
     return result
 
 
-def _normalize_course_name_list(value: Any) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in _normalize_string_list(value):
-        if item in seen:
-            continue
-        seen.add(item)
-        result.append(item)
-    return result
-
-
 def _normalize_order_lookup_mode(value: Any) -> str:
     normalized = str(value or "").strip().lower()
     if normalized in ORDER_LOOKUP_MODES:
@@ -151,26 +128,13 @@ def _normalize_order_lookup_mode(value: Any) -> str:
     return DEFAULT_ORDER_LOOKUP_MODE
 
 
-def _normalize_optional_timestamp(value: Any) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
-
-
 def get_attendance_service_extra_config(session: Session) -> dict[str, Any]:
     row = session.get(AppSetting, ATTENDANCE_SERVICE_EXTRA_SETTING_KEY)
     payload = row.value if row and isinstance(row.value, dict) else {}
-    feedback_course_names = _normalize_course_name_list(payload.get("feedback_course_names"))
-    if not feedback_course_names:
-        feedback_course_names = list(DEFAULT_FEEDBACK_COURSE_NAMES)
     return {
         "scan_reminder_users": _normalize_string_list(payload.get("scan_reminder_users")),
         "order_lookup_mode": _normalize_order_lookup_mode(payload.get("order_lookup_mode")),
         "order_operation_password_configured": bool(str(payload.get(ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY) or "").strip()),
-        "feedback_course_names": feedback_course_names,
-        "feedback_course_names_updated_at": _normalize_optional_timestamp(
-            payload.get("feedback_course_names_updated_at")
-        ),
     }
 
 
@@ -193,8 +157,6 @@ def update_attendance_service_extra_config(
     order_lookup_mode: str | None = None,
     order_operation_password: str | None = None,
     clear_order_operation_password: bool = False,
-    feedback_course_names: list[str] | None = None,
-    feedback_course_names_updated_at: float | None = None,
 ) -> dict[str, Any]:
     row = session.get(AppSetting, ATTENDANCE_SERVICE_EXTRA_SETTING_KEY)
     payload = row.value.copy() if row and isinstance(row.value, dict) else {}
@@ -209,12 +171,6 @@ def update_attendance_service_extra_config(
         payload[ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY] = encrypt_attendance_secret(order_operation_password)
 
     now = time.time()
-    if feedback_course_names is not None:
-        payload["feedback_course_names"] = _normalize_course_name_list(feedback_course_names)
-        payload["feedback_course_names_updated_at"] = (
-            _normalize_optional_timestamp(feedback_course_names_updated_at) or now
-        )
-
     if row is None:
         row = AppSetting(key=ATTENDANCE_SERVICE_EXTRA_SETTING_KEY, value=payload, updated_at=now)
     else:
@@ -280,38 +236,6 @@ def serialize_attendance_account(account: AttendanceAccountAsset, *, include_pas
     if include_password:
         data["password"] = decrypt_attendance_secret(account.password_encrypted)
     return data
-
-
-def serialize_attendance_template(template: AttendanceTemplateAsset) -> dict[str, Any]:
-    return {
-        "id": template.id,
-        "provider": template.provider,
-        "name": template.name,
-        "activity_id": template.activity_id,
-        "is_active": template.is_active,
-        "created_by_user_id": template.created_by_user_id,
-        "updated_by_user_id": template.updated_by_user_id,
-        "created_at": template.created_at,
-        "updated_at": template.updated_at,
-    }
-
-
-def serialize_attendance_run(run: AttendanceRun) -> dict[str, Any]:
-    return {
-        "id": run.id,
-        "template_id": run.template_id,
-        "account_id": run.account_id,
-        "execution_device_entry_id": run.execution_device_entry_id,
-        "requested_by_user_id": run.requested_by_user_id,
-        "action": run.action,
-        "status": run.status,
-        "request": dict(run.request_json or {}),
-        "result": dict(run.result_json or {}),
-        "error_message": run.error_message,
-        "created_at": run.created_at,
-        "finished_at": run.finished_at,
-        "updated_at": run.updated_at,
-    }
 
 
 def _normalize_attendance_order_id(value: Any) -> str:
@@ -487,20 +411,6 @@ def get_attendance_account_or_404(session: Session, account_id: str) -> Attendan
     return account
 
 
-def get_attendance_template_or_404(session: Session, template_id: str) -> AttendanceTemplateAsset:
-    template = session.get(AttendanceTemplateAsset, template_id)
-    if template is None:
-        raise HTTPException(status_code=404, detail="问卷星模板不存在")
-    return template
-
-
-def get_attendance_run_or_404(session: Session, run_id: str) -> AttendanceRun:
-    run = session.get(AttendanceRun, run_id)
-    if run is None:
-        raise HTTPException(status_code=404, detail="运行记录不存在")
-    return run
-
-
 def get_user_device_or_404(session: Session, entry_id: str) -> UserDevice:
     entry = session.get(UserDevice, entry_id)
     if entry is None:
@@ -527,10 +437,3 @@ def list_attendance_accounts(session: Session) -> list[AttendanceAccountAsset]:
     )
     return list(session.exec(statement).all())
 
-
-def list_attendance_templates(session: Session) -> list[AttendanceTemplateAsset]:
-    statement = (
-        select(AttendanceTemplateAsset)
-        .order_by(AttendanceTemplateAsset.updated_at.desc(), AttendanceTemplateAsset.created_at.desc())
-    )
-    return list(session.exec(statement).all())

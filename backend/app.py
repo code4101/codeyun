@@ -11,6 +11,7 @@ from backend.api.admin_feature_access import router as admin_feature_access_rout
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
+from backend.api.note_sheets import init_attendance_summary_scheduler, shutdown_attendance_summary_scheduler
 from backend.api.task_manager import (
     start_task_manager_services,
     stop_task_manager_services,
@@ -18,6 +19,14 @@ from backend.api.task_manager import (
 from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
+from backend.core.auto_git_commit import (
+    init_auto_git_commit_scheduler,
+    shutdown_auto_git_commit_scheduler,
+)
+from backend.core.note_metadata_feedback import (
+    init_note_metadata_feedback_scheduler,
+    shutdown_note_metadata_feedback_scheduler,
+)
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -26,6 +35,7 @@ from backend.core.storage import (
     get_attachments_dir,
     migrate_legacy_attachments,
 )
+from backend.core.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
 from backend.db import init_db
 from backend.standard import register_standard_modules
 
@@ -37,7 +47,16 @@ async def lifespan(app: FastAPI):
     ensure_bootstrap_admin()
     await start_task_manager_services()
     init_storage_scheduler()
+    init_attendance_summary_scheduler()
+    init_note_metadata_feedback_scheduler()
+    init_auto_git_commit_scheduler()
+    if not settings.is_test:
+        start_enabled_codex_bridges()
     yield
+    shutdown_codex_bridges()
+    shutdown_auto_git_commit_scheduler()
+    shutdown_note_metadata_feedback_scheduler()
+    shutdown_attendance_summary_scheduler()
     await stop_task_manager_services()
 
 

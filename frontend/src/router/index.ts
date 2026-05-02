@@ -47,6 +47,32 @@ const routes: Array<RouteRecordRaw> = [
   },
   ...buildLegacyRedirectRoutes('root'),
   {
+    path: '/workbook/:workbookId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'PublicWorkbookResource',
+        component: () => import('@/standard/notes/resource-view/page.vue'),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
+    path: '/sheet/:sheetId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'PublicSheetResource',
+        component: () => import('@/standard/notes/resource-view/page.vue'),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
     path: STANDALONE_PREFIX,
     component: StandaloneLayout,
     meta: { requiresAuth: false },
