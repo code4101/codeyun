@@ -15,7 +15,7 @@ from typing import Any, Iterator
 
 import requests
 
-from backend.core.settings import get_settings
+from backend.core.settings import ROOT_DIR, get_settings
 
 
 class OllamaClientError(RuntimeError):
@@ -52,6 +52,8 @@ class AiProviderConfig:
     is_custom: bool = False
     sharing_mode: str = "builtin"
     can_manage: bool = False
+    workspace_dir: str = ""
+    session_id: str = ""
 
 
 OLLAMA_MODEL_ALIASES: dict[str, dict[str, Any]] = {
@@ -342,7 +344,18 @@ def _resolve_command_path(command: list[str]) -> list[str]:
     return command
 
 
-def _build_codex_workspace_dir() -> Path:
+def _build_codex_workspace_dir(workspace_dir: str | None = None) -> Path:
+    raw_workspace_dir = (workspace_dir or "").strip()
+    if raw_workspace_dir:
+        path = Path(raw_workspace_dir).expanduser()
+        if not path.is_absolute():
+            path = (ROOT_DIR / path).resolve()
+        if not path.exists():
+            raise OllamaClientError(f"Codex CLI 工作目录不存在：{path}")
+        if not path.is_dir():
+            raise OllamaClientError(f"Codex CLI 工作目录不是目录：{path}")
+        return path
+
     path = get_settings().data_dir / CODEX_CLI_WORKSPACE_DIRNAME
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -362,6 +375,22 @@ def _summarize_process_output(*segments: str) -> str:
             continue
         return line
     return lines[-1]
+
+
+def _extract_codex_cli_session_id(*segments: str) -> str:
+    for segment in segments:
+        for line in segment.splitlines():
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            for key in ("thread_id", "session_id"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    return ""
 
 
 def _probe_codex_cli(provider: AiProviderConfig) -> None:
@@ -398,12 +427,8 @@ def _build_codex_cli_prompt(
     response_format: Any,
 ) -> str:
     sections = [
-        "你正在通过 CodeYun 调用本机 Codex CLI 响应请求。",
-        "运行环境：",
-        "- 当前来源默认拥有完整的命令执行与文件系统访问权限。",
-        "- 你可以根据用户请求读取文件、遍历目录、运行 shell 命令并直接给出结果。",
-        "- 当前工作目录由 CodeYun 指定；如果用户提供了绝对路径，你可以直接访问该路径。",
-        "- 不要暴露内部思考或执行计划。",
+        "你正在通过 CodeYun 调用本机 Codex CLI。",
+        "当前工作目录由 CodeYun 通过 --cd 指定；请按用户消息直接处理。",
     ]
 
     if response_format == "json":
@@ -495,7 +520,8 @@ def _chat_with_codex_cli(
     if not command:
         raise OllamaClientError("Codex CLI 未填写命令")
 
-    workspace_dir = _build_codex_workspace_dir()
+    workspace_dir = _build_codex_workspace_dir(provider.workspace_dir)
+    session_id = provider.session_id.strip()
     prompt = _build_codex_cli_prompt(
         messages=messages,
         system_prompt=system_prompt,
@@ -514,8 +540,7 @@ def _chat_with_codex_cli(
             "--dangerously-bypass-approvals-and-sandbox",
             "--color",
             "never",
-            "-c",
-            "shell_environment_policy.inherit=none",
+            "--json",
             "--cd",
             os.fspath(workspace_dir),
             "--output-last-message",
@@ -525,6 +550,8 @@ def _chat_with_codex_cli(
             command_args.extend(["--model", resolved_model])
         for image_path in image_paths:
             command_args.extend(["--image", os.fspath(image_path)])
+        if session_id:
+            command_args.extend(["resume", session_id])
         command_args.append("-")
 
         try:
@@ -549,6 +576,7 @@ def _chat_with_codex_cli(
         content = ""
         if output_path.exists():
             content = output_path.read_text(encoding="utf-8").strip()
+        returned_session_id = _extract_codex_cli_session_id(completed.stdout)
 
     if completed.returncode != 0:
         detail = _summarize_process_output(completed.stderr, completed.stdout, content)
@@ -562,6 +590,7 @@ def _chat_with_codex_cli(
         "content": content,
         "created_at": datetime.now(tz=timezone.utc).isoformat(),
         "done_reason": "stop",
+        "session_id": returned_session_id or session_id or None,
         "prompt_eval_count": None,
         "eval_count": None,
         "total_duration": None,

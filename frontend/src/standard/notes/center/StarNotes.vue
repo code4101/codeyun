@@ -4,10 +4,11 @@
       <NoteProgramBar
         v-model="dataProgram"
         title="后端筛选"
-        help-text="决定从后端加载哪些节点，点击“执行”后生效并保存；规则按顺序执行，后面的包含/排除可以覆盖前面的结果。"
+        help-text="决定从后端加载哪些节点，点击“执行”后生效并保存；规则按顺序执行，后面的添加/移除/筛选可以覆盖前面的结果。"
         hint-text=""
         apply-text="执行"
         reset-text="恢复默认"
+        enable-full-text
         :loading="isRefreshing"
         @apply="applyDataProgram"
         @reset="resetDataProgram"

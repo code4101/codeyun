@@ -70,6 +70,7 @@ def _load_project_dotenv() -> None:
 @dataclass(frozen=True)
 class Settings:
     data_dir: Path
+    ai_notebook_workdir: Path
     environment: str
     debug: bool
     docs_enabled: bool
@@ -122,6 +123,10 @@ def load_settings() -> Settings:
     _load_project_dotenv()
     environment = _normalize_environment(os.getenv("CODEYUN_ENV") or os.getenv("ENVIRONMENT"))
     data_dir = _resolve_path(os.getenv("CODEYUN_DATA_DIR"), DEFAULT_DATA_DIR)
+    ai_notebook_workdir = _resolve_path(
+        os.getenv("CODEYUN_AI_NOTEBOOK_WORKDIR"),
+        data_dir / "ai-notebooks",
+    )
     default_db_file = data_dir / "codeyun.db"
 
     debug = _env_flag("CODEYUN_DEBUG", environment == "development")
@@ -190,6 +195,7 @@ def load_settings() -> Settings:
 
     return Settings(
         data_dir=data_dir,
+        ai_notebook_workdir=ai_notebook_workdir,
         environment=environment,
         debug=debug,
         docs_enabled=docs_enabled,

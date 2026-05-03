@@ -20,8 +20,9 @@
           class="w-90"
           @update:model-value="value => updateRuleAction(getActualRuleIndex(visibleIndex), value)"
         >
-          <el-option label="包含" value="include" />
-          <el-option label="排除" value="exclude" />
+          <el-option label="添加" value="include" />
+          <el-option label="移除" value="exclude" />
+          <el-option label="筛选" value="filter" />
         </el-select>
 
         <el-select
@@ -46,6 +47,17 @@
             clearable
             class="w-320"
             @update:model-value="value => updateIdRule(getActualRuleIndex(visibleIndex), value)"
+          />
+        </template>
+
+        <template v-else-if="rule.matcher.kind === 'full_text_contains'">
+          <el-input
+            size="small"
+            :model-value="String(rule.matcher.value ?? '')"
+            placeholder="搜索标题或正文"
+            clearable
+            class="w-320"
+            @update:model-value="value => patchRule(getActualRuleIndex(visibleIndex), draft => { draft.matcher.value = value || ''; draft.matcher.values = []; })"
           />
         </template>
 
@@ -133,6 +145,7 @@
                       <el-option label="日" value="day" />
                       <el-option label="周" value="week" />
                       <el-option label="月" value="month" />
+                      <el-option label="年" value="year" />
                     </el-select>
 
                     <el-input-number
@@ -195,6 +208,7 @@
                   <el-option label="日" value="day" />
                   <el-option label="周" value="week" />
                   <el-option label="月" value="month" />
+                  <el-option label="年" value="year" />
                 </el-select>
 
                 <el-input-number
@@ -294,6 +308,7 @@ import { getOrderedNodeStatuses, getOrderedNodeTypes, getOrderedNoteForms } from
 type RuleTemplateValue =
   | 'all'
   | 'title_match'
+  | 'full_text'
   | 'id'
   | 'primary_category'
   | 'note_form'
@@ -309,10 +324,10 @@ type RelativePresetValue =
   | 'tomorrow'
   | 'this_week'
   | 'last_week'
-  | 'next_week'
   | 'this_month'
   | 'last_month'
-  | 'next_month'
+  | 'this_year'
+  | 'last_year'
   | 'custom_relative';
 
 type TimePointEditorValue = 'absolute' | RelativePresetValue;
@@ -325,6 +340,7 @@ const props = withDefaults(defineProps<{
   hintText?: string;
   emptyText?: string;
   hiddenLeadingRuleCount?: number;
+  enableFullText?: boolean;
   applyText?: string;
   resetText?: string;
   loading?: boolean;
@@ -333,9 +349,10 @@ const props = withDefaults(defineProps<{
   title: '数据筛选',
   caption: '',
   helpText: '',
-  hintText: '规则按顺序执行，后面的包含/排除可以覆盖前面的结果。',
+  hintText: '规则按顺序执行：添加会加入命中节点，移除会拿掉命中节点，筛选会只保留当前结果中命中的节点。',
   emptyText: '',
   hiddenLeadingRuleCount: 0,
+  enableFullText: false,
   applyText: '应用程序',
   resetText: '恢复默认',
   loading: false
@@ -358,8 +375,9 @@ const orderedNodeStatuses = computed(() => getOrderedNodeStatuses());
 const orderedNoteForms = computed(() => getOrderedNoteForms());
 const getActualRuleIndex = (visibleIndex: number) => visibleRuleStartIndex.value + visibleIndex;
 
-const ruleTemplates: Array<{ value: RuleTemplateValue; label: string }> = [
+const ruleTemplates = computed<Array<{ value: RuleTemplateValue; label: string }>>(() => [
   { value: 'title_match', label: '标题匹配' },
+  ...(props.enableFullText ? [{ value: 'full_text' as const, label: '全文检索' }] : []),
   { value: 'primary_category', label: '分类匹配' },
   { value: 'note_form', label: '形态匹配' },
   { value: 'lifecycle_stage', label: '阶段匹配' },
@@ -369,18 +387,15 @@ const ruleTemplates: Array<{ value: RuleTemplateValue; label: string }> = [
   { value: 'weight', label: '权重比较' },
   { value: 'id', label: '指定节点 ID' },
   { value: 'all', label: '全部节点' }
-];
+]);
 
 const relativePresetOptions: Array<{ value: RelativePresetValue; label: string }> = [
-  { value: 'today', label: '今天' },
-  { value: 'yesterday', label: '昨天' },
-  { value: 'tomorrow', label: '明天' },
   { value: 'this_week', label: '本周' },
   { value: 'last_week', label: '上周' },
-  { value: 'next_week', label: '下周' },
   { value: 'this_month', label: '本月' },
   { value: 'last_month', label: '上月' },
-  { value: 'next_month', label: '下月' },
+  { value: 'this_year', label: '今年' },
+  { value: 'last_year', label: '去年' },
   { value: 'custom_relative', label: '自定义相对时间' }
 ];
 
@@ -423,6 +438,14 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
           kind: 'field',
           field: 'title',
           op: 'eq',
+          value: ''
+        }
+      };
+    case 'full_text':
+      return {
+        action: 'include',
+        matcher: {
+          kind: 'full_text_contains',
           value: ''
         }
       };
@@ -508,6 +531,7 @@ const createRuleFromTemplate = (template: RuleTemplateValue): NoteProgramRule =>
 };
 
 const getRuleTemplateValue = (rule: NoteProgramRule): RuleTemplateValue => {
+  if (rule.matcher.kind === 'full_text_contains') return 'full_text';
   if (rule.matcher.kind === 'title_contains') return 'title_match';
   if (rule.matcher.kind === 'id') return 'id';
   if (rule.matcher.kind === 'all') return 'all';
@@ -526,7 +550,11 @@ const getRuleTemplateValue = (rule: NoteProgramRule): RuleTemplateValue => {
 
 const addRule = () => {
   updateChannel(draft => {
-    draft.rules.push(createRuleFromTemplate('title_match'));
+    const rule = createRuleFromTemplate('title_match');
+    if (draft.rules.length > 0) {
+      rule.action = 'filter';
+    }
+    draft.rules.push(rule);
   });
 };
 
@@ -542,7 +570,7 @@ const replaceRuleTemplate = (index: number, template: RuleTemplateValue) => {
 
 const updateRuleAction = (index: number, action: string) => {
   patchRule(index, draft => {
-    draft.action = action === 'exclude' ? 'exclude' : 'include';
+    draft.action = action === 'exclude' || action === 'filter' ? action : 'include';
     applyPrivateLevelConveniencePreset(draft);
   });
 };
@@ -595,8 +623,8 @@ const getAllowedOps = (field: string) => {
   if (field === 'start_at' || field === 'updated_at') {
     return [
       { value: 'between', label: '介于' },
-      { value: 'gte', label: '不早于' },
-      { value: 'lte', label: '不晚于' }
+      { value: 'gte', label: '晚于' },
+      { value: 'lte', label: '早于' }
     ];
   }
   if (field === 'weight') {
@@ -655,14 +683,14 @@ const buildRelativePresetExpr = (
       return createRelativeTimePoint('week', 0, boundary);
     case 'last_week':
       return createRelativeTimePoint('week', -1, boundary);
-    case 'next_week':
-      return createRelativeTimePoint('week', 1, boundary);
     case 'this_month':
       return createRelativeTimePoint('month', 0, boundary);
     case 'last_month':
       return createRelativeTimePoint('month', -1, boundary);
-    case 'next_month':
-      return createRelativeTimePoint('month', 1, boundary);
+    case 'this_year':
+      return createRelativeTimePoint('year', 0, boundary);
+    case 'last_year':
+      return createRelativeTimePoint('year', -1, boundary);
   }
 };
 
@@ -673,15 +701,12 @@ const inferRelativePreset = (
   if (expr.kind !== 'relative' || expr.boundary !== boundary) return 'custom_relative';
 
   const options: Array<[Exclude<RelativePresetValue, 'custom_relative'>, NoteTimePointUnit, number]> = [
-    ['today', 'day', 0],
-    ['yesterday', 'day', -1],
-    ['tomorrow', 'day', 1],
     ['this_week', 'week', 0],
     ['last_week', 'week', -1],
-    ['next_week', 'week', 1],
     ['this_month', 'month', 0],
     ['last_month', 'month', -1],
-    ['next_month', 'month', 1]
+    ['this_year', 'year', 0],
+    ['last_year', 'year', -1]
   ];
 
   for (const [value, unit, offset] of options) {
@@ -855,7 +880,7 @@ const updateTimeExprUnit = (index: number, value: string, rangeIndex?: number) =
   patchTimeExpr(index, current => ({
     ...current,
     kind: 'relative',
-    unit: value === 'day' || value === 'week' || value === 'month' ? value : 'month'
+    unit: value === 'day' || value === 'week' || value === 'month' || value === 'year' ? value : 'month'
   }), rangeIndex);
 };
 
@@ -1018,15 +1043,15 @@ const updateTimeExprBoundary = (index: number, value: string, rangeIndex?: numbe
   font-size: 12px;
 }
 
-.w-80 { width: 80px; }
-.w-90 { width: 90px; }
-.w-100 { width: 100px; }
-.w-110 { width: 110px; }
-.w-130 { width: 130px; }
-.w-140 { width: 140px; }
-.w-150 { width: 150px; }
-.w-190 { width: 190px; }
-.w-200 { width: 200px; }
-.w-280 { width: 280px; }
-.w-320 { width: 320px; }
+.w-80 { width: 80px; flex: 0 0 80px; }
+.w-90 { width: 90px; flex: 0 0 90px; }
+.w-100 { width: 100px; flex: 0 0 100px; }
+.w-110 { width: 110px; flex: 0 0 110px; }
+.w-130 { width: 130px; flex: 0 0 130px; }
+.w-140 { width: 140px; flex: 0 0 140px; }
+.w-150 { width: 150px; flex: 0 0 150px; }
+.w-190 { width: 190px; flex: 0 0 190px; }
+.w-200 { width: 200px; flex: 0 0 200px; }
+.w-280 { width: 280px; flex: 0 0 280px; }
+.w-320 { width: 320px; flex: 0 0 320px; }
 </style>

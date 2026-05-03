@@ -3,11 +3,13 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+import html
 import inspect
 import re
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 from backend.models import NoteEdge, NoteNode
+from backend.core.note_progress import is_note_system_custom_field_key
 from backend.core.note_semantics import NOTE_LIFECYCLE_STAGE_DEFAULT, normalize_lifecycle_stage
 
 Predicate = Callable[["NoteVisit"], bool]
@@ -15,6 +17,9 @@ TransitionFilter = Callable[["NoteVisit", NoteEdge, "NoteVisit"], bool]
 TraversalDirection = Literal["both", "incoming", "outgoing"]
 ComponentMode = Literal["planetary", "satellite"]
 CompareOp = Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]
+HTML_BREAK_RE = re.compile(r"<\s*/?\s*(br|p|div|li|tr|h[1-6])\b[^>]*>", re.IGNORECASE)
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+WHITESPACE_RE = re.compile(r"\s+")
 
 
 def _to_list(values: str | Sequence[Any]) -> List[Any]:
@@ -26,6 +31,66 @@ def _to_list(values: str | Sequence[Any]) -> List[Any]:
 def _normalize_text(value: Any, ignore_case: bool) -> str:
     text = "" if value is None else str(value)
     return text.lower() if ignore_case else text
+
+
+def _html_to_plain_text(value: Any) -> str:
+    text = str(value or "")
+    if not text.strip():
+        return ""
+    text = HTML_BREAK_RE.sub("\n", text)
+    text = HTML_TAG_RE.sub(" ", text)
+    text = html.unescape(text).replace("\xa0", " ")
+    return WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _append_full_text_part(parts: List[str], value: Any) -> None:
+    if value is None:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _append_full_text_part(parts, key)
+            _append_full_text_part(parts, item)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _append_full_text_part(parts, item)
+        return
+
+    text = _html_to_plain_text(value)
+    if text:
+        parts.append(text)
+
+
+def _append_custom_field_text(parts: List[str], key: Any, value: Any) -> None:
+    if is_note_system_custom_field_key(key):
+        return
+    _append_full_text_part(parts, key)
+    _append_full_text_part(parts, value)
+
+
+def _get_custom_fields_full_text_parts(custom_fields: Any) -> List[str]:
+    parts: List[str] = []
+    if isinstance(custom_fields, dict):
+        for key, value in custom_fields.items():
+            _append_custom_field_text(parts, key, value)
+        return parts
+
+    if not isinstance(custom_fields, list):
+        return parts
+
+    for item in custom_fields:
+        if isinstance(item, (list, tuple)) and len(item) >= 3:
+            _append_custom_field_text(parts, item[0], item[2])
+        elif isinstance(item, dict) and "key" in item:
+            _append_custom_field_text(parts, item.get("key"), item.get("value"))
+
+    return parts
+
+
+def _get_note_full_text(note: NoteNode) -> str:
+    parts = [str(note.title or ""), _html_to_plain_text(note.content)]
+    parts.extend(_get_custom_fields_full_text_parts(note.custom_fields))
+    return "\n".join(part for part in parts if part)
 
 
 def _get_note_value(note: NoteNode, field_name: str) -> Any:
@@ -91,7 +156,7 @@ def _shift_month(year: int, month: int, offset: int) -> Tuple[int, int]:
 
 
 def _resolve_relative_time_point(
-    unit: Literal["day", "week", "month"],
+    unit: Literal["day", "week", "month", "year"],
     offset: int,
     boundary: Literal["start", "end"],
     *,
@@ -99,6 +164,12 @@ def _resolve_relative_time_point(
 ) -> float:
     current = base_time or datetime.now().astimezone()
     tzinfo = current.tzinfo
+
+    if unit == "year":
+        target_year = current.year + offset
+        start_at = datetime(target_year, 1, 1, 0, 0, 0, 0, tzinfo=tzinfo)
+        end_at = datetime(target_year + 1, 1, 1, 0, 0, 0, 0, tzinfo=tzinfo)
+        return start_at.timestamp() if boundary == "start" else end_at.timestamp() - 0.001
 
     if unit == "month":
         start_year, start_month = _shift_month(current.year, current.month, offset)
@@ -143,7 +214,7 @@ def _resolve_time_point_expr(expr: Any, *, base_time: Optional[datetime] = None)
 
     if kind == "relative":
         unit = _get_expr_attr(expr, "unit", "month")
-        if unit not in {"day", "week", "month"}:
+        if unit not in {"day", "week", "month", "year"}:
             unit = "month"
         boundary = _get_expr_attr(expr, "boundary", "start")
         if boundary not in {"start", "end"}:
@@ -353,6 +424,16 @@ class NoteFilterFactory:
         return _check
 
     @classmethod
+    def match_full_text(cls, text: str, *, ignore_case: bool = True) -> Predicate:
+        expected = _normalize_text(text, ignore_case)
+
+        def _check(visit: NoteVisit) -> bool:
+            full_text = _normalize_text(_get_note_full_text(visit.node), ignore_case)
+            return expected in full_text
+
+        return _check
+
+    @classmethod
     def match_depth(cls, *, min_depth: int = 0, max_depth: Optional[int] = None) -> Predicate:
         def _check(visit: NoteVisit) -> bool:
             if visit.depth < min_depth:
@@ -428,11 +509,13 @@ class RuleBuilder:
         rules: List[Tuple[Predicate, bool]],
         target: bool,
         base_condition: Optional[Predicate] = None,
+        invert_predicate: bool = False,
     ) -> None:
         self.parent = parent
         self.rules = rules
         self.target = target
         self.base_condition = base_condition
+        self.invert_predicate = invert_predicate
 
     def __getattr__(self, method: str):
         rule_factory = getattr(NoteFilterFactory, method)
@@ -443,6 +526,13 @@ class RuleBuilder:
                 kwargs["context"] = self.parent.context
 
             predicate = rule_factory(*args, **kwargs)
+            if self.invert_predicate:
+                original_predicate = predicate
+
+                def inverted_predicate(visit: NoteVisit) -> bool:
+                    return not original_predicate(visit)
+
+                predicate = inverted_predicate
 
             if self.base_condition:
                 base_condition = self.base_condition
@@ -491,6 +581,10 @@ class NoteWalker:
         return RuleBuilder(self, self.expand_rules, False)
 
     @property
+    def filter_expand(self) -> RuleBuilder:
+        return RuleBuilder(self, self.expand_rules, False, invert_predicate=True)
+
+    @property
     def enter(self) -> RuleBuilder:
         return self.expand
 
@@ -505,6 +599,10 @@ class NoteWalker:
     @property
     def exclude(self) -> RuleBuilder:
         return RuleBuilder(self, self.select_rules, False)
+
+    @property
+    def filter(self) -> RuleBuilder:
+        return RuleBuilder(self, self.select_rules, False, invert_predicate=True)
 
     @property
     def include_seed(self) -> RuleBuilder:

@@ -156,6 +156,7 @@ CODEX_DIARY_DATE_FIELD = "__codex_diary_date"
 CODEX_DIARY_SCOPE_FIELD = "__codex_diary_scope_key"
 CODEX_DIARY_BLOCK_FIELD = "__codex_diary_block_key"
 CODEX_DIARY_SOURCE_THREADS_FIELD = "__codex_source_thread_ids"
+CODEX_DIARY_DIRECT_REMOTE_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
 CODEX_DIARY_TARGET_SECONDS = 3600
 CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
 CODEX_DIARY_RESULT_KEYWORDS = (
@@ -247,6 +248,105 @@ CODEX_DIARY_HTML_LI_NUMBER_PREFIX_RE = re.compile(
     r"(<li\b[^>]*>\s*(?:<(?:span|p|strong|b|code)\b[^>]*>\s*)*)"
     r"(?:(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*)+",
     re.IGNORECASE,
+)
+CODEX_DIARY_CATEGORY_HINT_STOPWORDS = {
+    "修复",
+    "新增",
+    "调整",
+    "优化",
+    "兼容",
+    "流程",
+    "接口",
+    "页面",
+    "数据",
+    "字段",
+    "导入",
+    "导出",
+    "查询",
+    "状态",
+    "规则",
+    "任务",
+    "项目",
+    "节点",
+    "脚本",
+    "自动",
+    "完成",
+    "失败",
+    "问题",
+    "处理",
+    "逻辑",
+    "支持",
+    "功能",
+    "工具",
+    "列表",
+    "菜单",
+    "缓存",
+    "配置",
+    "统一",
+    "补充",
+    "清理",
+    "验证",
+    "保存",
+    "读取",
+    "写入",
+    "同步",
+    "生成",
+    "更新",
+    "删除",
+    "选择",
+    "运行",
+    "本地",
+    "远端",
+    "代码",
+    "前端",
+    "后端",
+}
+CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
+    (
+        ("考勤", "attendance", "kq"),
+        (
+            "考勤",
+            "课程",
+            "问卷",
+            "问卷星",
+            "打卡",
+            "念住",
+            "禅寺",
+            "学员",
+            "讲师",
+            "退款",
+            "微信零钱",
+            "在线考勤表",
+            "考勤实际完成结点",
+            "clockin_table",
+            "clockin",
+            "wjx",
+            "kdocs",
+        ),
+    ),
+    (
+        ("凡修", "fanxiu"),
+        (
+            "凡修",
+            "prayer_cycle",
+            "祈愿",
+            "炼丹",
+            "淬体",
+            "灵兽",
+            "妖王",
+            "仙花",
+            "宗城",
+            "法宝",
+            "道具",
+            "仙舟",
+            "魔道",
+            "昆仑",
+            "寿元",
+            "翠剑",
+            "衣橱",
+            "抽卡",
+        ),
+    ),
 )
 
 
@@ -415,6 +515,7 @@ def _fetch_remote_codex_json(
             method=method,
             url=target_url,
             headers=_remote_codex_headers(entry),
+            proxies=CODEX_DIARY_DIRECT_REMOTE_PROXIES.copy(),
             timeout=timeout,
         )
     except requests.RequestException as exc:
@@ -645,6 +746,185 @@ def _normalize_project_palette_token(value: Any) -> str:
     return text
 
 
+def _is_specific_codex_diary_category_key(value: Any) -> bool:
+    key = str(value or "").strip()
+    return bool(key) and key != NOTE_CATEGORY_DEFAULT
+
+
+def _iter_unique_codex_diary_palette_items(palette_lookup: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    items_by_key: dict[str, dict[str, Any]] = {}
+    for item in palette_lookup.values():
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        if key and key not in items_by_key:
+            items_by_key[key] = item
+    return list(items_by_key.values())
+
+
+def _codex_diary_category_result(
+    category_key: str,
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    key = str(category_key or "").strip() or NOTE_CATEGORY_DEFAULT
+    for item in _iter_unique_codex_diary_palette_items(palette_lookup):
+        if str(item.get("key") or "").strip() == key:
+            return {
+                "key": key,
+                "label": str(item.get("label") or item.get("key") or ("综合" if key == NOTE_CATEGORY_DEFAULT else key)),
+                "color": item.get("color"),
+            }
+    return {"key": key, "label": "综合" if key == NOTE_CATEGORY_DEFAULT else key, "color": None}
+
+
+def _extract_codex_diary_category_hint_tokens(value: Any) -> list[str]:
+    normalized = _normalize_project_palette_token(value)
+    if not normalized:
+        return []
+
+    stopwords = {_normalize_project_palette_token(item) for item in CODEX_DIARY_CATEGORY_HINT_STOPWORDS}
+    tokens: set[str] = set()
+    for match in re.findall(r"[a-z][a-z0-9]{2,}", normalized):
+        if match not in stopwords:
+            tokens.add(match)
+
+    for cjk_text in re.findall(r"[\u4e00-\u9fff]+", normalized):
+        if len(cjk_text) < 2:
+            continue
+        if len(cjk_text) <= 6 and cjk_text not in stopwords:
+            tokens.add(cjk_text)
+        max_size = min(4, len(cjk_text))
+        for size in range(2, max_size + 1):
+            for start in range(0, len(cjk_text) - size + 1):
+                token = cjk_text[start : start + size]
+                if token not in stopwords:
+                    tokens.add(token)
+
+    return sorted(tokens, key=lambda item: (-len(item), item))[:80]
+
+
+def _codex_diary_domain_aliases_for_palette_item(item: dict[str, Any]) -> list[str]:
+    identity = _normalize_project_palette_token(
+        " ".join(
+            _collect_project_palette_candidates(
+                item.get("key"),
+                item.get("label"),
+                str(item.get("key") or "").removeprefix("custom_"),
+            )
+        )
+    )
+    if not identity:
+        return []
+
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for markers, raw_aliases in CODEX_DIARY_CATEGORY_DOMAIN_ALIASES:
+        normalized_markers = [_normalize_project_palette_token(marker) for marker in markers]
+        if not any(marker and marker in identity for marker in normalized_markers):
+            continue
+        for alias in raw_aliases:
+            normalized_alias = _normalize_project_palette_token(alias)
+            if normalized_alias and normalized_alias not in seen:
+                seen.add(normalized_alias)
+                aliases.append(normalized_alias)
+    return aliases
+
+
+def _add_codex_diary_category_score(scores: dict[str, int], category_key: Any, score: int) -> None:
+    key = str(category_key or "").strip()
+    if not key or score <= 0:
+        return
+    scores[key] = scores.get(key, 0) + int(score)
+
+
+def _score_codex_diary_category_texts(
+    values: list[Any],
+    *,
+    palette_lookup: dict[str, dict[str, Any]],
+    title_hints: dict[str, str],
+    exact_weight: int,
+    palette_token_weight: int,
+    domain_alias_weight: int,
+    title_hint_full_weight: int,
+    title_hint_token_weight: int,
+) -> dict[str, int]:
+    combined_text = _normalize_project_palette_token(" ".join(str(value or "") for value in values))
+    scores: dict[str, int] = {}
+    if not combined_text:
+        return scores
+
+    for candidate in _collect_project_palette_candidates(*values):
+        item = palette_lookup.get(_normalize_project_palette_token(candidate))
+        if item:
+            _add_codex_diary_category_score(scores, item.get("key"), exact_weight)
+
+    for item in _iter_unique_codex_diary_palette_items(palette_lookup):
+        category_key = item.get("key")
+        for token in _collect_project_palette_candidates(
+            item.get("key"),
+            item.get("label"),
+            str(item.get("key") or "").removeprefix("custom_"),
+        ):
+            normalized_token = _normalize_project_palette_token(token)
+            if len(normalized_token) >= 2 and normalized_token in combined_text:
+                _add_codex_diary_category_score(scores, category_key, palette_token_weight)
+        for alias in _codex_diary_domain_aliases_for_palette_item(item):
+            if alias in combined_text:
+                _add_codex_diary_category_score(scores, category_key, domain_alias_weight)
+
+    for hint_title, category_key in title_hints.items():
+        if not _is_specific_codex_diary_category_key(category_key):
+            continue
+        normalized_hint = _normalize_project_palette_token(hint_title)
+        if len(normalized_hint) >= 3 and normalized_hint in combined_text:
+            _add_codex_diary_category_score(scores, category_key, title_hint_full_weight)
+        for token in _extract_codex_diary_category_hint_tokens(normalized_hint):
+            if token in combined_text:
+                _add_codex_diary_category_score(scores, category_key, title_hint_token_weight)
+
+    return scores
+
+
+def _select_best_codex_diary_category_key(
+    scores: dict[str, int],
+    *,
+    specific_only: bool = False,
+) -> str | None:
+    candidates = [
+        (key, score)
+        for key, score in scores.items()
+        if score > 0 and (not specific_only or _is_specific_codex_diary_category_key(key))
+    ]
+    if not candidates:
+        return None
+    return sorted(
+        candidates,
+        key=lambda item: (
+            -item[1],
+            0 if _is_specific_codex_diary_category_key(item[0]) else 1,
+            item[0],
+        ),
+    )[0][0]
+
+
+def _codex_diary_group_key_for_record(record: dict[str, Any], category_key: str) -> str:
+    key = str(category_key or NOTE_CATEGORY_DEFAULT).strip() or NOTE_CATEGORY_DEFAULT
+    if key != NOTE_CATEGORY_DEFAULT:
+        return key
+
+    thread_id = str(record.get("thread_id") or "").strip()
+    if thread_id:
+        return f"{key}:thread:{thread_id}"
+
+    title_seed = _normalize_project_palette_token(record.get("thread_title") or record.get("user_request"))
+    if title_seed:
+        return f"{key}:topic:{title_seed[:40]}"
+
+    start_at = str(record.get("start_at") or "").strip()
+    return f"{key}:record:{start_at}"
+
+
 def _collect_project_palette_candidates(*values: Any) -> list[str]:
     candidates: list[str] = []
     seen: set[str] = set()
@@ -711,31 +991,44 @@ def _resolve_codex_diary_category(
     palette_lookup: dict[str, dict[str, Any]],
     title_hints: dict[str, str],
 ) -> dict[str, Any]:
-    candidates = _collect_project_palette_candidates(
-        turn.get("project_label"),
-        turn.get("thread_title"),
-        turn.get("source_root_dir"),
+    content_scores = _score_codex_diary_category_texts(
+        [turn.get("user_request"), turn.get("assistant_result")],
+        palette_lookup=palette_lookup,
+        title_hints=title_hints,
+        exact_weight=40,
+        palette_token_weight=18,
+        domain_alias_weight=16,
+        title_hint_full_weight=16,
+        title_hint_token_weight=5,
     )
-    for candidate in candidates:
-        item = palette_lookup.get(_normalize_project_palette_token(candidate))
-        if item:
-            return {
-                "key": str(item.get("key") or NOTE_CATEGORY_DEFAULT),
-                "label": str(item.get("label") or item.get("key") or "综合"),
-                "color": item.get("color"),
-            }
-    for candidate in candidates:
-        normalized_candidate = _normalize_project_palette_token(candidate)
-        if len(normalized_candidate) < 3:
-            continue
-        scores: dict[str, int] = {}
-        for hint_title, category_key in title_hints.items():
-            if normalized_candidate and normalized_candidate in hint_title:
-                scores[category_key] = scores.get(category_key, 0) + (3 if hint_title.startswith(normalized_candidate) else 1)
-        if scores:
-            best_key = sorted(scores.items(), key=lambda item: (-item[1], item[0]))[0][0]
-            return {"key": best_key, "label": best_key, "color": None}
-    return {"key": NOTE_CATEGORY_DEFAULT, "label": "综合", "color": None}
+    context_scores = _score_codex_diary_category_texts(
+        [turn.get("project_label"), turn.get("thread_title"), turn.get("source_root_dir")],
+        palette_lookup=palette_lookup,
+        title_hints=title_hints,
+        exact_weight=10,
+        palette_token_weight=5,
+        domain_alias_weight=3,
+        title_hint_full_weight=5,
+        title_hint_token_weight=1,
+    )
+
+    content_best_key = _select_best_codex_diary_category_key(content_scores, specific_only=True)
+    if content_best_key and content_scores.get(content_best_key, 0) >= 12:
+        return _codex_diary_category_result(content_best_key, palette_lookup=palette_lookup)
+
+    combined_scores = dict(context_scores)
+    for key, score in content_scores.items():
+        combined_scores[key] = combined_scores.get(key, 0) + score
+
+    best_key = _select_best_codex_diary_category_key(combined_scores, specific_only=True)
+    if best_key:
+        return _codex_diary_category_result(best_key, palette_lookup=palette_lookup)
+
+    best_key = _select_best_codex_diary_category_key(combined_scores)
+    if best_key:
+        return _codex_diary_category_result(best_key, palette_lookup=palette_lookup)
+
+    return _codex_diary_category_result(NOTE_CATEGORY_DEFAULT, palette_lookup=palette_lookup)
 
 
 def _codex_diary_turn_duration_seconds(turn: dict[str, Any]) -> float:
@@ -968,7 +1261,7 @@ def _strip_codex_diary_title_noise(value: Any) -> str:
 
 def _normalize_codex_diary_ai_title(value: Any) -> str:
     text = _strip_codex_diary_title_noise(value)
-    text = re.sub(r"^(综合|general|CodeYun/笔记|codeyun|Codex)[：:]\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"^(综合|杂项|多项整合|多项处理|多项事项|general|CodeYun/笔记|codeyun|Codex)[：:\s]*", "", text, flags=re.IGNORECASE)
     text = text.rstrip(".…")
     if not text or text in CODEX_DIARY_TITLE_BAD_VALUES:
         return ""
@@ -1013,6 +1306,7 @@ def _build_codex_diary_ai_system_prompt() -> str:
             "只根据每条记录的 user_request、assistant_result、thread_title 做语义归纳；assistant_result 优先。",
             "不要照搬聊天原文，不要输出工具日志、JSON、堆栈、操作记录、文件大段内容。",
             "标题必须是信息密度高的短名词短语，保留关键对象/动作/接口/页面/字段/路径名；不要带分类前缀。",
+            "标题不要使用“综合”“杂项”“多项整合”这类笼统词；多个事项并列时保留前两个具体对象。",
             "标题禁止使用“是的”“可以”“好的”“已改完”“已经删了”这类低信息开头或低信息标题。",
             "正文条目写成总结性工作记录，每条只讲做了什么、达成什么结果、关键风险或后续点。",
             "summary_items 返回纯文本数组，每个数组元素不要自带 1.、2.、一、这类编号；编号由星图笔记编辑器自动生成。",
@@ -1161,9 +1455,11 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         category_key = str(category["key"] or NOTE_CATEGORY_DEFAULT)
         record["duration_seconds"] = _codex_diary_turn_duration_seconds(record)
         record["codex_diary_category"] = category
+        group_key = _codex_diary_group_key_for_record(record, category_key)
         group = grouped.setdefault(
-            category_key,
+            group_key,
             {
+                "group_key": group_key,
                 "category_key": category_key,
                 "category_label": str(category.get("label") or category_key),
                 "records": [],
@@ -1183,6 +1479,7 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
             start_at = min(float(record.get("start_at") or 0) for record in current_records)
             end_at = max(float(record.get("end_at") or record.get("start_at") or 0) for record in current_records)
             block = {
+                "group_key": group["group_key"],
                 "category_key": group["category_key"],
                 "category_label": group["category_label"],
                 "records": list(current_records),
@@ -1206,6 +1503,7 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
             if (
                 blocks
                 and blocks[-1]["category_key"] == block["category_key"]
+                and blocks[-1].get("group_key") == block.get("group_key")
                 and block["duration_seconds"] < CODEX_DIARY_TINY_TAIL_SECONDS
             ):
                 previous = blocks[-1]
@@ -2571,6 +2869,9 @@ def _apply_program_matcher(builder, matcher) -> None:
     if matcher.kind == "title_contains":
         builder.match_title(str(matcher.value or ""), ignore_case=matcher.ignore_case)
         return
+    if matcher.kind == "full_text_contains":
+        builder.match_full_text(str(matcher.value or ""), ignore_case=matcher.ignore_case)
+        return
     if matcher.kind == "seed":
         builder.is_seed()
         return
@@ -2596,11 +2897,21 @@ def _build_program_walker(context: NoteGraphContext, request: NoteProgramRequest
     )
 
     for rule in request.program.expand.rules:
-        builder = walker.expand if rule.action == "include" else walker.skip_expand
+        if rule.action == "include":
+            builder = walker.expand
+        elif rule.action == "filter":
+            builder = walker.filter_expand
+        else:
+            builder = walker.skip_expand
         _apply_program_matcher(builder, rule.matcher)
 
     for rule in request.program.select.rules:
-        builder = walker.include if rule.action == "include" else walker.exclude
+        if rule.action == "include":
+            builder = walker.include
+        elif rule.action == "filter":
+            builder = walker.filter
+        else:
+            builder = walker.exclude
         _apply_program_matcher(builder, rule.matcher)
 
     return walker

@@ -8,6 +8,7 @@ def make_note(
     note_id: str,
     title: str,
     *,
+    content: str = "",
     node_status: str = "idea",
     node_type: str = "note",
     weight: int = 0,
@@ -19,7 +20,7 @@ def make_note(
         id=note_id,
         user_id=1,
         title=title,
-        content="",
+        content=content,
         weight=weight,
         node_type=node_type,
         node_status=node_status,
@@ -128,3 +129,48 @@ def test_include_seed_applies_base_condition_before_predicate():
     result = walker.collect_graph(["root"], include_edges=False)
 
     assert result.node_ids == ["root"]
+
+
+def test_collect_all_supports_full_text_matcher():
+    context = build_context(
+        [
+            make_note("title-hit", "Search Target"),
+            make_note("body-hit", "Body", content="<p>contains search target in content</p>"),
+            make_note(
+                "custom-field-hit",
+                "Custom Field",
+                custom_fields=[
+                    ["CDK", "string", "S63RJH5ZWLB0ZGBY"],
+                    ["渠道", "string", "search target member shop"],
+                ],
+            ),
+            make_note("system-field-miss", "System Field", custom_fields=[["__hidden", "string", "search target"]]),
+            make_note("miss", "Other", content="<p>nothing relevant</p>"),
+        ]
+    )
+
+    walker = NoteWalker(context, select=False)
+    walker.include.match_full_text("search target")
+
+    result = walker.collect_all()
+
+    assert result.node_ids == ["title-hit", "body-hit", "custom-field-hit"]
+
+
+def test_collect_all_filter_action_narrows_current_result_and_can_be_overridden():
+    context = build_context(
+        [
+            make_note("date-only", "Date Only", content="<p>no keyword here</p>", start_at=200.0, updated_at=300.0),
+            make_note("keyword", "Keyword", content="<p>contains codex in the body</p>", start_at=200.0, updated_at=200.0),
+            make_note("rescue", "Rescue", content="<p>no keyword but intentionally restored</p>", start_at=50.0, updated_at=100.0),
+        ]
+    )
+
+    walker = NoteWalker(context, select=False)
+    walker.include.match_field("start_at", "gte", value=100.0)
+    walker.filter.match_full_text("codex")
+    walker.include.match_id("rescue")
+
+    result = walker.collect_all()
+
+    assert result.node_ids == ["keyword", "rescue"]

@@ -27,6 +27,10 @@ from backend.core.note_metadata_feedback import (
     init_note_metadata_feedback_scheduler,
     shutdown_note_metadata_feedback_scheduler,
 )
+from backend.core.weekly_note_scheduler import (
+    init_ruanyf_weekly_note_scheduler,
+    shutdown_ruanyf_weekly_note_scheduler,
+)
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -50,10 +54,12 @@ async def lifespan(app: FastAPI):
     init_attendance_summary_scheduler()
     init_note_metadata_feedback_scheduler()
     init_auto_git_commit_scheduler()
+    init_ruanyf_weekly_note_scheduler()
     if not settings.is_test:
         start_enabled_codex_bridges()
     yield
     shutdown_codex_bridges()
+    shutdown_ruanyf_weekly_note_scheduler()
     shutdown_auto_git_commit_scheduler()
     shutdown_note_metadata_feedback_scheduler()
     shutdown_attendance_summary_scheduler()

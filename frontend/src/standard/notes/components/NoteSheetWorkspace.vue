@@ -350,6 +350,10 @@ type FormulaDisplayState = {
   errorKeys: Set<string>
 }
 
+type FormulaDisplayBuildOptions = {
+  rowOffset?: number
+}
+
 type FormulaEngineInstance = {
   getCellValue: (address: { sheet: number; row: number; col: number }) => unknown
   destroy: () => void
@@ -1788,7 +1792,7 @@ function isColumnHiddenConfigValue(value: unknown) {
 function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
   return {
     show_row_numbers: true,
-    row_marker_numbering: 'page',
+    row_marker_numbering: 'global',
     show_column_markers: true,
     column_marker_style: 'letters',
     pagination: {
@@ -1803,7 +1807,7 @@ function normalizeColumnMarkerStyle(value: unknown): ColumnMarkerStyle {
 }
 
 function normalizeRowMarkerNumbering(value: unknown): RowMarkerNumbering {
-  return value === 'global' ? 'global' : 'page'
+  return value === 'page' ? 'page' : 'global'
 }
 
 function normalizeSheetPageSize(value: unknown) {
@@ -2149,7 +2153,7 @@ function createDefaultDocument(): SheetDocument {
   }
 }
 
-function normalizeSheetDocument(source: unknown): SheetDocument {
+function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayBuildOptions = {}): SheetDocument {
   if (!source || typeof source !== 'object') {
     return createDefaultDocument()
   }
@@ -2160,7 +2164,12 @@ function normalizeSheetDocument(source: unknown): SheetDocument {
   const normalizedRows = trimTrailingBlankRows(sourceRows.map((row) => normalizeRow(row, headers)))
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   const normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
-  const formulaDisplayForWidths = buildFormulaDisplayStateForRows(headers, normalizedRows, normalizedColumnConfigs)
+  const formulaDisplayForWidths = buildFormulaDisplayStateForRows(
+    headers,
+    normalizedRows,
+    normalizedColumnConfigs,
+    formulaOptions,
+  )
   const normalizedWidths = headers.map((_, index) => {
     const width = Number(sourceWidths[index])
     const widthMode = normalizeColumnConfig(normalizedColumnConfigs[headers[index]]).width_mode
@@ -2333,6 +2342,22 @@ function normalizeFormulaInputExpression(value: string) {
 
 function normalizeFormulaExpressionForEngine(value: string) {
   return normalizeFormulaInputExpression(value)
+}
+
+function getCurrentFormulaDisplayRowOffset() {
+  return effectivePaginationEnabled.value ? pageRowOffset.value : 0
+}
+
+function normalizeFormulaExpressionForPagedEngine(value: string, rowOffset: number, rowCount: number) {
+  const normalizedFormula = normalizeFormulaExpressionForEngine(value)
+  if (rowOffset <= 0) {
+    return normalizedFormula
+  }
+
+  return remapFormulaCellReferences(normalizedFormula, (sourceRowIndex) => {
+    const localRowIndex = sourceRowIndex - rowOffset
+    return localRowIndex >= 0 && localRowIndex < rowCount ? localRowIndex : null
+  })
 }
 
 function isFormulaErrorValue(value: unknown): value is { value: string } {
@@ -3143,8 +3168,10 @@ function buildFormulaDisplayStateForRows(
   headers: string[],
   sourceRows: SheetRow[],
   sourceConfigs: Record<string, SheetColumnConfig> = columnConfigs.value,
+  options: FormulaDisplayBuildOptions = {},
 ): FormulaDisplayState {
   const normalizedRows = sourceRows.map((row) => normalizeRow(row, headers))
+  const rowOffset = normalizeNonNegativeInt(options.rowOffset, getCurrentFormulaDisplayRowOffset())
   const formulaCells: Array<{ row: number; column: number }> = []
 
   normalizedRows.forEach((row, rowIndex) => {
@@ -3173,7 +3200,7 @@ function buildFormulaDisplayStateForRows(
 
   const engineRows = normalizedRows.map((row) => row.map((cellValue) => (
     isFormulaExpression(cellValue)
-      ? normalizeFormulaExpressionForEngine(cellValue)
+      ? normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedRows.length)
       : cellValue
   )))
   const cells = normalizedRows.map((row) => row.map(() => null as FormulaCellModel | null))
@@ -3543,13 +3570,16 @@ function readDraftPayload(): SheetDraftPayload | null {
       return null
     }
     const payload = JSON.parse(raw) as Record<string, unknown>
+    const pageState = normalizeDraftPageState(payload.pageState)
     return {
       version: 1,
       updatedAt: normalizeTimestampMs(payload.updatedAt),
       sheetVersion: payload.sheetVersion == null ? null : Number(payload.sheetVersion),
       title: String(payload.title ?? '').trim() || '未命名表格',
-      document: normalizeSheetDocument(payload.document),
-      pageState: normalizeDraftPageState(payload.pageState),
+      document: normalizeSheetDocument(payload.document, {
+        rowOffset: pageState?.paginationEnabled ? pageState.rowOffset : 0,
+      }),
+      pageState,
     }
   } catch (error) {
     console.warn('Failed to restore note sheet draft', error)
@@ -5766,6 +5796,7 @@ async function restoreInitialDocument() {
       clearDraftStorage()
     }
 
+    applyPaginationState(remote.pagination)
     let remoteDocument = normalizeSheetDocument(remote.document_json)
     const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings)
     if (
@@ -5789,12 +5820,12 @@ async function restoreInitialDocument() {
         return
       }
       remoteAccessCapabilities.value = remote.access?.capabilities ?? null
+      applyPaginationState(remote.pagination)
       remoteDocument = normalizeSheetDocument(remote.document_json)
     }
 
     sheetTitle.value = remote.title || '未命名表格'
     sheetVersion.value = Number(remote.version || 1)
-    applyPaginationState(remote.pagination)
     emitSheetSync(remote)
 
     let activeDocument = remoteDocument
@@ -9043,8 +9074,8 @@ defineExpose({
           <div class="sheet-settings-label">行标</div>
           <el-select v-model="sheetSettingsRowMarkerMode" class="sheet-settings-inline-select">
             <el-option label="无行标" value="none" />
-            <el-option label="数字（每页 1 / 2 / 3）" value="page_numbers" />
             <el-option label="数字（全局 101 / 102 / 103）" value="global_numbers" />
+            <el-option label="数字（每页 1 / 2 / 3）" value="page_numbers" />
           </el-select>
         </div>
         <div class="sheet-settings-inline-field">

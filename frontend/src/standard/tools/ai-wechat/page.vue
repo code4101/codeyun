@@ -115,7 +115,7 @@
           <div v-if="selectedAccount" class="bridge-section">
             <div class="bridge-section-head">
               <div>
-                <strong>Codex 自动回复</strong>
+                <strong>CodeClaw</strong>
                 <span>{{ getBridgeStateText(selectedAccount) }}</span>
               </div>
               <el-tag
@@ -509,9 +509,9 @@ async function startCodexBridge() {
   try {
     const response = await startWechatIlinkCodexBridge(selectedAccount.value.account_id)
     replaceAccountSummary(response.account)
-    ElMessage.success('Codex 自动回复已开启')
+    ElMessage.success('CodeClaw 已开启')
   } catch (error) {
-    ElMessage.error(getErrorMessage(error, '开启 Codex 自动回复失败'))
+    ElMessage.error(getErrorMessage(error, '开启 CodeClaw 失败'))
   } finally {
     bridgeStarting.value = false
   }
@@ -523,9 +523,9 @@ async function stopCodexBridge() {
   try {
     const response = await stopWechatIlinkCodexBridge(selectedAccount.value.account_id)
     replaceAccountSummary(response.account)
-    ElMessage.success('Codex 自动回复已停止')
+    ElMessage.success('CodeClaw 已停止')
   } catch (error) {
-    ElMessage.error(getErrorMessage(error, '停止 Codex 自动回复失败'))
+    ElMessage.error(getErrorMessage(error, '停止 CodeClaw 失败'))
   } finally {
     bridgeStopping.value = false
   }
@@ -711,12 +711,12 @@ function getLoginStatusTagType(status: string) {
 function getBridgeStateText(account: WechatIlinkAccountSummary) {
   const bridge = account.codex_bridge || {}
   if (bridge.running) {
-    return bridge.last_reply_at ? `最近回复 ${formatTime(bridge.last_reply_at)}` : '收到新消息后会交给 Codex CLI'
+    return bridge.last_reply_at ? `最近回复 ${formatTime(bridge.last_reply_at)}` : '收到新消息后交给 Codex CLI'
   }
   if (bridge.enabled) {
     return '已启用，但当前后台监听未运行'
   }
-  return '开启后，新消息会自动交给 Codex CLI 回复'
+  return '开启后，新消息会交给 Codex CLI'
 }
 
 function formatTime(value: number | string | null | undefined) {

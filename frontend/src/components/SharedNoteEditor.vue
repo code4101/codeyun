@@ -1,12 +1,12 @@
 <template>
-  <div class="shared-note-editor">
+  <div class="shared-note-editor" :class="`is-${effectiveEditorLayout}`">
     <div v-if="props.loading" class="state-line">
       <el-icon class="is-loading"><Loading /></el-icon> 加载内容中...
     </div>
     <div v-else-if="!currentNote" class="state-block">
       <el-empty :description="props.emptyText || '未选择内容'" />
     </div>
-    <div v-else class="panel-content">
+    <div v-else class="panel-content" :class="`is-${effectiveEditorLayout}`">
       <div class="editor-header">
         <div class="header-row primary-row">
           <el-input
@@ -336,7 +336,7 @@
       <NoteEditor
         :key="currentNote.id || 'new'"
         v-model="currentNote.content"
-        :layout="editorLayout"
+        :layout="effectiveEditorLayout"
         :readOnly="effectiveReadonly"
         show-wrap-toggle
         @change="handleContentChange"
@@ -411,6 +411,8 @@ const props = defineProps<{
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
 }>();
+
+const effectiveEditorLayout = computed(() => props.editorLayout || 'fill');
 
 const emit = defineEmits<{
   (e: 'update:modelValue', note: NoteNode): void;
@@ -1040,7 +1042,12 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 </script>
 
 <style scoped>
-.shared-note-editor,.panel-content{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.shared-note-editor{display:flex;flex-direction:column;flex:1;min-height:0}
+.shared-note-editor.is-fill{overflow-y:auto;overflow-x:hidden}
+.shared-note-editor.is-flow{overflow:visible}
+.panel-content{display:flex;flex-direction:column;flex:1;min-height:0}
+.panel-content.is-fill{flex:1 0 auto;min-height:100%;overflow:visible}
+.panel-content.is-flow{flex:none;overflow:visible}
 .editor-header{display:flex;flex-direction:column;gap:12px;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid #f0f0f0}
 .header-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .primary-row{gap:10px}.secondary-row{justify-content:space-between;font-size:12px;color:#909399}
