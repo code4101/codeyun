@@ -210,6 +210,8 @@ const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '�
 const currentNoteId = ref('');
 const loading = ref(false);
 const codexDiaryImporting = ref(false);
+const CODEX_DIARY_IMPORT_POLL_INTERVAL_MS = 1500;
+const CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS = 16 * 60 * 1000;
 const dayContextMenu = ref({
   visible: false,
   x: 0,
@@ -327,11 +329,13 @@ const createNoteFromContextMenu = async () => {
 };
 
 const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
+const isCodexDiaryImportActive = (status: string | undefined | null) => status === 'pending' || status === 'running';
 
 const waitForCodexDiaryImportRun = async (runId: string): Promise<CodexDiaryImportRunResponse> => {
   let latest = await fetchCodexDiaryImportRun(runId);
-  for (let i = 0; i < 160 && latest.status === 'running'; i += 1) {
-    await delay(1500);
+  const deadline = Date.now() + CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS;
+  while (isCodexDiaryImportActive(latest.status) && Date.now() < deadline) {
+    await delay(CODEX_DIARY_IMPORT_POLL_INTERVAL_MS);
     latest = await fetchCodexDiaryImportRun(runId);
   }
   return latest;
@@ -391,6 +395,14 @@ const importCodexDiaryForDay = async (date: Date) => {
       ElMessage.error(completedRun.error_message || 'Codex 总结日记导入失败');
       return;
     }
+    if (isCodexDiaryImportActive(completedRun.status)) {
+      ElMessage.warning('Codex 总结日记仍在运行，请稍后刷新日历查看结果');
+      return;
+    }
+    if (completedRun.status !== 'completed') {
+      ElMessage.error(completedRun.error_message || `Codex 总结日记状态异常：${completedRun.status}`);
+      return;
+    }
     await refreshData({ silent: true });
     completedRun.created_note_ids.forEach(noteId => noteStore.addNoteToTab(props.tabId, noteId));
     if (completedRun.created_note_ids.length > 0) {
@@ -399,6 +411,17 @@ const importCodexDiaryForDay = async (date: Date) => {
     } else {
       ElMessage.info('当天没有可导入的 Codex 会话记录');
     }
+  } catch (error) {
+    const maybeError = error as {
+      response?: { data?: { detail?: string; message?: string } };
+      message?: string;
+    };
+    ElMessage.error(
+      maybeError.response?.data?.detail
+      || maybeError.response?.data?.message
+      || maybeError.message
+      || 'Codex 总结日记导入失败'
+    );
   } finally {
     codexDiaryImporting.value = false;
   }

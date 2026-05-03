@@ -107,11 +107,11 @@ export interface NoteQueryResponse {
   total_edges: number;
 }
 
-export type NoteProgramMatcherKind = 'all' | 'none' | 'id' | 'field' | 'title_contains' | 'seed' | 'depth' | 'relative_month_window';
-export type NoteProgramRuleAction = 'include' | 'exclude';
+export type NoteProgramMatcherKind = 'all' | 'none' | 'id' | 'field' | 'title_contains' | 'full_text_contains' | 'seed' | 'depth' | 'relative_month_window';
+export type NoteProgramRuleAction = 'include' | 'exclude' | 'filter';
 
 export type NoteTimePointExprKind = 'absolute' | 'relative';
-export type NoteTimePointUnit = 'day' | 'week' | 'month';
+export type NoteTimePointUnit = 'day' | 'week' | 'month' | 'year';
 export type NoteTimePointBoundary = 'start' | 'end';
 
 export interface NoteTimePointExpr {
@@ -441,7 +441,7 @@ export const createNoteProgramMatcher = (kind: NoteProgramMatcherKind = 'all'): 
   ids: [],
   field: kind === 'field' ? 'node_status' : kind === 'relative_month_window' ? 'start_at' : null,
   op: kind === 'field' ? 'eq' : kind === 'relative_month_window' ? 'between' : null,
-  value: kind === 'title_contains' ? '' : undefined,
+  value: kind === 'title_contains' || kind === 'full_text_contains' ? '' : undefined,
   values: [],
   ignore_case: true,
   min_depth: 0,
@@ -483,7 +483,7 @@ export const normalizeNoteTimePointExpr = (value?: Partial<NoteTimePointExpr> | 
   return {
     kind,
     value: numericValue,
-    unit: value?.unit === 'day' || value?.unit === 'week' || value?.unit === 'month' ? value.unit : 'month',
+    unit: value?.unit === 'day' || value?.unit === 'week' || value?.unit === 'month' || value?.unit === 'year' ? value.unit : 'month',
     offset: isFiniteNumber(value?.offset) ? Number(value?.offset) : 0,
     boundary: value?.boundary === 'end' ? 'end' : 'start'
   };
@@ -561,7 +561,7 @@ export const createNoteProgramRule = (
 });
 
 export const normalizeNoteProgramRule = (value?: Partial<NoteProgramRule> | null): NoteProgramRule => ({
-  action: value?.action === 'exclude' ? 'exclude' : 'include',
+  action: value?.action === 'exclude' || value?.action === 'filter' ? value.action : 'include',
   matcher: normalizeNoteProgramMatcher(value?.matcher)
 });
 
@@ -693,6 +693,13 @@ const resolveRelativeTimePoint = (
   boundary: NoteTimePointBoundary,
   baseDate: Date = new Date()
 ): number => {
+  if (unit === 'year') {
+    const targetYear = baseDate.getFullYear() + offset;
+    const startAt = new Date(targetYear, 0, 1, 0, 0, 0, 0).getTime();
+    const endAt = new Date(targetYear + 1, 0, 1, 0, 0, 0, 0).getTime() - 1;
+    return boundary === 'start' ? startAt : endAt;
+  }
+
   if (unit === 'month') {
     const [startYear, startMonth] = shiftMonth(baseDate.getFullYear(), baseDate.getMonth() + 1, offset);
     const [endYear, endMonth] = shiftMonth(baseDate.getFullYear(), baseDate.getMonth() + 1, offset + 1);
@@ -748,6 +755,67 @@ const getNoteMatcherValue = (note: NoteNode, field: string) => {
 
   return (note as any)[field];
 };
+
+const htmlToPlainText = (value: unknown): string => String(value ?? '')
+  .replace(/<\s*\/?\s*(br|p|div|li|tr|h[1-6])\b[^>]*>/gi, '\n')
+  .replace(/<[^>]+>/g, ' ')
+  .replace(/&nbsp;/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const isSystemCustomFieldKey = (key: unknown): boolean => typeof key === 'string' && key.startsWith('__');
+
+const appendFullTextPart = (parts: string[], value: unknown) => {
+  if (value === undefined || value === null) return;
+  if (Array.isArray(value)) {
+    value.forEach(item => appendFullTextPart(parts, item));
+    return;
+  }
+  if (typeof value === 'object') {
+    Object.entries(value as Record<string, unknown>).forEach(([key, item]) => {
+      appendFullTextPart(parts, key);
+      appendFullTextPart(parts, item);
+    });
+    return;
+  }
+
+  const text = htmlToPlainText(value);
+  if (text) parts.push(text);
+};
+
+const appendCustomFieldText = (parts: string[], key: unknown, value: unknown) => {
+  if (isSystemCustomFieldKey(key)) return;
+  appendFullTextPart(parts, key);
+  appendFullTextPart(parts, value);
+};
+
+const getCustomFieldsFullTextParts = (customFields: unknown): string[] => {
+  const parts: string[] = [];
+  if (Array.isArray(customFields)) {
+    customFields.forEach(item => {
+      if (Array.isArray(item) && item.length >= 3) {
+        appendCustomFieldText(parts, item[0], item[2]);
+      } else if (item && typeof item === 'object' && 'key' in item) {
+        const row = item as { key?: unknown; value?: unknown };
+        appendCustomFieldText(parts, row.key, row.value);
+      }
+    });
+    return parts;
+  }
+
+  if (customFields && typeof customFields === 'object') {
+    Object.entries(customFields as Record<string, unknown>).forEach(([key, value]) => {
+      appendCustomFieldText(parts, key, value);
+    });
+  }
+  return parts;
+};
+
+const getNoteFullText = (note: NoteNode): string => [
+  note.title || '',
+  htmlToPlainText(note.content || ''),
+  ...getCustomFieldsFullTextParts(note.custom_fields)
+].filter(Boolean).join('\n');
 
 const compareProgramValue = (
   fieldValue: any,
@@ -810,6 +878,12 @@ export const matchNoteProgramMatcherLocally = (
     return compareProgramValue(fieldValue, normalized.op || 'eq', normalized.value, Array.isArray(normalized.values) ? normalized.values : []);
   }
 
+  if (normalized.kind === 'full_text_contains') {
+    const keyword = String(normalized.value ?? '').toLowerCase();
+    const fullText = getNoteFullText(note).toLowerCase();
+    return fullText.includes(keyword);
+  }
+
   return false;
 };
 
@@ -823,10 +897,13 @@ export const applyNoteProgramChannelLocally = (
     let decision = normalizedChannel.default;
 
     for (const rule of normalizedChannel.rules) {
-      const target = rule.action === 'include';
-      if (decision === target) continue;
-      if (matchNoteProgramMatcherLocally(note, rule.matcher)) {
-        decision = target;
+      const matched = matchNoteProgramMatcherLocally(note, rule.matcher);
+      if (rule.action === 'include') {
+        if (!decision && matched) decision = true;
+      } else if (rule.action === 'filter') {
+        if (decision && !matched) decision = false;
+      } else if (decision && matched) {
+        decision = false;
       }
     }
 

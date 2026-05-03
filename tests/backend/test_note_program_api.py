@@ -9,22 +9,24 @@ def make_note(
     note_id: str,
     title: str,
     *,
+    content: str = "",
     start_at: float,
     updated_at: float,
     node_status: str = "idea",
     node_type: str = "note",
     private_level: int = 0,
+    custom_fields=None,
 ):
     return NoteNode(
         id=note_id,
         user_id=auth_user.id,
         title=title,
-        content="",
+        content=content,
         weight=100,
         node_type=node_type,
         node_status=node_status,
         private_level=private_level,
-        custom_fields=[],
+        custom_fields=custom_fields or [],
         created_at=start_at,
         updated_at=updated_at,
         start_at=start_at,
@@ -55,6 +57,11 @@ def month_start_timestamp(offset: int) -> float:
         month -= 12
 
     return datetime(year, month, 1, 12, 0, 0, tzinfo=now.tzinfo).timestamp()
+
+
+def year_start_timestamp(offset: int) -> float:
+    now = datetime.now().astimezone()
+    return datetime(now.year + offset, 1, 1, 12, 0, 0, tzinfo=now.tzinfo).timestamp()
 
 
 def test_query_program_scan_supports_ordered_reinclude(client, session, auth_user):
@@ -303,6 +310,62 @@ def test_query_program_supports_field_between_with_relative_time_values(client, 
     assert [node["id"] for node in payload["nodes"]] == ["note-relative-inside"]
 
 
+def test_query_program_supports_relative_year_time_values(client, session, auth_user):
+    session.add(make_note(
+        auth_user,
+        "note-this-year",
+        "This Year",
+        start_at=year_start_timestamp(0),
+        updated_at=100.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-last-year",
+        "Last Year",
+        start_at=year_start_timestamp(-1),
+        updated_at=200.0,
+    ))
+    session.commit()
+
+    response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "field",
+                                "field": "start_at",
+                                "op": "between",
+                                "time_values": [
+                                    {"kind": "relative", "unit": "year", "offset": 0, "boundary": "start"},
+                                    {"kind": "relative", "unit": "year", "offset": 0, "boundary": "end"},
+                                ],
+                            },
+                        }
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "order_by": "updated_at",
+                "order_desc": False,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert [node["id"] for node in payload["nodes"]] == ["note-this-year"]
+
+
 def test_query_program_supports_private_level_field_matcher(client, session, auth_user):
     session.add(make_note(auth_user, "note-public", "Public", start_at=100.0, updated_at=100.0, private_level=0))
     session.add(make_note(auth_user, "note-private", "Private", start_at=100.0, updated_at=200.0, private_level=1))
@@ -419,3 +482,170 @@ def test_query_program_supports_title_regex_and_not_contains_matchers(client, se
     assert not_contains_response.status_code == 200
     not_contains_payload = not_contains_response.json()
     assert [node["id"] for node in not_contains_payload["nodes"]] == ["note-clean"]
+
+
+def test_query_program_supports_full_text_matcher_ordered_by_updated_time(client, session, auth_user):
+    session.add(make_note(
+        auth_user,
+        "note-old-body",
+        "Old",
+        content="<p>contains search target in the body</p>",
+        start_at=100.0,
+        updated_at=100.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-title",
+        "Search Target",
+        content="",
+        start_at=100.0,
+        updated_at=200.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-new-body",
+        "Newest",
+        content="<p>newer body has search target</p>",
+        start_at=100.0,
+        updated_at=300.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-custom-field",
+        "Custom Field",
+        content="<p>nothing in body</p>",
+        custom_fields=[
+            ["CDK", "string", "S63RJH5ZWLB0ZGBY"],
+            ["渠道", "string", "search target member shop"],
+        ],
+        start_at=100.0,
+        updated_at=250.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-system-field",
+        "System Field",
+        content="<p>nothing in body</p>",
+        custom_fields=[["__hidden", "string", "search target"]],
+        start_at=100.0,
+        updated_at=225.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-miss",
+        "Other",
+        content="<p>nothing relevant</p>",
+        start_at=100.0,
+        updated_at=400.0,
+    ))
+    session.commit()
+
+    response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "full_text_contains",
+                                "value": "search target",
+                            },
+                        }
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "order_by": "updated_at",
+                "order_desc": True,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_nodes"] == 4
+    assert [node["id"] for node in payload["nodes"]] == [
+        "note-new-body",
+        "note-custom-field",
+        "note-title",
+        "note-old-body",
+    ]
+
+
+def test_query_program_supports_filter_action_as_result_narrowing(client, session, auth_user):
+    session.add(make_note(
+        auth_user,
+        "note-date-only",
+        "Date Only",
+        content="<p>does not contain the keyword</p>",
+        start_at=100.0,
+        updated_at=300.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-keyword",
+        "Keyword",
+        content="<p>contains codex in the body</p>",
+        start_at=100.0,
+        updated_at=200.0,
+    ))
+    session.add(make_note(
+        auth_user,
+        "note-before-range",
+        "Before Range",
+        content="<p>contains codex but starts too early</p>",
+        start_at=50.0,
+        updated_at=100.0,
+    ))
+    session.commit()
+
+    response = client.post(
+        "/api/notes/query-program",
+        json={
+            "executor": {"kind": "scan"},
+            "program": {
+                "expand": {"default": False, "rules": []},
+                "select": {
+                    "default": False,
+                    "rules": [
+                        {
+                            "action": "include",
+                            "matcher": {
+                                "kind": "field",
+                                "field": "start_at",
+                                "op": "gte",
+                                "value": 100.0,
+                            },
+                        },
+                        {
+                            "action": "filter",
+                            "matcher": {
+                                "kind": "full_text_contains",
+                                "value": "codex",
+                            },
+                        },
+                    ],
+                },
+            },
+            "result": {
+                "include_edges": False,
+                "order_by": "updated_at",
+                "order_desc": True,
+                "skip": 0,
+                "limit": 10,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_nodes"] == 1
+    assert [node["id"] for node in payload["nodes"]] == ["note-keyword"]

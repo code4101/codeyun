@@ -286,13 +286,13 @@ class NoteQueryResponse(BaseModel):
 class NoteTimePointExpr(BaseModel):
     kind: Literal["absolute", "relative"] = "absolute"
     value: Optional[float] = None
-    unit: Literal["day", "week", "month"] = "month"
+    unit: Literal["day", "week", "month", "year"] = "month"
     offset: int = 0
     boundary: Literal["start", "end"] = "start"
 
 
 class NoteProgramMatcher(BaseModel):
-    kind: Literal["all", "none", "id", "field", "title_contains", "seed", "depth", "relative_month_window"]
+    kind: Literal["all", "none", "id", "field", "title_contains", "full_text_contains", "seed", "depth", "relative_month_window"]
     ids: List[str] = Field(default_factory=list)
     field: Optional[str] = None
     op: Optional[Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]] = None
@@ -308,7 +308,7 @@ class NoteProgramMatcher(BaseModel):
 
 
 class NoteProgramRule(BaseModel):
-    action: Literal["include", "exclude"]
+    action: Literal["include", "exclude", "filter"]
     matcher: NoteProgramMatcher
 
 

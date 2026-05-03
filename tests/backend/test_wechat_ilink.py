@@ -193,14 +193,24 @@ def test_wechat_codex_bridge_replies_to_user_text_message(monkeypatch, isolated_
         base_url="https://ilink.example.com",
     )
     sent_messages = []
+    session_id = "019debcf-8ede-7591-9e59-6ccc85992f8d"
 
     def fake_chat_with_provider(*, provider_id=None, messages, model=None, system_prompt=None, extra_providers=(), **kwargs):
         assert provider_id == "wechat-codex-cli"
         assert extra_providers[0].kind == "codex_cli"
+        assert extra_providers[0].workspace_dir == str(wechat_ilink.ROOT_DIR)
+        assert extra_providers[0].session_id == ""
         assert model == "gpt-test"
         assert "微信发送方：friend-1" in messages[0]["content"]
-        assert "高风险操作" in system_prompt
-        return {"content": "Codex 已处理"}
+        assert "时间上下文（Asia/Shanghai）" in messages[0]["content"]
+        assert "消息时间戳=1710000000000" in messages[0]["content"]
+        assert "消息时间=2024-03-10 00:00:00" in messages[0]["content"]
+        assert "系统收到" not in messages[0]["content"]
+        assert "昨天=2024-03-09" in messages[0]["content"]
+        assert "上周=2024-02-26~2024-03-03" in messages[0]["content"]
+        assert "CodeClaw" in system_prompt
+        assert "高风险操作" not in system_prompt
+        return {"content": "Codex 已处理", "session_id": session_id}
 
     def fake_send_text_message(account_id, *, to_user_id, text, context_token=None, timeout_seconds=15):
         sent_messages.append(
@@ -221,6 +231,7 @@ def test_wechat_codex_bridge_replies_to_user_text_message(monkeypatch, isolated_
         {
             "from_user_id": "friend-1",
             "text": "帮我看一下项目状态",
+            "create_time_ms": 1710000000000,
             "message_type": 1,
             "context_token": "ctx-1",
         },
@@ -229,6 +240,7 @@ def test_wechat_codex_bridge_replies_to_user_text_message(monkeypatch, isolated_
     )
 
     assert result["message_id"] == "reply-1"
+    assert wechat_ilink._load_codex_bridge_session_id("bot@example", "friend-1") == session_id
     assert sent_messages == [
         {
             "account_id": "bot@example",
@@ -348,6 +360,80 @@ def test_wechat_codex_bridge_passes_images_to_codex(monkeypatch, isolated_wechat
     assert result["message_id"] == "reply-1"
     assert captured["provider"].supports_vision is True
     assert captured["messages"][0]["images"][0].startswith("data:image/png;base64,")
+
+
+def test_wechat_codex_bridge_sends_reply_image_directive(monkeypatch, isolated_wechat_store, tmp_path):
+    wechat_ilink.save_account(
+        account_id="bot@example",
+        token="plain-token",
+        user_id="bot-user",
+        base_url="https://ilink.example.com",
+    )
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
+    sent_texts = []
+    sent_images = []
+
+    def fake_chat_with_provider(**kwargs):
+        return {"content": f"这是当前截图。\nCODECLAW_IMAGE: {image_path}"}
+
+    def fake_send_text_message(account_id, *, to_user_id, text, context_token=None, timeout_seconds=15):
+        sent_texts.append(text)
+        return {"message_id": "text-1", "to_user_id": to_user_id, "used_context_token": bool(context_token)}
+
+    def fake_send_image_message(
+        account_id,
+        *,
+        to_user_id,
+        image_bytes,
+        filename="",
+        mime_type="",
+        text="",
+        context_token=None,
+        timeout_seconds=15,
+    ):
+        sent_images.append(
+            {
+                "to_user_id": to_user_id,
+                "image_bytes": image_bytes,
+                "filename": filename,
+                "mime_type": mime_type,
+            }
+        )
+        return {
+            "message_id": "image-1",
+            "to_user_id": to_user_id,
+            "used_context_token": bool(context_token),
+            "image": {"mime_type": mime_type, "size": len(image_bytes)},
+        }
+
+    monkeypatch.setattr(wechat_ilink, "chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr(wechat_ilink, "send_text_message", fake_send_text_message)
+    monkeypatch.setattr(wechat_ilink, "send_image_message", fake_send_image_message)
+
+    result = wechat_ilink.handle_codex_bridge_message(
+        "bot@example",
+        {
+            "from_user_id": "friend-1",
+            "text": "把当前桌面截图发给我",
+            "message_type": 1,
+            "context_token": "ctx-1",
+        },
+        model="gpt-test",
+        command="codex",
+    )
+
+    assert result["message_id"] == "image-1"
+    assert sent_texts == ["这是当前截图。"]
+    assert sent_images == [
+        {
+            "to_user_id": "friend-1",
+            "image_bytes": b"\x89PNG\r\n\x1a\nfake-png",
+            "filename": "screen.png",
+            "mime_type": "image/png",
+        }
+    ]
+    assert result["images"][0]["image"]["mime_type"] == "image/png"
 
 
 def test_wechat_ilink_send_image_uploads_cdn_and_sends_image(monkeypatch, isolated_wechat_store):

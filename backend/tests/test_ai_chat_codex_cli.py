@@ -28,7 +28,12 @@ from backend.core.ai_chat_user_config import (
 from backend.models import AppSetting, User
 
 
-def _build_codex_provider(provider_id: str = "custom-codex") -> AiProviderConfig:
+def _build_codex_provider(
+    provider_id: str = "custom-codex",
+    *,
+    workspace_dir: str = "",
+    session_id: str = "",
+) -> AiProviderConfig:
     return AiProviderConfig(
         id=provider_id,
         label="My Codex",
@@ -45,6 +50,8 @@ def _build_codex_provider(provider_id: str = "custom-codex") -> AiProviderConfig
         is_custom=True,
         sharing_mode="private",
         can_manage=True,
+        workspace_dir=workspace_dir,
+        session_id=session_id,
     )
 
 
@@ -95,6 +102,8 @@ def test_summarize_process_output_skips_trailing_node_version():
 
 def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
+    workspace_dir = tmp_path / "codeyun"
+    workspace_dir.mkdir()
 
     def fake_run(command, **kwargs):
         captured["command"] = command
@@ -104,13 +113,14 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
         output_flag_index = command.index("--output-last-message")
         output_path = Path(command[output_flag_index + 1])
         output_path.write_text("wrapped reply", encoding="utf-8")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout='{"type":"thread.started","thread_id":"019debcf-8ede-7591-9e59-6ccc85992f8d"}\n',
+            stderr="",
+        )
 
     monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
-    monkeypatch.setattr(
-        "backend.core.ai_chat._build_codex_workspace_dir",
-        lambda: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,
-    )
 
     response = chat_with_provider(
         provider_id="custom-codex",
@@ -118,10 +128,9 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
         model="gpt-5.4-mini",
         messages=[{"role": "user", "content": "hello from CodeYun"}],
         system_prompt="Reply briefly.",
-        extra_providers=(_build_codex_provider(),),
+        extra_providers=(_build_codex_provider(workspace_dir=str(workspace_dir)),),
     )
 
-    workspace_dir = tmp_path / CODEX_CLI_WORKSPACE_DIRNAME
     command = captured["command"]
 
     assert response["content"] == "wrapped reply"
@@ -130,6 +139,8 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     assert command[1:4] == ["-p", "myprofile", "exec"]
     assert "--dangerously-bypass-approvals-and-sandbox" in command
     assert "--skip-git-repo-check" in command
+    assert "--json" in command
+    assert "shell_environment_policy.inherit=none" not in command
     assert "--model" in command
     assert "gpt-5.4-mini" in command
     assert "--cd" in command
@@ -137,7 +148,45 @@ def test_codex_cli_chat_uses_isolated_exec_wrapper(monkeypatch, tmp_path):
     assert captured["cwd"] == str(workspace_dir)
     assert "hello from CodeYun" in str(captured["input"])
     assert "Reply briefly." in str(captured["input"])
-    assert "完整的命令执行与文件系统访问权限" in str(captured["input"])
+    assert "当前工作目录由 CodeYun 通过 --cd 指定" in str(captured["input"])
+    assert response["session_id"] == "019debcf-8ede-7591-9e59-6ccc85992f8d"
+
+
+def test_codex_cli_chat_resumes_explicit_session(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+    workspace_dir = tmp_path / "codeyun"
+    workspace_dir.mkdir()
+    session_id = "019debcf-8ede-7591-9e59-6ccc85992f8d"
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+
+        output_flag_index = command.index("--output-last-message")
+        output_path = Path(command[output_flag_index + 1])
+        output_path.write_text("resumed reply", encoding="utf-8")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f'{{"type":"thread.started","thread_id":"{session_id}"}}\n',
+            stderr="",
+        )
+
+    monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
+
+    response = chat_with_provider(
+        provider_id="custom-codex",
+        base_url="codex",
+        messages=[{"role": "user", "content": "continue"}],
+        extra_providers=(
+            _build_codex_provider(workspace_dir=str(workspace_dir), session_id=session_id),
+        ),
+    )
+
+    command = captured["command"]
+
+    assert response["content"] == "resumed reply"
+    assert response["session_id"] == session_id
+    assert command[-3:] == ["resume", session_id, "-"]
 
 
 def test_codex_cli_chat_attaches_images(monkeypatch, tmp_path):
@@ -162,7 +211,7 @@ def test_codex_cli_chat_attaches_images(monkeypatch, tmp_path):
     monkeypatch.setattr("backend.core.ai_chat.subprocess.run", fake_run)
     monkeypatch.setattr(
         "backend.core.ai_chat._build_codex_workspace_dir",
-        lambda: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,
+        lambda workspace_dir=None: tmp_path / CODEX_CLI_WORKSPACE_DIRNAME,
     )
 
     response = chat_with_provider(

@@ -120,6 +120,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "tools.ai-notebook",
+      "title": "AI协作Notebook",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 60,
+      "route_paths": ["/tools/ai-notebook"],
+      "menu_paths": ["/tools/ai-notebook"],
+      "api_scopes": ["ai-tools.notebook"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "attendance-tools",
       "title": "禅寺考勤",
       "node_type": "group",

@@ -7,6 +7,8 @@ from sqlmodel import Session, select
 from backend.core.note_semantics import build_note_category_palette_setting_key
 from backend.api.notes import (
     _build_codex_diary_body_html,
+    _build_codex_diary_blocks,
+    _fetch_remote_codex_json,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
@@ -47,6 +49,51 @@ def _create_device_entries(session: Session, user_id: int) -> list[UserDevice]:
     for entry in entries:
         session.refresh(entry)
     return entries
+
+
+def test_fetch_remote_codex_json_bypasses_environment_proxy(monkeypatch):
+    captured: list[dict] = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        text = ""
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_request(method, url, headers=None, proxies=None, timeout=None):
+        captured.append(
+            {
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "proxies": proxies,
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.notes.requests.request", fake_request)
+
+    payload = _fetch_remote_codex_json(
+        UserDevice(
+            user_id=1,
+            device_id="remote-device",
+            mode="remote",
+            name="remote",
+            server_url="http://192.168.31.15:8000",
+            token="remote-token",
+        ),
+        "GET",
+        "/codex/workload",
+        timeout=20,
+    )
+
+    assert payload == {"ok": True}
+    assert captured[0]["url"] == "http://192.168.31.15:8000/api/codex/workload"
+    assert captured[0]["headers"]["Authorization"] == "Bearer remote-token"
+    assert captured[0]["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
 
 
 def _wait_for_import_run(client, run_id: str) -> dict:
@@ -397,10 +444,131 @@ def test_codex_diary_import_merges_fragmented_same_category_records(
     assert "约 63 分钟" in note.content
 
 
+def test_codex_diary_blocks_prefer_content_category_over_thread_context(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_attendance", "label": "考勤", "color": "#67c23a", "order": 10},
+                    {"key": "custom_fanxiu", "label": "凡修", "color": "#409eff", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add_all(
+        [
+            NoteNode(
+                id="hint-attendance",
+                user_id=auth_user.id,
+                title="念住考勤打卡课程脚本",
+                primary_category="custom_attendance",
+                note_categories=[{"key": "custom_attendance", "weight": 100}],
+            ),
+            NoteNode(
+                id="hint-fanxiu",
+                user_id=auth_user.id,
+                title="凡修祈愿轮换炼丹妖王活动",
+                primary_category="custom_fanxiu",
+                note_categories=[{"key": "custom_fanxiu", "weight": 100}],
+            ),
+        ]
+    )
+    session.commit()
+    start_at = _ts(2026, 5, 3, 14, 0)
+    source = {
+        "date": "2026-05-03",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "mixed:thread",
+                "thread_title": "祈愿轮换与退款流程",
+                "project_label": "凡修",
+                "time_range": "2026-05-03 14:00 ~ 2026-05-03 14:30",
+                "user_request": "修复课程脚本导入缺口，并把念住打卡链接写入 clockin_table。",
+                "assistant_result": "已修复课程脚本、微信零钱退款流程和念住打卡链接导入。",
+                "start_at": start_at,
+                "end_at": start_at + 30 * 60,
+            },
+            {
+                "thread_id": "mixed:thread",
+                "thread_title": "祈愿轮换与退款流程",
+                "project_label": "凡修",
+                "time_range": "2026-05-03 14:30 ~ 2026-05-03 15:00",
+                "user_request": "新增 prayer_cycle 纯时间轮换规则。",
+                "assistant_result": "已按炼丹、淬体、灵兽、洗灵、仙花推导凡修活动。",
+                "start_at": start_at + 30 * 60,
+                "end_at": start_at + 60 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert [block["category_key"] for block in blocks] == ["custom_attendance", "custom_fanxiu"]
+    assert "课程脚本" in blocks[0]["records"][0]["user_request"]
+    assert "prayer_cycle" in blocks[1]["records"][0]["user_request"]
+
+
+def test_codex_diary_general_fallback_does_not_merge_unrelated_threads(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 5, 3, 16, 0)
+    source = {
+        "date": "2026-05-03",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "unknown:a",
+                "thread_title": "临时资料整理",
+                "project_label": "未命名",
+                "time_range": "2026-05-03 16:00 ~ 2026-05-03 16:05",
+                "user_request": "整理一份临时资料。",
+                "assistant_result": "临时资料已整理。",
+                "start_at": start_at,
+                "end_at": start_at + 5 * 60,
+            },
+            {
+                "thread_id": "unknown:b",
+                "thread_title": "命名讨论",
+                "project_label": "未命名",
+                "time_range": "2026-05-03 16:10 ~ 2026-05-03 16:15",
+                "user_request": "讨论一个变量命名。",
+                "assistant_result": "变量命名建议已给出。",
+                "start_at": start_at + 10 * 60,
+                "end_at": start_at + 15 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert len(blocks) == 2
+    assert [block["category_key"] for block in blocks] == ["general", "general"]
+    assert [len(block["records"]) for block in blocks] == [1, 1]
+
+
 def test_codex_diary_ai_title_rejects_low_information_prefixes():
     assert _normalize_codex_diary_ai_title("可以") == ""
     assert _normalize_codex_diary_ai_title("已改完") == ""
     assert _normalize_codex_diary_ai_title("是的，会话列表全量时间线分页加载") == "会话列表全量时间线分页加载"
+    assert _normalize_codex_diary_ai_title("综合修复事项") == "修复事项"
 
 
 def test_codex_diary_ai_summary_items_strip_number_prefixes():

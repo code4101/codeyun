@@ -441,7 +441,7 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
         },
         "view_settings": {
             "show_row_numbers": True,
-            "row_marker_numbering": "page",
+            "row_marker_numbering": "global",
             "show_column_markers": True,
             "column_marker_style": "letters",
             "pagination": {
@@ -505,7 +505,7 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
 
     view_settings = dict(source.get("view_settings") if isinstance(source.get("view_settings"), dict) else {})
     view_settings.setdefault("show_row_numbers", True)
-    view_settings.setdefault("row_marker_numbering", "page")
+    view_settings.setdefault("row_marker_numbering", "global")
     view_settings.setdefault("show_column_markers", True)
     view_settings.setdefault("column_marker_style", "letters")
     pagination = dict(view_settings.get("pagination") if isinstance(view_settings.get("pagination"), dict) else {})

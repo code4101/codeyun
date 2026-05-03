@@ -371,7 +371,7 @@ def _create_default_sheet_document() -> dict[str, Any]:
         "rows": [],
         "view_settings": {
             "show_row_numbers": True,
-            "row_marker_numbering": "page",
+            "row_marker_numbering": "global",
             "show_column_markers": True,
             "column_marker_style": "letters",
             "pagination": {

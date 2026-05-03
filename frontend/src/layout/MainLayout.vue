@@ -66,6 +66,7 @@ const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
+const AI_NOTEBOOK_PATH = requirePageMenuPath('AiNotebook');
 const AI_WECHAT_PATH = requirePageMenuPath('AiWechat');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
@@ -118,6 +119,7 @@ const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
+const AI_NOTEBOOK_TITLE = requirePermissionTitleByMenuPath(AI_NOTEBOOK_PATH);
 const AI_WECHAT_TITLE = requirePermissionTitleByMenuPath(AI_WECHAT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
@@ -329,6 +331,7 @@ const aiToolsMenuVisible = computed(() =>
     AI_CHAT_PATH,
     AI_REDUCTION_PATH,
     AI_GIT_COMMIT_PATH,
+    AI_NOTEBOOK_PATH,
     AI_WECHAT_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -676,6 +679,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_NOTEBOOK_PATH)" :index="AI_NOTEBOOK_PATH">{{ AI_NOTEBOOK_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_WECHAT_PATH)" :index="AI_WECHAT_PATH">{{ AI_WECHAT_TITLE }}</el-menu-item>
           </el-sub-menu>
 
