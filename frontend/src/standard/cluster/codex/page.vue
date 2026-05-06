@@ -230,7 +230,6 @@ const devices = computed(() => taskStore.devices);
 const canLoad = computed(() => Boolean(selectedEntryId.value));
 const showDeviceEmptyState = computed(() => !isLoadingDevices.value && !devices.value.length);
 const isAllDevicesMode = computed(() => selectedEntryId.value === ALL_DEVICES_ENTRY_ID);
-const canOpenDailySummary = computed(() => canLoad.value);
 
 const formatDeviceLabel = (device?: Pick<Device, 'name' | 'device_id'> | null) => (
   device?.name || device?.device_id || ''
@@ -476,11 +475,6 @@ const normalizeRootDirForRequest = () => {
   const value = rootDirInput.value.trim();
   return value || undefined;
 };
-
-const buildCodexRouteQuery = () => ({
-  ...(selectedEntryId.value ? { entryId: selectedEntryId.value } : {}),
-  ...(normalizeRootDirForRequest() ? { rootDir: normalizeRootDirForRequest() } : {}),
-});
 
 const resolveDateValue = (value?: number | string | null) => {
   if (value === null || value === undefined || value === '') return null;
@@ -2521,14 +2515,6 @@ const goToClusterTasks = () => {
   void router.push('/cluster/tasks');
 };
 
-const goToDailySummary = () => {
-  if (!canOpenDailySummary.value) return;
-  void router.push({
-    path: '/cluster/codex/daily-summary',
-    query: buildCodexRouteQuery(),
-  });
-};
-
 const applyRouteSeed = () => {
   if (typeof route.query.entryId === 'string' && route.query.entryId.trim()) {
     selectedEntryId.value = route.query.entryId.trim();
@@ -2673,13 +2659,6 @@ watch(
           </div>
 
           <div class="codex-toolbar-actions">
-            <el-button
-              size="large"
-              :disabled="!canOpenDailySummary"
-              @click="goToDailySummary"
-            >
-              <span>日报总结</span>
-            </el-button>
             <el-button
               type="primary"
               size="large"

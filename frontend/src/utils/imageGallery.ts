@@ -1,6 +1,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from 'vue';
 
-export type GalleryItemKind = 'image' | 'video';
+export type GalleryItemKind = 'image' | 'video' | 'pdf';
 export type GalleryUrlVariant = 'thumbnail' | 'full';
 
 export interface GalleryItem {
@@ -202,7 +202,7 @@ const getGallerySortValue = (image: GalleryImage, field: GallerySortField): stri
     case 'folder_path':
       return image.folderPath || '';
     case 'kind':
-      return image.kind === 'video' ? 'video' : 'image';
+      return getGalleryItemKind(image);
     case 'width':
       return isFiniteNumber(image.width) ? image.width : null;
     case 'height':
@@ -683,9 +683,11 @@ export const isImageInFolder = (imageFolderPath: string, selectedFolderPath: str
 };
 
 export const getGalleryItemKind = (image: GalleryImage): GalleryItemKind =>
-  image.kind === 'video' ? 'video' : 'image';
+  image.kind === 'video' || image.kind === 'pdf' ? image.kind : 'image';
 
 export const isVideoGalleryItem = (image: GalleryImage) => getGalleryItemKind(image) === 'video';
+
+export const isPdfGalleryItem = (image: GalleryImage) => getGalleryItemKind(image) === 'pdf';
 
 export const getFolderPath = (relativePath: string) => {
   const lastSlashIndex = relativePath.lastIndexOf('/');
@@ -696,6 +698,7 @@ export const getFolderPath = (relativePath: string) => {
 export const formatFolderLabel = (folderPath: string) => (folderPath ? folderPath : '根目录');
 
 export const formatResolution = (image: GalleryImage) => {
+  if (isPdfGalleryItem(image)) return '--';
   if (!image.width || !image.height) return '读取中';
   return `${image.height} x ${image.width}`;
 };

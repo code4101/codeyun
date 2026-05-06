@@ -737,6 +737,8 @@ import { Check, MagicStick, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
+  fetchAiGitCommitConfig,
+  updateAiGitCommitConfig,
   fetchAiGitSavedRepos,
   saveAiGitSavedRepos,
   touchAiGitSavedRepo,
@@ -1241,12 +1243,35 @@ watch(
   },
 )
 
+watch(
+  () => ({ providerId: form.providerId, model: form.model }),
+  ({ providerId, model }) => {
+    if (!providerId || !model) {
+      return
+    }
+    updateAiGitCommitConfig({ provider_id: providerId, model }).catch(error => {
+      console.warn('Failed to save ai-git-commit config to backend', error)
+    })
+  },
+  { deep: true },
+)
+
 onMounted(async () => {
-  await Promise.all([
+  const [_, __, ___, config] = await Promise.all([
     taskStore.fetchDevices(),
     aiProviderStore.loadProviders(userStore.isAuthenticated),
     loadSavedRepos(),
+    fetchAiGitCommitConfig().catch(() => null),
   ])
+
+  if (config) {
+    if (config.provider_id) {
+      form.providerId = config.provider_id
+    }
+    if (config.model) {
+      form.model = config.model
+    }
+  }
 
   if (!form.entryId || !devices.value.some(device => device.id === form.entryId)) {
     form.entryId = devices.value[0]?.id || ''

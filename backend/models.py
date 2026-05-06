@@ -1,6 +1,6 @@
 from typing import Any, Optional, List
 from sqlmodel import Field, SQLModel, Relationship
-from sqlalchemy import Column, JSON, String, UniqueConstraint
+from sqlalchemy import Column, JSON, String, Text, UniqueConstraint
 import time
 import socket
 import uuid
@@ -217,6 +217,65 @@ class ResourceAccessGrant(SQLModel, table=True):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+
+
+class PdfDocument(SQLModel, table=True):
+    __tablename__ = "pdfdocument"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "source_device_id", "source_absolute_path", name="uq_pdfdocument_owner_source"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    title: str = Field(default="")
+    source_device_file_id: Optional[int] = Field(default=None, foreign_key="devicefile.id", index=True)
+    source_entry_id: str = Field(default="", index=True)
+    source_device_id: str = Field(default="", index=True)
+    source_absolute_path: str = Field(default="", index=True)
+    mime_type: str = Field(default="application/pdf", index=True)
+    size_bytes: Optional[int] = Field(default=None, index=True)
+    content_hash: Optional[str] = Field(default=None, index=True)
+    hash_algorithm: str = Field(default="sha256")
+    owner_user_id: int = Field(foreign_key="user.id", index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class PdfUserState(SQLModel, table=True):
+    __tablename__ = "pdfuserstate"
+    __table_args__ = (
+        UniqueConstraint("pdf_document_id", "user_id", name="uq_pdfuserstate_document_user"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    pdf_document_id: str = Field(foreign_key="pdfdocument.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    current_page: int = Field(default=1)
+    zoom: str = Field(default="auto")
+    sidebar_open: bool = Field(default=True)
+    state_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class PdfPageNote(SQLModel, table=True):
+    __tablename__ = "pdfpagenote"
+    __table_args__ = (
+        UniqueConstraint("pdf_document_id", "user_id", "page_number", name="uq_pdfpagenote_document_user_page"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    pdf_document_id: str = Field(foreign_key="pdfdocument.id", index=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    page_number: int = Field(index=True)
+    content_html: str = Field(default="", sa_column=Column(Text))
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
 
 
 class DocumentAsset(SQLModel, table=True):

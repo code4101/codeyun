@@ -457,6 +457,12 @@ def delete_account(
 @tasks_router.get("/background-tasks/status", response_model=BackgroundTaskStatusResponse)
 def get_background_task_status(session: Session = Depends(get_session)):
     from backend.api.note_sheets import attendance_summary_scheduler
+    from backend.api.notes import (
+        CODEX_DIARY_AUTO_IMPORT_CRON,
+        CODEX_DIARY_AUTO_IMPORT_TASK_NAME,
+        codex_diary_import_scheduler,
+        get_codex_diary_auto_import_status,
+    )
     from backend.core.auto_git_commit import auto_git_commit_scheduler
     from backend.core.note_metadata_feedback import metadata_feedback_scheduler
 
@@ -464,8 +470,16 @@ def get_background_task_status(session: Session = Depends(get_session)):
     storage_config = load_config()
     metadata_status = get_note_metadata_feedback_status(session)
     auto_git_status = get_auto_git_commit_status(session)
+    codex_diary_status = get_codex_diary_auto_import_status(session)
     metadata_latest = metadata_status.get("latest_run") if isinstance(metadata_status, dict) else None
     auto_git_latest = auto_git_status.get("latest_run") if isinstance(auto_git_status, dict) else None
+    codex_diary_latest = codex_diary_status.get("latest_run") if isinstance(codex_diary_status, dict) else None
+
+    def _is_task_enabled(task_key: str) -> bool:
+        row = session.get(AppSetting, f"background_task.{task_key}.enabled")
+        if row and isinstance(row.value, dict):
+            return bool(row.value.get("enabled", False))
+        return False
 
     tasks = [
         BackgroundTaskRead(
@@ -474,7 +488,7 @@ def get_background_task_status(session: Session = Depends(get_session)):
             category="Git",
             description="凌晨检查 pyxllib、xlproject、codeyun，有变更则生成提交信息并提交。",
             cron_expression=AUTO_GIT_COMMIT_CRON,
-            enabled=True,
+            enabled=_is_task_enabled("auto_git_commit"),
             scheduler_running=auto_git_commit_scheduler.running,
             next_run_at=_serialize_scheduler_next_run(auto_git_commit_scheduler, "auto_git_commit"),
             trigger_warning="会直接提交 pyxllib、xlproject、codeyun 的当前工作区变更。",
@@ -488,7 +502,7 @@ def get_background_task_status(session: Session = Depends(get_session)):
             category="AI",
             description="凌晨窗口消费节点元数据修正样本，调用 Codex CLI 优化标题和元标签生成规则。",
             cron_expression="*/30 0-5 * * *",
-            enabled=True,
+            enabled=_is_task_enabled("note_metadata_feedback_optimization"),
             scheduler_running=metadata_feedback_scheduler.running,
             next_run_at=_serialize_scheduler_next_run(metadata_feedback_scheduler, "note_metadata_feedback_optimization"),
             trigger_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
@@ -497,12 +511,26 @@ def get_background_task_status(session: Session = Depends(get_session)):
             latest_run=metadata_latest if isinstance(metadata_latest, dict) else None,
         ),
         BackgroundTaskRead(
+            key=CODEX_DIARY_AUTO_IMPORT_TASK_NAME,
+            title="Codex 星图日记",
+            category="AI",
+            description="每天 1 点读取昨日 Codex 会话，复用现有日记导入流程写入星图笔记。",
+            cron_expression=CODEX_DIARY_AUTO_IMPORT_CRON,
+            enabled=_is_task_enabled(CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
+            scheduler_running=codex_diary_import_scheduler.running,
+            next_run_at=_serialize_scheduler_next_run(codex_diary_import_scheduler, CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
+            trigger_warning="会调用 Codex CLI 生成昨日星图笔记总结；已导入过的日期会自动跳过。",
+            active=_run_is_active(codex_diary_status.get("active_run") if isinstance(codex_diary_status, dict) else None)
+            or _queue_task_is_active(queue, CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
+            latest_run=codex_diary_latest if isinstance(codex_diary_latest, dict) else None,
+        ),
+        BackgroundTaskRead(
             key="attendance_summary_monthly_templates",
             title="考勤汇总模板",
             category="表格",
             description="每月 27 日凌晨为考勤汇总表补下月模板。",
             cron_expression="5 0 27 * *",
-            enabled=True,
+            enabled=_is_task_enabled("attendance_summary_monthly_templates"),
             scheduler_running=attendance_summary_scheduler.running,
             next_run_at=_serialize_scheduler_next_run(attendance_summary_scheduler, "attendance_summary_monthly_templates"),
             active=_queue_task_is_active(queue, "attendance_summary_monthly_templates"),
@@ -558,6 +586,18 @@ def trigger_background_task(
             run=_without_queue(get_note_metadata_feedback_status(session).get("latest_run") or {}),
         )
 
+    if normalized_key == "codex_diary_yesterday_import":
+        from backend.api.notes import get_codex_diary_auto_import_status, maybe_enqueue_codex_diary_yesterday_import
+
+        queue_task_id = maybe_enqueue_codex_diary_yesterday_import(trigger_reason="manual_admin")
+        if queue_task_id is None:
+            raise HTTPException(status_code=409, detail="Codex 星图日记任务已在队列中")
+        return BackgroundTaskTriggerResponse(
+            task_key=normalized_key,
+            queue_task_id=queue_task_id,
+            run=get_codex_diary_auto_import_status(session).get("latest_run"),
+        )
+
     if normalized_key == "auto_git_commit":
         run = create_auto_git_commit_run(
             session,
@@ -572,6 +612,122 @@ def trigger_background_task(
 
     raise HTTPException(status_code=404, detail="后台任务不存在")
 
+
+class BackgroundTaskToggleRequest(BaseModel):
+    enabled: bool
+
+@tasks_router.post("/background-tasks/{task_key}/toggle", response_model=dict)
+def toggle_background_task(
+    task_key: str,
+    payload: BackgroundTaskToggleRequest,
+    session: Session = Depends(get_session),
+):
+    normalized_key = task_key.strip()
+    enabled = payload.enabled
+
+    if normalized_key == "storage_analysis":
+        config = load_config()
+        config["schedule_enabled"] = enabled
+        save_config(config)
+        
+        if enabled:
+            cron = config.get("cron_expression", "0 3 * * *")
+            try:
+                storage_scheduler.add_job(
+                    lambda: background_task_queue.enqueue("storage_analysis", scheduled_analysis_job),
+                    CronTrigger.from_crontab(cron),
+                    id="storage_analysis",
+                    replace_existing=True
+                )
+            except Exception:
+                pass
+        else:
+            if storage_scheduler.get_job("storage_analysis"):
+                storage_scheduler.remove_job("storage_analysis")
+                
+        return {"success": True, "enabled": enabled}
+
+    # For other tasks
+    setting_key = f"background_task.{normalized_key}.enabled"
+    row = session.get(AppSetting, setting_key)
+    if not row:
+        row = AppSetting(key=setting_key)
+    row.value = {"enabled": enabled}
+    row.updated_at = time.time()
+    session.add(row)
+    session.commit()
+
+    # Handle dynamic scheduler updates
+    if normalized_key == "auto_git_commit":
+        from backend.core.auto_git_commit import auto_git_commit_scheduler, maybe_enqueue_auto_git_commit, AUTO_GIT_COMMIT_CRON
+        if enabled:
+            if not auto_git_commit_scheduler.running:
+                auto_git_commit_scheduler.start()
+            auto_git_commit_scheduler.add_job(
+                maybe_enqueue_auto_git_commit,
+                CronTrigger.from_crontab(AUTO_GIT_COMMIT_CRON),
+                id="auto_git_commit",
+                replace_existing=True,
+                max_instances=1,
+            )
+        else:
+            if auto_git_commit_scheduler.get_job("auto_git_commit"):
+                auto_git_commit_scheduler.remove_job("auto_git_commit")
+
+    elif normalized_key == "note_metadata_feedback_optimization":
+        from backend.core.note_metadata_feedback import metadata_feedback_scheduler, maybe_enqueue_note_metadata_feedback_optimization
+        if enabled:
+            if not metadata_feedback_scheduler.running:
+                metadata_feedback_scheduler.start()
+            metadata_feedback_scheduler.add_job(
+                maybe_enqueue_note_metadata_feedback_optimization,
+                CronTrigger.from_crontab("*/30 0-5 * * *"),
+                id="note_metadata_feedback_optimization",
+                replace_existing=True,
+                max_instances=1,
+            )
+        else:
+            if metadata_feedback_scheduler.get_job("note_metadata_feedback_optimization"):
+                metadata_feedback_scheduler.remove_job("note_metadata_feedback_optimization")
+
+    elif normalized_key == "codex_diary_yesterday_import":
+        from backend.api.notes import codex_diary_import_scheduler, maybe_enqueue_codex_diary_yesterday_import, CODEX_DIARY_AUTO_IMPORT_CRON, CODEX_DIARY_AUTO_IMPORT_TASK_NAME
+        from zoneinfo import ZoneInfo
+        from backend.api.notes import CODEX_DIARY_TIMEZONE
+        if enabled:
+            if not codex_diary_import_scheduler.running:
+                codex_diary_import_scheduler.start()
+            codex_diary_import_scheduler.add_job(
+                maybe_enqueue_codex_diary_yesterday_import,
+                CronTrigger.from_crontab(CODEX_DIARY_AUTO_IMPORT_CRON, timezone=ZoneInfo(CODEX_DIARY_TIMEZONE)),
+                id=CODEX_DIARY_AUTO_IMPORT_TASK_NAME,
+                replace_existing=True,
+                max_instances=1,
+            )
+        else:
+            if codex_diary_import_scheduler.get_job(CODEX_DIARY_AUTO_IMPORT_TASK_NAME):
+                codex_diary_import_scheduler.remove_job(CODEX_DIARY_AUTO_IMPORT_TASK_NAME)
+
+    elif normalized_key == "attendance_summary_monthly_templates":
+        from backend.api.note_sheets import attendance_summary_scheduler, run_attendance_summary_template_job
+        if enabled:
+            if not attendance_summary_scheduler.running:
+                attendance_summary_scheduler.start()
+            attendance_summary_scheduler.add_job(
+                lambda: background_task_queue.enqueue(
+                    "attendance_summary_monthly_templates",
+                    run_attendance_summary_template_job,
+                ),
+                CronTrigger.from_crontab("5 0 27 * *"),
+                id="attendance_summary_monthly_templates",
+                replace_existing=True,
+                max_instances=1,
+            )
+        else:
+            if attendance_summary_scheduler.get_job("attendance_summary_monthly_templates"):
+                attendance_summary_scheduler.remove_job("attendance_summary_monthly_templates")
+
+    return {"success": True, "enabled": enabled}
 
 @images_router.get("/storage/dashboard", response_model=StorageDashboardStats)
 def get_storage_dashboard(session: Session = Depends(get_session)):

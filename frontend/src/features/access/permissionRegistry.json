@@ -539,8 +539,8 @@
       "node_type": "feature",
       "parent_key": "cluster-tools",
       "sort_order": 25,
-      "route_paths": ["/cluster/codex", "/cluster/codex/daily-summary"],
-      "menu_paths": ["/cluster/codex", "/cluster/codex/daily-summary"],
+      "route_paths": ["/cluster/codex"],
+      "menu_paths": ["/cluster/codex"],
       "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false
     },

@@ -98,11 +98,9 @@ const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
 const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
-const CLUSTER_CODEX_DAILY_SUMMARY_PATH = requirePageMenuPath('ClusterCodexDailySummary');
 const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
 const CLUSTER_FILES_SUBMENU_INDEX = 'cluster-files';
-const CLUSTER_CODEX_SUBMENU_INDEX = 'cluster-codex';
 const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
 const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
@@ -158,7 +156,6 @@ const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
 const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
-const CLUSTER_CODEX_DAILY_SUMMARY_TITLE = '日报总结';
 const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
 const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
@@ -429,11 +426,7 @@ const clusterFilesMenuEntryPath = computed(() =>
 
 const clusterCodexMenuVisible = computed(() =>
   canAccessFeature('cluster.codex')
-  && [CLUSTER_CODEX_PATH, CLUSTER_CODEX_DAILY_SUMMARY_PATH].some((path) => canAccessMenuPath(path)),
-);
-
-const clusterCodexMenuEntryPath = computed(() =>
-  canAccessMenuPath(CLUSTER_CODEX_PATH) ? CLUSTER_CODEX_PATH : CLUSTER_CODEX_DAILY_SUMMARY_PATH,
+  && canAccessMenuPath(CLUSTER_CODEX_PATH),
 );
 
 const fanxiuActivityListMenuEntryPath = computed(() =>
@@ -486,9 +479,6 @@ const defaultOpeneds = computed(() => {
   if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
   if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
     openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
-  }
-  if ([CLUSTER_CODEX_PATH, CLUSTER_CODEX_DAILY_SUMMARY_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
-    openeds.push(CLUSTER_CODEX_SUBMENU_INDEX);
   }
   if (route.path.startsWith('/admin/')) openeds.push('admin-tools');
   if (route.path.startsWith('/tools/ai-')) openeds.push('ai-tools');
@@ -822,15 +812,7 @@ watch(
               </template>
               <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
             </el-sub-menu>
-            <el-sub-menu v-if="clusterCodexMenuVisible" :index="CLUSTER_CODEX_SUBMENU_INDEX">
-              <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterCodexMenuEntryPath)">
-                  {{ CLUSTER_CODEX_TITLE }}
-                </span>
-              </template>
-              <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">会话</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_DAILY_SUMMARY_PATH)" :index="CLUSTER_CODEX_DAILY_SUMMARY_PATH">{{ CLUSTER_CODEX_DAILY_SUMMARY_TITLE }}</el-menu-item>
-            </el-sub-menu>
+            <el-menu-item v-if="clusterCodexMenuVisible" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item
               v-for="item in clusterPluginMenuItems"
               :key="item.key"

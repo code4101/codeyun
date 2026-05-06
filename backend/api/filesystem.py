@@ -68,6 +68,10 @@ VIDEO_EXTENSIONS = {
     ".webm",
 }
 
+PDF_EXTENSIONS = {
+    ".pdf",
+}
+
 DEVICE_ROOT_SENTINEL = "__device_root__"
 MEDIA_LISTING_SNAPSHOT_LIMIT = 32
 MEDIA_LISTING_SNAPSHOT_TTL_SECONDS = 30 * 60
@@ -1175,6 +1179,9 @@ def _resolve_media_kind(path: Path) -> tuple[str, str | None] | None:
     if suffix in VIDEO_EXTENSIONS or (guessed_type and guessed_type.startswith("video/")):
         return "video", guessed_type
 
+    if suffix in PDF_EXTENSIONS or guessed_type == "application/pdf":
+        return "pdf", guessed_type or "application/pdf"
+
     return None
 
 
@@ -2248,7 +2255,7 @@ def list_media_entries(
         absolute_path,
         recursive=recursive,
         scan_limit=scan_limit,
-        allowed_kinds={"image", "video"},
+        allowed_kinds={"image", "video", "pdf"},
         response_key="media",
         session=session,
         sort_mode=sort_mode,

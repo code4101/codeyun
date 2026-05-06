@@ -1,7 +1,7 @@
 from sqlmodel import Session, select
 
 import backend.api.task_manager as task_manager_api
-from backend.models import UserDevice
+from backend.models import User, UserDevice
 
 
 def test_add_devices_append_order(client, session, auth_user):
@@ -39,6 +39,59 @@ def test_add_devices_append_order(client, session, auth_user):
         .order_by(UserDevice.order_index)
     ).all()
     assert [(link.device_id, link.order_index) for link in links] == [("remote-1", 0), ("remote-2", 1)]
+
+
+def test_device_list_hides_token_until_revealed(client, auth_user):
+    resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "remote",
+            "device_id": "remote-token-node",
+            "token": "secret-entry-token",
+            "alias": "Token Node",
+            "server_url": "http://token-node:8000",
+        },
+    )
+
+    assert resp.status_code == 200
+    created = resp.json()
+    assert "token" not in created
+
+    devices = client.get("/api/devices/").json()
+    assert len(devices) == 1
+    assert "token" not in devices[0]
+
+    token_resp = client.get(f"/api/devices/{created['id']}/token")
+    assert token_resp.status_code == 200
+    assert token_resp.json() == {"token": "secret-entry-token"}
+
+
+def test_device_token_reveal_requires_owner(client, session, auth_user):
+    other_user = User(
+        username="otheruser",
+        email="other@example.com",
+        hashed_password="pw",
+        is_active=True,
+    )
+    session.add(other_user)
+    session.commit()
+    session.refresh(other_user)
+
+    other_entry = UserDevice(
+        user_id=other_user.id,
+        device_id="other-device",
+        mode="remote",
+        token="other-secret-token",
+        name="Other Device",
+        server_url="http://other-device:8000",
+        is_active=True,
+        order_index=0,
+    )
+    session.add(other_entry)
+    session.commit()
+
+    token_resp = client.get(f"/api/devices/{other_entry.entry_id}/token")
+    assert token_resp.status_code == 404
 
 
 def test_local_device_hides_persisted_url(client, session, auth_user):

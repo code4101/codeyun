@@ -30,6 +30,7 @@
     "jwt-decode": "^4.0.0",
     "lunar-javascript": "^1.7.7",
     "marked": "^17.0.5",
+    "pdfjs-dist": "^5.7.284",
     "pinia": "^3.0.4",
     "sass": "^1.97.3",
     "sortablejs": "^1.15.7",

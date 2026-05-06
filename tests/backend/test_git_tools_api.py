@@ -239,6 +239,31 @@ def test_git_tools_inspect_reports_precheck_findings(client, test_device, tmp_pa
     assert any("abcdefghijklmnopqrstuvwxyz1234567890" in line["text"] for line in env_issue["context_lines"])
 
 
+def test_git_tools_inspect_blocks_dot_tmp_directory(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-dot-tmp-repo"
+    _init_git_repo(repo_path)
+    tmp_dir = repo_path / ".tmp_pdf_check"
+    tmp_dir.mkdir()
+    (tmp_dir / "page_1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    issue = next(
+        item for item in payload["precheck"]["issues"]
+        if item["path"] == ".tmp_pdf_check/page_1.png"
+    )
+    assert issue["issue_type"] == "ignore_candidate"
+    assert issue["blocking"] is True
+    assert issue["severity"] == "error"
+    assert issue["suggestion"] == ".tmp_pdf_check/"
+
+
 def test_git_tools_precheck_does_not_treat_route_password_path_as_secret_assignment(client, test_device, tmp_path):
     repo_path = tmp_path / "git-precheck-route-repo"
     _init_git_repo(repo_path)

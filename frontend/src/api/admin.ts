@@ -97,6 +97,10 @@ export interface BackgroundTaskRunSummary {
   skipped_repo_count?: number;
   failed_repo_count?: number;
   sample_count?: number;
+  diary_date?: string;
+  source_turn_count?: number;
+  created_note_count?: number;
+  duplicate_note_ids?: string[];
   error_message?: string | null;
   queued_at?: number;
   created_at?: number;
@@ -244,6 +248,11 @@ export const fetchBackgroundTaskStatus = async (): Promise<BackgroundTaskStatusR
 
 export const triggerBackgroundTask = async (taskKey: string): Promise<BackgroundTaskTriggerResponse> => {
   const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/trigger`);
+  return response.data;
+};
+
+export const toggleBackgroundTask = async (taskKey: string, enabled: boolean) => {
+  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/toggle`, { enabled });
   return response.data;
 };
 

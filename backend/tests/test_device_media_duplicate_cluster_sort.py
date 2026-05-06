@@ -379,6 +379,22 @@ def test_list_supported_entries_does_not_prewarm_visual_hash_without_duplicate_c
     assert scheduled == []
 
 
+def test_list_media_entries_includes_pdf_documents(tmp_path):
+    pdf_path = tmp_path / "manual.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n")
+    (tmp_path / "notes.txt").write_text("plain text", encoding="utf-8")
+
+    result = filesystem_api.list_media_entries(absolute_path=str(tmp_path))
+
+    assert result["total_count"] == 1
+    [entry] = result["media"]
+    assert entry["name"] == "manual.pdf"
+    assert entry["kind"] == "pdf"
+    assert entry["mime_type"] == "application/pdf"
+    assert entry["width"] is None
+    assert entry["height"] is None
+
+
 def test_list_supported_entries_prewarms_visual_hash_when_duplicate_cluster_rule_active(tmp_path, monkeypatch):
     engine = create_engine(
         "sqlite://",

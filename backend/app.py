@@ -12,6 +12,7 @@ from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
 from backend.api.note_sheets import init_attendance_summary_scheduler, shutdown_attendance_summary_scheduler
+from backend.api.notes import init_codex_diary_import_scheduler, shutdown_codex_diary_import_scheduler
 from backend.api.task_manager import (
     start_task_manager_services,
     stop_task_manager_services,
@@ -55,10 +56,12 @@ async def lifespan(app: FastAPI):
     init_note_metadata_feedback_scheduler()
     init_auto_git_commit_scheduler()
     init_ruanyf_weekly_note_scheduler()
+    init_codex_diary_import_scheduler()
     if not settings.is_test:
         start_enabled_codex_bridges()
     yield
     shutdown_codex_bridges()
+    shutdown_codex_diary_import_scheduler()
     shutdown_ruanyf_weekly_note_scheduler()
     shutdown_auto_git_commit_scheduler()
     shutdown_note_metadata_feedback_scheduler()

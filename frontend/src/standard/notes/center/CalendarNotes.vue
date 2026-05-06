@@ -330,6 +330,12 @@ const createNoteFromContextMenu = async () => {
 
 const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms));
 const isCodexDiaryImportActive = (status: string | undefined | null) => status === 'pending' || status === 'running';
+const showCodexDiaryImportError = async (message?: string | null) => {
+  await ElMessageBox.alert(message || 'Codex 总结日记导入失败', 'Codex 总结日记导入失败', {
+    confirmButtonText: '知道了',
+    type: 'error'
+  }).catch(() => undefined);
+};
 
 const waitForCodexDiaryImportRun = async (runId: string): Promise<CodexDiaryImportRunResponse> => {
   let latest = await fetchCodexDiaryImportRun(runId);
@@ -373,10 +379,9 @@ const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Prom
       }
       return startCodexDiaryImport(date, true);
     }
-    ElMessage.error(
+    await showCodexDiaryImportError(
       (typeof maybeError.response?.data?.detail === 'string' && maybeError.response.data.detail)
       || maybeError.message
-      || 'Codex 总结日记导入失败'
     );
     return null;
   }
@@ -392,7 +397,7 @@ const importCodexDiaryForDay = async (date: Date) => {
     ElMessage.info('正在导入 Codex 总结日记');
     const completedRun = await waitForCodexDiaryImportRun(startedRun.id);
     if (completedRun.status === 'failed') {
-      ElMessage.error(completedRun.error_message || 'Codex 总结日记导入失败');
+      await showCodexDiaryImportError(completedRun.error_message);
       return;
     }
     if (isCodexDiaryImportActive(completedRun.status)) {
@@ -400,27 +405,26 @@ const importCodexDiaryForDay = async (date: Date) => {
       return;
     }
     if (completedRun.status !== 'completed') {
-      ElMessage.error(completedRun.error_message || `Codex 总结日记状态异常：${completedRun.status}`);
+      await showCodexDiaryImportError(completedRun.error_message || `Codex 总结日记状态异常：${completedRun.status}`);
       return;
     }
     await refreshData({ silent: true });
     completedRun.created_note_ids.forEach(noteId => noteStore.addNoteToTab(props.tabId, noteId));
     if (completedRun.created_note_ids.length > 0) {
       currentNoteId.value = completedRun.created_note_ids[0];
-      ElMessage.success(`已创建 ${completedRun.created_note_ids.length} 个节点`);
+      ElMessage.success(completedRun.stage_label || `已创建 ${completedRun.created_note_ids.length} 个节点`);
     } else {
-      ElMessage.info('当天没有可导入的 Codex 会话记录');
+      ElMessage.info(completedRun.stage_label || '当天没有可导入的 Codex 会话记录');
     }
   } catch (error) {
     const maybeError = error as {
       response?: { data?: { detail?: string; message?: string } };
       message?: string;
     };
-    ElMessage.error(
+    await showCodexDiaryImportError(
       maybeError.response?.data?.detail
       || maybeError.response?.data?.message
       || maybeError.message
-      || 'Codex 总结日记导入失败'
     );
   } finally {
     codexDiaryImporting.value = false;

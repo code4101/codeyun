@@ -5,7 +5,7 @@ import DocPage from '@/components/DocPage.vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Clock } from '@element-plus/icons-vue';
+import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Clock, View, Hide } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import Sortable from 'sortablejs';
 
@@ -118,21 +118,83 @@ const deviceForm = ref({
 const currentDeviceConfig = ref({
   new_name: '',
   server_url: '',
-  token: ''
+  token: '',
+  token_dirty: false
 });
+
+const hiddenDeviceTokenDisplay = '••••••••••••••••';
+const tokenRevealLoading = ref(false);
+const isDeviceTokenVisible = ref(false);
+const deviceTokenDisplayValue = computed(() => (
+  isDeviceTokenVisible.value ? currentDeviceConfig.value.token : hiddenDeviceTokenDisplay
+));
+
+const resetDeviceTokenReveal = () => {
+  tokenRevealLoading.value = false;
+  isDeviceTokenVisible.value = false;
+  currentDeviceConfig.value.token = '';
+  currentDeviceConfig.value.token_dirty = false;
+};
+
+const stopEditingDevice = () => {
+  isEditingDevice.value = false;
+  resetDeviceTokenReveal();
+};
+
+const handleDeviceTokenInput = (value: string) => {
+  if (!isDeviceTokenVisible.value) return;
+  currentDeviceConfig.value.token = value;
+  currentDeviceConfig.value.token_dirty = true;
+};
+
+const revealDeviceToken = async () => {
+  const device = devices.value.find(d => d.id === currentDeviceId.value);
+  if (!device || tokenRevealLoading.value) return;
+
+  tokenRevealLoading.value = true;
+  try {
+    const token = await taskStore.fetchDeviceToken(device.id);
+    if (currentDeviceId.value !== device.id || !isEditingDevice.value) return;
+    currentDeviceConfig.value.token = token;
+    currentDeviceConfig.value.token_dirty = false;
+    isDeviceTokenVisible.value = true;
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '读取 Token 失败');
+  } finally {
+    tokenRevealLoading.value = false;
+  }
+};
+
+const toggleDeviceTokenVisibility = () => {
+  if (isDeviceTokenVisible.value) {
+    resetDeviceTokenReveal();
+    return;
+  }
+  revealDeviceToken();
+};
 
 const updateDeviceConfig = async () => {
   const device = devices.value.find(d => d.id === currentDeviceId.value);
   if (!device) return;
 
+  const updates: Partial<Device> = {
+    name: currentDeviceConfig.value.new_name,
+    server_url: device.mode === 'remote' ? currentDeviceConfig.value.server_url : undefined
+  };
+
+  if (currentDeviceConfig.value.token_dirty) {
+    const token = currentDeviceConfig.value.token.trim();
+    if (!token) {
+      ElMessage.warning('Token 不能为空');
+      return;
+    }
+    updates.token = token;
+  }
+
   try {
-    await taskStore.updateDevice(device.id, {
-        name: currentDeviceConfig.value.new_name,
-        server_url: device.mode === 'remote' ? currentDeviceConfig.value.server_url : undefined,
-        token: currentDeviceConfig.value.token
-    });
+    await taskStore.updateDevice(device.id, updates);
     ElMessage.success('设备配置已更新');
-    isEditingDevice.value = false;
+    stopEditingDevice();
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || '更新失败');
   }
@@ -163,8 +225,10 @@ const syncDeviceConfig = () => {
     currentDeviceConfig.value = {
       new_name: device.name || device.device_id,
       server_url: device.server_url || '',
-      token: ''
+      token: '',
+      token_dirty: false
     };
+    resetDeviceTokenReveal();
   }
 };
 
@@ -176,7 +240,7 @@ const startEditingDevice = () => {
 // Watch for device switching to refresh tasks and restart polling
 watch(currentDeviceId, async (newId, oldId) => {
   if (newId && newId !== oldId) {
-    isEditingDevice.value = false;
+    stopEditingDevice();
     deviceError.value = false;
     stopTaskPolling();
     await fetchTasks(newId, false);
@@ -215,7 +279,7 @@ const fetchDevices = async () => {
       // No need to sync here either, it's done when "Config" button is clicked
       if (isEditingDevice.value) {
         // If somehow we are editing, close it
-        isEditingDevice.value = false;
+        stopEditingDevice();
       }
     } else {
         // If device was selected but not found in list (e.g. deleted), clear selection
@@ -667,7 +731,7 @@ onUnmounted(() => {
           <el-button v-if="deviceError" type="danger" size="small" :icon="Connection" @click="openTokenDialog">重连 / 更新 Token</el-button>
           <el-button v-if="!isEditingDevice" :icon="Setting" size="small" @click="startEditingDevice">配置</el-button>
           <div v-else>
-            <el-button size="small" @click="isEditingDevice = false">取消</el-button>
+            <el-button size="small" @click="stopEditingDevice">取消</el-button>
             <el-button type="primary" size="small" @click="updateDeviceConfig">保存</el-button>
           </div>
         </div>
@@ -688,6 +752,26 @@ onUnmounted(() => {
                placeholder="例如 http://192.168.1.5:8000"
                style="width: 280px;"
              />
+          </el-form-item>
+          <el-form-item label="Token">
+             <div class="device-token-row">
+               <el-input
+                 :model-value="deviceTokenDisplayValue"
+                 class="device-token-input"
+                 :readonly="!isDeviceTokenVisible"
+                 :disabled="tokenRevealLoading"
+                 placeholder="点击右侧眼睛读取明文"
+                 @update:model-value="handleDeviceTokenInput"
+               />
+               <el-button
+                 circle
+                 :icon="isDeviceTokenVisible ? Hide : View"
+                 :loading="tokenRevealLoading"
+                 :title="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
+                 :aria-label="isDeviceTokenVisible ? '隐藏 Token' : '读取并显示 Token'"
+                 @click="toggleDeviceTokenVisibility"
+               />
+             </div>
           </el-form-item>
         </el-form>
       </div>
@@ -941,6 +1025,18 @@ onUnmounted(() => {
 
 .card-content {
   padding: 15px;
+}
+
+.device-token-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 340px;
+}
+
+.device-token-input {
+  flex: 1;
+  min-width: 0;
 }
 
 .task-name {

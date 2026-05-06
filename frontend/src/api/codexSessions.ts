@@ -1,6 +1,7 @@
 import api, { getDeviceEntryPath } from '@/api';
 
-const CODEX_DAILY_SUMMARY_TIMEOUT_MS = 15 * 60 * 1000;
+const CODEX_SESSION_READ_TIMEOUT_MS = 120 * 1000;
+const CODEX_WORKLOAD_READ_TIMEOUT_MS = 180 * 1000;
 
 export interface CodexThreadSummary {
   id: string;
@@ -119,75 +120,6 @@ export interface CodexWorkloadResponse {
   segments: CodexWorkloadSegment[];
 }
 
-export interface CodexDailySummaryThread {
-  thread_id: string;
-  title: string;
-  project_label: string;
-  project_secondary_label?: string | null;
-  workspace_root?: string | null;
-  source_entry_id?: string | null;
-  source_device_name?: string | null;
-  source_root_dir?: string | null;
-  start_at: number;
-  end_at: number;
-  turn_count: number;
-  user_message_count: number;
-  assistant_message_count: number;
-  preview?: string | null;
-}
-
-export interface CodexDailySummaryTypeItem {
-  key: string;
-  label: string;
-  color?: string | null;
-  order: number;
-  builtin: boolean;
-}
-
-export interface CodexDailySummaryResponse {
-  root_dir: string;
-  date: string;
-  timezone: string;
-  generated_at?: string | null;
-  generated_by: 'codex_cli' | 'empty';
-  model?: string | null;
-  prompt_version: string;
-  summary_text: string;
-  thread_count: number;
-  turn_count: number;
-  user_message_count: number;
-  assistant_message_count: number;
-  threads: CodexDailySummaryThread[];
-  type_items: CodexDailySummaryTypeItem[];
-}
-
-export interface CodexDailySummaryRunRead {
-  id: string;
-  root_dir: string;
-  date: string;
-  timezone: string;
-  provider: string;
-  generated_by: string;
-  model?: string | null;
-  prompt_version: string;
-  force_requested: boolean;
-  reused_existing_run: boolean;
-  status: string;
-  stage: string;
-  stage_label: string;
-  thread_count: number;
-  turn_count: number;
-  user_message_count: number;
-  assistant_message_count: number;
-  summary_text: string;
-  error_message?: string | null;
-  heartbeat_at?: number | null;
-  result?: CodexDailySummaryResponse | null;
-  created_at: number;
-  finished_at?: number | null;
-  updated_at: number;
-}
-
 export async function fetchCodexOverviewForEntry(
   entryId: string,
   params?: {
@@ -208,6 +140,7 @@ export async function fetchCodexOverviewForEntry(
   }
   const response = await api.get<CodexOverviewResponse>(getDeviceEntryPath(entryId, '/codex/overview'), {
     params: Object.keys(requestParams).length ? requestParams : undefined,
+    timeout: CODEX_SESSION_READ_TIMEOUT_MS,
   });
   return response.data;
 }
@@ -217,6 +150,7 @@ export async function fetchCodexThreadDetailForEntry(entryId: string, threadId: 
     getDeviceEntryPath(entryId, `/codex/threads/${threadId}`),
     {
       params: rootDir?.trim() ? { root_dir: rootDir.trim() } : undefined,
+      timeout: CODEX_SESSION_READ_TIMEOUT_MS,
     },
   );
   return response.data;
@@ -232,6 +166,7 @@ export async function fetchCodexThreadMessageImagesForEntry(
     getDeviceEntryPath(entryId, `/codex/threads/${threadId}/messages/${messageSeq}/images`),
     {
       params: rootDir?.trim() ? { root_dir: rootDir.trim() } : undefined,
+      timeout: CODEX_SESSION_READ_TIMEOUT_MS,
     },
   );
   return response.data;
@@ -240,110 +175,7 @@ export async function fetchCodexThreadMessageImagesForEntry(
 export async function fetchCodexWorkloadForEntry(entryId: string, rootDir?: string) {
   const response = await api.get<CodexWorkloadResponse>(getDeviceEntryPath(entryId, '/codex/workload'), {
     params: rootDir?.trim() ? { root_dir: rootDir.trim() } : undefined,
+    timeout: CODEX_WORKLOAD_READ_TIMEOUT_MS,
   });
-  return response.data;
-}
-
-export async function generateCodexDailySummaryForEntry(
-  entryId: string,
-  payload: {
-    date: string;
-    root_dir?: string | null;
-    model?: string | null;
-  },
-) {
-  const response = await api.post<CodexDailySummaryResponse>(
-    getDeviceEntryPath(entryId, '/codex/daily-summary/generate'),
-    payload,
-    {
-      timeout: CODEX_DAILY_SUMMARY_TIMEOUT_MS,
-    },
-  );
-  return response.data;
-}
-
-export async function fetchCodexDailySummaryLatestForEntry(
-  entryId: string,
-  params: {
-    date: string;
-    root_dir?: string | null;
-  },
-) {
-  const response = await api.get<CodexDailySummaryRunRead>(
-    getDeviceEntryPath(entryId, '/codex/daily-summary/latest'),
-    {
-      params: params.root_dir?.trim()
-        ? { date: params.date, root_dir: params.root_dir.trim() }
-        : { date: params.date },
-    },
-  );
-  return response.data;
-}
-
-export async function fetchCodexDailySummaryLatestForEntries(
-  entryIds: string[],
-  params: {
-    date: string;
-  },
-) {
-  const response = await api.get<CodexDailySummaryRunRead>(
-    '/device-entries/codex/daily-summary/latest',
-    {
-      params: {
-        entry_ids: entryIds.join(','),
-        date: params.date,
-      },
-    },
-  );
-  return response.data;
-}
-
-export async function startCodexDailySummaryRunForEntry(
-  entryId: string,
-  payload: {
-    date: string;
-    root_dir?: string | null;
-    model?: string | null;
-    force?: boolean;
-  },
-) {
-  const response = await api.post<CodexDailySummaryRunRead>(
-    getDeviceEntryPath(entryId, '/codex/daily-summary/runs'),
-    payload,
-  );
-  return response.data;
-}
-
-export async function startCodexDailySummaryRunForEntries(
-  entryIds: string[],
-  payload: {
-    date: string;
-    model?: string | null;
-    force?: boolean;
-  },
-) {
-  const response = await api.post<CodexDailySummaryRunRead>(
-    '/device-entries/codex/daily-summary/runs',
-    {
-      entry_ids: entryIds,
-      date: payload.date,
-      model: payload.model ?? null,
-      force: payload.force ?? false,
-    },
-  );
-  return response.data;
-}
-
-export async function fetchCodexDailySummaryRunForEntry(entryId: string, runId: string) {
-  const response = await api.get<CodexDailySummaryRunRead>(
-    getDeviceEntryPath(entryId, `/codex/daily-summary/runs/${runId}`),
-  );
-  return response.data;
-}
-
-export async function fetchCodexDailySummaryRunForEntries(runId: string) {
-  const response = await api.get<CodexDailySummaryRunRead>(
-    `/device-entries/codex/daily-summary/runs/${runId}`,
-  );
   return response.data;
 }

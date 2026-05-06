@@ -5,12 +5,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { fetchWorkbook, type WorkbookDetail } from '@/api/noteSheets'
 import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
+const APP_TITLE = 'CodeYun'
+
 const route = useRoute()
 const router = useRouter()
 
 const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
 const activeSheetId = ref<number | null>(null)
+const standaloneSheetTitle = ref('')
 const errorText = ref('')
 
 const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
@@ -20,6 +23,17 @@ const querySheetId = computed(() => normalizePositiveInt(route.query.sheet))
 const activeSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? null
 ))
+const pageDocumentTitle = computed(() => {
+  if (isWorkbookMode.value) {
+    const workbookTitle = String(workbook.value?.title || '').trim()
+    const sheetTitle = String(activeSheet.value?.title || '').trim()
+    const segments = [sheetTitle, workbookTitle].filter(Boolean)
+    return segments.length ? `${segments.join(' - ')} - ${APP_TITLE}` : APP_TITLE
+  }
+
+  const sheetTitle = standaloneSheetTitle.value.trim()
+  return sheetTitle ? `${sheetTitle} - ${APP_TITLE}` : APP_TITLE
+})
 
 function normalizePositiveInt(value: unknown): number | null {
   const raw = Array.isArray(value) ? value[0] : value
@@ -89,6 +103,10 @@ function handleSheetMissing() {
 }
 
 function handleSheetSync(payload: { id: number; title: string; version: number; updatedAt: number }) {
+  if (!isWorkbookMode.value) {
+    standaloneSheetTitle.value = payload.title || ''
+    return
+  }
   if (!workbook.value) {
     return
   }
@@ -98,6 +116,30 @@ function handleSheetSync(payload: { id: number; title: string; version: number; 
     sheet.updated_at = payload.updatedAt
   }
 }
+
+watch(
+  pageDocumentTitle,
+  (title) => {
+    document.title = title
+  },
+  { immediate: true },
+)
+
+watch(
+  sheetId,
+  (nextSheetId, previousSheetId) => {
+    if (nextSheetId !== previousSheetId && !isWorkbookMode.value) {
+      standaloneSheetTitle.value = ''
+    }
+  },
+)
+
+watch(
+  () => route.fullPath,
+  () => {
+    document.title = pageDocumentTitle.value
+  },
+)
 
 watch(
   [workbookId, querySheetId, isWorkbookMode],
@@ -156,6 +198,7 @@ onMounted(() => {
         :show-title-input="false"
         empty-text="工作表不存在或不可访问"
         @missing="handleSheetMissing"
+        @sheet-sync="handleSheetSync"
       />
       <el-empty v-else :description="errorText || '工作表地址无效'" />
     </template>

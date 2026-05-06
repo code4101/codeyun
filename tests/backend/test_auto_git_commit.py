@@ -120,6 +120,44 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
+def test_auto_git_commit_worker_blocks_obvious_dot_tmp_directory(session, auth_user, tmp_path):
+    dirty_repo = tmp_path / "dirty-temp-repo"
+    _init_git_repo(dirty_repo)
+    tmp_dir = dirty_repo / ".tmp_pdf_check"
+    tmp_dir.mkdir()
+    (tmp_dir / "page_1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    def unexpected_draft_generator(**kwargs):
+        raise AssertionError("precheck should block before AI draft generation")
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        draft_generator=unexpected_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    assert updated.status == "completed"
+    assert updated.changed_repo_count == 1
+    assert updated.committed_repo_count == 0
+    assert updated.failed_repo_count == 1
+    repo_result = updated.result_json["repos"][0]
+    assert repo_result["status"] == "failed"
+    assert "提交前预检未通过" in repo_result["error_message"]
+    assert ".tmp_pdf_check/page_1.png" in repo_result["changed_paths"]
+    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "init"
+    assert "?? .tmp_pdf_check/" in _run_git(dirty_repo, "status", "--short")
+
+
 def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committing(session, auth_user, tmp_path, monkeypatch):
     dirty_repo = tmp_path / "dirty-failure-repo"
     _init_git_repo(dirty_repo)

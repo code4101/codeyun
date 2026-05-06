@@ -67,4 +67,5 @@ backend/data/
 /frontend/src/plugins/modules/*
 !/frontend/src/plugins/modules/.gitkeep
 /.tmp-dev-observe
+/.tmp_*/
 /.tmp_git_reduce_debug/

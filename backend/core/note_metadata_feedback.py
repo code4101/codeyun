@@ -696,6 +696,17 @@ def maybe_enqueue_note_metadata_feedback_optimization() -> None:
 def init_note_metadata_feedback_scheduler() -> None:
     if get_settings().is_test:
         return
+        
+    from backend.db import engine
+    from backend.models import AppSetting
+    from sqlmodel import Session
+    with Session(engine) as session:
+        row = session.get(AppSetting, "background_task.note_metadata_feedback_optimization.enabled")
+        enabled = bool(row.value.get("enabled", False)) if row and isinstance(row.value, dict) else False
+        
+    if not enabled:
+        return
+        
     if not metadata_feedback_scheduler.running:
         metadata_feedback_scheduler.start()
     metadata_feedback_scheduler.add_job(

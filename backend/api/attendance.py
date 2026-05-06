@@ -15,7 +15,6 @@ from sqlmodel import Session, select
 from backend.core.attendance_service import (
     AttendanceServiceError,
     apply_attendance_order_operation_password_env,
-    decrypt_attendance_secret,
     encrypt_attendance_secret,
     ensure_can_manage_attendance_service,
     ensure_can_use_attendance_service,
@@ -40,10 +39,6 @@ from backend.core.attendance_order import (
     OrderAutomationError,
     execute_order_action,
     query_order_refund_details,
-)
-from backend.core.attendance_wjx_data import (
-    WjxDataSyncError,
-    execute_wjx_data_sync,
 )
 from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
@@ -214,13 +209,6 @@ class AttendanceOrderRefundHistoryPage(BaseModel):
     total: int
     page: int
     page_size: int
-
-
-class AttendanceWjxDataSyncRequest(BaseModel):
-    template_id: Optional[str] = None
-    account_id: Optional[str] = None
-    execution_device_entry_id: Optional[str] = None
-    persist_global_selection: bool = True
 
 
 class AttendanceFeedbackSubmitRequest(BaseModel):
@@ -566,6 +554,38 @@ def _set_attendance_wjx_sheet_cell_link(
     return True
 
 
+def _parse_attendance_wjx_sheet_cell_meta_key(key: Any) -> tuple[int, int] | None:
+    if not isinstance(key, str):
+        return None
+    row_text, separator, column_text = key.partition(":")
+    if separator != ":" or not row_text.isdigit() or not column_text.isdigit():
+        return None
+    return int(row_text), int(column_text)
+
+
+def _shift_attendance_wjx_sheet_cell_meta_rows_for_insert(
+    document_json: dict[str, Any],
+    *,
+    insert_index: int,
+    amount: int,
+) -> None:
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict) or amount <= 0:
+        return
+
+    shifted: dict[str, Any] = {}
+    for key, value in cell_meta.items():
+        position = _parse_attendance_wjx_sheet_cell_meta_key(key)
+        if position is None:
+            shifted[str(key)] = value
+            continue
+
+        row_index, column_index = position
+        next_row_index = row_index + amount if row_index >= insert_index else row_index
+        shifted[f"{next_row_index}:{column_index}"] = value
+    document_json["cell_meta"] = shifted
+
+
 def _sync_attendance_wjx_sheet_course_link_for_row(
     document_json: dict[str, Any],
     *,
@@ -637,6 +657,21 @@ def _find_attendance_wjx_sheet_row_index(document_json: dict[str, Any], seq: int
     return None
 
 
+def _get_attendance_wjx_sheet_insert_index(rows: list[list[str]], columns: list[str], seq: int) -> int:
+    first_non_seq_index: int | None = None
+    for index, row in enumerate(rows):
+        current_seq = _parse_attendance_wjx_sheet_seq(
+            _get_attendance_wjx_sheet_cell(row, columns, "序号")
+        )
+        if current_seq is None:
+            if first_non_seq_index is None:
+                first_non_seq_index = index
+            continue
+        if seq > current_seq:
+            return index
+    return first_non_seq_index if first_non_seq_index is not None else len(rows)
+
+
 def _get_next_attendance_wjx_sheet_seq(document_json: dict[str, Any]) -> int:
     document = _normalize_attendance_wjx_sheet_document(document_json)
     columns = list(document["columns"])
@@ -701,8 +736,13 @@ def _upsert_attendance_wjx_sheet_values(
     inserted = row_index is None
     if inserted:
         row = [""] * len(columns)
-        rows.append(row)
-        row_index = len(rows) - 1
+        row_index = _get_attendance_wjx_sheet_insert_index(rows, columns, seq)
+        rows.insert(row_index, row)
+        _shift_attendance_wjx_sheet_cell_meta_rows_for_insert(
+            document,
+            insert_index=row_index,
+            amount=1,
+        )
     else:
         row = list(rows[row_index])
 
@@ -714,8 +754,7 @@ def _upsert_attendance_wjx_sheet_values(
         if header in values:
             _set_attendance_wjx_sheet_cell(row, columns, header, values.get(header))
 
-    if not inserted:
-        rows[row_index] = row
+    rows[row_index] = row
     document["rows"] = rows
     link_changed = _sync_attendance_wjx_sheet_course_link_for_row(
         document,
@@ -1773,103 +1812,6 @@ def _get_attendance_wjx_data_state(
     )
 
 
-def _persist_wjx_data_sync_result(
-    session: Session,
-    *,
-    current_user: User,
-    template: dict[str, str],
-    execution_device_entry_id: str,
-    sync_result: dict[str, Any],
-) -> tuple[AttendanceWjxDataSyncState, int, int]:
-    activity_id = str(template["activity_id"])
-    state = _get_attendance_wjx_data_state(session, template=template, actor=current_user)
-    now = time.time()
-    rows = list(sync_result.get("rows") or [])
-
-    seqs: list[int] = []
-    for row in rows:
-        try:
-            seqs.append(int(row.get("序号")))
-        except (TypeError, ValueError):
-            continue
-
-    existing_map: dict[int, AttendanceWjxDataEntry] = {}
-    if seqs:
-        statement = select(AttendanceWjxDataEntry).where(
-            AttendanceWjxDataEntry.activity_id == activity_id,
-            AttendanceWjxDataEntry.seq.in_(seqs),
-        )
-        existing_map = {item.seq: item for item in session.exec(statement).all()}
-
-    inserted_count = 0
-    updated_count = 0
-    for row in rows:
-        try:
-            seq = int(row.get("序号"))
-        except (TypeError, ValueError):
-            continue
-
-        entry = existing_map.get(seq)
-        if entry is None:
-            entry = AttendanceWjxDataEntry(
-                activity_id=activity_id,
-                seq=seq,
-                created_at=now,
-            )
-            inserted_count += 1
-        else:
-            updated_count += 1
-
-        entry.submitted_at_text = _normalize_wjx_data_text(row.get("提交答卷时间"))
-        entry.duration_text = _normalize_wjx_data_text(row.get("所用时间"))
-        entry.source = _normalize_wjx_data_text(row.get("来源"))
-        entry.source_detail = _normalize_wjx_data_text(row.get("来源详情"))
-        entry.source_ip = _normalize_wjx_data_text(row.get("来自IP"))
-        entry.course_name = _normalize_wjx_data_text(row.get("1、所属课程"))
-        entry.student_id_text = _normalize_wjx_data_text(row.get("2、学号"))
-        entry.student_name = _normalize_wjx_data_text(row.get("3、姓名"))
-        entry.correction_request = _normalize_wjx_data_text(row.get("4、修正需求"))
-        entry.extra_note = _normalize_wjx_data_text(row.get("5、其他补充说明"))
-        entry.raw_row_json = dict(row)
-        entry.synced_at = now
-        entry.updated_at = now
-        session.add(entry)
-
-    session.commit()
-
-    stored_count = int(
-        session.exec(
-            select(func.count())
-            .select_from(AttendanceWjxDataEntry)
-            .where(AttendanceWjxDataEntry.activity_id == activity_id)
-        ).one()
-        or 0
-    )
-
-    state.last_max_seq = max(
-        int(state.last_max_seq or 0),
-        int(sync_result.get("latest_max_id") or 0),
-    )
-    state.last_incremental_count = int(sync_result.get("incremental_count") or 0)
-    state.stored_count = stored_count
-    state.last_used_all_pages = bool(sync_result.get("used_all_pages"))
-    state.last_sync_at = now
-    state.last_success_at = now
-    state.last_error = None
-    state.execution_device_entry_id = execution_device_entry_id
-    state.updated_by_user_id = current_user.id
-    state.updated_at = now
-    session.add(state)
-    session.commit()
-    session.refresh(state)
-    _upsert_attendance_wjx_sheet_raw_rows(
-        session,
-        rows=[dict(row) for row in rows if isinstance(row, dict)],
-        actor=current_user,
-    )
-
-    return state, inserted_count, updated_count
-
 def _build_attendance_wjx_data_page(
     session: Session,
     *,
@@ -2031,23 +1973,6 @@ def _ensure_owned_device_for_selection(entry: UserDevice, current_user: User) ->
         raise HTTPException(status_code=400, detail="当前执行设备已停用")
 
 
-def _resolve_run_account(
-    session: Session,
-    config,
-    *,
-    account_id: Optional[str],
-) -> AttendanceAccountAsset:
-    selected_id = _normalize_optional_id(account_id) or _normalize_optional_id(config.current_wjx_account_id)
-    if not selected_id:
-        accounts = list_attendance_accounts(session)
-        if len(accounts) == 1:
-            selected_id = accounts[0].id
-    if not selected_id:
-        raise HTTPException(status_code=400, detail="请先配置或选择当前问卷星账号")
-    account = get_attendance_account_or_404(session, selected_id)
-    return account
-
-
 def _resolve_run_device(
     session: Session,
     config,
@@ -2071,49 +1996,6 @@ def _build_remote_headers(entry: UserDevice) -> dict[str, str]:
         "Authorization": f"Bearer {entry.token}",
         "X-Device-Token": entry.token,
     }
-
-
-def _execute_wjx_data_sync_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
-    mode = str(entry_snapshot.get("mode") or "")
-    if mode == "local":
-        local_device_id = get_device_id()
-        if str(entry_snapshot.get("device_id") or "") != local_device_id:
-            raise RuntimeError("所选本地执行设备不属于当前节点")
-        with ensure_ui_automation_thread_context():
-            return execute_wjx_data_sync(**execution_payload)
-
-    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
-    token = str(entry_snapshot.get("token") or "")
-    if not server_url or not token:
-        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
-
-    response = requests.post(
-        f"{server_url}/api/device-control/attendance/wjx-data/execute",
-        json=execution_payload,
-        headers=_build_remote_headers(
-            UserDevice(
-                entry_id=str(entry_snapshot.get("entry_id") or ""),
-                user_id=int(entry_snapshot.get("user_id") or 0),
-                device_id=str(entry_snapshot.get("device_id") or ""),
-                name=str(entry_snapshot.get("name") or ""),
-                mode=str(entry_snapshot.get("mode") or "remote"),
-                server_url=server_url,
-                token=token,
-                is_active=bool(entry_snapshot.get("is_active", True)),
-                order_index=int(entry_snapshot.get("order_index") or 0),
-                created_at=float(entry_snapshot.get("created_at") or 0.0),
-                updated_at=float(entry_snapshot.get("updated_at") or 0.0),
-            )
-        ),
-        timeout=600,
-    )
-    if response.status_code >= 400:
-        try:
-            detail = response.json().get("detail")
-        except Exception:
-            detail = response.text.strip()
-        raise RuntimeError(detail or f"远程执行失败，HTTP {response.status_code}")
-    return response.json()
 
 
 def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
@@ -2526,92 +2408,6 @@ def get_attendance_wjx_data_sheet_location(
         sheet_id=sheet_id,
         path=f"/notes/sheets?workbook={ATTENDANCE_WJX_DATA_WORKBOOK_ID}&sheet={sheet_id}",
     )
-
-
-@router.post("/wjx-data/sync")
-def sync_attendance_wjx_data(
-    payload: AttendanceWjxDataSyncRequest,
-    session: Session = Depends(get_session),
-    current_user: User = Depends(get_current_user_from_token),
-    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
-):
-    current_user = ensure_can_use_attendance_service(current_user, session)
-    template = _resolve_wjx_template_payload(payload.template_id)
-
-    config = get_or_create_attendance_service_config(session)
-    account = _resolve_run_account(session, config, account_id=payload.account_id)
-    entry = _resolve_run_device(
-        session,
-        config,
-        execution_device_entry_id=payload.execution_device_entry_id,
-        current_user=current_user,
-    )
-
-    try:
-        password_plain = decrypt_attendance_secret(account.password_encrypted)
-    except AttendanceServiceError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    state = _get_attendance_wjx_data_state(session, template=template, actor=current_user)
-    execution_payload = {
-        "login_username": account.login_username,
-        "password": password_plain,
-        "activity_id": template["activity_id"],
-        "exist_max_id": state.last_max_seq,
-    }
-
-    try:
-        sync_result = _execute_wjx_data_sync_on_entry(
-            {
-                **serialize_user_device(entry),
-                "token": entry.token,
-            },
-            execution_payload,
-        )
-    except WjxDataSyncError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        now = time.time()
-        state.last_sync_at = now
-        state.last_error = str(exc)
-        state.execution_device_entry_id = entry.entry_id
-        state.updated_by_user_id = current_user.id
-        state.updated_at = now
-        session.add(state)
-        session.commit()
-        raise HTTPException(
-            status_code=400 if isinstance(exc, RuntimeError) else 500,
-            detail=str(exc),
-        ) from exc
-
-    state, inserted_count, updated_count = _persist_wjx_data_sync_result(
-        session,
-        current_user=current_user,
-        template=template,
-        execution_device_entry_id=entry.entry_id,
-        sync_result=sync_result,
-    )
-
-    if payload.persist_global_selection:
-        config.current_wjx_account_id = account.id
-        config.execution_device_entry_id = entry.entry_id
-        config.updated_by_user_id = current_user.id
-        config.updated_at = time.time()
-        session.add(config)
-        session.commit()
-
-    return {
-        "template": template,
-        "execution_device_entry_id": entry.entry_id,
-        "inserted_count": inserted_count,
-        "updated_count": updated_count,
-        "latest_max_seq": int(sync_result.get("latest_max_id") or 0),
-        "recent_count": int(sync_result.get("recent_count") or 0),
-        "fetched_count": int(sync_result.get("fetched_count") or 0),
-        "incremental_count": int(sync_result.get("incremental_count") or 0),
-        "used_all_pages": bool(sync_result.get("used_all_pages")),
-        "sync_state": serialize_attendance_wjx_data_sync_state(state),
-    }
 
 
 @public_router.get("/wjx-data", response_model=AttendanceWjxDataPage)

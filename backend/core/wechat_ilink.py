@@ -30,7 +30,15 @@ from backend.core.ai_chat import (
     CODEX_CLI_DEFAULT_MODEL,
     chat_with_provider,
 )
+from backend.core.note_semantics import (
+    NOTE_CATEGORY_DEFAULT,
+    NOTE_FORM_DOCUMENT,
+    NOTE_LIFECYCLE_STAGE_DEFAULT,
+    NOTE_SCENE_DEFAULT,
+    derive_legacy_semantics_from_taxonomy,
+)
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.models import NoteNode, User
 
 
 class WechatIlinkError(RuntimeError):
@@ -51,6 +59,8 @@ CODEX_BRIDGE_DEFAULT_TIMEOUT_SECONDS = 600.0
 CODEX_BRIDGE_MAX_REPLY_CHARS = 3500
 CODEX_BRIDGE_LEGACY_DEFAULT_MODELS = {"gpt-5.4"}
 CODEX_BRIDGE_TIMEZONE = "Asia/Shanghai"
+CODEX_BRIDGE_QUICK_NOTE_TEXT = "-"
+CODEX_BRIDGE_QUICK_NOTE_PRIVATE_LEVEL = 1
 CODEX_BRIDGE_IMAGE_DIRECTIVE_RE = re.compile(
     r"^\s*CODECLAW_(?:SEND_)?IMAGE\s*:\s*(?P<path>.+?)\s*$",
     re.IGNORECASE,
@@ -604,7 +614,12 @@ def start_login(*, account_id: str | None = None, force: bool = False, bot_type:
         }
 
 
-def wait_login(*, session_key: str, timeout_seconds: float = DEFAULT_LONG_POLL_TIMEOUT_SECONDS) -> dict[str, Any]:
+def wait_login(
+    *,
+    session_key: str,
+    timeout_seconds: float = DEFAULT_LONG_POLL_TIMEOUT_SECONDS,
+    owner_user_id: int | None = None,
+) -> dict[str, Any]:
     deadline = _now() + max(1.0, timeout_seconds)
     while _now() < deadline:
         with _login_lock:
@@ -657,6 +672,7 @@ def wait_login(*, session_key: str, timeout_seconds: float = DEFAULT_LONG_POLL_T
                 token=bot_token,
                 user_id=user_id,
                 base_url=base_url,
+                owner_user_id=owner_user_id,
             )
             with _login_lock:
                 _login_sessions.pop(session_key, None)
@@ -682,7 +698,14 @@ def wait_login(*, session_key: str, timeout_seconds: float = DEFAULT_LONG_POLL_T
     return {"connected": False, "status": "wait", "message": "等待扫码。"}
 
 
-def save_account(*, account_id: str, token: str, user_id: str = "", base_url: str = DEFAULT_API_BASE_URL) -> dict[str, Any]:
+def save_account(
+    *,
+    account_id: str,
+    token: str,
+    user_id: str = "",
+    base_url: str = DEFAULT_API_BASE_URL,
+    owner_user_id: int | None = None,
+) -> dict[str, Any]:
     normalized_account_id = _normalize_account_id(account_id)
     store = _read_store()
     accounts = store.setdefault("accounts", {})
@@ -699,6 +722,8 @@ def save_account(*, account_id: str, token: str, user_id: str = "", base_url: st
             "updated_at": now,
         }
     )
+    if owner_user_id is not None:
+        account["owner_user_id"] = int(owner_user_id)
     account.setdefault("created_at", now)
     account.setdefault("get_updates_buf", "")
     account.setdefault("context_tokens", {})
@@ -1034,6 +1059,145 @@ def _build_bridge_image_payloads(message: dict[str, Any]) -> list[str]:
     return payloads
 
 
+def _get_database_engine():
+    from backend.db import engine
+
+    return engine
+
+
+def _normalize_owner_user_id(value: Any) -> int | None:
+    try:
+        user_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
+
+
+def _load_codex_bridge_owner_user_id(account_id: str) -> int | None:
+    store = _read_store()
+    account = _load_account(store, account_id)
+    bridge_config = account.get("codex_bridge")
+    if not isinstance(bridge_config, dict):
+        bridge_config = {}
+    for value in (bridge_config.get("owner_user_id"), account.get("owner_user_id")):
+        user_id = _normalize_owner_user_id(value)
+        if user_id is not None:
+            return user_id
+    return None
+
+
+def _resolve_quick_note_owner(session: Any, owner_user_id: int | None) -> User:
+    from sqlmodel import select
+
+    if owner_user_id is not None:
+        user = session.get(User, owner_user_id)
+        if user is not None and user.is_active:
+            return user
+
+    bootstrap_username = get_settings().bootstrap_admin_username
+    if bootstrap_username:
+        user = session.exec(
+            select(User).where(User.username == bootstrap_username, User.is_active == True)  # noqa: E712
+        ).first()
+        if user is not None:
+            return user
+
+    superusers = session.exec(
+        select(User)
+        .where(User.is_active == True, User.is_superuser == True)  # noqa: E712
+        .order_by(User.id)
+    ).all()
+    if len(superusers) == 1:
+        return superusers[0]
+
+    users = session.exec(
+        select(User)
+        .where(User.is_active == True)  # noqa: E712
+        .order_by(User.id)
+    ).all()
+    if len(users) == 1:
+        return users[0]
+
+    raise WechatIlinkError("CodeClaw 尚未绑定星图笔记用户，请在 CodeYun 页面重新开启 CodeClaw。")
+
+
+def _create_codex_bridge_quick_dash_note(account_id: str) -> dict[str, Any]:
+    from sqlmodel import Session
+
+    owner_user_id = _load_codex_bridge_owner_user_id(account_id)
+    taxonomy = derive_legacy_semantics_from_taxonomy(
+        [{"key": NOTE_CATEGORY_DEFAULT, "weight": 100}],
+        primary_category=NOTE_CATEGORY_DEFAULT,
+        note_form=NOTE_FORM_DOCUMENT,
+        note_scene=NOTE_SCENE_DEFAULT,
+        lifecycle_stage=NOTE_LIFECYCLE_STAGE_DEFAULT,
+    )
+    now = _now()
+    with Session(_get_database_engine()) as session:
+        owner = _resolve_quick_note_owner(session, owner_user_id)
+        note = NoteNode(
+            id=str(uuid.uuid4()),
+            user_id=int(owner.id),
+            title=CODEX_BRIDGE_QUICK_NOTE_TEXT,
+            content="",
+            weight=0,
+            node_type=taxonomy["node_type"],
+            note_types=taxonomy["note_types"],
+            note_categories=taxonomy["note_categories"],
+            primary_category=taxonomy["primary_category"],
+            note_form=taxonomy["note_form"],
+            note_kind=taxonomy["note_kind"],
+            note_scene=taxonomy["note_scene"],
+            node_status=taxonomy["node_status"],
+            lifecycle_stage=taxonomy["lifecycle_stage"],
+            color=None,
+            weight_mode=None,
+            private_level=CODEX_BRIDGE_QUICK_NOTE_PRIVATE_LEVEL,
+            custom_fields=[],
+            created_at=now,
+            updated_at=now,
+            start_at=now,
+            history=[],
+        )
+        session.add(note)
+        session.commit()
+        session.refresh(note)
+        return {
+            "id": str(note.id),
+            "user_id": int(note.user_id),
+            "title": str(note.title or ""),
+            "private_level": int(note.private_level),
+            "note_form": str(note.note_form or ""),
+            "start_at": float(note.start_at),
+        }
+
+
+def _is_codex_bridge_quick_dash_note_message(message: dict[str, Any]) -> bool:
+    text = str(message.get("text") or "").strip()
+    return text == CODEX_BRIDGE_QUICK_NOTE_TEXT and not _message_images(message)
+
+
+def _handle_codex_bridge_quick_dash_note(account_id: str, message: dict[str, Any]) -> dict[str, Any]:
+    sender_id = str(message.get("from_user_id") or "").strip()
+    note = _create_codex_bridge_quick_dash_note(account_id)
+    note_time = _format_bridge_datetime(datetime.fromtimestamp(note["start_at"], tz=_bridge_timezone()))
+    sent = send_text_message(
+        account_id,
+        to_user_id=sender_id,
+        text=f"已记录星图笔记：-（{note_time}）",
+        context_token=str(message.get("context_token") or ""),
+    )
+    return {
+        "message_id": str(sent.get("message_id") or ""),
+        "to_user_id": sender_id,
+        "text": sent,
+        "images": [],
+        "errors": [],
+        "note": note,
+        "handled_without_ai": True,
+    }
+
+
 def _clip_wechat_reply(value: str) -> str:
     text = value.strip()
     if len(text) <= CODEX_BRIDGE_MAX_REPLY_CHARS:
@@ -1125,6 +1289,9 @@ def handle_codex_bridge_message(
 ) -> dict[str, Any] | None:
     if not _is_user_bridge_message(message):
         return None
+
+    if _is_codex_bridge_quick_dash_note_message(message):
+        return _handle_codex_bridge_quick_dash_note(account_id, message)
 
     resolved_model = _normalize_codex_bridge_model(model)
     resolved_command = _normalize_codex_bridge_command(command)
@@ -1282,7 +1449,7 @@ def _codex_bridge_loop(account_id: str) -> None:
                         send_text_message(
                             account_id,
                             to_user_id=str(message.get("from_user_id") or ""),
-                            text=f"Codex 处理失败：{exc}",
+                            text=f"CodeClaw 处理失败：{exc}",
                             context_token=str(message.get("context_token") or ""),
                         )
                     except Exception:
@@ -1322,6 +1489,7 @@ def start_codex_bridge(
     model: str | None = None,
     command: str | None = None,
     system_prompt: str | None = None,
+    owner_user_id: int | None = None,
 ) -> dict[str, Any]:
     normalized_account_id = _normalize_account_id(account_id)
     resolved_model = _normalize_codex_bridge_model(model)
@@ -1337,6 +1505,10 @@ def start_codex_bridge(
     }
     if isinstance(existing_sessions, dict):
         bridge_config["sessions"] = dict(existing_sessions)
+    if owner_user_id is not None:
+        bridge_config["owner_user_id"] = int(owner_user_id)
+    elif _normalize_owner_user_id(existing_config.get("owner_user_id")) is not None:
+        bridge_config["owner_user_id"] = int(existing_config["owner_user_id"])
     summary = _save_codex_bridge_config(normalized_account_id, bridge_config)
 
     with _codex_bridge_lock:

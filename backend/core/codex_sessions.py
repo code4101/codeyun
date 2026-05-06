@@ -24,9 +24,11 @@ from backend.core.ai_chat import (
 from backend.db import engine
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
+    NOTE_CATEGORY_DEFAULT,
     NOTE_TYPE_BUILTIN_PALETTE,
     build_note_category_palette_setting_key,
     build_note_type_palette_setting_key,
+    is_note_auto_classification_blocked_category,
 )
 from backend.models import (
     AppSetting,
@@ -1597,7 +1599,25 @@ def _load_codex_daily_summary_type_palette(user_id: int | None, session: Session
             for item in NOTE_TYPE_BUILTIN_PALETTE
         ]
 
-    return sorted(items, key=lambda item: (int(item.get("order", 0)), str(item.get("label") or ""), str(item.get("key") or "")))
+    filtered = [
+        item
+        for item in items
+        if not is_note_auto_classification_blocked_category(item.get("key"), item.get("label"))
+    ]
+    if not filtered:
+        filtered = [
+            {
+                "key": item["key"],
+                "label": item["label"],
+                "color": item["color"],
+                "order": int(item["order"]),
+                "builtin": True,
+            }
+            for item in NOTE_TYPE_BUILTIN_PALETTE
+            if item["key"] == NOTE_CATEGORY_DEFAULT
+        ]
+
+    return sorted(filtered, key=lambda item: (int(item.get("order", 0)), str(item.get("label") or ""), str(item.get("key") or "")))
 
 
 def _build_codex_daily_summary_system_prompt(
@@ -1605,13 +1625,15 @@ def _build_codex_daily_summary_system_prompt(
     type_items: list[dict[str, Any]],
 ) -> str:
     chinese_date = _format_chinese_calendar_date(target_date)
-    type_labels = " / ".join(str(item["label"]) for item in type_items) or "综合 / 项目 / 模块 / 任务 / 缺陷"
+    blocked_labels = "、".join(("任务", "重点", "项目", "模块"))
+    type_labels = " / ".join(str(item["label"]) for item in type_items) or "综合 / 缺陷"
     return "\n".join(
         [
             "你在整理同一位用户的 Codex 工作日报。",
             "你会收到某一天的真实聊天记录提要。",
             "只允许依据输入材料总结，不要补充未出现的信息。",
             f"优先参考这些工作类型来组织一级分类：{type_labels}。",
+            f"一级分类不得使用这些名称：{blocked_labels}。",
             "输出要求：只输出中文层次编号列表，不要加标题、代码块、Markdown 解释或客套话。",
             "一级编号使用“1. 2. 3.”，二级编号使用“1.1 1.2 1.3”。",
             "一级条目只保留当天确实涉及的类别，空类别不要输出。",
