@@ -109,6 +109,15 @@ CLEAR_IGNORE_DIR_PARTS = {
     "temp",
 }
 
+CLEAR_IGNORE_DIR_PREFIXES = (
+    ".tmp",
+    ".temp",
+    "tmp-",
+    "tmp_",
+    "temp-",
+    "temp_",
+)
+
 CLEAR_IGNORE_FILENAMES = {
     ".ds_store",
     "thumbs.db",
@@ -400,6 +409,15 @@ def _is_env_candidate(name_lower: str) -> bool:
     )
 
 
+def _match_clear_ignore_dir_part(path: Path) -> Optional[str]:
+    for part in (item.lower() for item in path.parts[:-1]):
+        if part in CLEAR_IGNORE_DIR_PARTS:
+            return part
+        if any(part.startswith(prefix) for prefix in CLEAR_IGNORE_DIR_PREFIXES):
+            return part
+    return None
+
+
 def _build_ignore_candidate_issue(repo_root: Path, item: dict[str, object]) -> Optional[dict[str, object]]:
     if not _is_new_changed_file(item):
         return None
@@ -409,7 +427,6 @@ def _build_ignore_candidate_issue(repo_root: Path, item: dict[str, object]) -> O
         return None
 
     pure_path = Path(path)
-    parts_lower = [part.lower() for part in pure_path.parts]
     name_lower = pure_path.name.lower()
     suffix = pure_path.suffix.lower()
     file_path = (repo_root / pure_path).resolve()
@@ -425,17 +442,17 @@ def _build_ignore_candidate_issue(repo_root: Path, item: dict[str, object]) -> O
             "suggestion": _build_ignore_suggestion(path),
         }
 
-    for part in parts_lower:
-        if part in CLEAR_IGNORE_DIR_PARTS:
-            return {
-                "issue_type": "ignore_candidate",
-                "severity": "error",
-                "blocking": True,
-                "path": path,
-                "line": None,
-                "message": "疑似本地生成目录、缓存目录或日志目录产物，建议加入 .gitignore。",
-                "suggestion": _build_ignore_suggestion(path, matched_dir_part=part),
-            }
+    matched_dir_part = _match_clear_ignore_dir_part(pure_path)
+    if matched_dir_part:
+        return {
+            "issue_type": "ignore_candidate",
+            "severity": "error",
+            "blocking": True,
+            "path": path,
+            "line": None,
+            "message": "疑似本地生成目录、缓存目录或日志目录产物，建议加入 .gitignore。",
+            "suggestion": _build_ignore_suggestion(path, matched_dir_part=matched_dir_part),
+        }
 
     if name_lower in CLEAR_IGNORE_FILENAMES:
         return {

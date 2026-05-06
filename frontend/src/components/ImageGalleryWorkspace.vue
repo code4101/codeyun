@@ -156,7 +156,7 @@
             <div class="thumb-frame">
               <template v-if="image.url">
                 <img
-                  v-if="!isVideo(image) || image.urlVariant === 'thumbnail'"
+                  v-if="!isPdf(image) && (!isVideo(image) || image.urlVariant === 'thumbnail')"
                   class="thumb-media"
                   :src="image.url"
                   :alt="image.name"
@@ -164,7 +164,7 @@
                   @load="handleImageLoad(image.id, $event)"
                 />
                 <video
-                  v-else
+                  v-else-if="isVideo(image)"
                   class="thumb-media thumb-video"
                   :src="image.url"
                   preload="metadata"
@@ -173,7 +173,10 @@
                   @loadedmetadata="handleVideoMetadata(image.id, $event)"
                 />
               </template>
-              <div v-else class="thumb-placeholder">{{ getLoadingText(image) }}</div>
+              <div v-if="isPdf(image)" class="document-placeholder">
+                <span class="document-placeholder-icon">PDF</span>
+              </div>
+              <div v-else-if="!image.url" class="thumb-placeholder">{{ getLoadingText(image) }}</div>
 
               <div class="media-badge-group">
                 <span class="media-kind-badge">{{ getMediaFormatLabel(image) }}</span>
@@ -191,6 +194,17 @@
                 @click.stop="handleDeleteImage(image.id)"
               >
                 删
+              </button>
+
+              <button
+                v-if="openPdfDocument && isPdf(image)"
+                type="button"
+                class="media-open-reader-button"
+                :class="{ 'is-disabled': openingPdfImageId === image.id }"
+                :disabled="openingPdfImageId === image.id"
+                @click.stop="handleOpenPdfDocument(image)"
+              >
+                阅读
               </button>
 
               <div v-if="shouldShowWeightPanel(image)" class="media-weight-panel" @click.stop>
@@ -252,7 +266,7 @@
               <div class="masonry-frame">
                 <template v-if="image.url">
                   <img
-                    v-if="!isVideo(image) || image.urlVariant === 'thumbnail'"
+                    v-if="!isPdf(image) && (!isVideo(image) || image.urlVariant === 'thumbnail')"
                     class="masonry-thumb"
                     :src="image.url"
                     :alt="image.name"
@@ -260,7 +274,7 @@
                     @load="handleImageLoad(image.id, $event)"
                   />
                   <video
-                    v-else
+                    v-else-if="isVideo(image)"
                     class="masonry-thumb masonry-video"
                     :src="image.url"
                     preload="metadata"
@@ -269,7 +283,10 @@
                     @loadedmetadata="handleVideoMetadata(image.id, $event)"
                   />
                 </template>
-                <div v-else class="masonry-placeholder">{{ getLoadingText(image) }}</div>
+                <div v-if="isPdf(image)" class="document-placeholder is-masonry">
+                  <span class="document-placeholder-icon">PDF</span>
+                </div>
+                <div v-else-if="!image.url" class="masonry-placeholder">{{ getLoadingText(image) }}</div>
 
                 <div class="media-badge-group">
                   <span class="media-kind-badge">{{ getMediaFormatLabel(image) }}</span>
@@ -287,6 +304,17 @@
                   @click.stop="handleDeleteImage(image.id)"
                 >
                   删
+                </button>
+
+                <button
+                  v-if="openPdfDocument && isPdf(image)"
+                  type="button"
+                  class="media-open-reader-button"
+                  :class="{ 'is-disabled': openingPdfImageId === image.id }"
+                  :disabled="openingPdfImageId === image.id"
+                  @click.stop="handleOpenPdfDocument(image)"
+                >
+                  阅读
                 </button>
 
                 <div v-if="shouldShowWeightPanel(image)" class="media-weight-panel" @click.stop>
@@ -343,6 +371,7 @@
   <el-dialog
     v-model="previewVisible"
     class="preview-dialog"
+    :class="{ 'is-pdf-preview': previewImage && isPdf(previewImage) }"
     width="92vw"
     top="4vh"
     destroy-on-close
@@ -370,6 +399,14 @@
           >
             {{ deleteButtonText }}
           </el-button>
+          <el-button
+            v-if="openPdfDocument && isPdf(previewImage)"
+            plain
+            :loading="openingPdfImageId === previewImage.id"
+            @click="handleOpenPdfDocument(previewImage)"
+          >
+            {{ openPdfButtonText }}
+          </el-button>
         </div>
         <el-tag>{{ previewPositionText }}</el-tag>
       </div>
@@ -379,13 +416,13 @@
       <div class="preview-stage">
         <template v-if="previewImage.url">
           <img
-            v-if="!isVideo(previewImage)"
+            v-if="!isVideo(previewImage) && !isPdf(previewImage)"
             :src="previewImage.url"
             :alt="previewImage.name"
             @load="handleImageLoad(previewImage.id, $event)"
           />
           <video
-            v-else
+            v-else-if="isVideo(previewImage)"
             ref="previewVideoRef"
             class="preview-video"
             :src="previewImage.url"
@@ -393,6 +430,12 @@
             playsinline
             preload="metadata"
             @loadedmetadata="handleVideoMetadata(previewImage.id, $event)"
+          />
+          <iframe
+            v-else
+            class="preview-pdf"
+            :src="previewImage.url"
+            :title="previewImage.name"
           />
         </template>
         <div v-else class="preview-placeholder">{{ getLoadingText(previewImage) }}</div>
@@ -466,6 +509,7 @@ import {
   formatDuration,
   formatFileSize,
   formatResolution,
+  isPdfGalleryItem,
   isVideoGalleryItem,
   type GalleryImage,
   type GallerySortProgram,
@@ -501,9 +545,11 @@ const props = withDefaults(
     updateImageWeight?: (imageId: string, nextWeight: number) => Promise<boolean>;
     deleteImage?: (imageId: string) => Promise<boolean>;
     revealImageInFolder?: (image: GalleryImage) => Promise<boolean | void>;
+    openPdfDocument?: (image: GalleryImage) => Promise<boolean | void>;
     deleteButtonText?: string;
     setCoverButtonText?: string;
     revealButtonText?: string;
+    openPdfButtonText?: string;
     deleteTip?: string;
     itemLabel?: string;
     itemCountLabel?: string;
@@ -530,6 +576,7 @@ const props = withDefaults(
     deleteButtonText: '删除图片',
     setCoverButtonText: '设为封面',
     revealButtonText: '打开所在目录',
+    openPdfButtonText: '打开阅读器',
     deleteTip: '',
     itemLabel: '图片',
     itemCountLabel: '张图片',
@@ -604,6 +651,7 @@ watch(
 const deletingImageId = ref<string | null>(null);
 const revealingImageId = ref<string | null>(null);
 const settingCoverImageId = ref<string | null>(null);
+const openingPdfImageId = ref<string | null>(null);
 const updatingWeightById = ref<Record<string, boolean>>({});
 const mediaCardElements = new Map<string, Element>();
 const galleryScrollTop = ref(0);
@@ -641,6 +689,7 @@ let activeThumbnailWarmCount = 0;
 
 const getPreviewFolderPath = (image: GalleryImage) => image.folderDisplayPath || image.folderPath || '根目录';
 const isVideo = (image: GalleryImage) => isVideoGalleryItem(image);
+const isPdf = (image: GalleryImage) => isPdfGalleryItem(image);
 const hasDuration = (image: GalleryImage) =>
   typeof image.duration === 'number' && Number.isFinite(image.duration) && image.duration >= 0;
 const getImageWeight = (image: GalleryImage) =>
@@ -664,16 +713,16 @@ const getMediaFormatLabel = (image: GalleryImage) => {
     return mimeSubtype.toLowerCase();
   }
 
+  if (isPdf(image)) return 'pdf';
   return isVideo(image) ? 'video' : 'image';
 };
-const getLoadingText = (image: GalleryImage | null) =>
-  image?.thumbnailFailed
-    ? image && isVideo(image)
-      ? '暂无视频首帧，点击预览播放'
-      : '缩略图生成失败'
-    : image && isVideo(image)
-      ? '视频首帧加载中'
-      : '缩略图加载中';
+const getLoadingText = (image: GalleryImage | null) => {
+  if (image && isPdf(image)) return 'PDF 加载中';
+  if (image?.thumbnailFailed) {
+    return image && isVideo(image) ? '暂无视频首帧，点击预览播放' : '缩略图生成失败';
+  }
+  return image && isVideo(image) ? '视频首帧加载中' : '缩略图加载中';
+};
 
 const ensureImage = async (imageId: string, options?: { full?: boolean }) => {
   if (!props.ensureImageReady) return true;
@@ -710,9 +759,14 @@ const handleAdjustImageWeight = async (imageId: string, delta: number) => {
 };
 
 const isMasonryRenderable = (image: GalleryImage) =>
-  Boolean(image.url && (image.urlVariant === 'thumbnail' || image.urlVariant === 'full')) || image.thumbnailFailed;
+  isPdf(image)
+  || Boolean(image.url && (image.urlVariant === 'thumbnail' || image.urlVariant === 'full'))
+  || image.thumbnailFailed;
 
 const getKnownAspectRatio = (image: GalleryImage) => {
+  if (isPdf(image)) {
+    return 4 / 3;
+  }
   if (!image.width || !image.height || image.width <= 0 || image.height <= 0) {
     return null;
   }
@@ -949,7 +1003,13 @@ const flushThumbnailWarmQueue = () => {
 
     queuedThumbnailIds.delete(imageId);
     const image = props.images.find((item) => item.id === imageId);
-    if (!image || image.urlVariant === 'thumbnail' || image.urlVariant === 'full' || image.thumbnailFailed) {
+    if (
+      !image
+      || isPdf(image)
+      || image.urlVariant === 'thumbnail'
+      || image.urlVariant === 'full'
+      || image.thumbnailFailed
+    ) {
       continue;
     }
 
@@ -971,7 +1031,13 @@ const scheduleThumbnailWarm = (imageId: string) => {
   }
 
   const image = props.images.find((item) => item.id === imageId);
-  if (!image || image.urlVariant === 'thumbnail' || image.urlVariant === 'full' || image.thumbnailFailed) {
+  if (
+    !image
+    || isPdf(image)
+    || image.urlVariant === 'thumbnail'
+    || image.urlVariant === 'full'
+    || image.thumbnailFailed
+  ) {
     return;
   }
 
@@ -1068,7 +1134,7 @@ const rebuildMediaVisibilityObserver = async () => {
         const imageId = (entry.target as HTMLElement).dataset.imageId;
         if (!imageId) continue;
         const image = props.images.find((item) => item.id === imageId);
-        if (!image || image.urlVariant === 'thumbnail' || image.urlVariant === 'full') {
+        if (!image || isPdf(image) || image.urlVariant === 'thumbnail' || image.urlVariant === 'full') {
           continue;
         }
         scheduleThumbnailWarm(imageId);
@@ -1244,6 +1310,21 @@ const handleRevealImageInFolder = async () => {
   } finally {
     if (revealingImageId.value === targetImageId) {
       revealingImageId.value = null;
+    }
+  }
+};
+
+const handleOpenPdfDocument = async (image: GalleryImage) => {
+  if (!props.openPdfDocument) {
+    return;
+  }
+
+  openingPdfImageId.value = image.id;
+  try {
+    await props.openPdfDocument(image);
+  } finally {
+    if (openingPdfImageId.value === image.id) {
+      openingPdfImageId.value = null;
     }
   }
 };
@@ -1780,6 +1861,37 @@ onBeforeUnmount(() => {
   background: #0f172a;
 }
 
+.document-placeholder {
+  width: 100%;
+  min-height: 140px;
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    linear-gradient(180deg, rgba(248, 250, 252, 0.98), rgba(226, 232, 240, 0.96));
+  color: #b91c1c;
+}
+
+.document-placeholder.is-masonry {
+  min-height: 180px;
+}
+
+.document-placeholder-icon {
+  min-width: 64px;
+  height: 82px;
+  border-radius: 8px;
+  border: 1px solid rgba(185, 28, 28, 0.22);
+  background: #ffffff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
 .media-badge-group {
   position: absolute;
   top: 10px;
@@ -1845,6 +1957,37 @@ onBeforeUnmount(() => {
 }
 
 .media-quick-delete-button.is-disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.media-open-reader-button {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 1;
+  height: 26px;
+  border: none;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.92);
+  color: #eff6ff;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(30, 64, 175, 0.24);
+  transition:
+    background-color 0.2s ease,
+    opacity 0.2s ease,
+    transform 0.2s ease;
+}
+
+.media-open-reader-button:hover:not(.is-disabled) {
+  background: rgba(29, 78, 216, 0.96);
+  transform: translateY(-1px);
+}
+
+.media-open-reader-button.is-disabled {
   opacity: 0.55;
   cursor: wait;
 }
@@ -2083,6 +2226,15 @@ onBeforeUnmount(() => {
   background: #000000;
 }
 
+.preview-pdf {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
 .preview-sidebar {
   display: flex;
   flex-direction: column;
@@ -2090,6 +2242,30 @@ onBeforeUnmount(() => {
   max-height: min(22vh, 240px);
   overflow: auto;
   padding-right: 4px;
+}
+
+.preview-dialog.is-pdf-preview :deep(.el-dialog) {
+  max-width: none;
+  height: 92vh;
+}
+
+.preview-dialog.is-pdf-preview :deep(.el-dialog__body) {
+  height: auto;
+}
+
+.preview-dialog.is-pdf-preview .preview-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 320px);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+}
+
+.preview-dialog.is-pdf-preview .preview-stage {
+  padding: 0;
+  background: #e2e8f0;
+}
+
+.preview-dialog.is-pdf-preview .preview-sidebar {
+  max-height: none;
 }
 
 .meta-card {
@@ -2159,6 +2335,19 @@ onBeforeUnmount(() => {
 
   .preview-dialog :deep(.el-dialog__body) {
     height: calc(96vh - 132px);
+  }
+
+  .preview-dialog.is-pdf-preview :deep(.el-dialog__body) {
+    height: auto;
+  }
+
+  .preview-dialog.is-pdf-preview .preview-layout {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, auto);
+  }
+
+  .preview-dialog.is-pdf-preview .preview-sidebar {
+    max-height: min(20vh, 180px);
   }
 }
 

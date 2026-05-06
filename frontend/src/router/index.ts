@@ -73,6 +73,19 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
+    path: '/pdf/:pdfId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'PdfDocumentResource',
+        component: () => import('@/standard/pdf/resource-view/page.vue'),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
     path: STANDALONE_PREFIX,
     component: StandaloneLayout,
     meta: { requiresAuth: false },

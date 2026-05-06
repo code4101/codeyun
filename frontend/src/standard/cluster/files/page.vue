@@ -43,8 +43,10 @@
           :update-image-weight="updateImageWeight"
           :delete-image="deleteImage"
           :reveal-image-in-folder="revealDeviceMediaInFolder"
+          :open-pdf-document="openPdfDocument"
           delete-button-text="删除文件"
           set-cover-button-text="设为封面"
+          open-pdf-button-text="打开阅读器"
           show-quick-delete-for-non-positive-weight
           @update:show-sidebar="showSidebar = $event"
         >
@@ -312,6 +314,14 @@
             <el-button plain :loading="downloadingPath === previewImage.absolutePath" @click="downloadPreviewFile">
               下载
             </el-button>
+            <el-button
+              v-if="previewImage.kind === 'pdf'"
+              plain
+              :loading="openingPdfPath === previewImage.absolutePath"
+              @click="openPdfDocument(previewImage)"
+            >
+              打开阅读器
+            </el-button>
           </div>
           <el-tag>{{ previewPositionText }}</el-tag>
         </div>
@@ -321,19 +331,25 @@
         <div class="preview-stage">
           <template v-if="canRenderPreviewMedia(previewImage)">
             <img
-              v-if="!shouldRenderPreviewAsVideo(previewImage)"
+              v-if="!shouldRenderPreviewAsVideo(previewImage) && !shouldRenderPreviewAsPdf(previewImage)"
               :src="previewImage.url"
               :alt="previewImage.name"
               class="preview-image"
             />
             <video
-              v-else
+              v-else-if="shouldRenderPreviewAsVideo(previewImage)"
               ref="previewVideoRef"
               class="preview-video"
               :src="previewImage.url"
               controls
               playsinline
               preload="metadata"
+            />
+            <iframe
+              v-else
+              class="preview-pdf"
+              :src="previewImage.url"
+              :title="previewImage.name"
             />
           </template>
           <div v-else class="preview-placeholder">{{ getMediaLoadingText(previewImage, true) }}</div>
@@ -434,6 +450,7 @@ import {
   type DeviceMediaListing,
   type DeviceMediaVisualHashStatus,
 } from '@/api/deviceFiles';
+import { createPdfDocumentFromDeviceFile } from '@/api/pdfDocuments';
 import GallerySortProgramBar from '@/components/GallerySortProgramBar.vue';
 import ImageGalleryWorkspace from '@/components/ImageGalleryWorkspace.vue';
 import { taskStore } from '@/store/taskStore';
@@ -558,6 +575,7 @@ const isLoadingListing = ref(false);
 const isLoadingMediaPage = ref(false);
 const downloadingPath = ref('');
 const revealingPath = ref('');
+const openingPdfPath = ref('');
 const directorySortProgram = ref<DeviceDirectorySortProgram>(cloneDirectorySortProgram(DEFAULT_DIRECTORY_SORT_PROGRAM));
 const backendSortProgram = ref<GallerySortProgram>(createDefaultGallerySortProgram());
 const previewVisible = ref(false);
@@ -1218,25 +1236,28 @@ const getPreviewFormatLabel = (image: DeviceBrowserImage) => {
     return mimeSubtype.toLowerCase();
   }
 
+  if (image.kind === 'pdf') return 'pdf';
   return image.kind === 'video' ? 'video' : 'image';
 };
 
-const getMediaLoadingText = (image: DeviceBrowserImage | null, full = false) =>
-  image?.thumbnailFailed
-    ? image && image.kind === 'video'
-      ? '暂无视频首帧'
-      : '缩略图失败'
-    : full
-      ? '原图加载中'
-      : image && image.kind === 'video'
-        ? '视频封面加载中'
-        : '图片加载中';
+const getMediaLoadingText = (image: DeviceBrowserImage | null, full = false) => {
+  if (image?.kind === 'pdf') {
+    return full ? 'PDF 加载中' : 'PDF';
+  }
+  if (image?.thumbnailFailed) {
+    return image.kind === 'video' ? '暂无视频首帧' : '缩略图失败';
+  }
+  if (full) return '原图加载中';
+  return image?.kind === 'video' ? '视频封面加载中' : '图片加载中';
+};
 
 const isVideoMedia = (image: DeviceBrowserImage) => image.kind === 'video';
 const canRenderPreviewMedia = (image: DeviceBrowserImage | null) =>
   Boolean(image?.url && (image.urlVariant === 'full' || !image.isFetchingUrl));
 const shouldRenderPreviewAsVideo = (image: DeviceBrowserImage | null) =>
   Boolean(image && image.kind === 'video' && image.urlVariant === 'full');
+const shouldRenderPreviewAsPdf = (image: DeviceBrowserImage | null) =>
+  Boolean(image && image.kind === 'pdf' && image.urlVariant === 'full');
 
 const isNativeStreamableVideo = (image: DeviceBrowserImage) => {
   if (image.kind !== 'video') {
@@ -1576,6 +1597,34 @@ const revealPreviewInFolder = async () => {
   await revealDeviceMediaInFolder(previewImage.value);
 };
 
+const openPdfDocument = async (image: GalleryImage) => {
+  if (!selectedEntryId.value) {
+    return false;
+  }
+  const target = image as DeviceBrowserImage;
+  if (target.kind !== 'pdf' || !target.absolutePath) {
+    return false;
+  }
+
+  openingPdfPath.value = target.absolutePath;
+  try {
+    const document = await createPdfDocumentFromDeviceFile({
+      entry_id: selectedEntryId.value,
+      absolute_path: target.absolutePath,
+    });
+    await router.push(`/pdf/${document.id}`);
+    return true;
+  } catch (error) {
+    console.error('Failed to open PDF document reader', error);
+    ElMessage.error('打开 PDF 阅读器失败');
+    return false;
+  } finally {
+    if (openingPdfPath.value === target.absolutePath) {
+      openingPdfPath.value = '';
+    }
+  }
+};
+
 const setVideoCover = async (imageId: string, cover: Blob) => {
   const target = mediaItems.value.find((item) => item.id === imageId);
   if (!target || !selectedEntryId.value) return false;
@@ -1641,6 +1690,12 @@ const ensureMediaReady = async (image: GalleryImage, options?: { full?: boolean 
 
   const desiredVariant: GalleryUrlVariant = options?.full ? 'full' : 'thumbnail';
   if (target.url && target.urlVariant === desiredVariant) {
+    target.lastAccessedAt = Date.now();
+    return;
+  }
+  if (target.kind === 'pdf' && desiredVariant === 'thumbnail') {
+    target.urlVariant = 'thumbnail';
+    target.thumbnailFailed = false;
     target.lastAccessedAt = Date.now();
     return;
   }
@@ -2861,6 +2916,14 @@ onBeforeUnmount(() => {
   object-fit: contain;
 }
 
+.preview-pdf {
+  width: 100%;
+  height: 68vh;
+  border: 0;
+  border-radius: 14px;
+  background: #ffffff;
+}
+
 .preview-placeholder {
   color: #475569;
   font-size: 15px;
@@ -3017,8 +3080,13 @@ onBeforeUnmount(() => {
   }
 
   .preview-image,
-  .preview-video {
+  .preview-video,
+  .preview-pdf {
     max-height: 44vh;
+  }
+
+  .preview-pdf {
+    height: 44vh;
   }
 }
 

@@ -9,7 +9,9 @@ from sqlmodel import Session
 
 from backend.api.git_tools import GitToolInspectRequest, GitToolInspectResponse
 from backend.core.ai_git_repos import (
+    get_user_ai_git_commit_config,
     list_user_ai_git_repos,
+    save_user_ai_git_commit_config,
     save_user_ai_git_repos,
     touch_user_ai_git_repo,
 )
@@ -47,6 +49,11 @@ class AiGitSavedRepoInput(BaseModel):
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
     last_used_at: Optional[float] = None
+
+
+class AiGitCommitConfigPayload(BaseModel):
+    provider_id: str = ""
+    model: str = ""
 
 
 class AiGitSavedReposResponse(BaseModel):
@@ -179,6 +186,23 @@ def _build_status_item(repo: dict[str, object], inspect_payload: dict[str, objec
         suggested_split_groups=list(inspect_payload.get("suggested_split_groups") or []) if inspect_payload is not None else [],
         error=error,
     )
+
+
+@router.get("/config", response_model=AiGitCommitConfigPayload)
+def get_ai_git_commit_config_endpoint(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    return get_user_ai_git_commit_config(session, current_user.id)
+
+
+@router.put("/config", response_model=AiGitCommitConfigPayload)
+def update_ai_git_commit_config_endpoint(
+    req: AiGitCommitConfigPayload,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    return save_user_ai_git_commit_config(session, current_user.id, req.provider_id, req.model)
 
 
 @router.get("", response_model=AiGitSavedReposResponse)

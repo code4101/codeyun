@@ -1,6 +1,7 @@
 from unittest.mock import patch
 
-from backend.models import NoteNode
+from backend.core.note_semantics import build_note_category_palette_setting_key
+from backend.models import AppSetting, NoteNode
 
 
 def _make_note(
@@ -140,7 +141,10 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     assert "修复登录接口报错" in kwargs["messages"][0]["content"]
     assert "500 报错" not in kwargs["messages"][0]["content"]
     assert "- 修复注册接口报错 | bug(缺陷) | note(笔记) | doing(待办)" in kwargs["messages"][0]["content"]
-    assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" in kwargs["messages"][0]["content"]
+    assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" not in kwargs["messages"][0]["content"]
+    assert "project | 项目" not in kwargs["messages"][0]["content"]
+    assert "module | 模块" not in kwargs["messages"][0]["content"]
+    assert "task | 任务" not in kwargs["messages"][0]["content"]
 
 
 def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, session, auth_user):
@@ -190,8 +194,44 @@ def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, 
     assert response.status_code == 200
     prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
     assert prompt.count("| bug(缺陷) | note(笔记) | doing(待办)") == 4
-    assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" in prompt
+    assert "- 登录模块技术方案 | project(项目) | document(文档) | idea(笔记)" not in prompt
     assert "当前正文不应参与分类" not in prompt
+
+
+def test_ai_categorize_note_filters_blocked_custom_category_labels(client, session, auth_user):
+    note = _make_note("note-ai-categorize-blocked-label", auth_user.id, "整理关键结论")
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "order": 0},
+                    {"key": "focus", "label": "重点", "order": 10},
+                    {"key": "bug", "label": "缺陷", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add(note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"general","note_form":"note","lifecycle_stage":"idea"}',
+        },
+    ) as mock_chat:
+        response = client.post(
+            f"/api/notes/{note.id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
+        )
+
+    assert response.status_code == 200
+    prompt = mock_chat.call_args.kwargs["messages"][0]["content"]
+    assert "focus | 重点" not in prompt
+    assert "general | 综合" in prompt
+    assert "bug | 缺陷" in prompt
 
 
 def test_ai_categorize_note_rejects_unknown_category(client, session, auth_user):
@@ -230,6 +270,27 @@ def test_ai_categorize_note_rejects_unknown_category(client, session, auth_user)
                 "provider": "deepseek",
                 "model": "deepseek-chat",
             },
+        )
+
+    assert response.status_code == 502
+    assert "未知分类" in response.json()["detail"]
+
+
+def test_ai_categorize_note_rejects_blocked_builtin_category(client, session, auth_user):
+    note = _make_note("note-ai-categorize-blocked", auth_user.id, "跟进一个执行事项")
+    session.add(note)
+    session.commit()
+
+    with patch(
+        "backend.api.notes.chat_with_provider",
+        return_value={
+            "model": "deepseek-chat",
+            "content": '{"primary_category":"task","note_form":"note","lifecycle_stage":"doing"}',
+        },
+    ):
+        response = client.post(
+            f"/api/notes/{note.id}/ai-categorize",
+            json={"provider": "deepseek", "model": "deepseek-chat"},
         )
 
     assert response.status_code == 502

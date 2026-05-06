@@ -593,10 +593,10 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
             "model": kwargs.get("model") or "gpt-5.4",
             "content": "\n".join(
                 [
-                    "1. 项目推进",
+                    "1. 综合",
                     "1.1 打通 Codex 日报页原型与按天汇总链路，完成页面入口、后端接口和调用路径。",
                     "1.2 梳理 attendance 菜单语义，确认命名应按真实页面功能收口。",
-                    "2. 任务",
+                    "2. 缺陷",
                     "2.1 为后续文案和结构修正沉淀判断依据。",
                 ]
             ),
@@ -627,10 +627,10 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert completed_payload["turn_count"] == 2
     assert completed_payload["user_message_count"] == 2
     assert completed_payload["assistant_message_count"] == 4
-    assert completed_payload["summary_text"].startswith("1. 项目推进")
+    assert completed_payload["summary_text"].startswith("1. 综合")
     assert completed_payload["result"]["prompt_version"] == "2026-04-23.hierarchical-note-types-v1"
     assert [item["title"] for item in completed_payload["result"]["threads"]] == ["Codex 日报页", "Attendance 菜单语义"]
-    assert [item["label"] for item in completed_payload["result"]["type_items"]][:2] == ["综合", "项目推进"]
+    assert [item["label"] for item in completed_payload["result"]["type_items"]] == ["综合", "缺陷"]
 
     latest_response = client.get(
         f"/api/device-entries/{entry_id}/codex/daily-summary/latest",
@@ -639,7 +639,7 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert latest_response.status_code == 200
     latest_payload = latest_response.json()
     assert latest_payload["id"] == first_run["id"]
-    assert latest_payload["summary_text"].startswith("1. 项目推进")
+    assert latest_payload["summary_text"].startswith("1. 综合")
 
     reused_response = client.post(
         f"/api/device-entries/{entry_id}/codex/daily-summary/runs",
@@ -677,7 +677,11 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert "Memory consolidation complete" not in prompt
     assert "codex-cli-workspace" not in prompt
     assert "通过 CodeYun 调用本机 Codex CLI" not in prompt
-    assert "项目推进（key=project）" in prompt
+    assert "项目推进（key=project）" not in prompt
+    assert "模块（key=module）" not in prompt
+    assert "任务（key=task）" not in prompt
+    assert "缺陷（key=bug）" in prompt
+    assert "一级分类不得使用这些名称：任务、重点、项目、模块" in captured[0]["system_prompt"]
     assert "2026年4月22日" in captured[0]["system_prompt"]
     assert captured[0]["provider_id"] == "codex-daily-summary"
 
@@ -689,8 +693,8 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     ).all()
     assert len(run_rows) == 2
     assert run_rows[0].summary_date == "2026-04-22"
-    assert run_rows[0].summary_text.startswith("1. 项目推进")
-    assert run_rows[0].result_json["type_items"][1]["label"] == "项目推进"
+    assert run_rows[0].summary_text.startswith("1. 综合")
+    assert [item["label"] for item in run_rows[0].result_json["type_items"]] == ["综合", "缺陷"]
 
 
 def test_multi_device_daily_summary_merges_local_and_remote_sources(
@@ -701,7 +705,7 @@ def test_multi_device_daily_summary_merges_local_and_remote_sources(
     tmp_path,
     monkeypatch,
 ):
-    from backend.api import device_entries as device_entries_api
+    from backend.core import codex_device_summary
 
     local_entry_id = _create_local_entry(client)
     local_codex_root = _create_codex_root_for_daily_summary(tmp_path)
@@ -798,12 +802,12 @@ def test_multi_device_daily_summary_merges_local_and_remote_sources(
         assert method == "GET"
         remote_calls.append(path)
         if path == "/codex/workload":
-            return remote_workload, None
+            return remote_workload
         if path == "/codex/threads/remote-thread-1":
-            return remote_detail, None
+            return remote_detail
         raise AssertionError(f"Unexpected remote path: {path}")
 
-    monkeypatch.setattr(device_entries_api, "_fetch_remote_json", fake_fetch_remote_json)
+    monkeypatch.setattr(codex_device_summary, "fetch_remote_codex_json", fake_fetch_remote_json)
 
     captured: list[dict[str, object]] = []
 
@@ -887,7 +891,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
         def content(self):
             return json.dumps(self._payload).encode("utf-8")
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured.append(
             {
                 "method": method,
@@ -895,6 +899,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
                 "headers": headers,
                 "params": params,
                 "json": json,
+                "proxies": proxies,
                 "timeout": timeout,
                 "stream": stream,
             }
@@ -1029,6 +1034,8 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
     assert captured[0]["url"] == "http://remote-device:8000/api/codex/overview"
     assert captured[0]["headers"]["Authorization"] == "Bearer remote-token"
     assert captured[0]["params"] == {"root_dir": "C:\\Users\\test\\.codex"}
+    assert captured[0]["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
+    assert captured[0]["timeout"] == 120
 
     detail_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/threads/thread-1",
@@ -1036,6 +1043,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
     )
     assert detail_response.status_code == 200
     assert captured[1]["url"] == "http://remote-device:8000/api/codex/threads/thread-1"
+    assert captured[1]["timeout"] == 120
 
     image_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/threads/thread-1/messages/1/images",
@@ -1043,6 +1051,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
     )
     assert image_response.status_code == 200
     assert captured[2]["url"] == "http://remote-device:8000/api/codex/threads/thread-1/messages/1/images"
+    assert captured[2]["timeout"] == 120
 
     workload_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/workload",
@@ -1050,6 +1059,7 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
     )
     assert workload_response.status_code == 200
     assert captured[3]["url"] == "http://remote-device:8000/api/codex/workload"
+    assert captured[3]["timeout"] == 180
 
     latest_daily_summary_response = client.get(
         f"/api/device-entries/{entry.entry_id}/codex/daily-summary/latest",

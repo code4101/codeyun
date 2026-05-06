@@ -5,7 +5,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlmodel import select
 
+from backend.models import NoteNode
 from backend.core import wechat_ilink
 
 
@@ -249,6 +251,75 @@ def test_wechat_codex_bridge_replies_to_user_text_message(monkeypatch, isolated_
             "context_token": "ctx-1",
         }
     ]
+
+
+def test_wechat_codex_bridge_dash_message_creates_private_note_without_ai(
+    monkeypatch,
+    isolated_wechat_store,
+    session,
+    engine,
+    auth_user,
+):
+    wechat_ilink.save_account(
+        account_id="bot@example",
+        token="plain-token",
+        user_id="bot-user",
+        base_url="https://ilink.example.com",
+        owner_user_id=auth_user.id,
+    )
+    sent_messages = []
+
+    def fake_chat_with_provider(**kwargs):
+        raise AssertionError("dash quick note should not call AI")
+
+    def fake_send_text_message(account_id, *, to_user_id, text, context_token=None, timeout_seconds=15):
+        sent_messages.append(
+            {
+                "account_id": account_id,
+                "to_user_id": to_user_id,
+                "text": text,
+                "context_token": context_token,
+            }
+        )
+        return {"message_id": "quick-note-reply", "to_user_id": to_user_id, "used_context_token": bool(context_token)}
+
+    monkeypatch.setattr(wechat_ilink, "_get_database_engine", lambda: engine)
+    monkeypatch.setattr(wechat_ilink, "chat_with_provider", fake_chat_with_provider)
+    monkeypatch.setattr(wechat_ilink, "send_text_message", fake_send_text_message)
+
+    result = wechat_ilink.handle_codex_bridge_message(
+        "bot@example",
+        {
+            "from_user_id": "friend-1",
+            "text": " - ",
+            "create_time_ms": 1710000000000,
+            "message_type": 1,
+            "context_token": "ctx-1",
+        },
+        model="gpt-test",
+        command="codex",
+    )
+
+    session.expire_all()
+    note = session.exec(select(NoteNode).where(NoteNode.user_id == auth_user.id)).one()
+    assert note.title == "-"
+    assert note.content == ""
+    assert note.private_level == 1
+    assert note.note_form == "document"
+    assert note.start_at == note.created_at == note.updated_at
+    assert wechat_ilink._load_codex_bridge_session_id("bot@example", "friend-1") == ""
+    assert result["message_id"] == "quick-note-reply"
+    assert result["handled_without_ai"] is True
+    assert result["note"]["id"] == note.id
+    assert sent_messages == [
+        {
+            "account_id": "bot@example",
+            "to_user_id": "friend-1",
+            "text": sent_messages[0]["text"],
+            "context_token": "ctx-1",
+        }
+    ]
+    assert sent_messages[0]["text"].startswith("已记录星图笔记：-（")
 
 
 def test_wechat_codex_bridge_uses_new_default_for_legacy_config(isolated_wechat_store):

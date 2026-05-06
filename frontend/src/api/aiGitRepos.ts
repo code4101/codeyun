@@ -1,5 +1,20 @@
 import api from '@/api'
 
+export interface AiGitCommitConfigPayload {
+  provider_id: string
+  model: string
+}
+
+export async function fetchAiGitCommitConfig() {
+  const response = await api.get<AiGitCommitConfigPayload>('/ai-git-repos/config')
+  return response.data
+}
+
+export async function updateAiGitCommitConfig(payload: AiGitCommitConfigPayload) {
+  const response = await api.put<AiGitCommitConfigPayload>('/ai-git-repos/config', payload)
+  return response.data
+}
+
 export interface AiGitSavedRepo {
   id: string
   name: string

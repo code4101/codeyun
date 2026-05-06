@@ -758,6 +758,7 @@ def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client:
     assert submit_response.json()["seq"] == 901
 
     sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == location["sheet_id"])).one()
+    assert [row[0] for row in sheet.document_json["rows"]] == ["901", "900"]
     rows_by_seq = {row[0]: row for row in sheet.document_json["rows"]}
     assert rows_by_seq["901"] == [
         "901",
@@ -802,6 +803,42 @@ def test_attendance_feedback_submission_links_course_cell_from_summary_sheet(cli
     ).one()
     assert sheet.document_json["rows"][0][3] == "20260408第39届念住"
     assert sheet.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu39"
+
+
+def test_attendance_wjx_sheet_upsert_inserts_by_seq_desc_and_shifts_cell_meta():
+    document = attendance_api._create_default_attendance_wjx_sheet_document()
+    document["rows"] = [
+        ["900", "2026/4/18 08:00:00", "微信", "旧课程1", "39", "吴菲", "旧问题1", "", ""],
+        ["800", "2026/4/17 08:00:00", "微信", "旧课程2", "40", "王五", "旧问题2", "", ""],
+    ]
+    document["cell_meta"] = {
+        "0:3": {"link": {"url": "https://example.com/old-900"}},
+        "1:3": {"link": {"url": "https://example.com/old-800"}},
+    }
+
+    next_document, inserted, changed = attendance_api._upsert_attendance_wjx_sheet_values(
+        document,
+        {
+            "序号": 901,
+            "提交时间": "2026/4/19 09:00:00",
+            "来源": "采集系统",
+            "课程": "新课程",
+            "学号": "41",
+            "姓名": "赵六",
+            "修正需求": "新问题",
+            "补充说明": "",
+            "处理状态": "",
+        },
+        preserve_process_status=False,
+        course_link_map={"新课程": "https://example.com/new"},
+    )
+
+    assert inserted is True
+    assert changed is True
+    assert [row[0] for row in next_document["rows"]] == ["901", "900", "800"]
+    assert next_document["cell_meta"]["0:3"]["link"]["url"] == "https://example.com/new"
+    assert next_document["cell_meta"]["1:3"]["link"]["url"] == "https://example.com/old-900"
+    assert next_document["cell_meta"]["2:3"]["link"]["url"] == "https://example.com/old-800"
 
 
 def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: TestClient, session):
@@ -909,6 +946,7 @@ def test_attendance_feedback_submission_persists_and_keeps_existing_rows(client:
 
     admin_user = _create_admin_user(session)
     _grant_feature_access(session, user_id=admin_user.id, feature_key="attendance.wjx-data")
+    _create_attendance_workbook(session, admin_user)
     _override_user(admin_user)
 
     try:
@@ -1005,135 +1043,48 @@ def test_attendance_wjx_data_delete_requires_superuser(client: TestClient, sessi
     assert response.json()["detail"] == "只有超级管理员可以删除问卷数据"
 
 
-def test_attendance_wjx_data_sync_list_and_update(client: TestClient, session, monkeypatch, test_device):
+def test_attendance_wjx_data_feedback_list_and_update(client: TestClient, session):
     admin_user = _create_admin_user(session)
+    _grant_feature_access(session, user_id=admin_user.id, feature_key="attendance.wjx-data")
     _override_user(admin_user)
 
     try:
-        add_device_resp = client.post(
-            "/api/devices/add",
-            json={
-                "mode": "local",
-                "token": "attendance-local-token",
-                "alias": "问卷同步设备",
-            },
-        )
-        assert add_device_resp.status_code == 200
-        entry_id = add_device_resp.json()["id"]
-
-        account = client.post(
-            "/api/attendance/accounts",
-            json={
-                "login_username": "18850009999",
-                "password": "plain-pass",
-            },
-        ).json()
-
-        recorded_payloads = []
-        sync_results = [
+        submitted = []
+        for payload in [
             {
-                "activity_id": "264266843",
-                "exist_max_id": 0,
-                "latest_max_id": 11,
-                "recent_count": 2,
-                "fetched_count": 2,
-                "incremental_count": 2,
-                "used_all_pages": False,
-                "rows": [
-                    {
-                        "序号": 10,
-                        "提交答卷时间": "2026/4/18 08:00:00",
-                        "所用时间": "80秒",
-                        "来源": "微信",
-                        "来源详情": "福建福州",
-                        "来自IP": "1.1.1.1",
-                        "1、所属课程": "20260401第45届觉观",
-                        "2、学号": "2-17",
-                        "3、姓名": "薛伟",
-                        "4、修正需求": "第3课没有返款",
-                        "5、其他补充说明": "",
-                    },
-                    {
-                        "序号": 11,
-                        "提交答卷时间": "2026/4/18 08:05:00",
-                        "所用时间": "90秒",
-                        "来源": "微信",
-                        "来源详情": "上海上海",
-                        "来自IP": "2.2.2.2",
-                        "1、所属课程": "20260408第39届念住",
-                        "2、学号": "39",
-                        "3、姓名": "吴菲",
-                        "4、修正需求": "",
-                        "5、其他补充说明": "备注",
-                    },
-                ],
+                "course_name": "20260401第45届觉观",
+                "student_id_text": "2-17",
+                "student_name": "薛伟",
+                "correction_request": "第3课没有返款",
+                "extra_note": "",
             },
             {
-                "activity_id": "264266843",
-                "exist_max_id": 11,
-                "latest_max_id": 12,
-                "recent_count": 1,
-                "fetched_count": 1,
-                "incremental_count": 1,
-                "used_all_pages": False,
-                "rows": [
-                    {
-                        "序号": 12,
-                        "提交答卷时间": "2026/4/18 08:10:00",
-                        "所用时间": "77秒",
-                        "来源": "微信",
-                        "来源详情": "江苏无锡",
-                        "来自IP": "3.3.3.3",
-                        "1、所属课程": "20260415梵呗初阶",
-                        "2、学号": "13",
-                        "3、姓名": "伍琳",
-                        "4、修正需求": "补第2课",
-                        "5、其他补充说明": "",
-                    }
-                ],
+                "course_name": "20260408第39届念住",
+                "student_id_text": "39",
+                "student_name": "吴菲",
+                "correction_request": "补第1课",
+                "extra_note": "备注",
             },
-        ]
-
-        def fake_sync(entry_snapshot, execution_payload):
-            recorded_payloads.append(execution_payload)
-            return sync_results.pop(0)
-
-        monkeypatch.setattr("backend.api.attendance._execute_wjx_data_sync_on_entry", fake_sync)
-
-        first_sync = client.post(
-            "/api/attendance/wjx-data/sync",
-            json={
-                "account_id": account["id"],
-                "execution_device_entry_id": entry_id,
+            {
+                "course_name": "20260415梵呗初阶",
+                "student_id_text": "13",
+                "student_name": "伍琳",
+                "correction_request": "补第2课",
+                "extra_note": "",
             },
-        )
-        assert first_sync.status_code == 200
-        first_payload = first_sync.json()
-        assert first_payload["inserted_count"] == 2
-        assert first_payload["updated_count"] == 0
-        assert first_payload["latest_max_seq"] == 11
-        assert first_payload["sync_state"]["stored_count"] == 2
-
-        second_sync = client.post(
-            "/api/attendance/wjx-data/sync",
-            json={},
-        )
-        assert second_sync.status_code == 200
-        second_payload = second_sync.json()
-        assert second_payload["inserted_count"] == 1
-        assert second_payload["latest_max_seq"] == 12
-        assert second_payload["sync_state"]["stored_count"] == 3
-
-        assert recorded_payloads[0]["exist_max_id"] == 0
-        assert recorded_payloads[1]["exist_max_id"] == 11
+        ]:
+            response = client.post("/api/attendance/wjx-feedback/submissions", json=payload)
+            assert response.status_code == 200
+            submitted.append(response.json())
 
         listing = client.get("/api/attendance/wjx-data")
         assert listing.status_code == 200
         page = listing.json()
         assert page["total"] == 3
-        assert [item["seq"] for item in page["items"]] == [12, 11, 10]
-        assert page["sync_state"]["last_max_seq"] == 12
-        assert page["sync_state"]["execution_device_entry_id"] == entry_id
+        assert [item["seq"] for item in page["items"]] == sorted(
+            [item["seq"] for item in submitted],
+            reverse=True,
+        )
 
         first_item_id = page["items"][0]["id"]
         update_resp = client.patch(
@@ -1156,13 +1107,7 @@ def test_attendance_wjx_data_sync_list_and_update(client: TestClient, session, m
         assert filtered.status_code == 200
         filtered_page = filtered.json()
         assert filtered_page["total"] == 1
-        assert filtered_page["items"][0]["seq"] == 12
-
-        config_resp = client.get("/api/attendance/config")
-        assert config_resp.status_code == 200
-        config_payload = config_resp.json()
-        assert config_payload["service"]["current_wjx_account_id"] == account["id"]
-        assert config_payload["service"]["execution_device_entry_id"] == entry_id
+        assert filtered_page["items"][0]["id"] == first_item_id
     finally:
         _clear_user_override()
 

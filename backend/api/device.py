@@ -11,7 +11,7 @@ from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
 from backend.db import get_session
 from backend.models import User, UserDevice
-from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceUpdate
+from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceTokenRead, UserDeviceUpdate
 
 router = APIRouter()
 
@@ -58,7 +58,6 @@ def _entry_read(user_device: UserDevice) -> UserDeviceRead:
         alias=user_device.name,
         name=user_device.name,
         server_url=_client_visible_server_url(user_device),
-        token=user_device.token,
         is_active=user_device.is_active,
         created_at=user_device.created_at,
         updated_at=user_device.updated_at,
@@ -105,6 +104,18 @@ def read_user_devices(
     )
     user_devices = session.exec(statement).all()
     return [_entry_read(entry) for entry in user_devices]
+
+
+@router.get("/{entry_id}/token", response_model=UserDeviceTokenRead)
+def read_user_device_token(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    link = session.get(UserDevice, entry_id)
+    if not link or link.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Device entry not found")
+    return UserDeviceTokenRead(token=link.token)
 
 
 @router.post("/add", response_model=UserDeviceRead)

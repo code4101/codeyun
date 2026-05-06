@@ -13,7 +13,7 @@ from sqlmodel import Session, select
 from backend.core.ai_chat_user_config import get_user_ai_chat_provider_runtime_config
 from backend.core.ai_git_commit import AiGitCommitError, resolve_ai_runtime_config
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
-from backend.core.ai_git_repos import list_user_ai_git_repos
+from backend.core.ai_git_repos import get_user_ai_git_commit_config, list_user_ai_git_repos
 from backend.core.background_task_queue import background_task_queue
 from backend.core.git_tools import GitToolError, create_git_commit, inspect_git_repository
 from backend.core.settings import ROOT_DIR, get_settings
@@ -320,14 +320,23 @@ def _run_one_repo(
         result.update({"status": "failed", "error_message": "关联用户不存在"})
         return result
 
+    config = get_user_ai_git_commit_config(session, candidate.user_id)
+    user_provider = config.get("provider_id") or None
+    user_model = config.get("model") or None
+
     provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
         session=session,
         current_user=user,
-        provider=None,
+        provider=user_provider,
         base_url=None,
         api_key=None,
     )
-    model = _resolve_auto_git_model(session, candidate.user_id, provider_id)
+    
+    if user_provider and provider_id == user_provider:
+        model = user_model
+    else:
+        model = _resolve_auto_git_model(session, candidate.user_id, provider_id)
+
     draft = draft_generator(
         cwd=candidate.cwd,
         provider_id=provider_id,
@@ -499,6 +508,17 @@ def maybe_enqueue_auto_git_commit() -> AutoGitCommitRun | None:
 def init_auto_git_commit_scheduler() -> None:
     if get_settings().is_test:
         return
+        
+    from backend.db import engine
+    from backend.models import AppSetting
+    from sqlmodel import Session
+    with Session(engine) as session:
+        row = session.get(AppSetting, "background_task.auto_git_commit.enabled")
+        enabled = bool(row.value.get("enabled", False)) if row and isinstance(row.value, dict) else False
+        
+    if not enabled:
+        return
+        
     if not auto_git_commit_scheduler.running:
         auto_git_commit_scheduler.start()
     auto_git_commit_scheduler.add_job(

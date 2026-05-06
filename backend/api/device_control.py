@@ -15,7 +15,6 @@ from backend.core.attendance_order import (
     execute_order_action,
     query_order_refund_details,
 )
-from backend.core.attendance_wjx_data import WjxDataSyncError, execute_wjx_data_sync
 from backend.core.device import (
     build_background_popen_kwargs,
     device_manager,
@@ -212,25 +211,3 @@ def query_attendance_order_refund_details(req: AttendanceOrderRefundDetailReques
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-
-class AttendanceWjxDataExecuteRequest(BaseModel):
-    login_username: str
-    password: str
-    activity_id: str
-    exist_max_id: int = 0
-
-
-@router.post("/attendance/wjx-data/execute")
-def execute_attendance_wjx_data(req: AttendanceWjxDataExecuteRequest):
-    try:
-        with ensure_ui_automation_thread_context():
-            return execute_wjx_data_sync(
-                login_username=req.login_username,
-                password=req.password,
-                activity_id=req.activity_id,
-                exist_max_id=req.exist_max_id,
-            )
-    except WjxDataSyncError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc

@@ -11,10 +11,43 @@ from backend.models import AppSetting
 
 
 AI_GIT_REPOS_SETTING_KEY_PREFIX = "ai_git_commit.saved_repos.user"
+AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
 
 
 def build_ai_git_repos_setting_key(user_id: int) -> str:
     return f"{AI_GIT_REPOS_SETTING_KEY_PREFIX}.{int(user_id)}"
+
+
+def build_ai_git_commit_config_setting_key(user_id: int) -> str:
+    return f"{AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX}.{int(user_id)}"
+
+
+def get_user_ai_git_commit_config(session: Session, user_id: int) -> dict[str, Any]:
+    row = session.get(AppSetting, build_ai_git_commit_config_setting_key(user_id))
+    if row is None or not isinstance(row.value, dict):
+        return {"provider_id": "", "model": ""}
+    return {
+        "provider_id": str(row.value.get("provider_id") or "").strip(),
+        "model": str(row.value.get("model") or "").strip(),
+    }
+
+
+def save_user_ai_git_commit_config(session: Session, user_id: int, provider_id: str, model: str) -> dict[str, Any]:
+    setting_key = build_ai_git_commit_config_setting_key(user_id)
+    row = session.get(AppSetting, setting_key)
+    now = time.time()
+    payload = {
+        "provider_id": provider_id.strip(),
+        "model": model.strip(),
+    }
+    if row is None:
+        row = AppSetting(key=setting_key, value=payload, updated_at=now)
+    else:
+        row.value = payload
+        row.updated_at = now
+    session.add(row)
+    session.commit()
+    return payload
 
 
 def _normalize_repo_id(value: Any) -> str:

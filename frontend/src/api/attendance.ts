@@ -4,7 +4,6 @@ import api from '@/api'
 
 export type AttendanceOrderLookupMode = 'hybrid' | 'db_only' | 'browser_only'
 const ATTENDANCE_ORDER_REQUEST_TIMEOUT_MS = 620000
-const ATTENDANCE_WJX_DATA_REQUEST_TIMEOUT_MS = 620000
 
 function normalizeAttendanceTimestamp(value: unknown): number {
   const numeric = typeof value === 'number' ? value : Number(value)
@@ -267,32 +266,12 @@ export interface AttendanceWjxDataSheetLocation {
   path: string
 }
 
-export interface AttendanceWjxDataSyncRequest {
-  template_id?: string | null
-  account_id?: string | null
-  execution_device_entry_id?: string | null
-  persist_global_selection?: boolean
-}
-
 export interface AttendanceFeedbackSubmitRequest {
   course_name: string
   student_id_text: string
   student_name: string
   correction_request: string
   extra_note?: string
-}
-
-export interface AttendanceWjxDataSyncResponse {
-  template: AttendanceWjxDataPage['template']
-  execution_device_entry_id: string
-  inserted_count: number
-  updated_count: number
-  latest_max_seq: number
-  recent_count: number
-  fetched_count: number
-  incremental_count: number
-  used_all_pages: boolean
-  sync_state?: AttendanceWjxDataSyncState | null
 }
 
 export interface AttendanceWjxDataUpdateRequest {
@@ -449,13 +428,6 @@ export async function fetchAttendanceOrderRefundHistory(params?: { page?: number
       foreground_colors: item.foreground_colors || {},
     })),
   }
-}
-
-export async function syncAttendanceWjxData(payload: AttendanceWjxDataSyncRequest = {}) {
-  const response = await api.post<AttendanceWjxDataSyncResponse>('/attendance/wjx-data/sync', payload, {
-    timeout: ATTENDANCE_WJX_DATA_REQUEST_TIMEOUT_MS,
-  })
-  return response.data
 }
 
 export async function submitAttendanceFeedback(payload: AttendanceFeedbackSubmitRequest) {

@@ -1,4 +1,3 @@
-import hashlib
 import shlex
 import subprocess
 import sys
@@ -6,7 +5,6 @@ import threading
 import time
 import uuid
 from datetime import timedelta
-from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -84,7 +82,6 @@ from backend.core.ai_chat import OllamaClientError
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.auth import ALGORITHM, SECRET_KEY, create_access_token, get_current_user_from_token
 from backend.core.codex_sessions import (
-    annotate_codex_daily_summary_source,
     build_codex_daily_summary,
     build_codex_overview,
     build_codex_thread_detail,
@@ -93,16 +90,23 @@ from backend.core.codex_sessions import (
     cache_remote_codex_overview,
     cache_remote_codex_thread_detail,
     cache_remote_codex_workload,
-    collect_cached_codex_daily_summary_source,
-    collect_codex_daily_summary_source,
     get_codex_daily_summary_latest_run,
     get_codex_daily_summary_latest_run_by_root_key,
     get_codex_daily_summary_run,
-    merge_codex_daily_summary_sources,
     paginate_codex_overview_payload,
-    resolve_codex_daily_summary_epoch_range,
     serialize_codex_daily_summary_run,
     start_codex_daily_summary_run,
+)
+from backend.core.codex_device_summary import (
+    CODEX_REMOTE_READ_TIMEOUT_SECONDS,
+    CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS,
+    REMOTE_DEVICE_DIRECT_PROXIES,
+    build_multi_codex_summary_identity,
+    codex_summary_entry_label,
+    collect_multi_codex_daily_summary_source,
+    collect_remote_codex_entry_daily_summary_source,
+    ensure_local_codex_entry,
+    snapshot_codex_summary_entries,
 )
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
@@ -141,7 +145,7 @@ from backend.core.git_tools import (
 )
 from backend.db import get_session
 from backend.db import engine
-from backend.models import CodexDailySummaryRun, CodexTextCacheTurn, DeviceFile
+from backend.models import CodexDailySummaryRun, DeviceFile
 from backend.models import GitReductionRun
 from backend.models import Task as TaskModel
 from backend.models import User, UserDevice
@@ -199,12 +203,7 @@ def _get_entry_with_any_feature_or_404(
 
 
 def _ensure_local_entry(entry: UserDevice) -> None:
-    if entry.mode != "local":
-        raise HTTPException(status_code=400, detail="This entry is not a local entry")
-
-    local_device_id = get_device_id()
-    if entry.device_id != local_device_id:
-        raise HTTPException(status_code=409, detail="Local entry device_id does not match current node")
+    ensure_local_codex_entry(entry)
 
 
 def _remote_base_url(entry: UserDevice) -> str:
@@ -428,6 +427,7 @@ def _fetch_remote_json(
             headers=_proxy_headers(entry),
             params=params,
             json=json_body,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
             timeout=timeout,
         )
     except requests.RequestException as exc:
@@ -1788,7 +1788,13 @@ def get_codex_overview_for_entry(
         **({"thread_offset": thread_offset} if thread_offset else {}),
         **({"thread_limit": thread_limit} if thread_limit is not None else {}),
     } or None
-    payload, error_response = _fetch_remote_json(entry, "GET", "/codex/overview", params=params, timeout=20)
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "GET",
+        "/codex/overview",
+        params=params,
+        timeout=CODEX_REMOTE_READ_TIMEOUT_SECONDS,
+    )
     if error_response is not None:
         return _proxy_response(error_response)
     try:
@@ -1816,7 +1822,13 @@ def get_codex_thread_detail_for_entry(
             _raise_codex_http_error(exc)
 
     params = {"root_dir": root_dir} if root_dir else None
-    payload, error_response = _fetch_remote_json(entry, "GET", f"/codex/threads/{thread_id}", params=params, timeout=20)
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "GET",
+        f"/codex/threads/{thread_id}",
+        params=params,
+        timeout=CODEX_REMOTE_READ_TIMEOUT_SECONDS,
+    )
     if error_response is not None:
         return _proxy_response(error_response)
     try:
@@ -1843,7 +1855,13 @@ def get_codex_thread_message_images_for_entry(
             _raise_codex_http_error(exc)
 
     params = {"root_dir": root_dir} if root_dir else None
-    return _proxy_request(entry, "GET", f"/codex/threads/{thread_id}/messages/{message_seq}/images", params=params)
+    return _proxy_request(
+        entry,
+        "GET",
+        f"/codex/threads/{thread_id}/messages/{message_seq}/images",
+        params=params,
+        timeout=CODEX_REMOTE_READ_TIMEOUT_SECONDS,
+    )
 
 
 @router.get("/{entry_id}/codex/workload")
@@ -1861,7 +1879,13 @@ def get_codex_workload_for_entry(
             _raise_codex_http_error(exc)
 
     params = {"root_dir": root_dir} if root_dir else None
-    payload, error_response = _fetch_remote_json(entry, "GET", "/codex/workload", params=params, timeout=20)
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "GET",
+        "/codex/workload",
+        params=params,
+        timeout=CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS,
+    )
     if error_response is not None:
         return _proxy_response(error_response)
     try:
@@ -1906,38 +1930,15 @@ def _get_daily_summary_entries(
 
 
 def _daily_summary_entry_label(entry: UserDevice | dict[str, Any]) -> str:
-    if isinstance(entry, dict):
-        return str(entry.get("name") or entry.get("device_id") or entry.get("entry_id") or "").strip()
-    return str(entry.name or entry.device_id or entry.entry_id).strip()
+    return codex_summary_entry_label(entry)
 
 
 def _snapshot_daily_summary_entries(entries: list[UserDevice]) -> list[dict[str, Any]]:
-    return [
-        {
-            "entry_id": entry.entry_id,
-            "user_id": entry.user_id,
-            "device_id": entry.device_id,
-            "name": _daily_summary_entry_label(entry),
-            "mode": entry.mode,
-            "server_url": entry.server_url,
-            "token": entry.token,
-        }
-        for entry in entries
-    ]
+    return snapshot_codex_summary_entries(entries)
 
 
 def _build_multi_daily_summary_identity(entry_specs: list[dict[str, Any]]) -> tuple[str, dict[str, str]]:
-    entry_ids = [str(entry["entry_id"]) for entry in entry_specs]
-    digest = hashlib.sha1(",".join(entry_ids).encode("utf-8")).hexdigest()[:12]
-    root_dir = f"{len(entry_ids)} 台设备各自默认 .codex"
-    return (
-        f"entries:{','.join(entry_ids)}",
-        {
-            "root_key": f"device-entries:{digest}:default-codex",
-            "root_dir": root_dir,
-            "default_root_dir": "",
-        },
-    )
+    return build_multi_codex_summary_identity(entry_specs)
 
 
 def _collect_remote_entry_daily_summary_source(
@@ -1947,53 +1948,8 @@ def _collect_remote_entry_daily_summary_source(
     user_id: int | None,
     session: Session,
 ) -> dict[str, Any]:
-    remote_entry = SimpleNamespace(**entry_spec)
-    workload_payload, workload_error = _fetch_remote_json(remote_entry, "GET", "/codex/workload", timeout=20)
-    if workload_error is not None:
-        _raise_remote_json_error(workload_error)
-    if not isinstance(workload_payload, dict):
-        raise HTTPException(status_code=502, detail="远端 Codex workload 返回格式不正确")
-
-    try:
-        cache_info = cache_remote_codex_workload(entry_spec["entry_id"], workload_payload, session=session)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
-
-    root_key = str(cache_info["root_key"])
-    _, day_start_at, day_end_at = resolve_codex_daily_summary_epoch_range(target_date_text)
-    thread_ids = sorted(
-        {
-            str(thread_id)
-            for thread_id in session.exec(
-                select(CodexTextCacheTurn.thread_id)
-                .where(
-                    CodexTextCacheTurn.root_key == root_key,
-                    CodexTextCacheTurn.end_at > day_start_at,
-                    CodexTextCacheTurn.start_at < day_end_at,
-                )
-            ).all()
-            if str(thread_id or "").strip()
-        }
-    )
-
-    for thread_id in thread_ids:
-        detail_payload, detail_error = _fetch_remote_json(
-            remote_entry,
-            "GET",
-            f"/codex/threads/{thread_id}",
-            timeout=20,
-        )
-        if detail_error is not None:
-            _raise_remote_json_error(detail_error)
-        if not isinstance(detail_payload, dict):
-            raise HTTPException(status_code=502, detail=f"远端 Codex 会话 {thread_id} 返回格式不正确")
-        try:
-            cache_remote_codex_thread_detail(entry_spec["entry_id"], detail_payload, session=session)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"写入远端 Codex 会话缓存失败：{exc}") from exc
-
-    return collect_cached_codex_daily_summary_source(
-        root_key,
+    return collect_remote_codex_entry_daily_summary_source(
+        entry_spec,
         target_date_text,
         user_id=user_id,
         session=session,
@@ -2008,37 +1964,9 @@ def _collect_multi_daily_summary_source(
     user_id: int | None,
     session: Session,
 ) -> dict[str, Any]:
-    sources: list[dict[str, Any]] = []
-    for entry_spec in entry_specs:
-        if entry_spec["mode"] == "local":
-            local_entry = UserDevice(**entry_spec)
-            _ensure_local_entry(local_entry)
-            source = collect_codex_daily_summary_source(
-                None,
-                target_date_text,
-                user_id=user_id,
-                session=session,
-            )
-        else:
-            source = _collect_remote_entry_daily_summary_source(
-                entry_spec,
-                target_date_text,
-                user_id=user_id,
-                session=session,
-            )
-
-        sources.append(
-            annotate_codex_daily_summary_source(
-                source,
-                source_entry_id=str(entry_spec["entry_id"]),
-                source_device_name=_daily_summary_entry_label(entry_spec),
-            )
-        )
-
-    return merge_codex_daily_summary_sources(
-        sources,
-        root_key=root_identity["root_key"],
-        root_dir=root_identity["root_dir"],
+    return collect_multi_codex_daily_summary_source(
+        entry_specs,
+        root_identity,
         target_date_text=target_date_text,
         user_id=user_id,
         session=session,

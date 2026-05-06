@@ -1904,6 +1904,40 @@ def v38_add_auto_git_commit_run_table(session: Session):
     session.commit()
     print("  Added auto git commit run table.")
 
+
+def v39_add_pdf_page_note_table(session: Session):
+    """
+    Migration V39: Add per-user, per-page PDF notes.
+    """
+    print("Running System Upgrade V39: Add PDF page note table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS pdfpagenote (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                pdf_document_id VARCHAR NOT NULL,
+                user_id INTEGER NOT NULL,
+                page_number INTEGER NOT NULL,
+                content_html TEXT NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_pdfpagenote_document_user_page
+                    UNIQUE (pdf_document_id, user_id, page_number),
+                FOREIGN KEY(pdf_document_id) REFERENCES pdfdocument (id),
+                FOREIGN KEY(user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_pdfpagenote_pdf_document_id ON pdfpagenote (pdf_document_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfpagenote_user_id ON pdfpagenote (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_pdfpagenote_page_number ON pdfpagenote (page_number)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added PDF page note table.")
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1945,6 +1979,7 @@ MIGRATIONS = [
     (36, "Remove legacy attendance questionnaire config", v36_remove_legacy_attendance_questionnaire_config),
     (37, "Add note metadata feedback tables", v37_add_note_metadata_feedback_tables),
     (38, "Add auto git commit run table", v38_add_auto_git_commit_run_table),
+    (39, "Add PDF page note table", v39_add_pdf_page_note_table),
 ]
 
 def get_current_version(session: Session) -> int:

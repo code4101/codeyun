@@ -10,11 +10,11 @@
           <span v-if="pendingCount">等待 {{ pendingCount }} 项</span>
         </div>
       </div>
-      <el-button :icon="Refresh" :loading="loading" @click="loadStatus">刷新</el-button>
+      <el-button :icon="Refresh" :loading="manualRefreshing" @click="loadStatus()">刷新</el-button>
     </header>
 
     <el-table
-      v-loading="loading"
+      v-loading="tableLoading"
       :data="tasks"
       row-key="key"
       table-layout="auto"
@@ -34,9 +34,14 @@
       <el-table-column label="计划" width="170">
         <template #default="{ row }">
           <div class="schedule-cell">
-            <el-tag size="small" :type="row.enabled ? 'success' : 'info'" effect="plain">
-              {{ row.enabled ? '启用' : '停用' }}
-            </el-tag>
+            <el-switch
+              v-model="row.enabled"
+              :loading="togglingKey === row.key"
+              @change="handleToggle(row, $event)"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+            />
             <code>{{ row.cron_expression || '-' }}</code>
           </div>
         </template>
@@ -71,6 +76,10 @@
           </div>
           <div v-else-if="row.key === 'note_metadata_feedback_optimization' && row.latest_run" class="compact-result">
             样本 {{ row.latest_run.sample_count || 0 }}
+          </div>
+          <div v-else-if="row.key === 'codex_diary_yesterday_import' && row.latest_run" class="compact-result">
+            节点 {{ row.latest_run.created_note_count || 0 }}，
+            记录 {{ row.latest_run.source_turn_count || 0 }}
           </div>
           <span v-else class="muted">-</span>
         </template>
@@ -113,6 +122,7 @@ import { Refresh, VideoPlay } from '@element-plus/icons-vue';
 import {
   fetchBackgroundTaskStatus,
   triggerBackgroundTask,
+  toggleBackgroundTask,
   type BackgroundTaskItem,
   type BackgroundTaskStatusResponse,
 } from '@/api/admin';
@@ -120,23 +130,52 @@ import {
 type TagType = 'success' | 'warning' | 'info' | 'danger' | 'primary';
 
 const status = ref<BackgroundTaskStatusResponse | null>(null);
-const loading = ref(false);
+const initialLoading = ref(false);
+const manualRefreshing = ref(false);
 const triggeringKey = ref('');
+const togglingKey = ref('');
 let refreshTimer = 0;
+let silentRefreshRunning = false;
+let latestStatusRequestId = 0;
 
+const tableLoading = computed(() => initialLoading.value && !status.value);
 const tasks = computed(() => status.value?.tasks || []);
 const pendingCount = computed(() => status.value?.queue.pending?.length || 0);
 const recentItems = computed(() => (status.value?.queue.recent || []).slice(0, 8));
 
-const loadStatus = async () => {
-  loading.value = true;
+const loadStatus = async (options: { silent?: boolean } = {}) => {
+  const silent = options.silent === true;
+  if (silent) {
+    if (silentRefreshRunning || initialLoading.value || manualRefreshing.value) return;
+    silentRefreshRunning = true;
+  }
+
+  const requestId = ++latestStatusRequestId;
+  if (!silent) {
+    if (status.value) {
+      manualRefreshing.value = true;
+    } else {
+      initialLoading.value = true;
+    }
+  }
+
   try {
-    status.value = await fetchBackgroundTaskStatus();
+    const nextStatus = await fetchBackgroundTaskStatus();
+    if (requestId === latestStatusRequestId) {
+      status.value = nextStatus;
+    }
   } catch (error) {
     console.error(error);
-    ElMessage.error('后台任务状态读取失败');
+    if (!silent) {
+      ElMessage.error('后台任务状态读取失败');
+    }
   } finally {
-    loading.value = false;
+    if (!silent) {
+      initialLoading.value = false;
+      manualRefreshing.value = false;
+    } else {
+      silentRefreshRunning = false;
+    }
   }
 };
 
@@ -201,11 +240,27 @@ const handleTrigger = async (row: BackgroundTaskItem) => {
   }
 };
 
+const handleToggle = async (row: BackgroundTaskItem, val: string | number | boolean) => {
+  const enabled = Boolean(val);
+  togglingKey.value = row.key;
+  try {
+    await toggleBackgroundTask(row.key, enabled);
+    ElMessage.success(`已${enabled ? '启用' : '停用'}`);
+    await loadStatus();
+  } catch (error: any) {
+    console.error(error);
+    row.enabled = !enabled; // revert
+    ElMessage.error(error?.response?.data?.detail || '操作失败');
+  } finally {
+    togglingKey.value = '';
+  }
+};
+
 onMounted(() => {
   loadStatus();
   refreshTimer = window.setInterval(() => {
     if (!status.value || !status.value.queue.is_idle || status.value.tasks.some((item) => item.active)) {
-      loadStatus();
+      loadStatus({ silent: true });
     }
   }, 3000);
 });

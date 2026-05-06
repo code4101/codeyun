@@ -94,10 +94,13 @@ class UserDeviceCreate(BaseModel):
     server_url: Optional[str] = None
 
 class UserDeviceRead(UserDeviceBase):
-    token: str
     created_at: float
     updated_at: float
     device: Optional[DeviceRead] = None
+
+class UserDeviceTokenRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    token: str
 
 class UserDeviceUpdate(BaseModel):
     model_config = ConfigDict(from_attributes=True)

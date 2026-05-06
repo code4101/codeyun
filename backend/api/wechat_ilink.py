@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from backend.core.auth import get_optional_current_user_from_token
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.wechat_ilink import (
     WechatIlinkError,
@@ -21,6 +22,7 @@ from backend.core.wechat_ilink import (
     stop_codex_bridge,
     wait_login,
 )
+from backend.models import User
 
 
 router = APIRouter(
@@ -178,11 +180,15 @@ def start_wechat_ilink_login(request: WechatIlinkLoginStartRequest) -> dict[str,
 
 
 @router.post("/login/wait", response_model=WechatIlinkLoginWaitResponse)
-def wait_wechat_ilink_login(request: WechatIlinkLoginWaitRequest) -> dict[str, Any]:
+def wait_wechat_ilink_login(
+    request: WechatIlinkLoginWaitRequest,
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+) -> dict[str, Any]:
     try:
         return wait_login(
             session_key=request.session_key,
             timeout_seconds=request.timeout_ms / 1000,
+            owner_user_id=current_user.id if current_user is not None else None,
         )
     except WechatIlinkError as exc:
         raise _map_wechat_error(exc) from exc
@@ -258,6 +264,7 @@ def get_wechat_ilink_media(media_id: str) -> FileResponse:
 def start_wechat_ilink_codex_bridge(
     account_id: str,
     request: WechatIlinkCodexBridgeStartRequest,
+    current_user: User | None = Depends(get_optional_current_user_from_token),
 ) -> dict[str, Any]:
     try:
         return {
@@ -266,6 +273,7 @@ def start_wechat_ilink_codex_bridge(
                 model=request.model,
                 command=request.command,
                 system_prompt=request.system_prompt,
+                owner_user_id=current_user.id if current_user is not None else None,
             )
         }
     except WechatIlinkError as exc:

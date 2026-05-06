@@ -48,7 +48,6 @@ export const taskStore = reactive({
                     server_url: item.server_url ?? devInfo.server_url,
                     mode: item.mode || (devInfo.type === 'LocalDevice' ? 'local' : 'remote'),
                     type: devInfo.type || 'RemoteDevice',
-                    token: item.token,
                     owner_id: item.user_id
                 };
             });
@@ -94,6 +93,16 @@ export const taskStore = reactive({
             return response.data;
         } catch (error) {
             console.error('Failed to update device:', error);
+            throw error;
+        }
+    },
+
+    async fetchDeviceToken(entryId: string): Promise<string> {
+        try {
+            const response = await api.get(`/devices/${entryId}/token`);
+            return response.data.token || '';
+        } catch (error) {
+            console.error('Failed to fetch device token:', error);
             throw error;
         }
     },

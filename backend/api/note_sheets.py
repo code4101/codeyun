@@ -1707,6 +1707,17 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
 def init_attendance_summary_scheduler() -> None:
     if get_settings().is_test:
         return
+        
+    from backend.db import engine
+    from backend.models import AppSetting
+    from sqlmodel import Session
+    with Session(engine) as session:
+        row = session.get(AppSetting, "background_task.attendance_summary_monthly_templates.enabled")
+        enabled = bool(row.value.get("enabled", False)) if row and isinstance(row.value, dict) else False
+        
+    if not enabled:
+        return
+        
     if not attendance_summary_scheduler.running:
         attendance_summary_scheduler.start()
     attendance_summary_scheduler.add_job(
