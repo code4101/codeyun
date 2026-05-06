@@ -1,13 +1,17 @@
 import subprocess
+from datetime import datetime
 
 from backend.core.ai_git_commit import AiGitCommitError
 from backend.core.ai_git_repos import save_user_ai_git_repos
 from backend.core.auto_git_commit import (
+    AUTO_GIT_COMMIT_CRON,
+    AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY,
     create_auto_git_commit_run,
+    maybe_create_due_auto_git_commit_run,
     run_auto_git_commit_worker,
     select_auto_git_commit_candidates,
 )
-from backend.models import AutoGitCommitRun
+from backend.models import AppSetting, AutoGitCommitRun
 
 
 def _run_git(repo_path, *args):
@@ -53,6 +57,28 @@ def _save_auto_commit_repos(session, user_id, items):
     )
 
 
+def _dt(text):
+    return datetime.fromisoformat(text)
+
+
+def _save_auto_git_schedule(session, next_run_at: str):
+    row = AppSetting(
+        key=AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY,
+        value={
+            "cron": AUTO_GIT_COMMIT_CRON,
+            "next_run_at": next_run_at,
+        },
+    )
+    session.add(row)
+    session.commit()
+
+
+def _load_auto_git_schedule(session):
+    row = session.get(AppSetting, AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY)
+    assert row is not None
+    return row.value
+
+
 def test_auto_git_commit_candidates_use_first_three_allowed_saved_repos(session, auth_user, tmp_path):
     _save_auto_commit_repos(
         session,
@@ -69,6 +95,84 @@ def test_auto_git_commit_candidates_use_first_three_allowed_saved_repos(session,
 
     assert [item.name for item in candidates] == ["pyxllib", "xlproject", "codeyun"]
     assert all("dsp-calc" not in item.cwd for item in candidates)
+
+
+def test_auto_git_commit_due_scheduler_waits_until_persisted_next_run(session):
+    _save_auto_git_schedule(session, "2026-05-06T03:20:00+08:00")
+
+    run = maybe_create_due_auto_git_commit_run(
+        session,
+        trigger_reason="scheduled",
+        now=_dt("2026-05-06T03:19:00+08:00"),
+        enqueue=False,
+    )
+
+    assert run is None
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-06T03:20:00+08:00"
+
+
+def test_auto_git_commit_due_scheduler_backfills_expired_persisted_next_run(session):
+    _save_auto_git_schedule(session, "2026-05-06T03:20:00+08:00")
+
+    run = maybe_create_due_auto_git_commit_run(
+        session,
+        trigger_reason="scheduled_catchup",
+        now=_dt("2026-05-06T10:00:00+08:00"),
+        enqueue=False,
+    )
+
+    assert run is not None
+    assert run.trigger_reason == "scheduled_catchup"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+
+
+def test_auto_git_commit_due_scheduler_initializes_from_existing_run_history(session):
+    session.add(
+        AutoGitCommitRun(
+            status="completed",
+            trigger_reason="scheduled",
+            run_date="2026-05-04",
+            created_at=_dt("2026-05-04T03:21:00+08:00").timestamp(),
+            updated_at=_dt("2026-05-04T03:22:00+08:00").timestamp(),
+            finished_at=_dt("2026-05-04T03:22:00+08:00").timestamp(),
+        )
+    )
+    session.commit()
+
+    run = maybe_create_due_auto_git_commit_run(
+        session,
+        trigger_reason="scheduled_catchup",
+        now=_dt("2026-05-06T10:00:00+08:00"),
+        enqueue=False,
+    )
+
+    assert run is not None
+    assert run.trigger_reason == "scheduled_catchup"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+
+
+def test_auto_git_commit_due_scheduler_does_not_duplicate_existing_due_day_run(session):
+    session.add(
+        AutoGitCommitRun(
+            status="completed",
+            trigger_reason="manual_backfill",
+            run_date="2026-05-06",
+            created_at=_dt("2026-05-06T10:00:00+08:00").timestamp(),
+            updated_at=_dt("2026-05-06T10:01:00+08:00").timestamp(),
+            finished_at=_dt("2026-05-06T10:01:00+08:00").timestamp(),
+        )
+    )
+    session.commit()
+
+    run = maybe_create_due_auto_git_commit_run(
+        session,
+        trigger_reason="scheduled_catchup",
+        now=_dt("2026-05-06T10:05:00+08:00"),
+        enqueue=False,
+    )
+
+    assert run is None
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
 
 
 def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session, auth_user, tmp_path, monkeypatch):

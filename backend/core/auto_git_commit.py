@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 import time
 from typing import Any, Callable
@@ -17,13 +17,16 @@ from backend.core.ai_git_repos import get_user_ai_git_commit_config, list_user_a
 from backend.core.background_task_queue import background_task_queue
 from backend.core.git_tools import GitToolError, create_git_commit, inspect_git_repository
 from backend.core.settings import ROOT_DIR, get_settings
-from backend.models import AutoGitCommitRun, User
+from backend.models import AppSetting, AutoGitCommitRun, User
 
 
+AUTO_GIT_COMMIT_TASK_KEY = "auto_git_commit"
 AUTO_GIT_COMMIT_REPO_KEYS = ("pyxllib", "xlproject", "codeyun")
 AUTO_GIT_COMMIT_CRON = "20 3 * * *"
+AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY = f"background_task.{AUTO_GIT_COMMIT_TASK_KEY}.schedule"
 AUTO_GIT_COMMIT_BRANCH_FACTOR = 10
 AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80
+AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
 
 auto_git_commit_scheduler = BackgroundScheduler()
 
@@ -35,6 +38,144 @@ class AutoGitCommitCandidate:
     name: str
     cwd: str
     entry_id: str = ""
+
+
+def _auto_git_cron_trigger() -> CronTrigger:
+    return CronTrigger.from_crontab(AUTO_GIT_COMMIT_CRON)
+
+
+def _coerce_cron_datetime(value: datetime, trigger: CronTrigger | None = None) -> datetime:
+    cron_trigger = trigger or _auto_git_cron_trigger()
+    if value.tzinfo is None:
+        return value.replace(tzinfo=cron_trigger.timezone)
+    return value.astimezone(cron_trigger.timezone)
+
+
+def _auto_git_now(now: datetime | None = None, trigger: CronTrigger | None = None) -> datetime:
+    cron_trigger = trigger or _auto_git_cron_trigger()
+    if now is not None:
+        return _coerce_cron_datetime(now, cron_trigger).replace(microsecond=0)
+    return datetime.now(cron_trigger.timezone).replace(microsecond=0)
+
+
+def _parse_schedule_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return _coerce_cron_datetime(datetime.fromisoformat(text)).replace(microsecond=0)
+    except ValueError:
+        return None
+
+
+def _format_schedule_datetime(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return _coerce_cron_datetime(value).replace(microsecond=0).isoformat()
+
+
+def _next_future_cron_fire(now: datetime | None = None) -> datetime:
+    trigger = _auto_git_cron_trigger()
+    current = _auto_git_now(now, trigger)
+    next_fire = trigger.get_next_fire_time(None, current)
+    if next_fire is None:
+        raise RuntimeError(f"无法计算自动 Git 提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
+    next_fire = _coerce_cron_datetime(next_fire, trigger).replace(microsecond=0)
+    if next_fire <= current:
+        next_fire = trigger.get_next_fire_time(next_fire, current + timedelta(seconds=1))
+    if next_fire is None:
+        raise RuntimeError(f"无法计算自动 Git 提交的下次运行时间：{AUTO_GIT_COMMIT_CRON}")
+    return _coerce_cron_datetime(next_fire, trigger).replace(microsecond=0)
+
+
+def _latest_cron_fire_at_or_before(now: datetime | None = None) -> datetime | None:
+    trigger = _auto_git_cron_trigger()
+    current = _auto_git_now(now, trigger)
+    cursor = current - timedelta(days=AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS)
+    fire = trigger.get_next_fire_time(None, cursor)
+    latest: datetime | None = None
+    guard = 0
+    while fire is not None and guard < 5000:
+        fire = _coerce_cron_datetime(fire, trigger).replace(microsecond=0)
+        if fire > current:
+            break
+        latest = fire
+        fire = trigger.get_next_fire_time(fire, fire + timedelta(seconds=1))
+        guard += 1
+    return latest
+
+
+def _load_auto_git_schedule_next_run_at(session: Session) -> datetime | None:
+    row = session.get(AppSetting, AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY)
+    if row is None or not isinstance(row.value, dict):
+        return None
+    if row.value.get("cron") != AUTO_GIT_COMMIT_CRON:
+        return None
+    return _parse_schedule_datetime(row.value.get("next_run_at"))
+
+
+def _save_auto_git_schedule_next_run_at(session: Session, next_run_at: datetime) -> None:
+    row = session.get(AppSetting, AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY)
+    if row is None:
+        row = AppSetting(key=AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY)
+    row.value = {
+        "cron": AUTO_GIT_COMMIT_CRON,
+        "next_run_at": _format_schedule_datetime(next_run_at),
+    }
+    row.updated_at = time.time()
+    session.add(row)
+    session.commit()
+
+
+def _has_any_auto_git_run(session: Session) -> bool:
+    return bool(session.exec(select(AutoGitCommitRun.id).limit(1)).first())
+
+
+def _has_auto_git_run_started_since(session: Session, since_at: datetime) -> bool:
+    since_ts = _coerce_cron_datetime(since_at).timestamp()
+    return bool(
+        session.exec(
+            select(AutoGitCommitRun.id)
+            .where(AutoGitCommitRun.created_at >= since_ts)
+            .limit(1)
+        ).first()
+    )
+
+
+def _infer_initial_auto_git_next_run_at(session: Session, now: datetime | None = None) -> datetime:
+    latest_due = _latest_cron_fire_at_or_before(now)
+    if (
+        latest_due is not None
+        and _has_any_auto_git_run(session)
+        and not _has_auto_git_run_started_since(session, latest_due)
+    ):
+        return latest_due
+    return _next_future_cron_fire(now)
+
+
+def _ensure_auto_git_schedule_next_run_at(session: Session, now: datetime | None = None) -> datetime:
+    next_run_at = _load_auto_git_schedule_next_run_at(session)
+    if next_run_at is None:
+        next_run_at = _infer_initial_auto_git_next_run_at(session, now)
+        _save_auto_git_schedule_next_run_at(session, next_run_at)
+    return next_run_at
+
+
+def _advance_auto_git_schedule_next_run_at(session: Session, now: datetime | None = None) -> datetime:
+    next_run_at = _next_future_cron_fire(now)
+    _save_auto_git_schedule_next_run_at(session, next_run_at)
+    return next_run_at
+
+
+def mark_auto_git_schedule_consumed_if_due(session: Session, now: datetime | None = None) -> bool:
+    next_run_at = _load_auto_git_schedule_next_run_at(session)
+    if next_run_at is None:
+        return False
+    current = _auto_git_now(now)
+    if next_run_at > current:
+        return False
+    _advance_auto_git_schedule_next_run_at(session, current)
+    return True
 
 
 def _repo_basename(path_text: str) -> str:
@@ -178,9 +319,11 @@ def get_auto_git_commit_status(session: Session) -> dict[str, Any]:
         .where(AutoGitCommitRun.status.in_(["pending", "running"]))
         .order_by(AutoGitCommitRun.created_at.desc())
     ).first()
+    next_run_at = _load_auto_git_schedule_next_run_at(session)
     return {
         "repo_keys": list(AUTO_GIT_COMMIT_REPO_KEYS),
         "cron": AUTO_GIT_COMMIT_CRON,
+        "next_run_at": _format_schedule_datetime(next_run_at),
         "latest_run": serialize_auto_git_commit_run(latest_run),
         "active_run": serialize_auto_git_commit_run(active_run),
         "queue": background_task_queue.snapshot(),
@@ -492,17 +635,56 @@ def run_auto_git_commit_worker(
             session.commit()
 
 
-def maybe_enqueue_auto_git_commit() -> AutoGitCommitRun | None:
+def maybe_create_due_auto_git_commit_run(
+    session: Session,
+    *,
+    trigger_reason: str = "scheduled",
+    now: datetime | None = None,
+    enqueue: bool = True,
+) -> AutoGitCommitRun | None:
+    current = _auto_git_now(now)
+    next_run_at = _ensure_auto_git_schedule_next_run_at(session, current)
+    if next_run_at > current:
+        return None
+
+    if _has_active_auto_git_commit_run(session):
+        _advance_auto_git_schedule_next_run_at(session, current)
+        return None
+
+    run = create_auto_git_commit_run(
+        session,
+        trigger_reason=trigger_reason,
+        enqueue=enqueue,
+    )
+    _advance_auto_git_schedule_next_run_at(session, current)
+    return run
+
+
+def maybe_enqueue_auto_git_commit(*, trigger_reason: str = "scheduled") -> AutoGitCommitRun | None:
     from backend.db import engine
 
     with Session(engine) as session:
-        if _has_active_auto_git_commit_run(session):
-            return None
-        return create_auto_git_commit_run(
+        return maybe_create_due_auto_git_commit_run(
             session,
-            trigger_reason="scheduled",
+            trigger_reason=trigger_reason,
             enqueue=True,
         )
+
+
+def schedule_auto_git_commit_job(*, run_catchup: bool = True) -> None:
+    if not auto_git_commit_scheduler.running:
+        auto_git_commit_scheduler.start()
+    auto_git_commit_scheduler.add_job(
+        maybe_enqueue_auto_git_commit,
+        _auto_git_cron_trigger(),
+        id=AUTO_GIT_COMMIT_TASK_KEY,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=None,
+    )
+    if run_catchup:
+        maybe_enqueue_auto_git_commit(trigger_reason="scheduled_catchup")
 
 
 def init_auto_git_commit_scheduler() -> None:
@@ -518,16 +700,8 @@ def init_auto_git_commit_scheduler() -> None:
         
     if not enabled:
         return
-        
-    if not auto_git_commit_scheduler.running:
-        auto_git_commit_scheduler.start()
-    auto_git_commit_scheduler.add_job(
-        maybe_enqueue_auto_git_commit,
-        CronTrigger.from_crontab(AUTO_GIT_COMMIT_CRON),
-        id="auto_git_commit",
-        replace_existing=True,
-        max_instances=1,
-    )
+
+    schedule_auto_git_commit_job(run_catchup=True)
     print(f"Auto git commit scheduled: {AUTO_GIT_COMMIT_CRON}")
 
 
