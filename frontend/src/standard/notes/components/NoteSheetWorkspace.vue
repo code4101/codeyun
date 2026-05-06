@@ -58,8 +58,6 @@ const DEFAULT_DATE_DISPLAY_FORMAT = 'yyyy/m/d'
 const DEFAULT_PERCENT_DISPLAY_FORMAT = '0%'
 const EXCEL_DATE_UNIX_EPOCH_SERIAL = 25569
 const MS_PER_DAY = 24 * 60 * 60 * 1000
-const COLUMN_MARKER_ROW_HEIGHT = 28
-const ROW_HEADER_MARKER_WIDTH = 50
 const MIN_COLUMN_WIDTH = 88
 const MAX_COLUMN_WIDTH = 360
 const HEADER_WIDTH_PADDING = 34
@@ -132,6 +130,7 @@ type ColumnMarkerStyle = 'letters' | 'numbers'
 type ColumnMarkerMode = 'none' | 'letters' | 'numbers'
 type RowMarkerNumbering = 'page' | 'global'
 type RowMarkerMode = 'none' | 'page_numbers' | 'global_numbers'
+type ColumnNoteDisplayMode = 'hover' | 'row'
 type SortDirection = 'asc' | 'desc'
 type ColumnWidthMode = 'adaptive' | 'fixed'
 type ColumnValueType = 'text' | 'multi_text' | 'number' | 'percent' | 'date' | 'phone'
@@ -213,6 +212,15 @@ type CellMouseSelectionController = {
   cell?: boolean
 }
 
+type SelectedSheetHeaderCell = {
+  column: number
+  headerLevel: number
+}
+
+type LinkDialogTarget =
+  | { kind: 'cell'; row: number; column: number }
+  | { kind: 'column_header'; column: number }
+
 type FormulaReferenceEditTarget =
   | { kind: 'formula-bar' }
   | { kind: 'inline'; editor: SheetActiveEditor }
@@ -270,6 +278,7 @@ type SheetColumnConfig = {
   header_background_color?: string
   header_text_color?: string
   note?: string
+  header_link?: SheetCellLink
 }
 
 type ColumnSettingsDraft = {
@@ -297,6 +306,7 @@ type SheetViewSettings = {
   row_marker_numbering?: RowMarkerNumbering
   show_column_markers?: boolean
   column_marker_style?: ColumnMarkerStyle
+  column_note_display?: ColumnNoteDisplayMode
   pagination?: {
     enabled?: boolean
     page_size?: number
@@ -454,7 +464,6 @@ const cellHashColorStyleCache = new Map<string, HashColorStyle | null>()
 const hotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const sheetFrameRef = ref<HTMLElement | null>(null)
 const contextMenuFallbackButtonRef = ref<HTMLButtonElement | null>(null)
-const columnMarkerContentRef = ref<HTMLElement | null>(null)
 const columnNotePopoverRef = ref<HTMLElement | null>(null)
 const columnHeaders = ref<string[]>([...DEFAULT_SHEET_COLUMNS])
 const headerGroups = ref<SheetHeaderGroupCell[][]>([])
@@ -470,8 +479,6 @@ const rows = ref<SheetRow[]>([createEmptyRow(DEFAULT_SHEET_COLUMNS.length)])
 const sheetTitle = ref('未命名表格')
 const sheetVersion = ref<number>(0)
 const sheetViewportHeight = ref<number | 'auto'>('auto')
-const sheetScrollLeft = ref(0)
-const columnMarkerResizingIndex = ref<number | null>(null)
 const sheetSettingsDialogVisible = ref(false)
 const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings())
 const sheetSettingsRowMarkerMode = computed<RowMarkerMode>({
@@ -513,7 +520,7 @@ const columnSettingsDraft = ref<ColumnSettingsDraft>(createDefaultColumnSettings
 const columnSettingsTouched = ref<ColumnSettingsTouchedState>(createColumnSettingsTouchedState())
 const columnSettingsMixed = ref<ColumnSettingsMixedState>(createColumnSettingsMixedState())
 const cellLinkDialogVisible = ref(false)
-const cellLinkDialogCell = ref<{ row: number; column: number } | null>(null)
+const cellLinkDialogTarget = ref<LinkDialogTarget | null>(null)
 const cellLinkDraftUrl = ref('')
 const cellStyleDialogVisible = ref(false)
 const cellStyleDialogCells = ref<SelectedDataCell[]>([])
@@ -533,6 +540,7 @@ const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
 const touchContextMenuFallbackEnabled = ref(false)
 const hasContextMenuFallbackSelection = ref(false)
 const selectedColumnMarkerBounds = ref<{ start: number; end: number } | null>(null)
+const selectedSheetHeaderCell = ref<SelectedSheetHeaderCell | null>(null)
 const columnNotePopover = ref<{
   visible: boolean
   x: number
@@ -779,6 +787,20 @@ const hiddenColumnsForSettings = computed(() => (
 ))
 
 const normalizedHeaderGroups = computed(() => normalizeHeaderGroups(headerGroups.value, columnHeaders.value.length))
+const columnNoteDisplayMode = computed(() => sheetViewSettings.value.column_note_display)
+const hasColumnNotes = computed(() => columnHeaders.value.some((_, index) => getColumnNote(index).trim() !== ''))
+const shouldShowColumnNoteRow = computed(() => columnNoteDisplayMode.value === 'row' && hasColumnNotes.value)
+const columnHeaderLevel = computed(() => normalizedHeaderGroups.value.length)
+const columnNoteHeaderLevel = computed(() => (shouldShowColumnNoteRow.value ? columnHeaderLevel.value + 1 : -1))
+const sheetHeaderRowCount = computed(() => (
+  normalizedHeaderGroups.value.length
+  + 1
+  + (shouldShowColumnNoteRow.value ? 1 : 0)
+))
+
+const sheetColumnHeaders = computed<false | ((index: number) => string)>(() => (
+  sheetViewSettings.value.show_column_markers ? getColumnMarkerLabel : false
+))
 
 const rowHeightLayoutState = computed(() => {
   let singleLineHeight = TABLE_LINE_HEIGHT
@@ -808,14 +830,56 @@ const rowHeightLayoutState = computed(() => {
   }
 })
 
-const nestedHeaders = computed(() => [
-  ...normalizedHeaderGroups.value.map((row) => row.map((cell) => (
-    cell.colspan && cell.colspan > 1
-      ? { label: cell.label, colspan: cell.colspan }
-      : cell.label
-  ))),
-  [...columnHeaders.value],
-])
+function expandHeaderGroupLabels(row: SheetHeaderGroupCell[], columnCount: number) {
+  const labels: string[] = []
+  for (const cell of row) {
+    const colspan = Math.max(1, cell.colspan ?? 1)
+    labels.push(cell.label)
+    for (let index = 1; index < colspan && labels.length < columnCount; index += 1) {
+      labels.push('')
+    }
+    if (labels.length >= columnCount) {
+      break
+    }
+  }
+  while (labels.length < columnCount) {
+    labels.push('')
+  }
+  return labels
+}
+
+const sheetGridRows = computed<SheetRow[]>(() => {
+  const headers = columnHeaders.value
+  const headerRows = normalizedHeaderGroups.value.map((row) => expandHeaderGroupLabels(row, headers.length))
+  headerRows.push([...headers])
+  if (shouldShowColumnNoteRow.value) {
+    headerRows.push(headers.map((_, index) => getColumnNote(index)))
+  }
+  return [
+    ...headerRows,
+    ...rows.value.map((row) => normalizeRow(row, headers)),
+  ]
+})
+
+const sheetMergeCells = computed(() => {
+  const cells: Array<{ row: number; col: number; rowspan: number; colspan: number }> = []
+  normalizedHeaderGroups.value.forEach((row, rowIndex) => {
+    let columnIndex = 0
+    row.forEach((cell) => {
+      const colspan = Math.max(1, cell.colspan ?? 1)
+      if (colspan > 1) {
+        cells.push({
+          row: rowIndex,
+          col: columnIndex,
+          rowspan: 1,
+          colspan,
+        })
+      }
+      columnIndex += colspan
+    })
+  })
+  return cells
+})
 
 const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => {
   const rows: (SheetHeaderCellStyle | null)[][] = []
@@ -843,7 +907,6 @@ const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => 
   return rows
 })
 
-const showColumnMarkerRow = computed(() => shouldRenderSheetContent.value && sheetViewSettings.value.show_column_markers)
 const sheetRowHeaders = computed<false | ((index: number) => string)>(() => (
   sheetViewSettings.value.show_row_numbers ? getSheetRowHeaderLabel : false
 ))
@@ -864,37 +927,8 @@ const sheetGridHeight = computed(() => {
   if (sheetViewportHeight.value === 'auto') {
     return 'auto'
   }
-  const reservedHeight = showColumnMarkerRow.value ? COLUMN_MARKER_ROW_HEIGHT : 0
-  return Math.max(sheetViewportHeight.value - reservedHeight, 80)
+  return Math.max(sheetViewportHeight.value, 80)
 })
-
-const visibleColumnMarkerCells = computed(() => (
-  columnHeaders.value
-    .map((header, index) => ({
-      key: `${index}:${header}`,
-      index,
-      label: getColumnMarkerLabel(index),
-      width: columnWidths.value[index] ?? getAdaptiveColumnWidth(header),
-      hidden: columnConfigs.value[header]?.hidden === true,
-    }))
-    .filter((item) => !item.hidden)
-))
-
-const columnMarkerContentStyle = computed(() => ({
-  width: `${visibleColumnMarkerCells.value.reduce((sum, item) => sum + item.width, 0)}px`,
-  transform: `translate3d(${-sheetScrollLeft.value}px, 0, 0)`,
-}))
-
-const columnMarkerRowStyle = computed(() => ({
-  height: `${COLUMN_MARKER_ROW_HEIGHT}px`,
-  minHeight: `${COLUMN_MARKER_ROW_HEIGHT}px`,
-  flexBasis: `${COLUMN_MARKER_ROW_HEIGHT}px`,
-}))
-
-const columnMarkerCornerStyle = computed(() => ({
-  width: `${ROW_HEADER_MARKER_WIDTH}px`,
-  flexBasis: `${ROW_HEADER_MARKER_WIDTH}px`,
-}))
 
 let suppressPersistence = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -903,18 +937,9 @@ let lastQueuedSerial = 0
 let saveInFlight = false
 let sheetLayoutObserver: ResizeObserver | null = null
 let editingHeaderInputEl: HTMLInputElement | null = null
-let gridScrollElement: HTMLElement | null = null
-let columnMarkerScrollFrame: number | null = null
 let formulaEngineImportPromise: Promise<FormulaEngineClass | null> | null = null
 let sheetFormulaPluginRegistered = false
 let columnMarkerSelectionAnchor: number | null = null
-let columnMarkerResizeState: {
-  columnIndex: number
-  startX: number
-  startWidth: number
-  previousUserSelect: string
-  previousCursor: string
-} | null = null
 
 const contextMenu = {
   items: {
@@ -1105,11 +1130,11 @@ const contextMenu = {
     },
     hsep_link: {
       name: '---------',
-      hidden: () => !hasSingleDataCellSelection(),
+      hidden: () => !hasSingleLinkTargetSelection(),
     },
     set_cell_link: {
-      name: '设置超链接',
-      hidden: () => !hasSingleDataCellSelection(),
+      name: () => (getSelectedColumnHeaderCellIndex() != null ? '设置字段超链接' : '设置超链接'),
+      hidden: () => !hasSingleLinkTargetSelection(),
       disabled: () => !canEditConfig.value,
       callback: () => {
         openSelectedCellLinkDialog()
@@ -1123,7 +1148,7 @@ const contextMenu = {
       },
     },
     remove_cell_link: {
-      name: '移除超链接',
+      name: () => (getSelectedColumnHeaderCellIndex() != null ? '移除字段超链接' : '移除超链接'),
       hidden: () => !hasSelectedCellLink(),
       disabled: () => !canEditConfig.value,
       callback: () => {
@@ -1280,6 +1305,7 @@ function resetWorkspaceState() {
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
   sheetContentReady.value = false
   closeColumnNotePopover()
@@ -1294,14 +1320,13 @@ function resetWorkspaceState() {
   rows.value = [createEmptyRow(DEFAULT_SHEET_COLUMNS.length)]
   sheetTitle.value = '未命名表格'
   sheetVersion.value = 0
-  sheetScrollLeft.value = 0
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings()
   columnSettingsDialogVisible.value = false
   columnSettingsColumnIndex.value = null
   columnSettingsSelectionBounds.value = null
   cellLinkDialogVisible.value = false
-  cellLinkDialogCell.value = null
+  cellLinkDialogTarget.value = null
   cellLinkDraftUrl.value = ''
   cellStyleDialogVisible.value = false
   cellStyleDialogCells.value = []
@@ -1571,6 +1596,19 @@ function normalizeCellMetaMap(source: unknown, columnCount: number): SheetCellMe
   return normalized
 }
 
+function splitColumnNoteLeadingLink(source: unknown) {
+  const note = normalizeColumnNote(source)
+  const match = note.match(/^链接[:：]\s*(https?:\/\/[^\s]+)\s*(?:\r?\n)?/i)
+  if (!match) {
+    return { note, link: null as SheetCellLink | null }
+  }
+
+  return {
+    note: note.slice(match[0].length).trim(),
+    link: normalizeCellLink({ url: match[1] }),
+  }
+}
+
 function getColumnHeaderStyle(config: SheetColumnConfig | undefined): SheetHeaderCellStyle | null {
   if (!config?.header_background_color && !config?.header_text_color) {
     return null
@@ -1795,6 +1833,7 @@ function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
     row_marker_numbering: 'global',
     show_column_markers: true,
     column_marker_style: 'letters',
+    column_note_display: 'hover',
     pagination: {
       enabled: false,
       page_size: DEFAULT_PAGE_SIZE,
@@ -1808,6 +1847,10 @@ function normalizeColumnMarkerStyle(value: unknown): ColumnMarkerStyle {
 
 function normalizeRowMarkerNumbering(value: unknown): RowMarkerNumbering {
   return value === 'page' ? 'page' : 'global'
+}
+
+function normalizeColumnNoteDisplayMode(value: unknown): ColumnNoteDisplayMode {
+  return value === 'row' ? 'row' : 'hover'
 }
 
 function normalizeSheetPageSize(value: unknown) {
@@ -1830,6 +1873,7 @@ function normalizeSheetViewSettings(source: unknown): Required<SheetViewSettings
     row_marker_numbering: normalizeRowMarkerNumbering(record.row_marker_numbering),
     show_column_markers: record.show_column_markers !== false,
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
+    column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
     pagination: (() => {
       const pagination = record.pagination
       if (!pagination || typeof pagination !== 'object') {
@@ -1874,7 +1918,9 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
     const restoreIndex = normalizeNonNegativeInt(configRecord.restore_index, -1)
     const headerBackgroundColor = normalizeCssColor(configRecord.header_background_color)
     const headerTextColor = normalizeCssColor(configRecord.header_text_color)
-    const note = normalizeColumnNote(configRecord.note)
+    const noteWithLink = splitColumnNoteLeadingLink(configRecord.note)
+    const note = noteWithLink.note
+    const headerLink = normalizeCellLink(configRecord.header_link) ?? noteWithLink.link
 
     if (
       valueType !== 'text'
@@ -1892,6 +1938,7 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
       || headerBackgroundColor
       || headerTextColor
       || note
+      || headerLink
     ) {
       normalized[header] = {}
       if (valueType !== 'text') {
@@ -1941,6 +1988,9 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
       }
       if (note) {
         normalized[header].note = note
+      }
+      if (headerLink) {
+        normalized[header].header_link = headerLink
       }
     }
   }
@@ -3407,6 +3457,19 @@ function normalizeAutofillRange(range: SheetAutofillRange) {
   }
 }
 
+function shiftAutofillRangeRows(range: SheetAutofillRange, rowOffset: number): SheetAutofillRange {
+  return {
+    getTopStartCorner: () => {
+      const corner = range.getTopStartCorner()
+      return { ...corner, row: corner.row + rowOffset }
+    },
+    getBottomEndCorner: () => {
+      const corner = range.getBottomEndCorner()
+      return { ...corner, row: corner.row + rowOffset }
+    },
+  }
+}
+
 function getAutofillSourceOffset(
   targetOffset: number,
   targetLength: number,
@@ -3925,7 +3988,6 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
       })
       hot.render()
     }
-    scheduleColumnMarkerScrollSync()
     changed = true
   }
 
@@ -4023,16 +4085,27 @@ function getWrappedLineCount(text: string, availableWidth: number, font = TABLE_
 }
 
 function resolveRowHeight(rowIndex: number) {
+  if (isSheetHeaderGridRow(rowIndex)) {
+    if (rowIndex < normalizedHeaderGroups.value.length) {
+      return 32
+    }
+    if (rowIndex === columnHeaderLevel.value) {
+      return 36
+    }
+    return 92
+  }
+
+  const dataRowIndex = getDataRowIndex(rowIndex)
   const layoutState = rowHeightLayoutState.value
   if (!layoutState.hasWrappedColumns) {
     return layoutState.singleLineHeight
   }
 
-  const row = rows.value[rowIndex] ?? []
+  const row = rows.value[dataRowIndex] ?? []
   let maxContentHeight = layoutState.singleLineHeight - TABLE_CELL_VERTICAL_PADDING * 2 - TABLE_CELL_BORDER_WIDTH
 
   for (const columnLayout of layoutState.wrappedColumns) {
-    const cellText = getCellTextForLayout(rowIndex, columnLayout.index, row[columnLayout.index] ?? '')
+    const cellText = getCellTextForLayout(dataRowIndex, columnLayout.index, row[columnLayout.index] ?? '')
     if (!cellText) {
       maxContentHeight = Math.max(maxContentHeight, columnLayout.lineHeight)
       continue
@@ -4070,9 +4143,6 @@ async function updateSheetViewportHeight() {
   sheetViewportHeight.value = availableHeight
 
   getHotInstance()?.render()
-  void nextTick(() => {
-    bindGridScrollSync()
-  })
 }
 
 function handleWindowResize() {
@@ -4080,65 +4150,8 @@ function handleWindowResize() {
   void updateSheetViewportHeight()
 }
 
-function syncColumnMarkerScroll() {
-  const nextElement = gridScrollElement
-    ?? sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
-  const nextScrollLeft = nextElement?.scrollLeft ?? 0
-  sheetScrollLeft.value = nextScrollLeft
-  if (columnMarkerContentRef.value) {
-    columnMarkerContentRef.value.style.transform = `translate3d(${-nextScrollLeft}px, 0, 0)`
-  }
-}
-
-function handleGridScroll() {
-  syncColumnMarkerScroll()
-}
-
-function scheduleColumnMarkerScrollSync() {
-  if (columnMarkerScrollFrame != null) {
-    return
-  }
-  columnMarkerScrollFrame = window.requestAnimationFrame(() => {
-    columnMarkerScrollFrame = null
-    syncColumnMarkerScroll()
-  })
-}
-
-function unbindGridScrollSync() {
-  if (columnMarkerScrollFrame != null) {
-    window.cancelAnimationFrame(columnMarkerScrollFrame)
-    columnMarkerScrollFrame = null
-  }
-  gridScrollElement?.removeEventListener('scroll', handleGridScroll)
-  gridScrollElement = null
-  sheetScrollLeft.value = 0
-  if (columnMarkerContentRef.value) {
-    columnMarkerContentRef.value.style.transform = 'translate3d(0, 0, 0)'
-  }
-}
-
-function bindGridScrollSync() {
-  const nextElement = sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
-  if (nextElement === gridScrollElement) {
-    syncColumnMarkerScroll()
-    return
-  }
-
-  unbindGridScrollSync()
-  gridScrollElement = nextElement
-  if (gridScrollElement) {
-    gridScrollElement.addEventListener('scroll', handleGridScroll, { passive: true })
-    syncColumnMarkerScroll()
-  }
-}
-
-function handleAfterScrollHorizontally() {
-  syncColumnMarkerScroll()
-}
-
 function captureSheetScrollPosition() {
-  const gridElement = gridScrollElement
-    ?? sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
+  const gridElement = sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
   const pageElement = getMainScrollContainer()
   return {
     gridLeft: gridElement?.scrollLeft ?? 0,
@@ -4150,9 +4163,7 @@ function captureSheetScrollPosition() {
 
 function restoreSheetScrollPosition(position: ReturnType<typeof captureSheetScrollPosition>) {
   void nextTick(() => {
-    bindGridScrollSync()
-    const gridElement = gridScrollElement
-      ?? sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
+    const gridElement = sheetFrameRef.value?.querySelector('.ht_master .wtHolder') as HTMLElement | null
     const pageElement = getMainScrollContainer()
     if (gridElement) {
       gridElement.scrollLeft = position.gridLeft
@@ -4162,7 +4173,6 @@ function restoreSheetScrollPosition(position: ReturnType<typeof captureSheetScro
       pageElement.scrollLeft = position.pageLeft
       pageElement.scrollTop = position.pageTop
     }
-    syncColumnMarkerScroll()
   })
 }
 
@@ -4192,7 +4202,9 @@ function syncRowsFromGrid() {
   }
 
   const sourceRows = hot.getSourceData() as unknown[]
-  rows.value = sourceRows.map((row) => normalizeRow(row, columnHeaders.value))
+  rows.value = sourceRows
+    .slice(sheetHeaderRowCount.value)
+    .map((row) => normalizeRow(row, columnHeaders.value))
   return rows.value
 }
 
@@ -4203,60 +4215,18 @@ function refreshGridStructure() {
   }
 
   hot.updateSettings({
-    colHeaders: [...columnHeaders.value],
-    nestedHeaders: nestedHeaders.value,
+    data: sheetGridRows.value,
+    colHeaders: sheetColumnHeaders.value,
     colWidths: [...columnWidths.value],
     rowHeaders: sheetRowHeaders.value,
+    fixedRowsTop: sheetHeaderRowCount.value,
+    mergeCells: sheetMergeCells.value,
     hiddenColumns: {
       columns: [...hiddenColumnIndexes.value],
       indicators: false,
     },
   })
   hot.render()
-  void nextTick(() => {
-    bindGridScrollSync()
-  })
-}
-
-function cleanupColumnMarkerResize(refreshRowHeights = true) {
-  if (columnMarkerResizeState) {
-    const { previousUserSelect, previousCursor } = columnMarkerResizeState
-    document.body.style.userSelect = previousUserSelect
-    document.body.style.cursor = previousCursor
-  }
-  columnMarkerResizeState = null
-  columnMarkerResizingIndex.value = null
-  window.removeEventListener('mousemove', handleColumnMarkerResizeMouseMove)
-  window.removeEventListener('mouseup', handleColumnMarkerResizeMouseUp)
-  window.removeEventListener('blur', handleColumnMarkerResizeWindowBlur)
-  if (refreshRowHeights) {
-    void refreshComputedRowHeights()
-  }
-}
-
-function handleColumnMarkerResizeMouseMove(event: MouseEvent) {
-  const state = columnMarkerResizeState
-  if (!state) {
-    return
-  }
-  event.preventDefault()
-  setColumnWidth(state.columnIndex, state.startWidth + event.clientX - state.startX)
-}
-
-function handleColumnMarkerResizeMouseUp(event: MouseEvent) {
-  const state = columnMarkerResizeState
-  if (state) {
-    setColumnWidth(state.columnIndex, state.startWidth + event.clientX - state.startX, {
-      commitFixedWidth: true,
-      refreshRowHeights: true,
-      save: true,
-    })
-  }
-  cleanupColumnMarkerResize(false)
-}
-
-function handleColumnMarkerResizeWindowBlur() {
-  cleanupColumnMarkerResize()
 }
 
 function selectColumnMarker(columnIndex: number, extendSelection = false) {
@@ -4270,6 +4240,7 @@ function selectColumnMarker(columnIndex: number, extendSelection = false) {
   if (formulaBarFocused.value) {
     commitFormulaBarDraft()
   }
+  clearSheetHeaderSelection()
   clearFormulaBarSelection()
   const anchor = extendSelection
     ? (columnMarkerSelectionAnchor ?? selectedColumnMarkerBounds.value?.start ?? columnIndex)
@@ -4288,71 +4259,6 @@ function selectColumnMarker(columnIndex: number, extendSelection = false) {
   return selected
 }
 
-function handleColumnMarkerMouseDown(event: MouseEvent, columnIndex: number) {
-  if (event.button !== 0) {
-    return
-  }
-
-  event.preventDefault()
-  event.stopPropagation()
-  selectColumnMarker(columnIndex, event.shiftKey)
-}
-
-function handleColumnMarkerContextMenu(event: MouseEvent, columnIndex: number) {
-  event.preventDefault()
-  event.stopPropagation()
-
-  if (!isColumnMarkerSelected(columnIndex) && !selectColumnMarker(columnIndex, event.shiftKey)) {
-    return
-  }
-
-  getContextMenuPlugin()?.open?.(event)
-}
-
-function startColumnMarkerResize(event: MouseEvent, columnIndex: number) {
-  if (!ensureCanEditConfig()) {
-    return
-  }
-
-  if (columnIndex < 0 || columnIndex >= columnHeaders.value.length) {
-    return
-  }
-
-  event.preventDefault()
-  event.stopPropagation()
-  cleanupColumnMarkerResize(false)
-  clearEditingColumnState()
-  closeColumnNotePopover()
-
-  columnMarkerResizeState = {
-    columnIndex,
-    startX: event.clientX,
-    startWidth: normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex)),
-    previousUserSelect: document.body.style.userSelect,
-    previousCursor: document.body.style.cursor,
-  }
-  columnMarkerResizingIndex.value = columnIndex
-  document.body.style.userSelect = 'none'
-  document.body.style.cursor = 'col-resize'
-  window.addEventListener('mousemove', handleColumnMarkerResizeMouseMove)
-  window.addEventListener('mouseup', handleColumnMarkerResizeMouseUp)
-  window.addEventListener('blur', handleColumnMarkerResizeWindowBlur)
-}
-
-function autoFitColumnFromMarker(event: MouseEvent, columnIndex: number) {
-  event.preventDefault()
-  event.stopPropagation()
-  if (!ensureCanEditConfig()) {
-    return
-  }
-  cleanupColumnMarkerResize(false)
-  setColumnWidth(columnIndex, getAutoColumnWidth(columnIndex), {
-    commitAdaptiveWidth: true,
-    refreshRowHeights: true,
-    save: true,
-  })
-}
-
 function normalizeMovedColumnIndexes(movedColumns: number[]) {
   return Array.from(new Set(
     movedColumns
@@ -4363,6 +4269,7 @@ function normalizeMovedColumnIndexes(movedColumns: number[]) {
 function normalizeMovedRowIndexes(movedRows: number[]) {
   return Array.from(new Set(
     movedRows
+      .map((index) => getDataRowIndex(index))
       .filter((index) => Number.isInteger(index) && index >= 0 && index < rows.value.length),
   )).sort((left, right) => left - right)
 }
@@ -4596,7 +4503,7 @@ function remapFormulaReferencesInRows(
   }
 
   rows.value = nextRows
-  getHotInstance()?.updateSettings({ data: nextRows })
+  getHotInstance()?.updateSettings({ data: sheetGridRows.value })
   return nextRows
 }
 
@@ -4684,10 +4591,11 @@ function handleBeforeColumnMove(
   const hot = getHotInstance()
   if (hot) {
     hot.updateSettings({
-      data: nextRows,
-      colHeaders: [...nextHeaders],
-      nestedHeaders: nestedHeaders.value,
+      data: sheetGridRows.value,
+      colHeaders: sheetColumnHeaders.value,
       colWidths: [...nextWidths],
+      fixedRowsTop: sheetHeaderRowCount.value,
+      mergeCells: sheetMergeCells.value,
     })
     hot.render()
     void nextTick(() => {
@@ -4712,7 +4620,9 @@ function handleBeforeRowMove(
   }
 
   const effectiveMovedRows = getEffectiveMovedRowsForDrag(movedRows)
-  const effectiveFinalIndex = countMoveFinalIndex(effectiveMovedRows, dropIndex, finalIndex)
+  const dataFinalIndex = Math.max(0, getDataRowIndex(finalIndex))
+  const dataDropIndex = dropIndex == null ? undefined : Math.max(0, getDataRowIndex(dropIndex))
+  const effectiveFinalIndex = countMoveFinalIndex(effectiveMovedRows, dataDropIndex, dataFinalIndex)
   const effectiveMovePossible = (
     movePossible
     && effectiveMovedRows.length > 0
@@ -4739,11 +4649,11 @@ function handleBeforeRowMove(
   const hot = getHotInstance()
   if (hot) {
     hot.updateSettings({
-      data: nextRows,
+      data: sheetGridRows.value,
     })
     hot.render()
     void nextTick(() => {
-      hot.selectRows(movedRangeStart, movedRangeEnd)
+      hot.selectRows(getGridRowIndex(movedRangeStart), getGridRowIndex(movedRangeEnd))
     })
   }
   void refreshComputedRowHeights()
@@ -4837,17 +4747,57 @@ function cancelInlineRenameColumn() {
   refreshGridStructure()
 }
 
+function isManualColumnResizerMouseTarget(event: MouseEvent) {
+  const target = event.target
+  return target instanceof Element && !!target.closest('.manualColumnResizer')
+}
+
 function handleBeforeCellMouseDown(
   event: MouseEvent,
   coords: { row: number; col: number },
   _td: HTMLTableCellElement,
   controller: CellMouseSelectionController,
 ) {
-  if (coords.row < 0 || coords.col < 0 || event.button !== 0) {
+  if (coords.row < 0) {
     return
   }
 
-  if (beginFormulaReferenceRange(coords.row, coords.col)) {
+  if (isSheetHeaderGridRow(coords.row) && coords.col >= 0) {
+    if (isManualColumnResizerMouseTarget(event)) {
+      return
+    }
+
+    const headerLevel = getSheetHeaderGridLevel(coords.row)
+    controller.row = false
+    controller.column = false
+    controller.cell = false
+    event.preventDefault()
+    event.stopImmediatePropagation()
+
+    if (headerLevel === columnHeaderLevel.value && (event.ctrlKey || event.metaKey)) {
+      const headerLink = getColumnHeaderLink(coords.col)
+      if (headerLink) {
+        openCellLink(headerLink)
+        return
+      }
+    }
+    selectSheetHeaderCell(coords.col, headerLevel)
+    if (event.button === 0 && event.detail >= 2 && headerLevel === columnHeaderLevel.value) {
+      startInlineRenameColumn(coords.col)
+    }
+    return
+  }
+
+  if (coords.col < 0 || event.button !== 0) {
+    return
+  }
+
+  clearSheetHeaderSelection()
+  const dataRow = getDataRowIndex(coords.row)
+  if (dataRow < 0) {
+    return
+  }
+  if (beginFormulaReferenceRange(dataRow, coords.col)) {
     stopFormulaReferenceCellSelection(event, controller)
   }
 }
@@ -4861,13 +4811,17 @@ function handleBeforeCellMouseOver(
   if (!formulaReferenceRangeState || coords.row < 0 || coords.col < 0) {
     return
   }
+  const dataRow = getDataRowIndex(coords.row)
+  if (dataRow < 0) {
+    return
+  }
 
   if (event.buttons !== 1) {
     finishFormulaReferenceRange({ restoreFocus: true })
     return
   }
 
-  updateFormulaReferenceRange(coords.row, coords.col)
+  updateFormulaReferenceRange(dataRow, coords.col)
   stopFormulaReferenceCellSelection(event, controller)
 }
 
@@ -4877,20 +4831,24 @@ function handleBeforeCellMouseUp(event: MouseEvent, coords: { row: number; col: 
   }
 
   if (coords.row >= 0 && coords.col >= 0) {
-    updateFormulaReferenceRange(coords.row, coords.col)
+    const dataRow = getDataRowIndex(coords.row)
+    if (dataRow >= 0) {
+      updateFormulaReferenceRange(dataRow, coords.col)
+    }
   }
   finishFormulaReferenceRange({ restoreFocus: true })
   event.preventDefault()
 }
 
 function handleHeaderMouseDown(event: MouseEvent, coords: { row: number; col: number }) {
-  if (coords.row >= 0 && coords.col >= 0 && event.button === 0 && isFormulaReferencePickMode()) {
+  const dataRow = coords.row >= 0 ? getDataRowIndex(coords.row) : -1
+  if (dataRow >= 0 && coords.col >= 0 && event.button === 0 && isFormulaReferencePickMode()) {
     markFormulaReferencePointerDown()
     return
   }
 
-  if (coords.row >= 0 && coords.col >= 0 && (event.ctrlKey || event.metaKey)) {
-    const link = getCellLinkAt(getDocumentRowIndex(coords.row), coords.col)
+  if (dataRow >= 0 && coords.col >= 0 && (event.ctrlKey || event.metaKey)) {
+    const link = getCellLinkAt(getDocumentRowIndex(dataRow), coords.col)
     if (link) {
       event.preventDefault()
       event.stopPropagation()
@@ -4899,7 +4857,7 @@ function handleHeaderMouseDown(event: MouseEvent, coords: { row: number; col: nu
     return
   }
 
-  if (coords.col < 0 || coords.row !== -1 || event.detail < 2) {
+  if (coords.col < 0 || getSheetHeaderGridLevel(coords.row) !== columnHeaderLevel.value || event.detail < 2) {
     return
   }
 
@@ -4931,30 +4889,39 @@ function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, he
   }
 }
 
-function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement, headerLevel: number) {
-  applyHeaderCellStyle(column, th, headerLevel)
-  const editableHeaderLevel = nestedHeaders.value.length - 1
-
-  if (
-    column < 0
-    || !sheetFrameRef.value
-    || th.classList.contains('sheet-col-marker')
-    || headerLevel !== editableHeaderLevel
-  ) {
-    return
+function resetRenderedCellState(TD: HTMLTableCellElement) {
+  TD.classList.remove(
+    'sheet-cell-has-link',
+    'sheet-cell-formula',
+    'sheet-cell-formula-error',
+    'sheet-cell-formula-reference-preview',
+    'sheet-grid-header-cell',
+    'sheet-grid-group-header-cell',
+    'sheet-grid-field-header-cell',
+    'sheet-grid-note-header-cell',
+    'sheet-grid-header-cell-selected',
+  )
+  TD.style.backgroundColor = ''
+  TD.style.color = ''
+  TD.style.fontSize = ''
+  TD.style.fontWeight = ''
+  TD.style.lineHeight = ''
+  TD.style.textAlign = ''
+  if (TD.dataset.hyperlinkUrl) {
+    delete TD.dataset.hyperlinkUrl
   }
-
-  const headerContent = th.querySelector('.colHeader') as HTMLElement | null
-  if (!headerContent) {
-    return
+  if (TD.title) {
+    TD.removeAttribute('title')
   }
+}
 
+function renderFieldHeaderCell(TD: HTMLTableCellElement, column: number) {
   const headerTitle = columnHeaders.value[column] ?? createFallbackHeader(column)
   if (editingColumnIndex.value !== column) {
-    if (editingHeaderInputEl && editingHeaderInputEl.closest('th') === th) {
+    if (editingHeaderInputEl && editingHeaderInputEl.closest('td') === TD) {
       editingHeaderInputEl = null
     }
-    headerContent.textContent = ''
+    TD.textContent = ''
     const label = document.createElement('span')
     label.className = 'sheet-header-label'
 
@@ -4962,17 +4929,31 @@ function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement,
     titleEl.className = 'sheet-header-title'
     titleEl.textContent = headerTitle
     const note = getColumnNote(column)
-    if (note) {
-      titleEl.title = note
-      titleEl.setAttribute('aria-label', note)
+    const headerLink = getColumnHeaderLink(column)
+    if (headerLink) {
+      titleEl.classList.add('has-link')
+      titleEl.dataset.hyperlinkUrl = headerLink.url
+    }
+    if (note && columnNoteDisplayMode.value === 'hover') {
+      const title = headerLink ? `${note}\n${headerLink.url}` : note
+      titleEl.setAttribute('aria-label', title)
+      label.addEventListener('mouseenter', () => {
+        openColumnNotePopover(column, label.getBoundingClientRect())
+      })
+      label.addEventListener('mouseleave', () => {
+        closeColumnNotePopover()
+      })
+    } else if (headerLink) {
+      titleEl.title = headerLink.url
+      titleEl.setAttribute('aria-label', headerLink.url)
+      TD.title = headerLink.url
     }
     label.appendChild(titleEl)
-
-    headerContent.appendChild(label)
+    TD.appendChild(label)
     return
   }
 
-  const currentInput = headerContent.querySelector('.sheet-header-rename-input') as HTMLInputElement | null
+  const currentInput = TD.querySelector('.sheet-header-rename-input') as HTMLInputElement | null
   if (currentInput) {
     currentInput.value = editingColumnTitle.value
     currentInput.style.width = getEditingColumnInputWidth(editingColumnTitle.value)
@@ -4980,7 +4961,7 @@ function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement,
     return
   }
 
-  headerContent.textContent = ''
+  TD.textContent = ''
   const input = document.createElement('input')
   input.className = 'sheet-header-rename-input'
   input.value = editingColumnTitle.value
@@ -5007,9 +4988,51 @@ function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement,
   input.addEventListener('blur', () => {
     commitInlineRenameColumn()
   })
-  headerContent.appendChild(input)
+  TD.appendChild(input)
   editingHeaderInputEl = input
   focusEditingColumnInput()
+}
+
+function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column: number, value: string) {
+  resetRenderedCellState(TD)
+  TD.classList.add('sheet-grid-header-cell')
+  TD.classList.toggle('sheet-grid-header-cell-selected', isSheetHeaderCellSelected(column, row))
+  TD.dataset.sheetHeaderLevel = String(row)
+  TD.dataset.sheetHeaderColumn = String(column)
+
+  if (row < normalizedHeaderGroups.value.length) {
+    TD.classList.add('sheet-grid-group-header-cell')
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    setRenderedCellText(TD, value)
+    return
+  }
+
+  if (row === columnHeaderLevel.value) {
+    TD.classList.add('sheet-grid-field-header-cell')
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    renderFieldHeaderCell(TD, column)
+    return
+  }
+
+  TD.classList.add('sheet-grid-note-header-cell')
+  const note = getColumnNote(column)
+  setRenderedCellText(TD, note)
+  if (note) {
+    TD.title = note
+  }
+}
+
+function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement, headerLevel: number) {
+  th.classList.remove(
+    'sheet-col-marker',
+    'sheet-column-marker-header-selected',
+  )
+  th.classList.add('sheet-col-marker')
+  th.dataset.sheetHeaderColumn = String(column)
+  th.classList.toggle('sheet-column-marker-header-selected', isColumnMarkerSelected(column))
+  if (column < 0) {
+    return
+  }
 }
 
 function getColumnMarkerLabel(index: number) {
@@ -5026,6 +5049,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
     && normalizedLeft.row_marker_numbering === normalizedRight.row_marker_numbering
     && normalizedLeft.show_column_markers === normalizedRight.show_column_markers
     && normalizedLeft.column_marker_style === normalizedRight.column_marker_style
+    && normalizedLeft.column_note_display === normalizedRight.column_note_display
     && normalizedLeft.pagination.enabled === normalizedRight.pagination.enabled
     && normalizedLeft.pagination.page_size === normalizedRight.pagination.page_size
   )
@@ -5110,6 +5134,7 @@ function loadSheetDocument(document: SheetDocument) {
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
   closeColumnNotePopover()
   columnSettingsDialogVisible.value = false
@@ -5144,11 +5169,12 @@ function loadSheetDocument(document: SheetDocument) {
   const hot = getHotInstance()
   if (hot) {
     hot.updateSettings({
-      data: normalizedRows,
-      colHeaders: [...normalizedHeaders],
-      nestedHeaders: nestedHeaders.value,
+      data: sheetGridRows.value,
+      colHeaders: sheetColumnHeaders.value,
       colWidths: [...columnWidths.value],
       rowHeaders: sheetRowHeaders.value,
+      fixedRowsTop: sheetHeaderRowCount.value,
+      mergeCells: sheetMergeCells.value,
       hiddenColumns: {
         columns: [...hiddenColumnIndexes.value],
         indicators: false,
@@ -5157,9 +5183,6 @@ function loadSheetDocument(document: SheetDocument) {
       rowHeights: resolveRowHeight,
     })
     hot.render()
-    void nextTick(() => {
-      bindGridScrollSync()
-    })
     void refreshComputedRowHeights()
   }
 }
@@ -5372,7 +5395,7 @@ function sortColumnLocally(columnIndex: number, direction: SortDirection) {
 
   const hot = getHotInstance()
   if (hot) {
-    hot.updateSettings({ data: rows.value })
+    hot.updateSettings({ data: sheetGridRows.value })
     hot.render()
   }
   syncRowsFromGrid()
@@ -5956,17 +5979,21 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
     sheetInternalClipboard = null
     return
   }
+  if (range.startRow < sheetHeaderRowCount.value) {
+    sheetInternalClipboard = null
+    return
+  }
 
   const rawData = data.map((row, rowOffset) => (
     row.map((_, columnOffset) => {
-      const sourceRow = range.startRow + rowOffset
+      const sourceRow = getDataRowIndex(range.startRow + rowOffset)
       const sourceColumn = range.startColumn + columnOffset
       return getRawCellValue(sourceRow, sourceColumn)
     })
   ))
   const displayData = rawData.map((row, rowOffset) => (
     row.map((rawValue, columnOffset) => {
-      const sourceRow = range.startRow + rowOffset
+      const sourceRow = getDataRowIndex(range.startRow + rowOffset)
       const sourceColumn = range.startColumn + columnOffset
       return getCellDisplayText(sourceRow, sourceColumn, rawValue)
     })
@@ -5974,7 +6001,7 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
 
   sheetInternalClipboard = {
     sheetId: props.sheetId,
-    sourceStartRow: range.startRow,
+    sourceStartRow: getDataRowIndex(range.startRow),
     sourceStartColumn: range.startColumn,
     rawData,
     displayData,
@@ -6010,7 +6037,7 @@ function getInternalClipboardForPaste(data: unknown[][]) {
 
 function getGridRowCountForExpansionGuard() {
   const hot = getHotInstance()
-  return Math.max(rows.value.length, hot?.countSourceRows() ?? 0)
+  return Math.max(rows.value.length, (hot?.countSourceRows() ?? sheetHeaderRowCount.value) - sheetHeaderRowCount.value)
 }
 
 function isPagedRowExpansionAllowed(requiredEndRow: number) {
@@ -6065,7 +6092,10 @@ function getChangesRequiredEndRow(changes: unknown[]) {
 
     const rowIndex = Number(change[0])
     if (Number.isInteger(rowIndex)) {
-      endRow = Math.max(endRow, rowIndex)
+      const dataRowIndex = getDataRowIndex(rowIndex)
+      if (dataRowIndex >= 0) {
+        endRow = Math.max(endRow, dataRowIndex)
+      }
     }
   }
   return endRow
@@ -6106,15 +6136,25 @@ function handleBeforePaste(data: unknown[][], coords: unknown[]) {
   if (!targetRange) {
     return
   }
+  if (targetRange.startRow < sheetHeaderRowCount.value) {
+    warnReadOnlyAction()
+    return false
+  }
+  const targetDataStartRow = getDataRowIndex(targetRange.startRow)
+  const targetDataRange = {
+    ...targetRange,
+    startRow: targetDataStartRow,
+    endRow: getDataRowIndex(targetRange.endRow),
+  }
   if (!isColumnRangeEditable(targetRange.startColumn, getPasteRequiredEndColumn(data, targetRange))) {
     warnReadOnlyColumnAction()
     return false
   }
-  if (!canEditData.value && getPasteRequiredEndRow(data, targetRange) >= getGridRowCountForExpansionGuard()) {
+  if (!canEditData.value && getPasteRequiredEndRow(data, targetDataRange) >= getGridRowCountForExpansionGuard()) {
     warnReadOnlyAction()
     return false
   }
-  if (!ensurePagedRowExpansionAllowed(getPasteRequiredEndRow(data, targetRange))) {
+  if (!ensurePagedRowExpansionAllowed(getPasteRequiredEndRow(data, targetDataRange))) {
     return false
   }
   if (!clipboard) {
@@ -6128,7 +6168,7 @@ function handleBeforePaste(data: unknown[][], coords: unknown[]) {
     row.forEach((rawValue, columnOffset) => {
       const sourceRow = clipboard.sourceStartRow + rowOffset
       const sourceColumn = clipboard.sourceStartColumn + columnOffset
-      const targetRow = targetRange.startRow + rowOffset
+      const targetRow = targetDataStartRow + rowOffset
       const targetColumn = targetRange.startColumn + columnOffset
       data[rowOffset][columnOffset] = isFormulaExpression(rawValue)
         ? shiftFormulaCellReferences(rawValue, targetRow - sourceRow, targetColumn - sourceColumn)
@@ -6189,6 +6229,10 @@ function handleBeforeChange(changes: unknown, source?: string) {
     return
   }
 
+  if (changes.some((change) => Array.isArray(change) && getDataRowIndex(Number(change[0])) < 0)) {
+    return false
+  }
+
   if (!areChangedColumnsEditable(changes)) {
     warnReadOnlyColumnAction()
     return false
@@ -6236,18 +6280,28 @@ function handleBeforeAutofill(
     return false
   }
   const targetBounds = normalizeAutofillRange(targetRange)
+  const sourceBounds = normalizeAutofillRange(sourceRange)
+  if (sourceBounds.startRow < sheetHeaderRowCount.value || targetBounds.startRow < sheetHeaderRowCount.value) {
+    warnReadOnlyAction()
+    return false
+  }
+  const targetDataEndRow = getDataRowIndex(targetBounds.endRow)
   if (!isColumnRangeEditable(targetBounds.startColumn, targetBounds.endColumn)) {
     warnReadOnlyColumnAction()
     return false
   }
-  if (!canEditData.value && targetBounds.endRow >= getGridRowCountForExpansionGuard()) {
+  if (!canEditData.value && targetDataEndRow >= getGridRowCountForExpansionGuard()) {
     warnReadOnlyAction()
     return false
   }
-  if (!ensurePagedRowExpansionAllowed(targetBounds.endRow, PAGED_AUTO_ROW_INSERT_MESSAGE)) {
+  if (!ensurePagedRowExpansionAllowed(targetDataEndRow, PAGED_AUTO_ROW_INSERT_MESSAGE)) {
     return false
   }
-  return buildFormulaAutofillData(sourceRange, targetRange, direction) ?? selectionData
+  return buildFormulaAutofillData(
+    shiftAutofillRangeRows(sourceRange, -sheetHeaderRowCount.value),
+    shiftAutofillRangeRows(targetRange, -sheetHeaderRowCount.value),
+    direction,
+  ) ?? selectionData
 }
 
 function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
@@ -6259,7 +6313,7 @@ function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
     return
   }
 
-  const startRow = normalizeNonNegativeInt(index, getGridRowCountForExpansionGuard())
+  const startRow = normalizeNonNegativeInt(getDataRowIndex(index), getGridRowCountForExpansionGuard())
   const rowAmount = Math.max(1, normalizePositivePageNumber(amount, 1))
   const requiredEndRow = Math.max(getGridRowCountForExpansionGuard(), startRow) + rowAmount - 1
   if (!ensurePagedRowExpansionAllowed(requiredEndRow, PAGED_AUTO_ROW_INSERT_MESSAGE)) {
@@ -6268,17 +6322,19 @@ function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
 }
 
 function handleAfterCreateRow(index = 0, amount = 1) {
-  shiftCellMetaRows(getDocumentRowIndex(index), amount)
+  const dataIndex = Math.max(0, getDataRowIndex(index))
+  shiftCellMetaRows(getDocumentRowIndex(dataIndex), amount)
   syncRowsFromGrid()
-  remapFormulaReferencesInRows((rowIndex) => (rowIndex >= index ? rowIndex + amount : rowIndex))
+  remapFormulaReferencesInRows((rowIndex) => (rowIndex >= dataIndex ? rowIndex + amount : rowIndex))
 }
 
 function handleAfterRemoveRow(index = 0, amount = 1) {
-  removeCellMetaRows(getDocumentRowIndex(index), amount)
+  const dataIndex = Math.max(0, getDataRowIndex(index))
+  removeCellMetaRows(getDocumentRowIndex(dataIndex), amount)
   syncRowsFromGrid()
-  const endIndex = index + amount
+  const endIndex = dataIndex + amount
   remapFormulaReferencesInRows((rowIndex) => {
-    if (rowIndex >= index && rowIndex < endIndex) {
+    if (rowIndex >= dataIndex && rowIndex < endIndex) {
       return null
     }
     return rowIndex >= endIndex ? rowIndex - amount : rowIndex
@@ -6359,13 +6415,15 @@ function getSelectionRowBounds() {
 
   const startRow = Math.min(selection[0], selection[2])
   const endRow = Math.max(selection[0], selection[2])
-  if (endRow < 0) {
+  const startDataRow = Math.max(getDataRowIndex(startRow), 0)
+  const endDataRow = getDataRowIndex(endRow)
+  if (endDataRow < 0) {
     return null
   }
 
   return {
-    start: Math.max(startRow, 0),
-    end: endRow,
+    start: startDataRow,
+    end: endDataRow,
   }
 }
 
@@ -6402,6 +6460,43 @@ function clearColumnMarkerSelection() {
   columnMarkerSelectionAnchor = null
 }
 
+function clearSheetHeaderSelection() {
+  if (!selectedSheetHeaderCell.value) {
+    return
+  }
+  selectedSheetHeaderCell.value = null
+  getHotInstance()?.render()
+}
+
+function isSheetHeaderCellSelected(column: number, headerLevel: number) {
+  return (
+    selectedSheetHeaderCell.value?.column === column
+    && selectedSheetHeaderCell.value.headerLevel === headerLevel
+  )
+}
+
+function selectSheetHeaderCell(column: number, headerLevel: number) {
+  const hot = getHotInstance()
+  if (!hot || column < 0 || column >= columnHeaders.value.length || headerLevel < 0) {
+    return false
+  }
+
+  closeColumnNotePopover()
+  if (formulaBarFocused.value) {
+    commitFormulaBarDraft()
+  }
+  clearFormulaBarSelection()
+  clearColumnMarkerSelection()
+  hasContextMenuFallbackSelection.value = false
+  if (hot.getSelectedLast()) {
+    hot.deselectCell()
+  }
+  selectedSheetHeaderCell.value = { column, headerLevel }
+  hot.render()
+  hot.listen()
+  return true
+}
+
 function syncColumnMarkerSelection() {
   if (!isSelectedByColumnHeader() || isSelectedByCorner()) {
     if (selectedColumnMarkerBounds.value || columnMarkerSelectionAnchor != null) {
@@ -6435,7 +6530,30 @@ function getDocumentRowIndex(rowIndex: number) {
   return (effectivePaginationEnabled.value ? pageRowOffset.value : 0) + rowIndex
 }
 
-function getSheetRowHeaderLabel(rowIndex: number) {
+function getDataRowIndex(gridRowIndex: number) {
+  return gridRowIndex - sheetHeaderRowCount.value
+}
+
+function getGridRowIndex(dataRowIndex: number) {
+  return dataRowIndex + sheetHeaderRowCount.value
+}
+
+function isSheetHeaderGridRow(rowIndex: number) {
+  return rowIndex >= 0 && rowIndex < sheetHeaderRowCount.value
+}
+
+function getSheetHeaderGridLevel(rowIndex: number) {
+  if (rowIndex < 0 || rowIndex >= sheetHeaderRowCount.value) {
+    return -1
+  }
+  return rowIndex
+}
+
+function getSheetRowHeaderLabel(gridRowIndex: number) {
+  const rowIndex = getDataRowIndex(gridRowIndex)
+  if (rowIndex < 0) {
+    return ''
+  }
   const numbering = sheetViewSettings.value.row_marker_numbering
   const offset = effectivePaginationEnabled.value && numbering === 'global' ? pageRowOffset.value : 0
   return String(offset + rowIndex + 1)
@@ -6686,7 +6804,8 @@ function getFormulaReferenceEditTarget(target: FormulaReferenceInsertionTarget):
 
 function getFormulaReferenceTargetCell(target: FormulaReferenceEditTarget) {
   if (target.kind === 'inline' && typeof target.editor.row === 'number' && typeof target.editor.col === 'number') {
-    return { row: target.editor.row, column: target.editor.col }
+    const dataRow = getDataRowIndex(target.editor.row)
+    return dataRow >= 0 ? { row: dataRow, column: target.editor.col } : null
   }
 
   const cell = formulaBarCell.value
@@ -6974,7 +7093,7 @@ function paintFormulaReferencePreview() {
 
   for (let rowIndex = bounds.startRow; rowIndex <= bounds.endRow; rowIndex += 1) {
     for (let columnIndex = bounds.startColumn; columnIndex <= bounds.endColumn; columnIndex += 1) {
-      hot.getCell(rowIndex, columnIndex)?.classList.add('sheet-cell-formula-reference-preview')
+      hot.getCell(getGridRowIndex(rowIndex), columnIndex)?.classList.add('sheet-cell-formula-reference-preview')
     }
   }
 }
@@ -7113,10 +7232,14 @@ function syncFormulaBarFromInlineEditor(editor: SheetActiveEditor, value: string
   if (typeof editor.row !== 'number' || typeof editor.col !== 'number') {
     return
   }
+  const dataRow = getDataRowIndex(editor.row)
+  if (dataRow < 0) {
+    return
+  }
   formulaBarCell.value = {
-    row: editor.row,
+    row: dataRow,
     column: editor.col,
-    documentRow: getDocumentRowIndex(editor.row),
+    documentRow: getDocumentRowIndex(dataRow),
   }
   formulaBarDraft.value = value
 }
@@ -7126,7 +7249,11 @@ function syncInlineEditorToCellEditText(editor: SheetActiveEditor) {
     return
   }
 
-  const rawValue = getRawCellValue(editor.row, editor.col)
+  const dataRow = getDataRowIndex(editor.row)
+  if (dataRow < 0) {
+    return
+  }
+  const rawValue = getRawCellValue(dataRow, editor.col)
   const editText = getCellEditText(editor.col, rawValue)
   if (editText === rawValue || getActiveEditorDraft(editor) !== rawValue) {
     return
@@ -7142,7 +7269,7 @@ function syncInlineEditorToCellEditText(editor: SheetActiveEditor) {
 
 function isEditorForFormulaBarCell(editor: SheetActiveEditor) {
   const cell = formulaBarCell.value
-  return !!cell && editor.row === cell.row && editor.col === cell.column
+  return !!cell && getDataRowIndex(editor.row) === cell.row && editor.col === cell.column
 }
 
 function syncFormulaBarFromActiveInlineEditor() {
@@ -7285,7 +7412,7 @@ function commitFormulaBarDraft() {
 
   const hot = getHotInstance()
   if (hot) {
-    hot.setDataAtCell(cell.row, cell.column, nextValue, 'formula-bar')
+    hot.setDataAtCell(getGridRowIndex(cell.row), cell.column, nextValue, 'formula-bar')
   } else {
     const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
     if (!nextRows[cell.row]) {
@@ -7370,15 +7497,23 @@ function resetFormulaBarDraftAndExit() {
 
 function handleAfterSelection(row: number, column: number) {
   refreshContextMenuFallbackSelectionState()
+  if (isSheetHeaderGridRow(row) && column >= 0) {
+    clearFormulaBarSelection()
+    selectSheetHeaderCell(column, getSheetHeaderGridLevel(row))
+    syncColumnMarkerSelection()
+    return
+  }
+  clearSheetHeaderSelection()
   if (formulaReferenceRangeState) {
     syncColumnMarkerSelection()
     return
   }
 
-  if (formulaReferencePointerDown && row >= 0 && column >= 0 && isFormulaReferencePickMode()) {
+  const dataRow = row >= 0 ? getDataRowIndex(row) : -1
+  if (formulaReferencePointerDown && dataRow >= 0 && column >= 0 && isFormulaReferencePickMode()) {
     clearFormulaReferencePointerDownReset()
     formulaReferencePointerDown = false
-    insertFormulaReferenceIntoDraft(row, column)
+    insertFormulaReferenceIntoDraft(dataRow, column)
     syncColumnMarkerSelection()
     return
   }
@@ -7386,13 +7521,14 @@ function handleAfterSelection(row: number, column: number) {
   clearFormulaReferencePointerDownReset()
   formulaReferencePointerDown = false
   clearFormulaReferencePreviewRange()
-  setFormulaBarCell(row, column)
+  setFormulaBarCell(dataRow, column)
   syncColumnMarkerSelection()
 }
 
 function handleAfterDeselect() {
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
 }
 
@@ -7404,10 +7540,11 @@ function getSingleSelectedDataCell() {
 
   const startRow = Math.min(selection[0], selection[2])
   const endRow = Math.max(selection[0], selection[2])
+  const dataRow = getDataRowIndex(startRow)
   const startColumn = Math.min(selection[1], selection[3])
   const endColumn = Math.max(selection[1], selection[3])
   if (
-    startRow < 0
+    dataRow < 0
     || startColumn < 0
     || startRow !== endRow
     || startColumn !== endColumn
@@ -7416,9 +7553,9 @@ function getSingleSelectedDataCell() {
   }
 
   return {
-    row: startRow,
+    row: dataRow,
     column: startColumn,
-    documentRow: getDocumentRowIndex(startRow),
+    documentRow: getDocumentRowIndex(dataRow),
   }
 }
 
@@ -7436,8 +7573,8 @@ function getSelectedDataCells(): SelectedDataCell[] {
       continue
     }
 
-    const startRow = Math.max(Math.min(selection[0], selection[2]), 0)
-    const endRow = Math.min(Math.max(selection[0], selection[2]), rows.value.length - 1)
+    const startRow = Math.max(getDataRowIndex(Math.min(selection[0], selection[2])), 0)
+    const endRow = Math.min(getDataRowIndex(Math.max(selection[0], selection[2])), rows.value.length - 1)
     const startColumn = Math.max(Math.min(selection[1], selection[3]), 0)
     const endColumn = Math.min(Math.max(selection[1], selection[3]), columnHeaders.value.length - 1)
     if (startRow > endRow || startColumn > endColumn) {
@@ -7480,11 +7617,6 @@ function getCellStyleAt(documentRow: number, columnIndex: number) {
   return getCellMetaAt(documentRow, columnIndex)?.style ?? null
 }
 
-function hasSelectedCellLink() {
-  const cell = getSingleSelectedDataCell()
-  return !!cell && !!getCellLinkAt(cell.documentRow, cell.column)
-}
-
 function hasSelectedCellStyle() {
   return getSelectedDataCells().some((cell) => !!getCellStyleAt(cell.documentRow, cell.column))
 }
@@ -7517,6 +7649,25 @@ function setCellLink(documentRow: number, columnIndex: number, url: string) {
     }
     return nextEntry
   })
+}
+
+function setColumnHeaderLink(columnIndex: number, url: string) {
+  const header = columnHeaders.value[columnIndex]
+  if (!header) {
+    return
+  }
+
+  const normalizedLink = normalizeCellLink({ url })
+  const nextConfigs = { ...columnConfigs.value }
+  const nextConfig: SheetColumnConfig = { ...(nextConfigs[header] ?? {}) }
+  if (normalizedLink) {
+    nextConfig.header_link = normalizedLink
+  } else {
+    delete nextConfig.header_link
+  }
+  nextConfigs[header] = nextConfig
+  columnConfigs.value = normalizeColumnConfigs(nextConfigs, columnHeaders.value)
+  refreshGridStructure()
 }
 
 function setCellStyle(documentRow: number, columnIndex: number, styleSource: unknown) {
@@ -7720,7 +7871,42 @@ function openCellLink(link: SheetCellLink | null) {
   window.open(link.url, '_blank', 'noopener,noreferrer')
 }
 
+function getSelectedColumnHeaderCellIndex() {
+  const headerCell = selectedSheetHeaderCell.value
+  if (!headerCell || headerCell.headerLevel !== columnHeaderLevel.value) {
+    return null
+  }
+  if (headerCell.column < 0 || headerCell.column >= columnHeaders.value.length) {
+    return null
+  }
+  return headerCell.column
+}
+
+function hasSingleLinkTargetSelection() {
+  return hasSingleDataCellSelection() || getSelectedColumnHeaderCellIndex() != null
+}
+
+function getSelectedLinkTargetLink() {
+  const headerColumn = getSelectedColumnHeaderCellIndex()
+  if (headerColumn != null) {
+    return getColumnHeaderLink(headerColumn)
+  }
+
+  const cell = getSingleSelectedDataCell()
+  return cell ? getCellLinkAt(cell.documentRow, cell.column) : null
+}
+
+function hasSelectedCellLink() {
+  return !!getSelectedLinkTargetLink()
+}
+
 function openSelectedCellLink() {
+  const headerColumn = getSelectedColumnHeaderCellIndex()
+  if (headerColumn != null) {
+    openCellLink(getColumnHeaderLink(headerColumn))
+    return
+  }
+
   const cell = getSingleSelectedDataCell()
   if (!cell) {
     return
@@ -7732,6 +7918,12 @@ function removeSelectedCellLink() {
   if (!ensureCanEditConfig()) {
     return
   }
+  const headerColumn = getSelectedColumnHeaderCellIndex()
+  if (headerColumn != null) {
+    setColumnHeaderLink(headerColumn, '')
+    return
+  }
+
   const cell = getSingleSelectedDataCell()
   if (!cell) {
     return
@@ -7743,12 +7935,24 @@ function openSelectedCellLinkDialog() {
   if (!ensureCanEditConfig()) {
     return
   }
+  const headerColumn = getSelectedColumnHeaderCellIndex()
+  if (headerColumn != null) {
+    cellLinkDialogTarget.value = {
+      kind: 'column_header',
+      column: headerColumn,
+    }
+    cellLinkDraftUrl.value = getColumnHeaderLink(headerColumn)?.url ?? ''
+    cellLinkDialogVisible.value = true
+    return
+  }
+
   const cell = getSingleSelectedDataCell()
   if (!cell) {
     return
   }
 
-  cellLinkDialogCell.value = {
+  cellLinkDialogTarget.value = {
+    kind: 'cell',
     row: cell.documentRow,
     column: cell.column,
   }
@@ -7758,7 +7962,7 @@ function openSelectedCellLinkDialog() {
 
 function closeCellLinkDialog() {
   cellLinkDialogVisible.value = false
-  cellLinkDialogCell.value = null
+  cellLinkDialogTarget.value = null
   cellLinkDraftUrl.value = ''
 }
 
@@ -7767,8 +7971,8 @@ function applyCellLinkDialog() {
     closeCellLinkDialog()
     return
   }
-  const cell = cellLinkDialogCell.value
-  if (!cell) {
+  const target = cellLinkDialogTarget.value
+  if (!target) {
     closeCellLinkDialog()
     return
   }
@@ -7779,7 +7983,11 @@ function applyCellLinkDialog() {
     return
   }
 
-  setCellLink(cell.row, cell.column, normalizedUrl)
+  if (target.kind === 'cell') {
+    setCellLink(target.row, target.column, normalizedUrl)
+  } else {
+    setColumnHeaderLink(target.column, normalizedUrl)
+  }
   closeCellLinkDialog()
 }
 
@@ -7847,7 +8055,7 @@ function normalizeColumnValuesForValueType(columnIndex: number, valueType: Colum
   }
 
   rows.value = nextRows
-  getHotInstance()?.updateSettings({ data: nextRows })
+  getHotInstance()?.updateSettings({ data: sheetGridRows.value })
   return true
 }
 
@@ -8016,6 +8224,9 @@ function pickPreservedColumnConfig(currentRawConfig: SheetColumnConfig | undefin
   if (currentRawConfig.header_text_color) {
     preservedConfig.header_text_color = currentRawConfig.header_text_color
   }
+  if (currentRawConfig.header_link) {
+    preservedConfig.header_link = currentRawConfig.header_link
+  }
   return preservedConfig
 }
 
@@ -8086,6 +8297,14 @@ function getColumnNote(columnIndex: number) {
     return ''
   }
   return normalizeColumnNote(columnConfigs.value[header]?.note)
+}
+
+function getColumnHeaderLink(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex]
+  if (!header) {
+    return null
+  }
+  return normalizeCellLink(columnConfigs.value[header]?.header_link)
 }
 
 function getColumnSettingsTitle() {
@@ -8333,11 +8552,11 @@ function insertRowFromSelection(side: 'above' | 'below') {
   }
 
   const bounds = getSelectionRowBounds()
-  const targetIndex = bounds
+  const targetDataIndex = bounds
     ? (side === 'above' ? bounds.start : bounds.end + 1)
-    : hot.countSourceRows()
+    : rows.value.length
 
-  hot.alter('insert_row_above', targetIndex, 1)
+  hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
 }
 
 function removeSelectedColumns() {
@@ -8474,15 +8693,24 @@ function removeSelectedRows() {
     return
   }
 
-  hot.alter('remove_row', bounds.start, bounds.end - bounds.start + 1)
+  hot.alter('remove_row', getGridRowIndex(bounds.start), bounds.end - bounds.start + 1)
 }
 
-function resolveCellMeta(_row: number, col: number) {
+function resolveCellMeta(row: number, col: number) {
   if (col < 0) {
     return {
       wordWrap: true,
       textEllipsis: false,
       readOnly: true,
+    }
+  }
+
+  if (isSheetHeaderGridRow(row)) {
+    return {
+      wordWrap: true,
+      textEllipsis: false,
+      readOnly: true,
+      className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
     }
   }
 
@@ -8623,7 +8851,14 @@ function handleAfterRenderer(
   _prop: string | number,
   value: string,
 ) {
-  const documentRow = row >= 0 ? getDocumentRowIndex(row) : -1
+  if (row >= 0 && column >= 0 && isSheetHeaderGridRow(row)) {
+    renderSheetHeaderGridCell(TD, row, column, normalizeCellValue(value))
+    return
+  }
+
+  const dataRow = row >= 0 ? getDataRowIndex(row) : -1
+  resetRenderedCellState(TD)
+  const documentRow = dataRow >= 0 ? getDocumentRowIndex(dataRow) : -1
   const rawText = normalizeCellValue(value)
   const header = column >= 0 ? columnHeaders.value[column] ?? '' : ''
   const columnConfig = header ? columnConfigs.value[header] : undefined
@@ -8631,8 +8866,8 @@ function handleAfterRenderer(
     ? getCellLinkAt(documentRow, column)
     : null
   const linkDisplayText = rawText.trim() ? '' : (link?.title || link?.url || '')
-  const formulaCell = row >= 0 && column >= 0 && isFormulaExpression(rawText)
-    ? getFormulaCellModel(row, column)
+  const formulaCell = dataRow >= 0 && column >= 0 && isFormulaExpression(rawText)
+    ? getFormulaCellModel(dataRow, column)
     : null
   const formulaText = formulaCell?.text ?? null
   let renderedText = rawText
@@ -8640,7 +8875,7 @@ function handleAfterRenderer(
     renderedText = formulaCell.text
   } else if (linkDisplayText) {
     renderedText = linkDisplayText
-  } else if (row >= 0 && column >= 0) {
+  } else if (dataRow >= 0 && column >= 0) {
     renderedText = formatCellDisplayValueCached(rawText, columnConfig)
   }
 
@@ -8650,7 +8885,7 @@ function handleAfterRenderer(
 
   const hasFormula = formulaText != null
   const hasFormulaError = hasFormula && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#'))
-  const isFormulaReferencePreview = row >= 0 && column >= 0 && isCellInFormulaReferencePreview(row, column)
+  const isFormulaReferencePreview = dataRow >= 0 && column >= 0 && isCellInFormulaReferencePreview(dataRow, column)
 
   const cellStyle = documentRow >= 0 && column >= 0
     ? getCellStyleAt(documentRow, column)
@@ -8662,7 +8897,7 @@ function handleAfterRenderer(
   let textAlignStyle = ''
 
   if (column >= 0) {
-    backgroundColor = getPluginRowBackgroundColor(row)
+    backgroundColor = getPluginRowBackgroundColor(dataRow)
     textAlignStyle = resolveColumnTextAlign(columnConfig)
     const fontSize = getColumnFontSizeFromConfig(columnConfig)
     if (fontSize !== DEFAULT_COLUMN_FONT_SIZE) {
@@ -8678,7 +8913,7 @@ function handleAfterRenderer(
       textColor = hashColorStyle.color
     }
 
-    const accentStyle = getCellAccentStyle(row, column)
+    const accentStyle = getCellAccentStyle(dataRow, column)
     if (accentStyle) {
       backgroundColor = accentStyle.backgroundColor
     }
@@ -8866,7 +9101,7 @@ watch(
 )
 
 watch(
-  [() => rows.value.length, () => columnHeaders.value.length, () => props.sheetId, showColumnMarkerRow],
+  [() => rows.value.length, () => columnHeaders.value.length, () => props.sheetId],
   () => {
     void updateSheetViewportHeight()
   },
@@ -8893,11 +9128,9 @@ onBeforeUnmount(() => {
   clearScheduledFormulaBarDraftSync()
   clearScheduledInlineEditorFormulaBarSync()
   clearFormulaReferencePointerDownReset()
-  cleanupColumnMarkerResize(false)
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('input', handleInlineEditorInput, true)
-  unbindGridScrollSync()
   sheetLayoutObserver?.disconnect()
   sheetLayoutObserver = null
 })
@@ -8954,48 +9187,16 @@ defineExpose({
     </div>
 
     <div v-if="sheetId == null || shouldRenderSheetContent" ref="sheetFrameRef" class="sheet-frame" :class="{ 'is-empty': sheetId == null }">
-      <div v-if="showColumnMarkerRow" class="sheet-column-marker-row" :style="columnMarkerRowStyle">
-        <div
-          v-if="sheetViewSettings.show_row_numbers"
-          class="sheet-column-marker-corner"
-          :style="columnMarkerCornerStyle"
-        />
-        <div class="sheet-column-marker-viewport">
-          <div ref="columnMarkerContentRef" class="sheet-column-marker-content" :style="columnMarkerContentStyle">
-            <div
-              v-for="item in visibleColumnMarkerCells"
-              :key="item.key"
-              class="sheet-column-marker-cell"
-              :class="{
-                'is-resizing': columnMarkerResizingIndex === item.index,
-                'is-selected': isColumnMarkerSelected(item.index),
-              }"
-              :style="{ width: `${item.width}px` }"
-              @mousedown="handleColumnMarkerMouseDown($event, item.index)"
-              @contextmenu="handleColumnMarkerContextMenu($event, item.index)"
-            >
-              <span class="sheet-column-marker-label">{{ item.label }}</span>
-              <span
-                v-if="canEditConfig"
-                class="sheet-column-marker-resize-handle"
-                title="拖拽调整列宽，双击自适应"
-                aria-label="调整列宽"
-                @mousedown="startColumnMarkerResize($event, item.index)"
-                @dblclick="autoFitColumnFromMarker($event, item.index)"
-              />
-            </div>
-          </div>
-        </div>
-      </div>
       <HotTable
         v-if="shouldRenderSheetContent"
         ref="hotTableRef"
-        :data="rows"
+        :data="sheetGridRows"
         :language="'zh-CN'"
-        :col-headers="columnHeaders"
-        :nested-headers="nestedHeaders"
+        :col-headers="sheetColumnHeaders"
         :col-widths="columnWidths"
         :row-headers="sheetRowHeaders"
+        :fixed-rows-top="sheetHeaderRowCount"
+        :merge-cells="sheetMergeCells"
         :hidden-columns="{ columns: hiddenColumnIndexes, indicators: false }"
         :manual-column-resize="canEditConfig"
         :manual-column-move="canEditConfig"
@@ -9041,7 +9242,6 @@ defineExpose({
         :after-selection="handleAfterSelection"
         :after-deselect="handleAfterDeselect"
         :after-get-col-header="handleAfterGetColHeader"
-        :after-scroll-horizontally="handleAfterScrollHorizontally"
         :after-renderer="handleAfterRenderer"
       />
 
@@ -9084,6 +9284,13 @@ defineExpose({
             <el-option label="无列标" value="none" />
             <el-option label="字母（A / B / C）" value="letters" />
             <el-option label="数字（1 / 2 / 3）" value="numbers" />
+          </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">字段备注</div>
+          <el-select v-model="sheetSettingsDraft.column_note_display" class="sheet-settings-inline-select">
+            <el-option label="悬停展示" value="hover" />
+            <el-option label="备注行展示" value="row" />
           </el-select>
         </div>
         <div class="sheet-settings-field">
@@ -9868,78 +10075,6 @@ defineExpose({
   font-size: 13px;
 }
 
-.sheet-column-marker-row {
-  display: flex;
-  flex: 0 0 28px;
-  height: 28px;
-  min-height: 28px;
-  overflow: hidden;
-  border-bottom: 1px solid #e6e6e6;
-  background: #f7f7f7;
-}
-
-.sheet-column-marker-corner {
-  flex: 0 0 50px;
-  width: 50px;
-  border-right: 1px solid #e6e6e6;
-  background: #f2f2f2;
-}
-
-.sheet-column-marker-viewport {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-}
-
-.sheet-column-marker-content {
-  display: flex;
-  height: 100%;
-  will-change: transform;
-}
-
-.sheet-column-marker-cell {
-  position: relative;
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  border-right: 1px solid #e6e6e6;
-  color: #1f2d3d;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.sheet-column-marker-cell.is-selected {
-  background: #e8f2ff;
-  color: #1d4ed8;
-}
-
-.sheet-column-marker-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  pointer-events: none;
-}
-
-.sheet-column-marker-resize-handle {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  z-index: 3;
-  width: 8px;
-  height: 100%;
-  cursor: col-resize;
-}
-
-.sheet-column-marker-resize-handle:hover,
-.sheet-column-marker-cell.is-resizing .sheet-column-marker-resize-handle {
-  background: rgba(64, 158, 255, 0.18);
-}
-
 .sheet-frame :deep(.handsontable) {
   font-size: 13px;
 }
@@ -9996,6 +10131,7 @@ defineExpose({
 }
 
 .sheet-frame :deep(th.sheet-col-marker) {
+  background: #f7f7f7 !important;
   color: #8c7a62;
   font-size: 11px;
   font-weight: 600;
@@ -10006,36 +10142,66 @@ defineExpose({
   opacity: 0.9;
 }
 
+.sheet-frame :deep(.handsontable th.sheet-column-marker-header-selected) {
+  background: #e8f2ff !important;
+  color: #1d4ed8;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-header-cell) {
+  font-weight: 700;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-group-header-cell) {
+  color: #0f172a;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-field-header-cell) {
+  background: #e7eefb;
+  color: #0f172a;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-note-header-cell) {
+  background: #f2f2f2;
+  color: #5f6368;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-header-cell-selected) {
+  position: relative;
+  z-index: 2;
+  outline: 2px solid #409eff;
+  outline-offset: -2px;
+}
+
 .sheet-frame :deep(.sheet-header-label) {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
+  width: 100%;
   min-width: 0;
 }
 
 .sheet-frame :deep(.sheet-header-title) {
-  min-width: 0;
-}
-
-.sheet-frame :deep(.sheet-header-note-trigger) {
+  display: block;
   flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 1px solid #d6c7af;
-  border-radius: 999px;
-  background: #fff9ef;
-  color: #8b7355;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: help;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.sheet-frame :deep(.sheet-header-note-trigger:hover) {
-  border-color: #c7b08b;
-  background: #fdf2df;
-  color: #6d5a43;
+.sheet-frame :deep(.sheet-header-title.has-link) {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
 }
 
 .sheet-frame :deep(.sheet-header-rename-input) {

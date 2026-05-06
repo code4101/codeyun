@@ -14,6 +14,8 @@ from backend.core.auto_git_commit import (
     AUTO_GIT_COMMIT_CRON,
     create_auto_git_commit_run,
     get_auto_git_commit_status,
+    mark_auto_git_schedule_consumed_if_due,
+    schedule_auto_git_commit_job,
 )
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
@@ -490,7 +492,8 @@ def get_background_task_status(session: Session = Depends(get_session)):
             cron_expression=AUTO_GIT_COMMIT_CRON,
             enabled=_is_task_enabled("auto_git_commit"),
             scheduler_running=auto_git_commit_scheduler.running,
-            next_run_at=_serialize_scheduler_next_run(auto_git_commit_scheduler, "auto_git_commit"),
+            next_run_at=auto_git_status.get("next_run_at")
+            or _serialize_scheduler_next_run(auto_git_commit_scheduler, "auto_git_commit"),
             trigger_warning="会直接提交 pyxllib、xlproject、codeyun 的当前工作区变更。",
             active=_run_is_active(auto_git_status.get("active_run") if isinstance(auto_git_status, dict) else None)
             or _queue_task_is_active(queue, "auto_git_commit"),
@@ -604,6 +607,7 @@ def trigger_background_task(
             trigger_reason="manual_admin",
             enqueue=True,
         )
+        mark_auto_git_schedule_consumed_if_due(session)
         return BackgroundTaskTriggerResponse(
             task_key=normalized_key,
             queue_task_id=run.queue_task_id,
@@ -659,17 +663,9 @@ def toggle_background_task(
 
     # Handle dynamic scheduler updates
     if normalized_key == "auto_git_commit":
-        from backend.core.auto_git_commit import auto_git_commit_scheduler, maybe_enqueue_auto_git_commit, AUTO_GIT_COMMIT_CRON
+        from backend.core.auto_git_commit import auto_git_commit_scheduler
         if enabled:
-            if not auto_git_commit_scheduler.running:
-                auto_git_commit_scheduler.start()
-            auto_git_commit_scheduler.add_job(
-                maybe_enqueue_auto_git_commit,
-                CronTrigger.from_crontab(AUTO_GIT_COMMIT_CRON),
-                id="auto_git_commit",
-                replace_existing=True,
-                max_instances=1,
-            )
+            schedule_auto_git_commit_job(run_catchup=True)
         else:
             if auto_git_commit_scheduler.get_job("auto_git_commit"):
                 auto_git_commit_scheduler.remove_job("auto_git_commit")
