@@ -4,6 +4,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 import mimetypes
 import random
 import re
@@ -39,6 +40,9 @@ from backend.core.note_semantics import (
 )
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import NoteNode, User
+
+
+logger = logging.getLogger(__name__)
 
 
 class WechatIlinkError(RuntimeError):
@@ -1539,7 +1543,12 @@ def start_codex_bridge(
 
 
 def start_enabled_codex_bridges() -> list[dict[str, Any]]:
-    store = _read_store()
+    try:
+        store = _read_store()
+    except WechatIlinkError as exc:
+        logger.warning("Skipping startup of enabled WeChat Codex bridges: %s", exc)
+        return []
+
     accounts = store.get("accounts", {})
     if not isinstance(accounts, dict):
         return []
@@ -1560,14 +1569,24 @@ def start_enabled_codex_bridges() -> list[dict[str, Any]]:
             if existing and existing.thread.is_alive() and not existing.stop_event.is_set():
                 continue
 
-        started.append(
-            start_codex_bridge(
+        try:
+            summary = start_codex_bridge(
                 account_id,
                 model=str(bridge_config.get("model") or ""),
                 command=str(bridge_config.get("command") or ""),
                 system_prompt=str(bridge_config.get("system_prompt") or ""),
             )
-        )
+        except WechatIlinkError as exc:
+            logger.warning(
+                "Skipping startup of WeChat Codex bridge %s: %s",
+                account_id,
+                exc,
+            )
+            continue
+        except Exception:
+            logger.exception("Skipping startup of WeChat Codex bridge %s", account_id)
+            continue
+        started.append(summary)
     return started
 
 

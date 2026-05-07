@@ -399,6 +399,14 @@ def test_start_enabled_codex_bridges_restores_persisted_bridge(monkeypatch, isol
     ]
 
 
+def test_start_enabled_codex_bridges_ignores_unreadable_store(isolated_wechat_store):
+    store_path = isolated_wechat_store / "wechat-ilink" / "accounts.json"
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text("{", encoding="utf-8")
+
+    assert wechat_ilink.start_enabled_codex_bridges() == []
+
+
 def test_wechat_codex_bridge_passes_images_to_codex(monkeypatch, isolated_wechat_store, tmp_path):
     image_path = tmp_path / "inbound.png"
     image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake-png")
