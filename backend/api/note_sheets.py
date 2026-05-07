@@ -369,6 +369,10 @@ def _create_default_sheet_document() -> dict[str, Any]:
         "schema_version": 1,
         "columns": list(DEFAULT_NOTE_SHEET_COLUMNS),
         "rows": [],
+        "grid_rows": [list(DEFAULT_NOTE_SHEET_COLUMNS)],
+        "data_start_row": 1,
+        "field_row_index": 0,
+        "merged_cells": [],
         "view_settings": {
             "show_row_numbers": True,
             "row_marker_numbering": "global",
@@ -388,6 +392,30 @@ def _normalize_document_json(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _normalize_document_data_start_row(document_json: dict[str, Any]) -> int:
+    raw_value = document_json.get("data_start_row")
+    try:
+        numeric = int(raw_value)
+    except (TypeError, ValueError):
+        return 0
+    return max(numeric, 0)
+
+
+def _extract_document_grid_rows(document_json: dict[str, Any]) -> list[Any]:
+    grid_rows = document_json.get("grid_rows")
+    return list(grid_rows) if isinstance(grid_rows, list) else []
+
+
+def _replace_document_data_rows(document_json: dict[str, Any], rows: list[Any]) -> dict[str, Any]:
+    next_document = dict(document_json)
+    next_document["rows"] = rows
+    grid_rows = _extract_document_grid_rows(next_document)
+    if grid_rows:
+        data_start_row = min(_normalize_document_data_start_row(next_document), len(grid_rows))
+        next_document["grid_rows"] = [*grid_rows[:data_start_row], *rows]
+    return next_document
+
+
 def _normalize_document_columns(document_json: dict[str, Any]) -> list[str]:
     columns = document_json.get("columns")
     if not isinstance(columns, list):
@@ -405,8 +433,21 @@ def _row_has_meaningful_cell(row: Any) -> bool:
 
 
 def _document_has_structural_customization(document_json: dict[str, Any]) -> bool:
-    for key in ("header_groups", "cell_meta", "column_configs"):
+    for key in ("header_groups", "cell_meta", "column_configs", "grid_rows", "merged_cells", "data_start_row", "field_row_index"):
         value = document_json.get(key)
+        if key == "grid_rows":
+            columns = _normalize_document_columns(document_json)
+            if isinstance(value, list) and value and value != [columns]:
+                return True
+            continue
+        if key == "data_start_row":
+            if value not in (None, 1):
+                return True
+            continue
+        if key == "field_row_index":
+            if value not in (None, 0):
+                return True
+            continue
         if isinstance(value, dict) and value:
             return True
         if isinstance(value, list) and value:
@@ -511,12 +552,17 @@ def _build_paged_document(
     safe_page = min(max(int(page or 1), 1), actual_page_count)
     row_offset = min((safe_page - 1) * safe_page_size, len(all_rows))
     page_rows = all_rows[row_offset: row_offset + safe_page_size]
+    page_document = {
+        **normalized,
+        "rows": page_rows,
+    }
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        data_start_row = min(_normalize_document_data_start_row(normalized), len(grid_rows))
+        page_document["grid_rows"] = [*grid_rows[:data_start_row], *page_rows]
 
     return (
-        {
-            **normalized,
-            "rows": page_rows,
-        },
+        page_document,
         NoteSheetPaginationResponse(
             page=safe_page,
             page_size=safe_page_size,
@@ -561,19 +607,27 @@ def _merge_paged_document(
     loaded_row_count = max(int(page_patch.loaded_row_count or 0), 0)
     tail_start = min(row_offset + loaded_row_count, len(current_rows))
 
-    return {
+    merged_rows = [
+        *current_rows[:row_offset],
+        *incoming_rows,
+        *current_rows[tail_start:],
+    ]
+    next_document = {
         **normalized_current,
         **{
             key: value
             for key, value in normalized_incoming.items()
-            if key != "rows"
+            if key not in {"rows", "grid_rows"}
         },
-        "rows": [
-            *current_rows[:row_offset],
-            *incoming_rows,
-            *current_rows[tail_start:],
-        ],
+        "rows": merged_rows,
     }
+    current_grid_rows = _extract_document_grid_rows(normalized_current)
+    incoming_grid_rows = _extract_document_grid_rows(normalized_incoming)
+    if current_grid_rows or incoming_grid_rows:
+        data_start_row = _normalize_document_data_start_row(next_document)
+        source_grid_rows = incoming_grid_rows or current_grid_rows
+        next_document["grid_rows"] = [*source_grid_rows[:data_start_row], *merged_rows]
+    return next_document
 
 
 def _normalize_restricted_cell_value(value: Any) -> str:
@@ -622,10 +676,7 @@ def _apply_restricted_data_column_update(
             next_row = _set_row_cell_value(next_row, current_columns, column_index, incoming_cells[column_index])
         next_rows.append(next_row)
 
-    return {
-        **current_normalized,
-        "rows": next_rows,
-    }
+    return _replace_document_data_rows(current_normalized, next_rows)
 
 
 def _normalize_title(value: str | None, *, default_value: str) -> str:
@@ -1099,6 +1150,36 @@ def _insert_columns_into_header_groups(header_groups: Any, insert_index: int, am
     return next_groups
 
 
+def _shift_merged_cell_columns_for_insert(merged_cells: Any, insert_index: int, amount: int) -> list[Any]:
+    if not isinstance(merged_cells, list) or amount <= 0:
+        return list(merged_cells) if isinstance(merged_cells, list) else []
+
+    shifted: list[Any] = []
+    for cell in merged_cells:
+        if not isinstance(cell, dict):
+            continue
+        row = int(cell.get("row") or 0)
+        col = int(cell.get("col") or 0)
+        rowspan = max(int(cell.get("rowspan") or 1), 1)
+        colspan = max(int(cell.get("colspan") or 1), 1)
+        if col < insert_index < col + colspan:
+            colspan += amount
+        elif col >= insert_index:
+            col += amount
+        if rowspan > 1 or colspan > 1:
+            shifted.append({"row": row, "col": col, "rowspan": rowspan, "colspan": colspan})
+    return shifted
+
+
+def _insert_cell_into_grid_row(row: Any, column_count: int, insert_index: int) -> list[Any]:
+    normalized_row = _normalize_sheet_row(row, column_count)
+    return [
+        *normalized_row[:insert_index],
+        "",
+        *normalized_row[insert_index:],
+    ]
+
+
 def _insert_document_column(
     document_json: dict[str, Any],
     *,
@@ -1146,9 +1227,21 @@ def _insert_document_column(
         "rows": next_rows,
         "column_widths": next_widths,
     }
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        next_document["grid_rows"] = [
+            _insert_cell_into_grid_row(row, len(columns), bounded_insert_index)
+            for row in grid_rows
+        ]
     if "cell_meta" in normalized:
         next_document["cell_meta"] = _shift_cell_meta_columns_for_insert(
             normalized.get("cell_meta"),
+            bounded_insert_index,
+            1,
+        )
+    if "merged_cells" in normalized:
+        next_document["merged_cells"] = _shift_merged_cell_columns_for_insert(
+            normalized.get("merged_cells"),
             bounded_insert_index,
             1,
         )
@@ -1503,27 +1596,29 @@ def _set_attendance_summary_row_completed(
         source_index: target_index
         for target_index, (source_index, _row) in enumerate(ordered_rows)
     }
-    next_document = {
+    next_rows = [
+        _remap_row_formula_cell_references(
+            row,
+            columns=columns,
+            row_index_map=row_index_map,
+        )
+        for _source_index, row in ordered_rows
+    ]
+    next_document = _replace_document_data_rows({
         **normalized,
         "columns": columns,
-        "rows": [
-            _remap_row_formula_cell_references(
-                row,
-                columns=columns,
-                row_index_map=row_index_map,
-            )
-            for _source_index, row in ordered_rows
-        ],
-    }
+    }, next_rows)
     if isinstance(normalized.get("cell_meta"), dict):
+        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
             row_index_map,
+            row_offset=row_offset,
         )
     return next_document, row_index_map[row_index]
 
 
-def _shift_cell_meta_rows_for_insert(cell_meta: Any, insert_index: int, amount: int) -> dict[str, Any]:
+def _shift_cell_meta_rows_for_insert(cell_meta: Any, insert_index: int, amount: int, *, row_offset: int = 0) -> dict[str, Any]:
     if not isinstance(cell_meta, dict) or amount <= 0:
         return dict(cell_meta) if isinstance(cell_meta, dict) else {}
 
@@ -1533,7 +1628,8 @@ def _shift_cell_meta_rows_for_insert(cell_meta: Any, insert_index: int, amount: 
         if parsed is None:
             continue
         row_index, column_index = parsed
-        next_row_index = row_index + amount if row_index >= insert_index else row_index
+        effective_insert_index = insert_index + row_offset
+        next_row_index = row_index + amount if row_index >= effective_insert_index else row_index
         shifted[f"{next_row_index}:{column_index}"] = meta
     return shifted
 
@@ -1843,20 +1939,21 @@ def _generate_attendance_course_templates(
     if not inserted_rows:
         return normalized, generated, skipped
 
-    next_document = {
+    next_rows = [
+        *existing_rows[:insert_index],
+        *inserted_rows,
+        *existing_rows[insert_index:],
+    ]
+    next_document = _replace_document_data_rows({
         **normalized,
         "columns": columns,
-        "rows": [
-            *existing_rows[:insert_index],
-            *inserted_rows,
-            *existing_rows[insert_index:],
-        ],
-    }
+    }, next_rows)
     if "cell_meta" in normalized:
         next_document["cell_meta"] = _shift_cell_meta_rows_for_insert(
             normalized.get("cell_meta"),
             insert_index,
             len(inserted_rows),
+            row_offset=_normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0,
         )
     return next_document, generated, skipped
 
@@ -2322,11 +2419,10 @@ def _update_attendance_link_counts(
         )
         updated.append(item)
 
-    return {
+    return _replace_document_data_rows({
         **normalized,
         "columns": columns,
-        "rows": next_rows,
-    }, updated, skipped
+    }, next_rows), updated, skipped
 
 
 def _list_attendance_course_script_statuses(document_json: dict[str, Any]) -> list[NoteSheetAttendanceCourseScriptStatusItem]:
@@ -2608,7 +2704,7 @@ def _parse_cell_meta_key(key: Any) -> tuple[int, int] | None:
     return int(row_text), int(column_text)
 
 
-def _remap_cell_meta_rows(cell_meta: Any, row_index_map: dict[int, int]) -> dict[str, Any]:
+def _remap_cell_meta_rows(cell_meta: Any, row_index_map: dict[int, int], *, row_offset: int = 0) -> dict[str, Any]:
     if not isinstance(cell_meta, dict):
         return {}
 
@@ -2620,11 +2716,12 @@ def _remap_cell_meta_rows(cell_meta: Any, row_index_map: dict[int, int]) -> dict
             continue
 
         row_index, column_index = position
-        next_row_index = row_index_map.get(row_index)
+        lookup_row_index = row_index - row_offset
+        next_row_index = row_index_map.get(lookup_row_index)
         if next_row_index is None:
             remapped[str(key)] = value
         else:
-            remapped[f"{next_row_index}:{column_index}"] = value
+            remapped[f"{next_row_index + row_offset}:{column_index}"] = value
     return remapped
 
 
@@ -2637,6 +2734,14 @@ def _sort_sheet_document_rows(
     normalized = _normalize_document_json(document_json)
     all_rows = _extract_document_rows(normalized)
     columns = list(normalized.get("columns") or [])
+    data_start_row = _normalize_document_data_start_row(normalized)
+    merged_cells = normalized.get("merged_cells")
+    if isinstance(merged_cells, list):
+        for cell in merged_cells:
+            if not isinstance(cell, dict):
+                continue
+            if int(cell.get("row") or 0) >= data_start_row and int(cell.get("rowspan") or 1) > 1:
+                raise HTTPException(status_code=400, detail="数据区存在跨行合并，不能排序")
     column_config = _get_column_config(normalized, column_index, columns)
     column_value_type = _get_column_value_type(column_config)
 
@@ -2691,21 +2796,21 @@ def _sort_sheet_document_rows(
         for target_index, (source_index, _row) in enumerate(ordered_rows)
     }
 
-    next_document = {
-        **normalized,
-        "rows": [
-            _remap_row_formula_cell_references(
-                row,
-                columns=columns,
-                row_index_map=row_index_map,
-            )
-            for _source_index, row in ordered_rows
-        ],
-    }
+    next_rows = [
+        _remap_row_formula_cell_references(
+            row,
+            columns=columns,
+            row_index_map=row_index_map,
+        )
+        for _source_index, row in ordered_rows
+    ]
+    next_document = _replace_document_data_rows(normalized, next_rows)
     if isinstance(normalized.get("cell_meta"), dict):
+        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
         next_document["cell_meta"] = _remap_cell_meta_rows(
             normalized.get("cell_meta"),
             row_index_map,
+            row_offset=row_offset,
         )
     return next_document
 

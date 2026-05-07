@@ -3,6 +3,7 @@ import ctypes
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -14,6 +15,11 @@ try:
 except ImportError:
     watch = None
 
+try:
+    from dotenv import dotenv_values
+except ImportError:
+    dotenv_values = None
+
 
 BACKEND_RELOAD_MODES = ("outer", "uvicorn")
 BACKEND_RELOAD_MODE_ENV = "CODEYUN_DEV_BACKEND_RELOAD_MODE"
@@ -24,6 +30,8 @@ BACKEND_RELOAD_COOLDOWN_ENV = "CODEYUN_DEV_BACKEND_RELOAD_COOLDOWN_SECONDS"
 DEFAULT_BACKEND_RELOAD_MODE = "outer"
 DEFAULT_CHECK_INTERVAL_SECONDS = 5.0
 DEFAULT_BACKEND_RELOAD_COOLDOWN_SECONDS = 60.0
+DEFAULT_BACKEND_HOST = "0.0.0.0"
+DEFAULT_BACKEND_PORT = 8000
 
 BACKEND_WATCH_TARGETS = ("backend", "pyproject.toml", "uv.lock", ".env")
 BACKEND_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
@@ -41,6 +49,10 @@ WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 
 def log(message):
     print(message, flush=True)
+
+
+class PortInUseError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -71,8 +83,48 @@ def get_npm_path():
     return "npm.cmd"
 
 
+def _env_flag_value(value, default=True):
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def load_dotenv_into_env(root_dir, env):
+    if not _env_flag_value(env.get("CODEYUN_LOAD_DOTENV"), default=True):
+        return
+
+    env_file = os.path.join(root_dir, ".env")
+    if not os.path.isfile(env_file):
+        return
+
+    if dotenv_values is not None:
+        for key, value in dotenv_values(env_file).items():
+            if key and value is not None and key not in env:
+                env[key] = value
+        return
+
+    try:
+        with open(env_file, encoding="utf-8") as file:
+            lines = file.readlines()
+    except OSError as exc:
+        log(f"Skipping .env load: {exc}")
+        return
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        if not key or key in env:
+            continue
+        value = value.strip().strip("'\"")
+        env[key] = value
+
+
 def setup_env(root_dir):
     env = os.environ.copy()
+    load_dotenv_into_env(root_dir, env)
     python_executable = sys.executable
     env["CODEYUN_ENV"] = "development"
     env["PYTHONUNBUFFERED"] = "1"
@@ -126,6 +178,91 @@ def read_env_float(name, default, minimum):
         return default
 
     return value
+
+
+def read_backend_port(env):
+    raw = str(env.get("CODEYUN_BACKEND_PORT") or "").strip()
+    if not raw:
+        return DEFAULT_BACKEND_PORT
+
+    try:
+        value = int(raw)
+    except ValueError:
+        log(f"Ignoring invalid CODEYUN_BACKEND_PORT={raw!r}; expected an integer.")
+        return DEFAULT_BACKEND_PORT
+
+    if not (0 < value < 65536):
+        log(f"Ignoring invalid CODEYUN_BACKEND_PORT={raw!r}; expected 1-65535.")
+        return DEFAULT_BACKEND_PORT
+
+    return value
+
+
+def read_backend_host(env):
+    return str(env.get("CODEYUN_BACKEND_HOST") or DEFAULT_BACKEND_HOST).strip() or DEFAULT_BACKEND_HOST
+
+
+def tcp_port_can_bind(host, port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _local_address_uses_port(local_address, port):
+    suffix = f":{port}"
+    if local_address.endswith(suffix):
+        return True
+    if local_address.startswith("[") and local_address.endswith(suffix):
+        return True
+    return False
+
+
+def find_tcp_listener_pids(port):
+    if os.name != "nt":
+        return []
+
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "tcp"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return []
+
+    pids = set()
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if parts[3].upper() != "LISTENING":
+            continue
+        if not _local_address_uses_port(parts[1], port):
+            continue
+        try:
+            pids.add(int(parts[4]))
+        except ValueError:
+            continue
+    return sorted(pids)
+
+
+def ensure_backend_port_available(host, port):
+    if tcp_port_can_bind(host, port):
+        return
+
+    pids = find_tcp_listener_pids(port)
+    pid_text = f" Listening PID(s): {', '.join(str(pid) for pid in pids)}." if pids else ""
+    raise PortInUseError(
+        f"Backend port {host}:{port} is already in use.{pid_text} "
+        "Stop the existing CodeYun backend/dev runner before starting a new one."
+    )
 
 
 def parse_args(argv):
@@ -344,7 +481,9 @@ def create_process_guard():
     return ProcessLifecycleGuard()
 
 
-def start_backend(root_dir, env, python_executable, reload_mode):
+def start_backend(root_dir, env, python_executable, reload_mode, backend_host, backend_port):
+    ensure_backend_port_available(backend_host, backend_port)
+
     if reload_mode == "uvicorn":
         log("Launching backend with uvicorn --reload ...")
     else:
@@ -356,9 +495,9 @@ def start_backend(root_dir, env, python_executable, reload_mode):
         "uvicorn",
         "backend.app:app",
         "--host",
-        "0.0.0.0",
+        backend_host,
         "--port",
-        "8000",
+        str(backend_port),
     ]
     if reload_mode == "uvicorn":
         cmd.extend(
@@ -575,7 +714,16 @@ class BackendChangeWatcher:
 
 def restart_backend(root_dir, env, python_executable, process_guard, reload_mode, current_proc):
     stop_process(current_proc, process_guard=process_guard)
-    proc = start_backend(root_dir, env, python_executable, reload_mode=reload_mode)
+    backend_host = read_backend_host(env)
+    backend_port = read_backend_port(env)
+    proc = start_backend(
+        root_dir,
+        env,
+        python_executable,
+        reload_mode=reload_mode,
+        backend_host=backend_host,
+        backend_port=backend_port,
+    )
     process_guard.register(proc)
     return proc
 
@@ -588,7 +736,10 @@ def main():
 
     log("Starting CodeYun services (supervised dev runner)...")
     env, python_executable, npm_exec = setup_env(root_dir)
+    backend_host = read_backend_host(env)
+    backend_port = read_backend_port(env)
     log(f"Resolved npm: {npm_exec}")
+    log(f"Backend bind: {backend_host}:{backend_port}")
     log(f"Backend reload mode: {config.backend_reload_mode}")
     log(f"Supervisor check interval: {config.check_interval_seconds:.1f}s")
     if config.backend_reload_mode == "outer":
@@ -608,6 +759,8 @@ def main():
             env,
             python_executable,
             reload_mode=config.backend_reload_mode,
+            backend_host=backend_host,
+            backend_port=backend_port,
         )
         process_guard.register(backend_proc)
 
@@ -619,7 +772,7 @@ def main():
         frontend_proc = start_frontend(frontend_dir, env, npm_exec)
         process_guard.register(frontend_proc)
 
-        log("Backend:  http://localhost:8000/docs")
+        log(f"Backend:  http://localhost:{backend_port}/docs")
         log("Frontend: http://localhost:5173")
         log("Press Ctrl+C once to stop.")
 
@@ -650,6 +803,8 @@ def main():
                     env,
                     python_executable,
                     reload_mode=config.backend_reload_mode,
+                    backend_host=backend_host,
+                    backend_port=backend_port,
                 )
                 process_guard.register(backend_proc)
                 if backend_watcher is not None:
@@ -696,6 +851,8 @@ def main():
 
     except KeyboardInterrupt:
         log("Stopping services ...")
+    except PortInUseError as exc:
+        log(f"Cannot start backend: {exc}")
     finally:
         if backend_watcher is not None:
             backend_watcher.close()

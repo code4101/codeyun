@@ -1704,6 +1704,131 @@ def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(clien
         _clear_user_override()
 
 
+def test_note_sheet_unified_grid_page_patch_preserves_headers_and_merges(client, session):
+    user = _create_user(session, username="note-sheet-grid-page-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        document = {
+            "schema_version": 1,
+            "columns": ["序号", "内容"],
+            "rows": [["1", "row-1"], ["2", "row-2"], ["3", "row-3"]],
+            "grid_rows": [
+                ["分组", ""],
+                ["序号", "内容"],
+                ["1", "row-1"],
+                ["2", "row-2"],
+                ["3", "row-3"],
+            ],
+            "data_start_row": 2,
+            "field_row_index": 1,
+            "merged_cells": [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}],
+            "cell_meta": {"0:0": {"style": {"background_color": "#e0f2fe"}}},
+            "view_settings": {"pagination": {"enabled": True, "page_size": 2}},
+        }
+        create_response = client.post(
+            "/api/note-sheets/sheets",
+            json={"title": "统一网格分页", "document_json": document},
+        )
+        assert create_response.status_code == 200
+        sheet_id = create_response.json()["id"]
+
+        page2_response = client.get(f"/api/note-sheets/sheets/{sheet_id}", params={"page": 2, "page_size": 2})
+        assert page2_response.status_code == 200
+        page2_document = page2_response.json()["document_json"]
+        assert page2_document["rows"] == [["3", "row-3"]]
+        assert page2_document["grid_rows"] == [["分组", ""], ["序号", "内容"], ["3", "row-3"]]
+
+        save_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            json={
+                "document_json": {
+                    **page2_document,
+                    "rows": [["30", "row-30"]],
+                    "grid_rows": [["分组", ""], ["序号", "内容"], ["30", "row-30"]],
+                },
+                "page_patch": {
+                    "page": 2,
+                    "page_size": 2,
+                    "row_offset": 2,
+                    "loaded_row_count": 1,
+                },
+            },
+        )
+        assert save_response.status_code == 200
+        full_response = client.get(f"/api/note-sheets/sheets/{sheet_id}", params={"paginate": False})
+        assert full_response.status_code == 200
+        saved_document = full_response.json()["document_json"]
+        assert saved_document["rows"] == [["1", "row-1"], ["2", "row-2"], ["30", "row-30"]]
+        assert saved_document["grid_rows"] == [
+            ["分组", ""],
+            ["序号", "内容"],
+            ["1", "row-1"],
+            ["2", "row-2"],
+            ["30", "row-30"],
+        ]
+        assert saved_document["merged_cells"] == [{"row": 0, "col": 0, "rowspan": 1, "colspan": 2}]
+        assert saved_document["cell_meta"] == {"0:0": {"style": {"background_color": "#e0f2fe"}}}
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_unified_grid_sort_remaps_sheet_meta_and_rejects_rowspan_merge(client, session):
+    user = _create_user(session, username="note-sheet-grid-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "统一网格排序",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["序号", "内容"],
+                    "rows": [["2", "row-2"], ["1", "row-1"]],
+                    "grid_rows": [["分组", ""], ["序号", "内容"], ["2", "row-2"], ["1", "row-1"]],
+                    "data_start_row": 2,
+                    "field_row_index": 1,
+                    "merged_cells": [{"row": 2, "col": 0, "rowspan": 1, "colspan": 2}],
+                    "cell_meta": {"2:1": {"link": {"url": "https://example.com/row-2"}}},
+                },
+            },
+        )
+        assert create_response.status_code == 200
+        sheet_id = create_response.json()["id"]
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/sort",
+            json={"column_index": 0, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+        sorted_document = sort_response.json()["document_json"]
+        assert sorted_document["rows"] == [["1", "row-1"], ["2", "row-2"]]
+        assert sorted_document["grid_rows"] == [["分组", ""], ["序号", "内容"], ["1", "row-1"], ["2", "row-2"]]
+        assert sorted_document["cell_meta"] == {"3:1": {"link": {"url": "https://example.com/row-2"}}}
+
+        reject_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            json={
+                "document_json": {
+                    **sorted_document,
+                    "merged_cells": [{"row": 2, "col": 0, "rowspan": 2, "colspan": 1}],
+                },
+            },
+        )
+        assert reject_response.status_code == 200
+        reject_sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/sort",
+            json={"column_index": 0, "direction": "asc"},
+        )
+        assert reject_sort_response.status_code == 400
+        assert reject_sort_response.json()["detail"] == "数据区存在跨行合并，不能排序"
+    finally:
+        _clear_user_override()
+
+
 def test_migrate_attendance_course_sheets_to_notes_workbook_is_idempotent(session):
     owner_user = _create_user(session, username="attendance-workbook-owner")
     source_document = SheetDocument(

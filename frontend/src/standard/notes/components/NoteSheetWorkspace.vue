@@ -130,7 +130,9 @@ type ColumnMarkerStyle = 'letters' | 'numbers'
 type ColumnMarkerMode = 'none' | 'letters' | 'numbers'
 type RowMarkerNumbering = 'page' | 'global'
 type RowMarkerMode = 'none' | 'page_numbers' | 'global_numbers'
+type RowMarkerOrigin = 'data' | 'sheet' | 'sheet_zero'
 type ColumnNoteDisplayMode = 'hover' | 'row'
+type FormulaReferenceOrigin = 'data' | 'sheet' | 'sheet_v2'
 type SortDirection = 'asc' | 'desc'
 type ColumnWidthMode = 'adaptive' | 'fixed'
 type ColumnValueType = 'text' | 'multi_text' | 'number' | 'percent' | 'date' | 'phone'
@@ -151,6 +153,13 @@ type SheetHeaderThemeCell = {
 type SheetHeaderGroupCell = SheetHeaderCellStyle & {
   label: string
   colspan?: number
+}
+
+type SheetMergedCell = {
+  row: number
+  col: number
+  rowspan: number
+  colspan: number
 }
 
 type SheetCellLink = {
@@ -190,6 +199,12 @@ type SelectedDataCell = {
   documentRow: number
 }
 
+type SelectedSheetCell = {
+  row: number
+  column: number
+  documentRow: number
+}
+
 type FormulaBarInputExpose = {
   input?: HTMLInputElement | HTMLTextAreaElement
   focus?: () => void
@@ -201,6 +216,7 @@ type SheetActiveEditor = {
   col?: number
   TEXTAREA?: HTMLElement
   isOpened?: () => boolean
+  finishEditing?: (restoreOriginalValue?: boolean) => void
   getValue?: () => unknown
   setValue?: (value: unknown) => void
   focus?: () => void
@@ -304,6 +320,7 @@ type ColumnSettingsMixedState = Record<ColumnSettingsDraftKey, boolean>
 type SheetViewSettings = {
   show_row_numbers?: boolean
   row_marker_numbering?: RowMarkerNumbering
+  row_marker_origin?: RowMarkerOrigin
   show_column_markers?: boolean
   column_marker_style?: ColumnMarkerStyle
   column_note_display?: ColumnNoteDisplayMode
@@ -317,6 +334,11 @@ type SheetDocument = {
   schema_version: 1
   columns: string[]
   rows: SheetRow[]
+  grid_rows?: SheetRow[]
+  data_start_row?: number
+  field_row_index?: number
+  merged_cells?: SheetMergedCell[]
+  formula_reference_origin?: FormulaReferenceOrigin
   header_groups?: SheetHeaderGroupCell[][]
   cell_meta?: SheetCellMetaMap
   column_configs?: Record<string, SheetColumnConfig>
@@ -358,10 +380,13 @@ type FormulaCellModel = {
 type FormulaDisplayState = {
   cells: Array<Array<FormulaCellModel | null>>
   errorKeys: Set<string>
+  dataStartRow: number
 }
 
 type FormulaDisplayBuildOptions = {
   rowOffset?: number
+  headerRows?: SheetRow[]
+  headerRowCount?: number
 }
 
 type FormulaEngineInstance = {
@@ -467,6 +492,7 @@ const contextMenuFallbackButtonRef = ref<HTMLButtonElement | null>(null)
 const columnNotePopoverRef = ref<HTMLElement | null>(null)
 const columnHeaders = ref<string[]>([...DEFAULT_SHEET_COLUMNS])
 const headerGroups = ref<SheetHeaderGroupCell[][]>([])
+const mergedCells = ref<SheetMergedCell[]>([])
 const columnConfigs = ref<Record<string, SheetColumnConfig>>({})
 const cellMeta = ref<SheetCellMetaMap>({})
 const attendanceCourseScriptStatuses = ref<Record<number, AttendanceCourseScriptStatusItem>>({})
@@ -523,7 +549,7 @@ const cellLinkDialogVisible = ref(false)
 const cellLinkDialogTarget = ref<LinkDialogTarget | null>(null)
 const cellLinkDraftUrl = ref('')
 const cellStyleDialogVisible = ref(false)
-const cellStyleDialogCells = ref<SelectedDataCell[]>([])
+const cellStyleDialogCells = ref<SelectedSheetCell[]>([])
 const activeCellStyleColorField = ref<SheetCellStyleField | null>(null)
 const cellStyleDraft = ref<SheetCellStyleDraft>({
   background_color: '',
@@ -612,7 +638,7 @@ const formulaBarAddress = computed(() => {
   if (!cell) {
     return ''
   }
-  return `${getExcelColumnLabel(cell.column)}${cell.documentRow + 1}`
+  return getCellReferenceLabel(cell.row, cell.column)
 })
 
 const duplicateHighlightMap = computed(() => {
@@ -861,25 +887,208 @@ const sheetGridRows = computed<SheetRow[]>(() => {
   ]
 })
 
+function getDocumentColumnNote(header: string, sourceConfigs: Record<string, SheetColumnConfig>) {
+  return normalizeColumnNote(sourceConfigs[header]?.note)
+}
+
+function shouldIncludeFormulaNoteRow(
+  headers: string[],
+  sourceConfigs: Record<string, SheetColumnConfig>,
+  settings: Required<SheetViewSettings>,
+) {
+  return (
+    settings.column_note_display === 'row'
+    && headers.some((header) => getDocumentColumnNote(header, sourceConfigs) !== '')
+  )
+}
+
+function getFormulaHeaderRowsForDocument(
+  headers: string[],
+  groups: SheetHeaderGroupCell[][],
+  sourceConfigs: Record<string, SheetColumnConfig>,
+  settings: Required<SheetViewSettings>,
+) {
+  const headerRows = groups.map((row) => expandHeaderGroupLabels(row, headers.length))
+  headerRows.push([...headers])
+  if (shouldIncludeFormulaNoteRow(headers, sourceConfigs, settings)) {
+    headerRows.push(headers.map((header) => getDocumentColumnNote(header, sourceConfigs)))
+  }
+  return headerRows
+}
+
+function getCurrentFormulaHeaderRows(headers = columnHeaders.value) {
+  return getFormulaHeaderRowsForDocument(
+    headers,
+    normalizeHeaderGroups(headerGroups.value, headers.length),
+    normalizeColumnConfigs(columnConfigs.value, headers),
+    sheetViewSettings.value,
+  )
+}
+
 const sheetMergeCells = computed(() => {
-  const cells: Array<{ row: number; col: number; rowspan: number; colspan: number }> = []
-  normalizedHeaderGroups.value.forEach((row, rowIndex) => {
-    let columnIndex = 0
-    row.forEach((cell) => {
-      const colspan = Math.max(1, cell.colspan ?? 1)
-      if (colspan > 1) {
-        cells.push({
-          row: rowIndex,
-          col: columnIndex,
-          rowspan: 1,
-          colspan,
-        })
-      }
-      columnIndex += colspan
-    })
-  })
-  return cells
+  return getRenderableMergedCells()
 })
+
+function getDocumentGridRowIndex(gridRowIndex: number) {
+  if (gridRowIndex < sheetHeaderRowCount.value) {
+    return gridRowIndex
+  }
+  return sheetHeaderRowCount.value + getDocumentRowIndex(getDataRowIndex(gridRowIndex))
+}
+
+function getCurrentGridRowIndexFromDocumentRow(documentGridRow: number) {
+  if (documentGridRow < sheetHeaderRowCount.value) {
+    return documentGridRow
+  }
+  const dataRow = documentGridRow - sheetHeaderRowCount.value
+  const pageLocalRow = dataRow - (effectivePaginationEnabled.value ? pageRowOffset.value : 0)
+  return pageLocalRow >= 0 && pageLocalRow < rows.value.length
+    ? sheetHeaderRowCount.value + pageLocalRow
+    : -1
+}
+
+function getRenderableMergedCells() {
+  const currentRows = sheetGridRows.value
+  const normalized = normalizeMergedCells(
+    [
+      ...getHeaderGroupMergeCells(normalizedHeaderGroups.value),
+      ...mergedCells.value,
+    ],
+    Math.max(sheetHeaderRowCount.value + totalRowCount.value, currentRows.length),
+    columnHeaders.value.length,
+  )
+
+  const rendered: SheetMergedCell[] = []
+  const seen = new Set<string>()
+  normalized.forEach((cell) => {
+    const isHeaderMerge = cell.row < sheetHeaderRowCount.value
+    if (isHeaderMerge) {
+      if (cell.row + cell.rowspan > sheetHeaderRowCount.value) {
+        return
+      }
+      const key = `${cell.row}:${cell.col}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        rendered.push(cell)
+      }
+      return
+    }
+
+    const dataStart = cell.row - sheetHeaderRowCount.value
+    const pageStart = effectivePaginationEnabled.value ? pageRowOffset.value : 0
+    const pageEnd = pageStart + rows.value.length
+    if (dataStart < pageStart || dataStart + cell.rowspan > pageEnd) {
+      return
+    }
+    const row = sheetHeaderRowCount.value + dataStart - pageStart
+    const key = `${row}:${cell.col}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      rendered.push({ ...cell, row })
+    }
+  })
+  return rendered
+}
+
+function findMergedCellAtDocumentCell(documentRow: number, columnIndex: number) {
+  return normalizeMergedCells(
+    [
+      ...getHeaderGroupMergeCells(normalizedHeaderGroups.value),
+      ...mergedCells.value,
+    ],
+    Math.max(sheetHeaderRowCount.value + totalRowCount.value, sheetGridRows.value.length),
+    columnHeaders.value.length,
+  ).find((cell) => (
+    documentRow >= cell.row
+    && documentRow < cell.row + cell.rowspan
+    && columnIndex >= cell.col
+    && columnIndex < cell.col + cell.colspan
+  )) ?? null
+}
+
+function findMergedCellAtGridCell(gridRowIndex: number, columnIndex: number) {
+  const documentRow = getDocumentGridRowIndex(gridRowIndex)
+  return findMergedCellAtDocumentCell(documentRow, columnIndex)
+}
+
+function getMergeAnchorForGridCell(gridRowIndex: number, columnIndex: number) {
+  const merge = findMergedCellAtGridCell(gridRowIndex, columnIndex)
+  if (!merge) {
+    return { row: gridRowIndex, column: columnIndex, documentRow: getDocumentGridRowIndex(gridRowIndex) }
+  }
+  const row = getCurrentGridRowIndexFromDocumentRow(merge.row)
+  return {
+    row: row >= 0 ? row : gridRowIndex,
+    column: merge.col,
+    documentRow: merge.row,
+  }
+}
+
+function getMergeAnchorForDocumentCell(documentRow: number, columnIndex: number) {
+  const merge = findMergedCellAtDocumentCell(documentRow, columnIndex)
+  if (!merge) {
+    return {
+      row: getCurrentGridRowIndexFromDocumentRow(documentRow),
+      column: columnIndex,
+      documentRow,
+    }
+  }
+  return {
+    row: getCurrentGridRowIndexFromDocumentRow(merge.row),
+    column: merge.col,
+    documentRow: merge.row,
+  }
+}
+
+function normalizeSheetCellToMergeAnchor(cell: SelectedSheetCell): SelectedSheetCell {
+  const anchor = getMergeAnchorForDocumentCell(cell.documentRow, cell.column)
+  return {
+    row: anchor.row >= 0 ? anchor.row : cell.row,
+    column: anchor.column,
+    documentRow: anchor.documentRow,
+  }
+}
+
+function normalizeSheetCellsToMergeAnchors(cells: SelectedSheetCell[]) {
+  const normalized: SelectedSheetCell[] = []
+  const seen = new Set<string>()
+  cells.forEach((cell) => {
+    const anchor = normalizeSheetCellToMergeAnchor(cell)
+    const key = createCellMetaKey(anchor.documentRow, anchor.column)
+    if (seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    normalized.push(anchor)
+  })
+  return normalized
+}
+
+function getGridCellRawValue(gridRowIndex: number, columnIndex: number) {
+  return normalizeCellValue(sheetGridRows.value[gridRowIndex]?.[columnIndex] ?? '')
+}
+
+function getLiveGridCellRawValue(gridRowIndex: number, columnIndex: number) {
+  const hot = getHotInstance()
+  if (!hot || gridRowIndex < 0 || columnIndex < 0) {
+    return ''
+  }
+
+  return normalizeCellValue(hot.getSourceDataAtCell?.(gridRowIndex, columnIndex) ?? '')
+}
+
+function getGridCellRenderSourceValue(gridRowIndex: number, columnIndex: number) {
+  const rawValue = getGridCellRawValue(gridRowIndex, columnIndex)
+  if (rawValue || gridRowIndex >= columnHeaderLevel.value) {
+    return rawValue
+  }
+
+  const merge = findMergedCellAtGridCell(gridRowIndex, columnIndex)
+  if (!merge || merge.row >= columnHeaderLevel.value) {
+    return rawValue
+  }
+  return inferBlankHeaderMergeLabel(sheetGridRows.value, columnHeaders.value, merge, columnHeaderLevel.value)
+}
 
 const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => {
   const rows: (SheetHeaderCellStyle | null)[][] = []
@@ -1110,22 +1319,30 @@ const contextMenu = {
     },
     hsep_style: {
       name: '---------',
-      hidden: () => !hasDataCellSelection(),
+      hidden: () => !hasSheetCellSelection(),
     },
     set_cell_style: {
-      name: () => (getSelectedDataCells().length > 1 ? '设置选区颜色' : '设置单元格颜色'),
-      hidden: () => !hasDataCellSelection(),
+      name: () => (getSelectedSheetCells().length > 1 ? '设置选区颜色' : '设置单元格颜色'),
+      hidden: () => !hasSheetCellSelection(),
       disabled: () => !canEditConfig.value,
       callback: () => {
         openSelectedCellStyleDialog()
       },
     },
-    remove_cell_style: {
-      name: () => (getSelectedDataCells().length > 1 ? '清除选区颜色' : '清除单元格颜色'),
-      hidden: () => !hasSelectedCellStyle(),
+    merge_cells: {
+      name: '合并单元格',
+      hidden: () => !hasSheetCellSelection(),
+      disabled: () => !canEditConfig.value || !canMergeSelectedCells(),
+      callback: () => {
+        mergeSelectedCells()
+      },
+    },
+    unmerge_cells: {
+      name: '取消合并',
+      hidden: () => !hasSelectedMergedCell(),
       disabled: () => !canEditConfig.value,
       callback: () => {
-        removeSelectedCellStyle()
+        unmergeSelectedCells()
       },
     },
     hsep_link: {
@@ -1133,7 +1350,7 @@ const contextMenu = {
       hidden: () => !hasSingleLinkTargetSelection(),
     },
     set_cell_link: {
-      name: () => (getSelectedColumnHeaderCellIndex() != null ? '设置字段超链接' : '设置超链接'),
+      name: '设置超链接',
       hidden: () => !hasSingleLinkTargetSelection(),
       disabled: () => !canEditConfig.value,
       callback: () => {
@@ -1148,7 +1365,7 @@ const contextMenu = {
       },
     },
     remove_cell_link: {
-      name: () => (getSelectedColumnHeaderCellIndex() != null ? '移除字段超链接' : '移除超链接'),
+      name: '移除超链接',
       hidden: () => !hasSelectedCellLink(),
       disabled: () => !canEditConfig.value,
       callback: () => {
@@ -1311,6 +1528,7 @@ function resetWorkspaceState() {
   closeColumnNotePopover()
   columnHeaders.value = [...DEFAULT_SHEET_COLUMNS]
   headerGroups.value = []
+  mergedCells.value = []
   columnConfigs.value = {}
   cellMeta.value = {}
   attendanceCourseScriptStatuses.value = {}
@@ -1499,6 +1717,198 @@ function normalizeHeaderGroups(source: unknown, columnCount: number): SheetHeade
   }
 
   return normalizedRows
+}
+
+function expandHeaderGroupsToSingleCellRows(groups: SheetHeaderGroupCell[][], columnCount: number) {
+  return groups.map((row) => expandHeaderGroupLabels(row, columnCount).map((label) => ({ label, colspan: 1 })))
+}
+
+function getHeaderGroupMergeCells(groups: SheetHeaderGroupCell[][]) {
+  const cells: SheetMergedCell[] = []
+  groups.forEach((row, rowIndex) => {
+    let columnIndex = 0
+    row.forEach((cell) => {
+      const colspan = Math.max(1, cell.colspan ?? 1)
+      if (colspan > 1) {
+        cells.push({
+          row: rowIndex,
+          col: columnIndex,
+          rowspan: 1,
+          colspan,
+        })
+      }
+      columnIndex += colspan
+    })
+  })
+  return cells
+}
+
+function createSingleCellHeaderGroupsFromGridRows(
+  gridRows: SheetRow[],
+  headerGroupRowCount: number,
+  headers: string[],
+) {
+  return gridRows
+    .slice(0, Math.max(0, headerGroupRowCount))
+    .map((row) => normalizeRow(row, headers).map((label) => ({ label, colspan: 1 })))
+}
+
+function getNormalizedHeaderFieldLabels(gridRows: SheetRow[], headers: string[], fieldRowIndex: number) {
+  const sourceRow = fieldRowIndex >= 0 ? gridRows[fieldRowIndex] : null
+  const labels = normalizeRow(sourceRow ?? headers, headers)
+  return labels.map((label, index) => normalizeCellValue(label || headers[index] || createFallbackHeader(index)))
+}
+
+function inferAttendanceHeaderGroupLabel(fieldLabels: string[]) {
+  const labelSet = new Set(fieldLabels.map((label) => normalizeCellValue(label)).filter(Boolean))
+  const hasAny = (...labels: string[]) => labels.some((label) => labelSet.has(label))
+  const hasAll = (...labels: string[]) => labels.every((label) => labelSet.has(label))
+
+  if (
+    hasAll('分组', '学号', '用户ID')
+    && hasAny('禅客', '商户订单号', '昵称', '姓名')
+  ) {
+    return '用户信息'
+  }
+  if (
+    hasAll('完成视频数', '视频应返款', '打卡应返款', '总应返款')
+    && hasAny('已返款', '订单金额')
+  ) {
+    return '退款总计（每天晚上上21点更新数据）'
+  }
+  if (hasAll('当前应返款', '返款配置')) {
+    return '退款操作'
+  }
+  return ''
+}
+
+function inferBlankHeaderMergeLabel(
+  gridRows: SheetRow[],
+  headers: string[],
+  merge: SheetMergedCell,
+  fieldRowIndex: number,
+) {
+  const row = normalizeRow(gridRows[merge.row] ?? [], headers)
+  for (let column = merge.col; column < merge.col + merge.colspan; column += 1) {
+    const value = normalizeCellValue(row[column] ?? '')
+    if (value) {
+      return value
+    }
+  }
+
+  const fieldLabels = getNormalizedHeaderFieldLabels(gridRows, headers, fieldRowIndex)
+  return inferAttendanceHeaderGroupLabel(fieldLabels.slice(merge.col, merge.col + merge.colspan))
+}
+
+function repairBlankHeaderMergeAnchors(
+  gridRows: SheetRow[],
+  mergedCells: SheetMergedCell[],
+  headers: string[],
+  fieldRowIndex: number,
+) {
+  if (!gridRows.length || fieldRowIndex <= 0) {
+    return gridRows
+  }
+
+  let changed = false
+  const nextRows = gridRows.map((row) => normalizeRow(row, headers))
+  mergedCells.forEach((merge) => {
+    if (merge.row < 0 || merge.row >= fieldRowIndex || merge.rowspan !== 1 || merge.col < 0 || merge.col >= headers.length) {
+      return
+    }
+    if (normalizeCellValue(nextRows[merge.row]?.[merge.col] ?? '')) {
+      return
+    }
+    const inferredLabel = inferBlankHeaderMergeLabel(nextRows, headers, merge, fieldRowIndex)
+    if (!inferredLabel) {
+      return
+    }
+    nextRows[merge.row][merge.col] = inferredLabel
+    changed = true
+  })
+
+  return changed ? nextRows : gridRows
+}
+
+function normalizeMergedCells(source: unknown, rowCount: number, columnCount: number) {
+  if (!Array.isArray(source) || rowCount <= 0 || columnCount <= 0) {
+    return []
+  }
+
+  const cells: SheetMergedCell[] = []
+  const occupied = new Set<string>()
+  for (const item of source) {
+    if (!item || typeof item !== 'object') {
+      continue
+    }
+    const record = item as Record<string, unknown>
+    const row = normalizeNonNegativeInt(record.row, -1)
+    const col = normalizeNonNegativeInt(record.col, -1)
+    const rowspan = normalizePositivePageNumber(record.rowspan, 1)
+    const colspan = normalizePositivePageNumber(record.colspan, 1)
+    if (
+      row < 0
+      || col < 0
+      || row >= rowCount
+      || col >= columnCount
+      || (rowspan <= 1 && colspan <= 1)
+    ) {
+      continue
+    }
+
+    const boundedRowspan = Math.min(rowspan, rowCount - row)
+    const boundedColspan = Math.min(colspan, columnCount - col)
+    let overlaps = false
+    for (let rowOffset = 0; rowOffset < boundedRowspan && !overlaps; rowOffset += 1) {
+      for (let columnOffset = 0; columnOffset < boundedColspan; columnOffset += 1) {
+        if (occupied.has(`${row + rowOffset}:${col + columnOffset}`)) {
+          overlaps = true
+          break
+        }
+      }
+    }
+    if (overlaps) {
+      continue
+    }
+    for (let rowOffset = 0; rowOffset < boundedRowspan; rowOffset += 1) {
+      for (let columnOffset = 0; columnOffset < boundedColspan; columnOffset += 1) {
+        occupied.add(`${row + rowOffset}:${col + columnOffset}`)
+      }
+    }
+    cells.push({ row, col, rowspan: boundedRowspan, colspan: boundedColspan })
+  }
+  return cells
+}
+
+function getMergedCellsSourceRowCount(source: unknown) {
+  if (!Array.isArray(source)) {
+    return 0
+  }
+  return source.reduce((maxRow, item) => {
+    if (!item || typeof item !== 'object') {
+      return maxRow
+    }
+    const record = item as Record<string, unknown>
+    const row = normalizeNonNegativeInt(record.row, -1)
+    const rowspan = normalizePositivePageNumber(record.rowspan, 1)
+    return row >= 0 ? Math.max(maxRow, row + rowspan) : maxRow
+  }, 0)
+}
+
+function shiftCellMetaRowKeys(source: unknown, rowDelta: number, columnCount: number) {
+  const normalized = normalizeCellMetaMap(source, columnCount)
+  if (rowDelta === 0) {
+    return normalized
+  }
+  const shifted: SheetCellMetaMap = {}
+  for (const [key, meta] of Object.entries(normalized)) {
+    const position = parseCellMetaKey(key)
+    if (!position) {
+      continue
+    }
+    shifted[createCellMetaKey(Math.max(0, position.row + rowDelta), position.column)] = meta
+  }
+  return normalizeCellMetaMap(shifted, columnCount)
 }
 
 function createCellMetaKey(rowIndex: number, columnIndex: number) {
@@ -1831,6 +2241,7 @@ function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
   return {
     show_row_numbers: true,
     row_marker_numbering: 'global',
+    row_marker_origin: 'data',
     show_column_markers: true,
     column_marker_style: 'letters',
     column_note_display: 'hover',
@@ -1849,8 +2260,22 @@ function normalizeRowMarkerNumbering(value: unknown): RowMarkerNumbering {
   return value === 'page' ? 'page' : 'global'
 }
 
+function normalizeRowMarkerOrigin(value: unknown): RowMarkerOrigin {
+  if (value === 'sheet' || value === 'sheet_zero') {
+    return value
+  }
+  return 'data'
+}
+
 function normalizeColumnNoteDisplayMode(value: unknown): ColumnNoteDisplayMode {
   return value === 'row' ? 'row' : 'hover'
+}
+
+function normalizeFormulaReferenceOrigin(value: unknown): FormulaReferenceOrigin {
+  if (value === 'sheet' || value === 'sheet_v2') {
+    return value
+  }
+  return 'data'
 }
 
 function normalizeSheetPageSize(value: unknown) {
@@ -1871,6 +2296,7 @@ function normalizeSheetViewSettings(source: unknown): Required<SheetViewSettings
   return {
     show_row_numbers: record.show_row_numbers !== false,
     row_marker_numbering: normalizeRowMarkerNumbering(record.row_marker_numbering),
+    row_marker_origin: normalizeRowMarkerOrigin(record.row_marker_origin),
     show_column_markers: record.show_column_markers !== false,
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
     column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
@@ -2191,10 +2617,16 @@ function trimTrailingBlankRows(sourceRows: SheetRow[]): SheetRow[] {
 }
 
 function createDefaultDocument(): SheetDocument {
+  const gridRows = [[...DEFAULT_SHEET_COLUMNS]]
   return {
     schema_version: 1,
     columns: [...DEFAULT_SHEET_COLUMNS],
     rows: [],
+    grid_rows: gridRows,
+    data_start_row: 1,
+    field_row_index: 0,
+    merged_cells: [],
+    formula_reference_origin: 'sheet_v2',
     header_groups: [],
     cell_meta: {},
     column_configs: {},
@@ -2211,14 +2643,66 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
   const record = source as Record<string, unknown>
   const headers = normalizeHeaders(record.columns)
   const sourceRows = Array.isArray(record.rows) ? record.rows : []
-  const normalizedRows = trimTrailingBlankRows(sourceRows.map((row) => normalizeRow(row, headers)))
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   const normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
+  const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
+  const normalizedSettings = normalizeSheetViewSettings(record.view_settings)
+  const formulaHeaderRows = getFormulaHeaderRowsForDocument(
+    headers,
+    sourceHeaderGroups,
+    normalizedColumnConfigs,
+    normalizedSettings,
+  )
+  const dataStartRow = normalizeNonNegativeInt(record.data_start_row, formulaHeaderRows.length)
+  const fieldRowIndex = normalizeNonNegativeInt(record.field_row_index, Math.max(0, formulaHeaderRows.length - 1))
+  const hasUnifiedGridRows = Array.isArray(record.grid_rows)
+  const sourceGridRows = hasUnifiedGridRows
+    ? (record.grid_rows as unknown[]).map((row) => normalizeRow(row, headers))
+    : [
+      ...formulaHeaderRows.map((row) => normalizeRow(row, headers)),
+      ...sourceRows.map((row) => normalizeRow(row, headers)),
+    ]
+  const sourceFormulaOrigin = normalizeFormulaReferenceOrigin(record.formula_reference_origin)
+  const sourceNormalizedRows = trimTrailingBlankRows(
+    (hasUnifiedGridRows ? sourceGridRows.slice(dataStartRow) : sourceRows.map((row) => normalizeRow(row, headers))),
+  )
+  // The old "sheet" marker was produced by a short-lived migration that over-shifted A1 row refs.
+  const normalizedRows = sourceFormulaOrigin === 'sheet'
+    ? remapRowsFormulaReferencesByRowDelta(sourceNormalizedRows, -formulaHeaderRows.length)
+    : sourceNormalizedRows
+  const initialNormalizedGridRows = [
+    ...sourceGridRows.slice(0, dataStartRow).map((row) => normalizeRow(row, headers)),
+    ...normalizedRows,
+  ]
+  const normalizedMergedCells = normalizeMergedCells(
+    [
+      ...(!hasUnifiedGridRows ? getHeaderGroupMergeCells(sourceHeaderGroups) : []),
+      ...(Array.isArray(record.merged_cells) ? record.merged_cells : []),
+    ],
+    Math.max(initialNormalizedGridRows.length, getMergedCellsSourceRowCount(record.merged_cells)),
+    headers.length,
+  )
+  const normalizedGridRows = repairBlankHeaderMergeAnchors(
+    initialNormalizedGridRows,
+    normalizedMergedCells,
+    headers,
+    fieldRowIndex,
+  )
+  const normalizedHeaderGroups = hasUnifiedGridRows
+    ? createSingleCellHeaderGroupsFromGridRows(normalizedGridRows, fieldRowIndex, headers)
+    : expandHeaderGroupsToSingleCellRows(sourceHeaderGroups, headers.length)
+  const normalizedCellMeta = hasUnifiedGridRows
+    ? normalizeCellMetaMap(record.cell_meta, headers.length)
+    : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
   const formulaDisplayForWidths = buildFormulaDisplayStateForRows(
     headers,
     normalizedRows,
     normalizedColumnConfigs,
-    formulaOptions,
+    {
+      ...formulaOptions,
+      headerRows: formulaHeaderRows,
+      headerRowCount: formulaHeaderRows.length,
+    },
   )
   const normalizedWidths = headers.map((_, index) => {
     const width = Number(sourceWidths[index])
@@ -2232,11 +2716,16 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
     schema_version: 1,
     columns: headers,
     rows: normalizedRows,
-    header_groups: normalizeHeaderGroups(record.header_groups, headers.length),
-    cell_meta: normalizeCellMetaMap(record.cell_meta, headers.length),
+    grid_rows: normalizedGridRows,
+    data_start_row: dataStartRow,
+    field_row_index: fieldRowIndex,
+    merged_cells: normalizedMergedCells,
+    formula_reference_origin: 'sheet_v2',
+    header_groups: normalizedHeaderGroups,
+    cell_meta: normalizedCellMeta,
     column_configs: normalizedColumnConfigs,
     column_widths: normalizedWidths,
-    view_settings: normalizeSheetViewSettings(record.view_settings),
+    view_settings: normalizedSettings,
   }
 }
 
@@ -2247,6 +2736,11 @@ function buildCurrentDocument(): SheetDocument {
     schema_version: 1,
     columns: headers,
     rows: normalizedRows,
+    grid_rows: sheetGridRows.value.map((row) => normalizeRow(row, headers)),
+    data_start_row: sheetHeaderRowCount.value,
+    field_row_index: columnHeaderLevel.value,
+    merged_cells: normalizeMergedCells(mergedCells.value, sheetHeaderRowCount.value + totalRowCount.value, headers.length),
+    formula_reference_origin: 'sheet_v2',
     header_groups: normalizeHeaderGroups(headerGroups.value, headers.length),
     cell_meta: normalizeCellMetaMap(cellMeta.value, headers.length),
     column_configs: normalizeColumnConfigs(columnConfigs.value, headers),
@@ -2398,15 +2892,25 @@ function getCurrentFormulaDisplayRowOffset() {
   return effectivePaginationEnabled.value ? pageRowOffset.value : 0
 }
 
-function normalizeFormulaExpressionForPagedEngine(value: string, rowOffset: number, rowCount: number) {
+function normalizeFormulaExpressionForPagedEngine(
+  value: string,
+  rowOffset: number,
+  dataRowCount: number,
+  headerRowCount: number,
+) {
   const normalizedFormula = normalizeFormulaExpressionForEngine(value)
   if (rowOffset <= 0) {
     return normalizedFormula
   }
 
   return remapFormulaCellReferences(normalizedFormula, (sourceRowIndex) => {
-    const localRowIndex = sourceRowIndex - rowOffset
-    return localRowIndex >= 0 && localRowIndex < rowCount ? localRowIndex : null
+    if (sourceRowIndex < headerRowCount) {
+      return sourceRowIndex
+    }
+    const localDataRowIndex = sourceRowIndex - headerRowCount - rowOffset
+    return localDataRowIndex >= 0 && localDataRowIndex < dataRowCount
+      ? headerRowCount + localDataRowIndex
+      : null
   })
 }
 
@@ -3211,6 +3715,7 @@ function createEmptyFormulaDisplayState(): FormulaDisplayState {
   return {
     cells: [],
     errorKeys: new Set(),
+    dataStartRow: 0,
   }
 }
 
@@ -3220,7 +3725,14 @@ function buildFormulaDisplayStateForRows(
   sourceConfigs: Record<string, SheetColumnConfig> = columnConfigs.value,
   options: FormulaDisplayBuildOptions = {},
 ): FormulaDisplayState {
-  const normalizedRows = sourceRows.map((row) => normalizeRow(row, headers))
+  const normalizedDataRows = sourceRows.map((row) => normalizeRow(row, headers))
+  const normalizedHeaderRows = (options.headerRows ?? getCurrentFormulaHeaderRows(headers))
+    .map((row) => normalizeRow(row, headers))
+  const headerRowCount = normalizeNonNegativeInt(options.headerRowCount, normalizedHeaderRows.length)
+  const normalizedRows = [
+    ...normalizedHeaderRows.slice(0, headerRowCount),
+    ...normalizedDataRows,
+  ]
   const rowOffset = normalizeNonNegativeInt(options.rowOffset, getCurrentFormulaDisplayRowOffset())
   const formulaCells: Array<{ row: number; column: number }> = []
 
@@ -3236,6 +3748,7 @@ function buildFormulaDisplayStateForRows(
     return {
       cells: [],
       errorKeys: new Set(),
+      dataStartRow: headerRowCount,
     }
   }
 
@@ -3245,12 +3758,13 @@ function buildFormulaDisplayStateForRows(
     return {
       cells: [],
       errorKeys: new Set(),
+      dataStartRow: headerRowCount,
     }
   }
 
   const engineRows = normalizedRows.map((row) => row.map((cellValue) => (
     isFormulaExpression(cellValue)
-      ? normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedRows.length)
+      ? normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedDataRows.length, headerRowCount)
       : cellValue
   )))
   const cells = normalizedRows.map((row) => row.map(() => null as FormulaCellModel | null))
@@ -3284,11 +3798,21 @@ function buildFormulaDisplayStateForRows(
     engine?.destroy()
   }
 
-  return { cells, errorKeys }
+  return { cells, errorKeys, dataStartRow: headerRowCount }
 }
 
 function buildFormulaDisplayState(): FormulaDisplayState {
-  return buildFormulaDisplayStateForRows(normalizeHeaders(columnHeaders.value), rows.value, columnConfigs.value)
+  const headers = normalizeHeaders(columnHeaders.value)
+  const headerRows = getCurrentFormulaHeaderRows(headers)
+  return buildFormulaDisplayStateForRows(
+    headers,
+    rows.value,
+    columnConfigs.value,
+    {
+      headerRows,
+      headerRowCount: headerRows.length,
+    },
+  )
 }
 
 function refreshFormulaDisplayState() {
@@ -3301,7 +3825,8 @@ function getFormulaDisplayTextFromState(
   rowIndex: number,
   columnIndex: number,
 ) {
-  return displayState?.cells[rowIndex]?.[columnIndex]?.text ?? ''
+  const gridRowIndex = (displayState?.dataStartRow ?? sheetHeaderRowCount.value) + rowIndex
+  return displayState?.cells[gridRowIndex]?.[columnIndex]?.text ?? ''
 }
 
 function getFormulaCellModel(rowIndex: number, columnIndex: number) {
@@ -3312,7 +3837,8 @@ function getFormulaCellModel(rowIndex: number, columnIndex: number) {
   if (!row || !isFormulaExpression(row[columnIndex])) {
     return null
   }
-  return formulaDisplayState.value.cells[rowIndex]?.[columnIndex] ?? null
+  const gridRowIndex = formulaDisplayState.value.dataStartRow + rowIndex
+  return formulaDisplayState.value.cells[gridRowIndex]?.[columnIndex] ?? null
 }
 
 function getColumnConfigByIndex(
@@ -3438,6 +3964,61 @@ function remapFormulaCellReferences(
       return `${prefix}${columnAbsoluteMarker}${nextColumnLabel}${rowAbsoluteMarker}${nextRowIndex + 1}`
     },
   )
+}
+
+function remapRowsFormulaReferencesByRowDelta(sourceRows: SheetRow[], rowDelta: number) {
+  if (rowDelta === 0) {
+    return sourceRows
+  }
+
+  let changed = false
+  const nextRows = sourceRows.map((row) => row.map((cellValue) => {
+    if (!isFormulaExpression(cellValue)) {
+      return cellValue
+    }
+    const nextValue = remapFormulaCellReferences(cellValue, (rowIndex) => {
+      const nextRowIndex = rowIndex + rowDelta
+      return nextRowIndex >= 0 ? nextRowIndex : null
+    })
+    if (nextValue !== cellValue) {
+      changed = true
+    }
+    return nextValue
+  }))
+  return changed ? nextRows : sourceRows
+}
+
+function remapRowsFormulaReferencesForHeaderRowCountChange(
+  sourceRows: SheetRow[],
+  previousHeaderRowCount: number,
+  nextHeaderRowCount: number,
+) {
+  const delta = nextHeaderRowCount - previousHeaderRowCount
+  if (delta === 0) {
+    return sourceRows
+  }
+
+  let changed = false
+  const nextRows = sourceRows.map((row) => row.map((cellValue) => {
+    if (!isFormulaExpression(cellValue)) {
+      return cellValue
+    }
+
+    const nextValue = remapFormulaCellReferences(cellValue, (rowIndex) => {
+      if (delta > 0) {
+        return rowIndex >= previousHeaderRowCount ? rowIndex + delta : rowIndex
+      }
+      if (rowIndex >= nextHeaderRowCount && rowIndex < previousHeaderRowCount) {
+        return null
+      }
+      return rowIndex >= previousHeaderRowCount ? rowIndex + delta : rowIndex
+    })
+    if (nextValue !== cellValue) {
+      changed = true
+    }
+    return nextValue
+  }))
+  return changed ? nextRows : sourceRows
 }
 
 function normalizeAutofillRange(range: SheetAutofillRange) {
@@ -4220,11 +4801,13 @@ function refreshGridStructure() {
     colWidths: [...columnWidths.value],
     rowHeaders: sheetRowHeaders.value,
     fixedRowsTop: sheetHeaderRowCount.value,
-    mergeCells: sheetMergeCells.value,
     hiddenColumns: {
       columns: [...hiddenColumnIndexes.value],
       indicators: false,
     },
+  })
+  hot.updateSettings({
+    mergeCells: sheetMergeCells.value,
   })
   hot.render()
 }
@@ -4432,6 +5015,78 @@ function removeCellMetaColumns(startColumn: number, amount: number) {
   })
 }
 
+function normalizeCurrentMergedCells(
+  source = mergedCells.value,
+  rowCount = getMergedCellsDocumentRowCount(),
+  columnCount = columnHeaders.value.length,
+) {
+  return normalizeMergedCells(source, rowCount, columnCount)
+}
+
+function insertMergedCellRows(startRow: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    if (cell.row < startRow && startRow < cell.row + cell.rowspan) {
+      return { ...cell, rowspan: cell.rowspan + amount }
+    }
+    return cell.row >= startRow ? { ...cell, row: cell.row + amount } : cell
+  }), getMergedCellsDocumentRowCount() + amount)
+}
+
+function removeMergedCellRows(startRow: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const endRow = startRow + amount
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    const cellEnd = cell.row + cell.rowspan
+    if (cellEnd <= startRow) {
+      return cell
+    }
+    if (cell.row >= endRow) {
+      return { ...cell, row: cell.row - amount }
+    }
+    const overlap = Math.min(cellEnd, endRow) - Math.max(cell.row, startRow)
+    const nextRowspan = cell.rowspan - Math.max(0, overlap)
+    const nextRow = cell.row >= startRow ? startRow : cell.row
+    return { ...cell, row: nextRow, rowspan: nextRowspan }
+  }).filter((cell) => cell.rowspan > 1 || cell.colspan > 1))
+}
+
+function insertMergedCellColumns(startColumn: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    if (cell.col < startColumn && startColumn < cell.col + cell.colspan) {
+      return { ...cell, colspan: cell.colspan + amount }
+    }
+    return cell.col >= startColumn ? { ...cell, col: cell.col + amount } : cell
+  }), getMergedCellsDocumentRowCount(), columnHeaders.value.length + amount)
+}
+
+function removeMergedCellColumns(startColumn: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const endColumn = startColumn + amount
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    const cellEnd = cell.col + cell.colspan
+    if (cellEnd <= startColumn) {
+      return cell
+    }
+    if (cell.col >= endColumn) {
+      return { ...cell, col: cell.col - amount }
+    }
+    const overlap = Math.min(cellEnd, endColumn) - Math.max(cell.col, startColumn)
+    const nextColspan = cell.colspan - Math.max(0, overlap)
+    const nextCol = cell.col >= startColumn ? startColumn : cell.col
+    return { ...cell, col: nextCol, colspan: nextColspan }
+  }).filter((cell) => cell.rowspan > 1 || cell.colspan > 1))
+}
+
 function buildMoveIndexMap(length: number, movedIndexes: number[], finalIndex: number) {
   const sourceIndexes = Array.from({ length }, (_, index) => index)
   const nextOrder = reorderItemsByMove(sourceIndexes, movedIndexes, finalIndex)
@@ -4450,6 +5105,23 @@ function remapRowsWithFormulaReferenceMaps(
   const headers = columnHeaders.value
   const nextRows = Array.from({ length: sourceRows.length }, () => createEmptyRow(headers.length))
 
+  const headerRowCount = sheetHeaderRowCount.value
+  const pageStart = getDocumentRowIndex(0)
+  const pageEnd = pageStart + sourceRows.length
+  const formulaRowIndexMapper = rowIndexMap
+    ? (rowIndex: number) => {
+        if (rowIndex < headerRowCount) {
+          return rowIndex
+        }
+        const documentDataRowIndex = rowIndex - headerRowCount
+        if (documentDataRowIndex < pageStart || documentDataRowIndex >= pageEnd) {
+          return rowIndex
+        }
+        const localDataRowIndex = documentDataRowIndex - pageStart
+        return headerRowCount + pageStart + (rowIndexMap.get(localDataRowIndex) ?? localDataRowIndex)
+      }
+    : undefined
+
   sourceRows.forEach((row, sourceRowIndex) => {
     const normalizedRow = normalizeRow(row, headers)
     const targetRowIndex = rowIndexMap?.get(sourceRowIndex) ?? sourceRowIndex
@@ -4465,7 +5137,7 @@ function remapRowsWithFormulaReferenceMaps(
 
       nextRows[targetRowIndex][targetColumnIndex] = remapFormulaCellReferences(
         cellValue,
-        rowIndexMap ? (rowIndex) => rowIndexMap.get(rowIndex) ?? rowIndex : undefined,
+        formulaRowIndexMapper,
         columnIndexMap ? (columnIndex) => columnIndexMap.get(columnIndex) ?? columnIndex : undefined,
       )
     })
@@ -4484,13 +5156,24 @@ function remapFormulaReferencesInRows(
 
   let changed = false
   const headers = columnHeaders.value
+  const headerRowCount = sheetHeaderRowCount.value
+  const formulaRowIndexMapper = rowIndexMapper
+    ? (rowIndex: number) => {
+        if (rowIndex < headerRowCount) {
+          return rowIndex
+        }
+        const documentDataRowIndex = rowIndex - headerRowCount
+        const nextDocumentDataRowIndex = rowIndexMapper(documentDataRowIndex)
+        return nextDocumentDataRowIndex == null ? null : headerRowCount + nextDocumentDataRowIndex
+      }
+    : undefined
   const nextRows = rows.value.map((row, rowIndex) => (
     normalizeRow(row, headers).map((cellValue, columnIndex) => {
       if (!isFormulaExpression(cellValue)) {
         return cellValue
       }
 
-      const nextValue = remapFormulaCellReferences(cellValue, rowIndexMapper, columnIndexMapper)
+      const nextValue = remapFormulaCellReferences(cellValue, formulaRowIndexMapper, columnIndexMapper)
       if (nextValue !== cellValue) {
         changed = true
       }
@@ -4516,7 +5199,7 @@ function moveCellMetaColumns(movedColumns: number[], finalIndex: number) {
 }
 
 function moveCellMetaRows(movedRows: number[], finalIndex: number) {
-  const pageStart = getDocumentRowIndex(0)
+  const pageStart = sheetHeaderRowCount.value + getDocumentRowIndex(0)
   const indexMap = buildMoveIndexMap(rows.value.length, movedRows, finalIndex)
   const pageEnd = pageStart + rows.value.length
 
@@ -4532,8 +5215,59 @@ function moveCellMetaRows(movedRows: number[], finalIndex: number) {
   })
 }
 
+function canMoveMergedCellsColumns(movedColumns: number[]) {
+  const moved = new Set(movedColumns)
+  return normalizeCurrentMergedCells().every((cell) => {
+    let touched = 0
+    for (let column = cell.col; column < cell.col + cell.colspan; column += 1) {
+      if (moved.has(column)) {
+        touched += 1
+      }
+    }
+    return touched === 0 || touched === cell.colspan
+  })
+}
+
+function moveMergedCellsColumns(movedColumns: number[], finalIndex: number) {
+  const indexMap = buildMoveIndexMap(columnHeaders.value.length, movedColumns, finalIndex)
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    const mappedColumns = Array.from({ length: cell.colspan }, (_, offset) => indexMap.get(cell.col + offset) ?? cell.col + offset)
+      .sort((left, right) => left - right)
+    return { ...cell, col: mappedColumns[0] ?? cell.col }
+  }))
+}
+
+function canMoveMergedCellsRows(movedRows: number[]) {
+  const pageStart = sheetHeaderRowCount.value + getDocumentRowIndex(0)
+  const moved = new Set(movedRows.map((row) => pageStart + row))
+  return normalizeCurrentMergedCells().every((cell) => {
+    let touched = 0
+    for (let row = cell.row; row < cell.row + cell.rowspan; row += 1) {
+      if (moved.has(row)) {
+        touched += 1
+      }
+    }
+    return touched === 0 || touched === cell.rowspan
+  })
+}
+
+function moveMergedCellsRows(movedRows: number[], finalIndex: number) {
+  const pageStart = sheetHeaderRowCount.value + getDocumentRowIndex(0)
+  const indexMap = buildMoveIndexMap(rows.value.length, movedRows, finalIndex)
+  mergedCells.value = normalizeCurrentMergedCells(mergedCells.value.map((cell) => {
+    if (cell.row < pageStart || cell.row >= pageStart + rows.value.length) {
+      return cell
+    }
+    const mappedRows = Array.from({ length: cell.rowspan }, (_, offset) => {
+      const localRow = cell.row + offset - pageStart
+      return pageStart + (indexMap.get(localRow) ?? localRow)
+    }).sort((left, right) => left - right)
+    return { ...cell, row: mappedRows[0] ?? cell.row }
+  }))
+}
+
 function remapVisiblePageCellMetaRows(rowIndexMap: Map<number, number>) {
-  const pageStart = getDocumentRowIndex(0)
+  const pageStart = sheetHeaderRowCount.value + getDocumentRowIndex(0)
   const pageEnd = pageStart + rows.value.length
   cellMeta.value = transformCellMetaPositions(cellMeta.value, ({ row, column }) => {
     if (row < pageStart || row >= pageEnd) {
@@ -4564,6 +5298,7 @@ function handleBeforeColumnMove(
     && effectiveMovedColumns.length > 0
     && effectiveFinalIndex >= 0
     && effectiveFinalIndex + effectiveMovedColumns.length <= columnHeaders.value.length
+    && canMoveMergedCellsColumns(effectiveMovedColumns)
   )
 
   if (!effectiveMovePossible) {
@@ -4582,6 +5317,7 @@ function handleBeforeColumnMove(
 
   clearEditingColumnState()
   moveCellMetaColumns(effectiveMovedColumns, effectiveFinalIndex)
+  moveMergedCellsColumns(effectiveMovedColumns, effectiveFinalIndex)
   columnHeaders.value = nextHeaders
   columnWidths.value = nextWidths
   rows.value = nextRows
@@ -4628,6 +5364,7 @@ function handleBeforeRowMove(
     && effectiveMovedRows.length > 0
     && effectiveFinalIndex >= 0
     && effectiveFinalIndex + effectiveMovedRows.length <= rows.value.length
+    && canMoveMergedCellsRows(effectiveMovedRows)
   )
 
   if (!effectiveMovePossible) {
@@ -4643,6 +5380,7 @@ function handleBeforeRowMove(
 
   clearEditingColumnState()
   moveCellMetaRows(effectiveMovedRows, effectiveFinalIndex)
+  moveMergedCellsRows(effectiveMovedRows, effectiveFinalIndex)
   rows.value = nextRows
   const movedRangeStart = effectiveFinalIndex
   const movedRangeEnd = effectiveFinalIndex + effectiveMovedRows.length - 1
@@ -4705,22 +5443,50 @@ function commitInlineRenameColumn() {
   const currentHeader = columnHeaders.value[columnIndex] ?? createFallbackHeader(columnIndex)
   const nextHeader = editingColumnTitle.value.trim()
 
-  if (!nextHeader) {
-    ElMessage.warning('字段名不能为空')
-    focusEditingColumnInput()
-    return
-  }
-
-  if (columnHeaders.value.some((header, index) => index !== columnIndex && header === nextHeader)) {
-    ElMessage.warning('字段名不能重复')
-    focusEditingColumnInput()
-    return
-  }
-
   if (nextHeader === currentHeader) {
     clearEditingColumnState()
     refreshGridStructure()
     return
+  }
+
+  if (!renameColumnHeaderAtIndex(columnIndex, nextHeader, { focusOnInvalid: true })) {
+    return
+  }
+
+  clearEditingColumnState()
+  refreshGridStructure()
+}
+
+function renameColumnHeaderAtIndex(
+  columnIndex: number,
+  nextHeaderSource: string,
+  options: { focusOnInvalid?: boolean } = {},
+) {
+  if (columnIndex < 0 || columnIndex >= columnHeaders.value.length) {
+    return false
+  }
+
+  const currentHeader = columnHeaders.value[columnIndex] ?? createFallbackHeader(columnIndex)
+  const nextHeader = nextHeaderSource.trim()
+
+  if (!nextHeader) {
+    ElMessage.warning('字段名不能为空')
+    if (options.focusOnInvalid) {
+      focusEditingColumnInput()
+    }
+    return false
+  }
+
+  if (columnHeaders.value.some((header, index) => index !== columnIndex && header === nextHeader)) {
+    ElMessage.warning('字段名不能重复')
+    if (options.focusOnInvalid) {
+      focusEditingColumnInput()
+    }
+    return false
+  }
+
+  if (nextHeader === currentHeader) {
+    return false
   }
 
   const nextHeaders = [...columnHeaders.value]
@@ -4737,9 +5503,96 @@ function commitInlineRenameColumn() {
     nextConfigs[nextHeader] = { ...currentConfig }
   }
   columnConfigs.value = nextConfigs
+  return true
+}
 
-  clearEditingColumnState()
-  refreshGridStructure()
+function setColumnNoteAtIndex(columnIndex: number, nextNoteSource: string) {
+  const header = columnHeaders.value[columnIndex]
+  if (!header) {
+    return false
+  }
+
+  const nextNote = normalizeColumnNote(nextNoteSource)
+  const currentNote = getColumnNote(columnIndex)
+  if (nextNote === currentNote) {
+    return false
+  }
+
+  const nextConfigs = { ...columnConfigs.value }
+  const nextConfig: SheetColumnConfig = { ...(nextConfigs[header] ?? {}) }
+  if (nextNote) {
+    nextConfig.note = nextNote
+  } else {
+    delete nextConfig.note
+  }
+  nextConfigs[header] = nextConfig
+  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
+  const normalizedNextConfigs = normalizeColumnConfigs(nextConfigs, columnHeaders.value)
+  const nextFormulaHeaderRowCount = getFormulaHeaderRowsForDocument(
+    columnHeaders.value,
+    normalizedHeaderGroups.value,
+    normalizedNextConfigs,
+    sheetViewSettings.value,
+  ).length
+  columnConfigs.value = normalizedNextConfigs
+  const nextRows = remapRowsFormulaReferencesForHeaderRowCountChange(
+    rows.value,
+    previousFormulaHeaderRowCount,
+    nextFormulaHeaderRowCount,
+  )
+  if (nextRows !== rows.value) {
+    rows.value = nextRows
+  }
+  return true
+}
+
+function setHeaderGroupLabelAtGridCell(rowIndex: number, columnIndex: number, nextLabelSource: string) {
+  if (rowIndex < 0 || rowIndex >= normalizedHeaderGroups.value.length || columnIndex < 0) {
+    return false
+  }
+
+  const nextGroups = normalizedHeaderGroups.value.map((row) => row.map((cell) => ({ ...cell })))
+  const row = nextGroups[rowIndex]
+  if (!row) {
+    return false
+  }
+
+  let startColumn = 0
+  for (let cellIndex = 0; cellIndex < row.length; cellIndex += 1) {
+    const cell = row[cellIndex]
+    const colspan = Math.max(1, cell.colspan ?? 1)
+    const endColumn = startColumn + colspan - 1
+    if (columnIndex >= startColumn && columnIndex <= endColumn) {
+      const nextLabel = normalizeCellValue(nextLabelSource)
+      if (nextLabel === cell.label) {
+        return false
+      }
+      row[cellIndex] = { ...cell, label: nextLabel }
+      headerGroups.value = normalizeHeaderGroups(nextGroups, columnHeaders.value.length)
+      return true
+    }
+    startColumn += colspan
+  }
+
+  return false
+}
+
+function applySheetHeaderGridChange(gridRowIndex: number, columnIndex: number, nextValue: unknown) {
+  if (columnIndex < 0 || !isSheetHeaderGridRow(gridRowIndex)) {
+    return false
+  }
+
+  const textValue = normalizeCellValue(nextValue)
+  if (gridRowIndex < normalizedHeaderGroups.value.length) {
+    return setHeaderGroupLabelAtGridCell(gridRowIndex, columnIndex, textValue)
+  }
+  if (gridRowIndex === columnHeaderLevel.value) {
+    return renameColumnHeaderAtIndex(columnIndex, textValue)
+  }
+  if (gridRowIndex === columnNoteHeaderLevel.value) {
+    return setColumnNoteAtIndex(columnIndex, textValue)
+  }
+  return false
 }
 
 function cancelInlineRenameColumn() {
@@ -4767,24 +5620,28 @@ function handleBeforeCellMouseDown(
       return
     }
 
-    const headerLevel = getSheetHeaderGridLevel(coords.row)
-    controller.row = false
-    controller.column = false
-    controller.cell = false
-    event.preventDefault()
-    event.stopImmediatePropagation()
+    const anchor = getMergeAnchorForGridCell(coords.row, coords.col)
+    const headerLevel = getSheetHeaderGridLevel(anchor.row)
+    if (
+      event.button === 0
+      && insertFormulaReferenceText(getCellReferenceLabelForSheetRow(anchor.documentRow, anchor.column))
+    ) {
+      markFormulaReferencePointerDown()
+      stopFormulaReferenceCellSelection(event, controller)
+      return
+    }
 
     if (headerLevel === columnHeaderLevel.value && (event.ctrlKey || event.metaKey)) {
-      const headerLink = getColumnHeaderLink(coords.col)
+      const headerLink = getCellLinkAt(anchor.documentRow, anchor.column) ?? getColumnHeaderLink(anchor.column)
       if (headerLink) {
+        event.preventDefault()
+        event.stopPropagation()
         openCellLink(headerLink)
         return
       }
     }
-    selectSheetHeaderCell(coords.col, headerLevel)
-    if (event.button === 0 && event.detail >= 2 && headerLevel === columnHeaderLevel.value) {
-      startInlineRenameColumn(coords.col)
-    }
+    clearFormulaBarSelection()
+    selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
     return
   }
 
@@ -4793,11 +5650,12 @@ function handleBeforeCellMouseDown(
   }
 
   clearSheetHeaderSelection()
-  const dataRow = getDataRowIndex(coords.row)
+  const anchor = getMergeAnchorForGridCell(coords.row, coords.col)
+  const dataRow = getDataRowIndex(anchor.row)
   if (dataRow < 0) {
     return
   }
-  if (beginFormulaReferenceRange(dataRow, coords.col)) {
+  if (beginFormulaReferenceRange(dataRow, anchor.column)) {
     stopFormulaReferenceCellSelection(event, controller)
   }
 }
@@ -4857,17 +5715,13 @@ function handleHeaderMouseDown(event: MouseEvent, coords: { row: number; col: nu
     return
   }
 
-  if (coords.col < 0 || getSheetHeaderGridLevel(coords.row) !== columnHeaderLevel.value || event.detail < 2) {
-    return
-  }
-
-  startInlineRenameColumn(coords.col)
+  clearSheetHeaderSelection()
 }
 
 function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, headerLevel: number) {
-  th.style.backgroundColor = ''
-  th.style.color = ''
-  th.style.fontWeight = ''
+  th.style.removeProperty('background-color')
+  th.style.removeProperty('color')
+  th.style.removeProperty('font-weight')
 
   if (column < 0 || headerLevel < 0) {
     return
@@ -4879,13 +5733,22 @@ function applyHeaderCellStyle(column: number, th: HTMLTableHeaderCellElement, he
   }
 
   if (style.background_color) {
-    th.style.backgroundColor = style.background_color
+    th.style.setProperty('background-color', style.background_color, 'important')
   }
   if (style.text_color) {
-    th.style.color = style.text_color
+    th.style.setProperty('color', style.text_color, 'important')
   }
   if (style.background_color || style.text_color) {
-    th.style.fontWeight = '600'
+    th.style.setProperty('font-weight', '600')
+  }
+}
+
+function applyCellMetaStyle(TD: HTMLTableCellElement, style: SheetCellStyle | null) {
+  if (style?.background_color) {
+    TD.style.setProperty('background-color', style.background_color, 'important')
+  }
+  if (style?.text_color) {
+    TD.style.setProperty('color', style.text_color, 'important')
   }
 }
 
@@ -4901,12 +5764,12 @@ function resetRenderedCellState(TD: HTMLTableCellElement) {
     'sheet-grid-note-header-cell',
     'sheet-grid-header-cell-selected',
   )
-  TD.style.backgroundColor = ''
-  TD.style.color = ''
-  TD.style.fontSize = ''
-  TD.style.fontWeight = ''
-  TD.style.lineHeight = ''
-  TD.style.textAlign = ''
+  TD.style.removeProperty('background-color')
+  TD.style.removeProperty('color')
+  TD.style.removeProperty('font-size')
+  TD.style.removeProperty('font-weight')
+  TD.style.removeProperty('line-height')
+  TD.style.removeProperty('text-align')
   if (TD.dataset.hyperlinkUrl) {
     delete TD.dataset.hyperlinkUrl
   }
@@ -4929,7 +5792,7 @@ function renderFieldHeaderCell(TD: HTMLTableCellElement, column: number) {
     titleEl.className = 'sheet-header-title'
     titleEl.textContent = headerTitle
     const note = getColumnNote(column)
-    const headerLink = getColumnHeaderLink(column)
+    const headerLink = getCellLinkAt(getDocumentGridRowIndex(columnHeaderLevel.value), column) ?? getColumnHeaderLink(column)
     if (headerLink) {
       titleEl.classList.add('has-link')
       titleEl.dataset.hyperlinkUrl = headerLink.url
@@ -5003,6 +5866,13 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   if (row < normalizedHeaderGroups.value.length) {
     TD.classList.add('sheet-grid-group-header-cell')
     applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
+    const link = getCellLinkAt(getDocumentGridRowIndex(row), column)
+    if (link) {
+      TD.classList.add('sheet-cell-has-link')
+      TD.dataset.hyperlinkUrl = link.url
+      TD.title = link.url
+    }
     setRenderedCellText(TD, value)
     return
   }
@@ -5010,15 +5880,22 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   if (row === columnHeaderLevel.value) {
     TD.classList.add('sheet-grid-field-header-cell')
     applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
     renderFieldHeaderCell(TD, column)
     return
   }
 
   TD.classList.add('sheet-grid-note-header-cell')
   const note = getColumnNote(column)
+  applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
+  const link = getCellLinkAt(getDocumentGridRowIndex(row), column)
+  if (link) {
+    TD.classList.add('sheet-cell-has-link')
+    TD.dataset.hyperlinkUrl = link.url
+  }
   setRenderedCellText(TD, note)
-  if (note) {
-    TD.title = note
+  if (note || link) {
+    TD.title = [note, link?.url].filter(Boolean).join('\n')
   }
 }
 
@@ -5047,6 +5924,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
   return (
     normalizedLeft.show_row_numbers === normalizedRight.show_row_numbers
     && normalizedLeft.row_marker_numbering === normalizedRight.row_marker_numbering
+    && normalizedLeft.row_marker_origin === normalizedRight.row_marker_origin
     && normalizedLeft.show_column_markers === normalizedRight.show_column_markers
     && normalizedLeft.column_marker_style === normalizedRight.column_marker_style
     && normalizedLeft.column_note_display === normalizedRight.column_note_display
@@ -5091,12 +5969,28 @@ async function applySheetSettings() {
     ...sheetViewSettings.value,
     pagination: { ...sheetViewSettings.value.pagination },
   }
+  const previousRows = rows.value
 
   const paginationChanged = (
     sheetViewSettings.value.pagination.enabled !== nextSettings.pagination.enabled
     || sheetViewSettings.value.pagination.page_size !== nextSettings.pagination.page_size
   )
+  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
+  const nextFormulaHeaderRowCount = getFormulaHeaderRowsForDocument(
+    columnHeaders.value,
+    normalizedHeaderGroups.value,
+    normalizeColumnConfigs(columnConfigs.value, columnHeaders.value),
+    nextSettings,
+  ).length
+  const nextRows = remapRowsFormulaReferencesForHeaderRowCountChange(
+    rows.value,
+    previousFormulaHeaderRowCount,
+    nextFormulaHeaderRowCount,
+  )
 
+  if (nextRows !== rows.value) {
+    rows.value = nextRows
+  }
   sheetViewSettings.value = nextSettings
   refreshGridStructure()
   await refreshComputedRowHeights()
@@ -5114,6 +6008,7 @@ async function applySheetSettings() {
     } catch (error) {
       console.warn('Failed to save sheet settings', error)
       sheetViewSettings.value = previousSettings
+      rows.value = previousRows
       refreshGridStructure()
       await refreshComputedRowHeights()
       await updateSheetViewportHeight()
@@ -5150,6 +6045,11 @@ function loadSheetDocument(document: SheetDocument) {
   columnHeaders.value = normalizedHeaders
   headerGroups.value = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length)
   columnConfigs.value = normalizeColumnConfigs(document.column_configs, normalizedHeaders)
+  mergedCells.value = normalizeMergedCells(
+    document.merged_cells,
+    Math.max(document.grid_rows?.length ?? 0, sheetHeaderRowCount.value + normalizedRows.length, getMergedCellsSourceRowCount(document.merged_cells)),
+    normalizedHeaders.length,
+  )
   cellMeta.value = normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length)
   sheetViewSettings.value = normalizeSheetViewSettings(document.view_settings)
   pageSize.value = sheetViewSettings.value.pagination.page_size
@@ -5567,7 +6467,7 @@ function getSelectedAttendanceOnlineSheetCell() {
     return null
   }
 
-  const link = getCellLinkAt(cell.documentRow, cell.column)
+  const link = getCellLinkAt(sheetHeaderRowCount.value + cell.documentRow, cell.column)
   if (!link?.url) {
     return null
   }
@@ -5979,8 +6879,32 @@ function handleBeforeCopy(data: unknown[][], coords: unknown[]) {
     sheetInternalClipboard = null
     return
   }
-  if (range.startRow < sheetHeaderRowCount.value) {
+  const documentRange = {
+    startRow: getDocumentGridRowIndex(range.startRow),
+    endRow: getDocumentGridRowIndex(range.endRow),
+    startColumn: range.startColumn,
+    endColumn: range.endColumn,
+  }
+  const visibleData = data.map((row, rowOffset) => (
+    row.map((_, columnOffset) => {
+      const gridRow = range.startRow + rowOffset
+      const column = range.startColumn + columnOffset
+      const anchor = getMergeAnchorForGridCell(gridRow, column)
+      return anchor.row === gridRow && anchor.column === column
+        ? getCellDisplayText(getDataRowIndex(anchor.row), anchor.column, getGridCellRawValue(anchor.row, anchor.column))
+        : ''
+    })
+  ))
+
+  if (range.startRow < sheetHeaderRowCount.value || rangePartiallyIntersectsMergedCells(documentRange)) {
     sheetInternalClipboard = null
+    visibleData.forEach((row, rowIndex) => {
+      row.forEach((cell, columnIndex) => {
+        if (Array.isArray(data[rowIndex])) {
+          data[rowIndex][columnIndex] = cell
+        }
+      })
+    })
     return
   }
 
@@ -6140,6 +7064,16 @@ function handleBeforePaste(data: unknown[][], coords: unknown[]) {
     warnReadOnlyAction()
     return false
   }
+  const targetDocumentRange = {
+    startRow: getDocumentGridRowIndex(targetRange.startRow),
+    endRow: getDocumentGridRowIndex(targetRange.endRow),
+    startColumn: targetRange.startColumn,
+    endColumn: getPasteRequiredEndColumn(data, targetRange),
+  }
+  if (rangePartiallyIntersectsMergedCells(targetDocumentRange)) {
+    ElMessage.warning('粘贴范围不能只覆盖合并单元格的一部分')
+    return false
+  }
   const targetDataStartRow = getDataRowIndex(targetRange.startRow)
   const targetDataRange = {
     ...targetRange,
@@ -6213,15 +7147,6 @@ function normalizeCellInputValueForColumn(value: string, columnIndex: number) {
 
 function handleBeforeChange(changes: unknown, source?: string) {
   if (
-    !canEditData.value
-    && !canEditPartialData.value
-    && source !== 'loadData'
-    && source !== 'external-update'
-  ) {
-    return false
-  }
-
-  if (
     !Array.isArray(changes)
     || source === 'loadData'
     || source === 'external-update'
@@ -6229,7 +7154,50 @@ function handleBeforeChange(changes: unknown, source?: string) {
     return
   }
 
-  if (changes.some((change) => Array.isArray(change) && getDataRowIndex(Number(change[0])) < 0)) {
+  changes.forEach((change) => {
+    if (!Array.isArray(change) || change.length < 4) {
+      return
+    }
+    const rowIndex = Number(change[0])
+    const columnIndex = Number(change[1])
+    if (!Number.isInteger(rowIndex) || !Number.isInteger(columnIndex) || rowIndex < 0 || columnIndex < 0) {
+      return
+    }
+    const anchor = getMergeAnchorForGridCell(rowIndex, columnIndex)
+    if (anchor.row !== rowIndex || anchor.column !== columnIndex) {
+      change[0] = anchor.row
+      change[1] = anchor.column
+    }
+  })
+
+  const headerChanges = changes.filter((change) => (
+    Array.isArray(change)
+    && getDataRowIndex(Number(change[0])) < 0
+  ))
+  if (headerChanges.length > 0) {
+    if (!canEditConfig.value) {
+      warnReadOnlyAction()
+      return false
+    }
+
+    let changed = false
+    headerChanges.forEach((change) => {
+      const rowIndex = Number(change[0])
+      const columnIndex = Number(change[1])
+      if (!Number.isInteger(rowIndex) || !Number.isInteger(columnIndex)) {
+        return
+      }
+      changed = applySheetHeaderGridChange(rowIndex, columnIndex, change[3]) || changed
+    })
+    if (changed) {
+      clearEditingColumnState()
+      refreshGridStructure()
+      void refreshComputedRowHeights()
+    }
+    return false
+  }
+
+  if (!canEditData.value && !canEditPartialData.value) {
     return false
   }
 
@@ -6323,18 +7291,22 @@ function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
 
 function handleAfterCreateRow(index = 0, amount = 1) {
   const dataIndex = Math.max(0, getDataRowIndex(index))
-  shiftCellMetaRows(getDocumentRowIndex(dataIndex), amount)
+  const documentDataIndex = getDocumentRowIndex(dataIndex)
+  shiftCellMetaRows(sheetHeaderRowCount.value + documentDataIndex, amount)
+  insertMergedCellRows(sheetHeaderRowCount.value + documentDataIndex, amount)
   syncRowsFromGrid()
-  remapFormulaReferencesInRows((rowIndex) => (rowIndex >= dataIndex ? rowIndex + amount : rowIndex))
+  remapFormulaReferencesInRows((rowIndex) => (rowIndex >= documentDataIndex ? rowIndex + amount : rowIndex))
 }
 
 function handleAfterRemoveRow(index = 0, amount = 1) {
   const dataIndex = Math.max(0, getDataRowIndex(index))
-  removeCellMetaRows(getDocumentRowIndex(dataIndex), amount)
+  const documentDataIndex = getDocumentRowIndex(dataIndex)
+  removeCellMetaRows(sheetHeaderRowCount.value + documentDataIndex, amount)
+  removeMergedCellRows(sheetHeaderRowCount.value + documentDataIndex, amount)
   syncRowsFromGrid()
-  const endIndex = dataIndex + amount
+  const endIndex = documentDataIndex + amount
   remapFormulaReferencesInRows((rowIndex) => {
-    if (rowIndex >= dataIndex && rowIndex < endIndex) {
+    if (rowIndex >= documentDataIndex && rowIndex < endIndex) {
       return null
     }
     return rowIndex >= endIndex ? rowIndex - amount : rowIndex
@@ -6354,6 +7326,7 @@ function handleAfterCreateCol(index: number, amount: number) {
   columnWidths.value = nextWidths
   columnConfigs.value = normalizeColumnConfigs(columnConfigs.value, nextHeaders)
   shiftCellMetaColumns(index, amount)
+  insertMergedCellColumns(index, amount)
   refreshGridStructure()
   syncRowsFromGrid()
   remapFormulaReferencesInRows(undefined, (columnIndex) => (
@@ -6376,6 +7349,7 @@ function handleAfterRemoveCol(index: number, amount: number) {
     : [getAdaptiveColumnWidth(columnHeaders.value[0])]
   columnConfigs.value = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
   removeCellMetaColumns(index, amount)
+  removeMergedCellColumns(index, amount)
   refreshGridStructure()
   syncRowsFromGrid()
   const endIndex = index + amount
@@ -6475,28 +7449,6 @@ function isSheetHeaderCellSelected(column: number, headerLevel: number) {
   )
 }
 
-function selectSheetHeaderCell(column: number, headerLevel: number) {
-  const hot = getHotInstance()
-  if (!hot || column < 0 || column >= columnHeaders.value.length || headerLevel < 0) {
-    return false
-  }
-
-  closeColumnNotePopover()
-  if (formulaBarFocused.value) {
-    commitFormulaBarDraft()
-  }
-  clearFormulaBarSelection()
-  clearColumnMarkerSelection()
-  hasContextMenuFallbackSelection.value = false
-  if (hot.getSelectedLast()) {
-    hot.deselectCell()
-  }
-  selectedSheetHeaderCell.value = { column, headerLevel }
-  hot.render()
-  hot.listen()
-  return true
-}
-
 function syncColumnMarkerSelection() {
   if (!isSelectedByColumnHeader() || isSelectedByCorner()) {
     if (selectedColumnMarkerBounds.value || columnMarkerSelectionAnchor != null) {
@@ -6538,6 +7490,10 @@ function getGridRowIndex(dataRowIndex: number) {
   return dataRowIndex + sheetHeaderRowCount.value
 }
 
+function getSheetCellDocumentRow(rowIndex: number) {
+  return getDocumentGridRowIndex(rowIndex)
+}
+
 function isSheetHeaderGridRow(rowIndex: number) {
   return rowIndex >= 0 && rowIndex < sheetHeaderRowCount.value
 }
@@ -6551,12 +7507,33 @@ function getSheetHeaderGridLevel(rowIndex: number) {
 
 function getSheetRowHeaderLabel(gridRowIndex: number) {
   const rowIndex = getDataRowIndex(gridRowIndex)
+  const numbering = sheetViewSettings.value.row_marker_numbering
+  const pageOffset = effectivePaginationEnabled.value && numbering === 'global' ? pageRowOffset.value : 0
+
+  if (sheetViewSettings.value.row_marker_origin === 'sheet_zero') {
+    if (gridRowIndex < 0) {
+      return ''
+    }
+    if (rowIndex < 0) {
+      return String(gridRowIndex)
+    }
+    return String(pageOffset + sheetHeaderRowCount.value + rowIndex)
+  }
+
+  if (sheetViewSettings.value.row_marker_origin === 'sheet') {
+    if (gridRowIndex < 0) {
+      return ''
+    }
+    if (rowIndex < 0) {
+      return String(gridRowIndex + 1)
+    }
+    return String(pageOffset + sheetHeaderRowCount.value + rowIndex + 1)
+  }
+
   if (rowIndex < 0) {
     return ''
   }
-  const numbering = sheetViewSettings.value.row_marker_numbering
-  const offset = effectivePaginationEnabled.value && numbering === 'global' ? pageRowOffset.value : 0
-  return String(offset + rowIndex + 1)
+  return String(pageOffset + rowIndex + 1)
 }
 
 function clearFormulaBarSelection() {
@@ -6629,8 +7606,16 @@ function isFormulaReferencePickMode() {
   return !!formulaBarCell.value && formulaBarFocused.value && formulaBarDraft.value.trimStart().startsWith('=')
 }
 
+function getSheetFormulaRowIndex(dataRowIndex: number) {
+  return sheetHeaderRowCount.value + getDocumentRowIndex(dataRowIndex)
+}
+
+function getCellReferenceLabelForSheetRow(sheetRowIndex: number, columnIndex: number) {
+  return `${getExcelColumnLabel(columnIndex)}${sheetRowIndex + 1}`
+}
+
 function getCellReferenceLabel(rowIndex: number, columnIndex: number) {
-  return `${getExcelColumnLabel(columnIndex)}${getDocumentRowIndex(rowIndex) + 1}`
+  return getCellReferenceLabelForSheetRow(getSheetFormulaRowIndex(rowIndex), columnIndex)
 }
 
 function getCellReferenceRangeLabel(startRow: number, startColumn: number, endRow: number, endColumn: number) {
@@ -6696,6 +7681,41 @@ function getEditorTextInput(editor: SheetActiveEditor) {
 function getActiveEditorDraft(editor: SheetActiveEditor) {
   const input = getEditorTextInput(editor)
   return normalizeCellValue(input?.value ?? editor.getValue?.() ?? '')
+}
+
+function commitPendingSheetGridEdit() {
+  if (formulaBarFocused.value) {
+    commitFormulaBarDraft()
+  }
+
+  const editor = getActiveOpenedEditor()
+  if (!editor) {
+    syncRowsFromGrid()
+    return
+  }
+
+  const rowIndex = Number(editor.row)
+  const columnIndex = Number(editor.col)
+  const draftValue = getActiveEditorDraft(editor)
+  if (typeof editor.finishEditing === 'function') {
+    editor.finishEditing(false)
+  } else if (Number.isInteger(rowIndex) && Number.isInteger(columnIndex) && rowIndex >= 0 && columnIndex >= 0) {
+    const anchor = getMergeAnchorForGridCell(rowIndex, columnIndex)
+    if (isSheetHeaderGridRow(anchor.row)) {
+      applySheetHeaderGridChange(anchor.row, anchor.column, draftValue)
+    } else {
+      const dataRow = getDataRowIndex(anchor.row)
+      if (dataRow >= 0) {
+        const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+        if (!nextRows[dataRow]) {
+          nextRows[dataRow] = createEmptyRow(columnHeaders.value.length)
+        }
+        nextRows[dataRow][anchor.column] = normalizeCellInputValueForColumn(draftValue, anchor.column)
+        rows.value = nextRows
+      }
+    }
+  }
+  syncRowsFromGrid()
 }
 
 function normalizeTextSelection(input: HTMLInputElement | HTMLTextAreaElement | null, currentValue: string) {
@@ -7205,27 +8225,25 @@ function scheduleFormulaReferenceRangeFinish(options: { restoreFocus?: boolean }
   }, 0)
 }
 
-function insertFormulaReferenceIntoDraft(rowIndex: number, columnIndex: number) {
-  const reference = getCellReferenceLabel(rowIndex, columnIndex)
-  const input = getFormulaBarNativeInput()
-  const currentValue = formulaBarDraft.value
-  const selection = normalizeTextSelection(input, currentValue)
-  const target: FormulaReferenceInsertionTarget = {
-    kind: 'formula-bar',
-    currentValue,
-    ...selection,
+function insertFormulaReferenceText(reference: string) {
+  const target = getFormulaReferenceInsertionTarget()
+  if (!target) {
+    return false
   }
-  const { selectionStart, selectionEnd } = getFormulaReferenceReplacementBounds(target)
-  const nextValue = `${currentValue.slice(0, selectionStart)}${reference}${currentValue.slice(selectionEnd)}`
 
-  formulaBarDraft.value = nextValue
-  setFormulaReferenceReplacementSpan({ kind: 'formula-bar' }, selectionStart, reference)
-  void nextTick(() => {
-    const nextInput = getFormulaBarNativeInput()
-    const cursorPosition = selectionStart + reference.length
-    nextInput?.setSelectionRange(cursorPosition, cursorPosition)
-    formulaBarInputRef.value?.focus?.()
-  })
+  const editTarget = getFormulaReferenceEditTarget(target)
+  const { selectionStart, selectionEnd } = getFormulaReferenceReplacementBounds(target)
+  const nextValue = `${target.currentValue.slice(0, selectionStart)}${reference}${target.currentValue.slice(selectionEnd)}`
+  const cursorPosition = selectionStart + reference.length
+
+  setFormulaReferenceTargetValue(editTarget, nextValue)
+  setFormulaReferenceReplacementSpan(editTarget, selectionStart, reference)
+  focusFormulaReferenceTarget(editTarget, cursorPosition)
+  return true
+}
+
+function insertFormulaReferenceIntoDraft(rowIndex: number, columnIndex: number) {
+  return insertFormulaReferenceText(getCellReferenceLabel(rowIndex, columnIndex))
 }
 
 function syncFormulaBarFromInlineEditor(editor: SheetActiveEditor, value: string) {
@@ -7357,37 +8375,7 @@ function handleFormulaBarKeyDown(event: KeyboardEvent) {
 }
 
 function insertFormulaReferenceIntoActiveEditor(rowIndex: number, columnIndex: number) {
-  const editor = getActiveOpenedEditor()
-  if (!editor) {
-    return false
-  }
-
-  const reference = getCellReferenceLabel(rowIndex, columnIndex)
-  const input = getEditorTextInput(editor)
-  const currentValue = getActiveEditorDraft(editor)
-  const target: FormulaReferenceInsertionTarget = {
-    kind: 'inline',
-    editor,
-    currentValue,
-    ...normalizeTextSelection(input, currentValue),
-  }
-  const { selectionStart, selectionEnd } = getFormulaReferenceReplacementBounds(target)
-  const nextValue = `${currentValue.slice(0, selectionStart)}${reference}${currentValue.slice(selectionEnd)}`
-
-  editor.setValue?.(nextValue)
-  if (input) {
-    input.value = nextValue
-  }
-  syncFormulaBarFromInlineEditor(editor, nextValue)
-  setFormulaReferenceReplacementSpan({ kind: 'inline', editor }, selectionStart, reference)
-
-  void nextTick(() => {
-    const nextInput = getEditorTextInput(editor)
-    const cursorPosition = selectionStart + reference.length
-    nextInput?.setSelectionRange(cursorPosition, cursorPosition)
-    editor.focus?.()
-  })
-  return true
+  return insertFormulaReferenceText(getCellReferenceLabel(rowIndex, columnIndex))
 }
 
 function commitFormulaBarDraft() {
@@ -7499,7 +8487,12 @@ function handleAfterSelection(row: number, column: number) {
   refreshContextMenuFallbackSelectionState()
   if (isSheetHeaderGridRow(row) && column >= 0) {
     clearFormulaBarSelection()
-    selectSheetHeaderCell(column, getSheetHeaderGridLevel(row))
+    const anchor = getMergeAnchorForGridCell(row, column)
+    const headerLevel = getSheetHeaderGridLevel(anchor.row)
+    if (!isSheetHeaderCellSelected(anchor.column, headerLevel)) {
+      selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
+      getHotInstance()?.render()
+    }
     syncColumnMarkerSelection()
     return
   }
@@ -7513,7 +8506,8 @@ function handleAfterSelection(row: number, column: number) {
   if (formulaReferencePointerDown && dataRow >= 0 && column >= 0 && isFormulaReferencePickMode()) {
     clearFormulaReferencePointerDownReset()
     formulaReferencePointerDown = false
-    insertFormulaReferenceIntoDraft(dataRow, column)
+    const anchor = getMergeAnchorForGridCell(row, column)
+    insertFormulaReferenceIntoDraft(getDataRowIndex(anchor.row), anchor.column)
     syncColumnMarkerSelection()
     return
   }
@@ -7521,7 +8515,12 @@ function handleAfterSelection(row: number, column: number) {
   clearFormulaReferencePointerDownReset()
   formulaReferencePointerDown = false
   clearFormulaReferencePreviewRange()
-  setFormulaBarCell(dataRow, column)
+  if (row >= 0 && column >= 0) {
+    const anchor = getMergeAnchorForGridCell(row, column)
+    setFormulaBarCell(getDataRowIndex(anchor.row), anchor.column)
+  } else {
+    setFormulaBarCell(dataRow, column)
+  }
   syncColumnMarkerSelection()
 }
 
@@ -7540,9 +8539,10 @@ function getSingleSelectedDataCell() {
 
   const startRow = Math.min(selection[0], selection[2])
   const endRow = Math.max(selection[0], selection[2])
-  const dataRow = getDataRowIndex(startRow)
   const startColumn = Math.min(selection[1], selection[3])
   const endColumn = Math.max(selection[1], selection[3])
+  const anchor = getMergeAnchorForGridCell(startRow, startColumn)
+  const dataRow = getDataRowIndex(anchor.row)
   if (
     dataRow < 0
     || startColumn < 0
@@ -7554,7 +8554,7 @@ function getSingleSelectedDataCell() {
 
   return {
     row: dataRow,
-    column: startColumn,
+    column: anchor.column,
     documentRow: getDocumentRowIndex(dataRow),
   }
 }
@@ -7597,12 +8597,262 @@ function getSelectedDataCells(): SelectedDataCell[] {
   return cells
 }
 
+function getSingleSelectedSheetCell() {
+  const cells = getSelectedSheetCells()
+  return cells.length === 1 ? cells[0] : null
+}
+
+function getSelectedSheetCells(): SelectedSheetCell[] {
+  const hot = getHotInstance()
+  const selections = hot?.getSelected?.() as number[][] | undefined
+  if (!selections?.length || sheetGridRows.value.length <= 0 || columnHeaders.value.length <= 0) {
+    return []
+  }
+
+  const cells: SelectedSheetCell[] = []
+  const seen = new Set<string>()
+  for (const selection of selections) {
+    if (!Array.isArray(selection) || selection.length < 4) {
+      continue
+    }
+
+    const startRow = Math.max(Math.min(selection[0], selection[2]), 0)
+    const endRow = Math.min(Math.max(selection[0], selection[2]), sheetGridRows.value.length - 1)
+    const startColumn = Math.max(Math.min(selection[1], selection[3]), 0)
+    const endColumn = Math.min(Math.max(selection[1], selection[3]), columnHeaders.value.length - 1)
+    if (startRow > endRow || startColumn > endColumn) {
+      continue
+    }
+
+    for (let row = startRow; row <= endRow; row += 1) {
+      for (let column = startColumn; column <= endColumn; column += 1) {
+        const anchor = getMergeAnchorForGridCell(row, column)
+        const key = createCellMetaKey(anchor.documentRow, anchor.column)
+        if (seen.has(key)) {
+          continue
+        }
+        seen.add(key)
+        cells.push({ row: anchor.row, column: anchor.column, documentRow: anchor.documentRow })
+      }
+    }
+  }
+
+  return normalizeSheetCellsToMergeAnchors(cells)
+}
+
 function hasSingleDataCellSelection() {
   return !!getSingleSelectedDataCell()
 }
 
 function hasDataCellSelection() {
   return getSelectedDataCells().length > 0
+}
+
+function hasSheetCellSelection() {
+  return getSelectedSheetCells().length > 0
+}
+
+function getSelectedGridCellBounds() {
+  const selection = getHotInstance()?.getSelectedLast()
+  if (!selection) {
+    return null
+  }
+  const startRow = Math.min(selection[0], selection[2])
+  const endRow = Math.max(selection[0], selection[2])
+  const startColumn = Math.min(selection[1], selection[3])
+  const endColumn = Math.max(selection[1], selection[3])
+  if (endRow < 0 || endColumn < 0) {
+    return null
+  }
+  return {
+    startRow: Math.max(startRow, 0),
+    endRow: Math.min(endRow, sheetGridRows.value.length - 1),
+    startColumn: Math.max(startColumn, 0),
+    endColumn: Math.min(endColumn, columnHeaders.value.length - 1),
+  }
+}
+
+function getSelectedDocumentCellBounds() {
+  const bounds = getSelectedGridCellBounds()
+  if (!bounds || bounds.startRow > bounds.endRow || bounds.startColumn > bounds.endColumn) {
+    return null
+  }
+  return {
+    startRow: getDocumentGridRowIndex(bounds.startRow),
+    endRow: getDocumentGridRowIndex(bounds.endRow),
+    startColumn: bounds.startColumn,
+    endColumn: bounds.endColumn,
+  }
+}
+
+function doMergedCellsIntersectRange(
+  cell: SheetMergedCell,
+  range: { startRow: number; endRow: number; startColumn: number; endColumn: number },
+) {
+  return (
+    cell.row <= range.endRow
+    && cell.row + cell.rowspan - 1 >= range.startRow
+    && cell.col <= range.endColumn
+    && cell.col + cell.colspan - 1 >= range.startColumn
+  )
+}
+
+function selectionCrossesDataStart(range: { startRow: number; endRow: number }) {
+  return range.startRow < sheetHeaderRowCount.value && range.endRow >= sheetHeaderRowCount.value
+}
+
+function getMergedCellsDocumentRowCount() {
+  return Math.max(sheetHeaderRowCount.value + totalRowCount.value, sheetHeaderRowCount.value + rows.value.length, sheetGridRows.value.length)
+}
+
+function canMergeSelectedCells() {
+  const range = getSelectedDocumentCellBounds()
+  if (!range) {
+    return false
+  }
+  if (range.startRow === range.endRow && range.startColumn === range.endColumn) {
+    return false
+  }
+  if (selectionCrossesDataStart(range)) {
+    return false
+  }
+  return !normalizeMergedCells(
+    mergedCells.value,
+    getMergedCellsDocumentRowCount(),
+    columnHeaders.value.length,
+  ).some((cell) => doMergedCellsIntersectRange(cell, range))
+}
+
+function rangeFullyContainsMergedCell(
+  range: { startRow: number; endRow: number; startColumn: number; endColumn: number },
+  cell: SheetMergedCell,
+) {
+  return (
+    range.startRow <= cell.row
+    && range.endRow >= cell.row + cell.rowspan - 1
+    && range.startColumn <= cell.col
+    && range.endColumn >= cell.col + cell.colspan - 1
+  )
+}
+
+function rangePartiallyIntersectsMergedCells(range: { startRow: number; endRow: number; startColumn: number; endColumn: number }) {
+  return normalizeCurrentMergedCells().some((cell) => (
+    doMergedCellsIntersectRange(cell, range)
+    && !rangeFullyContainsMergedCell(range, cell)
+  ))
+}
+
+function mergeSelectedCells() {
+  if (!ensureCanEditConfig() || !canMergeSelectedCells()) {
+    return
+  }
+  commitPendingSheetGridEdit()
+  const range = getSelectedDocumentCellBounds()
+  if (!range) {
+    return
+  }
+  const nextCell: SheetMergedCell = {
+    row: range.startRow,
+    col: range.startColumn,
+    rowspan: range.endRow - range.startRow + 1,
+    colspan: range.endColumn - range.startColumn + 1,
+  }
+  const anchorSynced = syncMergedCellAnchorFromVisibleGrid(nextCell)
+  mergedCells.value = normalizeMergedCells(
+    [...mergedCells.value, nextCell],
+    getMergedCellsDocumentRowCount(),
+    columnHeaders.value.length,
+  )
+  refreshGridStructure()
+  if (anchorSynced) {
+    refreshFormulaDisplayState()
+  }
+  scheduleRemoteSave(0)
+}
+
+function getSelectedMergedCells() {
+  const range = getSelectedDocumentCellBounds()
+  if (!range) {
+    return []
+  }
+  return normalizeMergedCells(
+    mergedCells.value,
+    getMergedCellsDocumentRowCount(),
+    columnHeaders.value.length,
+  ).filter((cell) => doMergedCellsIntersectRange(cell, range))
+}
+
+function hasSelectedMergedCell() {
+  return getSelectedMergedCells().length > 0
+}
+
+function setSheetCellRawValueAtDocumentCell(documentRow: number, columnIndex: number, value: string) {
+  const gridRow = getCurrentGridRowIndexFromDocumentRow(documentRow)
+  if (gridRow < 0 || columnIndex < 0 || columnIndex >= columnHeaders.value.length) {
+    return false
+  }
+
+  if (gridRow < sheetHeaderRowCount.value) {
+    return applySheetHeaderGridChange(gridRow, columnIndex, value)
+  }
+
+  const dataRow = getDataRowIndex(gridRow)
+  if (dataRow < 0 || dataRow >= rows.value.length) {
+    return false
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  if (!nextRows[dataRow]) {
+    nextRows[dataRow] = createEmptyRow(columnHeaders.value.length)
+  }
+  nextRows[dataRow][columnIndex] = normalizeCellInputValueForColumn(value, columnIndex)
+  rows.value = nextRows
+  return true
+}
+
+function syncMergedCellAnchorFromVisibleGrid(cell: SheetMergedCell) {
+  const gridRow = getCurrentGridRowIndexFromDocumentRow(cell.row)
+  if (gridRow < 0 || cell.col < 0 || cell.col >= columnHeaders.value.length) {
+    return false
+  }
+
+  const visibleValue = (
+    getLiveGridCellRawValue(gridRow, cell.col)
+    || getGridCellRawValue(gridRow, cell.col)
+    || getGridCellRenderSourceValue(gridRow, cell.col)
+    || inferBlankHeaderMergeLabel(sheetGridRows.value, columnHeaders.value, cell, columnHeaderLevel.value)
+  )
+  if (!visibleValue) {
+    return false
+  }
+
+  return setSheetCellRawValueAtDocumentCell(cell.row, cell.col, visibleValue)
+}
+
+function unmergeSelectedCells() {
+  if (!ensureCanEditConfig()) {
+    return
+  }
+  commitPendingSheetGridEdit()
+  const selected = getSelectedMergedCells()
+  if (!selected.length) {
+    return
+  }
+  let anchorSynced = false
+  selected.forEach((cell) => {
+    anchorSynced = syncMergedCellAnchorFromVisibleGrid(cell) || anchorSynced
+  })
+  const selectedKeys = new Set(selected.map((cell) => `${cell.row}:${cell.col}`))
+  mergedCells.value = normalizeMergedCells(
+    mergedCells.value.filter((cell) => !selectedKeys.has(`${cell.row}:${cell.col}`)),
+    getMergedCellsDocumentRowCount(),
+    columnHeaders.value.length,
+  )
+  refreshGridStructure()
+  scheduleRemoteSave(0)
+  if (anchorSynced) {
+    refreshFormulaDisplayState()
+  }
 }
 
 function getCellMetaAt(documentRow: number, columnIndex: number) {
@@ -7617,17 +8867,16 @@ function getCellStyleAt(documentRow: number, columnIndex: number) {
   return getCellMetaAt(documentRow, columnIndex)?.style ?? null
 }
 
-function hasSelectedCellStyle() {
-  return getSelectedDataCells().some((cell) => !!getCellStyleAt(cell.documentRow, cell.column))
-}
-
 function updateCellMetaEntry(
   documentRow: number,
   columnIndex: number,
   updater: (entry: SheetCellMeta) => SheetCellMeta,
 ) {
+  const anchor = getMergeAnchorForDocumentCell(documentRow, columnIndex)
+  const targetRow = anchor.documentRow
+  const targetColumn = anchor.column
   const nextMeta = { ...cellMeta.value }
-  const key = createCellMetaKey(documentRow, columnIndex)
+  const key = createCellMetaKey(targetRow, targetColumn)
   const nextEntry = normalizeCellMetaEntry(updater({ ...(nextMeta[key] ?? {}) }))
   if (nextEntry) {
     nextMeta[key] = nextEntry
@@ -7684,15 +8933,16 @@ function setCellStyle(documentRow: number, columnIndex: number, styleSource: unk
 }
 
 function updateCellMetaEntries(
-  cells: SelectedDataCell[],
-  updater: (entry: SheetCellMeta, cell: SelectedDataCell) => SheetCellMeta,
+  cells: SelectedSheetCell[],
+  updater: (entry: SheetCellMeta, cell: SelectedSheetCell) => SheetCellMeta,
 ) {
-  if (!cells.length) {
+  const anchorCells = normalizeSheetCellsToMergeAnchors(cells)
+  if (!anchorCells.length) {
     return
   }
 
   const nextMeta = { ...cellMeta.value }
-  cells.forEach((cell) => {
+  anchorCells.forEach((cell) => {
     const key = createCellMetaKey(cell.documentRow, cell.column)
     const nextEntry = normalizeCellMetaEntry(updater({ ...(nextMeta[key] ?? {}) }, cell))
     if (nextEntry) {
@@ -7705,7 +8955,7 @@ function updateCellMetaEntries(
   getHotInstance()?.render()
 }
 
-function getCommonSelectedCellStyle(cells: SelectedDataCell[], field: SheetCellStyleField) {
+function getCommonSelectedCellStyle(cells: SelectedSheetCell[], field: SheetCellStyleField) {
   if (!cells.length) {
     return ''
   }
@@ -7746,7 +8996,7 @@ function handleCellStyleColorPopoverVisibleChange(field: SheetCellStyleField, vi
   activeCellStyleColorField.value = visible ? field : null
 }
 
-function applyCellStyleToSelectedCells(cells: SelectedDataCell[]) {
+function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
   const touched = cellStyleDraftTouched.value
   if (!touched.background_color && !touched.text_color) {
     return
@@ -7781,26 +9031,11 @@ function applyCellStyleToSelectedCells(cells: SelectedDataCell[]) {
   })
 }
 
-function removeSelectedCellStyle() {
-  if (!ensureCanEditConfig()) {
-    return
-  }
-  const cells = getSelectedDataCells()
-  if (!cells.length) {
-    return
-  }
-  updateCellMetaEntries(cells, (entry) => {
-    const nextEntry = { ...entry }
-    delete nextEntry.style
-    return nextEntry
-  })
-}
-
 function openSelectedCellStyleDialog() {
   if (!ensureCanEditConfig()) {
     return
   }
-  const cells = getSelectedDataCells()
+  const cells = getSelectedSheetCells()
   if (!cells.length) {
     return
   }
@@ -7883,16 +9118,11 @@ function getSelectedColumnHeaderCellIndex() {
 }
 
 function hasSingleLinkTargetSelection() {
-  return hasSingleDataCellSelection() || getSelectedColumnHeaderCellIndex() != null
+  return !!getSingleSelectedSheetCell()
 }
 
 function getSelectedLinkTargetLink() {
-  const headerColumn = getSelectedColumnHeaderCellIndex()
-  if (headerColumn != null) {
-    return getColumnHeaderLink(headerColumn)
-  }
-
-  const cell = getSingleSelectedDataCell()
+  const cell = getSingleSelectedSheetCell()
   return cell ? getCellLinkAt(cell.documentRow, cell.column) : null
 }
 
@@ -7901,13 +9131,7 @@ function hasSelectedCellLink() {
 }
 
 function openSelectedCellLink() {
-  const headerColumn = getSelectedColumnHeaderCellIndex()
-  if (headerColumn != null) {
-    openCellLink(getColumnHeaderLink(headerColumn))
-    return
-  }
-
-  const cell = getSingleSelectedDataCell()
+  const cell = getSingleSelectedSheetCell()
   if (!cell) {
     return
   }
@@ -7918,13 +9142,7 @@ function removeSelectedCellLink() {
   if (!ensureCanEditConfig()) {
     return
   }
-  const headerColumn = getSelectedColumnHeaderCellIndex()
-  if (headerColumn != null) {
-    setColumnHeaderLink(headerColumn, '')
-    return
-  }
-
-  const cell = getSingleSelectedDataCell()
+  const cell = getSingleSelectedSheetCell()
   if (!cell) {
     return
   }
@@ -7935,18 +9153,7 @@ function openSelectedCellLinkDialog() {
   if (!ensureCanEditConfig()) {
     return
   }
-  const headerColumn = getSelectedColumnHeaderCellIndex()
-  if (headerColumn != null) {
-    cellLinkDialogTarget.value = {
-      kind: 'column_header',
-      column: headerColumn,
-    }
-    cellLinkDraftUrl.value = getColumnHeaderLink(headerColumn)?.url ?? ''
-    cellLinkDialogVisible.value = true
-    return
-  }
-
-  const cell = getSingleSelectedDataCell()
+  const cell = getSingleSelectedSheetCell()
   if (!cell) {
     return
   }
@@ -8412,6 +9619,7 @@ function applyColumnSettings() {
   const currentNormalizedConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
   const nextNormalizedConfigs = { ...currentNormalizedConfigs }
   const nextWidths = [...columnWidths.value]
+  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
   let configChanged = false
   let widthChanged = false
   let normalizedValuesChanged = false
@@ -8477,8 +9685,24 @@ function applyColumnSettings() {
     return
   }
 
+  const nextRows = configChanged
+    ? remapRowsFormulaReferencesForHeaderRowCountChange(
+      rows.value,
+      previousFormulaHeaderRowCount,
+      getFormulaHeaderRowsForDocument(
+        columnHeaders.value,
+        normalizedHeaderGroups.value,
+        normalizeColumnConfigs(nextNormalizedConfigs, columnHeaders.value),
+        sheetViewSettings.value,
+      ).length,
+    )
+    : rows.value
+
   if (configChanged) {
     columnConfigs.value = nextNormalizedConfigs
+  }
+  if (nextRows !== rows.value) {
+    rows.value = nextRows
   }
   if (widthChanged) {
     columnWidths.value = nextWidths
@@ -8709,7 +9933,7 @@ function resolveCellMeta(row: number, col: number) {
     return {
       wordWrap: true,
       textEllipsis: false,
-      readOnly: true,
+      readOnly: !canEditConfig.value,
       className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
     }
   }
@@ -8852,22 +10076,29 @@ function handleAfterRenderer(
   value: string,
 ) {
   if (row >= 0 && column >= 0 && isSheetHeaderGridRow(row)) {
-    renderSheetHeaderGridCell(TD, row, column, normalizeCellValue(value))
+    const anchor = getMergeAnchorForGridCell(row, column)
+    renderSheetHeaderGridCell(TD, anchor.row, anchor.column, getGridCellRenderSourceValue(anchor.row, anchor.column))
     return
   }
 
-  const dataRow = row >= 0 ? getDataRowIndex(row) : -1
+  const anchor = row >= 0 && column >= 0
+    ? getMergeAnchorForGridCell(row, column)
+    : { row, column, documentRow: -1 }
+  const renderColumn = anchor.column
+  const dataRow = anchor.row >= 0 ? getDataRowIndex(anchor.row) : -1
   resetRenderedCellState(TD)
-  const documentRow = dataRow >= 0 ? getDocumentRowIndex(dataRow) : -1
-  const rawText = normalizeCellValue(value)
-  const header = column >= 0 ? columnHeaders.value[column] ?? '' : ''
+  const documentRow = dataRow >= 0 ? anchor.documentRow : -1
+  const rawText = dataRow >= 0 && renderColumn >= 0
+    ? getGridCellRawValue(anchor.row, renderColumn)
+    : normalizeCellValue(value)
+  const header = renderColumn >= 0 ? columnHeaders.value[renderColumn] ?? '' : ''
   const columnConfig = header ? columnConfigs.value[header] : undefined
-  const link = documentRow >= 0 && column >= 0
-    ? getCellLinkAt(documentRow, column)
+  const link = documentRow >= 0 && renderColumn >= 0
+    ? getCellLinkAt(documentRow, renderColumn)
     : null
   const linkDisplayText = rawText.trim() ? '' : (link?.title || link?.url || '')
-  const formulaCell = dataRow >= 0 && column >= 0 && isFormulaExpression(rawText)
-    ? getFormulaCellModel(dataRow, column)
+  const formulaCell = dataRow >= 0 && renderColumn >= 0 && isFormulaExpression(rawText)
+    ? getFormulaCellModel(dataRow, renderColumn)
     : null
   const formulaText = formulaCell?.text ?? null
   let renderedText = rawText
@@ -8875,7 +10106,7 @@ function handleAfterRenderer(
     renderedText = formulaCell.text
   } else if (linkDisplayText) {
     renderedText = linkDisplayText
-  } else if (dataRow >= 0 && column >= 0) {
+  } else if (dataRow >= 0 && renderColumn >= 0) {
     renderedText = formatCellDisplayValueCached(rawText, columnConfig)
   }
 
@@ -8885,10 +10116,10 @@ function handleAfterRenderer(
 
   const hasFormula = formulaText != null
   const hasFormulaError = hasFormula && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#'))
-  const isFormulaReferencePreview = dataRow >= 0 && column >= 0 && isCellInFormulaReferencePreview(dataRow, column)
+  const isFormulaReferencePreview = dataRow >= 0 && renderColumn >= 0 && isCellInFormulaReferencePreview(dataRow, renderColumn)
 
-  const cellStyle = documentRow >= 0 && column >= 0
-    ? getCellStyleAt(documentRow, column)
+  const cellStyle = documentRow >= 0 && renderColumn >= 0
+    ? getCellStyleAt(documentRow, renderColumn)
     : null
   let backgroundColor = ''
   let textColor = ''
@@ -8896,7 +10127,7 @@ function handleAfterRenderer(
   let lineHeightStyle = ''
   let textAlignStyle = ''
 
-  if (column >= 0) {
+  if (renderColumn >= 0) {
     backgroundColor = getPluginRowBackgroundColor(dataRow)
     textAlignStyle = resolveColumnTextAlign(columnConfig)
     const fontSize = getColumnFontSizeFromConfig(columnConfig)
@@ -8905,7 +10136,7 @@ function handleAfterRenderer(
       lineHeightStyle = `${getColumnLineHeightFromFontSize(fontSize)}px`
     }
 
-    const hashColorStyle = getCellHashColorStyle(column, columnConfig, renderedText)
+    const hashColorStyle = getCellHashColorStyle(renderColumn, columnConfig, renderedText)
     if (hashColorStyle?.backgroundColor) {
       backgroundColor = hashColorStyle.backgroundColor
     }
@@ -8913,7 +10144,7 @@ function handleAfterRenderer(
       textColor = hashColorStyle.color
     }
 
-    const accentStyle = getCellAccentStyle(dataRow, column)
+    const accentStyle = getCellAccentStyle(dataRow, renderColumn)
     if (accentStyle) {
       backgroundColor = accentStyle.backgroundColor
     }
@@ -9009,7 +10240,7 @@ watch(
 )
 
 watch(
-  [rows, columnHeaders, columnConfigs],
+  [rows, columnHeaders, headerGroups, columnConfigs, sheetViewSettings],
   () => {
     refreshFormulaDisplayState()
   },
@@ -9276,6 +10507,14 @@ defineExpose({
             <el-option label="无行标" value="none" />
             <el-option label="数字（全局 101 / 102 / 103）" value="global_numbers" />
             <el-option label="数字（每页 1 / 2 / 3）" value="page_numbers" />
+          </el-select>
+        </div>
+        <div v-if="sheetSettingsDraft.show_row_numbers" class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">行号起点</div>
+          <el-select v-model="sheetSettingsDraft.row_marker_origin" class="sheet-settings-inline-select">
+            <el-option label="数据首行=1" value="data" />
+            <el-option label="表头首行=0" value="sheet_zero" />
+            <el-option label="表头首行=1" value="sheet" />
           </el-select>
         </div>
         <div class="sheet-settings-inline-field">
