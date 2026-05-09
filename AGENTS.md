@@ -19,6 +19,16 @@
 - 安装依赖：`npm install --prefix frontend`
 - 单独启动前端：`npm run dev --prefix frontend`
 
+## CodexSaver 分流约定（重要）
+
+- DeepSeek 代理接管所有任务；每个用户请求先调用 CodexSaver MCP 的 `delegate_task`。
+- 传入请求、`cwd`、已知文件、上下文、输入类型和验证命令。
+- `handled / applied`：使用返回结果。
+- `codex_required / failed`：Codex 继续处理。
+- 需要先做本地探查或浏览器/UI 操作时，先用 Codex 工具补足上下文，再调用 `delegate_task`。
+- 用户明确要求不用 CodexSaver 时，按用户要求执行。
+- 真实分流以 `.codexsaver.log` 执行记录为准；只有 MCP `ListToolsRequest` 不算实际分流。
+
 ## 前端页面/菜单挂载约定（重要）
 
 - `frontend/src/standard/**/index.ts` 只负责注册页面路由，不会自动把页面加到侧边栏菜单。

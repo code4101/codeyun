@@ -430,6 +430,7 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
         "view_settings": {
             "show_row_numbers": True,
             "row_marker_numbering": "global",
+            "row_marker_origin": "sheet",
             "show_column_markers": True,
             "column_marker_style": "letters",
             "pagination": {
@@ -494,6 +495,7 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     view_settings = dict(source.get("view_settings") if isinstance(source.get("view_settings"), dict) else {})
     view_settings.setdefault("show_row_numbers", True)
     view_settings.setdefault("row_marker_numbering", "global")
+    view_settings.setdefault("row_marker_origin", "sheet")
     view_settings.setdefault("show_column_markers", True)
     view_settings.setdefault("column_marker_style", "letters")
     pagination = dict(view_settings.get("pagination") if isinstance(view_settings.get("pagination"), dict) else {})
@@ -1186,6 +1188,16 @@ def _extract_feedback_sheet_rows(document_json: dict[str, Any]) -> list[Any]:
     return list(rows) if isinstance(rows, list) else []
 
 
+def _normalize_feedback_sheet_data_start_row(document_json: dict[str, Any]) -> int:
+    grid_rows = document_json.get("grid_rows")
+    if not isinstance(grid_rows, list) or not grid_rows:
+        return 0
+    try:
+        return max(int(document_json.get("data_start_row") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _find_feedback_course_column_index(columns: list[str], field_key: str) -> int | None:
     binding = FEEDBACK_COURSE_FIELD_BINDINGS.get(field_key)
     if binding is None:
@@ -1212,7 +1224,8 @@ def _extract_feedback_sheet_cell_link_url(document_json: dict[str, Any], row_ind
     cell_meta = document_json.get("cell_meta")
     if not isinstance(cell_meta, dict):
         return ""
-    entry = cell_meta.get(f"{row_index}:{column_index}")
+    meta_row_index = row_index + _normalize_feedback_sheet_data_start_row(document_json)
+    entry = cell_meta.get(f"{meta_row_index}:{column_index}")
     if not isinstance(entry, dict):
         return ""
     link = entry.get("link")

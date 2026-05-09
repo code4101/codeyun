@@ -42,47 +42,31 @@ def generate_token() -> str:
     """Generate a secure random token"""
     return secrets.token_urlsafe(32)
 
-async def verify_api_token(
-    authorization: Optional[str] = Header(None),
-    x_device_token: Optional[str] = Header(None),
-    token: Optional[str] = Query(None),
-    sec_websocket_protocol: Optional[str] = Header(None),
-    session: Session = Depends(get_session)
-):
-    """
-    Verify the token provided in the header or query parameter.
-    Supports:
-    - Header: 'Authorization: Bearer <token>'
-    - Header: 'X-Device-Token: <token>'
-    - Header: 'Sec-WebSocket-Protocol: <token>' (Preferred for WebSocket)
-    - Query: '?token=<token>' (Fallback)
-    
-    This verifies if the request comes from a trusted device (using Master Token).
-    Used for Server-side validation of incoming requests.
-    """
-    final_token = None
+def extract_api_token(
+    *,
+    authorization: Optional[str] = None,
+    x_device_token: Optional[str] = None,
+    token: Optional[str] = None,
+    sec_websocket_protocol: Optional[str] = None,
+) -> Optional[str]:
     if x_device_token:
-        final_token = x_device_token
-    elif authorization and authorization.startswith("Bearer "):
-        final_token = authorization.split(" ")[1]
-    elif sec_websocket_protocol:
-        # Browser sends list of protocols, usually just the token in our case
-        # But it might be comma separated if multiple protocols
-        # We assume the token is one of them. 
-        # Since token is urlsafe base64, it should be safe in protocol string.
-        # Format usually: "token_value"
-        final_token = sec_websocket_protocol.split(',')[0].strip()
-    elif token:
-        final_token = token
-    
+        return x_device_token
+    if authorization and authorization.startswith("Bearer "):
+        return authorization.split(" ", 1)[1]
+    if sec_websocket_protocol:
+        return sec_websocket_protocol.split(",")[0].strip()
+    if token:
+        return token
+    return None
+
+
+def validate_api_token_value(final_token: Optional[str]):
     if not final_token:
-        # Fallback for now: If no token provided, return None or raise error depending on strictness
-        # Since we are strict:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing authentication token",
         )
-    
+
     # Lazy import to avoid cycle
     from backend.core.device import device_manager, get_device_id
 
@@ -101,6 +85,33 @@ async def verify_api_token(
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid authentication token",
+    )
+
+async def verify_api_token(
+    authorization: Optional[str] = Header(None),
+    x_device_token: Optional[str] = Header(None),
+    token: Optional[str] = Query(None),
+    sec_websocket_protocol: Optional[str] = Header(None),
+    session: Session = Depends(get_session)
+):
+    """
+    Verify the token provided in the header or query parameter.
+    Supports:
+    - Header: 'Authorization: Bearer <token>'
+    - Header: 'X-Device-Token: <token>'
+    - Header: 'Sec-WebSocket-Protocol: <token>' (Preferred for WebSocket)
+    - Query: '?token=<token>' (Fallback)
+
+    This verifies if the request comes from a trusted device (using Master Token).
+    Used for Server-side validation of incoming requests.
+    """
+    return validate_api_token_value(
+        extract_api_token(
+            authorization=authorization,
+            x_device_token=x_device_token,
+            token=token,
+            sec_websocket_protocol=sec_websocket_protocol,
+        )
     )
 
 async def get_current_user_from_token(

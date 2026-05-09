@@ -659,7 +659,7 @@ const userStore = useUserStore()
 
 const assetMode = ref<'providers' | 'apps'>('providers')
 const selectedProviderId = ref('')
-const selectedAppId = ref<'note-taxonomy'>('note-taxonomy')
+const selectedAppId = ref<'note-taxonomy' | 'ai-git-commit' | 'codex-diary'>('note-taxonomy')
 const status = reactive<AiChatStatusResponse>({
   provider: 'ollama',
   label: 'Ollama',
@@ -844,13 +844,13 @@ const resolvedCurrentAppProviderId = computed(() =>
 const currentAppEnabled = computed({
   get: () => currentAppConfig.value.enabled,
   set: (value: boolean) => {
-    aiAppStore.updateAppConfig(selectedAppId.value, { enabled: value })
+    void aiAppStore.updateAppConfig(selectedAppId.value, { enabled: value })
   },
 })
 const currentAppProviderId = computed({
   get: () => currentAppConfig.value.provider.trim() || resolvedCurrentAppProviderId.value,
   set: (value: string) => {
-    aiAppStore.updateAppConfig(selectedAppId.value, {
+    void aiAppStore.updateAppConfig(selectedAppId.value, {
       provider: value,
       model: currentAppConfig.value.provider.trim() === value ? currentAppConfig.value.model : '',
     })
@@ -859,7 +859,7 @@ const currentAppProviderId = computed({
 const currentAppModel = computed({
   get: () => currentAppConfig.value.model,
   set: (value: string) => {
-    aiAppStore.updateAppConfig(selectedAppId.value, { model: value })
+    void aiAppStore.updateAppConfig(selectedAppId.value, { model: value })
   },
 })
 const currentAppProvider = computed(() => aiProviderStore.getProviderById(resolvedCurrentAppProviderId.value))
@@ -928,7 +928,6 @@ watch(
 )
 
 onMounted(async () => {
-  aiAppStore.ensureLoaded()
   await loadProvidersAndStatus()
 })
 
@@ -956,7 +955,7 @@ function handleProviderAssetChange(id: string) {
 
 function handleAppAssetChange(id: string) {
   assetMode.value = 'apps'
-  selectedAppId.value = id as 'note-taxonomy'
+  selectedAppId.value = id as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary'
 }
 
 function getBaseUrlDraft(providerId: string) {
@@ -1013,6 +1012,7 @@ function setNewModelDraft(providerId: string, value: string) {
 async function loadProvidersAndStatus() {
   try {
     await aiProviderStore.loadProviders(isAuthenticated.value)
+    await aiAppStore.loadAppConfigs(isAuthenticated.value)
     ensureSelectedProvider()
     getBaseUrlDraft(selectedProviderId.value)
     getApiKeyDraft(selectedProviderId.value)
@@ -1038,7 +1038,7 @@ function getProviderSummaryModel(providerId: string) {
 }
 
 function getAppSummaryModel(appId: string) {
-  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy')
+  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary')
   const providerId = config.provider.trim() || aiProviderStore.defaultProviderId || providers.value[0]?.id || ''
   const provider = aiProviderStore.getProviderById(providerId)
   const resolvedModel = config.model.trim() || (providerId ? aiProviderStore.getEffectiveModel(providerId) : '')
@@ -1073,7 +1073,7 @@ function getProviderStateClass(providerId: string) {
 }
 
 function getAppStateLabel(appId: string) {
-  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy')
+  const config = aiAppStore.getAppConfig(appId as 'note-taxonomy' | 'ai-git-commit' | 'codex-diary')
   if (!config.enabled) {
     return '已停用'
   }
@@ -1112,7 +1112,7 @@ function getCurrentAppStatusType() {
 }
 
 function clearCurrentAppModel() {
-  aiAppStore.updateAppConfig(selectedAppId.value, { model: '' })
+  void aiAppStore.updateAppConfig(selectedAppId.value, { model: '' })
 }
 
 async function handleProviderChange(providerId: string) {

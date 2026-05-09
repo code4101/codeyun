@@ -119,6 +119,14 @@ export interface NoteSheetSortRequest {
   direction?: 'asc' | 'desc'
 }
 
+export interface NoteSheetExcelImportResponse {
+  sheet: NoteSheetDetail
+  imported_count: number
+  preserved_row_count: number
+  warnings: string[]
+  mapping_notes: string[]
+}
+
 export interface AttendanceTemplateActionItem {
   course_type: string
   course_name: string
@@ -281,6 +289,29 @@ export async function sortNoteSheet(
   return response.data
 }
 
+export async function importNoteSheetFromExcelReset(
+  sheetId: number,
+  payload: { file: File; instruction?: string },
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const formData = new FormData()
+  formData.append('file', payload.file)
+  formData.append('instruction', payload.instruction ?? '')
+  const response = await api.post<NoteSheetExcelImportResponse>(
+    `/note-sheets/sheets/${sheetId}/import-excel-reset`,
+    formData,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    },
+  )
+  return response.data
+}
+
 export async function generateAttendanceNextMonthTemplates(sheetId: number, options?: NoteSheetResourceRequestOptions) {
   const response = await api.post<AttendanceTemplateGenerationResponse>(
     `/note-sheets/sheets/${sheetId}/attendance-summary/generate-next-month-templates`,
@@ -404,6 +435,11 @@ export async function fetchWorkbooks() {
 
 export async function createWorkbook(payload: { title?: string }) {
   const response = await api.post<WorkbookDetail>('/note-sheets/workbooks', payload)
+  return response.data
+}
+
+export async function updateWorkbook(workbookId: number, payload: { title?: string }) {
+  const response = await api.put<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}`, payload)
   return response.data
 }
 

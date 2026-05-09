@@ -80,10 +80,32 @@
       "title": "AI聊天",
       "node_type": "feature",
       "parent_key": "ai-tools",
-      "sort_order": 20,
+      "sort_order": 30,
       "route_paths": ["/tools/ai-chat"],
       "menu_paths": ["/tools/ai-chat"],
       "api_scopes": ["ai-tools.chat"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "tools.ai-codex-saver",
+      "title": "CodexSaver",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 20,
+      "route_paths": ["/tools/ai-codex-saver"],
+      "menu_paths": ["/tools/ai-codex-saver"],
+      "api_scopes": ["ai-tools.codex-saver"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.codex",
+      "title": "Codex",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 25,
+      "route_paths": ["/cluster/codex"],
+      "menu_paths": ["/cluster/codex"],
+      "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false
     },
     {
@@ -531,17 +553,6 @@
       "route_paths": ["/cluster/files", "/cluster/media", "/cluster/images"],
       "menu_paths": ["/cluster/files"],
       "api_scopes": ["cluster-tools.files"],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "cluster.codex",
-      "title": "Codex",
-      "node_type": "feature",
-      "parent_key": "cluster-tools",
-      "sort_order": 25,
-      "route_paths": ["/cluster/codex"],
-      "menu_paths": ["/cluster/codex"],
-      "api_scopes": ["cluster-tools.codex"],
       "default_anonymous_allow": false
     },
     {

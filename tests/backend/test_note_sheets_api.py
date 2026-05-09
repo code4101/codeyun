@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import io
+import json
 from datetime import date
 
+from openpyxl import Workbook
 from sqlmodel import Session, select
 
 from backend.api import note_sheets as note_sheets_api
@@ -97,6 +100,23 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         assert detail_workbook_response.status_code == 200
         assert detail_workbook_response.json()["sheets"][0]["id"] == sheet["id"]
 
+        rename_workbook_response = client.put(
+            f"/api/note-sheets/workbooks/{workbook['id']}",
+            json={"title": "禅宗工作簿-更新"},
+        )
+        assert rename_workbook_response.status_code == 200
+        renamed_workbook = rename_workbook_response.json()
+        assert renamed_workbook["title"] == "禅宗工作簿-更新"
+        assert renamed_workbook["sheets"][0]["workbook_items"] == [
+            {"id": workbook["id"], "title": "禅宗工作簿-更新"},
+        ]
+
+        list_sheets_after_rename_response = client.get("/api/note-sheets/sheets")
+        assert list_sheets_after_rename_response.status_code == 200
+        assert list_sheets_after_rename_response.json()[0]["workbook_items"] == [
+            {"id": workbook["id"], "title": "禅宗工作簿-更新"},
+        ]
+
         update_sheet_response = client.put(
             f"/api/note-sheets/sheets/{sheet['id']}",
             json={
@@ -152,6 +172,143 @@ def test_note_sheet_attach_existing_sheet_to_workbook(client, session):
         assert attach_response.status_code == 200
         detail = attach_response.json()
         assert [item["id"] for item in detail["sheets"]] == [sheet_id]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_blank_create_uses_sheet_address_defaults(client, session):
+    user = _create_user(session, username="note-sheet-default-address-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        response = client.post("/api/note-sheets/sheets", json={"title": "默认地址表"})
+        assert response.status_code == 200
+        document = response.json()["document_json"]
+        assert document["formula_reference_origin"] == "sheet_v2"
+        assert document["data_start_row"] == 1
+        assert document["field_row_index"] == 0
+        assert document["grid_rows"] == [["列1", "列2", "列3"]]
+        assert document["view_settings"]["row_marker_numbering"] == "global"
+        assert document["view_settings"]["row_marker_origin"] == "sheet"
+        assert document["view_settings"]["column_marker_style"] == "letters"
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_excel_import_reset_preserves_action_row(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-excel-import-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = [
+        "分组",
+        "序号",
+        "备注",
+        "提交时间",
+        "姓名",
+        "微信昵称",
+        "手机号",
+        "错误手机号",
+        "微信支付订单号",
+        "订单日期",
+        "商户订单号",
+        "订单金额",
+        "已退款",
+        "用户ID",
+        "匹配得分",
+        "参考信息",
+    ]
+    action_row = ["", "", "导入excel", "", "", "", "数字加前缀", "", "更新订单匹配", "", "", "", "仅参考，有延迟", "", "", "其他备注"]
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "报名源表"
+    worksheet.append(["序号", "促学金选择", "交易单号", "姓名", "微信昵称", "手机", "微信号"])
+    worksheet.append(["", "1组", "", "", "", "", ""])
+    worksheet.append([1, "自觉自律完成学修（无需支付促学金）", "", "阿丹", "阿丹", "15326693765", "adan-wx"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    def fake_chat_with_provider(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        assert "只导入报名学员" in prompt
+        assert "导入excel" in prompt
+        assert kwargs["response_format"]["properties"]["rows"]["items"]["properties"]["姓名"]["type"] == "string"
+        return {
+            "content": json.dumps(
+                {
+                    "rows": [
+                        {
+                            "分组": "1组",
+                            "序号": "1",
+                            "备注": "自觉自律完成学修（无需支付促学金）",
+                            "姓名": "阿丹",
+                            "微信昵称": "阿丹",
+                            "手机号": "15326693765",
+                            "参考信息": "微信号：adan-wx",
+                        },
+                    ],
+                    "warnings": [],
+                    "mapping_notes": ["按分组标题填充分组"],
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    monkeypatch.setattr(note_sheets_api, "chat_with_provider", fake_chat_with_provider)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "报名工作簿"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [
+                        action_row,
+                        ["旧组", "99", "旧数据", "", "旧姓名", "", "", "", "", "", "", "", "", "", "", ""],
+                    ],
+                    "grid_rows": [target_columns, action_row],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                    "cell_meta": {
+                        "1:2": {"style": {"background_color": "#eeeeee"}},
+                        "2:4": {"style": {"background_color": "#ff0000"}},
+                    },
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
+            params={"workbook_id": workbook_id},
+            data={"instruction": "只导入报名学员"},
+            files={
+                "file": (
+                    "source.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["imported_count"] == 1
+        assert payload["preserved_row_count"] == 1
+        document = payload["sheet"]["document_json"]
+        assert document["rows"][0] == action_row
+        assert document["rows"][1][target_columns.index("姓名")] == "阿丹"
+        assert document["rows"][1][target_columns.index("手机号")] == "15326693765"
+        assert document["rows"][1][target_columns.index("参考信息")] == "微信号：adan-wx"
+        assert "1:2" in document["cell_meta"]
+        assert "2:4" not in document["cell_meta"]
     finally:
         _clear_user_override()
 
@@ -596,6 +753,57 @@ def test_note_sheet_sort_date_formula_uses_typed_date_value(client, session):
             ["20250106念住闯关", '=DATE_PARSE(A1, "yyyymmdd")'],
             ["20260301禅宗46期五阶", '=DATE_PARSE(A2, "yyyymmdd")'],
             ["20260409梵呗增益", '=DATE_PARSE(A3, "yyyymmdd")'],
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_sort_date_formula_uses_sheet_v2_addresses(client, session):
+    user = _create_user(session, username="note-sheet-sheet-v2-formula-sort-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        columns = ["在线考勤表", "课程开始日期"]
+        rows = [
+            ["20260409梵呗增益", '=DATE_PARSE(A2, "yyyymmdd")'],
+            ["20250106念住闯关", '=DATE_PARSE(A3, "yyyymmdd")'],
+            ["20260301禅宗46期五阶", '=DATE_PARSE(A4, "yyyymmdd")'],
+        ]
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "工作表地址公式排序表",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": columns,
+                    "rows": rows,
+                    "grid_rows": [columns, *rows],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                    "formula_reference_origin": "sheet_v2",
+                    "column_configs": {
+                        "课程开始日期": {
+                            "value_type": "date",
+                            "display_format": "m/d",
+                        },
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet = create_sheet_response.json()
+
+        sort_response = client.post(
+            f"/api/note-sheets/sheets/{sheet['id']}/sort",
+            json={"column_index": 1, "direction": "asc"},
+        )
+        assert sort_response.status_code == 200
+
+        assert sort_response.json()["document_json"]["rows"] == [
+            ["20250106念住闯关", '=DATE_PARSE(A2, "yyyymmdd")'],
+            ["20260301禅宗46期五阶", '=DATE_PARSE(A3, "yyyymmdd")'],
+            ["20260409梵呗增益", '=DATE_PARSE(A4, "yyyymmdd")'],
         ]
     finally:
         _clear_user_override()

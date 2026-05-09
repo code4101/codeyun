@@ -44,20 +44,20 @@ from backend.schemas import (
     AiNoteCategorizeResponse,
 )
 from backend.core.ai_chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
-    AiProviderConfig,
     OllamaClientError,
     chat_with_provider,
-    get_default_ai_provider_id,
+)
+from backend.core.ai_app_config import (
+    AI_APP_CODEX_DIARY,
+    AI_APP_NOTE_TAXONOMY,
+    AiAppConfigError,
+    resolve_ai_app_runtime_config,
 )
 from backend.core.background_task_queue import background_task_queue
 from backend.core.ai_chat_user_config import (
     AiChatUserConfigError,
-    get_user_ai_chat_provider_runtime_config,
     list_user_ai_chat_custom_provider_configs,
 )
-from backend.core.ollama_access_keys import ensure_ollama_access_key_allowed
 from backend.core.auth import get_current_active_user
 from backend.core.codex_sessions import (
     resolve_codex_daily_summary_epoch_range,
@@ -141,7 +141,6 @@ NOTE_AI_HTML_BREAK_RE = re.compile(r"</?(?:p|div|li|tr|h[1-6]|blockquote)\b[^>]*
 NOTE_AI_HTML_TAG_RE = re.compile(r"<[^>]+>")
 NOTE_AI_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
-CODEX_DIARY_PROVIDER_ID = "codex-diary-import"
 CODEX_DIARY_TIMEOUT_SECONDS = 900.0
 CODEX_DIARY_PROMPT_VERSION = "2026-05-04.codex-cli-diary-draft-v2"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
@@ -473,24 +472,6 @@ class CodexDiaryImportRunRead(BaseModel):
 
 class NoteMetadataFeedbackOptimizationRunRequest(BaseModel):
     trigger_reason: str = "manual"
-
-
-def _build_default_codex_diary_provider() -> AiProviderConfig:
-    return AiProviderConfig(
-        id=CODEX_DIARY_PROVIDER_ID,
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
-        timeout_seconds=CODEX_DIARY_TIMEOUT_SECONDS,
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
-        is_custom=False,
-    )
 
 
 def _parse_codex_diary_date(value: str) -> tuple[str, float, float]:
@@ -1803,7 +1784,7 @@ def _build_codex_diary_title(block: dict[str, Any]) -> str:
 def _extract_codex_diary_ai_json(raw_content: Any) -> dict[str, Any]:
     content = str(raw_content or "").strip()
     if not content:
-        raise ValueError("Codex CLI 没有返回可解析的日记草案")
+        raise ValueError("AI 没有返回可解析的日记草案")
     if content.startswith("```"):
         fence_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if fence_match:
@@ -1816,7 +1797,7 @@ def _extract_codex_diary_ai_json(raw_content: Any) -> dict[str, Any]:
             raise ValueError("Codex CLI 没有返回 JSON 对象")
         parsed = json.loads(match.group(1))
     if not isinstance(parsed, dict):
-        raise ValueError("Codex CLI 日记草案不是 JSON 对象")
+        raise ValueError("AI 日记草案不是 JSON 对象")
     return parsed
 
 
@@ -1950,23 +1931,35 @@ def _build_codex_diary_ai_user_prompt(source: dict[str, Any], blocks: list[dict[
     return json.dumps(request_payload, ensure_ascii=False, indent=2)
 
 
-def _draft_codex_diary_blocks_with_ai(source: dict[str, Any], blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _draft_codex_diary_blocks_with_ai(
+    source: dict[str, Any],
+    blocks: list[dict[str, Any]],
+    *,
+    current_user: User,
+    session: Session,
+) -> list[dict[str, Any]]:
     if not blocks:
         return blocks
-    provider = _build_default_codex_diary_provider()
+    runtime = resolve_ai_app_runtime_config(
+        session=session,
+        current_user=current_user,
+        app_id=AI_APP_CODEX_DIARY,
+    )
     response = chat_with_provider(
-        provider_id=provider.id,
-        model=provider.default_model,
+        provider_id=str(runtime["provider"]),
+        base_url=runtime["base_url"],
+        api_key=runtime["api_key"],
+        model=runtime["model"],
         system_prompt=_build_codex_diary_ai_system_prompt(),
         messages=[{"role": "user", "content": _build_codex_diary_ai_user_prompt(source, blocks)}],
         response_format="json",
         timeout_seconds=CODEX_DIARY_TIMEOUT_SECONDS,
-        extra_providers=(provider,),
+        extra_providers=runtime["extra_providers"],
     )
     payload = _extract_codex_diary_ai_json(response.get("content"))
     draft_blocks = payload.get("blocks")
     if not isinstance(draft_blocks, list):
-        raise ValueError("Codex CLI 日记草案缺少 blocks")
+        raise ValueError("AI 日记草案缺少 blocks")
     draft_by_key: dict[str, dict[str, Any]] = {}
     for item in draft_blocks:
         if not isinstance(item, dict):
@@ -1979,13 +1972,13 @@ def _draft_codex_diary_blocks_with_ai(source: dict[str, Any], blocks: list[dict[
         block_key = str(block.get("block_key") or "").strip()
         draft = draft_by_key.get(block_key)
         if draft is None:
-            raise ValueError(f"Codex CLI 日记草案缺少 block：{block_key}")
+            raise ValueError(f"AI 日记草案缺少 block：{block_key}")
         title = _normalize_codex_diary_ai_title(draft.get("title"))
         if not title:
-            raise ValueError(f"Codex CLI 日记草案标题无效：{block_key}")
+            raise ValueError(f"AI 日记草案标题无效：{block_key}")
         summary_items = _normalize_codex_diary_ai_summary_items(draft.get("summary_items"))
         if not summary_items:
-            raise ValueError(f"Codex CLI 日记草案正文为空：{block_key}")
+            raise ValueError(f"AI 日记草案正文为空：{block_key}")
         block["title"] = title
         block["summary_items"] = summary_items
         block["lifecycle_stage"] = str(draft.get("lifecycle_stage") or "done").strip() or "done"
@@ -2279,8 +2272,8 @@ def _run_codex_diary_import_worker(
             _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按主题和时长拆分节点")
             blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
 
-            _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 Codex CLI 生成日记草案")
-            blocks = _draft_codex_diary_blocks_with_ai(source, blocks)
+            _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 AI 生成日记草案")
+            blocks = _draft_codex_diary_blocks_with_ai(source, blocks, current_user=user, session=session)
 
             _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
             created_notes: list[NoteNode] = []
@@ -2844,14 +2837,20 @@ def _resolve_note_ai_runtime_config(
     *,
     current_user: User,
     session: Session,
-) -> tuple[str, str | None, str | None]:
-    resolved_provider = (payload.provider or get_default_ai_provider_id()).strip().lower() or get_default_ai_provider_id()
-    saved_runtime = get_user_ai_chat_provider_runtime_config(session, current_user.id, resolved_provider)
-    resolved_base_url = (payload.base_url or "").strip() or str(saved_runtime.get("base_url") or "").strip() or None
-    resolved_api_key = (payload.api_key or "").strip() or str(saved_runtime.get("api_key") or "").strip() or None
-    if resolved_provider == "ollama":
-        ensure_ollama_access_key_allowed(session, resolved_api_key)
-    return resolved_provider, resolved_base_url, resolved_api_key
+) -> tuple[str, str | None, str | None, str | None]:
+    try:
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=current_user,
+            app_id=AI_APP_NOTE_TAXONOMY,
+            provider=payload.provider,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            model=payload.model,
+        )
+    except AiAppConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return str(runtime["provider"]), runtime["base_url"], runtime["api_key"], runtime["model"]
 
 
 def _normalize_note_ai_choice(
@@ -3841,12 +3840,11 @@ def ai_categorize_note(
         palette_items = _default_note_type_palette_items()
     category_items = _filter_note_auto_classification_category_items(palette_items)
 
-    resolved_provider, resolved_base_url, resolved_api_key = _resolve_note_ai_runtime_config(
+    resolved_provider, resolved_base_url, resolved_api_key, resolved_model = _resolve_note_ai_runtime_config(
         payload,
         current_user=current_user,
         session=session,
     )
-    resolved_model = (payload.model or "").strip()
     extra_providers = list_user_ai_chat_custom_provider_configs(session, current_user.id)
     system_prompt, user_prompt = _build_note_ai_prompt(note, palette_items=category_items, session=session)
 

@@ -177,13 +177,15 @@ def load_settings() -> Settings:
     except ValueError:
         deepseek_timeout_seconds = 120.0
 
-    ai_default_provider = (os.getenv("CODEYUN_AI_DEFAULT_PROVIDER") or "ollama").strip().lower() or "ollama"
+    ai_default_provider = (os.getenv("CODEYUN_AI_DEFAULT_PROVIDER") or "deepseek").strip().lower() or "deepseek"
     ollama_base_url = (os.getenv("CODEYUN_OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip()
     ollama_default_model = (os.getenv("CODEYUN_OLLAMA_DEFAULT_MODEL") or "qwen3-vl:4b").strip()
     deepseek_base_url = (os.getenv("CODEYUN_DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1").strip()
     deepseek_api_key = (os.getenv("CODEYUN_DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or "").strip()
-    deepseek_default_model = (os.getenv("CODEYUN_DEEPSEEK_DEFAULT_MODEL") or "deepseek-chat").strip()
+    deepseek_default_model = (os.getenv("CODEYUN_DEEPSEEK_DEFAULT_MODEL") or "deepseek-v4-flash").strip()
     deepseek_models = _split_csv(os.getenv("CODEYUN_DEEPSEEK_MODELS")) or (
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
         "deepseek-chat",
         "deepseek-reasoner",
     )
@@ -221,7 +223,7 @@ def load_settings() -> Settings:
         ollama_timeout_seconds=max(1.0, ollama_timeout_seconds),
         deepseek_base_url=deepseek_base_url.rstrip("/"),
         deepseek_api_key=deepseek_api_key,
-        deepseek_default_model=deepseek_default_model or "deepseek-chat",
+        deepseek_default_model=deepseek_default_model or "deepseek-v4-flash",
         deepseek_timeout_seconds=max(1.0, deepseek_timeout_seconds),
         deepseek_models=deepseek_models,
         ocr_device=ocr_device,

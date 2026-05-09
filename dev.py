@@ -32,6 +32,7 @@ DEFAULT_CHECK_INTERVAL_SECONDS = 5.0
 DEFAULT_BACKEND_RELOAD_COOLDOWN_SECONDS = 60.0
 DEFAULT_BACKEND_HOST = "0.0.0.0"
 DEFAULT_BACKEND_PORT = 8000
+DEFAULT_FRONTEND_PORT = 5173
 
 BACKEND_WATCH_TARGETS = ("backend", "pyproject.toml", "uv.lock", ".env")
 BACKEND_WATCH_EXTENSIONS = {".env", ".ini", ".json", ".py", ".toml", ".yaml", ".yml"}
@@ -251,6 +252,204 @@ def find_tcp_listener_pids(port):
         except ValueError:
             continue
     return sorted(pids)
+
+
+def _run_text_command(cmd):
+    try:
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+    except OSError:
+        return ""
+    return result.stdout
+
+
+def _current_process_tree_pids():
+    current_pid = os.getpid()
+    pids = {current_pid}
+
+    if os.name == "nt":
+        import json
+
+        script = (
+            "Get-CimInstance Win32_Process | "
+            "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"
+        )
+        output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
+        if not output:
+            return pids
+
+        try:
+            rows = json.loads(output)
+        except json.JSONDecodeError:
+            return pids
+
+        if isinstance(rows, dict):
+            rows = [rows]
+        parents = {
+            int(row["ProcessId"]): int(row["ParentProcessId"])
+            for row in rows
+            if row.get("ProcessId") is not None and row.get("ParentProcessId") is not None
+        }
+        pid = current_pid
+        while pid in parents and parents[pid] not in pids:
+            pid = parents[pid]
+            pids.add(pid)
+        return pids
+
+    output = _run_text_command(["ps", "-eo", "pid=,ppid="])
+    parents = {}
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            pid, parent_pid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        parents[pid] = parent_pid
+
+    pid = current_pid
+    while pid in parents and parents[pid] not in pids:
+        pid = parents[pid]
+        pids.add(pid)
+    return pids
+
+
+def _windows_processes():
+    import json
+
+    script = (
+        "Get-CimInstance Win32_Process | "
+        "Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress"
+    )
+    output = _run_text_command(["powershell", "-NoProfile", "-Command", script]).strip()
+    if not output:
+        return []
+
+    try:
+        rows = json.loads(output)
+    except json.JSONDecodeError:
+        return []
+
+    if isinstance(rows, dict):
+        rows = [rows]
+    return rows
+
+
+def _process_matches_dev_runner(name, command_line):
+    name = (name or "").lower()
+    command_line = (command_line or "").lower()
+    if not command_line:
+        return False
+
+    if "dev.py" in command_line:
+        return True
+    if "uvicorn" in command_line and "backend.app:app" in command_line:
+        return True
+    if name in {"node.exe", "node"} and "vite" in command_line:
+        return True
+    if name in {"cmd.exe", "cmd"} and "npm" in command_line and "dev" in command_line:
+        return True
+    return False
+
+
+def find_stale_dev_process_pids():
+    protected_pids = _current_process_tree_pids()
+
+    if os.name == "nt":
+        pids = set()
+        for row in _windows_processes():
+            try:
+                pid = int(row.get("ProcessId"))
+            except (TypeError, ValueError):
+                continue
+            if pid in protected_pids:
+                continue
+            if _process_matches_dev_runner(row.get("Name"), row.get("CommandLine")):
+                pids.add(pid)
+        return sorted(pids)
+
+    output = _run_text_command(["ps", "-eo", "pid=,comm=,args="])
+    pids = set()
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid in protected_pids:
+            continue
+        if _process_matches_dev_runner(parts[1], parts[2]):
+            pids.add(pid)
+    return sorted(pids)
+
+
+def terminate_pids(pids, reason):
+    pids = sorted(set(pid for pid in pids if pid and pid != os.getpid()))
+    if not pids:
+        return
+
+    log(f"Cleaning stale {reason}: PID(s) {', '.join(str(pid) for pid in pids)}")
+    if os.name == "nt":
+        for pid in pids:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        return
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            continue
+
+    deadline = time.monotonic() + 5
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        for pid in list(remaining):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                remaining.discard(pid)
+            except OSError:
+                remaining.discard(pid)
+        if remaining:
+            time.sleep(0.1)
+
+    for pid in remaining:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def cleanup_stale_dev_environment(ports):
+    terminate_pids(find_stale_dev_process_pids(), "dev runner processes")
+
+    protected_pids = _current_process_tree_pids()
+    port_pids = set()
+    for port in ports:
+        for pid in find_tcp_listener_pids(port):
+            if pid not in protected_pids:
+                port_pids.add(pid)
+    terminate_pids(port_pids, f"listeners on ports {', '.join(str(port) for port in ports)}")
+
+    if port_pids:
+        time.sleep(0.5)
 
 
 def ensure_backend_port_available(host, port):
@@ -744,6 +943,8 @@ def main():
     log(f"Supervisor check interval: {config.check_interval_seconds:.1f}s")
     if config.backend_reload_mode == "outer":
         log(f"Backend reload cooldown: {config.backend_reload_cooldown_seconds:.1f}s")
+
+    cleanup_stale_dev_environment((backend_port, DEFAULT_FRONTEND_PORT))
 
     process_guard = create_process_guard()
     backend_proc = None

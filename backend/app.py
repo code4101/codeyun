@@ -6,13 +6,10 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api.admin import init_storage_scheduler
 from backend.api.admin_feature_access import router as admin_feature_access_router
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
-from backend.api.note_sheets import init_attendance_summary_scheduler, shutdown_attendance_summary_scheduler
-from backend.api.notes import init_codex_diary_import_scheduler, shutdown_codex_diary_import_scheduler
 from backend.api.task_manager import (
     start_task_manager_services,
     stop_task_manager_services,
@@ -20,14 +17,8 @@ from backend.api.task_manager import (
 from backend.api.upload import router as upload_router
 from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
-from backend.core.auto_git_commit import (
-    init_auto_git_commit_scheduler,
-    shutdown_auto_git_commit_scheduler,
-)
-from backend.core.note_metadata_feedback import (
-    init_note_metadata_feedback_scheduler,
-    shutdown_note_metadata_feedback_scheduler,
-)
+from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
+from backend.core.codex_saver.mcp_server import codex_saver_mcp_lifespan
 from backend.core.weekly_note_scheduler import (
     init_ruanyf_weekly_note_scheduler,
     shutdown_ruanyf_weekly_note_scheduler,
@@ -51,21 +42,15 @@ async def lifespan(app: FastAPI):
     init_db()
     ensure_bootstrap_admin()
     await start_task_manager_services()
-    init_storage_scheduler()
-    init_attendance_summary_scheduler()
-    init_note_metadata_feedback_scheduler()
-    init_auto_git_commit_scheduler()
+    init_background_task_runner()
     init_ruanyf_weekly_note_scheduler()
-    init_codex_diary_import_scheduler()
     if not settings.is_test:
         start_enabled_codex_bridges()
-    yield
+    async with codex_saver_mcp_lifespan():
+        yield
     shutdown_codex_bridges()
-    shutdown_codex_diary_import_scheduler()
     shutdown_ruanyf_weekly_note_scheduler()
-    shutdown_auto_git_commit_scheduler()
-    shutdown_note_metadata_feedback_scheduler()
-    shutdown_attendance_summary_scheduler()
+    shutdown_background_task_runner()
     await stop_task_manager_services()
 
 

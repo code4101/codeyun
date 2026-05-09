@@ -76,7 +76,7 @@ from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_
 from backend.core.ai_git_commit import (
     AiGitCommitError,
     generate_ai_git_commit_draft,
-    resolve_ai_runtime_config,
+    resolve_ai_git_commit_runtime_config,
 )
 from backend.core.ai_chat import OllamaClientError
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
@@ -1356,12 +1356,13 @@ def start_git_reduction_run_for_entry(
     entry = _get_entry_or_404(session, current_user, entry_id)
 
     try:
-        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
             session=session,
             current_user=current_user,
             provider=req.provider,
             base_url=req.base_url,
             api_key=req.api_key,
+            model=req.model,
         )
     except AiGitCommitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1371,7 +1372,7 @@ def start_git_reduction_run_for_entry(
         entry_id=entry.entry_id,
         cwd=req.cwd,
         provider=provider_id,
-        model=(req.model or "").strip(),
+        model=(resolved_model or "").strip(),
         style=req.style,
         include_body=req.include_body,
         branch_factor=req.branch_factor,
@@ -1410,7 +1411,7 @@ def start_git_reduction_run_for_entry(
             "provider_id": provider_id,
             "base_url": base_url,
             "api_key": api_key,
-            "model": req.model,
+            "model": resolved_model,
             "extra_providers": extra_providers,
         },
         daemon=True,
@@ -1461,19 +1462,20 @@ def generate_git_message_for_entry(
                 _raise_remote_json_error(error_response)
             context_payload = GitToolContextResponse.model_validate(payload).model_dump()
 
-        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
             session=session,
             current_user=current_user,
             provider=req.provider,
             base_url=req.base_url,
             api_key=req.api_key,
+            model=req.model,
         )
         draft = generate_ai_git_commit_draft(
             context_text=str(context_payload["prompt_context"]),
             provider_id=provider_id,
             base_url=base_url,
             api_key=api_key,
-            model=req.model,
+            model=resolved_model,
             style=req.style,
             include_body=req.include_body,
             force_split_reason=str(context_payload.get("split_reason") or "").strip() or None,
@@ -1525,19 +1527,20 @@ def reduce_git_message_for_entry(
                 _raise_remote_json_error(error_response)
             reduction_input = GitToolReductionInputResponse.model_validate(payload).model_dump()
 
-        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
             session=session,
             current_user=current_user,
             provider=req.provider,
             base_url=req.base_url,
             api_key=req.api_key,
+            model=req.model,
         )
         reduction_payload = generate_ai_git_commit_draft_hierarchical(
             cwd=req.cwd if entry.mode == "local" else None,
             provider_id=provider_id,
             base_url=base_url,
             api_key=api_key,
-            model=req.model,
+            model=resolved_model,
             style=req.style,
             include_body=req.include_body,
             extra_providers=extra_providers,
@@ -1580,19 +1583,20 @@ def reduce_and_commit_git_for_entry(
                 _raise_remote_json_error(error_response)
             reduction_input = GitToolReductionInputResponse.model_validate(payload).model_dump()
 
-        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
             session=session,
             current_user=current_user,
             provider=req.provider,
             base_url=req.base_url,
             api_key=req.api_key,
+            model=req.model,
         )
         reduction_payload = generate_ai_git_commit_draft_hierarchical(
             cwd=req.cwd if entry.mode == "local" else None,
             provider_id=provider_id,
             base_url=base_url,
             api_key=api_key,
-            model=req.model,
+            model=resolved_model,
             style=req.style,
             include_body=req.include_body,
             extra_providers=extra_providers,
@@ -1697,19 +1701,20 @@ def generate_and_commit_git_for_entry(
                 _raise_remote_json_error(error_response)
             context_payload = GitToolContextResponse.model_validate(payload).model_dump()
 
-        provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
+        provider_id, base_url, api_key, resolved_model, extra_providers = resolve_ai_git_commit_runtime_config(
             session=session,
             current_user=current_user,
             provider=req.provider,
             base_url=req.base_url,
             api_key=req.api_key,
+            model=req.model,
         )
         draft = generate_ai_git_commit_draft(
             context_text=str(context_payload["prompt_context"]),
             provider_id=provider_id,
             base_url=base_url,
             api_key=api_key,
-            model=req.model,
+            model=resolved_model,
             style=req.style,
             include_body=req.include_body,
             force_split_reason=str(context_payload.get("split_reason") or "").strip() or None,

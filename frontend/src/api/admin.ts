@@ -117,9 +117,12 @@ export interface BackgroundTaskItem {
   category: string;
   description: string;
   cron_expression: string;
+  schedule_label: string;
   enabled: boolean;
   scheduler_running: boolean;
+  runner_running: boolean;
   next_run_at: string | null;
+  retry_policy: string;
   can_trigger: boolean;
   trigger_warning: string;
   active: boolean;
@@ -136,6 +139,9 @@ export interface BackgroundTaskQueueSnapshot {
 export interface BackgroundTaskStatusResponse {
   queue: BackgroundTaskQueueSnapshot;
   tasks: BackgroundTaskItem[];
+  runner_running: boolean;
+  next_wake_at: string | null;
+  runner_error?: string | null;
 }
 
 export interface BackgroundTaskTriggerResponse {
@@ -253,6 +259,11 @@ export const triggerBackgroundTask = async (taskKey: string): Promise<Background
 
 export const toggleBackgroundTask = async (taskKey: string, enabled: boolean) => {
   const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/toggle`, { enabled });
+  return response.data;
+};
+
+export const resetBackgroundTaskSchedule = async (taskKey: string) => {
+  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/reset-schedule`);
   return response.data;
 };
 

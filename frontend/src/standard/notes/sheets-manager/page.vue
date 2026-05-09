@@ -17,6 +17,7 @@ import {
   saveAsWorkbook,
   updateSheetAccess,
   updateNoteSheet,
+  updateWorkbook,
   updateWorkbookAccess,
   type NoteSheetResourceAccessGrantUpdate,
   type NoteSheetResourceRole,
@@ -604,6 +605,35 @@ async function handleDeleteWorkbook(workbook: WorkbookSummary) {
   }
 }
 
+async function handleRenameWorkbook(workbook: WorkbookSummary) {
+  closeListContextMenu()
+  if (!canManageResourceAccess(workbook)) {
+    ElMessage.warning('没有权限重命名该工作簿')
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '重命名工作簿', {
+      inputValue: workbook.title,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const nextTitle = value.trim()
+    if (nextTitle === workbook.title) {
+      return
+    }
+
+    const nextWorkbook = await updateWorkbook(workbook.id, { title: nextTitle })
+    await Promise.all([loadWorkbooks(), loadSheets()])
+    if (selectedWorkbookId.value === workbook.id) {
+      selectedWorkbookDetail.value = nextWorkbook
+    }
+  } catch {
+    return
+  }
+}
+
 async function handleSaveAsWorkbook(workbook: WorkbookSummary, mode: 'template' | 'duplicate') {
   closeListContextMenu()
   const modeLabel = mode === 'template' ? '模版' : '副本'
@@ -903,6 +933,13 @@ onBeforeUnmount(() => {
             @click="handleContextMenuCreateWorkbook"
           >
             新建工作簿
+          </button>
+          <button
+            type="button"
+            class="list-context-menu-item"
+            @click="handleRenameWorkbook(listContextMenu.payload.row)"
+          >
+            重命名
           </button>
           <button
             type="button"

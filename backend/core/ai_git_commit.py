@@ -6,11 +6,8 @@ from typing import Optional
 
 from sqlmodel import Session
 
-from backend.core.ai_chat import (
-    AiProviderConfig,
-    chat_with_provider,
-    get_default_ai_provider_id,
-)
+from backend.core.ai_app_config import AI_APP_GIT_COMMIT, AiAppConfigError, resolve_ai_app_runtime_config
+from backend.core.ai_chat import AiProviderConfig, chat_with_provider, get_default_ai_provider_id
 from backend.core.ai_chat_user_config import (
     AiChatUserConfigError,
     get_user_ai_chat_provider_runtime_config,
@@ -57,6 +54,36 @@ def resolve_ai_runtime_config(
             extra_providers,
         )
     except AiChatUserConfigError as exc:
+        raise AiGitCommitError(str(exc)) from exc
+
+
+def resolve_ai_git_commit_runtime_config(
+    *,
+    session: Session,
+    current_user: Optional[User],
+    provider: Optional[str],
+    base_url: Optional[str],
+    api_key: Optional[str],
+    model: Optional[str],
+) -> tuple[str, Optional[str], Optional[str], Optional[str], tuple[AiProviderConfig, ...]]:
+    try:
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=current_user,
+            app_id=AI_APP_GIT_COMMIT,
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+        )
+        return (
+            str(runtime["provider"]),
+            runtime["base_url"],
+            runtime["api_key"],
+            runtime["model"],
+            runtime["extra_providers"],
+        )
+    except AiAppConfigError as exc:
         raise AiGitCommitError(str(exc)) from exc
 
 

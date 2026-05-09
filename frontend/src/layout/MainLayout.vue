@@ -63,6 +63,7 @@ const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
+const AI_CODEX_SAVER_PATH = requirePageMenuPath('AiCodexSaver');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
@@ -114,6 +115,7 @@ const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH)
 const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
+const AI_CODEX_SAVER_TITLE = requirePermissionTitleByMenuPath(AI_CODEX_SAVER_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
@@ -325,6 +327,8 @@ const aiToolsMenuVisible = computed(() =>
   canAccessFeature('ai-tools')
   && [
     AI_CONFIG_PATH,
+    AI_CODEX_SAVER_PATH,
+    CLUSTER_CODEX_PATH,
     AI_CHAT_PATH,
     AI_REDUCTION_PATH,
     AI_GIT_COMMIT_PATH,
@@ -424,11 +428,6 @@ const clusterFilesMenuEntryPath = computed(() =>
   canAccessMenuPath(CLUSTER_FILES_PATH) ? CLUSTER_FILES_PATH : CLUSTER_VIEW_MN_PATH,
 );
 
-const clusterCodexMenuVisible = computed(() =>
-  canAccessFeature('cluster.codex')
-  && canAccessMenuPath(CLUSTER_CODEX_PATH),
-);
-
 const fanxiuActivityListMenuEntryPath = computed(() =>
   canAccessMenuPath(FANXIU_ACTIVITY_LIST_PATH)
     ? FANXIU_ACTIVITY_LIST_PATH
@@ -457,7 +456,6 @@ const clusterMenuVisible = computed(() =>
       CLUSTER_LABELME_PATH,
     ].some((path) => canAccessMenuPath(path))
     || clusterFilesMenuVisible.value
-    || clusterCodexMenuVisible.value
     || clusterPluginMenuItems.value.length > 0
   ),
 );
@@ -476,7 +474,11 @@ const defaultOpeneds = computed(() => {
   const openeds: string[] = [];
   if (route.path === ATTENDANCE_PATH_PREFIX) return ['attendance-tools'];
   if (route.path === '/cluster') return ['cluster-tools'];
-  if (route.path.startsWith('/cluster/')) openeds.push('cluster-tools');
+  if (route.path === CLUSTER_CODEX_PATH || route.path.startsWith(`${CLUSTER_CODEX_PATH}/`)) {
+    openeds.push('ai-tools');
+  } else if (route.path.startsWith('/cluster/')) {
+    openeds.push('cluster-tools');
+  }
   if ([CLUSTER_FILES_PATH, CLUSTER_VIEW_MN_PATH].some((path) => route.path === path || route.path.startsWith(`${path}/`))) {
     openeds.push(CLUSTER_FILES_SUBMENU_INDEX);
   }
@@ -666,6 +668,8 @@ watch(
               <span>{{ AI_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_CODEX_SAVER_PATH)" :index="AI_CODEX_SAVER_PATH">{{ AI_CODEX_SAVER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_GIT_COMMIT_PATH)" :index="AI_GIT_COMMIT_PATH">{{ AI_GIT_COMMIT_TITLE }}</el-menu-item>
@@ -812,7 +816,6 @@ watch(
               </template>
               <el-menu-item v-if="canAccessMenuPath(CLUSTER_VIEW_MN_PATH)" :index="CLUSTER_VIEW_MN_PATH">{{ CLUSTER_VIEW_MN_TITLE }}</el-menu-item>
             </el-sub-menu>
-            <el-menu-item v-if="clusterCodexMenuVisible" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item
               v-for="item in clusterPluginMenuItems"
               :key="item.key"
