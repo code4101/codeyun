@@ -4,8 +4,12 @@
       <div>
         <h2>后台任务</h2>
         <div class="header-meta">
+          <span :class="['queue-dot', status?.runner_running ? 'busy' : 'stopped']" />
+          <span>{{ status?.runner_running ? '行为树运行中' : '行为树未启动' }}</span>
+          <span v-if="status?.next_wake_at">下次唤醒：{{ formatDateTime(status.next_wake_at) }}</span>
+          <span v-if="status?.runner_error" class="error-text">{{ status.runner_error }}</span>
           <span :class="['queue-dot', status?.queue.is_idle ? 'idle' : 'busy']" />
-          <span>{{ status?.queue.is_idle ? '队列空闲' : '队列运行中' }}</span>
+          <span>{{ status?.queue.is_idle ? '执行队列空闲' : '执行队列运行中' }}</span>
           <span v-if="status?.queue.running">当前：{{ status.queue.running.name }}</span>
           <span v-if="pendingCount">等待 {{ pendingCount }} 项</span>
         </div>
@@ -31,7 +35,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="计划" width="170">
+      <el-table-column label="调度" width="230">
         <template #default="{ row }">
           <div class="schedule-cell">
             <el-switch
@@ -42,7 +46,10 @@
               active-text="启用"
               inactive-text="停用"
             />
-            <code>{{ row.cron_expression || '-' }}</code>
+            <div class="schedule-text">
+              <span>{{ row.schedule_label || '-' }}</span>
+              <small v-if="row.retry_policy">{{ row.retry_policy }}</small>
+            </div>
           </div>
         </template>
       </el-table-column>
@@ -85,19 +92,29 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="120" fixed="right">
+      <el-table-column label="操作" width="190" fixed="right">
         <template #default="{ row }">
-          <el-button
-            size="small"
-            type="primary"
-            plain
-            :icon="VideoPlay"
-            :disabled="row.active || !row.can_trigger"
-            :loading="triggeringKey === row.key"
-            @click="handleTrigger(row)"
-          >
-            执行
-          </el-button>
+          <div class="action-buttons">
+            <el-button
+              size="small"
+              type="primary"
+              plain
+              :icon="VideoPlay"
+              :disabled="row.active || !row.can_trigger"
+              :loading="triggeringKey === row.key"
+              @click="handleTrigger(row)"
+            >
+              执行
+            </el-button>
+            <el-button
+              size="small"
+              plain
+              :loading="resettingKey === row.key"
+              @click="handleResetSchedule(row)"
+            >
+              重置
+            </el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -121,6 +138,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Refresh, VideoPlay } from '@element-plus/icons-vue';
 import {
   fetchBackgroundTaskStatus,
+  resetBackgroundTaskSchedule,
   triggerBackgroundTask,
   toggleBackgroundTask,
   type BackgroundTaskItem,
@@ -134,6 +152,7 @@ const initialLoading = ref(false);
 const manualRefreshing = ref(false);
 const triggeringKey = ref('');
 const togglingKey = ref('');
+const resettingKey = ref('');
 let refreshTimer = 0;
 let silentRefreshRunning = false;
 let latestStatusRequestId = 0;
@@ -256,6 +275,34 @@ const handleToggle = async (row: BackgroundTaskItem, val: string | number | bool
   }
 };
 
+const handleResetSchedule = async (row: BackgroundTaskItem) => {
+  try {
+    await ElMessageBox.confirm(
+      '将清空该任务的下次运行时间，行为树会按当前时间重新计算下一次调度。',
+      `重置调度：${row.title}`,
+      {
+        confirmButtonText: '重置',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
+  } catch {
+    return;
+  }
+
+  resettingKey.value = row.key;
+  try {
+    await resetBackgroundTaskSchedule(row.key);
+    ElMessage.success('调度状态已重置');
+    await loadStatus();
+  } catch (error: any) {
+    console.error(error);
+    ElMessage.error(error?.response?.data?.detail || '重置失败');
+  } finally {
+    resettingKey.value = '';
+  }
+};
+
 onMounted(() => {
   loadStatus();
   refreshTimer = window.setInterval(() => {
@@ -314,6 +361,14 @@ onBeforeUnmount(() => {
   background: #409eff;
 }
 
+.queue-dot.stopped {
+  background: #c0c4cc;
+}
+
+.error-text {
+  color: #f56c6c;
+}
+
 .tasks-table {
   width: 100%;
 }
@@ -344,12 +399,17 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
-.schedule-cell code {
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: #f5f7fa;
-  color: #606266;
+.schedule-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   font-size: 12px;
+  color: #606266;
+  line-height: 1.35;
+}
+
+.schedule-text small {
+  color: #a8abb2;
 }
 
 .run-status {
@@ -357,6 +417,12 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .run-status span:last-child {

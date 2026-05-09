@@ -737,8 +737,6 @@ import { Check, MagicStick, RefreshRight } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
-  fetchAiGitCommitConfig,
-  updateAiGitCommitConfig,
   fetchAiGitSavedRepos,
   saveAiGitSavedRepos,
   touchAiGitSavedRepo,
@@ -767,6 +765,7 @@ import {
 } from '@/api/aiGitCommit'
 import { taskStore, type Device } from '@/store/taskStore'
 import { useAiProviderStore } from '@/store/aiProviderStore'
+import { useAiAppStore } from '@/store/aiAppStore'
 import { useUserStore } from '@/store/userStore'
 
 interface PersistedAiGitCommitForm {
@@ -883,6 +882,7 @@ const historyChartIdPrefix = `ai-git-history-${Math.random().toString(36).slice(
 const router = useRouter()
 const userStore = useUserStore()
 const aiProviderStore = useAiProviderStore()
+const aiAppStore = useAiAppStore()
 
 function loadPersistedForm(): PersistedAiGitCommitForm {
   const fallback: PersistedAiGitCommitForm = {
@@ -1246,31 +1246,30 @@ watch(
 watch(
   () => ({ providerId: form.providerId, model: form.model }),
   ({ providerId, model }) => {
-    if (!providerId || !model) {
+    if (!providerId || !model || aiAppStore.loadedForAuthState === null) {
       return
     }
-    updateAiGitCommitConfig({ provider_id: providerId, model }).catch(error => {
-      console.warn('Failed to save ai-git-commit config to backend', error)
+    aiAppStore.updateAppConfig('ai-git-commit', { provider: providerId, model }).catch(error => {
+      console.warn('Failed to save ai-git-commit app config', error)
     })
   },
   { deep: true },
 )
 
 onMounted(async () => {
-  const [_, __, ___, config] = await Promise.all([
+  await Promise.all([
     taskStore.fetchDevices(),
     aiProviderStore.loadProviders(userStore.isAuthenticated),
+    aiAppStore.loadAppConfigs(userStore.isAuthenticated),
     loadSavedRepos(),
-    fetchAiGitCommitConfig().catch(() => null),
   ])
 
-  if (config) {
-    if (config.provider_id) {
-      form.providerId = config.provider_id
-    }
-    if (config.model) {
-      form.model = config.model
-    }
+  const appConfig = aiAppStore.getAppConfig('ai-git-commit')
+  if (appConfig.provider) {
+    form.providerId = appConfig.provider
+  }
+  if (appConfig.model) {
+    form.model = appConfig.model
   }
 
   if (!form.entryId || !devices.value.some(device => device.id === form.entryId)) {

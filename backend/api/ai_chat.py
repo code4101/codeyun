@@ -19,6 +19,11 @@ from backend.core.ai_chat import (
     list_ai_provider_summaries,
     stream_chat_with_provider,
 )
+from backend.core.ai_app_config import (
+    AiAppConfigError,
+    list_user_ai_app_configs,
+    save_user_ai_app_config,
+)
 from backend.core.codex_access_keys import (
     create_codex_access_key,
     delete_codex_access_key,
@@ -189,6 +194,27 @@ class AiChatSavedProviderConfig(BaseModel):
 class AiChatSavedConfigsResponse(BaseModel):
     signed_in: bool
     items: list[AiChatSavedProviderConfig] = Field(default_factory=list)
+
+
+class AiChatAppConfig(BaseModel):
+    id: str
+    label: str = ""
+    description: str = ""
+    enabled: bool = True
+    provider: str = ""
+    model: str = ""
+    updated_at: Optional[float] = None
+
+
+class AiChatAppConfigsResponse(BaseModel):
+    signed_in: bool
+    items: list[AiChatAppConfig] = Field(default_factory=list)
+
+
+class AiChatSaveAppConfigRequest(BaseModel):
+    enabled: bool = True
+    provider: str = ""
+    model: str = ""
 
 
 class AiChatOllamaAccessKeySummary(BaseModel):
@@ -658,6 +684,49 @@ def get_ai_chat_saved_configs(
             for item in list_user_ai_chat_provider_configs(session, current_user.id)
         ],
     )
+
+
+@router.get("/app-configs", response_model=AiChatAppConfigsResponse)
+def get_ai_chat_app_configs(
+    current_user: Optional[User] = Depends(get_optional_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    if current_user is None:
+        return AiChatAppConfigsResponse(signed_in=False, items=[])
+    return AiChatAppConfigsResponse(
+        signed_in=True,
+        items=[
+            AiChatAppConfig.model_validate(item)
+            for item in list_user_ai_app_configs(session, current_user.id)
+        ],
+    )
+
+
+@router.put("/app-configs/{app_id}", response_model=AiChatAppConfig)
+def put_ai_chat_app_config(
+    app_id: str,
+    payload: AiChatSaveAppConfigRequest,
+    current_user: User = Depends(get_current_user_from_token),
+    session: Session = Depends(get_session),
+):
+    _ensure_ai_chat_access(current_user)
+    try:
+        saved = save_user_ai_app_config(
+            session,
+            current_user.id,
+            app_id,
+            enabled=payload.enabled,
+            provider=payload.provider,
+            model=payload.model,
+        )
+        definition = next(
+            (item for item in list_user_ai_app_configs(session, current_user.id) if item["id"] == saved["id"]),
+            saved,
+        )
+    except AiAppConfigError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return AiChatAppConfig.model_validate(definition)
 
 
 @router.get("/ollama-access-keys", response_model=AiChatOllamaAccessKeysResponse)

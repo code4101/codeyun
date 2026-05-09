@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+import io
+import json
 import os
 from pathlib import Path
 import shutil
@@ -13,10 +15,17 @@ from typing import Any, Literal, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select
 
+from backend.core.ai_chat import (
+    CODEX_CLI_DEFAULT_COMMAND,
+    CODEX_CLI_DEFAULT_MODEL,
+    AiProviderConfig,
+    OllamaClientError,
+    chat_with_provider,
+)
 from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import ensure_feature_access
@@ -36,6 +45,14 @@ router = APIRouter()
 DEFAULT_NOTE_SHEET_COLUMNS = ["列1", "列2", "列3"]
 DEFAULT_NOTE_SHEET_PAGE_SIZE = 100
 MAX_NOTE_SHEET_PAGE_SIZE = 1000
+NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "note-sheet-excel-import-codex"
+NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
+NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES = 12 * 1024 * 1024
+NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS = 12
+NOTE_SHEET_EXCEL_IMPORT_MAX_ROWS_PER_SHEET = 600
+NOTE_SHEET_EXCEL_IMPORT_MAX_COLS_PER_SHEET = 60
+NOTE_SHEET_EXCEL_IMPORT_MAX_NONEMPTY_ROWS = 900
+NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 RESOURCE_ACCESS_ROLES = ("deny", "viewer", "editor", "manager")
 RESOURCE_ACCESS_ROLE_RANK = {"deny": 0, "viewer": 1, "editor": 2, "manager": 3}
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -128,6 +145,34 @@ CELL_OFFSET_FORMULA_RE = re.compile(
     re.IGNORECASE,
 )
 FORMULA_CELL_REFERENCE_ONLY_RE = re.compile(r"^\$?([A-Za-z]{1,3})\$?(\d+)$")
+NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 导入标准化代理。
+
+你的任务是把用户上传的 Excel 工作簿标准化为当前目标 sheet 的数据行。你只做数据抽取和字段映射，不修改文件，不调用外部系统。
+
+硬性要求：
+- 最终只输出一个 JSON 对象，不要输出 Markdown 代码块或解释性正文。
+- 返回的 rows 只包含真实业务数据行，不包含目标 sheet 里已有的按钮行、说明行或字段表头。
+- 不确定的字段留空字符串，不要编造。
+- 保持源表中真实记录的顺序。
+- 所有单元格值都用字符串表示。
+
+报名表常见规则：
+- 跳过标题、二维码、空行、分组标题、说明文字、统计行、日志批阅师资名单等非报名记录，除非用户补充说明明确要求导入。
+- 如果源表用“1组/2组/第1组”等行表示分组，把该分组填入后续报名记录的“分组”字段，直到遇到下一组。
+- 姓名、微信昵称、手机号/手机、微信号、交易单号/微信支付订单号、订单日期、商户订单号、订单金额、退款状态、用户ID 等同义字段要映射到目标列。
+- 手机号、订单号、微信号必须按文本保留；不要转成科学计数法，不要自行补全未知位。
+- 如果源表里“选择促学金模式/自觉自律完成学修”等信息没有专门目标列，优先放到“备注”或“参考信息”。
+- 如果源表序号是每组内序号或全局序号，按源表可见语义填入；无法判断时按源记录顺序从 1 开始。
+
+返回 JSON 形状：
+{
+  "rows": [
+    {"目标列名": "标准化后的文本值"}
+  ],
+  "warnings": ["可选，导入风险或未能确定的信息"],
+  "mapping_notes": ["可选，说明主要字段映射判断"]
+}
+"""
 attendance_summary_scheduler = BackgroundScheduler()
 
 
@@ -205,6 +250,14 @@ class NoteSheetUpdateRequest(BaseModel):
 class NoteSheetSortRequest(BaseModel):
     column_index: int = Field(ge=0)
     direction: Literal["asc", "desc"] = "asc"
+
+
+class NoteSheetExcelImportResponse(BaseModel):
+    sheet: NoteSheetDetailResponse
+    imported_count: int = 0
+    preserved_row_count: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    mapping_notes: list[str] = Field(default_factory=list)
 
 
 class NoteSheetAttendanceTemplateGenerationRequest(BaseModel):
@@ -355,6 +408,10 @@ class WorkbookCreateRequest(BaseModel):
     title: str = ""
 
 
+class WorkbookUpdateRequest(BaseModel):
+    title: str = ""
+
+
 class WorkbookAttachSheetRequest(BaseModel):
     sheet_id: int
 
@@ -373,9 +430,11 @@ def _create_default_sheet_document() -> dict[str, Any]:
         "data_start_row": 1,
         "field_row_index": 0,
         "merged_cells": [],
+        "formula_reference_origin": "sheet_v2",
         "view_settings": {
             "show_row_numbers": True,
             "row_marker_numbering": "global",
+            "row_marker_origin": "sheet",
             "show_column_markers": True,
             "column_marker_style": "letters",
             "pagination": {
@@ -392,6 +451,12 @@ def _normalize_document_json(value: Any) -> dict[str, Any]:
     return dict(value)
 
 
+def _normalize_created_document_json(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or not value:
+        return _create_default_sheet_document()
+    return dict(value)
+
+
 def _normalize_document_data_start_row(document_json: dict[str, Any]) -> int:
     raw_value = document_json.get("data_start_row")
     try:
@@ -399,6 +464,14 @@ def _normalize_document_data_start_row(document_json: dict[str, Any]) -> int:
     except (TypeError, ValueError):
         return 0
     return max(numeric, 0)
+
+
+def _uses_sheet_formula_reference_origin(document_json: dict[str, Any]) -> bool:
+    return document_json.get("formula_reference_origin") == "sheet_v2"
+
+
+def _get_formula_reference_row_offset(document_json: dict[str, Any]) -> int:
+    return _normalize_document_data_start_row(document_json) if _uses_sheet_formula_reference_origin(document_json) else 0
 
 
 def _extract_document_grid_rows(document_json: dict[str, Any]) -> list[Any]:
@@ -831,13 +904,20 @@ def _resolve_formula_reference_value(
     rows: list[Any],
     columns: list[Any],
     depth: int,
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
 ) -> Any:
     reference = _parse_formula_cell_reference(token)
     if reference is None:
         return _unquote_formula_string(token)
 
-    row_index, column_index = reference
-    if row_index < 0 or row_index >= len(rows):
+    reference_row_index, column_index = reference
+    row_index = reference_row_index - reference_row_offset
+    if row_index < 0:
+        if grid_rows and 0 <= reference_row_index < len(grid_rows):
+            return _extract_row_cell_value(grid_rows[reference_row_index], column_index, columns)
+        return ""
+    if row_index >= len(rows):
         return ""
     raw_value = _extract_row_cell_value(rows[row_index], column_index, columns)
     return _evaluate_formula_sort_value(
@@ -846,6 +926,8 @@ def _resolve_formula_reference_value(
         column_index=column_index,
         rows=rows,
         columns=columns,
+        reference_row_offset=reference_row_offset,
+        grid_rows=grid_rows,
         depth=depth + 1,
     )
 
@@ -857,6 +939,8 @@ def _evaluate_formula_sort_value(
     column_index: int,
     rows: list[Any],
     columns: list[Any],
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
     depth: int = 0,
 ) -> Any:
     if depth > 8 or not _is_formula_expression(value):
@@ -869,6 +953,8 @@ def _evaluate_formula_sort_value(
             date_match.group("source"),
             rows=rows,
             columns=columns,
+            reference_row_offset=reference_row_offset,
+            grid_rows=grid_rows,
             depth=depth,
         )
         pattern = _unquote_formula_string(date_match.group("pattern")) or "yyyymmdd"
@@ -881,6 +967,8 @@ def _evaluate_formula_sort_value(
             offset_match.group("source"),
             rows=rows,
             columns=columns,
+            reference_row_offset=reference_row_offset,
+            grid_rows=grid_rows,
             depth=depth,
         )
         numeric_value = _parse_number_sort_value(source_value)
@@ -923,6 +1011,7 @@ def _remap_formula_cell_references(
     *,
     row_index_map: dict[int, int | None] | None = None,
     column_index_map: dict[int, int | None] | None = None,
+    row_index_offset: int = 0,
 ) -> str:
     if not _is_formula_expression(formula):
         return formula
@@ -944,11 +1033,14 @@ def _remap_formula_cell_references(
             if column_index_map is not None
             else source_column_index
         )
-        next_row_index = (
-            row_index_map.get(source_row_index, source_row_index)
-            if row_index_map is not None
-            else source_row_index
-        )
+        if row_index_map is None:
+            next_row_index = source_row_index
+        elif source_row_index < row_index_offset:
+            next_row_index = source_row_index
+        else:
+            source_data_row_index = source_row_index - row_index_offset
+            next_data_row_index = row_index_map.get(source_data_row_index, source_data_row_index)
+            next_row_index = None if next_data_row_index is None else next_data_row_index + row_index_offset
         if next_column_index is None or next_row_index is None or next_column_index < 0 or next_row_index < 0:
             return f"{prefix}#REF!"
 
@@ -966,6 +1058,7 @@ def _remap_formula_value_references(
     *,
     row_index_map: dict[int, int | None] | None = None,
     column_index_map: dict[int, int | None] | None = None,
+    row_index_offset: int = 0,
 ) -> Any:
     if not _is_formula_expression(value):
         return value
@@ -973,6 +1066,7 @@ def _remap_formula_value_references(
         value,
         row_index_map=row_index_map,
         column_index_map=column_index_map,
+        row_index_offset=row_index_offset,
     )
 
 
@@ -982,6 +1076,7 @@ def _remap_row_formula_cell_references(
     columns: list[Any],
     row_index_map: dict[int, int | None] | None = None,
     column_index_map: dict[int, int | None] | None = None,
+    row_index_offset: int = 0,
 ) -> Any:
     if isinstance(row, list):
         return [
@@ -989,6 +1084,7 @@ def _remap_row_formula_cell_references(
                 value,
                 row_index_map=row_index_map,
                 column_index_map=column_index_map,
+                row_index_offset=row_index_offset,
             )
             for value in row
         ]
@@ -1003,6 +1099,7 @@ def _remap_row_formula_cell_references(
                 next_row[column_key],
                 row_index_map=row_index_map,
                 column_index_map=column_index_map,
+                row_index_offset=row_index_offset,
             )
         return next_row
 
@@ -1054,6 +1151,338 @@ def _normalize_sheet_row(row: Any, column_count: int) -> list[Any]:
 
 def _normalize_sheet_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
+
+
+def _normalize_excel_import_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _compact_action_token(value: Any) -> str:
+    return re.sub(r"\s+", "", _normalize_sheet_text(value)).lower()
+
+
+def _sheet_row_has_excel_import_action(row: Any) -> bool:
+    values = row if isinstance(row, list) else list(row.values()) if isinstance(row, dict) else [row]
+    action_tokens = {_compact_action_token(token) for token in NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS}
+    return any(_compact_action_token(value) in action_tokens for value in values)
+
+
+def _get_excel_import_preserved_data_rows(document_json: dict[str, Any]) -> list[list[Any]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    for index, row in enumerate(rows):
+        if _sheet_row_has_excel_import_action(row):
+            return rows[: index + 1]
+    return []
+
+
+def _filter_cell_meta_for_document_row_prefix(cell_meta: Any, *, max_document_row: int, column_count: int) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+    filtered: dict[str, Any] = {}
+    for key, meta in cell_meta.items():
+        parsed = _parse_cell_meta_key(key)
+        if parsed is None:
+            continue
+        row_index, column_index = parsed
+        if 0 <= row_index < max_document_row and 0 <= column_index < column_count:
+            filtered[str(key)] = meta
+    return filtered
+
+
+def _filter_merged_cells_for_document_row_prefix(merged_cells: Any, *, max_document_row: int, column_count: int) -> list[Any]:
+    if not isinstance(merged_cells, list):
+        return []
+    filtered: list[Any] = []
+    for item in merged_cells:
+        if not isinstance(item, dict):
+            continue
+        try:
+            row = int(item.get("row") or 0)
+            col = int(item.get("col") or 0)
+            rowspan = max(int(item.get("rowspan") or 1), 1)
+            colspan = max(int(item.get("colspan") or 1), 1)
+        except (TypeError, ValueError):
+            continue
+        if row < 0 or col < 0 or col >= column_count:
+            continue
+        if row + rowspan <= max_document_row:
+            filtered.append({"row": row, "col": col, "rowspan": rowspan, "colspan": min(colspan, column_count - col)})
+    return filtered
+
+
+def _replace_document_rows_for_excel_import(
+    document_json: dict[str, Any],
+    import_rows: list[list[Any]],
+) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    column_count = len(columns)
+    preserved_rows = _get_excel_import_preserved_data_rows(normalized)
+    normalized_import_rows = [_normalize_sheet_row(row, column_count) for row in import_rows]
+    next_document = _replace_document_data_rows(normalized, [*preserved_rows, *normalized_import_rows])
+
+    data_start_row = _normalize_document_data_start_row(next_document)
+    max_preserved_document_row = data_start_row + len(preserved_rows)
+    next_document["cell_meta"] = _filter_cell_meta_for_document_row_prefix(
+        next_document.get("cell_meta"),
+        max_document_row=max_preserved_document_row,
+        column_count=column_count,
+    )
+    next_document["merged_cells"] = _filter_merged_cells_for_document_row_prefix(
+        next_document.get("merged_cells"),
+        max_document_row=max_preserved_document_row,
+        column_count=column_count,
+    )
+    return next_document, len(preserved_rows)
+
+
+def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str, Any]:
+    if len(raw_bytes) > NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Excel 文件过大，当前导入上限为 12MB")
+
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法解析 Excel") from exc
+
+    try:
+        workbook = load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Excel 文件无法读取：{exc}") from exc
+
+    source_sheet_count = len(workbook.sheetnames)
+    sheets: list[dict[str, Any]] = []
+    total_nonempty_rows = 0
+    try:
+        for worksheet in workbook.worksheets[:NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS]:
+            max_row = min(int(worksheet.max_row or 0), NOTE_SHEET_EXCEL_IMPORT_MAX_ROWS_PER_SHEET)
+            max_col = min(int(worksheet.max_column or 0), NOTE_SHEET_EXCEL_IMPORT_MAX_COLS_PER_SHEET)
+            sheet_rows: list[dict[str, Any]] = []
+            if max_row <= 0 or max_col <= 0:
+                sheets.append({
+                    "name": worksheet.title,
+                    "max_row": int(worksheet.max_row or 0),
+                    "max_column": int(worksheet.max_column or 0),
+                    "rows": sheet_rows,
+                })
+                continue
+
+            for row in worksheet.iter_rows(max_row=max_row, max_col=max_col):
+                values = [_normalize_excel_import_cell(cell.value) for cell in row]
+                while values and not values[-1]:
+                    values.pop()
+                if not any(values):
+                    continue
+                total_nonempty_rows += 1
+                if total_nonempty_rows > NOTE_SHEET_EXCEL_IMPORT_MAX_NONEMPTY_ROWS:
+                    raise HTTPException(status_code=413, detail="Excel 非空行过多，当前首版导入上限为 900 行")
+                sheet_rows.append({
+                    "row_number": int(row[0].row if row else len(sheet_rows) + 1),
+                    "values": values,
+                })
+
+            sheets.append({
+                "name": worksheet.title,
+                "max_row": int(worksheet.max_row or 0),
+                "max_column": int(worksheet.max_column or 0),
+                "scanned_row_count": max_row,
+                "scanned_column_count": max_col,
+                "rows": sheet_rows,
+            })
+    finally:
+        workbook.close()
+
+    if not any(sheet.get("rows") for sheet in sheets):
+        raise HTTPException(status_code=400, detail="Excel 中没有可读取的非空行")
+
+    return {
+        "file_name": filename,
+        "sheet_count": source_sheet_count,
+        "sheets": sheets,
+    }
+
+
+def _get_excel_import_column_notes(document_json: dict[str, Any], columns: list[str]) -> dict[str, str]:
+    column_configs = document_json.get("column_configs")
+    if not isinstance(column_configs, dict):
+        return {}
+    notes: dict[str, str] = {}
+    for header in columns:
+        config = column_configs.get(header)
+        if isinstance(config, dict):
+            note = _normalize_sheet_text(config.get("note"))
+            if note:
+                notes[header] = note
+    return notes
+
+
+def _build_note_sheet_excel_import_prompt(
+    *,
+    document_json: dict[str, Any],
+    workbook_payload: dict[str, Any],
+    instruction: str,
+) -> str:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    grid_rows = _extract_document_grid_rows(normalized)
+    preserved_rows = _get_excel_import_preserved_data_rows(normalized)
+    target_context = {
+        "columns": columns,
+        "column_notes": _get_excel_import_column_notes(normalized, columns),
+        "header_rows": grid_rows[:data_start_row],
+        "preserved_leading_data_rows": preserved_rows,
+        "imported_rows_should_start_after_preserved_count": len(preserved_rows),
+    }
+    user_instruction = instruction.strip() or "无补充说明。"
+    return "\n\n".join([
+        "请把 Excel 工作簿标准化为目标 sheet 的数据行。",
+        "目标 sheet 结构：",
+        json.dumps(target_context, ensure_ascii=False, indent=2),
+        "用户补充说明：",
+        user_instruction,
+        "Excel 工作簿抽取结果：",
+        json.dumps(workbook_payload, ensure_ascii=False, indent=2),
+    ])
+
+
+def _build_note_sheet_excel_import_response_schema(columns: list[str]) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["rows"],
+        "properties": {
+            "rows": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "properties": {column: {"type": "string"} for column in columns},
+                },
+            },
+            "warnings": {"type": "array", "items": {"type": "string"}},
+            "mapping_notes": {"type": "array", "items": {"type": "string"}},
+        },
+        "additionalProperties": False,
+    }
+
+
+def _build_note_sheet_excel_import_codex_provider() -> AiProviderConfig:
+    return AiProviderConfig(
+        id=NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID,
+        label="Codex CLI",
+        kind="codex_cli",
+        base_url=CODEX_CLI_DEFAULT_COMMAND,
+        default_model=CODEX_CLI_DEFAULT_MODEL,
+        timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
+        api_key="",
+        supports_stream=False,
+        supports_vision=False,
+        requires_api_key=False,
+        configured=True,
+        models=(CODEX_CLI_DEFAULT_MODEL,),
+        is_custom=False,
+        workspace_dir=os.fspath(Path(__file__).resolve().parents[2]),
+    )
+
+
+def _parse_note_sheet_excel_import_json(content: str) -> dict[str, Any]:
+    text = content.strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise HTTPException(status_code=502, detail="Codex CLI 未返回 JSON 对象")
+        try:
+            payload = json.loads(text[start:end + 1])
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=502, detail=f"Codex CLI 返回的 JSON 无法解析：{exc}") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="Codex CLI 返回 JSON 必须是对象")
+    return payload
+
+
+def _normalize_import_record_key(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()
+
+
+def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[str]) -> list[list[Any]]:
+    raw_rows = payload.get("rows")
+    if not isinstance(raw_rows, list):
+        raise HTTPException(status_code=502, detail="Codex CLI 返回 JSON 缺少 rows 数组")
+
+    normalized_rows: list[list[Any]] = []
+    for raw_row in raw_rows:
+        if isinstance(raw_row, dict):
+            exact_row = {_normalize_sheet_text(key): value for key, value in raw_row.items()}
+            normalized_key_row = {_normalize_import_record_key(key): value for key, value in raw_row.items()}
+            row = [
+                _normalize_excel_import_cell(
+                    exact_row.get(column, normalized_key_row.get(_normalize_import_record_key(column), "")),
+                )
+                for column in columns
+            ]
+        elif isinstance(raw_row, list):
+            row = [_normalize_excel_import_cell(value) for value in _normalize_sheet_row(raw_row, len(columns))]
+        else:
+            continue
+        if any(_normalize_sheet_text(cell) for cell in row):
+            normalized_rows.append(row)
+
+    if not normalized_rows:
+        raise HTTPException(status_code=422, detail="Codex CLI 没有识别到可导入的数据行")
+    return normalized_rows
+
+
+def _normalize_import_message_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [_normalize_sheet_text(item) for item in value if _normalize_sheet_text(item)]
+
+
+def _run_note_sheet_excel_import_codex(
+    *,
+    document_json: dict[str, Any],
+    workbook_payload: dict[str, Any],
+    instruction: str,
+) -> tuple[list[list[Any]], list[str], list[str]]:
+    columns = _normalize_document_columns(document_json)
+    prompt = _build_note_sheet_excel_import_prompt(
+        document_json=document_json,
+        workbook_payload=workbook_payload,
+        instruction=instruction,
+    )
+    try:
+        response = chat_with_provider(
+            provider_id=NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID,
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt=NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT,
+            response_format=_build_note_sheet_excel_import_response_schema(columns),
+            timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
+            extra_providers=(_build_note_sheet_excel_import_codex_provider(),),
+        )
+    except OllamaClientError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    payload = _parse_note_sheet_excel_import_json(str(response.get("content") or ""))
+    return (
+        _coerce_note_sheet_excel_import_rows(payload, columns),
+        _normalize_import_message_list(payload.get("warnings")),
+        _normalize_import_message_list(payload.get("mapping_notes")),
+    )
 
 
 def _find_column_index(columns: list[Any], header: str) -> int | None:
@@ -1438,6 +1867,8 @@ def _extract_attendance_row_start_date(
     columns: list[Any],
     rows: list[Any],
     start_date_index: int | None,
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
 ) -> date | None:
     if start_date_index is None or start_date_index >= len(row):
         return None
@@ -1448,6 +1879,8 @@ def _extract_attendance_row_start_date(
         column_index=start_date_index,
         rows=rows,
         columns=columns,
+        reference_row_offset=reference_row_offset,
+        grid_rows=grid_rows,
     )
     return _coerce_attendance_date(evaluated_value)
 
@@ -1458,6 +1891,8 @@ def _find_attendance_template_source_row(
     columns: list[Any],
     course_type: str,
     target_date: date,
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
 ) -> tuple[int, list[Any], dict[str, Any]] | None:
     column_count = len(columns)
     type_index = _find_attendance_column_index(columns, "course_type")
@@ -1477,6 +1912,8 @@ def _find_attendance_template_source_row(
             columns=columns,
             rows=rows,
             start_date_index=start_date_index,
+            reference_row_offset=reference_row_offset,
+            grid_rows=grid_rows,
         )
         if source_date is None:
             continue
@@ -1512,6 +1949,8 @@ def _attendance_template_row_exists(
     columns: list[Any],
     course_type: str,
     target_date: date,
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
 ) -> bool:
     type_index = _find_attendance_column_index(columns, "course_type")
     start_date_index = _find_attendance_column_index(columns, "start_date")
@@ -1528,6 +1967,8 @@ def _attendance_template_row_exists(
             columns=columns,
             rows=rows,
             start_date_index=start_date_index,
+            reference_row_offset=reference_row_offset,
+            grid_rows=grid_rows,
         )
         if start_date == target_date:
             return True
@@ -1596,11 +2037,13 @@ def _set_attendance_summary_row_completed(
         source_index: target_index
         for target_index, (source_index, _row) in enumerate(ordered_rows)
     }
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
     next_rows = [
         _remap_row_formula_cell_references(
             row,
             columns=columns,
             row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
         )
         for _source_index, row in ordered_rows
     ]
@@ -1714,7 +2157,14 @@ def _build_inserted_attendance_template_row(
     return next_row
 
 
-def _remap_existing_rows_for_insert(rows: list[Any], *, columns: list[Any], insert_index: int, amount: int) -> list[Any]:
+def _remap_existing_rows_for_insert(
+    rows: list[Any],
+    *,
+    columns: list[Any],
+    insert_index: int,
+    amount: int,
+    row_index_offset: int = 0,
+) -> list[Any]:
     if amount <= 0:
         return rows
     row_index_map = {
@@ -1722,7 +2172,12 @@ def _remap_existing_rows_for_insert(rows: list[Any], *, columns: list[Any], inse
         for index in range(len(rows))
     }
     return [
-        _remap_row_formula_cell_references(row, columns=columns, row_index_map=row_index_map)
+        _remap_row_formula_cell_references(
+            row,
+            columns=columns,
+            row_index_map=row_index_map,
+            row_index_offset=row_index_offset,
+        )
         for row in rows
     ]
 
@@ -1848,6 +2303,8 @@ def _generate_attendance_course_templates(
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     rows = _extract_document_rows(normalized)
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    formula_grid_rows = _extract_document_grid_rows(normalized)
     generated: list[NoteSheetAttendanceTemplateActionItem] = []
     skipped: list[NoteSheetAttendanceTemplateActionItem] = []
 
@@ -1869,6 +2326,8 @@ def _generate_attendance_course_templates(
             columns=columns,
             course_type=course_type,
             target_date=target_date,
+            reference_row_offset=formula_row_offset,
+            grid_rows=formula_grid_rows,
         ):
             skipped.append(NoteSheetAttendanceTemplateActionItem(
                 course_type=course_type,
@@ -1882,6 +2341,8 @@ def _generate_attendance_course_templates(
             columns=columns,
             course_type=course_type,
             target_date=target_date,
+            reference_row_offset=formula_row_offset,
+            grid_rows=formula_grid_rows,
         )
         if source is None:
             skipped.append(NoteSheetAttendanceTemplateActionItem(course_type=course_type, reason="没有找到上一次课程模板"))
@@ -1918,6 +2379,7 @@ def _generate_attendance_course_templates(
         columns=columns,
         insert_index=insert_index,
         amount=len(pending_rows),
+        row_index_offset=formula_row_offset,
     )
 
     inserted_rows: list[list[Any]] = []
@@ -2173,6 +2635,8 @@ def _build_attendance_course_script_status(
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     rows = _extract_document_rows(normalized)
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    formula_grid_rows = _extract_document_grid_rows(normalized)
     if row_index < 0 or row_index >= len(rows):
         raise HTTPException(status_code=400, detail="row_index 超出表格范围")
 
@@ -2222,6 +2686,8 @@ def _build_attendance_course_script_status(
                 columns=columns,
                 rows=rows,
                 start_date_index=start_date_index,
+                reference_row_offset=formula_row_offset,
+                grid_rows=formula_grid_rows,
             )
         if target_date is None:
             status.reason = "无法识别课程日期"
@@ -2294,6 +2760,7 @@ def _resolve_attendance_course_lookup_name(
     row_index: int,
     columns: list[Any],
 ) -> str:
+    normalized = _normalize_document_json(document_json)
     name_index = _find_attendance_column_index(columns, "course_name")
     online_sheet_index = _find_attendance_column_index(columns, "online_sheet")
     start_date_index = _find_attendance_column_index(columns, "start_date")
@@ -2308,13 +2775,15 @@ def _resolve_attendance_course_lookup_name(
     text_date, text_body = _parse_attendance_course_text_date(online_sheet)
     target_date = text_date
     if target_date is None and start_date_index is not None:
-        rows = _extract_document_rows(document_json)
+        rows = _extract_document_rows(normalized)
         target_date = _extract_attendance_row_start_date(
             row,
             row_index=row_index,
             columns=columns,
             rows=rows,
             start_date_index=start_date_index,
+            reference_row_offset=_get_formula_reference_row_offset(normalized),
+            grid_rows=_extract_document_grid_rows(normalized),
         )
     body = _sanitize_attendance_course_script_body(text_body or course_name)
     if target_date is not None and body:
@@ -2662,6 +3131,8 @@ def _extract_sort_cell_value(
     column_index: int,
     columns: list[Any],
     rows: list[Any],
+    reference_row_offset: int = 0,
+    grid_rows: list[Any] | None = None,
 ) -> Any:
     raw_value = _extract_row_cell_value(row, column_index, columns)
     return _evaluate_formula_sort_value(
@@ -2670,6 +3141,8 @@ def _extract_sort_cell_value(
         column_index=column_index,
         rows=rows,
         columns=columns,
+        reference_row_offset=reference_row_offset,
+        grid_rows=grid_rows,
     )
 
 
@@ -2735,6 +3208,8 @@ def _sort_sheet_document_rows(
     all_rows = _extract_document_rows(normalized)
     columns = list(normalized.get("columns") or [])
     data_start_row = _normalize_document_data_start_row(normalized)
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    formula_grid_rows = _extract_document_grid_rows(normalized)
     merged_cells = normalized.get("merged_cells")
     if isinstance(merged_cells, list):
         for cell in merged_cells:
@@ -2766,6 +3241,8 @@ def _sort_sheet_document_rows(
             column_index=column_index,
             columns=columns,
             rows=all_rows,
+            reference_row_offset=formula_row_offset,
+            grid_rows=formula_grid_rows,
         )
         if _sort_value_is_empty(cell_value):
             empty_value_rows.append((row_index, row))
@@ -2781,6 +3258,8 @@ def _sort_sheet_document_rows(
                 column_index=column_index,
                 columns=columns,
                 rows=all_rows,
+                reference_row_offset=formula_row_offset,
+                grid_rows=formula_grid_rows,
             ),
             column_value_type,
         ),
@@ -2801,6 +3280,7 @@ def _sort_sheet_document_rows(
             row,
             columns=columns,
             row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
         )
         for _source_index, row in ordered_rows
     ]
@@ -3406,7 +3886,7 @@ def create_note_sheet(
         sheet_key="pending",
         title=_normalize_title(payload.title, default_value="未命名表格"),
         engine="handsontable",
-        document_json=_normalize_document_json(payload.document_json),
+        document_json=_normalize_created_document_json(payload.document_json),
         version=1,
         owner_user_id=current_user.id,
         created_by_user_id=current_user.id,
@@ -3610,6 +4090,70 @@ def update_note_sheet(
             pagination=response_pagination,
             access=access,
         ),
+    )
+
+
+@router.post("/sheets/{sheet_id}/import-excel-reset", response_model=NoteSheetExcelImportResponse)
+async def import_note_sheet_excel_reset(
+    sheet_id: int,
+    file: UploadFile = File(...),
+    instruction: str = Form(default=""),
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data:
+        raise HTTPException(status_code=403, detail="导入重置需要完整编辑权限")
+
+    filename = str(file.filename or "").strip()
+    suffix = Path(filename).suffix.lower()
+    if suffix not in {".xlsx", ".xlsm", ".xltx", ".xltm"}:
+        raise HTTPException(status_code=400, detail="请上传 .xlsx 或 .xlsm Excel 文件")
+
+    raw_bytes = await file.read()
+    workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
+    current_document = _normalize_document_json(dict(document.document_json or {}))
+    import_rows, warnings, mapping_notes = _run_note_sheet_excel_import_codex(
+        document_json=current_document,
+        workbook_payload=workbook_payload,
+        instruction=instruction,
+    )
+    next_document, preserved_row_count = _replace_document_rows_for_excel_import(current_document, import_rows)
+
+    if _is_attendance_questionnaire_data_sheet(document):
+        next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+
+    if current_document != next_document:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    detail = NoteSheetDetailResponse.model_validate(
+        _serialize_sheet_detail(
+            document,
+            workbook_items=workbook_items,
+            document_json=dict(document.document_json or {}),
+            access=access,
+        ),
+    )
+    return NoteSheetExcelImportResponse(
+        sheet=detail,
+        imported_count=len(import_rows),
+        preserved_row_count=preserved_row_count,
+        warnings=warnings,
+        mapping_notes=mapping_notes,
     )
 
 
@@ -4028,6 +4572,29 @@ def get_workbook(
     current_user: User | None = Depends(get_optional_current_user_from_token),
 ):
     workbook, access = _get_workbook_or_404(session, current_user, workbook_id, required_role="viewer")
+    return WorkbookDetailResponse.model_validate(
+        _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),
+    )
+
+
+@router.put("/workbooks/{workbook_id}", response_model=WorkbookDetailResponse)
+def update_workbook(
+    workbook_id: int,
+    payload: WorkbookUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    _require_note_sheets_feature(session, current_user)
+    workbook, access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
+    next_title = _normalize_title(payload.title, default_value=workbook.title or "未命名工作簿")
+    if workbook.title != next_title:
+        workbook.title = next_title
+        workbook.updated_by_user_id = current_user.id
+        workbook.updated_at = time.time()
+        session.add(workbook)
+        session.commit()
+        session.refresh(workbook)
+
     return WorkbookDetailResponse.model_validate(
         _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),
     )

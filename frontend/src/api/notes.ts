@@ -1863,12 +1863,14 @@ export const useNoteStore = defineStore('notes', () => {
     const aiProviderStore = useAiProviderStore();
     const aiAppStore = useAiAppStore();
 
-    aiAppStore.ensureLoaded();
     if (
       aiProviderStore.providers.length === 0
       || aiProviderStore.loadedForAuthState !== userStore.isAuthenticated
     ) {
       await aiProviderStore.loadProviders(userStore.isAuthenticated);
+    }
+    if (aiAppStore.loadedForAuthState !== userStore.isAuthenticated) {
+      await aiAppStore.loadAppConfigs(userStore.isAuthenticated);
     }
 
     const appConfig = aiAppStore.getAppConfig('note-taxonomy');

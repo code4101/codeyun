@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlmodel import Session
 
+from backend.core.ai_app_config import AI_APP_GIT_COMMIT, get_user_ai_app_config, save_user_ai_app_config
 from backend.models import AppSetting
 
 
@@ -23,31 +24,26 @@ def build_ai_git_commit_config_setting_key(user_id: int) -> str:
 
 
 def get_user_ai_git_commit_config(session: Session, user_id: int) -> dict[str, Any]:
-    row = session.get(AppSetting, build_ai_git_commit_config_setting_key(user_id))
-    if row is None or not isinstance(row.value, dict):
-        return {"provider_id": "", "model": ""}
+    app_config = get_user_ai_app_config(session, user_id, AI_APP_GIT_COMMIT)
     return {
-        "provider_id": str(row.value.get("provider_id") or "").strip(),
-        "model": str(row.value.get("model") or "").strip(),
+        "provider_id": str(app_config.get("provider") or "").strip(),
+        "model": str(app_config.get("model") or "").strip(),
     }
 
 
 def save_user_ai_git_commit_config(session: Session, user_id: int, provider_id: str, model: str) -> dict[str, Any]:
-    setting_key = build_ai_git_commit_config_setting_key(user_id)
-    row = session.get(AppSetting, setting_key)
-    now = time.time()
-    payload = {
-        "provider_id": provider_id.strip(),
-        "model": model.strip(),
+    app_config = save_user_ai_app_config(
+        session,
+        user_id,
+        AI_APP_GIT_COMMIT,
+        enabled=True,
+        provider=provider_id,
+        model=model,
+    )
+    return {
+        "provider_id": str(app_config.get("provider") or "").strip(),
+        "model": str(app_config.get("model") or "").strip(),
     }
-    if row is None:
-        row = AppSetting(key=setting_key, value=payload, updated_at=now)
-    else:
-        row.value = payload
-        row.updated_at = now
-    session.add(row)
-    session.commit()
-    return payload
 
 
 def _normalize_repo_id(value: Any) -> str:

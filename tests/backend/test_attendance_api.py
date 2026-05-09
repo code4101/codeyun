@@ -130,6 +130,17 @@ def _course_row(course_name: str, online_sheet: str, completed_date: object = ""
     return ["", course_name, online_sheet, "", "", "", "", "", "", "", completed_date]
 
 
+def _shift_cell_meta_rows(cell_meta: dict[str, object], offset: int) -> dict[str, object]:
+    shifted: dict[str, object] = {}
+    for key, value in cell_meta.items():
+        row_text, separator, column_text = key.partition(":")
+        if separator != ":" or not row_text.isdigit():
+            shifted[key] = value
+            continue
+        shifted[f"{int(row_text) + offset}:{column_text}"] = value
+    return shifted
+
+
 def test_attendance_config_requires_attendance_access(client: TestClient, auth_user):
     response = client.get("/api/attendance/config")
     assert response.status_code == 403
@@ -236,6 +247,46 @@ def test_attendance_feedback_form_meta_reads_unfinished_courses_from_summary_she
     assert "summary_sheet_url" not in updated_payload
     source_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
     assert _get_anonymous_sheet_grant(session, source_sheet) is None
+
+
+def test_attendance_feedback_form_meta_reads_links_from_grid_row_cell_meta(client: TestClient, session):
+    _create_attendance_summary_course_sheet(
+        session,
+        rows=[
+            _course_row("2025念住闯关第2部分", "20250106念住闯关"),
+            _course_row("梵呗初阶", "20260601梵呗初阶"),
+            _course_row("禅宗1至3期5阶", "20260308禅宗1至3期五阶"),
+        ],
+        cell_meta=_shift_cell_meta_rows(
+            {
+                "0:2": {"link": {"url": "https://www.kdocs.cn/l/nianzhu"}},
+                "2:2": {"link": {"url": "https://www.kdocs.cn/l/zen-five"}},
+            },
+            1,
+        ),
+        updated_at=5678.0,
+    )
+    source_sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 4)).one()
+    document_json = dict(source_sheet.document_json or {})
+    columns = list(document_json["columns"])
+    rows = list(document_json["rows"])
+    source_sheet.document_json = {
+        **document_json,
+        "grid_rows": [columns, *rows],
+        "data_start_row": 1,
+        "field_row_index": 0,
+    }
+    session.add(source_sheet)
+    session.commit()
+
+    response = client.get("/api/attendance/wjx-feedback-form")
+
+    assert response.status_code == 200
+    assert response.json()["course_options"] == [
+        {"name": "20250106念住闯关", "attendance_sheet_url": "https://www.kdocs.cn/l/nianzhu"},
+        {"name": "20260601梵呗初阶", "attendance_sheet_url": ""},
+        {"name": "20260308禅宗1至3期五阶", "attendance_sheet_url": "https://www.kdocs.cn/l/zen-five"},
+    ]
 
 
 def test_attendance_feedback_form_meta_exposes_public_readonly_data_sheet_link(client: TestClient, session):
@@ -693,6 +744,9 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
     ]
     assert "处理说明" not in sheet.document_json["columns"]
     assert all(config.get("hidden") is not True for config in sheet.document_json["column_configs"].values())
+    assert sheet.document_json["view_settings"]["row_marker_numbering"] == "global"
+    assert sheet.document_json["view_settings"]["row_marker_origin"] == "sheet"
+    assert sheet.document_json["view_settings"]["column_marker_style"] == "letters"
     assert sheet.document_json["rows"] == [[
         "801",
         "2026/4/18 08:00:00",

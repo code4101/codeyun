@@ -111,6 +111,27 @@ export interface AiChatSavedConfigsResponse {
   items: AiChatSavedProviderConfig[]
 }
 
+export interface AiChatAppConfig {
+  id: string
+  label: string
+  description: string
+  enabled: boolean
+  provider: string
+  model: string
+  updated_at?: number | null
+}
+
+export interface AiChatAppConfigsResponse {
+  signed_in: boolean
+  items: AiChatAppConfig[]
+}
+
+export interface AiChatSaveAppConfigRequest {
+  enabled: boolean
+  provider: string
+  model: string
+}
+
 export interface AiChatOllamaAccessKeySummary {
   id: string
   label: string
@@ -279,6 +300,16 @@ export async function fetchAiChatStatus(payload: AiChatStatusRequest) {
 
 export async function fetchAiChatSavedConfigs() {
   const response = await api.get<AiChatSavedConfigsResponse>('/ai-chat/saved-configs')
+  return response.data
+}
+
+export async function fetchAiChatAppConfigs() {
+  const response = await api.get<AiChatAppConfigsResponse>('/ai-chat/app-configs')
+  return response.data
+}
+
+export async function saveAiChatAppConfig(appId: string, payload: AiChatSaveAppConfigRequest) {
+  const response = await api.put<AiChatAppConfig>(`/ai-chat/app-configs/${appId}`, payload)
   return response.data
 }
 

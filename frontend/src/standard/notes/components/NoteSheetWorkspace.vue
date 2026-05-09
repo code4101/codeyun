@@ -12,6 +12,7 @@ import {
   fetchAttendanceCourseScriptStatuses,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
+  importNoteSheetFromExcelReset,
   organizeAttendanceCourseScripts,
   setAttendanceRowCompleted,
   updateAttendanceLinkCounts,
@@ -43,8 +44,10 @@ const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
 const REMOTE_SAVE_DEBOUNCE_MS = 1200
 const DEFAULT_PAGE_SIZE = 100
-const TABLE_FONT = '400 14px Inter, "Segoe UI", sans-serif'
+const TABLE_FONT_FAMILY = 'Inter, "Segoe UI", sans-serif'
+const TABLE_FONT = `400 14px ${TABLE_FONT_FAMILY}`
 const TABLE_HEADER_FONT = '600 13px Inter, "Segoe UI", sans-serif'
+const MONOSPACE_FONT_FAMILY = 'Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, Monaco, "Liberation Mono", "Courier New", monospace'
 const TABLE_LINE_HEIGHT = 20
 const TABLE_CELL_VERTICAL_PADDING = 4
 const TABLE_CELL_HORIZONTAL_PADDING = 8
@@ -91,6 +94,7 @@ const ATTENDANCE_SUMMARY_SHEET_ID = 4
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
 const PAGED_ROW_EXPANSION_MESSAGE = '分页模式下不能跨页粘贴并自动新增行。请切到最后一页追加，或关闭分页后再粘贴。'
 const PAGED_AUTO_ROW_INSERT_MESSAGE = '分页模式只允许在最后一页自动新增行。请切到最后一页追加，或关闭分页后再操作。'
+const EXCEL_IMPORT_ACTION_TEXT = '导入excel'
 const ATTENDANCE_FIELD_BINDINGS = {
   courseType: { header: '课程类型', fallbackIndex: 0 },
   onlineSheet: { header: '在线考勤表', fallbackIndex: 2 },
@@ -109,6 +113,7 @@ const FULL_ACCESS_CAPABILITIES: NoteSheetAccessCapabilities = {
 }
 const COLUMN_SETTINGS_KEYS = [
   'value_type',
+  'text_rule',
   'display_format',
   'allow_empty',
   'display_mode',
@@ -119,8 +124,8 @@ const COLUMN_SETTINGS_KEYS = [
   'hash_color_tone',
   'width_mode',
   'width_value',
+  'font_family',
   'font_size',
-  'note',
 ] as const satisfies readonly ColumnSettingsDraftKey[]
 
 type SheetRow = string[]
@@ -135,10 +140,13 @@ type ColumnNoteDisplayMode = 'hover' | 'row'
 type FormulaReferenceOrigin = 'data' | 'sheet' | 'sheet_v2'
 type SortDirection = 'asc' | 'desc'
 type ColumnWidthMode = 'adaptive' | 'fixed'
-type ColumnValueType = 'text' | 'multi_text' | 'number' | 'percent' | 'date' | 'phone'
+type ColumnValueType = 'text' | 'multi_text' | 'number' | 'percent' | 'date'
+type ColumnTextRule = 'none' | 'phone' | 'id_card'
 type ColumnTextAlign = 'auto' | 'left' | 'center' | 'right'
 type ColumnHashColorMode = 'none' | 'text' | 'background'
 type ColumnHashColorTone = 'light' | 'dark'
+type ColumnFontFamily = 'default' | 'monospace'
+type CellFontFamily = ColumnFontFamily
 
 type SheetHeaderCellStyle = {
   background_color?: string
@@ -170,6 +178,7 @@ type SheetCellLink = {
 type SheetCellStyle = {
   background_color?: string
   text_color?: string
+  font_family?: CellFontFamily
 }
 
 type HashColorStyle = {
@@ -187,9 +196,11 @@ type SheetCellMetaMap = Record<string, SheetCellMeta>
 type SheetCellStyleDraft = {
   background_color: string
   text_color: string
+  font_family: CellFontFamily | ''
 }
 
 type SheetCellStyleField = keyof SheetCellStyleDraft
+type SheetCellColorField = 'background_color' | 'text_color'
 
 type SheetCellStyleDraftTouched = Record<SheetCellStyleField, boolean>
 
@@ -279,6 +290,7 @@ type FormulaReferenceArrowDirection = {
 
 type SheetColumnConfig = {
   value_type?: ColumnValueType
+  text_rule?: Exclude<ColumnTextRule, 'none'>
   display_format?: string
   allow_empty?: boolean
   display_mode?: ColumnDisplayMode
@@ -288,6 +300,7 @@ type SheetColumnConfig = {
   hash_color_mode?: Exclude<ColumnHashColorMode, 'none'>
   hash_color_tone?: ColumnHashColorTone
   width_mode?: ColumnWidthMode
+  font_family?: Exclude<ColumnFontFamily, 'default'>
   font_size?: number
   hidden?: boolean
   restore_index?: number
@@ -299,6 +312,7 @@ type SheetColumnConfig = {
 
 type ColumnSettingsDraft = {
   value_type: ColumnValueType
+  text_rule: ColumnTextRule
   display_format: string
   allow_empty: boolean
   display_mode: ColumnDisplayMode
@@ -309,13 +323,29 @@ type ColumnSettingsDraft = {
   hash_color_tone: ColumnHashColorTone
   width_mode: ColumnWidthMode
   width_value: number
+  font_family: ColumnFontFamily
   font_size: number
-  note: string
 }
 
 type ColumnSettingsDraftKey = keyof ColumnSettingsDraft
 type ColumnSettingsTouchedState = Record<ColumnSettingsDraftKey, boolean>
 type ColumnSettingsMixedState = Record<ColumnSettingsDraftKey, boolean>
+
+const COLUMN_FONT_FAMILY_OPTIONS = [
+  { label: '默认', value: 'default' },
+  { label: '等宽', value: 'monospace' },
+] as const
+
+const COLUMN_TEXT_RULE_OPTIONS = [
+  { label: '普通文本', value: 'none' },
+  { label: '手机号（11位数字）', value: 'phone' },
+  { label: '身份证号（18位）', value: 'id_card' },
+] as const
+
+const CELL_FONT_FAMILY_OPTIONS = [
+  { label: '跟随字段', value: '' },
+  ...COLUMN_FONT_FAMILY_OPTIONS,
+] as const
 
 type SheetViewSettings = {
   show_row_numbers?: boolean
@@ -507,6 +537,11 @@ const sheetVersion = ref<number>(0)
 const sheetViewportHeight = ref<number | 'auto'>('auto')
 const sheetSettingsDialogVisible = ref(false)
 const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings())
+const excelImportDialogVisible = ref(false)
+const excelImportFileInputRef = ref<HTMLInputElement | null>(null)
+const excelImportFile = ref<File | null>(null)
+const excelImportInstruction = ref('')
+const excelImportRunning = ref(false)
 const sheetSettingsRowMarkerMode = computed<RowMarkerMode>({
   get() {
     if (!sheetSettingsDraft.value.show_row_numbers) {
@@ -550,15 +585,18 @@ const cellLinkDialogTarget = ref<LinkDialogTarget | null>(null)
 const cellLinkDraftUrl = ref('')
 const cellStyleDialogVisible = ref(false)
 const cellStyleDialogCells = ref<SelectedSheetCell[]>([])
-const activeCellStyleColorField = ref<SheetCellStyleField | null>(null)
+const activeCellStyleColorField = ref<SheetCellColorField | null>(null)
 const cellStyleDraft = ref<SheetCellStyleDraft>({
   background_color: '',
   text_color: '',
+  font_family: '',
 })
 const cellStyleDraftTouched = ref<SheetCellStyleDraftTouched>({
   background_color: false,
   text_color: false,
+  font_family: false,
 })
+const copiedCellFormat = ref<{ style: SheetCellStyle | null } | null>(null)
 const formulaBarCell = ref<SelectedDataCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
@@ -630,7 +668,7 @@ const pageStatusText = computed(() => {
 
 const cellStyleDialogTitle = computed(() => {
   const count = cellStyleDialogCells.value.length
-  return count > 1 ? `设置 ${count} 个单元格颜色` : '设置单元格颜色'
+  return count > 1 ? `设置 ${count} 个单元格格式` : '设置单元格格式'
 })
 
 const formulaBarAddress = computed(() => {
@@ -689,14 +727,14 @@ const invalidValueHighlightMap = computed(() => {
 
   columnHeaders.value.forEach((header, columnIndex) => {
     const columnConfig = normalizeColumnConfig(columnConfigs.value[header])
-    if (columnConfig.value_type === 'text' && columnConfig.allow_empty) {
+    if (columnConfig.value_type === 'text' && columnConfig.text_rule === 'none' && columnConfig.allow_empty) {
       return
     }
 
     rows.value.forEach((row, rowIndex) => {
       const rawValue = row?.[columnIndex] ?? ''
       const cellValue = getCellSemanticValue(rowIndex, columnIndex, rawValue)
-      if (isColumnValueValidByType(cellValue, columnConfig.value_type, columnConfig.allow_empty)) {
+      if (isColumnValueValidByConfig(cellValue, columnConfig)) {
         return
       }
       highlightMap.set(`${rowIndex}:${columnIndex}`, INVALID_VALUE_HIGHLIGHT_COLOR)
@@ -831,7 +869,7 @@ const sheetColumnHeaders = computed<false | ((index: number) => string)>(() => (
 const rowHeightLayoutState = computed(() => {
   let singleLineHeight = TABLE_LINE_HEIGHT
   let hasWrappedColumns = false
-  const wrappedColumns: Array<{ index: number; fontSize: number; lineHeight: number }> = []
+  const wrappedColumns: Array<{ index: number; fontSize: number; fontFamily: ColumnFontFamily; lineHeight: number }> = []
 
   columnHeaders.value.forEach((header, index) => {
     const config = columnConfigs.value[header]
@@ -840,12 +878,13 @@ const rowHeightLayoutState = computed(() => {
     }
 
     const fontSize = getColumnFontSizeFromConfig(config)
+    const fontFamily = getColumnFontFamilyFromConfig(config)
     const lineHeight = getColumnLineHeightFromFontSize(fontSize)
     singleLineHeight = Math.max(singleLineHeight, lineHeight)
 
     if (normalizeColumnDisplayMode(config?.display_mode) !== 'single_line') {
       hasWrappedColumns = true
-      wrappedColumns.push({ index, fontSize, lineHeight })
+      wrappedColumns.push({ index, fontSize, fontFamily, lineHeight })
     }
   })
 
@@ -1235,7 +1274,7 @@ const contextMenu = {
       },
     },
     remove_col: {
-      name: '移除该列',
+      name: '删除选中列',
       hidden: () => !shouldShowRemoveColumnAction(),
       disabled: () => !canEditConfig.value,
       callback: () => {
@@ -1322,11 +1361,26 @@ const contextMenu = {
       hidden: () => !hasSheetCellSelection(),
     },
     set_cell_style: {
-      name: () => (getSelectedSheetCells().length > 1 ? '设置选区颜色' : '设置单元格颜色'),
+      name: () => (getSelectedSheetCells().length > 1 ? '设置选区格式' : '设置单元格格式'),
       hidden: () => !hasSheetCellSelection(),
       disabled: () => !canEditConfig.value,
       callback: () => {
         openSelectedCellStyleDialog()
+      },
+    },
+    copy_cell_format: {
+      name: '复制格式',
+      hidden: () => !hasSingleSheetCellSelection(),
+      callback: () => {
+        copySelectedCellFormat()
+      },
+    },
+    paste_cell_format: {
+      name: () => (getSelectedSheetCells().length > 1 ? '粘贴格式到选区' : '粘贴格式'),
+      hidden: () => !hasSheetCellSelection(),
+      disabled: () => !canEditConfig.value || !hasCopiedCellFormat(),
+      callback: () => {
+        pasteCellFormatToSelectedCells()
       },
     },
     merge_cells: {
@@ -1446,6 +1500,90 @@ function ensureCanRunSheetActions() {
   return false
 }
 
+function normalizeExcelImportActionText(value: unknown) {
+  return normalizeCellValue(value).replace(/\s+/g, '').toLowerCase()
+}
+
+function isExcelImportActionCell(dataRow: number, columnIndex: number) {
+  return normalizeExcelImportActionText(rows.value[dataRow]?.[columnIndex] ?? '') === EXCEL_IMPORT_ACTION_TEXT
+}
+
+function canOpenExcelImportDialog() {
+  return props.sheetId != null && canEditData.value && canRunSheetActions.value
+}
+
+function getExcelImportErrorMessage(error: unknown) {
+  const maybeError = error as { response?: { data?: { detail?: unknown } }, message?: string }
+  const detail = maybeError?.response?.data?.detail
+  return typeof detail === 'string' && detail.trim()
+    ? detail
+    : maybeError?.message || '导入 Excel 失败'
+}
+
+function openExcelImportDialog() {
+  if (!canOpenExcelImportDialog()) {
+    warnReadOnlyAction()
+    return
+  }
+  excelImportFile.value = null
+  excelImportInstruction.value = ''
+  if (excelImportFileInputRef.value) {
+    excelImportFileInputRef.value.value = ''
+  }
+  excelImportDialogVisible.value = true
+}
+
+function closeExcelImportDialog(force = false) {
+  if (excelImportRunning.value && !force) {
+    return
+  }
+  excelImportDialogVisible.value = false
+  excelImportFile.value = null
+  excelImportInstruction.value = ''
+  if (excelImportFileInputRef.value) {
+    excelImportFileInputRef.value.value = ''
+  }
+}
+
+function handleExcelImportFileChange(event: Event) {
+  const input = event.target as HTMLInputElement | null
+  excelImportFile.value = input?.files?.[0] ?? null
+}
+
+async function applyExcelImportReset() {
+  if (props.sheetId == null || !excelImportFile.value) {
+    ElMessage.warning('请选择 Excel 文件')
+    return
+  }
+  if (!canOpenExcelImportDialog()) {
+    warnReadOnlyAction()
+    return
+  }
+
+  excelImportRunning.value = true
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const result = await importNoteSheetFromExcelReset(
+      props.sheetId,
+      {
+        file: excelImportFile.value,
+        instruction: excelImportInstruction.value,
+      },
+      { workbookId: props.workbookId },
+    )
+    applyRemoteSheetDetail(result.sheet)
+    const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
+    ElMessage.success(`已导入 ${result.imported_count} 行${warningSuffix}`)
+    closeExcelImportDialog(true)
+  } catch (error) {
+    console.warn('Failed to import note sheet from Excel', error)
+    ElMessage.error(getExcelImportErrorMessage(error))
+  } finally {
+    excelImportRunning.value = false
+  }
+}
+
 function createEmptyRow(columnCount = columnHeaders.value.length): SheetRow {
   return Array.from({ length: columnCount }, () => '')
 }
@@ -1540,6 +1678,7 @@ function resetWorkspaceState() {
   sheetVersion.value = 0
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings()
+  closeExcelImportDialog()
   columnSettingsDialogVisible.value = false
   columnSettingsColumnIndex.value = null
   columnSettingsSelectionBounds.value = null
@@ -1552,13 +1691,16 @@ function resetWorkspaceState() {
   cellStyleDraft.value = {
     background_color: '',
     text_color: '',
+    font_family: '',
   }
   cellStyleDraftTouched.value = {
     background_color: false,
     text_color: false,
+    font_family: false,
   }
   columnSettingsDraft.value = {
     value_type: 'text',
+    text_rule: 'none',
     display_format: '',
     allow_empty: true,
     display_mode: DEFAULT_COLUMN_DISPLAY_MODE,
@@ -1569,8 +1711,8 @@ function resetWorkspaceState() {
     hash_color_tone: 'light',
     width_mode: 'adaptive',
     width_value: 120,
+    font_family: 'default',
     font_size: DEFAULT_COLUMN_FONT_SIZE,
-    note: '',
   }
 }
 
@@ -1942,6 +2084,13 @@ function normalizeCellLink(source: unknown): SheetCellLink | null {
   return title ? { url, title } : { url }
 }
 
+function normalizeCellFontFamily(value: unknown): CellFontFamily | '' {
+  if (value === 'default' || value === 'monospace') {
+    return value
+  }
+  return ''
+}
+
 function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   if (!source || typeof source !== 'object') {
     return null
@@ -1950,7 +2099,8 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   const record = source as Record<string, unknown>
   const backgroundColor = normalizeCssColor(record.background_color)
   const textColor = normalizeCssColor(record.text_color)
-  if (!backgroundColor && !textColor) {
+  const fontFamily = normalizeCellFontFamily(record.font_family)
+  if (!backgroundColor && !textColor && !fontFamily) {
     return null
   }
 
@@ -1960,6 +2110,9 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   }
   if (textColor) {
     style.text_color = textColor
+  }
+  if (fontFamily) {
+    style.font_family = fontFamily
   }
   return style
 }
@@ -2145,10 +2298,27 @@ function normalizeColumnTextAlign(value: unknown): ColumnTextAlign {
 }
 
 function normalizeColumnValueType(value: unknown): ColumnValueType {
-  if (value === 'multi_text' || value === 'number' || value === 'percent' || value === 'date' || value === 'phone') {
+  if (value === 'multi_text' || value === 'number' || value === 'percent' || value === 'date') {
     return value
   }
   return 'text'
+}
+
+function normalizeColumnTextRule(value: unknown, valueType: ColumnValueType = 'text'): ColumnTextRule {
+  if (valueType !== 'text') {
+    return 'none'
+  }
+  if (value === 'phone' || value === 'id_card') {
+    return value
+  }
+  return 'none'
+}
+
+function normalizeColumnTextRuleFromRecord(record: Record<string, unknown>, valueType: ColumnValueType) {
+  if (record.value_type === 'phone') {
+    return normalizeColumnTextRule('phone', valueType)
+  }
+  return normalizeColumnTextRule(record.text_rule, valueType)
 }
 
 function normalizeColumnDisplayFormat(value: unknown, valueType: ColumnValueType) {
@@ -2188,6 +2358,10 @@ function normalizeColumnHashColorTone(value: unknown): ColumnHashColorTone {
 
 function normalizeColumnWidthMode(value: unknown): ColumnWidthMode {
   return value === 'fixed' ? 'fixed' : 'adaptive'
+}
+
+function normalizeColumnFontFamily(value: unknown): ColumnFontFamily {
+  return value === 'monospace' ? 'monospace' : 'default'
 }
 
 function normalizeColumnFontSize(value: unknown) {
@@ -2241,7 +2415,7 @@ function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
   return {
     show_row_numbers: true,
     row_marker_numbering: 'global',
-    row_marker_origin: 'data',
+    row_marker_origin: 'sheet',
     show_column_markers: true,
     column_marker_style: 'letters',
     column_note_display: 'hover',
@@ -2330,6 +2504,7 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
 
     const configRecord = config as Record<string, unknown>
     const valueType = normalizeColumnValueType(configRecord.value_type)
+    const textRule = normalizeColumnTextRuleFromRecord(configRecord, valueType)
     const displayFormat = normalizeColumnDisplayFormat(configRecord.display_format, valueType)
     const allowEmpty = configRecord.allow_empty !== false
     const displayMode = normalizeColumnDisplayMode(configRecord.display_mode)
@@ -2339,6 +2514,7 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
     const hashColorMode = normalizeColumnHashColorMode(configRecord.hash_color_mode)
     const hashColorTone = normalizeColumnHashColorTone(configRecord.hash_color_tone)
     const widthMode = normalizeColumnWidthMode(configRecord.width_mode)
+    const fontFamily = normalizeColumnFontFamily(configRecord.font_family)
     const fontSize = normalizeColumnFontSize(configRecord.font_size)
     const hidden = isColumnHiddenConfigValue(configRecord.hidden)
     const restoreIndex = normalizeNonNegativeInt(configRecord.restore_index, -1)
@@ -2350,6 +2526,7 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
 
     if (
       valueType !== 'text'
+      || textRule !== 'none'
       || !isDefaultColumnDisplayFormat(valueType, displayFormat)
       || allowEmpty === false
       || displayMode !== DEFAULT_COLUMN_DISPLAY_MODE
@@ -2358,6 +2535,7 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
       || duplicateValueHighlight
       || hashColorMode !== 'none'
       || widthMode !== 'adaptive'
+      || fontFamily !== 'default'
       || fontSize !== DEFAULT_COLUMN_FONT_SIZE
       || hidden
       || restoreIndex >= 0
@@ -2369,6 +2547,9 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
       normalized[header] = {}
       if (valueType !== 'text') {
         normalized[header].value_type = valueType
+      }
+      if (valueType === 'text' && textRule !== 'none') {
+        normalized[header].text_rule = textRule
       }
       if (!isDefaultColumnDisplayFormat(valueType, displayFormat)) {
         normalized[header].display_format = displayFormat
@@ -2396,6 +2577,9 @@ function normalizeColumnConfigs(source: unknown, headers: string[]): Record<stri
       }
       if (widthMode !== 'adaptive') {
         normalized[header].width_mode = widthMode
+      }
+      if (fontFamily !== 'default') {
+        normalized[header].font_family = fontFamily
       }
       if (fontSize !== DEFAULT_COLUMN_FONT_SIZE) {
         normalized[header].font_size = fontSize
@@ -2431,9 +2615,11 @@ function normalizeColumnConfig(source: unknown): ColumnSettingsDraft {
 
   const record = source as Record<string, unknown>
   const valueType = normalizeColumnValueType(record.value_type)
+  const textRule = normalizeColumnTextRuleFromRecord(record, valueType)
   const hashColorMode = normalizeColumnHashColorMode(record.hash_color_mode)
   return {
     value_type: valueType,
+    text_rule: textRule,
     display_format: normalizeColumnDisplayFormat(record.display_format, valueType),
     allow_empty: record.allow_empty !== false,
     display_mode: normalizeColumnDisplayMode(record.display_mode),
@@ -2444,14 +2630,15 @@ function normalizeColumnConfig(source: unknown): ColumnSettingsDraft {
     hash_color_tone: hashColorMode === 'none' ? 'light' : normalizeColumnHashColorTone(record.hash_color_tone),
     width_mode: normalizeColumnWidthMode(record.width_mode),
     width_value: 120,
+    font_family: normalizeColumnFontFamily(record.font_family),
     font_size: normalizeColumnFontSize(record.font_size),
-    note: normalizeColumnNote(record.note),
   }
 }
 
 function createDefaultColumnSettingsDraft(): ColumnSettingsDraft {
   return {
     value_type: 'text',
+    text_rule: 'none',
     display_format: '',
     allow_empty: true,
     display_mode: DEFAULT_COLUMN_DISPLAY_MODE,
@@ -2462,8 +2649,8 @@ function createDefaultColumnSettingsDraft(): ColumnSettingsDraft {
     hash_color_tone: 'light',
     width_mode: 'adaptive',
     width_value: 120,
+    font_family: 'default',
     font_size: DEFAULT_COLUMN_FONT_SIZE,
-    note: '',
   }
 }
 
@@ -2635,6 +2822,24 @@ function createDefaultDocument(): SheetDocument {
   }
 }
 
+function normalizeRowsFormulaReferencesForOrigin(
+  sourceRows: SheetRow[],
+  origin: FormulaReferenceOrigin,
+  headerRowCount: number,
+) {
+  if (headerRowCount <= 0) {
+    return sourceRows
+  }
+  if (origin === 'data') {
+    return remapRowsFormulaReferencesByRowDelta(sourceRows, headerRowCount)
+  }
+  // The old "sheet" marker was produced by a short-lived migration that over-shifted A1 row refs.
+  if (origin === 'sheet') {
+    return remapRowsFormulaReferencesByRowDelta(sourceRows, -headerRowCount)
+  }
+  return sourceRows
+}
+
 function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayBuildOptions = {}): SheetDocument {
   if (!source || typeof source !== 'object') {
     return createDefaultDocument()
@@ -2666,10 +2871,11 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
   const sourceNormalizedRows = trimTrailingBlankRows(
     (hasUnifiedGridRows ? sourceGridRows.slice(dataStartRow) : sourceRows.map((row) => normalizeRow(row, headers))),
   )
-  // The old "sheet" marker was produced by a short-lived migration that over-shifted A1 row refs.
-  const normalizedRows = sourceFormulaOrigin === 'sheet'
-    ? remapRowsFormulaReferencesByRowDelta(sourceNormalizedRows, -formulaHeaderRows.length)
-    : sourceNormalizedRows
+  const normalizedRows = normalizeRowsFormulaReferencesForOrigin(
+    sourceNormalizedRows,
+    sourceFormulaOrigin,
+    formulaHeaderRows.length,
+  )
   const initialNormalizedGridRows = [
     ...sourceGridRows.slice(0, dataStartRow).map((row) => normalizeRow(row, headers)),
     ...normalizedRows,
@@ -4433,15 +4639,33 @@ function normalizeColumnWidthValue(value: unknown) {
   return Math.min(Math.max(Math.round(numeric), MIN_COLUMN_WIDTH), MAX_COLUMN_WIDTH)
 }
 
-function getColumnCellFontFromSize(fontSize: number) {
-  if (fontSize === DEFAULT_COLUMN_FONT_SIZE) {
-    return TABLE_FONT
-  }
-  return `400 ${fontSize}px Inter, "Segoe UI", sans-serif`
-}
-
 function getColumnFontSizeFromConfig(config: SheetColumnConfig | undefined) {
   return normalizeColumnFontSize(config?.font_size)
+}
+
+function getColumnFontFamilyFromConfig(config: SheetColumnConfig | undefined) {
+  return normalizeColumnFontFamily(config?.font_family)
+}
+
+function getContentFontFamilyCss(fontFamily: ColumnFontFamily) {
+  return fontFamily === 'monospace' ? MONOSPACE_FONT_FAMILY : TABLE_FONT_FAMILY
+}
+
+function getColumnFontFamilyStyle(config: SheetColumnConfig | undefined) {
+  const fontFamily = getColumnFontFamilyFromConfig(config)
+  return fontFamily === 'default' ? '' : getContentFontFamilyCss(fontFamily)
+}
+
+function getCellFontFamilyStyle(fontFamily: CellFontFamily) {
+  return getContentFontFamilyCss(fontFamily)
+}
+
+function getColumnCellFontFromSize(fontSize: number, fontFamily: ColumnFontFamily = 'default') {
+  if (fontSize === DEFAULT_COLUMN_FONT_SIZE && fontFamily === 'default') {
+    return TABLE_FONT
+  }
+  const resolvedFontSize = fontSize === DEFAULT_COLUMN_FONT_SIZE ? 14 : fontSize
+  return `400 ${resolvedFontSize}px ${getContentFontFamilyCss(fontFamily)}`
 }
 
 function getColumnLineHeightFromFontSize(fontSize: number) {
@@ -4459,7 +4683,11 @@ function getAutoColumnWidth(
   sourceFormulaDisplayState?: FormulaDisplayState | null,
 ) {
   const header = headers[columnIndex] ?? createFallbackHeader(columnIndex)
-  const cellFont = getColumnCellFontFromSize(getColumnFontSizeFromConfig(sourceConfigs[header]))
+  const columnConfig = sourceConfigs[header]
+  const cellFont = getColumnCellFontFromSize(
+    getColumnFontSizeFromConfig(columnConfig),
+    getColumnFontFamilyFromConfig(columnConfig),
+  )
   let width = getAdaptiveColumnWidth(header)
   const sampleLimit = Math.min(sourceRows.length, 40)
   let formulaDisplayForWidths = sourceFormulaDisplayState
@@ -4696,7 +4924,7 @@ function resolveRowHeight(rowIndex: number) {
       getEffectiveColumnWidth(columnLayout.index) - TABLE_CELL_HORIZONTAL_PADDING * 2,
       12,
     )
-    const cellFont = getColumnCellFontFromSize(columnLayout.fontSize)
+    const cellFont = getColumnCellFontFromSize(columnLayout.fontSize, columnLayout.fontFamily)
     maxContentHeight = Math.max(
       maxContentHeight,
       getWrappedLineCount(cellText, availableWidth, cellFont) * columnLayout.lineHeight,
@@ -5655,6 +5883,12 @@ function handleBeforeCellMouseDown(
   if (dataRow < 0) {
     return
   }
+  if (event.button === 0 && isExcelImportActionCell(dataRow, anchor.column)) {
+    event.preventDefault()
+    event.stopPropagation()
+    openExcelImportDialog()
+    return
+  }
   if (beginFormulaReferenceRange(dataRow, anchor.column)) {
     stopFormulaReferenceCellSelection(event, controller)
   }
@@ -5750,6 +5984,9 @@ function applyCellMetaStyle(TD: HTMLTableCellElement, style: SheetCellStyle | nu
   if (style?.text_color) {
     TD.style.setProperty('color', style.text_color, 'important')
   }
+  if (style?.font_family) {
+    TD.style.setProperty('font-family', getCellFontFamilyStyle(style.font_family), 'important')
+  }
 }
 
 function resetRenderedCellState(TD: HTMLTableCellElement) {
@@ -5766,6 +6003,7 @@ function resetRenderedCellState(TD: HTMLTableCellElement) {
   )
   TD.style.removeProperty('background-color')
   TD.style.removeProperty('color')
+  TD.style.removeProperty('font-family')
   TD.style.removeProperty('font-size')
   TD.style.removeProperty('font-weight')
   TD.style.removeProperty('line-height')
@@ -8351,7 +8589,80 @@ function handleAfterBeginEditing() {
   scheduleInlineEditorFormulaBarSync()
 }
 
+function isUndoShortcut(event: KeyboardEvent) {
+  return (event.ctrlKey || event.metaKey)
+    && !event.altKey
+    && !event.shiftKey
+    && event.key.toLowerCase() === 'z'
+}
+
+function isRedoShortcut(event: KeyboardEvent) {
+  return (event.ctrlKey || event.metaKey)
+    && !event.altKey
+    && (
+      (!event.shiftKey && event.key.toLowerCase() === 'y')
+      || (event.shiftKey && event.key.toLowerCase() === 'z')
+    )
+}
+
+function isTextEditingTarget(target: EventTarget | null) {
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || (target instanceof HTMLElement && target.isContentEditable)
+}
+
+function isFormulaBarDraftSyncedWithCell() {
+  const cell = formulaBarCell.value
+  if (!cell) {
+    return false
+  }
+  return formulaBarDraft.value === getCellEditText(cell.column, getRawCellValue(cell.row, cell.column))
+}
+
+function canRouteFormulaBarUndoRedo(event: KeyboardEvent) {
+  return event.target instanceof HTMLElement
+    && !!event.target.closest('.sheet-formula-input')
+    && isFormulaBarDraftSyncedWithCell()
+}
+
+function handleUndoRedoShortcut(event: KeyboardEvent, options: { allowSyncedFormulaBar?: boolean } = {}) {
+  const wantsUndo = isUndoShortcut(event)
+  const wantsRedo = isRedoShortcut(event)
+  if (!wantsUndo && !wantsRedo) {
+    return false
+  }
+
+  if (getActiveOpenedEditor()) {
+    return false
+  }
+
+  const routeFormulaBarShortcut = options.allowSyncedFormulaBar && canRouteFormulaBarUndoRedo(event)
+  if (isTextEditingTarget(event.target) && !routeFormulaBarShortcut) {
+    return false
+  }
+
+  const undoRedoPlugin = getUndoRedoPlugin()
+  if (wantsUndo) {
+    if (!undoRedoPlugin?.isUndoAvailable?.() || !undoRedoPlugin.undo) {
+      return false
+    }
+    event.preventDefault()
+    undoRedoPlugin.undo()
+    return true
+  }
+
+  if (!undoRedoPlugin?.isRedoAvailable?.() || !undoRedoPlugin.redo) {
+    return false
+  }
+  event.preventDefault()
+  undoRedoPlugin.redo()
+  return true
+}
+
 function handleBeforeKeyDown(event: KeyboardEvent) {
+  if (handleUndoRedoShortcut(event)) {
+    return false
+  }
   if (handleFormulaReferenceArrowKey(event)) {
     return false
   }
@@ -8366,6 +8677,9 @@ function handleAfterDocumentKeyDown(event: KeyboardEvent) {
 }
 
 function handleFormulaBarKeyDown(event: KeyboardEvent) {
+  if (handleUndoRedoShortcut(event, { allowSyncedFormulaBar: true })) {
+    return
+  }
   if (handleFormulaReferenceArrowKey(event)) {
     return
   }
@@ -8650,6 +8964,10 @@ function hasDataCellSelection() {
 
 function hasSheetCellSelection() {
   return getSelectedSheetCells().length > 0
+}
+
+function hasSingleSheetCellSelection() {
+  return !!getSingleSelectedSheetCell()
 }
 
 function getSelectedGridCellBounds() {
@@ -8967,20 +9285,95 @@ function getCommonSelectedCellStyle(cells: SelectedSheetCell[], field: SheetCell
   return hasMixedValue ? '' : firstValue
 }
 
-function getCellStyleDraftModelValue(field: SheetCellStyleField) {
+function cloneCellStyle(style: SheetCellStyle | null | undefined) {
+  return normalizeCellStyle(style ? { ...style } : null)
+}
+
+function getBaseCellStyleForCopy(cell: SelectedSheetCell) {
+  const headerStyle = cell.row >= 0 && cell.row < nestedHeaderStyleRows.value.length
+    ? nestedHeaderStyleRows.value[cell.row]?.[cell.column] ?? null
+    : null
+  const explicitStyle = getCellStyleAt(cell.documentRow, cell.column)
+
+  if (!headerStyle) {
+    const header = columnHeaders.value[cell.column]
+    const columnFontFamily = header
+      ? getColumnFontFamilyFromConfig(columnConfigs.value[header])
+      : 'default'
+    const inheritedStyle: SheetCellStyle | null = columnFontFamily === 'default'
+      ? null
+      : { font_family: columnFontFamily }
+    return normalizeCellStyle({
+      ...(inheritedStyle ?? {}),
+      ...(explicitStyle ?? {}),
+    })
+  }
+  return normalizeCellStyle({
+    ...headerStyle,
+    ...(explicitStyle ?? {}),
+  })
+}
+
+function hasCopiedCellFormat() {
+  return copiedCellFormat.value !== null
+}
+
+function copySelectedCellFormat() {
+  const cell = getSingleSelectedSheetCell()
+  if (!cell) {
+    return
+  }
+
+  copiedCellFormat.value = {
+    style: getBaseCellStyleForCopy(cell),
+  }
+  ElMessage.success('已复制格式')
+}
+
+function pasteCellFormatToSelectedCells() {
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  const format = copiedCellFormat.value
+  if (!format) {
+    ElMessage.warning('请先复制格式')
+    return
+  }
+
+  const cells = getSelectedSheetCells()
+  if (!cells.length) {
+    return
+  }
+
+  const copiedStyle = cloneCellStyle(format.style)
+  updateCellMetaEntries(cells, (entry) => {
+    const nextEntry = { ...entry }
+    if (copiedStyle) {
+      nextEntry.style = { ...copiedStyle }
+    } else {
+      delete nextEntry.style
+    }
+    return nextEntry
+  })
+  scheduleRemoteSave(0)
+  ElMessage.success(cells.length > 1 ? '已粘贴格式到选区' : '已粘贴格式')
+}
+
+function getCellStyleDraftModelValue(field: SheetCellColorField) {
   return cellStyleDraft.value[field] || (
     field === 'text_color' ? DEFAULT_CELL_TEXT_COLOR : DEFAULT_CELL_BACKGROUND_COLOR
   )
 }
 
-function getCellStyleDraftSwatchStyle(field: SheetCellStyleField) {
+function getCellStyleDraftSwatchStyle(field: SheetCellColorField) {
   const color = normalizeCssColor(cellStyleDraft.value[field])
   return color
     ? { backgroundColor: color }
     : { backgroundImage: 'linear-gradient(135deg, transparent 0 46%, #dcdfe6 46% 54%, transparent 54% 100%)' }
 }
 
-function setCellStyleDraftColor(field: SheetCellStyleField, value: string) {
+function setCellStyleDraftColor(field: SheetCellColorField, value: string) {
   cellStyleDraftTouched.value[field] = true
   cellStyleDraft.value = {
     ...cellStyleDraft.value,
@@ -8988,17 +9381,25 @@ function setCellStyleDraftColor(field: SheetCellStyleField, value: string) {
   }
 }
 
-function clearCellStyleDraftColor(field: SheetCellStyleField) {
+function clearCellStyleDraftColor(field: SheetCellColorField) {
   setCellStyleDraftColor(field, '')
 }
 
-function handleCellStyleColorPopoverVisibleChange(field: SheetCellStyleField, visible: boolean) {
+function handleCellStyleColorPopoverVisibleChange(field: SheetCellColorField, visible: boolean) {
   activeCellStyleColorField.value = visible ? field : null
+}
+
+function setCellStyleDraftFontFamily(value: unknown) {
+  cellStyleDraftTouched.value.font_family = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    font_family: normalizeCellFontFamily(value),
+  }
 }
 
 function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
   const touched = cellStyleDraftTouched.value
-  if (!touched.background_color && !touched.text_color) {
+  if (!touched.background_color && !touched.text_color && !touched.font_family) {
     return
   }
 
@@ -9021,8 +9422,16 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
         delete nextStyle.text_color
       }
     }
+    if (touched.font_family) {
+      const fontFamily = normalizeCellFontFamily(cellStyleDraft.value.font_family)
+      if (fontFamily) {
+        nextStyle.font_family = fontFamily
+      } else {
+        delete nextStyle.font_family
+      }
+    }
 
-    if (nextStyle.background_color || nextStyle.text_color) {
+    if (nextStyle.background_color || nextStyle.text_color || nextStyle.font_family) {
       nextEntry.style = nextStyle
     } else {
       delete nextEntry.style
@@ -9045,10 +9454,12 @@ function openSelectedCellStyleDialog() {
   cellStyleDraft.value = {
     background_color: getCommonSelectedCellStyle(cells, 'background_color'),
     text_color: getCommonSelectedCellStyle(cells, 'text_color'),
+    font_family: normalizeCellFontFamily(getCommonSelectedCellStyle(cells, 'font_family')),
   }
   cellStyleDraftTouched.value = {
     background_color: false,
     text_color: false,
+    font_family: false,
   }
   cellStyleDialogVisible.value = true
 }
@@ -9060,10 +9471,12 @@ function closeCellStyleDialog() {
   cellStyleDraft.value = {
     background_color: '',
     text_color: '',
+    font_family: '',
   }
   cellStyleDraftTouched.value = {
     background_color: false,
     text_color: false,
+    font_family: false,
   }
 }
 
@@ -9219,13 +9632,13 @@ function resolveColumnTextAlign(config: SheetColumnConfig | ColumnSettingsDraft 
   return 'left'
 }
 
-function isColumnValueValidByType(value: unknown, type: ColumnValueType, allowEmpty = true) {
+function isColumnValueValidByConfig(value: unknown, config: ColumnSettingsDraft) {
   const text = normalizeCellValue(value)
   if (!text) {
-    return allowEmpty
+    return config.allow_empty
   }
 
-  switch (type) {
+  switch (config.value_type) {
     case 'number':
       return (typeof value === 'number' && Number.isFinite(value))
         || /^[-+]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)
@@ -9233,9 +9646,13 @@ function isColumnValueValidByType(value: unknown, type: ColumnValueType, allowEm
       return parsePercentDisplayNumber(value) != null
     case 'date':
       return !!parseDateDisplayValue(value)
-    case 'phone':
-      return /^\d{11}$/.test(text)
     default:
+      if (config.text_rule === 'phone') {
+        return /^\d{11}$/.test(text)
+      }
+      if (config.text_rule === 'id_card') {
+        return /^\d{17}[\dXx]$/.test(text)
+      }
       return true
   }
 }
@@ -9324,7 +9741,7 @@ function getColumnSettingSelectModel(key: ColumnSettingsDraftKey) {
   return isColumnSettingMixed(key) ? '' : String(columnSettingsDraft.value[key] ?? '')
 }
 
-function getColumnSettingTextModel(key: 'display_format' | 'note') {
+function getColumnSettingTextModel(key: 'display_format') {
   return isColumnSettingMixed(key) ? '' : columnSettingsDraft.value[key]
 }
 
@@ -9341,6 +9758,11 @@ function getColumnSettingCheckboxModel(
 function setColumnSettingsValueType(value: unknown) {
   columnSettingsDraft.value.value_type = normalizeColumnValueType(value)
   handleColumnSettingsValueTypeChange(columnSettingsDraft.value.value_type)
+}
+
+function setColumnSettingsTextRule(value: unknown) {
+  columnSettingsDraft.value.text_rule = normalizeColumnTextRule(value, columnSettingsDraft.value.value_type)
+  markColumnSettingTouched('text_rule')
 }
 
 function setColumnSettingsDisplayFormat(value: unknown) {
@@ -9373,6 +9795,11 @@ function setColumnSettingsWidthMode(value: unknown) {
   markColumnSettingTouched('width_mode')
 }
 
+function setColumnSettingsFontFamily(value: unknown) {
+  columnSettingsDraft.value.font_family = normalizeColumnFontFamily(value)
+  markColumnSettingTouched('font_family')
+}
+
 function setColumnSettingsNumberValue(key: 'font_size' | 'width_value', value: unknown) {
   if (key === 'font_size') {
     columnSettingsDraft.value.font_size = normalizeColumnFontSize(value)
@@ -9388,11 +9815,6 @@ function setColumnSettingsBooleanValue(
 ) {
   columnSettingsDraft.value[key] = value === true
   markColumnSettingTouched(key)
-}
-
-function setColumnSettingsNote(value: unknown) {
-  columnSettingsDraft.value.note = normalizeColumnNote(value)
-  markColumnSettingTouched('note')
 }
 
 function mergeColumnSettingsDraft(
@@ -9434,6 +9856,9 @@ function pickPreservedColumnConfig(currentRawConfig: SheetColumnConfig | undefin
   if (currentRawConfig.header_link) {
     preservedConfig.header_link = currentRawConfig.header_link
   }
+  if (currentRawConfig.note) {
+    preservedConfig.note = normalizeColumnNote(currentRawConfig.note)
+  }
   return preservedConfig
 }
 
@@ -9443,6 +9868,7 @@ function createStoredColumnConfig(
 ) {
   if (
     nextConfig.value_type === 'text'
+    && nextConfig.text_rule === 'none'
     && isDefaultColumnDisplayFormat(nextConfig.value_type, nextConfig.display_format)
     && nextConfig.allow_empty
     && nextConfig.display_mode === DEFAULT_COLUMN_DISPLAY_MODE
@@ -9451,8 +9877,8 @@ function createStoredColumnConfig(
     && !nextConfig.duplicate_value_highlight
     && nextConfig.hash_color_mode === 'none'
     && nextConfig.width_mode === 'adaptive'
+    && nextConfig.font_family === 'default'
     && nextConfig.font_size === DEFAULT_COLUMN_FONT_SIZE
-    && !nextConfig.note
     && Object.keys(preservedConfig).length === 0
   ) {
     return null
@@ -9461,6 +9887,9 @@ function createStoredColumnConfig(
   const storedConfig: SheetColumnConfig = { ...preservedConfig }
   if (nextConfig.value_type !== 'text') {
     storedConfig.value_type = nextConfig.value_type
+  }
+  if (nextConfig.value_type === 'text' && nextConfig.text_rule !== 'none') {
+    storedConfig.text_rule = nextConfig.text_rule
   }
   if (!isDefaultColumnDisplayFormat(nextConfig.value_type, nextConfig.display_format)) {
     storedConfig.display_format = nextConfig.display_format
@@ -9489,11 +9918,11 @@ function createStoredColumnConfig(
   if (nextConfig.width_mode !== 'adaptive') {
     storedConfig.width_mode = nextConfig.width_mode
   }
+  if (nextConfig.font_family !== 'default') {
+    storedConfig.font_family = nextConfig.font_family
+  }
   if (nextConfig.font_size !== DEFAULT_COLUMN_FONT_SIZE) {
     storedConfig.font_size = nextConfig.font_size
-  }
-  if (nextConfig.note) {
-    storedConfig.note = nextConfig.note
   }
   return storedConfig
 }
@@ -9580,6 +10009,10 @@ function closeColumnSettings() {
 function handleColumnSettingsValueTypeChange(value: ColumnValueType) {
   markColumnSettingTouched('value_type')
   markColumnSettingTouched('display_format')
+  if (value !== 'text') {
+    columnSettingsDraft.value.text_rule = 'none'
+    markColumnSettingTouched('text_rule')
+  }
   if (value === 'date' || value === 'percent') {
     columnSettingsDraft.value.display_format = normalizeColumnDisplayFormat(
       columnSettingsDraft.value.display_format,
@@ -9656,6 +10089,7 @@ function applyColumnSettings() {
       && (
         applyAll
         || touched.width_mode
+        || touched.font_family
         || touched.font_size
         || touched.display_format
         || touched.value_type
@@ -9663,6 +10097,7 @@ function applyColumnSettings() {
       )
       && (
         nextConfig.width_mode !== currentConfig.width_mode
+        || nextConfig.font_family !== currentConfig.font_family
         || nextConfig.font_size !== currentConfig.font_size
         || nextConfig.display_format !== currentConfig.display_format
         || nextConfig.value_type !== currentConfig.value_type
@@ -10123,12 +10558,14 @@ function handleAfterRenderer(
     : null
   let backgroundColor = ''
   let textColor = ''
+  let fontFamilyStyle = ''
   let fontSizeStyle = ''
   let lineHeightStyle = ''
   let textAlignStyle = ''
 
   if (renderColumn >= 0) {
     backgroundColor = getPluginRowBackgroundColor(dataRow)
+    fontFamilyStyle = getColumnFontFamilyStyle(columnConfig)
     textAlignStyle = resolveColumnTextAlign(columnConfig)
     const fontSize = getColumnFontSizeFromConfig(columnConfig)
     if (fontSize !== DEFAULT_COLUMN_FONT_SIZE) {
@@ -10155,6 +10592,9 @@ function handleAfterRenderer(
     if (cellStyle?.text_color) {
       textColor = cellStyle.text_color
     }
+    if (cellStyle?.font_family) {
+      fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
+    }
   }
 
   let title = ''
@@ -10166,6 +10606,7 @@ function handleAfterRenderer(
   TD.classList.toggle('sheet-cell-formula-reference-preview', isFormulaReferencePreview)
   TD.style.backgroundColor = backgroundColor
   TD.style.color = textColor
+  TD.style.fontFamily = fontFamilyStyle
   TD.style.fontSize = fontSizeStyle
   TD.style.lineHeight = lineHeightStyle
   TD.style.textAlign = textAlignStyle
@@ -10434,6 +10875,7 @@ defineExpose({
         :manual-row-resize="true"
         :manual-row-move="canEditData"
         :copy-paste="true"
+        :undo="true"
         :context-menu="contextMenu"
         :cells="resolveCellMeta"
         :row-heights="resolveRowHeight"
@@ -10492,6 +10934,58 @@ defineExpose({
         @current-change="handlePageChange"
       />
     </div>
+
+    <el-dialog
+      v-model="excelImportDialogVisible"
+      title="导入 Excel"
+      width="460px"
+      destroy-on-close
+      append-to-body
+      :close-on-click-modal="!excelImportRunning"
+      :close-on-press-escape="!excelImportRunning"
+      :show-close="!excelImportRunning"
+    >
+      <div class="sheet-settings-form">
+        <div class="sheet-settings-field">
+          <div class="sheet-settings-label">Excel 文件</div>
+          <input
+            ref="excelImportFileInputRef"
+            class="sheet-excel-file-input"
+            type="file"
+            accept=".xlsx,.xlsm,.xltx,.xltm"
+            :disabled="excelImportRunning"
+            @change="handleExcelImportFileChange"
+          >
+          <div v-if="excelImportFile" class="sheet-excel-file-name">{{ excelImportFile.name }}</div>
+        </div>
+        <div class="sheet-settings-field">
+          <div class="sheet-settings-label">补充说明</div>
+          <el-input
+            v-model="excelImportInstruction"
+            type="textarea"
+            :rows="4"
+            :disabled="excelImportRunning"
+            placeholder="例如：只导入报名学员；日志批阅师资不要导入"
+          />
+        </div>
+        <div class="sheet-excel-import-hint">
+          会保留当前导入按钮所在的操作行，并重置其后的数据行。
+        </div>
+      </div>
+      <template #footer>
+        <div class="sheet-settings-footer">
+          <el-button :disabled="excelImportRunning" @click="() => closeExcelImportDialog()">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="excelImportRunning"
+            :disabled="!excelImportFile"
+            @click="applyExcelImportReset"
+          >
+            导入并重置
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <el-dialog
       v-model="sheetSettingsDialogVisible"
@@ -10581,230 +11075,268 @@ defineExpose({
         <div v-if="isColumnSettingsMultiSelection" class="sheet-settings-multi-hint">
           只批量覆盖本次修改的设置项，未修改项保持各字段原样。
         </div>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">类型</span>
-            <span v-if="isColumnSettingMixed('value_type')" class="sheet-settings-mixed-badge">多个值</span>
+        <div class="sheet-settings-section">
+          <div class="sheet-settings-section-title">基础规则</div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">类型</span>
+              <span v-if="isColumnSettingMixed('value_type')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <el-select
+              :model-value="getColumnSettingSelectModel('value_type')"
+              class="sheet-settings-inline-select"
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsValueType"
+            >
+              <el-option label="文本" value="text" />
+              <el-option label="多值文本" value="multi_text" />
+              <el-option label="数值" value="number" />
+              <el-option label="百分比" value="percent" />
+              <el-option label="日期" value="date" />
+            </el-select>
           </div>
-          <el-select
-            :model-value="getColumnSettingSelectModel('value_type')"
-            class="sheet-settings-inline-select"
-            placeholder="多个值，选择后批量覆盖"
-            @change="setColumnSettingsValueType"
-          >
-            <el-option label="文本" value="text" />
-            <el-option label="多值文本" value="multi_text" />
-            <el-option label="数值" value="number" />
-            <el-option label="百分比" value="percent" />
-            <el-option label="日期" value="date" />
-            <el-option label="手机号（11位数字）" value="phone" />
-          </el-select>
-        </div>
-        <div
-          v-if="columnSettingsDraft.value_type === 'date' && !isColumnSettingMixed('value_type')"
-          class="sheet-settings-inline-field"
-        >
           <div
-            class="sheet-settings-label-with-state"
-            title="可选择预设，也可直接输入自定义格式，例如 case(is_current_year, &quot;mm/dd&quot;, &quot;yyyy/mm/dd&quot;) 或 yyyy/mm/dd hh:mm:ss 后回车"
+            v-if="columnSettingsDraft.value_type === 'text' && !isColumnSettingMixed('value_type')"
+            class="sheet-settings-inline-field"
           >
-            <span class="sheet-settings-label">显示格式</span>
-            <span v-if="isColumnSettingMixed('display_format')" class="sheet-settings-mixed-badge">多个值</span>
-          </div>
-          <el-select
-            :model-value="getColumnSettingSelectModel('display_format')"
-            class="sheet-settings-inline-select"
-            filterable
-            allow-create
-            default-first-option
-            placeholder="多个值，选择后批量覆盖"
-            title="可输入 case(...) 条件格式；带时间的日期会自动保留时间，也可显式写 hh:mm 或 hh:mm:ss"
-            @change="setColumnSettingsDisplayFormat"
-          >
-            <el-option label="年月日（2025/1/6）" value="yyyy/m/d" />
-            <el-option label="月日（1/6）" value="m/d" />
-            <el-option label="标准日期（2025-01-06）" value="yyyy-mm-dd" />
-            <el-option label="补零月日（01/06）" value="mm/dd" />
-            <el-option label="智能月日（今年01/06，否则2025/01/06；有时间则保留）" value="case(is_current_year, &quot;mm/dd&quot;, &quot;yyyy/mm/dd&quot;)" />
-            <el-option label="智能月日到分钟（今年01/06 07:51，否则2025/01/06 07:51）" value="case(is_current_year, &quot;mm/dd hh:mm&quot;, &quot;yyyy/mm/dd hh:mm&quot;)" />
-            <el-option label="中文月日（1月6日）" value="m月d日" />
-          </el-select>
-        </div>
-        <div
-          v-if="columnSettingsDraft.value_type === 'percent' && !isColumnSettingMixed('value_type')"
-          class="sheet-settings-inline-field"
-        >
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">显示格式</span>
-            <span v-if="isColumnSettingMixed('display_format')" class="sheet-settings-mixed-badge">多个值</span>
-          </div>
-          <el-select
-            :model-value="getColumnSettingSelectModel('display_format')"
-            class="sheet-settings-inline-select"
-            filterable
-            allow-create
-            default-first-option
-            placeholder="多个值，选择后批量覆盖"
-            @change="setColumnSettingsDisplayFormat"
-          >
-            <el-option label="整数百分比（30%）" value="0%" />
-            <el-option label="一位小数（29.6%）" value="0.0%" />
-            <el-option label="两位小数（29.58%）" value="0.00%" />
-          </el-select>
-        </div>
-        <el-checkbox
-          :model-value="getColumnSettingCheckboxModel('allow_empty')"
-          :indeterminate="isColumnSettingMixed('allow_empty')"
-          @change="value => setColumnSettingsBooleanValue('allow_empty', value)"
-        >
-          允许空值
-          <span v-if="isColumnSettingMixed('allow_empty')" class="sheet-settings-mixed-badge">多个值</span>
-        </el-checkbox>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">内容显示</span>
-            <span v-if="isColumnSettingMixed('display_mode')" class="sheet-settings-mixed-badge">多个值</span>
-          </div>
-          <el-select
-            :model-value="getColumnSettingSelectModel('display_mode')"
-            class="sheet-settings-inline-select"
-            placeholder="多个值，选择后批量覆盖"
-            @change="setColumnSettingsDisplayMode"
-          >
-            <el-option label="单行显示（超长省略）" value="single_line" />
-            <el-option label="自动换行" value="wrap" />
-          </el-select>
-        </div>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">内容对齐</span>
-            <span v-if="isColumnSettingMixed('align')" class="sheet-settings-mixed-badge">多个值</span>
-          </div>
-          <el-select
-            :model-value="getColumnSettingSelectModel('align')"
-            class="sheet-settings-inline-select"
-            placeholder="多个值，选择后批量覆盖"
-            @change="setColumnSettingsAlign"
-          >
-            <el-option label="自动" value="auto" />
-            <el-option label="左对齐" value="left" />
-            <el-option label="居中" value="center" />
-            <el-option label="右对齐" value="right" />
-          </el-select>
-        </div>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">内容字号</span>
-            <span v-if="isColumnSettingMixed('font_size')" class="sheet-settings-mixed-badge">多个值</span>
-          </div>
-          <div class="sheet-settings-number-inline">
-            <el-input-number
-              :model-value="getColumnSettingNumberModel('font_size')"
-              class="sheet-settings-number-input"
-              :min="MIN_COLUMN_FONT_SIZE"
-              :max="MAX_COLUMN_FONT_SIZE"
-              :step="1"
-              controls-position="right"
-              placeholder="多个值"
-              @change="value => setColumnSettingsNumberValue('font_size', value)"
-            />
-            <span class="sheet-settings-width-unit">px</span>
-          </div>
-        </div>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">哈希颜色</span>
-            <span
-              v-if="isColumnSettingMixed('hash_color_mode') || isColumnSettingMixed('hash_color_tone')"
-              class="sheet-settings-mixed-badge"
-            >多个值</span>
-          </div>
-          <div class="sheet-settings-hash-color-inline">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">文本规则</span>
+              <span v-if="isColumnSettingMixed('text_rule')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
             <el-select
-              :model-value="getColumnSettingSelectModel('hash_color_mode')"
-              class="sheet-settings-hash-mode"
-              placeholder="多个值"
-              @change="setColumnSettingsHashColorMode"
+              :model-value="getColumnSettingSelectModel('text_rule')"
+              class="sheet-settings-inline-select"
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsTextRule"
             >
-              <el-option label="无" value="none" />
-              <el-option label="哈希前景" value="text" />
-              <el-option label="哈希背景" value="background" />
+              <el-option
+                v-for="option in COLUMN_TEXT_RULE_OPTIONS"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
             </el-select>
-            <el-select
-              v-if="columnSettingsDraft.hash_color_mode !== 'none' && !isColumnSettingMixed('hash_color_mode')"
-              :model-value="getColumnSettingSelectModel('hash_color_tone')"
-              class="sheet-settings-hash-tone"
-              placeholder="多个值"
-              @change="setColumnSettingsHashColorTone"
+          </div>
+          <div
+            v-if="columnSettingsDraft.value_type === 'date' && !isColumnSettingMixed('value_type')"
+            class="sheet-settings-inline-field"
+          >
+            <div
+              class="sheet-settings-label-with-state"
+              title="可选择预设，也可直接输入自定义格式，例如 case(is_current_year, &quot;mm/dd&quot;, &quot;yyyy/mm/dd&quot;) 或 yyyy/mm/dd hh:mm:ss 后回车"
             >
-              <el-option label="浅色" value="light" />
-              <el-option label="深色" value="dark" />
+              <span class="sheet-settings-label">显示格式</span>
+              <span v-if="isColumnSettingMixed('display_format')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <el-select
+              :model-value="getColumnSettingSelectModel('display_format')"
+              class="sheet-settings-inline-select"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="多个值，选择后批量覆盖"
+              title="可输入 case(...) 条件格式；带时间的日期会自动保留时间，也可显式写 hh:mm 或 hh:mm:ss"
+              @change="setColumnSettingsDisplayFormat"
+            >
+              <el-option label="年月日（2025/1/6）" value="yyyy/m/d" />
+              <el-option label="月日（1/6）" value="m/d" />
+              <el-option label="标准日期（2025-01-06）" value="yyyy-mm-dd" />
+              <el-option label="补零月日（01/06）" value="mm/dd" />
+              <el-option label="智能月日（今年01/06，否则2025/01/06；有时间则保留）" value="case(is_current_year, &quot;mm/dd&quot;, &quot;yyyy/mm/dd&quot;)" />
+              <el-option label="智能月日到分钟（今年01/06 07:51，否则2025/01/06 07:51）" value="case(is_current_year, &quot;mm/dd hh:mm&quot;, &quot;yyyy/mm/dd hh:mm&quot;)" />
+              <el-option label="中文月日（1月6日）" value="m月d日" />
+            </el-select>
+          </div>
+          <div
+            v-if="columnSettingsDraft.value_type === 'percent' && !isColumnSettingMixed('value_type')"
+            class="sheet-settings-inline-field"
+          >
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">显示格式</span>
+              <span v-if="isColumnSettingMixed('display_format')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <el-select
+              :model-value="getColumnSettingSelectModel('display_format')"
+              class="sheet-settings-inline-select"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsDisplayFormat"
+            >
+              <el-option label="整数百分比（30%）" value="0%" />
+              <el-option label="一位小数（29.6%）" value="0.0%" />
+              <el-option label="两位小数（29.58%）" value="0.00%" />
             </el-select>
           </div>
         </div>
-        <div class="sheet-settings-inline-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">列宽</span>
-            <span
-              v-if="isColumnSettingMixed('width_mode') || isColumnSettingMixed('width_value')"
-              class="sheet-settings-mixed-badge"
-            >多个值</span>
-          </div>
-          <div class="sheet-settings-width-inline">
+        <div class="sheet-settings-section">
+          <div class="sheet-settings-section-title">内容格式</div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">内容显示</span>
+              <span v-if="isColumnSettingMixed('display_mode')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
             <el-select
-              :model-value="getColumnSettingSelectModel('width_mode')"
-              class="sheet-settings-width-mode"
-              placeholder="多个值"
-              @change="setColumnSettingsWidthMode"
+              :model-value="getColumnSettingSelectModel('display_mode')"
+              class="sheet-settings-inline-select"
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsDisplayMode"
             >
-              <el-option label="自适应" value="adaptive" />
-              <el-option label="固定列宽" value="fixed" />
+              <el-option label="单行显示（超长省略）" value="single_line" />
+              <el-option label="自动换行" value="wrap" />
             </el-select>
-            <template v-if="columnSettingsDraft.width_mode === 'fixed' && !isColumnSettingMixed('width_mode')">
+          </div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">内容对齐</span>
+              <span v-if="isColumnSettingMixed('align')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <el-select
+              :model-value="getColumnSettingSelectModel('align')"
+              class="sheet-settings-inline-select"
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsAlign"
+            >
+              <el-option label="自动" value="auto" />
+              <el-option label="左对齐" value="left" />
+              <el-option label="居中" value="center" />
+              <el-option label="右对齐" value="right" />
+            </el-select>
+          </div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">内容字体</span>
+              <span v-if="isColumnSettingMixed('font_family')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <el-select
+              :model-value="getColumnSettingSelectModel('font_family')"
+              class="sheet-settings-inline-select"
+              placeholder="多个值，选择后批量覆盖"
+              @change="setColumnSettingsFontFamily"
+            >
+              <el-option
+                v-for="option in COLUMN_FONT_FAMILY_OPTIONS"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">内容字号</span>
+              <span v-if="isColumnSettingMixed('font_size')" class="sheet-settings-mixed-badge">多个值</span>
+            </div>
+            <div class="sheet-settings-number-inline">
               <el-input-number
-                :model-value="getColumnSettingNumberModel('width_value')"
-                class="sheet-settings-width-input"
-                :min="MIN_COLUMN_WIDTH"
-                :max="MAX_COLUMN_WIDTH"
+                :model-value="getColumnSettingNumberModel('font_size')"
+                class="sheet-settings-number-input"
+                :min="MIN_COLUMN_FONT_SIZE"
+                :max="MAX_COLUMN_FONT_SIZE"
                 :step="1"
                 controls-position="right"
                 placeholder="多个值"
-                @change="value => setColumnSettingsNumberValue('width_value', value)"
+                @change="value => setColumnSettingsNumberValue('font_size', value)"
               />
               <span class="sheet-settings-width-unit">px</span>
-            </template>
+            </div>
+          </div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">哈希颜色</span>
+              <span
+                v-if="isColumnSettingMixed('hash_color_mode') || isColumnSettingMixed('hash_color_tone')"
+                class="sheet-settings-mixed-badge"
+              >多个值</span>
+            </div>
+            <div class="sheet-settings-hash-color-inline">
+              <el-select
+                :model-value="getColumnSettingSelectModel('hash_color_mode')"
+                class="sheet-settings-hash-mode"
+                placeholder="多个值"
+                @change="setColumnSettingsHashColorMode"
+              >
+                <el-option label="无" value="none" />
+                <el-option label="哈希前景" value="text" />
+                <el-option label="哈希背景" value="background" />
+              </el-select>
+              <el-select
+                v-if="columnSettingsDraft.hash_color_mode !== 'none' && !isColumnSettingMixed('hash_color_mode')"
+                :model-value="getColumnSettingSelectModel('hash_color_tone')"
+                class="sheet-settings-hash-tone"
+                placeholder="多个值"
+                @change="setColumnSettingsHashColorTone"
+              >
+                <el-option label="浅色" value="light" />
+                <el-option label="深色" value="dark" />
+              </el-select>
+            </div>
           </div>
         </div>
-        <div class="sheet-settings-field">
-          <div class="sheet-settings-label-with-state">
-            <span class="sheet-settings-label">备注</span>
-            <span v-if="isColumnSettingMixed('note')" class="sheet-settings-mixed-badge">多个值</span>
+        <div class="sheet-settings-section">
+          <div class="sheet-settings-section-title">列布局</div>
+          <div class="sheet-settings-inline-field">
+            <div class="sheet-settings-label-with-state">
+              <span class="sheet-settings-label">列宽</span>
+              <span
+                v-if="isColumnSettingMixed('width_mode') || isColumnSettingMixed('width_value')"
+                class="sheet-settings-mixed-badge"
+              >多个值</span>
+            </div>
+            <div class="sheet-settings-width-inline">
+              <el-select
+                :model-value="getColumnSettingSelectModel('width_mode')"
+                class="sheet-settings-width-mode"
+                placeholder="多个值"
+                @change="setColumnSettingsWidthMode"
+              >
+                <el-option label="自适应" value="adaptive" />
+                <el-option label="固定列宽" value="fixed" />
+              </el-select>
+              <template v-if="columnSettingsDraft.width_mode === 'fixed' && !isColumnSettingMixed('width_mode')">
+                <el-input-number
+                  :model-value="getColumnSettingNumberModel('width_value')"
+                  class="sheet-settings-width-input"
+                  :min="MIN_COLUMN_WIDTH"
+                  :max="MAX_COLUMN_WIDTH"
+                  :step="1"
+                  controls-position="right"
+                  placeholder="多个值"
+                  @change="value => setColumnSettingsNumberValue('width_value', value)"
+                />
+                <span class="sheet-settings-width-unit">px</span>
+              </template>
+            </div>
           </div>
-          <el-input
-            :model-value="getColumnSettingTextModel('note')"
-            type="textarea"
-            :autosize="{ minRows: 2, maxRows: 6 }"
-            resize="none"
-            placeholder="多个值，输入后批量覆盖"
-            @input="setColumnSettingsNote"
-          />
         </div>
-        <el-checkbox
-          :model-value="getColumnSettingCheckboxModel('trim_whitespace')"
-          :indeterminate="isColumnSettingMixed('trim_whitespace')"
-          @change="value => setColumnSettingsBooleanValue('trim_whitespace', value)"
-        >
-          去除首尾空白
-          <span v-if="isColumnSettingMixed('trim_whitespace')" class="sheet-settings-mixed-badge">多个值</span>
-        </el-checkbox>
-        <el-checkbox
-          :model-value="getColumnSettingCheckboxModel('duplicate_value_highlight')"
-          :indeterminate="isColumnSettingMixed('duplicate_value_highlight')"
-          @change="value => setColumnSettingsBooleanValue('duplicate_value_highlight', value)"
-        >
-          重复值校验
-          <span v-if="isColumnSettingMixed('duplicate_value_highlight')" class="sheet-settings-mixed-badge">多个值</span>
-        </el-checkbox>
+        <div class="sheet-settings-section">
+          <div class="sheet-settings-section-title">数据处理</div>
+          <el-checkbox
+            :model-value="getColumnSettingCheckboxModel('allow_empty')"
+            :indeterminate="isColumnSettingMixed('allow_empty')"
+            @change="value => setColumnSettingsBooleanValue('allow_empty', value)"
+          >
+            允许空值
+            <span v-if="isColumnSettingMixed('allow_empty')" class="sheet-settings-mixed-badge">多个值</span>
+          </el-checkbox>
+          <el-checkbox
+            :model-value="getColumnSettingCheckboxModel('trim_whitespace')"
+            :indeterminate="isColumnSettingMixed('trim_whitespace')"
+            @change="value => setColumnSettingsBooleanValue('trim_whitespace', value)"
+          >
+            去除首尾空白
+            <span v-if="isColumnSettingMixed('trim_whitespace')" class="sheet-settings-mixed-badge">多个值</span>
+          </el-checkbox>
+          <el-checkbox
+            :model-value="getColumnSettingCheckboxModel('duplicate_value_highlight')"
+            :indeterminate="isColumnSettingMixed('duplicate_value_highlight')"
+            @change="value => setColumnSettingsBooleanValue('duplicate_value_highlight', value)"
+          >
+            重复值校验
+            <span v-if="isColumnSettingMixed('duplicate_value_highlight')" class="sheet-settings-mixed-badge">多个值</span>
+          </el-checkbox>
+        </div>
       </div>
       <template #footer>
         <div class="sheet-settings-footer">
@@ -10822,6 +11354,21 @@ defineExpose({
       append-to-body
     >
       <div class="sheet-settings-form">
+        <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">字体</div>
+          <el-select
+            :model-value="cellStyleDraft.font_family"
+            class="sheet-settings-inline-select"
+            @change="setCellStyleDraftFontFamily"
+          >
+            <el-option
+              v-for="option in CELL_FONT_FAMILY_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
         <div class="sheet-settings-inline-field">
           <div class="sheet-settings-label">文字颜色</div>
           <div class="sheet-color-setting-control">
@@ -10889,7 +11436,7 @@ defineExpose({
       </div>
       <template #footer>
         <div class="sheet-settings-footer">
-          <el-button @click="clearCellStyleDialog">清除颜色</el-button>
+          <el-button @click="clearCellStyleDialog">清除格式</el-button>
           <el-button @click="closeCellStyleDialog">取消</el-button>
           <el-button type="primary" @click="applyCellStyleDialog">保存</el-button>
         </div>
@@ -11060,6 +11607,24 @@ defineExpose({
   line-height: 1.4;
 }
 
+.sheet-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.sheet-settings-section + .sheet-settings-section {
+  padding-top: 14px;
+  border-top: 1px solid #f0e6d8;
+}
+
+.sheet-settings-section-title {
+  color: #9a7b4f;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .sheet-settings-inline-row {
   display: flex;
   align-items: center;
@@ -11078,6 +11643,24 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.sheet-excel-file-input {
+  width: 100%;
+  font-size: 13px;
+  color: #374151;
+}
+
+.sheet-excel-file-name {
+  font-size: 12px;
+  color: #6b7280;
+  word-break: break-all;
+}
+
+.sheet-excel-import-hint {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8b7355;
 }
 
 .sheet-settings-inline-field {
