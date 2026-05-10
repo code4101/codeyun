@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 from datetime import date
 
 from openpyxl import Workbook
@@ -219,7 +220,7 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         "匹配得分",
         "参考信息",
     ]
-    action_row = ["", "", "导入excel", "", "", "", "数字加前缀", "", "更新订单匹配", "", "", "", "仅参考，有延迟", "", "", "其他备注"]
+    action_row = ["", "", "导入报名", "", "", "", "数字加前缀", "", "更新订单匹配", "", "", "", "仅参考，有延迟", "", "", "其他备注"]
 
     workbook = Workbook()
     worksheet = workbook.active
@@ -233,24 +234,28 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
     def fake_chat_with_provider(**kwargs):
         prompt = kwargs["messages"][0]["content"]
         assert "只导入报名学员" in prompt
-        assert "导入excel" in prompt
+        assert "excel_import_reset" in prompt
+        assert "导入报名" in prompt
+        assert "不要把无法匹配的普通源字段塞进“备注”" in kwargs["system_prompt"]
+        assert kwargs["response_format"]["properties"]["extra_columns"]["items"]["type"] == "string"
         assert kwargs["response_format"]["properties"]["rows"]["items"]["properties"]["姓名"]["type"] == "string"
         return {
             "content": json.dumps(
                 {
+                    "extra_columns": ["促学金模式", "微信号"],
                     "rows": [
                         {
                             "分组": "1组",
                             "序号": "1",
-                            "备注": "自觉自律完成学修（无需支付促学金）",
+                            "促学金模式": "自觉自律完成学修（无需支付促学金）",
                             "姓名": "阿丹",
                             "微信昵称": "阿丹",
                             "手机号": "15326693765",
-                            "参考信息": "微信号：adan-wx",
+                            "微信号": "adan-wx",
                         },
                     ],
                     "warnings": [],
-                    "mapping_notes": ["按分组标题填充分组"],
+                    "mapping_notes": ["按分组标题填充分组；未匹配字段追加为扩展列"],
                 },
                 ensure_ascii=False,
             ),
@@ -270,14 +275,20 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
                     "schema_version": 1,
                     "columns": target_columns,
                     "rows": [
+                        ["旧组", "99", "旧数据", "", "旧姓名", "", "", "", "", "", "", "", "", "", "", ""],
+                    ],
+                    "grid_rows": [
+                        target_columns,
                         action_row,
                         ["旧组", "99", "旧数据", "", "旧姓名", "", "", "", "", "", "", "", "", "", "", ""],
                     ],
-                    "grid_rows": [target_columns, action_row],
-                    "data_start_row": 1,
+                    "data_start_row": 2,
                     "field_row_index": 0,
                     "cell_meta": {
-                        "1:2": {"style": {"background_color": "#eeeeee"}},
+                        "1:2": {
+                            "action": {"type": "excel_import_reset", "label": "导入excel"},
+                            "style": {"background_color": "#eeeeee"},
+                        },
                         "2:4": {"style": {"background_color": "#ff0000"}},
                     },
                 },
@@ -288,7 +299,7 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         response = client.post(
             f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
             params={"workbook_id": workbook_id},
-            data={"instruction": "只导入报名学员"},
+            data={"instruction": "只导入报名学员", "action_document_row": "1", "action_column": "2"},
             files={
                 "file": (
                     "source.xlsx",
@@ -301,14 +312,443 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         assert response.status_code == 200
         payload = response.json()
         assert payload["imported_count"] == 1
-        assert payload["preserved_row_count"] == 1
+        assert payload["preserved_row_count"] == 0
+        assert payload["extra_columns"] == ["促学金模式", "微信号"]
         document = payload["sheet"]["document_json"]
-        assert document["rows"][0] == action_row
-        assert document["rows"][1][target_columns.index("姓名")] == "阿丹"
-        assert document["rows"][1][target_columns.index("手机号")] == "15326693765"
-        assert document["rows"][1][target_columns.index("参考信息")] == "微信号：adan-wx"
+        assert document["columns"] == [*target_columns, "促学金模式", "微信号"]
+        assert document["grid_rows"][0] == [*target_columns, "促学金模式", "微信号"]
+        assert document["grid_rows"][1] == [*action_row, "", ""]
+        assert document["rows"][0][target_columns.index("姓名")] == "阿丹"
+        assert document["rows"][0][target_columns.index("手机号")] == "15326693765"
+        assert document["rows"][0][target_columns.index("备注")] == ""
+        assert document["rows"][0][target_columns.index("参考信息")] == ""
+        assert document["rows"][0][len(target_columns)] == "自觉自律完成学修（无需支付促学金）"
+        assert document["rows"][0][len(target_columns) + 1] == "adan-wx"
+        assert document["column_configs"]["促学金模式"]["header_text_color"] == "#4B5563"
+        assert document["column_configs"]["促学金模式"]["header_background_color"] == "#E5E7EB"
+        assert document["column_widths"][-2:] == [132, 132]
         assert "1:2" in document["cell_meta"]
+        assert document["cell_meta"]["1:2"]["action"]["type"] == "excel_import_reset"
         assert "2:4" not in document["cell_meta"]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_excel_import_extracts_sparse_rows_without_cell_row_attribute():
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "稀疏表"
+    worksheet["B2"] = "1组"
+    worksheet["D2"] = "阿丹"
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    payload = note_sheets_api._extract_excel_workbook_payload(buffer.getvalue(), "sparse.xlsx")
+
+    assert payload["sheets"][0]["rows"] == [
+        {"row_number": 2, "values": ["", "1组", "", "阿丹"]},
+    ]
+
+
+def test_note_sheet_excel_import_unknown_row_keys_become_extra_columns():
+    rows, extra_columns = note_sheets_api._coerce_note_sheet_excel_import_rows(
+        {
+            "rows": [
+                {
+                    "姓名": "阿丹",
+                    "微信支付订单号": "`4200003070202605026584858144",
+                    "微信号": "adan-wx",
+                    "促学金模式": "自觉自律完成学修（无需支付促学金）",
+                },
+            ],
+        },
+        ["姓名", "微信支付订单号", "备注", "参考信息"],
+    )
+
+    assert extra_columns == ["微信号", "促学金模式"]
+    assert rows == [["阿丹", "4200003070202605026584858144", "", "", "adan-wx", "自觉自律完成学修（无需支付促学金）"]]
+
+
+def test_note_sheet_registration_order_match_updates_order_columns(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-order-match-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = [
+        "分组",
+        "序号",
+        "备注",
+        "提交时间",
+        "姓名",
+        "微信昵称",
+        "手机号",
+        "错误手机号",
+        "微信支付订单号",
+        "订单日期",
+        "商户订单号",
+        "订单金额",
+        "已返款",
+        "用户ID",
+        "匹配得分",
+        "参考信息",
+    ]
+    order_index = target_columns.index("微信支付订单号")
+    date_index = target_columns.index("订单日期")
+    merchant_index = target_columns.index("商户订单号")
+    amount_index = target_columns.index("订单金额")
+    refunded_index = target_columns.index("已返款")
+
+    calls: list[dict[str, object]] = []
+
+    def fake_get_kqdb():
+        return object()
+
+    def fake_lookup_order(order_id, **kwargs):
+        calls.append({"order_id": order_id, **kwargs})
+        return {
+            "微信支付订单号": f"`{order_id}",
+            "订单日期": "202605",
+            "商户订单号": "M20260509",
+            "订单金额": 550.0,
+            "已返款": 0.0,
+        }
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: fake_get_kqdb)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_order_lookup_provider", lambda: fake_lookup_order)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
+        workbook_id = workbook_response.json()["id"]
+        row = [""] * len(target_columns)
+        row[target_columns.index("姓名")] = "阿丹"
+        row[order_index] = "4200003070202605026584858144"
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [row],
+                    "grid_rows": [
+                        target_columns,
+                        [""] * order_index + ["更新订单匹配"] + [""] * (len(target_columns) - order_index - 1),
+                        row,
+                    ],
+                    "data_start_row": 2,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/update-order-match",
+            params={"workbook_id": workbook_id},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["updated_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["error_count"] == 0
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[order_index] == "4200003070202605026584858144"
+        assert updated_row[date_index] == "202605"
+        assert updated_row[merchant_index] == "M20260509"
+        assert updated_row[amount_index] == "550"
+        assert updated_row[refunded_index] == "0"
+        assert calls[0]["order_id"] == "4200003070202605026584858144"
+        assert calls[0]["lookup_mode"] == "db_only"
+        assert calls[0]["use_browser"] is False
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_match_updates_user_columns(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-user-match-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+    calls: list[dict[str, object]] = []
+
+    class FakeKqdb:
+        def 查找用户(self, names, phones, **kwargs):
+            calls.append({"names": names, "phones": phones, **kwargs})
+            return "u_adan", 92
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [["阿丹", "阿丹", "15326693765", "", "", ""]],
+                    "grid_rows": [
+                        target_columns,
+                        ["", "", "", "", "更新用户匹配", ""],
+                        ["阿丹", "阿丹", "15326693765", "", "", ""],
+                    ],
+                    "data_start_row": 2,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/update-user-match",
+            params={"workbook_id": workbook_id},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["updated_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["error_count"] == 0
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[target_columns.index("用户ID")] == "u_adan"
+        assert updated_row[target_columns.index("匹配得分")] == "92"
+        assert calls[0]["names"] == ["阿丹", "阿丹"]
+        assert calls[0]["phones"] == ["15326693765"]
+        assert calls[0]["课程标准名"] == "d260509梵呗初阶"
+        assert calls[0]["shop_id"] == 1
+        assert calls[0]["return_mode"] == 1
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_match_uses_browser_fallback_when_db_missing(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-user-match-browser-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+    db_calls: list[dict[str, object]] = []
+    remote_calls: list[dict[str, object]] = []
+
+    class FakeKqdb:
+        def 查找用户(self, names, phones, **kwargs):
+            db_calls.append({"names": names, "phones": phones, **kwargs})
+            return "", -1
+
+    def fake_remote_lookup(session, current_user, *, course_name, items):
+        remote_calls.append(
+            {
+                "course_name": course_name,
+                "items": items,
+            }
+        )
+        return {items[0]["key"]: {"key": items[0]["key"], "user_id": "u_live"}}
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_remote_browser", fake_remote_lookup)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶.xlsx"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [["阿丹", "阿丹", "`15326693765", "", "", ""]],
+                    "grid_rows": [
+                        target_columns,
+                        ["", "", "", "", "更新用户匹配", ""],
+                        ["阿丹", "阿丹", "`15326693765", "", "", ""],
+                    ],
+                    "data_start_row": 2,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/update-user-match",
+            params={"workbook_id": workbook_id, "use_browser_fallback": "true"},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["updated_count"] == 1
+        assert payload["skipped_count"] == 0
+        assert payload["error_count"] == 0
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[target_columns.index("用户ID")] == "u_live"
+        assert updated_row[target_columns.index("匹配得分")] == "95"
+        assert db_calls[0]["phones"] == ["15326693765"]
+        assert db_calls[0]["课程标准名"] == "d260509梵呗初阶"
+        assert remote_calls == [
+            {
+                "course_name": "d260509梵呗初阶",
+                "items": [
+                        {
+                            "key": "0",
+                            "names": ["阿丹", "阿丹"],
+                            "phones": ["15326693765"],
+                        }
+                ],
+            }
+        ]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_match_run_is_background_and_dedupes(client, session, engine, monkeypatch):
+    user = _create_user(session, username="note-sheet-user-match-run-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+
+    class FakeKqdb:
+        def 查找用户(self, names, phones, **kwargs):
+            time.sleep(0.15)
+            return "u_async", 91
+
+    monkeypatch.setattr(note_sheets_api, "engine", engine)
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [["阿丹", "阿丹", "15326693765", "", "", ""]],
+                    "grid_rows": [
+                        target_columns,
+                        ["", "", "", "", "更新用户匹配", ""],
+                        ["阿丹", "阿丹", "15326693765", "", "", ""],
+                    ],
+                    "data_start_row": 2,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        start_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/match-runs",
+            params={"workbook_id": workbook_id},
+            json={"action": "registration_user_match"},
+        )
+        assert start_response.status_code == 200
+        started = start_response.json()
+        assert started["status"] in {"pending", "running"}
+        assert started["already_running"] is False
+        run_id = started["run_id"]
+
+        duplicate_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/match-runs",
+            params={"workbook_id": workbook_id},
+            json={"action": "registration_user_match"},
+        )
+        assert duplicate_response.status_code == 200
+        duplicate = duplicate_response.json()
+        assert duplicate["already_running"] is True
+        assert duplicate["run_id"] == run_id
+
+        active_response = client.get(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/match-runs/active",
+            params={"workbook_id": workbook_id, "action": "registration_user_match"},
+        )
+        assert active_response.status_code == 200
+        assert active_response.json()["run_id"] == run_id
+
+        deadline = time.time() + 3
+        final = None
+        while time.time() < deadline:
+            status_response = client.get(
+                f"/api/note-sheets/sheets/{sheet_id}/registration/match-runs/{run_id}",
+                params={"workbook_id": workbook_id},
+            )
+            assert status_response.status_code == 200
+            final = status_response.json()
+            if final["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        assert final is not None
+        assert final["status"] == "completed"
+        assert final["updated_count"] == 1
+        updated_row = final["sheet"]["document_json"]["rows"][0]
+        assert updated_row[target_columns.index("用户ID")] == "u_async"
+        assert updated_row[target_columns.index("匹配得分")] == "91"
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_registration_user_match_defaults_to_db_only(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-user-match-db-only-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    target_columns = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+
+    class FakeKqdb:
+        def 查找用户(self, names, phones, **kwargs):
+            return "", -1
+
+    def fake_remote_lookup(*args, **kwargs):
+        raise AssertionError("默认用户匹配不应调用远程小鹅通回查")
+
+    monkeypatch.setattr(note_sheets_api, "_load_attendance_kqdb_provider", lambda: (lambda: FakeKqdb()))
+    monkeypatch.setattr(note_sheets_api, "_lookup_registration_users_with_remote_browser", fake_remote_lookup)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "20260509梵呗初阶"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": target_columns,
+                    "rows": [["阿丹", "阿丹", "15326693765", "", "", ""]],
+                    "grid_rows": [
+                        target_columns,
+                        ["", "", "", "", "更新用户匹配", ""],
+                        ["阿丹", "阿丹", "15326693765", "", "", ""],
+                    ],
+                    "data_start_row": 2,
+                    "field_row_index": 0,
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/registration/update-user-match",
+            params={"workbook_id": workbook_id},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        updated_row = payload["sheet"]["document_json"]["rows"][0]
+        assert updated_row[target_columns.index("用户ID")] == ""
+        assert updated_row[target_columns.index("匹配得分")] == "-1"
     finally:
         _clear_user_override()
 
@@ -463,6 +903,7 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                 "提交时间",
                 "来源",
                 "课程",
+                "考勤负责人",
                 "学号",
                 "姓名",
                 "修正需求",
@@ -470,8 +911,8 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
                 "处理状态",
             ],
             "rows": [
-                ["651", "2026/4/20", "微信", "课程A", "5组6号", "陈香米", "第一堂视频课", "-", "确认中"],
-                ["650", "2026/4/19", "微信", "课程B", "4--49", "曾玉清", "请问作业", "其实也没什么", "已处理"],
+                ["651", "2026/4/20", "微信", "课程A", "", "5组6号", "陈香米", "第一堂视频课", "-", "确认中"],
+                ["650", "2026/4/19", "微信", "课程B", "", "4--49", "曾玉清", "请问作业", "其实也没什么", "已处理"],
             ],
             "view_settings": {
                 "pagination": {
@@ -498,10 +939,10 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     detail = detail_response.json()
     assert detail["access"]["role"] == "viewer"
     assert detail["access"]["capabilities"]["can_edit_data"] is False
-    assert detail["access"]["capabilities"]["editable_data_columns"] == [8]
+    assert detail["access"]["capabilities"]["editable_data_columns"] == [9]
 
     rows = detail["document_json"]["rows"]
-    rows[0][8] = "用户d问题，已修正"
+    rows[0][9] = "用户d问题，已修正"
     update_response = client.put(
         "/api/note-sheets/sheets/5",
         json={
@@ -514,10 +955,10 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     )
     assert update_response.status_code == 200
     session.refresh(sheet)
-    assert sheet.document_json["rows"][0][8] == "用户d问题，已修正"
-    assert sheet.document_json["rows"][0][6] == "第一堂视频课"
+    assert sheet.document_json["rows"][0][9] == "用户d问题，已修正"
+    assert sheet.document_json["rows"][0][7] == "第一堂视频课"
 
-    rows[0][6] = "越权修改"
+    rows[0][7] = "越权修改"
     forbidden_response = client.put(
         "/api/note-sheets/sheets/5",
         json={
@@ -614,6 +1055,36 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
                     "确认中",
                 ],
             ],
+            "grid_rows": [
+                [
+                    "序号",
+                    "提交时间",
+                    "来源",
+                    "课程",
+                    "学号",
+                    "姓名",
+                    "修正需求",
+                    "补充说明",
+                    "处理状态",
+                ],
+                [
+                    "651",
+                    "2026/4/20 07:51:46",
+                    "微信",
+                    "20260412禅宗12期一阶",
+                    "5组6号",
+                    "陈香米",
+                    "第一堂视频课",
+                    "-",
+                    "确认中",
+                ],
+            ],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "cell_meta": {
+                "0:3": {"link": {"url": "https://example.com/legacy-data-row-coordinate"}},
+                "1:3": {"link": {"url": "https://example.com/stale-next-row-link"}},
+            },
         },
     )
     session.add(source_sheet)
@@ -626,12 +1097,31 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
         response = client.get("/api/note-sheets/sheets/5")
         assert response.status_code == 200
         detail = response.json()
-        assert detail["document_json"]["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
+        assert detail["document_json"]["columns"] == [
+            "序号",
+            "提交时间",
+            "来源",
+            "课程",
+            "考勤负责人",
+            "学号",
+            "姓名",
+            "修正需求",
+            "补充说明",
+            "处理状态",
+        ]
+        assert detail["document_json"]["rows"][0][4] == ""
+        assert detail["document_json"]["rows"][0][5] == "5组6号"
+        assert detail["document_json"]["grid_rows"][0] == detail["document_json"]["columns"]
+        assert detail["document_json"]["grid_rows"][1][4] == ""
+        assert detail["document_json"]["grid_rows"][1][5] == "5组6号"
+        assert "0:3" not in detail["document_json"]["cell_meta"]
+        assert detail["document_json"]["cell_meta"]["1:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
 
         persisted = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == 5)).first()
         assert persisted is not None
         assert persisted.version == 2
-        assert persisted.document_json["cell_meta"]["0:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
+        assert persisted.document_json["rows"][0][4] == ""
+        assert persisted.document_json["cell_meta"]["1:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
     finally:
         _clear_user_override()
 
@@ -1007,12 +1497,12 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         assert rows[2][0:12] == [
             "梵呗初阶",
             "梵呗初阶",
-            "20260501梵呗初阶",
+            "20260509梵呗初阶",
             "王秀芹, 乐道行音, 陈坤泽",
             "",
             "数据每晚21点更新，次日返款",
-            serial(2026, 5, 1),
-            serial(2026, 5, 16),
+            serial(2026, 5, 9),
+            serial(2026, 5, 24),
             "",
             "550",
             "",
@@ -1043,7 +1533,7 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         )
         generic_response = client.post(
             "/api/note-sheets/sheets/4/attendance-summary/generate-course-template",
-            json={"row_index": fanbei_zengyi_row_index, "target_date": "2026-06-01"},
+            json={"row_index": fanbei_zengyi_row_index},
         )
         assert generic_response.status_code == 200
         generic_payload = generic_response.json()
@@ -1052,12 +1542,12 @@ def test_attendance_summary_generates_next_month_templates_idempotently(client, 
         assert generic_rows[0][0:12] == [
             "梵呗增益",
             "梵呗增益",
-            "20260601梵呗增益",
+            "20260609梵呗增益",
             "王秀芹, 卓尔不凡, 陈坤泽",
             "",
             "数据每晚21点更新，次日返款",
-            serial(2026, 6, 1),
-            serial(2026, 6, 26),
+            serial(2026, 6, 9),
+            serial(2026, 7, 4),
             "",
             "500",
             "",

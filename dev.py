@@ -452,6 +452,21 @@ def cleanup_stale_dev_environment(ports):
         time.sleep(0.5)
 
 
+def cleanup_port_listeners(port):
+    protected_pids = _current_process_tree_pids()
+    pids = [pid for pid in find_tcp_listener_pids(port) if pid not in protected_pids]
+    terminate_pids(pids, f"listeners on port {port}")
+
+
+def wait_for_backend_port_release(host, port, timeout_seconds=10.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if tcp_port_can_bind(host, port):
+            return True
+        time.sleep(0.2)
+    return tcp_port_can_bind(host, port)
+
+
 def ensure_backend_port_available(host, port):
     if tcp_port_can_bind(host, port):
         return
@@ -915,6 +930,9 @@ def restart_backend(root_dir, env, python_executable, process_guard, reload_mode
     stop_process(current_proc, process_guard=process_guard)
     backend_host = read_backend_host(env)
     backend_port = read_backend_port(env)
+    if not wait_for_backend_port_release(backend_host, backend_port):
+        cleanup_port_listeners(backend_port)
+        wait_for_backend_port_release(backend_host, backend_port)
     proc = start_backend(
         root_dir,
         env,
@@ -998,16 +1016,14 @@ def main():
             backend_code = backend_proc.poll()
             if backend_code is not None:
                 log(f"Backend exited with code {backend_code}. Restarting backend ...")
-                process_guard.stop(backend_proc)
-                backend_proc = start_backend(
+                backend_proc = restart_backend(
                     root_dir,
                     env,
                     python_executable,
+                    process_guard,
                     reload_mode=config.backend_reload_mode,
-                    backend_host=backend_host,
-                    backend_port=backend_port,
+                    current_proc=backend_proc,
                 )
-                process_guard.register(backend_proc)
                 if backend_watcher is not None:
                     backend_watcher.refresh()
                 if backend_pending_change:

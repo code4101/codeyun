@@ -306,8 +306,47 @@ export interface AttendanceSheetDocumentUpsertRequest {
   document_json: Record<string, unknown>
 }
 
+export interface AttendanceHeaderToolGroup {
+  label: string
+  kind: 'clockin' | 'week'
+  start_column: number
+  colspan: number
+  background_color: string
+  child_background_color: string
+  week_index?: number | null
+}
+
+export interface AttendanceHeaderToolCell {
+  label: string
+  url: string
+  kind: 'clockin' | 'lesson'
+  column_index: number
+  group_label: string
+  background_color: string
+  source_id?: number | null
+  lesson_id2: string
+  week_index?: number | null
+}
+
+export interface AttendanceHeaderToolResponse {
+  course_name: string
+  course_type: string
+  groups: AttendanceHeaderToolGroup[]
+  cells: AttendanceHeaderToolCell[]
+  rows: string[][]
+  plain_text: string
+  document_json: Record<string, unknown>
+}
+
 export async function fetchAttendanceConfig() {
   const response = await api.get<AttendanceConfigResponse>('/attendance/config')
+  return response.data
+}
+
+export async function generateAttendanceHeaderTool(courseName: string) {
+  const response = await api.post<AttendanceHeaderToolResponse>('/attendance/header-tool/generate', {
+    course_name: courseName,
+  })
   return response.data
 }
 

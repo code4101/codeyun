@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import select
 
@@ -287,6 +288,97 @@ def test_attendance_feedback_form_meta_reads_links_from_grid_row_cell_meta(clien
         {"name": "20260601梵呗初阶", "attendance_sheet_url": ""},
         {"name": "20260308禅宗1至3期五阶", "attendance_sheet_url": "https://www.kdocs.cn/l/zen-five"},
     ]
+
+
+def test_attendance_header_tool_builds_zen_week_headers(monkeypatch):
+    monkeypatch.setattr(
+        attendance_api,
+        "_query_attendance_header_clockins",
+        lambda course_name: [
+            {"clockin_id": 201, "name": f"{course_name}-共学打卡", "url": "https://example.com/clockin-study"},
+            {"clockin_id": 202, "name": f"{course_name}-共修打卡", "url": "https://example.com/clockin-practice"},
+        ],
+    )
+    monkeypatch.setattr(
+        attendance_api,
+        "_query_attendance_header_lessons",
+        lambda course_name: [
+            {
+                "lesson_id": 11,
+                "lesson_name": f"{course_name}-第1周=佛教史1",
+                "lesson_id2": "lesson-token-1",
+            },
+            {
+                "lesson_id": 12,
+                "lesson_name": f"{course_name}-第1周=佛教史2",
+                "lesson_id2": "https://example.com/lesson2",
+            },
+            {
+                "lesson_id": 13,
+                "lesson_name": f"{course_name}-第2周=心经",
+                "lesson_id2": "",
+            },
+        ],
+    )
+
+    payload = attendance_api._build_attendance_header_tool_response("d260308禅宗1至3期五阶")
+
+    assert [group.label for group in payload.groups] == ["打卡数据", "第1周", "第2周"]
+    assert [group.colspan for group in payload.groups] == [2, 2, 1]
+    assert payload.rows == [
+        ["打卡数据", "", "第1周", "", "第2周"],
+        ["共学打卡", "共修打卡", "佛教史1", "佛教史2", "心经"],
+    ]
+    assert payload.cells[2].url == (
+        "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id=lesson-token-1&tabName=UserManage"
+    )
+    assert payload.cells[3].url == "https://example.com/lesson2"
+    assert payload.document_json["merged_cells"] == [
+        {"row": 0, "col": 0, "rowspan": 1, "colspan": 2},
+        {"row": 0, "col": 2, "rowspan": 1, "colspan": 2},
+    ]
+    assert payload.document_json["cell_meta"]["1:2"]["link"]["url"] == payload.cells[2].url
+
+
+def test_attendance_header_tool_accepts_plain_date_prefix(monkeypatch):
+    queried_course_names: list[str] = []
+
+    def fake_query_clockins(course_name: str):
+        queried_course_names.append(course_name)
+        return []
+
+    def fake_query_lessons(course_name: str):
+        queried_course_names.append(course_name)
+        return [
+            {
+                "lesson_id": 11,
+                "lesson_name": f"{course_name}-第1周=佛教史1",
+                "lesson_id2": "lesson-token-1",
+            },
+        ]
+
+    monkeypatch.setattr(attendance_api, "_query_attendance_header_clockins", fake_query_clockins)
+    monkeypatch.setattr(attendance_api, "_query_attendance_header_lessons", fake_query_lessons)
+
+    payload = attendance_api._build_attendance_header_tool_response("20260308禅宗1至3期五阶")
+
+    assert payload.course_name == "d260308禅宗1至3期五阶"
+    assert queried_course_names == ["d260308禅宗1至3期五阶", "d260308禅宗1至3期五阶"]
+    assert payload.rows == [
+        ["第1周"],
+        ["佛教史1"],
+    ]
+
+
+def test_attendance_header_tool_rejects_unsupported_course_type():
+    try:
+        attendance_api._build_attendance_header_tool_response("d260501第40届念住")
+    except Exception as exc:
+        assert isinstance(exc, HTTPException)
+        assert exc.status_code == 400
+        assert "暂不支持" in exc.detail
+    else:
+        raise AssertionError("unsupported course type should fail")
 
 
 def test_attendance_feedback_form_meta_exposes_public_readonly_data_sheet_link(client: TestClient, session):
@@ -736,6 +828,7 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
         "提交时间",
         "来源",
         "课程",
+        "考勤负责人",
         "学号",
         "姓名",
         "修正需求",
@@ -752,6 +845,7 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
         "2026/4/18 08:00:00",
         "微信",
         "20260401第45届觉观",
+        "",
         "39",
         "吴菲",
         "补第2课",
@@ -787,6 +881,7 @@ def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client:
             "2026/4/18 08:00:00",
             "微信",
             "20260401第45届觉观",
+            "",
             "39",
             "吴菲",
             "旧问题",
@@ -819,6 +914,7 @@ def test_attendance_feedback_submission_uses_questionnaire_sheet_max_seq(client:
         submit_response.json()["submitted_at_text"],
         "采集系统",
         "20260408第39届念住",
+        "",
         "2-17",
         "薛伟",
         "今天没有收到退款",
@@ -862,8 +958,8 @@ def test_attendance_feedback_submission_links_course_cell_from_summary_sheet(cli
 def test_attendance_wjx_sheet_upsert_inserts_by_seq_desc_and_shifts_cell_meta():
     document = attendance_api._create_default_attendance_wjx_sheet_document()
     document["rows"] = [
-        ["900", "2026/4/18 08:00:00", "微信", "旧课程1", "39", "吴菲", "旧问题1", "", ""],
-        ["800", "2026/4/17 08:00:00", "微信", "旧课程2", "40", "王五", "旧问题2", "", ""],
+        ["900", "2026/4/18 08:00:00", "微信", "旧课程1", "", "39", "吴菲", "旧问题1", "", ""],
+        ["800", "2026/4/17 08:00:00", "微信", "旧课程2", "", "40", "王五", "旧问题2", "", ""],
     ]
     document["cell_meta"] = {
         "0:3": {"link": {"url": "https://example.com/old-900"}},
@@ -921,6 +1017,7 @@ def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: 
             "2026/4/18 08:00:00",
             "微信",
             "旧课程",
+            "",
             "39",
             "吴菲",
             "旧问题",
@@ -952,6 +1049,7 @@ def test_attendance_wjx_data_sheet_sync_preserves_manual_process_status(client: 
         "2026/4/19 08:00:00",
         "微信",
         "20260408第39届念住",
+        "",
         "2-17",
         "薛伟",
         "更新后的问题",

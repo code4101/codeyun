@@ -116,6 +116,30 @@ def test_local_device_hides_persisted_url(client, session, auth_user):
     assert devices[0]["device"]["server_url"] is None
 
 
+def test_local_device_token_reveal_uses_current_device_token(client, session, auth_user, monkeypatch):
+    monkeypatch.setattr("backend.api.device.get_device_token", lambda: "current-local-token")
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="local-1",
+        mode="local",
+        token="stale-local-token",
+        name="Local Node",
+        server_url="http://localhost:8000",
+        is_active=True,
+        order_index=0,
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    token_resp = client.get(f"/api/devices/{entry.entry_id}/token")
+
+    assert token_resp.status_code == 200
+    assert token_resp.json() == {"token": "current-local-token"}
+    session.refresh(entry)
+    assert entry.token == "current-local-token"
+
+
 def test_remote_loopback_urls_are_rejected(client, auth_user):
     for host in ["localhost", "127.0.0.1", "[::1]"]:
         resp = client.post(

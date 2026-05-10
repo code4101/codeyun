@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { fetchWorkbook, type WorkbookDetail } from '@/api/noteSheets'
+import { fetchWorkbook, type WorkbookDetail, type WorkbookRefItem } from '@/api/noteSheets'
 import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
 const APP_TITLE = 'CodeYun'
@@ -14,6 +14,7 @@ const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
 const activeSheetId = ref<number | null>(null)
 const standaloneSheetTitle = ref('')
+const standaloneWorkbookTitle = ref('')
 const errorText = ref('')
 
 const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
@@ -32,7 +33,11 @@ const pageDocumentTitle = computed(() => {
   }
 
   const sheetTitle = standaloneSheetTitle.value.trim()
-  return sheetTitle ? `${sheetTitle} - ${APP_TITLE}` : APP_TITLE
+  const workbookTitle = standaloneWorkbookTitle.value.trim()
+  const resourceTitle = workbookTitle && sheetTitle
+    ? `${workbookTitle}/${sheetTitle}`
+    : sheetTitle || workbookTitle
+  return resourceTitle ? `${resourceTitle} - ${APP_TITLE}` : APP_TITLE
 })
 
 function normalizePositiveInt(value: unknown): number | null {
@@ -102,9 +107,16 @@ function handleSheetMissing() {
   errorText.value = '工作表不存在或不可访问'
 }
 
-function handleSheetSync(payload: { id: number; title: string; version: number; updatedAt: number }) {
+function handleSheetSync(payload: {
+  id: number
+  title: string
+  version: number
+  updatedAt: number
+  workbookItems?: WorkbookRefItem[]
+}) {
   if (!isWorkbookMode.value) {
     standaloneSheetTitle.value = payload.title || ''
+    standaloneWorkbookTitle.value = payload.workbookItems?.[0]?.title || ''
     return
   }
   if (!workbook.value) {
@@ -130,6 +142,7 @@ watch(
   (nextSheetId, previousSheetId) => {
     if (nextSheetId !== previousSheetId && !isWorkbookMode.value) {
       standaloneSheetTitle.value = ''
+      standaloneWorkbookTitle.value = ''
     }
   },
 )

@@ -1938,6 +1938,355 @@ def v39_add_pdf_page_note_table(session: Session):
     session.commit()
     print("  Added PDF page note table.")
 
+
+def v40_add_eastmoney_trade_sync_tables(session: Session):
+    """
+    Migration V40: Add Eastmoney trade sync storage.
+    """
+    print("Running System Upgrade V40: Add Eastmoney trade sync tables...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneytradesyncrun (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                account_label VARCHAR NOT NULL DEFAULT '',
+                start_date VARCHAR NOT NULL DEFAULT '',
+                end_date VARCHAR NOT NULL DEFAULT '',
+                status VARCHAR NOT NULL DEFAULT 'running',
+                captured_at FLOAT,
+                inserted_count INTEGER NOT NULL DEFAULT 0,
+                updated_count INTEGER NOT NULL DEFAULT 0,
+                trade_record_count INTEGER NOT NULL DEFAULT 0,
+                position_count INTEGER NOT NULL DEFAULT 0,
+                asset_summary_json JSON NOT NULL DEFAULT '{}',
+                error_message TEXT,
+                started_at FLOAT NOT NULL,
+                finished_at FLOAT,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneytraderecord (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                sync_run_id VARCHAR NOT NULL DEFAULT '',
+                account_label VARCHAR NOT NULL DEFAULT '',
+                source VARCHAR NOT NULL DEFAULT '',
+                source_key VARCHAR NOT NULL,
+                market VARCHAR NOT NULL DEFAULT '',
+                trade_date VARCHAR NOT NULL DEFAULT '',
+                trade_time VARCHAR NOT NULL DEFAULT '',
+                security_code VARCHAR NOT NULL DEFAULT '',
+                security_name VARCHAR NOT NULL DEFAULT '',
+                direction VARCHAR NOT NULL DEFAULT '',
+                quantity VARCHAR NOT NULL DEFAULT '',
+                price VARCHAR NOT NULL DEFAULT '',
+                occurrence_date VARCHAR NOT NULL DEFAULT '',
+                occurrence_time VARCHAR NOT NULL DEFAULT '',
+                occurrence_amount VARCHAR NOT NULL DEFAULT '',
+                amount VARCHAR NOT NULL DEFAULT '',
+                fee VARCHAR NOT NULL DEFAULT '',
+                commission VARCHAR NOT NULL DEFAULT '',
+                stamp_tax VARCHAR NOT NULL DEFAULT '',
+                transfer_fee VARCHAR NOT NULL DEFAULT '',
+                other_fee VARCHAR NOT NULL DEFAULT '',
+                currency VARCHAR NOT NULL DEFAULT '',
+                deal_id VARCHAR NOT NULL DEFAULT '',
+                shareholder_account VARCHAR NOT NULL DEFAULT '',
+                share_balance VARCHAR NOT NULL DEFAULT '',
+                fund_balance VARCHAR NOT NULL DEFAULT '',
+                extended_name VARCHAR NOT NULL DEFAULT '',
+                raw_json JSON NOT NULL DEFAULT '{}',
+                raw_text TEXT NOT NULL DEFAULT '',
+                quantity_value FLOAT,
+                price_value FLOAT,
+                occurrence_amount_value FLOAT,
+                amount_value FLOAT,
+                fee_value FLOAT,
+                commission_value FLOAT,
+                stamp_tax_value FLOAT,
+                transfer_fee_value FLOAT,
+                other_fee_value FLOAT,
+                share_balance_value FLOAT,
+                fund_balance_value FLOAT,
+                first_seen_at FLOAT NOT NULL,
+                last_seen_at FLOAT NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_eastmoneytraderecord_user_source_key UNIQUE (user_id, source_key),
+                FOREIGN KEY(user_id) REFERENCES user (id),
+                FOREIGN KEY(sync_run_id) REFERENCES eastmoneytradesyncrun (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneyassetsnapshot (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                sync_run_id VARCHAR NOT NULL,
+                account_label VARCHAR NOT NULL DEFAULT '',
+                captured_at FLOAT NOT NULL,
+                total_asset VARCHAR NOT NULL DEFAULT '',
+                market_value VARCHAR NOT NULL DEFAULT '',
+                cash_available VARCHAR NOT NULL DEFAULT '',
+                cash_balance VARCHAR NOT NULL DEFAULT '',
+                withdrawable VARCHAR NOT NULL DEFAULT '',
+                frozen VARCHAR NOT NULL DEFAULT '',
+                pnl VARCHAR NOT NULL DEFAULT '',
+                raw_json JSON NOT NULL DEFAULT '{}',
+                created_at FLOAT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user (id),
+                FOREIGN KEY(sync_run_id) REFERENCES eastmoneytradesyncrun (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneypositionsnapshot (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                sync_run_id VARCHAR NOT NULL,
+                account_label VARCHAR NOT NULL DEFAULT '',
+                source VARCHAR NOT NULL DEFAULT '',
+                market VARCHAR NOT NULL DEFAULT '',
+                captured_at FLOAT NOT NULL,
+                security_code VARCHAR NOT NULL DEFAULT '',
+                security_name VARCHAR NOT NULL DEFAULT '',
+                quantity VARCHAR NOT NULL DEFAULT '',
+                available_quantity VARCHAR NOT NULL DEFAULT '',
+                cost_price VARCHAR NOT NULL DEFAULT '',
+                current_price VARCHAR NOT NULL DEFAULT '',
+                market_value VARCHAR NOT NULL DEFAULT '',
+                pnl VARCHAR NOT NULL DEFAULT '',
+                pnl_ratio VARCHAR NOT NULL DEFAULT '',
+                currency VARCHAR NOT NULL DEFAULT '',
+                raw_json JSON NOT NULL DEFAULT '{}',
+                created_at FLOAT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user (id),
+                FOREIGN KEY(sync_run_id) REFERENCES eastmoneytradesyncrun (id)
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_user_id ON eastmoneytradesyncrun (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_account_label ON eastmoneytradesyncrun (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_start_date ON eastmoneytradesyncrun (start_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_end_date ON eastmoneytradesyncrun (end_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_status ON eastmoneytradesyncrun (status)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_captured_at ON eastmoneytradesyncrun (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_started_at ON eastmoneytradesyncrun (started_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytradesyncrun_finished_at ON eastmoneytradesyncrun (finished_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_user_id ON eastmoneytraderecord (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_sync_run_id ON eastmoneytraderecord (sync_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_account_label ON eastmoneytraderecord (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_source ON eastmoneytraderecord (source)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_source_key ON eastmoneytraderecord (source_key)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_market ON eastmoneytraderecord (market)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_trade_date ON eastmoneytraderecord (trade_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_trade_time ON eastmoneytraderecord (trade_time)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_occurrence_date ON eastmoneytraderecord (occurrence_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_occurrence_time ON eastmoneytraderecord (occurrence_time)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_security_code ON eastmoneytraderecord (security_code)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_security_name ON eastmoneytraderecord (security_name)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_direction ON eastmoneytraderecord (direction)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_currency ON eastmoneytraderecord (currency)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_deal_id ON eastmoneytraderecord (deal_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_shareholder_account ON eastmoneytraderecord (shareholder_account)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_extended_name ON eastmoneytraderecord (extended_name)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_last_seen_at ON eastmoneytraderecord (last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyassetsnapshot_user_id ON eastmoneyassetsnapshot (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyassetsnapshot_sync_run_id ON eastmoneyassetsnapshot (sync_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyassetsnapshot_account_label ON eastmoneyassetsnapshot (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyassetsnapshot_captured_at ON eastmoneyassetsnapshot (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_user_id ON eastmoneypositionsnapshot (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_sync_run_id ON eastmoneypositionsnapshot (sync_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_account_label ON eastmoneypositionsnapshot (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_source ON eastmoneypositionsnapshot (source)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_market ON eastmoneypositionsnapshot (market)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_captured_at ON eastmoneypositionsnapshot (captured_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_security_code ON eastmoneypositionsnapshot (security_code)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_security_name ON eastmoneypositionsnapshot (security_name)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneypositionsnapshot_currency ON eastmoneypositionsnapshot (currency)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Eastmoney trade sync tables.")
+
+
+def v41_add_eastmoney_trade_detail_fields(session: Session):
+    """
+    Migration V41: Add detailed Eastmoney trade fields from mobile trade details.
+    """
+    print("Running System Upgrade V41: Add Eastmoney trade detail fields...")
+    if not _table_exists(session, "eastmoneytraderecord"):
+        print("  eastmoneytraderecord does not exist, skipping.")
+        return
+
+    columns = _get_table_columns(session, "eastmoneytraderecord")
+    column_defs = {
+        "occurrence_date": "VARCHAR NOT NULL DEFAULT ''",
+        "occurrence_time": "VARCHAR NOT NULL DEFAULT ''",
+        "occurrence_amount": "VARCHAR NOT NULL DEFAULT ''",
+        "commission": "VARCHAR NOT NULL DEFAULT ''",
+        "stamp_tax": "VARCHAR NOT NULL DEFAULT ''",
+        "transfer_fee": "VARCHAR NOT NULL DEFAULT ''",
+        "other_fee": "VARCHAR NOT NULL DEFAULT ''",
+        "shareholder_account": "VARCHAR NOT NULL DEFAULT ''",
+        "share_balance": "VARCHAR NOT NULL DEFAULT ''",
+        "fund_balance": "VARCHAR NOT NULL DEFAULT ''",
+        "extended_name": "VARCHAR NOT NULL DEFAULT ''",
+        "occurrence_amount_value": "FLOAT",
+        "commission_value": "FLOAT",
+        "stamp_tax_value": "FLOAT",
+        "transfer_fee_value": "FLOAT",
+        "other_fee_value": "FLOAT",
+        "share_balance_value": "FLOAT",
+        "fund_balance_value": "FLOAT",
+    }
+    for name, definition in column_defs.items():
+        if name not in columns:
+            session.exec(text(f"ALTER TABLE eastmoneytraderecord ADD COLUMN {name} {definition}"))
+
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_occurrence_date ON eastmoneytraderecord (occurrence_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_occurrence_time ON eastmoneytraderecord (occurrence_time)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_shareholder_account ON eastmoneytraderecord (shareholder_account)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneytraderecord_extended_name ON eastmoneytraderecord (extended_name)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Eastmoney trade detail fields.")
+
+
+def v42_add_eastmoney_pdf_statement_tables(session: Session):
+    """
+    Migration V42: Add Eastmoney PDF statement import and fund flow tables.
+    """
+    print("Running System Upgrade V42: Add Eastmoney PDF statement tables...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneystatementimport (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                sync_run_id VARCHAR NOT NULL DEFAULT '',
+                account_label VARCHAR NOT NULL DEFAULT '',
+                source VARCHAR NOT NULL DEFAULT 'pdf_statement',
+                file_name VARCHAR NOT NULL DEFAULT '',
+                file_path VARCHAR NOT NULL DEFAULT '',
+                file_size INTEGER NOT NULL DEFAULT 0,
+                file_mtime FLOAT NOT NULL DEFAULT 0,
+                file_sha256 VARCHAR NOT NULL,
+                print_time VARCHAR NOT NULL DEFAULT '',
+                printed_at FLOAT,
+                query_start_date VARCHAR NOT NULL DEFAULT '',
+                query_end_date VARCHAR NOT NULL DEFAULT '',
+                customer_name VARCHAR NOT NULL DEFAULT '',
+                customer_no VARCHAR NOT NULL DEFAULT '',
+                fund_account VARCHAR NOT NULL DEFAULT '',
+                sh_account VARCHAR NOT NULL DEFAULT '',
+                sz_account VARCHAR NOT NULL DEFAULT '',
+                asset_summary_json JSON NOT NULL DEFAULT '{}',
+                position_count INTEGER NOT NULL DEFAULT 0,
+                flow_count INTEGER NOT NULL DEFAULT 0,
+                trade_record_count INTEGER NOT NULL DEFAULT 0,
+                raw_text TEXT NOT NULL DEFAULT '',
+                raw_json JSON NOT NULL DEFAULT '{}',
+                imported_at FLOAT NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_eastmoneystatementimport_user_file_sha256 UNIQUE (user_id, file_sha256),
+                FOREIGN KEY(user_id) REFERENCES user (id),
+                FOREIGN KEY(sync_run_id) REFERENCES eastmoneytradesyncrun (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS eastmoneyfundflowrecord (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                statement_import_id VARCHAR NOT NULL DEFAULT '',
+                sync_run_id VARCHAR NOT NULL DEFAULT '',
+                account_label VARCHAR NOT NULL DEFAULT '',
+                source VARCHAR NOT NULL DEFAULT 'pdf_statement',
+                source_key VARCHAR NOT NULL,
+                flow_date VARCHAR NOT NULL DEFAULT '',
+                flow_category VARCHAR NOT NULL DEFAULT '',
+                market VARCHAR NOT NULL DEFAULT '',
+                security_code VARCHAR NOT NULL DEFAULT '',
+                security_name VARCHAR NOT NULL DEFAULT '',
+                quantity VARCHAR NOT NULL DEFAULT '',
+                price VARCHAR NOT NULL DEFAULT '',
+                occurrence_amount VARCHAR NOT NULL DEFAULT '',
+                fee VARCHAR NOT NULL DEFAULT '',
+                stamp_tax VARCHAR NOT NULL DEFAULT '',
+                transfer_fee VARCHAR NOT NULL DEFAULT '',
+                fund_balance VARCHAR NOT NULL DEFAULT '',
+                currency VARCHAR NOT NULL DEFAULT '人民币',
+                raw_json JSON NOT NULL DEFAULT '{}',
+                raw_text TEXT NOT NULL DEFAULT '',
+                quantity_value FLOAT,
+                price_value FLOAT,
+                occurrence_amount_value FLOAT,
+                fee_value FLOAT,
+                stamp_tax_value FLOAT,
+                transfer_fee_value FLOAT,
+                fund_balance_value FLOAT,
+                first_seen_at FLOAT NOT NULL,
+                last_seen_at FLOAT NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                CONSTRAINT uq_eastmoneyfundflowrecord_user_source_key UNIQUE (user_id, source_key),
+                FOREIGN KEY(user_id) REFERENCES user (id),
+                FOREIGN KEY(statement_import_id) REFERENCES eastmoneystatementimport (id),
+                FOREIGN KEY(sync_run_id) REFERENCES eastmoneytradesyncrun (id)
+            )
+            """
+        )
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_user_id ON eastmoneystatementimport (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_sync_run_id ON eastmoneystatementimport (sync_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_account_label ON eastmoneystatementimport (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_source ON eastmoneystatementimport (source)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_file_name ON eastmoneystatementimport (file_name)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_file_sha256 ON eastmoneystatementimport (file_sha256)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_printed_at ON eastmoneystatementimport (printed_at)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_query_start_date ON eastmoneystatementimport (query_start_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneystatementimport_query_end_date ON eastmoneystatementimport (query_end_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_user_id ON eastmoneyfundflowrecord (user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_statement_import_id ON eastmoneyfundflowrecord (statement_import_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_sync_run_id ON eastmoneyfundflowrecord (sync_run_id)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_account_label ON eastmoneyfundflowrecord (account_label)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_source ON eastmoneyfundflowrecord (source)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_source_key ON eastmoneyfundflowrecord (source_key)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_flow_date ON eastmoneyfundflowrecord (flow_date)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_flow_category ON eastmoneyfundflowrecord (flow_category)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_market ON eastmoneyfundflowrecord (market)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_security_code ON eastmoneyfundflowrecord (security_code)",
+        "CREATE INDEX IF NOT EXISTS ix_eastmoneyfundflowrecord_security_name ON eastmoneyfundflowrecord (security_name)",
+    ):
+        session.exec(text(statement))
+    session.commit()
+    print("  Added Eastmoney PDF statement tables.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -1980,6 +2329,9 @@ MIGRATIONS = [
     (37, "Add note metadata feedback tables", v37_add_note_metadata_feedback_tables),
     (38, "Add auto git commit run table", v38_add_auto_git_commit_run_table),
     (39, "Add PDF page note table", v39_add_pdf_page_note_table),
+    (40, "Add Eastmoney trade sync tables", v40_add_eastmoney_trade_sync_tables),
+    (41, "Add Eastmoney trade detail fields", v41_add_eastmoney_trade_detail_fields),
+    (42, "Add Eastmoney PDF statement tables", v42_add_eastmoney_pdf_statement_tables),
 ]
 
 def get_current_version(session: Session) -> int:

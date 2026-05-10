@@ -91,12 +91,14 @@ ATTENDANCE_WJX_DATA_COLUMNS = [
     "提交时间",
     "来源",
     "课程",
+    "考勤负责人",
     "学号",
     "姓名",
     "修正需求",
     "补充说明",
     "处理状态",
 ]
+ATTENDANCE_WJX_OMITTED_COURSE_OWNER_NAMES = ("陈坤泽",)
 FEEDBACK_COURSE_SOURCE_SHEET_ID = 4
 NOTE_SHEET_PUBLIC_RESOURCE_TYPE = "sheet"
 NOTE_SHEET_PUBLIC_SUBJECT_TYPE = "anonymous"
@@ -105,11 +107,32 @@ NOTE_SHEET_PUBLIC_VIEWER_ROLE = "viewer"
 FEEDBACK_COURSE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_name": ("课程名称", 1),
     "online_sheet": ("在线考勤表", 2),
+    "course_owner": ("考勤负责人", 3),
     "completed_date": ("考勤实际完成结点", 10),
 }
 ORDER_HISTORY_RESULT_TIMESTAMP_PATTERN = re.compile(
     r"(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\s+"
     r"(?P<hour>\d{1,2}):(?P<minute>\d{2})(?::(?P<second>\d{2}))?"
+)
+ATTENDANCE_HEADER_TOOL_ZEN_LESSON_RE = re.compile(
+    r"^第\s*(?P<week>\d+)\s*周\s*[=＝:：-]\s*(?P<title>.+)$"
+)
+ATTENDANCE_HEADER_TOOL_COURSE_DATE_PREFIX_RE = re.compile(
+    r"^(?P<year>20\d{2})(?P<month>\d{2})(?P<day>\d{2})(?P<rest>.*)$"
+)
+ATTENDANCE_HEADER_TOOL_LESSON_ADMIN_URL = (
+    "https://admin.xiaoe-tech.com/t/live_management#/userOperation?id={lesson_id2}&tabName=UserManage"
+)
+ATTENDANCE_HEADER_TOOL_CLOCKIN_GROUP_COLORS = ("#5B8FC9", "#A7C8E8")
+ATTENDANCE_HEADER_TOOL_WEEK_COLORS = (
+    ("#ED7D31", "#F5B183"),
+    ("#3B82C4", "#A8C7E8"),
+    ("#46A66A", "#B2D9BE"),
+    ("#9B6BC8", "#D2B8EB"),
+    ("#D85B5B", "#EFB0B0"),
+    ("#2A9D9D", "#9FD9D7"),
+    ("#B58A2A", "#E2CC88"),
+    ("#6B7C93", "#C0CBD8"),
 )
 
 
@@ -326,6 +349,42 @@ class AttendanceSheetDocumentUpsertRequest(BaseModel):
     document_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class AttendanceHeaderToolRequest(BaseModel):
+    course_name: str
+
+
+class AttendanceHeaderToolGroup(BaseModel):
+    label: str
+    kind: Literal["clockin", "week"]
+    start_column: int
+    colspan: int
+    background_color: str
+    child_background_color: str
+    week_index: Optional[int] = None
+
+
+class AttendanceHeaderToolCell(BaseModel):
+    label: str
+    url: str = ""
+    kind: Literal["clockin", "lesson"]
+    column_index: int
+    group_label: str
+    background_color: str
+    source_id: Optional[int] = None
+    lesson_id2: str = ""
+    week_index: Optional[int] = None
+
+
+class AttendanceHeaderToolResponse(BaseModel):
+    course_name: str
+    course_type: str
+    groups: list[AttendanceHeaderToolGroup] = Field(default_factory=list)
+    cells: list[AttendanceHeaderToolCell] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+    plain_text: str = ""
+    document_json: dict[str, Any] = Field(default_factory=dict)
+
+
 def _normalize_optional_id(value: Optional[str]) -> str | None:
     normalized = (value or "").strip()
     return normalized or None
@@ -346,6 +405,250 @@ def _normalize_sheet_numeric_id(value: str) -> int:
     if numeric_id <= 0:
         raise HTTPException(status_code=400, detail="sheet_id 非法")
     return numeric_id
+
+
+def _normalize_attendance_header_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_attendance_header_course_name(value: Any) -> str:
+    text = _normalize_attendance_header_text(value)
+    match = ATTENDANCE_HEADER_TOOL_COURSE_DATE_PREFIX_RE.match(text)
+    if not match:
+        return text
+
+    return f"d{match.group('year')[-2:]}{match.group('month')}{match.group('day')}{match.group('rest').lstrip()}"
+
+
+def _load_attendance_header_kqdb():
+    try:
+        from kq5034.attendance_api import get_kqdb  # type: ignore
+
+        return get_kqdb()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"无法加载考勤数据库：{exc}") from exc
+
+
+def _strip_attendance_header_course_prefix(course_name: str, value: Any) -> str:
+    text = _normalize_attendance_header_text(value)
+    prefix = f"{course_name}-"
+    if text.startswith(prefix):
+        return text[len(prefix):].strip()
+    return text
+
+
+def _normalize_attendance_header_url(value: Any) -> str:
+    text = _normalize_attendance_header_text(value)
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    return ATTENDANCE_HEADER_TOOL_LESSON_ADMIN_URL.format(lesson_id2=text)
+
+
+def _parse_zen_attendance_lesson(course_name: str, lesson_name: Any) -> tuple[int, str, str]:
+    short_name = _strip_attendance_header_course_prefix(course_name, lesson_name)
+    match = ATTENDANCE_HEADER_TOOL_ZEN_LESSON_RE.match(short_name)
+    if not match:
+        raise HTTPException(
+            status_code=400,
+            detail=f"禅宗课次必须包含“第几周=课次”：{_normalize_attendance_header_text(lesson_name)}",
+        )
+
+    week_index = int(match.group("week"))
+    title = match.group("title").strip()
+    if not title:
+        raise HTTPException(
+            status_code=400,
+            detail=f"禅宗课次缺少课次名称：{_normalize_attendance_header_text(lesson_name)}",
+        )
+    return week_index, f"第{week_index}周", title
+
+
+def _query_attendance_header_clockins(course_name: str) -> list[dict[str, Any]]:
+    xldb = _load_attendance_header_kqdb()
+    try:
+        records = xldb.exec2dict(
+            "SELECT clockin_id, name, url FROM clockin_table WHERE name LIKE %s ORDER BY clockin_id",
+            [f"{course_name}-%"],
+        )
+        return [dict(row) for row in (records or [])]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"查询打卡链接失败：{exc}") from exc
+
+
+def _query_attendance_header_lessons(course_name: str) -> list[dict[str, Any]]:
+    xldb = _load_attendance_header_kqdb()
+    try:
+        records = xldb.exec2dict(
+            "SELECT lesson_id, lesson_name, lesson_id2 FROM lesson_table "
+            "WHERE lesson_name LIKE %s ORDER BY lesson_id",
+            [f"{course_name}-%"],
+        )
+        return [dict(row) for row in (records or [])]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"查询课次链接失败：{exc}") from exc
+
+
+def _build_attendance_header_document(
+    groups: list[AttendanceHeaderToolGroup],
+    cells: list[AttendanceHeaderToolCell],
+) -> dict[str, Any]:
+    columns = [cell.label or f"列{cell.column_index + 1}" for cell in cells]
+    top_row = [""] * len(cells)
+    second_row = [cell.label for cell in cells]
+    cell_meta: dict[str, Any] = {}
+    merged_cells: list[dict[str, int]] = []
+
+    for group in groups:
+        if 0 <= group.start_column < len(top_row):
+            top_row[group.start_column] = group.label
+        if group.colspan > 1:
+            merged_cells.append({
+                "row": 0,
+                "col": group.start_column,
+                "rowspan": 1,
+                "colspan": group.colspan,
+            })
+        for column in range(group.start_column, min(group.start_column + group.colspan, len(cells))):
+            cell_meta[f"0:{column}"] = {
+                "style": {
+                    "background_color": group.background_color,
+                    "text_color": "#111827",
+                },
+            }
+
+    for cell in cells:
+        entry: dict[str, Any] = {
+            "style": {
+                "background_color": cell.background_color,
+                "text_color": "#0645AD" if cell.url else "#111827",
+            },
+        }
+        if cell.url:
+            entry["link"] = {"url": cell.url}
+        cell_meta[f"1:{cell.column_index}"] = entry
+
+    return {
+        "schema_version": 1,
+        "columns": columns,
+        "rows": [],
+        "grid_rows": [top_row, second_row],
+        "data_start_row": 2,
+        "field_row_index": 1,
+        "merged_cells": merged_cells,
+        "formula_reference_origin": "sheet_v2",
+        "cell_meta": cell_meta,
+        "column_widths": [max(96, min(180, len(label) * 18 + 36)) for label in columns],
+        "view_settings": {
+            "show_row_numbers": False,
+            "row_marker_numbering": "global",
+            "row_marker_origin": "sheet",
+            "show_column_markers": True,
+            "column_marker_style": "letters",
+            "frozen_column_count": 0,
+            "pagination": {
+                "enabled": False,
+                "page_size": 100,
+            },
+        },
+    }
+
+
+def _build_attendance_header_tool_response(course_name_source: Any) -> AttendanceHeaderToolResponse:
+    course_name = _normalize_attendance_header_course_name(course_name_source)
+    if not course_name:
+        raise HTTPException(status_code=400, detail="请输入课程前缀")
+    if "禅宗" not in course_name:
+        raise HTTPException(status_code=400, detail="暂不支持的类型：目前仅支持禅宗")
+
+    clockins = _query_attendance_header_clockins(course_name)
+    lessons = _query_attendance_header_lessons(course_name)
+    if not lessons:
+        raise HTTPException(status_code=404, detail="没有找到匹配的课次数据")
+
+    groups: list[AttendanceHeaderToolGroup] = []
+    cells: list[AttendanceHeaderToolCell] = []
+
+    if clockins:
+        group_color, child_color = ATTENDANCE_HEADER_TOOL_CLOCKIN_GROUP_COLORS
+        groups.append(AttendanceHeaderToolGroup(
+            label="打卡数据",
+            kind="clockin",
+            start_column=0,
+            colspan=len(clockins),
+            background_color=group_color,
+            child_background_color=child_color,
+        ))
+        for row in clockins:
+            column_index = len(cells)
+            cells.append(AttendanceHeaderToolCell(
+                label=_strip_attendance_header_course_prefix(course_name, row.get("name")),
+                url=_normalize_attendance_header_text(row.get("url")),
+                kind="clockin",
+                column_index=column_index,
+                group_label="打卡数据",
+                background_color=child_color,
+                source_id=int(row.get("clockin_id") or 0) or None,
+            ))
+
+    current_week_index: int | None = None
+    current_group: AttendanceHeaderToolGroup | None = None
+
+    for row in lessons:
+        week_index, week_label, lesson_title = _parse_zen_attendance_lesson(course_name, row.get("lesson_name"))
+        if current_week_index != week_index:
+            group_color, child_color = ATTENDANCE_HEADER_TOOL_WEEK_COLORS[
+                (len([group for group in groups if group.kind == "week"])) % len(ATTENDANCE_HEADER_TOOL_WEEK_COLORS)
+            ]
+            current_group = AttendanceHeaderToolGroup(
+                label=week_label,
+                kind="week",
+                start_column=len(cells),
+                colspan=0,
+                background_color=group_color,
+                child_background_color=child_color,
+                week_index=week_index,
+            )
+            groups.append(current_group)
+            current_week_index = week_index
+
+        if current_group is None:
+            raise HTTPException(status_code=500, detail="生成周分组失败")
+
+        current_group.colspan += 1
+        column_index = len(cells)
+        lesson_id2 = _normalize_attendance_header_text(row.get("lesson_id2"))
+        cells.append(AttendanceHeaderToolCell(
+            label=lesson_title,
+            url=_normalize_attendance_header_url(lesson_id2),
+            kind="lesson",
+            column_index=column_index,
+            group_label=current_group.label,
+            background_color=current_group.child_background_color,
+            source_id=int(row.get("lesson_id") or 0) or None,
+            lesson_id2=lesson_id2,
+            week_index=week_index,
+        ))
+
+    if not cells:
+        raise HTTPException(status_code=404, detail="没有找到可生成的表头数据")
+
+    document_json = _build_attendance_header_document(groups, cells)
+    rows = list(document_json["grid_rows"])
+    return AttendanceHeaderToolResponse(
+        course_name=course_name,
+        course_type="禅宗",
+        groups=groups,
+        cells=cells,
+        rows=rows,
+        plain_text="\n".join("\t".join(row) for row in rows),
+        document_json=document_json,
+    )
 
 
 def _get_next_sheet_numeric_id(session: Session) -> int:
@@ -424,6 +727,7 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
                 "display_mode": "single_line",
             },
             "来源": {"display_mode": "single_line"},
+            "考勤负责人": {"display_mode": "single_line"},
             "学号": {"display_mode": "single_line"},
             "姓名": {"display_mode": "single_line"},
         },
@@ -433,6 +737,7 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
             "row_marker_origin": "sheet",
             "show_column_markers": True,
             "column_marker_style": "letters",
+            "frozen_column_count": 0,
             "pagination": {
                 "enabled": True,
                 "page_size": 100,
@@ -445,7 +750,20 @@ def _normalize_attendance_wjx_sheet_cell(value: Any) -> str:
     return _normalize_wjx_data_text(value)
 
 
-def _normalize_attendance_wjx_sheet_columns(value: Any) -> list[str]:
+def _normalize_attendance_wjx_course_owner_display(value: Any) -> str:
+    text = _normalize_attendance_wjx_sheet_cell(value)
+    if not text:
+        return ""
+    for omitted_name in ATTENDANCE_WJX_OMITTED_COURSE_OWNER_NAMES:
+        text = text.replace(omitted_name, "")
+    text = re.sub(r"[，、/／]+", ",", text)
+    text = re.sub(r"\s*,\s*", ", ", text)
+    text = re.sub(r"(?:,\s*){2,}", ", ", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    return text.strip(" ,")
+
+
+def _normalize_attendance_wjx_sheet_source_columns(value: Any) -> list[str]:
     columns: list[str] = []
     seen: set[str] = set()
     if isinstance(value, list):
@@ -454,18 +772,42 @@ def _normalize_attendance_wjx_sheet_columns(value: Any) -> list[str]:
             if header and header not in seen:
                 columns.append(header)
                 seen.add(header)
+    return columns
+
+
+def _normalize_attendance_wjx_sheet_columns(value: Any) -> list[str]:
+    source_columns = _normalize_attendance_wjx_sheet_source_columns(value)
+    columns: list[str] = []
+    seen: set[str] = set()
     for header in ATTENDANCE_WJX_DATA_COLUMNS:
+        if header not in seen:
+            columns.append(header)
+            seen.add(header)
+    for header in source_columns:
         if header not in seen:
             columns.append(header)
             seen.add(header)
     return columns
 
 
-def _normalize_attendance_wjx_sheet_row(row: Any, columns: list[str]) -> list[str]:
+def _normalize_attendance_wjx_sheet_row(
+    row: Any,
+    columns: list[str],
+    *,
+    source_columns: list[str] | None = None,
+) -> list[str]:
     if isinstance(row, dict):
         values = [_normalize_attendance_wjx_sheet_cell(row.get(column, "")) for column in columns]
     elif isinstance(row, list):
-        values = [_normalize_attendance_wjx_sheet_cell(cell) for cell in row]
+        source_values = [_normalize_attendance_wjx_sheet_cell(cell) for cell in row]
+        if source_columns:
+            source_by_header = {
+                header: source_values[index] if index < len(source_values) else ""
+                for index, header in enumerate(source_columns)
+            }
+            values = [source_by_header.get(column, "") for column in columns]
+        else:
+            values = source_values
     else:
         values = []
     if len(values) < len(columns):
@@ -473,17 +815,96 @@ def _normalize_attendance_wjx_sheet_row(row: Any, columns: list[str]) -> list[st
     return values[:len(columns)]
 
 
+def _build_attendance_wjx_sheet_column_index_map(
+    source_columns: list[str],
+    target_columns: list[str],
+) -> dict[int, int]:
+    if not source_columns:
+        return {}
+    target_by_header = {header: index for index, header in enumerate(target_columns)}
+    return {
+        source_index: target_by_header[header]
+        for source_index, header in enumerate(source_columns)
+        if header in target_by_header
+    }
+
+
+def _remap_attendance_wjx_sheet_cell_meta_columns(
+    cell_meta: Any,
+    *,
+    source_columns: list[str],
+    target_columns: list[str],
+) -> dict[str, Any] | None:
+    if not isinstance(cell_meta, dict):
+        return None
+    column_index_map = _build_attendance_wjx_sheet_column_index_map(source_columns, target_columns)
+    if not column_index_map:
+        return dict(cell_meta)
+
+    remapped: dict[str, Any] = {}
+    for key, value in cell_meta.items():
+        position = _parse_attendance_wjx_sheet_cell_meta_key(key)
+        if position is None:
+            remapped[str(key)] = value
+            continue
+        row_index, source_column_index = position
+        target_column_index = column_index_map.get(source_column_index, source_column_index)
+        remapped[f"{row_index}:{target_column_index}"] = value
+    return remapped
+
+
+def _remap_attendance_wjx_sheet_column_widths(
+    column_widths: Any,
+    *,
+    source_columns: list[str],
+    target_columns: list[str],
+) -> list[Any] | None:
+    if not isinstance(column_widths, list):
+        return None
+    if not source_columns:
+        return list(column_widths)
+
+    source_index_by_header = {header: index for index, header in enumerate(source_columns)}
+    course_width = ""
+    course_source_index = source_index_by_header.get("课程")
+    if course_source_index is not None and course_source_index < len(column_widths):
+        course_width = column_widths[course_source_index]
+
+    remapped: list[Any] = []
+    for header in target_columns:
+        source_index = source_index_by_header.get(header)
+        if source_index is not None and source_index < len(column_widths):
+            remapped.append(column_widths[source_index])
+        elif header == "考勤负责人" and course_width != "":
+            remapped.append(course_width)
+        else:
+            remapped.append(None)
+    return remapped
+
+
+def _normalize_attendance_wjx_sheet_data_start_row(document_json: dict[str, Any]) -> int:
+    grid_rows = document_json.get("grid_rows")
+    if not isinstance(grid_rows, list):
+        return 0
+    try:
+        return max(int(document_json.get("data_start_row") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     source = dict(value) if isinstance(value, dict) else {}
+    source_columns = _normalize_attendance_wjx_sheet_source_columns(source.get("columns"))
     columns = _normalize_attendance_wjx_sheet_columns(source.get("columns"))
     rows_source = source.get("rows")
     rows = [
-        _normalize_attendance_wjx_sheet_row(row, columns)
+        _normalize_attendance_wjx_sheet_row(row, columns, source_columns=source_columns)
         for row in (rows_source if isinstance(rows_source, list) else [])
     ]
 
     default_document = _create_default_attendance_wjx_sheet_document()
-    column_configs = dict(source.get("column_configs") if isinstance(source.get("column_configs"), dict) else {})
+    source_column_configs = source.get("column_configs") if isinstance(source.get("column_configs"), dict) else {}
+    column_configs = dict(source_column_configs)
     for header, config in default_document["column_configs"].items():
         if not isinstance(column_configs.get(header), dict):
             column_configs[header] = dict(config)
@@ -491,6 +912,13 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
         merged_config = dict(config)
         merged_config.update(column_configs[header])
         column_configs[header] = merged_config
+    if not isinstance(source_column_configs.get("考勤负责人"), dict) and isinstance(column_configs.get("课程"), dict):
+        owner_config = dict(column_configs["课程"])
+        owner_config.setdefault("display_mode", "single_line")
+        column_configs["考勤负责人"] = owner_config
+    elif not isinstance(column_configs.get("考勤负责人"), dict):
+        course_config = column_configs.get("课程")
+        column_configs["考勤负责人"] = dict(course_config) if isinstance(course_config, dict) else {"display_mode": "single_line"}
 
     view_settings = dict(source.get("view_settings") if isinstance(source.get("view_settings"), dict) else {})
     view_settings.setdefault("show_row_numbers", True)
@@ -498,12 +926,13 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     view_settings.setdefault("row_marker_origin", "sheet")
     view_settings.setdefault("show_column_markers", True)
     view_settings.setdefault("column_marker_style", "letters")
+    view_settings.setdefault("frozen_column_count", 0)
     pagination = dict(view_settings.get("pagination") if isinstance(view_settings.get("pagination"), dict) else {})
     pagination.setdefault("enabled", True)
     pagination.setdefault("page_size", 100)
     view_settings["pagination"] = pagination
 
-    return {
+    normalized = {
         **source,
         "schema_version": 1,
         "columns": columns,
@@ -511,6 +940,36 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
         "column_configs": column_configs,
         "view_settings": view_settings,
     }
+    cell_meta = _remap_attendance_wjx_sheet_cell_meta_columns(
+        source.get("cell_meta"),
+        source_columns=source_columns,
+        target_columns=columns,
+    )
+    if cell_meta is not None:
+        normalized["cell_meta"] = cell_meta
+    column_widths = _remap_attendance_wjx_sheet_column_widths(
+        source.get("column_widths"),
+        source_columns=source_columns,
+        target_columns=columns,
+    )
+    if column_widths is not None:
+        normalized["column_widths"] = column_widths
+    grid_rows = source.get("grid_rows")
+    if isinstance(grid_rows, list):
+        data_start_row = min(_normalize_attendance_wjx_sheet_data_start_row(normalized), len(grid_rows))
+        try:
+            field_row_index = int(source.get("field_row_index") or 0)
+        except (TypeError, ValueError):
+            field_row_index = 0
+        prefix_rows = []
+        for prefix_index, row in enumerate(grid_rows[:data_start_row]):
+            if prefix_index == field_row_index:
+                prefix_rows.append(list(columns))
+                continue
+            prefix_rows.append(_normalize_attendance_wjx_sheet_row(row, columns, source_columns=source_columns))
+        normalized["grid_rows"] = [*prefix_rows, *rows]
+        normalized["data_start_row"] = data_start_row
+    return normalized
 
 
 def _get_attendance_wjx_sheet_column_index(columns: list[str], header: str) -> int:
@@ -533,27 +992,30 @@ def _set_attendance_wjx_sheet_cell_link(
     url: str,
 ) -> bool:
     cell_meta = dict(document_json.get("cell_meta") if isinstance(document_json.get("cell_meta"), dict) else {})
-    key = f"{row_index}:{column_index}"
+    row_offset = _normalize_attendance_wjx_sheet_data_start_row(document_json)
+    document_row_index = row_index + row_offset
+    key = f"{document_row_index}:{column_index}"
     entry = dict(cell_meta.get(key) if isinstance(cell_meta.get(key), dict) else {})
     normalized_url = _normalize_attendance_wjx_sheet_cell(url)
+    changed = False
 
     if normalized_url:
         current_link = entry.get("link") if isinstance(entry.get("link"), dict) else {}
-        if _normalize_attendance_wjx_sheet_cell(current_link.get("url")) == normalized_url:
-            return False
-        entry["link"] = {"url": normalized_url}
-        cell_meta[key] = entry
-    else:
-        if "link" not in entry:
-            return False
-        entry.pop("link", None)
-        if entry:
+        if _normalize_attendance_wjx_sheet_cell(current_link.get("url")) != normalized_url:
+            entry["link"] = {"url": normalized_url}
             cell_meta[key] = entry
-        else:
-            cell_meta.pop(key, None)
+            changed = True
+    else:
+        if "link" in entry:
+            entry.pop("link", None)
+            if entry:
+                cell_meta[key] = entry
+            else:
+                cell_meta.pop(key, None)
+            changed = True
 
     document_json["cell_meta"] = cell_meta
-    return True
+    return changed
 
 
 def _parse_attendance_wjx_sheet_cell_meta_key(key: Any) -> tuple[int, int] | None:
@@ -575,6 +1037,8 @@ def _shift_attendance_wjx_sheet_cell_meta_rows_for_insert(
     if not isinstance(cell_meta, dict) or amount <= 0:
         return
 
+    row_offset = _normalize_attendance_wjx_sheet_data_start_row(document_json)
+    insert_document_row = insert_index + row_offset
     shifted: dict[str, Any] = {}
     for key, value in cell_meta.items():
         position = _parse_attendance_wjx_sheet_cell_meta_key(key)
@@ -583,49 +1047,105 @@ def _shift_attendance_wjx_sheet_cell_meta_rows_for_insert(
             continue
 
         row_index, column_index = position
-        next_row_index = row_index + amount if row_index >= insert_index else row_index
+        next_row_index = row_index + amount if row_index >= insert_document_row else row_index
         shifted[f"{next_row_index}:{column_index}"] = value
     document_json["cell_meta"] = shifted
 
 
-def _sync_attendance_wjx_sheet_course_link_for_row(
+def _sync_attendance_wjx_sheet_course_info_for_row(
     document_json: dict[str, Any],
     *,
     row_index: int,
     row: list[str],
     columns: list[str],
     course_link_map: dict[str, str] | None,
+    course_owner_map: dict[str, str] | None = None,
 ) -> bool:
-    if course_link_map is None:
-        return False
-
     course_column_index = _get_attendance_wjx_sheet_column_index(columns, "课程")
     course_name = _normalize_attendance_wjx_sheet_cell(row[course_column_index] if course_column_index < len(row) else "")
-    return _set_attendance_wjx_sheet_cell_link(
-        document_json,
-        row_index=row_index,
-        column_index=course_column_index,
-        url=course_link_map.get(course_name, ""),
-    )
+    changed = False
+    if course_link_map is not None:
+        changed = _set_attendance_wjx_sheet_cell_link(
+            document_json,
+            row_index=row_index,
+            column_index=course_column_index,
+            url=course_link_map.get(course_name, ""),
+        ) or changed
+
+    if course_owner_map is not None:
+        course_owner = _normalize_attendance_wjx_course_owner_display(course_owner_map.get(course_name, ""))
+        owner_column_index = _get_attendance_wjx_sheet_column_index(columns, "考勤负责人")
+        current_owner = _normalize_attendance_wjx_sheet_cell(
+            row[owner_column_index] if owner_column_index < len(row) else ""
+        )
+        next_owner = _normalize_attendance_wjx_course_owner_display(current_owner)
+        if not next_owner and course_owner:
+            next_owner = course_owner
+        if next_owner != current_owner:
+            _set_attendance_wjx_sheet_cell(row, columns, "考勤负责人", next_owner)
+            changed = True
+
+    return changed
+
+
+def _clear_attendance_wjx_sheet_column_links(
+    document_json: dict[str, Any],
+    *,
+    column_index: int,
+    row_count: int,
+) -> bool:
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict) or row_count <= 0:
+        return False
+
+    row_offset = _normalize_attendance_wjx_sheet_data_start_row(document_json)
+    candidate_rows = set(range(row_count)) | set(range(row_offset, row_offset + row_count))
+    next_meta = dict(cell_meta)
+    changed = False
+    for row_index in candidate_rows:
+        key = f"{row_index}:{column_index}"
+        entry = next_meta.get(key)
+        if not isinstance(entry, dict) or "link" not in entry:
+            continue
+        next_entry = dict(entry)
+        next_entry.pop("link", None)
+        if next_entry:
+            next_meta[key] = next_entry
+        else:
+            next_meta.pop(key, None)
+        changed = True
+
+    if changed:
+        document_json["cell_meta"] = next_meta
+    return changed
 
 
 def _apply_attendance_wjx_sheet_course_links(
     document_json: dict[str, Any],
     course_link_map: dict[str, str] | None,
+    course_owner_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], bool]:
     document = _normalize_attendance_wjx_sheet_document(document_json)
-    if course_link_map is None:
+    if course_link_map is None and course_owner_map is None:
         return document, False
 
     columns = list(document["columns"])
     changed = False
+    if course_link_map is not None:
+        course_column_index = _get_attendance_wjx_sheet_column_index(columns, "课程")
+        changed = _clear_attendance_wjx_sheet_column_links(
+            document,
+            column_index=course_column_index,
+            row_count=len(document["rows"]),
+        ) or changed
     for row_index, row in enumerate(document["rows"]):
-        changed = _sync_attendance_wjx_sheet_course_link_for_row(
+        changed = _sync_attendance_wjx_sheet_course_info_for_row(
             document,
             row_index=row_index,
             row=row,
             columns=columns,
             course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
         ) or changed
     return document, changed
 
@@ -726,6 +1246,7 @@ def _upsert_attendance_wjx_sheet_values(
     *,
     preserve_process_status: bool = True,
     course_link_map: dict[str, str] | None = None,
+    course_owner_map: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], bool, bool]:
     seq = _parse_attendance_wjx_sheet_seq(values.get("序号"))
     if seq is None:
@@ -758,14 +1279,15 @@ def _upsert_attendance_wjx_sheet_values(
 
     rows[row_index] = row
     document["rows"] = rows
-    link_changed = _sync_attendance_wjx_sheet_course_link_for_row(
+    course_info_changed = _sync_attendance_wjx_sheet_course_info_for_row(
         document,
         row_index=row_index,
         row=row,
         columns=columns,
         course_link_map=course_link_map,
+        course_owner_map=course_owner_map,
     )
-    return document, inserted, inserted or row != original_row or link_changed
+    return document, inserted, inserted or row != original_row or course_info_changed
 
 
 def _remove_attendance_wjx_sheet_row(
@@ -921,13 +1443,14 @@ def _seed_attendance_wjx_sheet_from_entries(
         .order_by(AttendanceWjxDataEntry.seq.asc(), AttendanceWjxDataEntry.id.asc())
     ).all()
     next_document = _normalize_attendance_wjx_sheet_document(document_json)
-    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     for entry in entries:
         next_document, _inserted, _changed = _upsert_attendance_wjx_sheet_values(
             next_document,
             _entry_to_attendance_wjx_sheet_values(entry),
             preserve_process_status=False,
             course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
         )
     return next_document
 
@@ -961,12 +1484,13 @@ def _upsert_attendance_wjx_sheet_entry(
     document = _ensure_attendance_wjx_sheet_document(session, create=True)
     if document is None:
         return
-    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
         dict(document.document_json or {}),
         _entry_to_attendance_wjx_sheet_values(entry),
         preserve_process_status=preserve_process_status,
         course_link_map=course_link_map,
+        course_owner_map=course_owner_map,
     )
     if changed:
         _persist_attendance_wjx_sheet_document(session, document, next_document, actor=actor)
@@ -984,7 +1508,7 @@ def _upsert_attendance_wjx_sheet_raw_rows(
 
     next_document = dict(document.document_json or {})
     changed = False
-    course_link_map = _get_feedback_course_link_map_from_summary_sheet(session)
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     for row in rows:
         values = _wjx_raw_row_to_attendance_wjx_sheet_values(row)
         if values is None:
@@ -994,6 +1518,7 @@ def _upsert_attendance_wjx_sheet_raw_rows(
             values,
             preserve_process_status=True,
             course_link_map=course_link_map,
+            course_owner_map=course_owner_map,
         )
         changed = changed or row_changed
     if changed:
@@ -1305,22 +1830,73 @@ def _extract_feedback_course_link_map_from_sheet(document_json: dict[str, Any]) 
     return result
 
 
-def _get_feedback_course_link_map_from_summary_sheet(session: Session) -> dict[str, str] | None:
+def _extract_feedback_course_owner_map_from_sheet(document_json: dict[str, Any]) -> dict[str, str]:
+    columns = _normalize_feedback_sheet_columns(document_json)
+    rows = _extract_feedback_sheet_rows(document_json)
+    online_sheet_index = _find_feedback_course_column_index(columns, "online_sheet")
+    course_name_index = _find_feedback_course_column_index(columns, "course_name")
+    owner_index = _find_feedback_course_column_index(columns, "course_owner")
+    if owner_index is None or (online_sheet_index is None and course_name_index is None):
+        return {}
+
+    result: dict[str, str] = {}
+    for row in rows:
+        course_owner = _normalize_attendance_wjx_course_owner_display(
+            _extract_feedback_sheet_cell(row, owner_index, columns)
+        )
+        if not course_owner:
+            continue
+
+        candidates: list[str] = []
+        if online_sheet_index is not None:
+            candidates.append(_normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, online_sheet_index, columns)
+            ))
+        if course_name_index is not None:
+            candidates.append(_normalize_feedback_sheet_text(
+                _extract_feedback_sheet_cell(row, course_name_index, columns)
+            ))
+
+        for name in candidates:
+            if name and name not in result:
+                result[name] = course_owner
+    return result
+
+
+def _get_feedback_course_maps_from_summary_sheet(
+    session: Session,
+) -> tuple[dict[str, str] | None, dict[str, str] | None]:
     source_sheet = session.exec(
         select(SheetDocument).where(SheetDocument.numeric_id == FEEDBACK_COURSE_SOURCE_SHEET_ID)
     ).first()
     if source_sheet is None:
-        return None
-    return _extract_feedback_course_link_map_from_sheet(dict(source_sheet.document_json or {}))
+        return None, None
+    document_json = dict(source_sheet.document_json or {})
+    return (
+        _extract_feedback_course_link_map_from_sheet(document_json),
+        _extract_feedback_course_owner_map_from_sheet(document_json),
+    )
+
+
+def _get_feedback_course_link_map_from_summary_sheet(session: Session) -> dict[str, str] | None:
+    course_link_map, _course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
+    return course_link_map
+
+
+def _get_feedback_course_owner_map_from_summary_sheet(session: Session) -> dict[str, str] | None:
+    _course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
+    return course_owner_map
 
 
 def _sync_attendance_wjx_sheet_course_links(
     session: Session,
     document_json: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
+    course_link_map, course_owner_map = _get_feedback_course_maps_from_summary_sheet(session)
     return _apply_attendance_wjx_sheet_course_links(
         document_json,
-        _get_feedback_course_link_map_from_summary_sheet(session),
+        course_link_map,
+        course_owner_map,
     )
 
 
@@ -2212,6 +2788,17 @@ def get_attendance_sheet_document_by_id(
     if document is None or document.scope != "attendance":
         raise HTTPException(status_code=404, detail="表格文档不存在")
     return AttendanceSheetDocumentResponse.model_validate(_serialize_sheet_document(document))
+
+
+@router.post("/header-tool/generate", response_model=AttendanceHeaderToolResponse)
+def generate_attendance_header_tool(
+    payload: AttendanceHeaderToolRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.header-tool")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    return _build_attendance_header_tool_response(payload.course_name)
 
 
 @router.get("/config")

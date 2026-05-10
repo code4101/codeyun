@@ -773,6 +773,208 @@ class AttendanceWjxDataEntry(SQLModel, table=True):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
+
+class EastmoneyTradeSyncRun(SQLModel, table=True):
+    __tablename__ = "eastmoneytradesyncrun"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    account_label: str = Field(default="", index=True)
+    start_date: str = Field(default="", index=True)
+    end_date: str = Field(default="", index=True)
+    status: str = Field(default="running", index=True)
+    captured_at: Optional[float] = Field(default=None, index=True)
+    inserted_count: int = Field(default=0)
+    updated_count: int = Field(default=0)
+    trade_record_count: int = Field(default=0)
+    position_count: int = Field(default=0)
+    asset_summary_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    error_message: Optional[str] = Field(default=None, sa_column=Column(Text, nullable=True))
+    started_at: float = Field(default_factory=time.time, index=True)
+    finished_at: Optional[float] = Field(default=None, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class EastmoneyTradeRecord(SQLModel, table=True):
+    __tablename__ = "eastmoneytraderecord"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_key", name="uq_eastmoneytraderecord_user_source_key"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    sync_run_id: str = Field(default="", foreign_key="eastmoneytradesyncrun.id", index=True)
+    account_label: str = Field(default="", index=True)
+    source: str = Field(default="", index=True)
+    source_key: str = Field(index=True)
+    market: str = Field(default="", index=True)
+    trade_date: str = Field(default="", index=True)
+    trade_time: str = Field(default="", index=True)
+    security_code: str = Field(default="", index=True)
+    security_name: str = Field(default="", index=True)
+    direction: str = Field(default="", index=True)
+    quantity: str = Field(default="")
+    price: str = Field(default="")
+    occurrence_date: str = Field(default="", index=True)
+    occurrence_time: str = Field(default="", index=True)
+    occurrence_amount: str = Field(default="")
+    amount: str = Field(default="")
+    fee: str = Field(default="")
+    commission: str = Field(default="")
+    stamp_tax: str = Field(default="")
+    transfer_fee: str = Field(default="")
+    other_fee: str = Field(default="")
+    currency: str = Field(default="", index=True)
+    deal_id: str = Field(default="", index=True)
+    shareholder_account: str = Field(default="", index=True)
+    share_balance: str = Field(default="")
+    fund_balance: str = Field(default="")
+    extended_name: str = Field(default="", index=True)
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    raw_text: str = Field(default="", sa_column=Column(Text))
+    quantity_value: Optional[float] = Field(default=None, index=True)
+    price_value: Optional[float] = Field(default=None, index=True)
+    occurrence_amount_value: Optional[float] = Field(default=None, index=True)
+    amount_value: Optional[float] = Field(default=None, index=True)
+    fee_value: Optional[float] = Field(default=None, index=True)
+    commission_value: Optional[float] = Field(default=None, index=True)
+    stamp_tax_value: Optional[float] = Field(default=None, index=True)
+    transfer_fee_value: Optional[float] = Field(default=None, index=True)
+    other_fee_value: Optional[float] = Field(default=None, index=True)
+    share_balance_value: Optional[float] = Field(default=None, index=True)
+    fund_balance_value: Optional[float] = Field(default=None, index=True)
+    first_seen_at: float = Field(default_factory=time.time, index=True)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class EastmoneyAssetSnapshot(SQLModel, table=True):
+    __tablename__ = "eastmoneyassetsnapshot"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    sync_run_id: str = Field(foreign_key="eastmoneytradesyncrun.id", index=True)
+    account_label: str = Field(default="", index=True)
+    captured_at: float = Field(default_factory=time.time, index=True)
+    total_asset: str = Field(default="")
+    market_value: str = Field(default="")
+    cash_available: str = Field(default="")
+    cash_balance: str = Field(default="")
+    withdrawable: str = Field(default="")
+    frozen: str = Field(default="")
+    pnl: str = Field(default="")
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class EastmoneyPositionSnapshot(SQLModel, table=True):
+    __tablename__ = "eastmoneypositionsnapshot"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    sync_run_id: str = Field(foreign_key="eastmoneytradesyncrun.id", index=True)
+    account_label: str = Field(default="", index=True)
+    source: str = Field(default="", index=True)
+    market: str = Field(default="", index=True)
+    captured_at: float = Field(default_factory=time.time, index=True)
+    security_code: str = Field(default="", index=True)
+    security_name: str = Field(default="", index=True)
+    quantity: str = Field(default="")
+    available_quantity: str = Field(default="")
+    cost_price: str = Field(default="")
+    current_price: str = Field(default="")
+    market_value: str = Field(default="")
+    pnl: str = Field(default="")
+    pnl_ratio: str = Field(default="")
+    currency: str = Field(default="", index=True)
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = Field(default_factory=time.time, index=True)
+
+
+class EastmoneyStatementImport(SQLModel, table=True):
+    __tablename__ = "eastmoneystatementimport"
+    __table_args__ = (
+        UniqueConstraint("user_id", "file_sha256", name="uq_eastmoneystatementimport_user_file_sha256"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    sync_run_id: str = Field(default="", foreign_key="eastmoneytradesyncrun.id", index=True)
+    account_label: str = Field(default="", index=True)
+    source: str = Field(default="pdf_statement", index=True)
+    file_name: str = Field(default="", index=True)
+    file_path: str = Field(default="")
+    file_size: int = Field(default=0)
+    file_mtime: float = Field(default=0.0, index=True)
+    file_sha256: str = Field(index=True)
+    print_time: str = Field(default="", index=True)
+    printed_at: Optional[float] = Field(default=None, index=True)
+    query_start_date: str = Field(default="", index=True)
+    query_end_date: str = Field(default="", index=True)
+    customer_name: str = Field(default="", index=True)
+    customer_no: str = Field(default="", index=True)
+    fund_account: str = Field(default="", index=True)
+    sh_account: str = Field(default="", index=True)
+    sz_account: str = Field(default="", index=True)
+    asset_summary_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    position_count: int = Field(default=0)
+    flow_count: int = Field(default=0)
+    trade_record_count: int = Field(default=0)
+    raw_text: str = Field(default="", sa_column=Column(Text))
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    imported_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class EastmoneyFundFlowRecord(SQLModel, table=True):
+    __tablename__ = "eastmoneyfundflowrecord"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_key", name="uq_eastmoneyfundflowrecord_user_source_key"),
+        {"extend_existing": True},
+    )
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    statement_import_id: str = Field(default="", foreign_key="eastmoneystatementimport.id", index=True)
+    sync_run_id: str = Field(default="", foreign_key="eastmoneytradesyncrun.id", index=True)
+    account_label: str = Field(default="", index=True)
+    source: str = Field(default="pdf_statement", index=True)
+    source_key: str = Field(index=True)
+    flow_date: str = Field(default="", index=True)
+    flow_category: str = Field(default="", index=True)
+    market: str = Field(default="", index=True)
+    security_code: str = Field(default="", index=True)
+    security_name: str = Field(default="", index=True)
+    quantity: str = Field(default="")
+    price: str = Field(default="")
+    occurrence_amount: str = Field(default="")
+    fee: str = Field(default="")
+    stamp_tax: str = Field(default="")
+    transfer_fee: str = Field(default="")
+    fund_balance: str = Field(default="")
+    currency: str = Field(default="人民币", index=True)
+    raw_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    raw_text: str = Field(default="", sa_column=Column(Text))
+    quantity_value: Optional[float] = Field(default=None, index=True)
+    price_value: Optional[float] = Field(default=None, index=True)
+    occurrence_amount_value: Optional[float] = Field(default=None, index=True)
+    fee_value: Optional[float] = Field(default=None, index=True)
+    stamp_tax_value: Optional[float] = Field(default=None, index=True)
+    transfer_fee_value: Optional[float] = Field(default=None, index=True)
+    fund_balance_value: Optional[float] = Field(default=None, index=True)
+    first_seen_at: float = Field(default_factory=time.time, index=True)
+    last_seen_at: float = Field(default_factory=time.time, index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
 # --- Note Models ---
 
 class NoteNode(SQLModel, table=True):

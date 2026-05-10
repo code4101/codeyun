@@ -70,6 +70,7 @@ const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
 const AI_NOTEBOOK_PATH = requirePageMenuPath('AiNotebook');
 const AI_WECHAT_PATH = requirePageMenuPath('AiWechat');
 const ATTENDANCE_CONFIGS_PATH = requirePageMenuPath('AttendanceConfigs');
+const ATTENDANCE_HEADER_TOOL_PATH = requirePageMenuPath('AttendanceHeaderTool');
 const ATTENDANCE_WJX_COLLECT_PATH = requirePageMenuPath('AttendanceWjxCollect');
 const ATTENDANCE_ORDERS_PATH = requirePageMenuPath('AttendanceOrders');
 const DSP_CALCULATOR_PATH = requirePageMenuPath('DspCalculator');
@@ -94,7 +95,9 @@ const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
 const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
 const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
+const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
+const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
@@ -123,6 +126,7 @@ const AI_NOTEBOOK_TITLE = requirePermissionTitleByMenuPath(AI_NOTEBOOK_PATH);
 const AI_WECHAT_TITLE = requirePermissionTitleByMenuPath(AI_WECHAT_PATH);
 const ATTENDANCE_TOOLS_TITLE = requirePermissionTitle('attendance-tools');
 const ATTENDANCE_CONFIGS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_CONFIGS_PATH);
+const ATTENDANCE_HEADER_TOOL_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_HEADER_TOOL_PATH);
 const ATTENDANCE_WJX_COLLECT_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_WJX_COLLECT_PATH);
 const ATTENDANCE_ORDERS_TITLE = requirePermissionTitleByMenuPath(ATTENDANCE_ORDERS_PATH);
 const GAME_TOOLS_TITLE = requirePermissionTitle('game-tools');
@@ -152,7 +156,9 @@ const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_P
 const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
 const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
 const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
+const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
+const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
 const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
@@ -341,6 +347,7 @@ const attendanceMenuVisible = computed(() =>
   canAccessFeature('attendance-tools')
   && [
     ATTENDANCE_CONFIGS_PATH,
+    ATTENDANCE_HEADER_TOOL_PATH,
     ATTENDANCE_WJX_COLLECT_PATH,
     ATTENDANCE_ORDERS_PATH,
   ].some((path) => canAccessMenuPath(path)),
@@ -415,7 +422,9 @@ const noteToolsMenuVisible = computed(() =>
   canAccessFeature('note-tools')
   && [
     NOTES_CENTER_MENU_PATH,
+    EASTMONEY_PATH,
     NOTES_SHEETS_MANAGER_PATH,
+    NOTES_WECHAT_PATH,
     NOTES_INFINITE_CANVAS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -496,6 +505,7 @@ const defaultOpeneds = computed(() => {
   }
   if (route.path.startsWith('/magic-craft/')) openeds.push('game-tools', 'magic-craft');
   if (route.path.startsWith('/dsp/')) openeds.push('game-tools');
+  if (route.path.startsWith('/notes/')) openeds.push('note-tools');
   openeds.push(...getDefaultPluginOpeneds(route.path));
   return Array.from(new Set(openeds));
 });
@@ -683,6 +693,7 @@ watch(
               <span>{{ ATTENDANCE_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_CONFIGS_PATH)" :index="ATTENDANCE_CONFIGS_PATH">{{ ATTENDANCE_CONFIGS_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_HEADER_TOOL_PATH)" :index="ATTENDANCE_HEADER_TOOL_PATH">{{ ATTENDANCE_HEADER_TOOL_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_WJX_COLLECT_PATH)" :index="ATTENDANCE_WJX_COLLECT_PATH">{{ ATTENDANCE_WJX_COLLECT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(ATTENDANCE_ORDERS_PATH)" :index="ATTENDANCE_ORDERS_PATH">{{ ATTENDANCE_ORDERS_TITLE }}</el-menu-item>
           </el-sub-menu>
@@ -781,6 +792,8 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH)" :index="NOTES_CENTER_MENU_PATH">{{ NOTES_CENTER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(EASTMONEY_PATH)" :index="EASTMONEY_PATH">{{ EASTMONEY_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(NOTES_WECHAT_PATH)" :index="NOTES_WECHAT_PATH">{{ NOTES_WECHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.core.auth import get_current_user_from_token
-from backend.core.device import get_device_id
+from backend.core.device import get_device_id, get_device_token
 from backend.db import get_session
 from backend.models import User, UserDevice
 from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceTokenRead, UserDeviceUpdate
@@ -35,6 +35,27 @@ def _client_visible_server_url(user_device: UserDevice) -> Optional[str]:
     if user_device.mode == "local":
         return None
     return user_device.server_url
+
+
+def _effective_entry_token(user_device: UserDevice) -> str:
+    if user_device.mode == "local":
+        return get_device_token() or ""
+    return user_device.token or ""
+
+
+def _sync_local_entry_token(session: Session, user_device: UserDevice) -> None:
+    if user_device.mode != "local":
+        return
+
+    token = get_device_token()
+    if not token or user_device.token == token:
+        return
+
+    user_device.token = token
+    user_device.updated_at = time.time()
+    session.add(user_device)
+    session.commit()
+    session.refresh(user_device)
 
 
 def _device_read(user_device: UserDevice) -> DeviceRead:
@@ -115,7 +136,11 @@ def read_user_device_token(
     link = session.get(UserDevice, entry_id)
     if not link or link.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Device entry not found")
-    return UserDeviceTokenRead(token=link.token)
+    _sync_local_entry_token(session, link)
+    token = _effective_entry_token(link)
+    if not token:
+        raise HTTPException(status_code=400, detail="本机设备 Token 未配置")
+    return UserDeviceTokenRead(token=token)
 
 
 @router.post("/add", response_model=UserDeviceRead)
@@ -126,10 +151,11 @@ def add_user_device(
 ):
     mode = device_in.mode
     token = (device_in.token or "").strip()
-    if not token:
-        raise HTTPException(status_code=400, detail="Token 不能为空")
 
     if mode == "local":
+        token = get_device_token() or token
+        if not token:
+            raise HTTPException(status_code=400, detail="本机设备 Token 未配置")
         if device_in.server_url and device_in.server_url.strip():
             raise HTTPException(status_code=400, detail="本地设备模式不支持后端地址")
         if device_in.device_id and device_in.device_id.strip():
@@ -139,6 +165,8 @@ def add_user_device(
         name = (device_in.name or device_in.alias or local_name).strip() or local_name
         server_url = None
     else:
+        if not token:
+            raise HTTPException(status_code=400, detail="Token 不能为空")
         device_id = (device_in.device_id or "").strip()
         if not device_id:
             raise HTTPException(status_code=400, detail="远程设备模式必须填写设备 ID")
@@ -173,6 +201,9 @@ def update_user_device(
         raise HTTPException(status_code=404, detail="Device entry not found")
 
     if device_in.token is not None:
+        if link.mode == "local":
+            _sync_local_entry_token(session, link)
+            raise HTTPException(status_code=400, detail="本地入口 Token 来自本机设备配置，不能在连接入口中手动修改")
         token = device_in.token.strip()
         if not token:
             raise HTTPException(status_code=400, detail="Token 不能为空")

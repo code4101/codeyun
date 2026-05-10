@@ -9,6 +9,28 @@ from .eastmoney_browser import (
     get_eastmoney_browser_paths,
     open_eastmoney_browser,
 )
+from .eastmoney_trade import (
+    EastmoneyTradeError,
+    EastmoneyTradeSnapshot,
+    EastmoneyTable,
+    read_trade_snapshot,
+    snapshot_to_dict,
+)
+from .eastmoney_sync import (
+    TRADE_SOURCE_HK,
+    TRADE_SOURCE_MOBILE_DETAIL,
+    TRADE_SOURCE_NORMAL,
+    TRADE_SOURCE_STATEMENT_FLOW,
+    get_latest_asset_snapshot,
+    import_pdf_statement,
+    import_mobile_trade_detail_record,
+    list_sync_runs,
+    list_trade_records,
+    serialize_asset_snapshot,
+    serialize_sync_run,
+    serialize_trade_record,
+    sync_trade_data,
+)
 
 __all__ = [
     "EASTMONEY_HOME_URL",
@@ -20,4 +42,22 @@ __all__ = [
     "ensure_eastmoney_browser_paths",
     "get_eastmoney_browser_paths",
     "open_eastmoney_browser",
+    "EastmoneyTable",
+    "EastmoneyTradeError",
+    "EastmoneyTradeSnapshot",
+    "read_trade_snapshot",
+    "snapshot_to_dict",
+    "TRADE_SOURCE_HK",
+    "TRADE_SOURCE_MOBILE_DETAIL",
+    "TRADE_SOURCE_NORMAL",
+    "TRADE_SOURCE_STATEMENT_FLOW",
+    "get_latest_asset_snapshot",
+    "import_pdf_statement",
+    "import_mobile_trade_detail_record",
+    "list_sync_runs",
+    "list_trade_records",
+    "serialize_asset_snapshot",
+    "serialize_sync_run",
+    "serialize_trade_record",
+    "sync_trade_data",
 ]
