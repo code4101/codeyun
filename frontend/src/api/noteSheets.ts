@@ -123,8 +123,51 @@ export interface NoteSheetExcelImportResponse {
   sheet: NoteSheetDetail
   imported_count: number
   preserved_row_count: number
+  extra_columns: string[]
   warnings: string[]
   mapping_notes: string[]
+}
+
+const NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_MS = 930_000
+const NOTE_SHEET_ACTION_TIMEOUT_MS = 180_000
+
+export interface NoteSheetRegistrationMatchResponse {
+  sheet: NoteSheetDetail
+  action: string
+  updated_count: number
+  skipped_count: number
+  error_count: number
+  message: string
+}
+
+export type NoteSheetRegistrationMatchRunStatus =
+  | 'idle'
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+
+export interface NoteSheetRegistrationMatchRunResponse {
+  run_id: string
+  action: string
+  sheet_id: number
+  workbook_id?: number | null
+  status: NoteSheetRegistrationMatchRunStatus
+  use_browser_fallback: boolean
+  already_running: boolean
+  cancel_requested: boolean
+  queued_at?: number | null
+  started_at?: number | null
+  finished_at?: number | null
+  total_count: number
+  processed_count: number
+  updated_count: number
+  skipped_count: number
+  error_count: number
+  message: string
+  error_message?: string | null
+  sheet?: NoteSheetDetail | null
 }
 
 export interface AttendanceTemplateActionItem {
@@ -231,6 +274,10 @@ type NoteSheetResourceRequestOptions = {
   workbookId?: number | null
 }
 
+type NoteSheetRegistrationUserMatchOptions = NoteSheetResourceRequestOptions & {
+  useBrowserFallback?: boolean
+}
+
 export async function fetchNoteSheets() {
   const response = await api.get<NoteSheetSummary[]>('/note-sheets/sheets')
   return response.data
@@ -291,12 +338,16 @@ export async function sortNoteSheet(
 
 export async function importNoteSheetFromExcelReset(
   sheetId: number,
-  payload: { file: File; instruction?: string },
+  payload: { file: File; instruction?: string; actionCell?: { documentRow: number; column: number } },
   options?: NoteSheetResourceRequestOptions,
 ) {
   const formData = new FormData()
   formData.append('file', payload.file)
   formData.append('instruction', payload.instruction ?? '')
+  if (payload.actionCell) {
+    formData.append('action_document_row', String(payload.actionCell.documentRow))
+    formData.append('action_column', String(payload.actionCell.column))
+  }
   const response = await api.post<NoteSheetExcelImportResponse>(
     `/note-sheets/sheets/${sheetId}/import-excel-reset`,
     formData,
@@ -306,6 +357,101 @@ export async function importNoteSheetFromExcelReset(
       },
       headers: {
         'Content-Type': 'multipart/form-data',
+      },
+      timeout: NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function updateNoteSheetRegistrationOrderMatch(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetRegistrationMatchResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/update-order-match`,
+    {},
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function updateNoteSheetRegistrationUserMatch(
+  sheetId: number,
+  options?: NoteSheetRegistrationUserMatchOptions,
+) {
+  const response = await api.post<NoteSheetRegistrationMatchResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/update-user-match`,
+    {},
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+        use_browser_fallback: options?.useBrowserFallback ?? false,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function startNoteSheetRegistrationMatchRun(
+  sheetId: number,
+  payload: {
+    action: string
+    useBrowserFallback?: boolean
+    forceRestart?: boolean
+  },
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetRegistrationMatchRunResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/match-runs`,
+    {
+      action: payload.action,
+      use_browser_fallback: payload.useBrowserFallback ?? false,
+      force_restart: payload.forceRestart ?? false,
+    },
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function fetchNoteSheetActiveRegistrationMatchRun(
+  sheetId: number,
+  action: string,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<NoteSheetRegistrationMatchRunResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/match-runs/active`,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+        action,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function fetchNoteSheetRegistrationMatchRun(
+  sheetId: number,
+  runId: string,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<NoteSheetRegistrationMatchRunResponse>(
+    `/note-sheets/sheets/${sheetId}/registration/match-runs/${runId}`,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
       },
     },
   )

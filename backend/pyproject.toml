@@ -26,6 +26,7 @@ dependencies = [
     "jupyter-client>=8.8.0",
     "ipykernel>=7.2.0",
     "mcp>=1.27.0",
+    "pypdf>=6.0.0",
 ]
 
 [project.optional-dependencies]

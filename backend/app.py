@@ -34,6 +34,7 @@ from backend.core.storage import (
 from backend.core.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
 from backend.db import init_db
 from backend.standard import register_standard_modules
+from backend.api.wechat_archive import enqueue_wechat_archive_startup_sync
 
 settings = get_settings()
 
@@ -43,6 +44,7 @@ async def lifespan(app: FastAPI):
     ensure_bootstrap_admin()
     await start_task_manager_services()
     init_background_task_runner()
+    enqueue_wechat_archive_startup_sync()
     init_ruanyf_weekly_note_scheduler()
     if not settings.is_test:
         start_enabled_codex_bridges()

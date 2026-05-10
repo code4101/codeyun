@@ -8,14 +8,16 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import threading
 import time
 import re
+import uuid
 from math import ceil
 from typing import Any, Literal, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlmodel import Session, delete, select
 
@@ -26,7 +28,13 @@ from backend.core.ai_chat import (
     OllamaClientError,
     chat_with_provider,
 )
-from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.auth import (
+    extract_api_token,
+    get_current_active_user,
+    get_optional_current_user_from_token,
+    validate_api_token_value,
+)
+from backend.core.attendance_service import get_or_create_attendance_service_config
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
@@ -35,6 +43,7 @@ from backend.models import (
     ResourceAccessGrant,
     SheetDocument,
     User,
+    UserDevice,
     WorkbookDocument,
     WorkbookSheetLink,
 )
@@ -52,7 +61,27 @@ NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS = 12
 NOTE_SHEET_EXCEL_IMPORT_MAX_ROWS_PER_SHEET = 600
 NOTE_SHEET_EXCEL_IMPORT_MAX_COLS_PER_SHEET = 60
 NOTE_SHEET_EXCEL_IMPORT_MAX_NONEMPTY_ROWS = 900
+NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_WIDTH = 132
+NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_BACKGROUND = "#E5E7EB"
+NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_TEXT = "#4B5563"
+NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = "excel_import_reset"
+NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = "registration_order_match"
+NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = "registration_user_match"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
+NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
+NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+NOTE_SHEET_LEGACY_TEXT_PREFIX_STRIP_COLUMNS = {"微信支付订单号", "商户订单号", "手机号", "错误手机号", "微信号"}
+NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID = 1
+NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE = os.environ.get("CODEYUN_NOTE_SHEET_ORDER_LOOKUP_MODE", "db_only")
+NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT = False
+NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME = os.environ.get(
+    "CODEYUN_NOTE_SHEET_USER_BROWSER_DEVICE_NAME",
+    "codepc_mi15",
+)
+NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
+    "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
+    "900",
+)
 RESOURCE_ACCESS_ROLES = ("deny", "viewer", "editor", "manager")
 RESOURCE_ACCESS_ROLE_RANK = {"deny": 0, "viewer": 1, "editor": 2, "manager": 3}
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -65,10 +94,15 @@ ATTENDANCE_SUMMARY_SHEET_ID = 4
 ATTENDANCE_WJX_DATA_OWNER_TYPE = "attendance_questionnaire"
 ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
 ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
-ATTENDANCE_WJX_DATA_PUBLIC_EDITABLE_COLUMN_INDEXES = (8,)
+ATTENDANCE_WJX_DATA_PUBLIC_EDITABLE_COLUMN_INDEXES = (9,)
 ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES = ("念住", "觉观")
 ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES = ("梵呗初阶",)
 ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES = ("梵呗增益",)
+ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES = (
+    *ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES,
+    *ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES,
+)
+ATTENDANCE_TEMPLATE_FANBEI_START_DAY = 9
 ATTENDANCE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_type": ("课程类型", 0),
     "course_name": ("课程名称", 1),
@@ -127,6 +161,7 @@ ATTENDANCE_COURSE_SCRIPT_FILE_EXTENSION_RE = re.compile(
 )
 NATURAL_SORT_SPLIT_RE = re.compile(r"(\d+)")
 FORMULA_CELL_REFERENCE_RE = re.compile(r"(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(!])")
+A1_CELL_REFERENCE_RE = re.compile(r"^\s*(?:[^!]+!)?\$?(?P<column>[A-Za-z]{1,3})\$?(?P<row>\d+)\s*$")
 FORMULA_PUNCTUATION_TRANSLATION = str.maketrans({
     "，": ",",
     "（": "(",
@@ -161,13 +196,17 @@ NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT = """你是 CodeYun 星云表格的 Excel 
 - 如果源表用“1组/2组/第1组”等行表示分组，把该分组填入后续报名记录的“分组”字段，直到遇到下一组。
 - 姓名、微信昵称、手机号/手机、微信号、交易单号/微信支付订单号、订单日期、商户订单号、订单金额、退款状态、用户ID 等同义字段要映射到目标列。
 - 手机号、订单号、微信号必须按文本保留；不要转成科学计数法，不要自行补全未知位。
-- 如果源表里“选择促学金模式/自觉自律完成学修”等信息没有专门目标列，优先放到“备注”或“参考信息”。
+- 不要给手机号、订单号、微信号添加用于 Excel 文本识别的反引号、单引号等前缀字符。
+- “备注”只用于源表明确表达退课、退款、国际学生、人工备注等当前报名表备注语义的信息；不要把无法匹配的普通源字段塞进“备注”。
+- “参考信息”是目标表人工备用字段；除非用户补充说明明确要求，否则不要自动导入到“参考信息”。
+- 如果源表存在目标表没有的真实业务字段，放入 extra_columns，并在每行对象里用对应字段名保存值；常见如“选择促学金模式/自觉自律完成学修”归为“促学金模式”，“微信号”在目标表没有专门列时归为“微信号”。
 - 如果源表序号是每组内序号或全局序号，按源表可见语义填入；无法判断时按源记录顺序从 1 开始。
 
 返回 JSON 形状：
 {
+  "extra_columns": ["可选，目标表没有但源表需要保留的字段名"],
   "rows": [
-    {"目标列名": "标准化后的文本值"}
+    {"目标列名或 extra_columns 字段名": "标准化后的文本值"}
   ],
   "warnings": ["可选，导入风险或未能确定的信息"],
   "mapping_notes": ["可选，说明主要字段映射判断"]
@@ -247,6 +286,49 @@ class NoteSheetUpdateRequest(BaseModel):
     page_patch: Optional[NoteSheetPagePatchRequest] = None
 
 
+class NoteSheetTableResponse(BaseModel):
+    id: int
+    workbook_id: int | None = None
+    title: str
+    version: int
+    value_mode: Literal["text", "raw"] = "text"
+    columns: list[str] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    row_count: int = 0
+    data_start_row: int = 0
+    field_row_index: int = 0
+    grid_rows: list[list[Any]] = Field(default_factory=list)
+
+
+class NoteSheetTablePatchOperation(BaseModel):
+    type: Literal["write_fields", "write_range", "set_cell", "set_note_cell"] = "write_fields"
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    values: list[list[Any]] = Field(default_factory=list)
+    fields: list[str] = Field(default_factory=list)
+    key_field: str = ""
+    append_missing: bool = False
+    start_row_index: int | None = Field(default=None, ge=0)
+    start_sheet_row: int | None = Field(default=None, ge=1)
+    row_index: int | None = Field(default=None, ge=0)
+    sheet_row: int | None = Field(default=None, ge=1)
+    column: str | int | None = None
+    field: str = ""
+    cell: str = ""
+    value: Any = None
+
+
+class NoteSheetTablePatchRequest(BaseModel):
+    expected_version: int | None = Field(default=None, ge=1)
+    operations: list[NoteSheetTablePatchOperation] = Field(default_factory=list)
+
+
+class NoteSheetTablePatchResponse(BaseModel):
+    sheet: NoteSheetDetailResponse
+    table: NoteSheetTableResponse
+    updated_cell_count: int = 0
+    updated_row_count: int = 0
+
+
 class NoteSheetSortRequest(BaseModel):
     column_index: int = Field(ge=0)
     direction: Literal["asc", "desc"] = "asc"
@@ -256,8 +338,46 @@ class NoteSheetExcelImportResponse(BaseModel):
     sheet: NoteSheetDetailResponse
     imported_count: int = 0
     preserved_row_count: int = 0
+    extra_columns: list[str] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     mapping_notes: list[str] = Field(default_factory=list)
+
+
+class NoteSheetRegistrationMatchResponse(BaseModel):
+    sheet: NoteSheetDetailResponse
+    action: str
+    updated_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    message: str = ""
+
+
+class NoteSheetRegistrationMatchRunRequest(BaseModel):
+    action: Literal["registration_order_match", "registration_user_match"]
+    use_browser_fallback: bool = NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT
+    force_restart: bool = False
+
+
+class NoteSheetRegistrationMatchRunResponse(BaseModel):
+    run_id: str = ""
+    action: str
+    sheet_id: int
+    workbook_id: int | None = None
+    status: Literal["idle", "pending", "running", "completed", "failed", "cancelled"] = "idle"
+    use_browser_fallback: bool = False
+    already_running: bool = False
+    cancel_requested: bool = False
+    queued_at: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    total_count: int = 0
+    processed_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    message: str = ""
+    error_message: str | None = None
+    sheet: NoteSheetDetailResponse | None = None
 
 
 class NoteSheetAttendanceTemplateGenerationRequest(BaseModel):
@@ -437,6 +557,7 @@ def _create_default_sheet_document() -> dict[str, Any]:
             "row_marker_origin": "sheet",
             "show_column_markers": True,
             "column_marker_style": "letters",
+            "frozen_column_count": 0,
             "pagination": {
                 "enabled": False,
                 "page_size": DEFAULT_NOTE_SHEET_PAGE_SIZE,
@@ -887,7 +1008,7 @@ def _parse_percent_sort_value(value: Any) -> float | None:
     return _parse_number_sort_value(value)
 
 
-def _parse_formula_cell_reference(value: str) -> tuple[int, int] | None:
+def _parse_table_formula_cell_reference(value: str) -> tuple[int, int] | None:
     match = FORMULA_CELL_REFERENCE_ONLY_RE.fullmatch(value.strip())
     if not match:
         return None
@@ -1167,24 +1288,125 @@ def _normalize_excel_import_cell(value: Any) -> str:
     return str(value).strip()
 
 
+def _strip_legacy_text_prefix(value: Any) -> str:
+    return _normalize_sheet_text(value).lstrip("`'")
+
+
+def _normalize_excel_import_cell_for_column(column: str, value: Any) -> str:
+    normalized_value = _normalize_excel_import_cell(value)
+    return (
+        _strip_legacy_text_prefix(normalized_value)
+        if column in NOTE_SHEET_LEGACY_TEXT_PREFIX_STRIP_COLUMNS
+        else normalized_value
+    )
+
+
 def _compact_action_token(value: Any) -> str:
     return re.sub(r"\s+", "", _normalize_sheet_text(value)).lower()
 
 
-def _sheet_row_has_excel_import_action(row: Any) -> bool:
+def _is_legacy_action_text(value: Any, tokens: tuple[str, ...]) -> bool:
+    action_tokens = {_compact_action_token(token) for token in tokens}
+    return _compact_action_token(value) in action_tokens
+
+
+def _is_legacy_excel_import_action_text(value: Any) -> bool:
+    return _is_legacy_action_text(value, NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS)
+
+
+def _sheet_row_has_legacy_excel_import_action(row: Any) -> bool:
     values = row if isinstance(row, list) else list(row.values()) if isinstance(row, dict) else [row]
-    action_tokens = {_compact_action_token(token) for token in NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS}
-    return any(_compact_action_token(value) in action_tokens for value in values)
+    return any(_is_legacy_excel_import_action_text(value) for value in values)
 
 
-def _get_excel_import_preserved_data_rows(document_json: dict[str, Any]) -> list[list[Any]]:
+def _cell_meta_has_excel_import_action(meta: Any) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    action = meta.get("action")
+    if action == NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET:
+        return True
+    if not isinstance(action, dict):
+        return False
+    return _normalize_sheet_text(action.get("type") or action.get("name")) == NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET
+
+
+def _find_excel_import_action_data_row(
+    document_json: dict[str, Any],
+    rows: list[list[Any]],
+    *,
+    action_document_row: int | None = None,
+    action_column: int | None = None,
+) -> int | None:
+    data_start_row = _normalize_document_data_start_row(document_json)
+    column_count = len(_normalize_document_columns(document_json))
+    cell_meta = document_json.get("cell_meta")
+
+    def is_valid_action_cell(document_row: int, column_index: int | None) -> bool:
+        if column_index is None or column_index < 0 or column_index >= column_count:
+            return False
+        meta = cell_meta.get(f"{document_row}:{column_index}") if isinstance(cell_meta, dict) else None
+        if _cell_meta_has_excel_import_action(meta):
+            return True
+        data_row_index = document_row - data_start_row
+        if data_row_index < 0:
+            grid_rows = _extract_document_grid_rows(document_json)
+            if 0 <= document_row < len(grid_rows):
+                return _is_legacy_excel_import_action_text(_normalize_sheet_row(grid_rows[document_row], column_count)[column_index])
+            return False
+        if data_row_index >= len(rows):
+            return False
+        return _is_legacy_excel_import_action_text(rows[data_row_index][column_index])
+
+    if action_document_row is not None or action_column is not None:
+        if action_document_row is None or action_column is None:
+            raise HTTPException(status_code=400, detail="导入按钮坐标不完整")
+        if is_valid_action_cell(action_document_row, action_column):
+            return action_document_row - data_start_row
+        raise HTTPException(status_code=400, detail="当前单元格不是导入 Excel 按钮")
+
+    if isinstance(cell_meta, dict):
+        action_positions: list[tuple[int, int]] = []
+        for key, meta in cell_meta.items():
+            parsed = _parse_cell_meta_key(key)
+            if parsed is None or not _cell_meta_has_excel_import_action(meta):
+                continue
+            row_index, column_index = parsed
+            if row_index >= 0 and 0 <= column_index < column_count:
+                action_positions.append((row_index, column_index))
+        for row_index, column_index in sorted(action_positions):
+            data_row_index = row_index - data_start_row
+            if data_row_index < 0:
+                return data_row_index
+            if 0 <= data_row_index < len(rows) and 0 <= column_index < column_count:
+                return data_row_index
+
+    grid_rows = _extract_document_grid_rows(document_json)
+    for index, row in enumerate(grid_rows[:data_start_row]):
+        if _sheet_row_has_legacy_excel_import_action(row):
+            return index - data_start_row
+
+    for index, row in enumerate(rows):
+        if _sheet_row_has_legacy_excel_import_action(row):
+            return index
+    return None
+
+
+def _get_excel_import_preserved_data_rows(
+    document_json: dict[str, Any],
+    *,
+    action_document_row: int | None = None,
+    action_column: int | None = None,
+) -> list[list[Any]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
-    for index, row in enumerate(rows):
-        if _sheet_row_has_excel_import_action(row):
-            return rows[: index + 1]
-    return []
+    action_data_row = _find_excel_import_action_data_row(
+        normalized,
+        rows,
+        action_document_row=action_document_row,
+        action_column=action_column,
+    )
+    return rows[: max(action_data_row + 1, 0)] if action_data_row is not None else []
 
 
 def _filter_cell_meta_for_document_row_prefix(cell_meta: Any, *, max_document_row: int, column_count: int) -> dict[str, Any]:
@@ -1222,14 +1444,98 @@ def _filter_merged_cells_for_document_row_prefix(merged_cells: Any, *, max_docum
     return filtered
 
 
+def _get_excel_import_field_row_index(document_json: dict[str, Any], data_start_row: int) -> int:
+    try:
+        index = int(document_json.get("field_row_index") or 0)
+    except (TypeError, ValueError):
+        index = 0
+    if 0 <= index < data_start_row:
+        return index
+    return max(data_start_row - 1, 0)
+
+
+def _append_document_extra_columns_for_excel_import(
+    document_json: dict[str, Any],
+    extra_columns: list[str],
+) -> tuple[dict[str, Any], list[str]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    appended_columns: list[str] = []
+    used_keys = {_normalize_import_record_key(column) for column in columns}
+    for header in extra_columns:
+        _append_excel_import_extra_column_header(appended_columns, used_keys, header)
+
+    if not appended_columns:
+        return normalized, []
+
+    extra_count = len(appended_columns)
+    next_columns = [*columns, *appended_columns]
+    next_document = {
+        **normalized,
+        "columns": next_columns,
+    }
+
+    next_document["rows"] = [
+        [*_normalize_sheet_row(row, len(columns)), *([""] * extra_count)]
+        for row in _extract_document_rows(normalized)
+    ]
+
+    source_widths = normalized.get("column_widths")
+    if isinstance(source_widths, list):
+        next_document["column_widths"] = [
+            *source_widths[:len(columns)],
+            *([NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_WIDTH] * extra_count),
+        ]
+    else:
+        next_document["column_widths"] = [NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_WIDTH] * len(next_columns)
+
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        data_start_row = min(_normalize_document_data_start_row(normalized), len(grid_rows))
+        field_row_index = _get_excel_import_field_row_index(normalized, data_start_row)
+        next_grid_rows: list[list[Any]] = []
+        for row_index, row in enumerate(grid_rows):
+            suffix = appended_columns if row_index == field_row_index else [""] * extra_count
+            next_grid_rows.append([*_normalize_sheet_row(row, len(columns)), *suffix])
+        next_document["grid_rows"] = next_grid_rows
+
+    source_configs = normalized.get("column_configs")
+    next_configs = dict(source_configs) if isinstance(source_configs, dict) else {}
+    for header in appended_columns:
+        current = next_configs.get(header)
+        config = dict(current) if isinstance(current, dict) else {}
+        config.setdefault("header_background_color", NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_BACKGROUND)
+        config.setdefault("header_text_color", NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_TEXT)
+        next_configs[header] = config
+    next_document["column_configs"] = next_configs
+
+    if "header_groups" in normalized:
+        next_document["header_groups"] = _insert_columns_into_header_groups(
+            normalized.get("header_groups"),
+            len(columns),
+            extra_count,
+        )
+
+    return next_document, appended_columns
+
+
 def _replace_document_rows_for_excel_import(
     document_json: dict[str, Any],
     import_rows: list[list[Any]],
+    *,
+    extra_columns: list[str] | None = None,
+    action_document_row: int | None = None,
+    action_column: int | None = None,
 ) -> tuple[dict[str, Any], int]:
     normalized = _normalize_document_json(document_json)
+    normalized, _appended_columns = _append_document_extra_columns_for_excel_import(normalized, extra_columns or [])
     columns = _normalize_document_columns(normalized)
     column_count = len(columns)
-    preserved_rows = _get_excel_import_preserved_data_rows(normalized)
+    preserved_rows = _get_excel_import_preserved_data_rows(
+        normalized,
+        action_document_row=action_document_row,
+        action_column=action_column,
+    )
     normalized_import_rows = [_normalize_sheet_row(row, column_count) for row in import_rows]
     next_document = _replace_document_data_rows(normalized, [*preserved_rows, *normalized_import_rows])
 
@@ -1246,6 +1552,874 @@ def _replace_document_rows_for_excel_import(
         column_count=column_count,
     )
     return next_document, len(preserved_rows)
+
+
+def _load_attendance_order_lookup_provider():
+    _load_attendance_kqdb_provider()
+    try:
+        from kq5034.attendance_api import lookup_order  # type: ignore
+
+        return lookup_order
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"无法加载订单匹配工具：{exc}") from exc
+
+
+def _load_attendance_user_lookup_provider():
+    try:
+        from kq5034.attendance_api import lookup_registration_user_db  # type: ignore
+
+        return lookup_registration_user_db
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"无法加载用户匹配工具：{exc}") from exc
+
+
+def _format_registration_match_cell(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def _find_required_registration_column_indexes(columns: list[str], required_columns: list[str]) -> dict[str, int]:
+    indexes: dict[str, int] = {}
+    missing: list[str] = []
+    for header in required_columns:
+        index = _find_column_index(columns, header)
+        if index is None:
+            missing.append(header)
+        else:
+            indexes[header] = index
+    if missing:
+        raise HTTPException(status_code=400, detail=f"报名表缺少字段：{', '.join(missing)}")
+    return indexes
+
+
+def _normalize_registration_order_lookup_mode() -> str:
+    value = str(NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE or "").strip().lower()
+    return value if value in {"hybrid", "db_only", "browser_only"} else "db_only"
+
+
+def _registration_user_browser_timeout_seconds() -> float:
+    try:
+        return max(float(NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS), 1.0)
+    except (TypeError, ValueError):
+        return 900.0
+
+
+def _build_remote_device_headers(entry: UserDevice) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {entry.token}",
+        "X-Device-Token": entry.token,
+    }
+
+
+def _resolve_registration_user_browser_device(
+    session: Session,
+    current_user: User,
+) -> UserDevice:
+    config = get_or_create_attendance_service_config(session)
+    configured_entry_id = _normalize_sheet_text(config.execution_device_entry_id)
+    if configured_entry_id:
+        entry = session.get(UserDevice, configured_entry_id)
+        if entry is None:
+            raise HTTPException(status_code=400, detail="考勤配置的执行设备不存在，请在考勤配置页重新选择")
+        if not entry.is_active:
+            raise HTTPException(status_code=400, detail="考勤配置的执行设备已停用，请在考勤配置页重新选择")
+    else:
+        target_name = _normalize_sheet_text(NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME)
+        statement = select(UserDevice).where(
+            UserDevice.user_id == current_user.id,
+            UserDevice.is_active == True,  # noqa: E712
+        )
+        entry = next(
+            (
+                item
+                for item in session.exec(statement).all()
+                if item.name == target_name or item.device_id == target_name
+            ),
+            None,
+        )
+        if entry is None:
+            raise HTTPException(status_code=400, detail=f"未找到可用的远程设备：{target_name}")
+
+    if entry.mode != "remote" or not _normalize_sheet_text(entry.server_url):
+        raise HTTPException(status_code=400, detail="小鹅通兜底回查必须使用远程执行设备，请在考勤配置页选择 codepc_mi15")
+    if not _normalize_sheet_text(entry.token):
+        raise HTTPException(status_code=400, detail="远程执行设备缺少访问令牌，请检查设备清单配置")
+    return entry
+
+
+def _lookup_registration_users_with_remote_browser(
+    session: Session,
+    current_user: User,
+    *,
+    course_name: str,
+    items: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    if not items:
+        return {}
+
+    entry = _resolve_registration_user_browser_device(session, current_user)
+    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
+    payload = {
+        "course_name": course_name,
+        "course_product_name": "",
+        "shop_id": NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+        "close_browser": True,
+        "items": [
+            {
+                "key": _normalize_sheet_text(item.get("key")),
+                "names": [text for text in item.get("names", []) if _normalize_sheet_text(text)],
+                "phones": [text for text in item.get("phones", []) if _normalize_sheet_text(text)],
+            }
+            for item in items
+        ],
+    }
+
+    try:
+        import requests
+
+        with requests.Session() as request_session:
+            request_session.trust_env = False
+            response = request_session.post(
+                f"{server_url}/api/device-control/attendance/user-match/lookup",
+                json=payload,
+                headers=_build_remote_device_headers(entry),
+                timeout=_registration_user_browser_timeout_seconds(),
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"调用 {entry.name} 小鹅通回查失败：{exc}") from exc
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except Exception:
+            detail = response.text.strip()
+        raise HTTPException(status_code=502, detail=detail or f"{entry.name} 小鹅通回查失败，HTTP {response.status_code}")
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{entry.name} 小鹅通回查返回了无法解析的响应") from exc
+
+    result_map: dict[str, dict[str, Any]] = {}
+    result_items = data.get("results") if isinstance(data, dict) else []
+    if not isinstance(result_items, list):
+        result_items = []
+    for item in result_items:
+        if not isinstance(item, dict):
+            continue
+        key = _normalize_sheet_text(item.get("key"))
+        if key:
+            result_map[key] = item
+    return result_map
+
+
+def _update_registration_order_match_document(document_json: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_ORDER_COLUMNS)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    if not rows:
+        return normalized, {"updated_count": 0, "skipped_count": 0, "error_count": 0}
+
+    get_kqdb = _load_attendance_kqdb_provider()
+    lookup_order = _load_attendance_order_lookup_provider()
+    kqdb = get_kqdb()
+    lookup_mode = _normalize_registration_order_lookup_mode()
+
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    next_rows: list[list[Any]] = []
+    fill_columns = NOTE_SHEET_REGISTRATION_ORDER_COLUMNS
+    completeness_columns = fill_columns[1:]
+
+    for source_row in rows:
+        row = list(source_row)
+        order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
+        if len(order_id) < 19:
+            skipped_count += 1
+            next_rows.append(row)
+            continue
+
+        if all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns):
+            skipped_count += 1
+            next_rows.append(row)
+            continue
+
+        before = list(row)
+        try:
+            order_info = lookup_order(
+                order_id,
+                kqdb=kqdb,
+                lookup_mode=lookup_mode,
+                use_browser=lookup_mode != "db_only",
+            )
+        except Exception as exc:
+            row[indexes["订单金额"]] = str(exc)
+            row[indexes["已返款"]] = ""
+            error_count += 1
+            next_rows.append(row)
+            if row != before:
+                updated_count += 1
+            continue
+
+        if not order_info:
+            skipped_count += 1
+            next_rows.append(row)
+            continue
+        if isinstance(order_info, dict) and "error" in order_info:
+            row[indexes["订单金额"]] = _format_registration_match_cell(order_info.get("error") or "订单不存在")
+            row[indexes["已返款"]] = ""
+            error_count += 1
+            next_rows.append(row)
+            if row != before:
+                updated_count += 1
+            continue
+
+        for column in fill_columns:
+            value = order_info.get(column) if isinstance(order_info, dict) else ""
+            if value is not None and value != "":
+                formatted_value = _format_registration_match_cell(value)
+                if column == "微信支付订单号":
+                    formatted_value = _strip_legacy_text_prefix(formatted_value)
+                row[indexes[column]] = formatted_value
+        if row != before:
+            updated_count += 1
+        next_rows.append(row)
+
+    return _replace_document_data_rows(normalized, next_rows), {
+        "updated_count": updated_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+    }
+
+
+def _get_registration_course_name(document: SheetDocument, workbook: WorkbookDocument | None) -> str:
+    def normalize_course_name(value: str) -> str:
+        text = _normalize_sheet_text(value)
+        text = re.sub(r"\.[^.]+$", "", text)
+        text = re.sub(r"^\d{2}(\d{6})", r"d\1", text)
+        return text.replace(".", "点").replace(",", "")
+
+    if workbook is not None and _normalize_sheet_text(workbook.title):
+        return normalize_course_name(workbook.title)
+    return normalize_course_name(document.title)
+
+
+def _update_registration_user_match_document(
+    document_json: dict[str, Any],
+    *,
+    session: Session,
+    current_user: User,
+    course_name: str,
+    use_browser_fallback: bool,
+) -> tuple[dict[str, Any], dict[str, int]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    if not rows:
+        return normalized, {"updated_count": 0, "skipped_count": 0, "error_count": 0}
+
+    get_kqdb = _load_attendance_kqdb_provider()
+    lookup_user = _load_attendance_user_lookup_provider()
+    kqdb = get_kqdb()
+
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    next_rows: list[list[Any]] = []
+    browser_candidates: list[dict[str, Any]] = []
+    updated_row_positions: set[int] = set()
+
+    def mark_updated(row_position: int) -> None:
+        nonlocal updated_count
+        if row_position in updated_row_positions:
+            return
+        updated_row_positions.add(row_position)
+        updated_count += 1
+
+    for source_row in rows:
+        row = list(source_row)
+        if _normalize_sheet_text(row[indexes["用户ID"]]):
+            skipped_count += 1
+            next_rows.append(row)
+            continue
+
+        names = [
+            _normalize_sheet_text(row[indexes["姓名"]]),
+            _normalize_sheet_text(row[indexes["微信昵称"]]),
+        ]
+        phones = [
+            _strip_legacy_text_prefix(row[indexes["手机号"]]),
+            _strip_legacy_text_prefix(row[indexes["错误手机号"]]),
+        ]
+        names = [item for item in names if item]
+        phones = [item for item in phones if item and item.lower() != "none"]
+        if not names and not phones:
+            skipped_count += 1
+            next_rows.append(row)
+            continue
+
+        before = list(row)
+        try:
+            user_id, weight = lookup_user(
+                names,
+                phones,
+                course_name=course_name,
+                course_product_name="",
+                shop_id=NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+                return_mode=1,
+                kqdb=kqdb,
+            )
+        except Exception as exc:
+            row[indexes["匹配得分"]] = str(exc)
+            error_count += 1
+            next_rows.append(row)
+            if row != before:
+                updated_count += 1
+            continue
+
+        row[indexes["用户ID"]] = _format_registration_match_cell(user_id)
+        row[indexes["匹配得分"]] = _format_registration_match_cell(weight) if weight is not None else ""
+        row_position = len(next_rows)
+        initial_changed = row != before
+        if initial_changed and (user_id or not use_browser_fallback):
+            mark_updated(row_position)
+        next_rows.append(row)
+        if not user_id and use_browser_fallback:
+            browser_candidates.append(
+                {
+                    "key": str(len(browser_candidates)),
+                    "row_position": row_position,
+                    "initial_changed": initial_changed,
+                    "names": names,
+                    "phones": phones,
+                }
+            )
+
+    if use_browser_fallback and browser_candidates:
+        try:
+            browser_results = _lookup_registration_users_with_remote_browser(
+                session,
+                current_user,
+                course_name=course_name,
+                items=[
+                    {
+                        "key": candidate["key"],
+                        "names": candidate["names"],
+                        "phones": candidate["phones"],
+                    }
+                    for candidate in browser_candidates
+                ],
+            )
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                error_text = str(exc.detail)
+            else:
+                error_text = str(exc)
+            for candidate in browser_candidates:
+                row = next_rows[int(candidate["row_position"])]
+                before = list(row)
+                row[indexes["匹配得分"]] = error_text
+                error_count += 1
+                if row != before:
+                    mark_updated(int(candidate["row_position"]))
+        else:
+            for candidate in browser_candidates:
+                result = browser_results.get(str(candidate["key"]), {})
+                row = next_rows[int(candidate["row_position"])]
+                before = list(row)
+                result_error = _normalize_sheet_text(result.get("error"))
+                remote_user_id = _normalize_sheet_text(result.get("user_id"))
+                if result_error:
+                    row[indexes["匹配得分"]] = result_error
+                    error_count += 1
+                elif remote_user_id:
+                    row[indexes["用户ID"]] = remote_user_id
+                    row[indexes["匹配得分"]] = "95"
+                if row != before or bool(candidate.get("initial_changed")):
+                    mark_updated(int(candidate["row_position"]))
+
+    return _replace_document_data_rows(normalized, next_rows), {
+        "updated_count": updated_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+    }
+
+
+def _serialize_note_sheet_action_detail(
+    session: Session,
+    document: SheetDocument,
+    access: NoteSheetResourceAccess,
+) -> NoteSheetDetailResponse:
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    return NoteSheetDetailResponse.model_validate(
+        _serialize_sheet_detail(
+            document,
+            workbook_items=workbook_items,
+            document_json=dict(document.document_json or {}),
+            access=access,
+        ),
+    )
+
+
+def _run_registration_match_action(
+    *,
+    sheet_id: int,
+    action: str,
+    workbook_id: int | None,
+    session: Session,
+    current_user: User,
+    use_browser_fallback: bool = False,
+) -> NoteSheetRegistrationMatchResponse:
+    document, access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+
+    current_document = _normalize_document_json(dict(document.document_json or {}))
+    if action == NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH:
+        next_document, summary = _update_registration_order_match_document(current_document)
+        message = f"已更新 {summary['updated_count']} 行订单匹配"
+    elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
+        next_document, summary = _update_registration_user_match_document(
+            current_document,
+            session=session,
+            current_user=current_user,
+            course_name=_get_registration_course_name(document, workbook),
+            use_browser_fallback=use_browser_fallback,
+        )
+        message = f"已更新 {summary['updated_count']} 行用户匹配"
+    else:
+        raise HTTPException(status_code=400, detail="不支持的报名表动作")
+
+    if current_document != next_document:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+
+    return NoteSheetRegistrationMatchResponse(
+        sheet=_serialize_note_sheet_action_detail(session, document, access),
+        action=action,
+        updated_count=summary["updated_count"],
+        skipped_count=summary["skipped_count"],
+        error_count=summary["error_count"],
+        message=message,
+    )
+
+
+_REGISTRATION_MATCH_RUN_LOCK = threading.RLock()
+_REGISTRATION_MATCH_RUNS: dict[str, dict[str, Any]] = {}
+_REGISTRATION_MATCH_ACTIVE_BY_KEY: dict[tuple[int, str], str] = {}
+_REGISTRATION_MATCH_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+_REGISTRATION_MATCH_ACTIVE_STATUSES = {"pending", "running"}
+
+
+def _registration_match_run_key(sheet_id: int, action: str) -> tuple[int, str]:
+    return int(sheet_id), str(action)
+
+
+def _is_registration_match_run_active(run: dict[str, Any] | None) -> bool:
+    return bool(run and run.get("status") in _REGISTRATION_MATCH_ACTIVE_STATUSES and not run.get("cancel_requested"))
+
+
+def _serialize_registration_match_run(
+    run: dict[str, Any] | None,
+    *,
+    sheet: NoteSheetDetailResponse | None = None,
+    already_running: bool = False,
+    sheet_id: int | None = None,
+    action: str | None = None,
+    workbook_id: int | None = None,
+) -> NoteSheetRegistrationMatchRunResponse:
+    if run is None:
+        return NoteSheetRegistrationMatchRunResponse(
+            sheet_id=int(sheet_id or 0),
+            workbook_id=workbook_id,
+            action=str(action or ""),
+            sheet=sheet,
+        )
+    return NoteSheetRegistrationMatchRunResponse(
+        run_id=str(run.get("run_id") or ""),
+        action=str(run.get("action") or ""),
+        sheet_id=int(run.get("sheet_id") or 0),
+        workbook_id=run.get("workbook_id"),
+        status=run.get("status") or "idle",
+        use_browser_fallback=bool(run.get("use_browser_fallback")),
+        already_running=already_running,
+        cancel_requested=bool(run.get("cancel_requested")),
+        queued_at=run.get("queued_at"),
+        started_at=run.get("started_at"),
+        finished_at=run.get("finished_at"),
+        total_count=int(run.get("total_count") or 0),
+        processed_count=int(run.get("processed_count") or 0),
+        updated_count=int(run.get("updated_count") or 0),
+        skipped_count=int(run.get("skipped_count") or 0),
+        error_count=int(run.get("error_count") or 0),
+        message=str(run.get("message") or ""),
+        error_message=run.get("error_message"),
+        sheet=sheet,
+    )
+
+
+def _get_registration_match_run_snapshot(run_id: str) -> dict[str, Any] | None:
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        return dict(run) if run else None
+
+
+def _get_active_registration_match_run_snapshot(sheet_id: int, action: str) -> dict[str, Any] | None:
+    key = _registration_match_run_key(sheet_id, action)
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
+        run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
+        if _is_registration_match_run_active(run):
+            return dict(run)
+        if run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
+            _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+        return None
+
+
+def _update_registration_match_run(run_id: str, **updates: Any) -> dict[str, Any] | None:
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        if run is None:
+            return None
+        run.update(updates)
+        return dict(run)
+
+
+def _request_cancel_registration_match_run(run_id: str) -> None:
+    now = time.time()
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        if run is None or run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
+            return
+        run["cancel_requested"] = True
+        run["status"] = "cancelled"
+        run["finished_at"] = now
+        run["message"] = "已请求停止并准备重新开始"
+
+
+def _is_registration_match_run_current(run_id: str) -> bool:
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        if not run or run.get("cancel_requested"):
+            return False
+        key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
+        return _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id
+
+
+def _finish_registration_match_run(run_id: str, status: str, *, message: str = "", error_message: str | None = None) -> None:
+    now = time.time()
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        run = _REGISTRATION_MATCH_RUNS.get(run_id)
+        if run is None:
+            return
+        if run.get("status") == "cancelled" and status != "failed":
+            status = "cancelled"
+        run["status"] = status
+        run["finished_at"] = now
+        if message:
+            run["message"] = message
+        if error_message:
+            run["error_message"] = error_message
+        key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
+        if _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id:
+            _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+
+
+def _count_registration_user_match_targets(document_json: dict[str, Any]) -> int:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    count = 0
+    for row in rows:
+        if _normalize_sheet_text(row[indexes["用户ID"]]):
+            continue
+        names = [
+            _normalize_sheet_text(row[indexes["姓名"]]),
+            _normalize_sheet_text(row[indexes["微信昵称"]]),
+        ]
+        phones = [
+            _strip_legacy_text_prefix(row[indexes["手机号"]]),
+            _strip_legacy_text_prefix(row[indexes["错误手机号"]]),
+        ]
+        if any(names) or any(phone and phone.lower() != "none" for phone in phones):
+            count += 1
+    return count
+
+
+def _save_registration_match_row(
+    *,
+    session: Session,
+    sheet_id: int,
+    row_position: int,
+    row: list[Any],
+    current_user_id: int | None,
+    run_id: str,
+) -> bool:
+    if not _is_registration_match_run_current(run_id):
+        return False
+    document = _get_sheet_by_numeric_id_or_404(session, sheet_id)
+    current_document = _normalize_document_json(dict(document.document_json or {}))
+    columns = _normalize_document_columns(current_document)
+    current_rows = [_normalize_sheet_row(item, len(columns)) for item in _extract_document_rows(current_document)]
+    if row_position < 0 or row_position >= len(current_rows):
+        return False
+    next_row = _normalize_sheet_row(row, len(columns))
+    if current_rows[row_position] == next_row:
+        return False
+    current_rows[row_position] = next_row
+    document.document_json = _replace_document_data_rows(current_document, current_rows)
+    document.version = max(int(document.version or 1), 1) + 1
+    document.updated_by_user_id = current_user_id
+    document.updated_at = time.time()
+    session.add(document)
+    session.commit()
+    return True
+
+
+def _run_registration_user_match_background(
+    *,
+    run_id: str,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user_snapshot: dict[str, Any],
+    use_browser_fallback: bool,
+) -> None:
+    updated_positions: set[int] = set()
+    try:
+        _update_registration_match_run(run_id, status="running", started_at=time.time(), message="正在匹配用户")
+        with Session(engine) as session:
+            current_user_id = int(current_user_snapshot.get("id") or 0)
+            current_user = User(
+                id=current_user_id,
+                username=str(current_user_snapshot.get("username") or ""),
+                hashed_password="",
+                is_active=True,
+                is_superuser=bool(current_user_snapshot.get("is_superuser")),
+            )
+            document, access, workbook = _get_note_sheet_or_404(
+                session,
+                current_user,
+                sheet_id,
+                required_role="editor",
+                workbook_id=workbook_id,
+            )
+            if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+                raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+
+            normalized = _normalize_document_json(dict(document.document_json or {}))
+            columns = _normalize_document_columns(normalized)
+            indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS)
+            rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+            course_name = _get_registration_course_name(document, workbook)
+            total_count = _count_registration_user_match_targets(normalized)
+            _update_registration_match_run(run_id, total_count=total_count)
+
+            get_kqdb = _load_attendance_kqdb_provider()
+            lookup_user = _load_attendance_user_lookup_provider()
+            kqdb = get_kqdb()
+
+            processed_count = 0
+            skipped_count = 0
+            error_count = 0
+
+            def mark_updated(row_position: int) -> None:
+                updated_positions.add(row_position)
+                _update_registration_match_run(run_id, updated_count=len(updated_positions))
+
+            for row_position, source_row in enumerate(rows):
+                if not _is_registration_match_run_current(run_id):
+                    _finish_registration_match_run(run_id, "cancelled", message="用户匹配已停止")
+                    return
+
+                row = list(source_row)
+                if _normalize_sheet_text(row[indexes["用户ID"]]):
+                    skipped_count += 1
+                    _update_registration_match_run(run_id, skipped_count=skipped_count)
+                    continue
+
+                names = [
+                    _normalize_sheet_text(row[indexes["姓名"]]),
+                    _normalize_sheet_text(row[indexes["微信昵称"]]),
+                ]
+                phones = [
+                    _strip_legacy_text_prefix(row[indexes["手机号"]]),
+                    _strip_legacy_text_prefix(row[indexes["错误手机号"]]),
+                ]
+                names = [item for item in names if item]
+                phones = [item for item in phones if item and item.lower() != "none"]
+                if not names and not phones:
+                    skipped_count += 1
+                    _update_registration_match_run(run_id, skipped_count=skipped_count)
+                    continue
+
+                before = list(row)
+                try:
+                    user_id, weight = lookup_user(
+                        names,
+                        phones,
+                        course_name=course_name,
+                        course_product_name="",
+                        shop_id=NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+                        return_mode=1,
+                        kqdb=kqdb,
+                    )
+                    row[indexes["用户ID"]] = _format_registration_match_cell(user_id)
+                    row[indexes["匹配得分"]] = _format_registration_match_cell(weight) if weight is not None else ""
+                    if _save_registration_match_row(
+                        session=session,
+                        sheet_id=sheet_id,
+                        row_position=row_position,
+                        row=row,
+                        current_user_id=current_user_id,
+                        run_id=run_id,
+                    ) or row != before:
+                        mark_updated(row_position)
+
+                    if not user_id and use_browser_fallback:
+                        result_map = _lookup_registration_users_with_remote_browser(
+                            session,
+                            current_user,
+                            course_name=course_name,
+                            items=[{"key": "0", "names": names, "phones": phones}],
+                        )
+                        result = result_map.get("0", {})
+                        row_before_remote = list(row)
+                        result_error = _normalize_sheet_text(result.get("error"))
+                        remote_user_id = _normalize_sheet_text(result.get("user_id"))
+                        if result_error:
+                            row[indexes["匹配得分"]] = result_error
+                            error_count += 1
+                        elif remote_user_id:
+                            row[indexes["用户ID"]] = remote_user_id
+                            row[indexes["匹配得分"]] = "95"
+                        if _save_registration_match_row(
+                            session=session,
+                            sheet_id=sheet_id,
+                            row_position=row_position,
+                            row=row,
+                            current_user_id=current_user_id,
+                            run_id=run_id,
+                        ) or row != row_before_remote:
+                            mark_updated(row_position)
+                except Exception as exc:
+                    row[indexes["匹配得分"]] = str(exc.detail if isinstance(exc, HTTPException) else exc)
+                    error_count += 1
+                    if _save_registration_match_row(
+                        session=session,
+                        sheet_id=sheet_id,
+                        row_position=row_position,
+                        row=row,
+                        current_user_id=current_user_id,
+                        run_id=run_id,
+                    ) or row != before:
+                        mark_updated(row_position)
+                finally:
+                    processed_count += 1
+                    _update_registration_match_run(
+                        run_id,
+                        processed_count=processed_count,
+                        skipped_count=skipped_count,
+                        error_count=error_count,
+                        message=f"已处理 {processed_count}/{total_count} 行用户匹配",
+                    )
+
+            _finish_registration_match_run(
+                run_id,
+                "completed",
+                message=f"已更新 {len(updated_positions)} 行用户匹配",
+            )
+    except Exception as exc:
+        _finish_registration_match_run(
+            run_id,
+            "failed",
+            message="用户匹配任务失败",
+            error_message=str(exc.detail if isinstance(exc, HTTPException) else exc),
+        )
+
+
+def _start_registration_match_run(
+    *,
+    sheet_id: int,
+    workbook_id: int | None,
+    action: str,
+    current_user: User,
+    use_browser_fallback: bool,
+    force_restart: bool,
+) -> NoteSheetRegistrationMatchRunResponse:
+    key = _registration_match_run_key(sheet_id, action)
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        active_run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
+        active_run = _REGISTRATION_MATCH_RUNS.get(active_run_id or "")
+        if _is_registration_match_run_active(active_run):
+            if not force_restart:
+                return _serialize_registration_match_run(dict(active_run), already_running=True)
+            _request_cancel_registration_match_run(str(active_run_id))
+
+        run_id = uuid.uuid4().hex
+        run = {
+            "run_id": run_id,
+            "action": action,
+            "sheet_id": int(sheet_id),
+            "workbook_id": workbook_id,
+            "status": "pending",
+            "use_browser_fallback": bool(use_browser_fallback),
+            "current_user_id": current_user.id,
+            "cancel_requested": False,
+            "queued_at": time.time(),
+            "started_at": None,
+            "finished_at": None,
+            "total_count": 0,
+            "processed_count": 0,
+            "updated_count": 0,
+            "skipped_count": 0,
+            "error_count": 0,
+            "message": "任务已排队",
+            "error_message": None,
+        }
+        _REGISTRATION_MATCH_RUNS[run_id] = run
+        _REGISTRATION_MATCH_ACTIVE_BY_KEY[key] = run_id
+
+    if action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
+        target = _run_registration_user_match_background
+    else:
+        raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
+
+    thread = threading.Thread(
+        target=target,
+        kwargs={
+            "run_id": run_id,
+            "sheet_id": sheet_id,
+            "workbook_id": workbook_id,
+            "current_user_snapshot": {
+                "id": current_user.id,
+                "username": current_user.username,
+                "is_superuser": current_user.is_superuser,
+            },
+            "use_browser_fallback": use_browser_fallback,
+        },
+        name=f"note-sheet-registration-match-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _serialize_registration_match_run(_get_registration_match_run_snapshot(run_id))
 
 
 def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str, Any]:
@@ -1279,7 +2453,7 @@ def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str
                 })
                 continue
 
-            for row in worksheet.iter_rows(max_row=max_row, max_col=max_col):
+            for row_number, row in enumerate(worksheet.iter_rows(max_row=max_row, max_col=max_col), start=1):
                 values = [_normalize_excel_import_cell(cell.value) for cell in row]
                 while values and not values[-1]:
                     values.pop()
@@ -1289,7 +2463,7 @@ def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str
                 if total_nonempty_rows > NOTE_SHEET_EXCEL_IMPORT_MAX_NONEMPTY_ROWS:
                     raise HTTPException(status_code=413, detail="Excel 非空行过多，当前首版导入上限为 900 行")
                 sheet_rows.append({
-                    "row_number": int(row[0].row if row else len(sheet_rows) + 1),
+                    "row_number": row_number,
                     "values": values,
                 })
 
@@ -1333,18 +2507,29 @@ def _build_note_sheet_excel_import_prompt(
     document_json: dict[str, Any],
     workbook_payload: dict[str, Any],
     instruction: str,
+    action_document_row: int | None = None,
+    action_column: int | None = None,
 ) -> str:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     data_start_row = _normalize_document_data_start_row(normalized)
     grid_rows = _extract_document_grid_rows(normalized)
-    preserved_rows = _get_excel_import_preserved_data_rows(normalized)
+    preserved_rows = _get_excel_import_preserved_data_rows(
+        normalized,
+        action_document_row=action_document_row,
+        action_column=action_column,
+    )
     target_context = {
         "columns": columns,
         "column_notes": _get_excel_import_column_notes(normalized, columns),
         "header_rows": grid_rows[:data_start_row],
         "preserved_leading_data_rows": preserved_rows,
         "imported_rows_should_start_after_preserved_count": len(preserved_rows),
+        "trigger_action": {
+            "type": NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET,
+            "document_row": action_document_row,
+            "column": action_column,
+        },
     }
     user_instruction = instruction.strip() or "无补充说明。"
     return "\n\n".join([
@@ -1363,6 +2548,10 @@ def _build_note_sheet_excel_import_response_schema(columns: list[str]) -> dict[s
         "type": "object",
         "required": ["rows"],
         "properties": {
+            "extra_columns": {
+                "type": "array",
+                "items": {"type": "string"},
+            },
             "rows": {
                 "type": "array",
                 "items": {
@@ -1419,24 +2608,85 @@ def _normalize_import_record_key(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
 
-def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[str]) -> list[list[Any]]:
+def _normalize_excel_import_extra_column_header(value: Any) -> str:
+    header = _normalize_sheet_text(value)
+    header = re.sub(r"[\r\n\t]+", " ", header)
+    header = re.sub(r"\s{2,}", " ", header).strip()
+    return header[:60].strip()
+
+
+def _append_excel_import_extra_column_header(
+    headers: list[str],
+    used_keys: set[str],
+    value: Any,
+) -> None:
+    header = _normalize_excel_import_extra_column_header(value)
+    if not header:
+        return
+    key = _normalize_import_record_key(header)
+    if not key or key in used_keys:
+        return
+    headers.append(header)
+    used_keys.add(key)
+
+
+def _extract_note_sheet_excel_import_extra_columns(
+    payload: dict[str, Any],
+    columns: list[str],
+    raw_rows: list[Any],
+) -> list[str]:
+    extra_headers: list[str] = []
+    used_keys = {_normalize_import_record_key(column) for column in columns}
+
+    raw_extra_columns = payload.get("extra_columns")
+    if isinstance(raw_extra_columns, list):
+        for raw_header in raw_extra_columns:
+            if isinstance(raw_header, dict):
+                raw_header = (
+                    raw_header.get("header")
+                    or raw_header.get("name")
+                    or raw_header.get("label")
+                    or raw_header.get("field")
+                )
+            _append_excel_import_extra_column_header(extra_headers, used_keys, raw_header)
+
+    target_keys = {_normalize_import_record_key(column) for column in columns}
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        for raw_key, raw_value in raw_row.items():
+            key = _normalize_import_record_key(raw_key)
+            if key in target_keys or not _normalize_sheet_text(raw_value):
+                continue
+            _append_excel_import_extra_column_header(extra_headers, used_keys, raw_key)
+
+    return extra_headers
+
+
+def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[str]) -> tuple[list[list[Any]], list[str]]:
     raw_rows = payload.get("rows")
     if not isinstance(raw_rows, list):
         raise HTTPException(status_code=502, detail="Codex CLI 返回 JSON 缺少 rows 数组")
 
+    extra_columns = _extract_note_sheet_excel_import_extra_columns(payload, columns, raw_rows)
+    output_columns = [*columns, *extra_columns]
     normalized_rows: list[list[Any]] = []
     for raw_row in raw_rows:
         if isinstance(raw_row, dict):
             exact_row = {_normalize_sheet_text(key): value for key, value in raw_row.items()}
             normalized_key_row = {_normalize_import_record_key(key): value for key, value in raw_row.items()}
             row = [
-                _normalize_excel_import_cell(
+                _normalize_excel_import_cell_for_column(
+                    column,
                     exact_row.get(column, normalized_key_row.get(_normalize_import_record_key(column), "")),
                 )
-                for column in columns
+                for column in output_columns
             ]
         elif isinstance(raw_row, list):
-            row = [_normalize_excel_import_cell(value) for value in _normalize_sheet_row(raw_row, len(columns))]
+            row = [
+                _normalize_excel_import_cell_for_column(column, value)
+                for column, value in zip(output_columns, _normalize_sheet_row(raw_row, len(output_columns)))
+            ]
         else:
             continue
         if any(_normalize_sheet_text(cell) for cell in row):
@@ -1444,7 +2694,7 @@ def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[
 
     if not normalized_rows:
         raise HTTPException(status_code=422, detail="Codex CLI 没有识别到可导入的数据行")
-    return normalized_rows
+    return normalized_rows, extra_columns
 
 
 def _normalize_import_message_list(value: Any) -> list[str]:
@@ -1458,12 +2708,16 @@ def _run_note_sheet_excel_import_codex(
     document_json: dict[str, Any],
     workbook_payload: dict[str, Any],
     instruction: str,
-) -> tuple[list[list[Any]], list[str], list[str]]:
+    action_document_row: int | None = None,
+    action_column: int | None = None,
+) -> tuple[list[list[Any]], list[str], list[str], list[str]]:
     columns = _normalize_document_columns(document_json)
     prompt = _build_note_sheet_excel_import_prompt(
         document_json=document_json,
         workbook_payload=workbook_payload,
         instruction=instruction,
+        action_document_row=action_document_row,
+        action_column=action_column,
     )
     try:
         response = chat_with_provider(
@@ -1478,8 +2732,10 @@ def _run_note_sheet_excel_import_codex(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     payload = _parse_note_sheet_excel_import_json(str(response.get("content") or ""))
+    import_rows, extra_columns = _coerce_note_sheet_excel_import_rows(payload, columns)
     return (
-        _coerce_note_sheet_excel_import_rows(payload, columns),
+        import_rows,
+        extra_columns,
         _normalize_import_message_list(payload.get("warnings")),
         _normalize_import_message_list(payload.get("mapping_notes")),
     )
@@ -1489,6 +2745,57 @@ def _find_column_index(columns: list[Any], header: str) -> int | None:
     for index, column in enumerate(columns):
         if _normalize_sheet_text(column) == header:
             return index
+    return None
+
+
+def _normalize_table_field_token(value: Any) -> str:
+    return re.sub(r"\s+", "", _normalize_sheet_text(value)).lower()
+
+
+def _find_table_column_index(columns: list[Any], field: str | int | None) -> int | None:
+    if isinstance(field, int):
+        return field if 0 <= field < len(columns) else None
+
+    field_text = _normalize_sheet_text(field)
+    if not field_text:
+        return None
+
+    exact_index = _find_column_index(columns, field_text)
+    if exact_index is not None:
+        return exact_index
+
+    token = _normalize_table_field_token(field_text)
+    token_matches = [
+        index
+        for index, column in enumerate(columns)
+        if _normalize_table_field_token(column) == token
+    ]
+    if len(token_matches) == 1:
+        return token_matches[0]
+
+    lesson_match = re.search(r"第\s*0*(?P<number>\d+)\s*课", field_text)
+    if lesson_match:
+        lesson_number = int(lesson_match.group("number"))
+        lesson_tokens = {
+            f"第{lesson_number}课",
+            f"第{lesson_number:02d}课",
+        }
+        lesson_matches = [
+            index
+            for index, column in enumerate(columns)
+            if any(token in _normalize_sheet_text(column) for token in lesson_tokens)
+        ]
+        if len(lesson_matches) == 1:
+            return lesson_matches[0]
+
+    contains_matches = [
+        index
+        for index, column in enumerate(columns)
+        if token and token in _normalize_table_field_token(column)
+    ]
+    if len(contains_matches) == 1:
+        return contains_matches[0]
+
     return None
 
 
@@ -1758,6 +3065,28 @@ def _get_next_sunday(today: date | None = None) -> date:
     return current + timedelta(days=days_until_sunday)
 
 
+def _is_attendance_fanbei_course_type(course_type: str) -> bool:
+    return _normalize_sheet_text(course_type) in ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES
+
+
+def _get_attendance_course_month_start_date(course_type: str, month_date: date) -> date:
+    if _is_attendance_fanbei_course_type(course_type):
+        return date(month_date.year, month_date.month, ATTENDANCE_TEMPLATE_FANBEI_START_DAY)
+    return month_date
+
+
+def _add_months(value: date, month_delta: int) -> date:
+    month_index = value.year * 12 + (value.month - 1) + month_delta
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, value.day)
+
+
+def _get_next_attendance_fanbei_cycle_date(source_date: date) -> date:
+    next_cycle_month = _add_months(source_date.replace(day=ATTENDANCE_TEMPLATE_FANBEI_START_DAY), 2)
+    return date(next_cycle_month.year, next_cycle_month.month, ATTENDANCE_TEMPLATE_FANBEI_START_DAY)
+
+
 def _parse_attendance_date_text(value: Any) -> date | None:
     text = _normalize_sheet_text(value)
     if not text:
@@ -1806,26 +3135,104 @@ def _is_attendance_zen_course_type(course_type: str) -> bool:
     return "禅宗" in course_type
 
 
-def _get_attendance_course_template_target_date(
+def _has_attendance_template_target_payload(
+    payload: NoteSheetAttendanceTemplateGenerationRequest | None,
+) -> bool:
+    return bool(
+        payload
+        and (
+            payload.target_date is not None
+            or payload.target_year is not None
+            or payload.target_month is not None
+        )
+    )
+
+
+def _get_attendance_course_template_payload_target_date(
     course_type: str,
     payload: NoteSheetAttendanceCourseTemplateGenerationRequest | None = None,
 ) -> date:
-    if payload and (
-        payload.target_date is not None
-        or payload.target_year is not None
-        or payload.target_month is not None
-    ):
-        return _get_attendance_template_target_date(payload)
+    target_date = _get_attendance_template_target_date(payload)
+    return _get_attendance_course_month_start_date(course_type, target_date)
+
+
+def _get_attendance_course_template_reference_start_date(
+    document_json: dict[str, Any],
+    payload: NoteSheetAttendanceCourseTemplateGenerationRequest | None,
+    *,
+    course_type: str,
+) -> date | None:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    start_date_index = _find_attendance_column_index(columns, "start_date")
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    formula_grid_rows = _extract_document_grid_rows(normalized)
+
+    if payload and payload.row_index is not None:
+        if payload.row_index >= len(rows):
+            return None
+        return _extract_attendance_row_start_date(
+            _normalize_sheet_row(rows[payload.row_index], len(columns)),
+            row_index=payload.row_index,
+            columns=columns,
+            rows=rows,
+            start_date_index=start_date_index,
+            reference_row_offset=formula_row_offset,
+            grid_rows=formula_grid_rows,
+        )
+
+    source = _find_attendance_template_source_row(
+        rows,
+        columns=columns,
+        course_type=course_type,
+        target_date=date.max,
+        reference_row_offset=formula_row_offset,
+        grid_rows=formula_grid_rows,
+    )
+    return source[2]["date"] if source is not None else None
+
+
+def _get_attendance_course_template_target_date(
+    course_type: str,
+    payload: NoteSheetAttendanceCourseTemplateGenerationRequest | None = None,
+    document_json: dict[str, Any] | None = None,
+) -> date:
+    if _has_attendance_template_target_payload(payload):
+        return _get_attendance_course_template_payload_target_date(course_type, payload)
+    if _is_attendance_fanbei_course_type(course_type):
+        source_start_date = (
+            _get_attendance_course_template_reference_start_date(
+                document_json,
+                payload,
+                course_type=course_type,
+            )
+            if document_json is not None
+            else None
+        )
+        if source_start_date is not None:
+            return _get_next_attendance_fanbei_cycle_date(source_start_date)
+        return _get_attendance_course_month_start_date(course_type, _get_next_month_first_day())
     return _get_next_sunday() if _is_attendance_zen_course_type(course_type) else _get_next_month_first_day()
 
 
-def _get_attendance_batch_course_types(target_date: date) -> tuple[str, ...]:
-    course_types = [*ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES]
+def _get_attendance_batch_course_targets(target_date: date) -> tuple[tuple[str, date], ...]:
+    targets = [
+        (course_type, target_date)
+        for course_type in ATTENDANCE_TEMPLATE_MONTHLY_SOURCE_COURSES
+    ]
+    fanbei_target_date = _get_attendance_course_month_start_date("梵呗初阶", target_date)
     if target_date.month % 2 == 1:
-        course_types.extend(ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES)
+        targets.extend(
+            (course_type, fanbei_target_date)
+            for course_type in ATTENDANCE_TEMPLATE_ODD_MONTH_SOURCE_COURSES
+        )
     else:
-        course_types.extend(ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES)
-    return tuple(course_types)
+        targets.extend(
+            (course_type, fanbei_target_date)
+            for course_type in ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES
+        )
+    return tuple(targets)
 
 
 def _format_attendance_course_date(value: date) -> str:
@@ -2258,17 +3665,17 @@ def run_attendance_summary_template_job() -> tuple[int, int]:
 def init_attendance_summary_scheduler() -> None:
     if get_settings().is_test:
         return
-        
+
     from backend.db import engine
     from backend.models import AppSetting
     from sqlmodel import Session
     with Session(engine) as session:
         row = session.get(AppSetting, "background_task.attendance_summary_monthly_templates.enabled")
         enabled = bool(row.value.get("enabled", False)) if row and isinstance(row.value, dict) else False
-        
+
     if not enabled:
         return
-        
+
     if not attendance_summary_scheduler.running:
         attendance_summary_scheduler.start()
     attendance_summary_scheduler.add_job(
@@ -2427,10 +3834,7 @@ def _generate_attendance_next_month_templates(
 ) -> tuple[dict[str, Any], list[NoteSheetAttendanceTemplateActionItem], list[NoteSheetAttendanceTemplateActionItem]]:
     return _generate_attendance_course_templates(
         document_json,
-        targets=[
-            (course_type, target_date)
-            for course_type in _get_attendance_batch_course_types(target_date)
-        ],
+        targets=list(_get_attendance_batch_course_targets(target_date)),
     )
 
 
@@ -2739,14 +4143,8 @@ def _load_attendance_course_link_provider():
 
 
 def _load_attendance_kqdb_provider():
-    for path in (ATTENDANCE_KQ5034_REPO_DIR.parent, ATTENDANCE_XLPROJECT_SRC_DIR):
-        path_text = str(path)
-        if path.exists() and path_text not in sys.path:
-            sys.path.insert(0, path_text)
-
     try:
-        import xlproject.loadenv  # noqa: F401
-        from kq5034.db import get_kqdb  # type: ignore
+        from kq5034.attendance_api import get_kqdb  # type: ignore
 
         return get_kqdb
     except Exception as exc:
@@ -3554,6 +4952,61 @@ def _get_note_sheet_or_404(
     return document, access, workbook
 
 
+def _get_optional_trusted_device(
+    authorization: str | None = Header(default=None),
+    x_device_token: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    sec_websocket_protocol: str | None = Header(default=None),
+) -> Any | None:
+    final_token = extract_api_token(
+        authorization=authorization,
+        x_device_token=x_device_token,
+        token=token,
+        sec_websocket_protocol=sec_websocket_protocol,
+    )
+    if not final_token:
+        return None
+
+    try:
+        return validate_api_token_value(final_token)
+    except HTTPException:
+        return None
+
+
+def _get_note_sheet_for_table_or_404(
+    session: Session,
+    current_user: User | None,
+    trusted_device: Any | None,
+    sheet_id: int,
+    *,
+    required_role: Literal["viewer", "editor", "manager"] = "viewer",
+    workbook_id: int | None = None,
+) -> tuple[SheetDocument, NoteSheetResourceAccess, WorkbookDocument | None]:
+    if trusted_device is None:
+        return _get_note_sheet_or_404(
+            session,
+            current_user,
+            sheet_id,
+            required_role=required_role,
+            workbook_id=workbook_id,
+        )
+
+    document = _get_sheet_by_numeric_id_or_404(session, sheet_id)
+    workbook = _get_workbook_by_numeric_id_or_404(session, workbook_id) if workbook_id is not None else None
+    if workbook is not None:
+        link = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.workbook_id == workbook.id)
+            .where(WorkbookSheetLink.sheet_id == document.id)
+        ).first()
+        if link is None:
+            raise HTTPException(status_code=404, detail="工作簿中不存在该工作表")
+
+    access = _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)
+    _require_resource_access(access, required_role)
+    return document, access, workbook
+
+
 def _get_workbook_or_404(
     session: Session,
     current_user: User | None,
@@ -3635,6 +5088,848 @@ def _serialize_sheet_detail(
         "document_json": dict(document_json if document_json is not None else (document.document_json or {})),
         "pagination": pagination,
     }
+
+
+def _parse_table_cell_reference(cell: str) -> tuple[int, int]:
+    match = A1_CELL_REFERENCE_RE.match(str(cell or ""))
+    if not match:
+        raise HTTPException(status_code=400, detail=f"无法解析单元格坐标: {cell}")
+    column_index = _excel_column_index(match.group("column"))
+    if column_index is None:
+        raise HTTPException(status_code=400, detail=f"无法解析单元格列: {cell}")
+    return int(match.group("row")), column_index
+
+
+def _table_sheet_row_to_data_index(sheet_row: int, data_start_row: int) -> int:
+    return int(sheet_row) - int(data_start_row) - 1
+
+
+def _table_data_index_to_sheet_row(row_index: int, data_start_row: int) -> int:
+    return int(data_start_row) + int(row_index) + 1
+
+
+def _table_row_to_mapping(
+    row: Any,
+    *,
+    row_index: int,
+    data_start_row: int,
+    columns: list[str],
+) -> dict[str, Any]:
+    values = _normalize_sheet_row(row, len(columns))
+    item = {
+        "_row_index": row_index,
+        "_sheet_row": _table_data_index_to_sheet_row(row_index, data_start_row),
+    }
+    for column_index, column in enumerate(columns):
+        item[str(column)] = values[column_index] if column_index < len(values) else ""
+    return item
+
+
+def _split_formula_top_level(value: str, separator: str) -> list[str]:
+    parts: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char == '"':
+            current.append(char)
+            if in_string and index + 1 < len(value) and value[index + 1] == '"':
+                current.append(value[index + 1])
+                index += 2
+                continue
+            in_string = not in_string
+            index += 1
+            continue
+        if not in_string:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth = max(depth - 1, 0)
+            elif char == separator and depth == 0:
+                parts.append("".join(current).strip())
+                current = []
+                index += 1
+                continue
+        current.append(char)
+        index += 1
+    parts.append("".join(current).strip())
+    return parts
+
+
+def _strip_formula_outer_parentheses(value: str) -> str:
+    text = value.strip()
+    while text.startswith("(") and text.endswith(")"):
+        depth = 0
+        in_string = False
+        balanced_outer = True
+        for index, char in enumerate(text):
+            if char == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(text) - 1:
+                    balanced_outer = False
+                    break
+        if not balanced_outer or depth != 0:
+            return text
+        text = text[1:-1].strip()
+    return text
+
+
+def _split_formula_args(value: str) -> list[str]:
+    return _split_formula_top_level(value, ",")
+
+
+def _parse_formula_function(value: str) -> tuple[str, list[str]] | None:
+    match = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)\s*$", value, re.S)
+    if not match:
+        return None
+    return match.group(1).upper(), _split_formula_args(match.group(2))
+
+
+def _coerce_formula_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, int | float):
+        return float(value)
+    text = str(value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _format_formula_number(value: float) -> int | float:
+    rounded = round(value)
+    if abs(value - rounded) < 1e-9:
+        return int(rounded)
+    return value
+
+
+def _parse_formula_string_literal(value: str) -> str | None:
+    text = value.strip()
+    if len(text) < 2 or not (text.startswith('"') and text.endswith('"')):
+        return None
+    return text[1:-1].replace('""', '"')
+
+
+def _parse_formula_cell_reference(value: str) -> tuple[int, int] | None:
+    match = A1_CELL_REFERENCE_RE.match(value)
+    if not match:
+        return None
+    column_index = _excel_column_index(match.group("column"))
+    if column_index is None:
+        return None
+    return int(match.group("row")) - 1, column_index
+
+
+def _parse_table_formula_range_reference(value: str) -> tuple[int, int, int, int] | None:
+    match = re.match(
+        r"^\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*:\s*\$?([A-Za-z]{1,3})\$?(\d+)\s*$",
+        value,
+    )
+    if not match:
+        return None
+    start_column = _excel_column_index(match.group(1))
+    end_column = _excel_column_index(match.group(3))
+    if start_column is None or end_column is None:
+        return None
+    start_row = int(match.group(2)) - 1
+    end_row = int(match.group(4)) - 1
+    return (
+        min(start_row, end_row),
+        min(start_column, end_column),
+        max(start_row, end_row),
+        max(start_column, end_column),
+    )
+
+
+def _get_formula_grid_cell(
+    grid_rows: list[list[Any]],
+    row_index: int,
+    column_index: int,
+    cache: dict[tuple[int, int], Any],
+) -> Any:
+    if row_index < 0 or column_index < 0 or row_index >= len(grid_rows):
+        return ""
+    row = grid_rows[row_index]
+    if column_index >= len(row):
+        return ""
+    return _evaluate_table_formula_text_value(
+        row[column_index],
+        grid_rows=grid_rows,
+        row_index=row_index,
+        column_index=column_index,
+        cache=cache,
+    )
+
+
+def _get_formula_grid_range(
+    grid_rows: list[list[Any]],
+    range_ref: tuple[int, int, int, int],
+    cache: dict[tuple[int, int], Any],
+) -> list[Any]:
+    start_row, start_col, end_row, end_col = range_ref
+    values: list[Any] = []
+    for row_index in range(start_row, end_row + 1):
+        for column_index in range(start_col, end_col + 1):
+            values.append(_get_formula_grid_cell(grid_rows, row_index, column_index, cache))
+    return values
+
+
+def _evaluate_formula_comparison(
+    expr: str,
+    *,
+    grid_rows: list[list[Any]],
+    cache: dict[tuple[int, int], Any],
+) -> bool | None:
+    text = expr.strip()
+    in_string = False
+    depth = 0
+    operators = (">=", "<=", "<>", "=", ">", "<")
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            in_string = not in_string
+            index += 1
+            continue
+        if in_string:
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")":
+            depth = max(depth - 1, 0)
+            index += 1
+            continue
+        if depth == 0:
+            for operator in operators:
+                if text.startswith(operator, index):
+                    left = _evaluate_table_formula_expr(text[:index], grid_rows=grid_rows, cache=cache)
+                    right = _evaluate_table_formula_expr(text[index + len(operator):], grid_rows=grid_rows, cache=cache)
+                    left_number = _coerce_formula_number(left)
+                    right_number = _coerce_formula_number(right)
+                    if left_number is not None and right_number is not None:
+                        left_value: Any = left_number
+                        right_value: Any = right_number
+                    else:
+                        left_value = str(left or "")
+                        right_value = str(right or "")
+                    if operator == ">=":
+                        return left_value >= right_value
+                    if operator == "<=":
+                        return left_value <= right_value
+                    if operator == "<>":
+                        return left_value != right_value
+                    if operator == "=":
+                        return left_value == right_value
+                    if operator == ">":
+                        return left_value > right_value
+                    if operator == "<":
+                        return left_value < right_value
+        index += 1
+    return None
+
+
+def _evaluate_formula_arithmetic(
+    expr: str,
+    *,
+    grid_rows: list[list[Any]],
+    cache: dict[tuple[int, int], Any],
+) -> Any | None:
+    multiply_parts = _split_formula_top_level(expr, "*")
+    if len(multiply_parts) > 1:
+        result = 1.0
+        for part in multiply_parts:
+            value = _evaluate_table_formula_expr(part, grid_rows=grid_rows, cache=cache)
+            number = _coerce_formula_number(value)
+            if number is None:
+                return None
+            result *= number
+        return _format_formula_number(result)
+
+    terms: list[str] = []
+    operators: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    for index, char in enumerate(expr):
+        if char == '"':
+            in_string = not in_string
+        if not in_string:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth = max(depth - 1, 0)
+            elif char in "+-" and depth == 0 and index > 0:
+                previous = expr[index - 1]
+                if previous not in "+-*/(":
+                    terms.append("".join(current).strip())
+                    operators.append(char)
+                    current = []
+                    continue
+        current.append(char)
+    if operators:
+        terms.append("".join(current).strip())
+        first = _evaluate_table_formula_expr(terms[0], grid_rows=grid_rows, cache=cache)
+        result = _coerce_formula_number(first)
+        if result is None:
+            return None
+        for operator, term in zip(operators, terms[1:]):
+            value = _evaluate_table_formula_expr(term, grid_rows=grid_rows, cache=cache)
+            number = _coerce_formula_number(value)
+            if number is None:
+                return None
+            result = result + number if operator == "+" else result - number
+        return _format_formula_number(result)
+    return None
+
+
+def _evaluate_table_formula_expr(
+    expr: str,
+    *,
+    grid_rows: list[list[Any]],
+    cache: dict[tuple[int, int], Any],
+) -> Any:
+    text = _strip_formula_outer_parentheses(expr)
+    if not text:
+        return ""
+
+    concat_parts = _split_formula_top_level(text, "&")
+    if len(concat_parts) > 1:
+        return "".join(str(_evaluate_table_formula_expr(part, grid_rows=grid_rows, cache=cache)) for part in concat_parts)
+
+    literal = _parse_formula_string_literal(text)
+    if literal is not None:
+        return literal
+
+    upper = text.upper()
+    if upper == "TRUE":
+        return True
+    if upper == "FALSE":
+        return False
+    if upper == "TODAY()":
+        return date.today()
+
+    cell_ref = _parse_table_formula_cell_reference(text)
+    if cell_ref is not None:
+        return _get_formula_grid_cell(grid_rows, cell_ref[0], cell_ref[1], cache)
+
+    range_ref = _parse_table_formula_range_reference(text)
+    if range_ref is not None:
+        return _get_formula_grid_range(grid_rows, range_ref, cache)
+
+    try:
+        numeric = float(text)
+    except ValueError:
+        numeric = None
+    if numeric is not None:
+        return _format_formula_number(numeric)
+
+    comparison = _evaluate_formula_comparison(text, grid_rows=grid_rows, cache=cache)
+    if comparison is not None:
+        return comparison
+
+    arithmetic = _evaluate_formula_arithmetic(text, grid_rows=grid_rows, cache=cache)
+    if arithmetic is not None:
+        return arithmetic
+
+    func = _parse_formula_function(text)
+    if func is not None:
+        name, args = func
+        if name == "IF" and len(args) >= 2:
+            condition = bool(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache))
+            return _evaluate_table_formula_expr(args[1] if condition else (args[2] if len(args) > 2 else ""), grid_rows=grid_rows, cache=cache)
+        if name == "IFERROR" and args:
+            try:
+                return _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+            except Exception:
+                return _evaluate_table_formula_expr(args[1] if len(args) > 1 else "", grid_rows=grid_rows, cache=cache)
+        if name == "AND":
+            return all(bool(_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)) for arg in args)
+        if name == "OR":
+            return any(bool(_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)) for arg in args)
+        if name == "LEN" and args:
+            return len(str(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache) or ""))
+        if name == "TEXTJOIN" and len(args) >= 3:
+            delimiter = str(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache))
+            ignore_empty = bool(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache))
+            values = [_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache) for arg in args[2:]]
+            parts = [str(value) for value in values if not ignore_empty or str(value) != ""]
+            return delimiter.join(parts)
+        if name == "DATEDIF" and len(args) >= 3:
+            start_value = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+            end_value = _evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache)
+            unit = str(_evaluate_table_formula_expr(args[2], grid_rows=grid_rows, cache=cache)).lower()
+            start_date = date.fromisoformat(str(start_value))
+            if isinstance(end_value, date):
+                end_date = end_value
+            else:
+                end_date = date.fromisoformat(str(end_value))
+            if unit == "d":
+                return (end_date - start_date).days
+            return text
+        if name == "COUNTIF" and len(args) >= 2:
+            values = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+            pattern = str(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache))
+            needle = pattern.strip("*")
+            if not isinstance(values, list):
+                values = [values]
+            if pattern.startswith("*") and pattern.endswith("*"):
+                return sum(1 for value in values if needle in str(value or ""))
+            return sum(1 for value in values if str(value or "") == pattern)
+        if name == "SWITCH" and len(args) >= 3:
+            target = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+            pairs = args[1:]
+            default_value = None
+            if len(pairs) % 2 == 1:
+                default_value = pairs[-1]
+                pairs = pairs[:-1]
+            for condition_expr, value_expr in zip(pairs[0::2], pairs[1::2]):
+                condition = _evaluate_table_formula_expr(condition_expr, grid_rows=grid_rows, cache=cache)
+                if condition == target:
+                    return _evaluate_table_formula_expr(value_expr, grid_rows=grid_rows, cache=cache)
+            return _evaluate_table_formula_expr(default_value, grid_rows=grid_rows, cache=cache) if default_value is not None else ""
+
+    return text
+
+
+def _evaluate_table_formula_text_value(
+    value: Any,
+    *,
+    grid_rows: list[list[Any]],
+    row_index: int,
+    column_index: int,
+    cache: dict[tuple[int, int], Any],
+) -> Any:
+    if not _is_formula_expression(value):
+        return value
+    key = (row_index, column_index)
+    if key in cache:
+        return cache[key]
+    cache[key] = ""
+    try:
+        result = _evaluate_table_formula_expr(str(value)[1:], grid_rows=grid_rows, cache=cache)
+    except Exception:
+        result = value
+    cache[key] = result
+    return result
+
+
+def _build_table_text_grid(
+    normalized: dict[str, Any],
+    *,
+    columns: list[str],
+    rows: list[Any],
+) -> list[list[Any]]:
+    data_start_row = _normalize_document_data_start_row(normalized)
+    raw_grid_rows = _extract_document_grid_rows(normalized)
+    prefix_rows = raw_grid_rows[:data_start_row] if raw_grid_rows else [[""] * len(columns) for _ in range(data_start_row)]
+    source_grid = [
+        _normalize_sheet_row(row, len(columns))
+        for row in [*prefix_rows, *rows]
+    ]
+    cache: dict[tuple[int, int], Any] = {}
+    return [
+        [
+            _evaluate_table_formula_text_value(
+                cell,
+                grid_rows=source_grid,
+                row_index=row_index,
+                column_index=column_index,
+                cache=cache,
+            )
+            for column_index, cell in enumerate(row)
+        ]
+        for row_index, row in enumerate(source_grid)
+    ]
+
+
+def _build_note_sheet_table_response(
+    document: SheetDocument,
+    *,
+    workbook: WorkbookDocument | None = None,
+    include_grid: bool = False,
+    value_mode: Literal["text", "raw"] = "text",
+) -> NoteSheetTableResponse:
+    normalized = _normalize_document_json(dict(document.document_json or {}))
+    columns = _normalize_document_columns(normalized)
+    rows = _extract_document_rows(normalized)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    field_row_index = int(normalized.get("field_row_index") or 0)
+    raw_grid_rows = _extract_document_grid_rows(normalized)
+    response_rows = rows
+    response_grid_rows = raw_grid_rows
+    if value_mode == "text":
+        text_grid = _build_table_text_grid(normalized, columns=columns, rows=rows)
+        response_rows = text_grid[data_start_row:data_start_row + len(rows)]
+        if raw_grid_rows:
+            response_grid_rows = text_grid[:len(raw_grid_rows)]
+    table_rows = [
+        _table_row_to_mapping(
+            row,
+            row_index=row_index,
+            data_start_row=data_start_row,
+            columns=columns,
+        )
+        for row_index, row in enumerate(response_rows)
+    ]
+    grid_rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in response_grid_rows
+    ] if include_grid else []
+    return NoteSheetTableResponse(
+        id=_require_sheet_numeric_id(document),
+        workbook_id=_require_workbook_numeric_id(workbook) if workbook is not None else None,
+        title=document.title,
+        version=int(document.version or 1),
+        value_mode=value_mode,
+        columns=columns,
+        rows=table_rows,
+        row_count=len(rows),
+        data_start_row=data_start_row,
+        field_row_index=field_row_index,
+        grid_rows=grid_rows,
+    )
+
+
+def _ensure_table_data_row(rows: list[Any], row_index: int, columns: list[str]) -> None:
+    while len(rows) <= row_index:
+        rows.append([""] * len(columns))
+
+
+def _set_table_data_cell(
+    rows: list[Any],
+    *,
+    row_index: int,
+    column_index: int,
+    value: Any,
+    columns: list[str],
+) -> bool:
+    if row_index < 0:
+        raise HTTPException(status_code=400, detail="数据行号超出表格范围")
+    _ensure_table_data_row(rows, row_index, columns)
+    current_value = _extract_row_cell_value(rows[row_index], column_index, columns)
+    if current_value == value:
+        return False
+    rows[row_index] = _set_row_cell_value(rows[row_index], columns, column_index, value)
+    return True
+
+
+def _ensure_table_grid_row(grid_rows: list[Any], row_index: int, column_count: int) -> None:
+    while len(grid_rows) <= row_index:
+        grid_rows.append([""] * column_count)
+
+
+def _set_table_grid_cell(
+    grid_rows: list[Any],
+    *,
+    grid_row_index: int,
+    column_index: int,
+    value: Any,
+    column_count: int,
+) -> bool:
+    if grid_row_index < 0:
+        raise HTTPException(status_code=400, detail="表格行号超出范围")
+    _ensure_table_grid_row(grid_rows, grid_row_index, column_count)
+    current_cells = _normalize_sheet_row(grid_rows[grid_row_index], column_count)
+    current_value = current_cells[column_index] if column_index < len(current_cells) else ""
+    if current_value == value:
+        return False
+    current_cells[column_index] = value
+    grid_rows[grid_row_index] = current_cells
+    return True
+
+
+def _set_table_sheet_cell(
+    rows: list[Any],
+    grid_rows: list[Any],
+    *,
+    sheet_row: int,
+    column_index: int,
+    value: Any,
+    columns: list[str],
+    data_start_row: int,
+) -> tuple[bool, bool]:
+    if sheet_row <= 0:
+        raise HTTPException(status_code=400, detail="sheet_row 必须从 1 开始")
+    if column_index < 0 or column_index >= len(columns):
+        raise HTTPException(status_code=400, detail="列号超出表格范围")
+    if sheet_row <= data_start_row:
+        changed = _set_table_grid_cell(
+            grid_rows,
+            grid_row_index=sheet_row - 1,
+            column_index=column_index,
+            value=value,
+            column_count=len(columns),
+        )
+        return changed, False
+    changed = _set_table_data_cell(
+        rows,
+        row_index=_table_sheet_row_to_data_index(sheet_row, data_start_row),
+        column_index=column_index,
+        value=value,
+        columns=columns,
+    )
+    return changed, True
+
+
+def _resolve_table_operation_column(columns: list[str], operation: NoteSheetTablePatchOperation) -> int:
+    column = operation.column if operation.column is not None else operation.field
+    column_index = _find_table_column_index(columns, column)
+    if column_index is None:
+        raise HTTPException(status_code=400, detail=f"找不到字段列: {column}")
+    return column_index
+
+
+def _apply_table_write_fields_operation(
+    rows: list[Any],
+    *,
+    columns: list[str],
+    data_start_row: int,
+    operation: NoteSheetTablePatchOperation,
+) -> tuple[int, set[int]]:
+    if not operation.rows:
+        return 0, set()
+
+    writable_fields = [
+        field
+        for field in (operation.fields or sorted({
+            str(key)
+            for item in operation.rows
+            for key in item
+            if not str(key).startswith("_") and str(key) != operation.key_field
+        }))
+        if not str(field).startswith("_")
+    ]
+    column_indexes: dict[str, int] = {}
+    for field in writable_fields:
+        index = _find_table_column_index(columns, field)
+        if index is None:
+            raise HTTPException(status_code=400, detail=f"找不到字段列: {field}")
+        column_indexes[field] = index
+
+    key_row_map: dict[str, int] = {}
+    if operation.key_field:
+        key_column_index = _find_table_column_index(columns, operation.key_field)
+        if key_column_index is None:
+            raise HTTPException(status_code=400, detail=f"找不到 key_field 字段列: {operation.key_field}")
+        for row_index, row in enumerate(rows):
+            key = _normalize_sheet_text(_extract_row_cell_value(row, key_column_index, columns))
+            if key and key not in key_row_map:
+                key_row_map[key] = row_index
+
+    if operation.start_row_index is not None:
+        current_row_index = operation.start_row_index
+    elif operation.start_sheet_row is not None:
+        current_row_index = _table_sheet_row_to_data_index(operation.start_sheet_row, data_start_row)
+    else:
+        current_row_index = 0
+
+    updated_cells = 0
+    updated_rows: set[int] = set()
+    for offset, incoming in enumerate(operation.rows):
+        target_row_index: int | None = None
+        if operation.key_field:
+            key_value = _normalize_sheet_text(incoming.get(operation.key_field))
+            target_row_index = key_row_map.get(key_value)
+            if target_row_index is None and operation.append_missing:
+                target_row_index = len(rows)
+                key_row_map[key_value] = target_row_index
+        else:
+            target_row_index = current_row_index + offset
+
+        if target_row_index is None or target_row_index < 0:
+            continue
+
+        for field, column_index in column_indexes.items():
+            if field not in incoming:
+                continue
+            if _set_table_data_cell(
+                rows,
+                row_index=target_row_index,
+                column_index=column_index,
+                value=incoming.get(field),
+                columns=columns,
+            ):
+                updated_cells += 1
+                updated_rows.add(target_row_index)
+
+    return updated_cells, updated_rows
+
+
+def _apply_table_write_range_operation(
+    rows: list[Any],
+    grid_rows: list[Any],
+    *,
+    columns: list[str],
+    data_start_row: int,
+    operation: NoteSheetTablePatchOperation,
+) -> tuple[int, set[int]]:
+    if operation.cell:
+        start_sheet_row, start_column_index = _parse_table_cell_reference(operation.cell)
+    else:
+        start_column_index = _resolve_table_operation_column(columns, operation)
+        if operation.start_sheet_row is not None:
+            start_sheet_row = operation.start_sheet_row
+        elif operation.start_row_index is not None:
+            start_sheet_row = _table_data_index_to_sheet_row(operation.start_row_index, data_start_row)
+        else:
+            start_sheet_row = _table_data_index_to_sheet_row(0, data_start_row)
+
+    updated_cells = 0
+    updated_rows: set[int] = set()
+    for row_offset, row_values in enumerate(operation.values):
+        for column_offset, value in enumerate(row_values):
+            column_index = start_column_index + column_offset
+            if column_index < 0 or column_index >= len(columns):
+                continue
+            changed, is_data_row = _set_table_sheet_cell(
+                rows,
+                grid_rows,
+                sheet_row=start_sheet_row + row_offset,
+                column_index=column_index,
+                value=value,
+                columns=columns,
+                data_start_row=data_start_row,
+            )
+            if changed:
+                updated_cells += 1
+                if is_data_row:
+                    updated_rows.add(_table_sheet_row_to_data_index(start_sheet_row + row_offset, data_start_row))
+    return updated_cells, updated_rows
+
+
+def _apply_table_set_cell_operation(
+    rows: list[Any],
+    grid_rows: list[Any],
+    *,
+    columns: list[str],
+    data_start_row: int,
+    operation: NoteSheetTablePatchOperation,
+) -> tuple[int, set[int]]:
+    if operation.cell:
+        sheet_row, column_index = _parse_table_cell_reference(operation.cell)
+    else:
+        column_index = _resolve_table_operation_column(columns, operation)
+        if operation.sheet_row is not None:
+            sheet_row = operation.sheet_row
+        elif operation.row_index is not None:
+            sheet_row = _table_data_index_to_sheet_row(operation.row_index, data_start_row)
+        else:
+            raise HTTPException(status_code=400, detail="set_cell 需要 cell、sheet_row 或 row_index")
+
+    changed, is_data_row = _set_table_sheet_cell(
+        rows,
+        grid_rows,
+        sheet_row=sheet_row,
+        column_index=column_index,
+        value=operation.value,
+        columns=columns,
+        data_start_row=data_start_row,
+    )
+    if not changed:
+        return 0, set()
+    return 1, {_table_sheet_row_to_data_index(sheet_row, data_start_row)} if is_data_row else set()
+
+
+def _apply_table_set_note_cell_operation(
+    grid_rows: list[Any],
+    *,
+    columns: list[str],
+    field_row_index: int,
+    operation: NoteSheetTablePatchOperation,
+) -> int:
+    column_index = _resolve_table_operation_column(columns, operation)
+    if operation.sheet_row is not None:
+        grid_row_index = operation.sheet_row - 1
+    elif operation.row_index is not None:
+        grid_row_index = operation.row_index
+    else:
+        grid_row_index = field_row_index + 1
+    return int(_set_table_grid_cell(
+        grid_rows,
+        grid_row_index=grid_row_index,
+        column_index=column_index,
+        value=operation.value,
+        column_count=len(columns),
+    ))
+
+
+def _apply_note_sheet_table_patch(
+    document_json: dict[str, Any],
+    operations: list[NoteSheetTablePatchOperation],
+) -> tuple[dict[str, Any], int, int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    rows = list(_extract_document_rows(normalized))
+    data_start_row = _normalize_document_data_start_row(normalized)
+    field_row_index = int(normalized.get("field_row_index") or 0)
+    raw_grid_rows = _extract_document_grid_rows(normalized)
+    grid_rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in raw_grid_rows[:data_start_row]
+    ]
+    if not grid_rows and data_start_row:
+        grid_rows = [[""] * len(columns) for _ in range(data_start_row)]
+
+    updated_cells = 0
+    updated_rows: set[int] = set()
+    for operation in operations:
+        if operation.type == "write_fields":
+            cell_count, row_indexes = _apply_table_write_fields_operation(
+                rows,
+                columns=columns,
+                data_start_row=data_start_row,
+                operation=operation,
+            )
+        elif operation.type == "write_range":
+            cell_count, row_indexes = _apply_table_write_range_operation(
+                rows,
+                grid_rows,
+                columns=columns,
+                data_start_row=data_start_row,
+                operation=operation,
+            )
+        elif operation.type == "set_cell":
+            cell_count, row_indexes = _apply_table_set_cell_operation(
+                rows,
+                grid_rows,
+                columns=columns,
+                data_start_row=data_start_row,
+                operation=operation,
+            )
+        elif operation.type == "set_note_cell":
+            cell_count = _apply_table_set_note_cell_operation(
+                grid_rows,
+                columns=columns,
+                field_row_index=field_row_index,
+                operation=operation,
+            )
+            row_indexes = set()
+        else:  # pragma: no cover - guarded by pydantic Literal
+            raise HTTPException(status_code=400, detail=f"未知表格操作: {operation.type}")
+        updated_cells += cell_count
+        updated_rows.update(row_indexes)
+
+    next_document = {
+        **normalized,
+        "columns": columns,
+        "grid_rows": [*grid_rows, *rows] if grid_rows else raw_grid_rows,
+    }
+    return _replace_document_data_rows(next_document, rows), updated_cells, len(updated_rows)
 
 
 def _serialize_workbook_summary(
@@ -3966,6 +6261,88 @@ def get_note_sheet(
     )
 
 
+@router.get("/sheets/{sheet_id}/table", response_model=NoteSheetTableResponse)
+def get_note_sheet_table(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    include_grid: bool = Query(default=False),
+    value_mode: Literal["text", "raw"] = Query(default="text"),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+    trusted_device: Any | None = Depends(_get_optional_trusted_device),
+):
+    document, _access, workbook = _get_note_sheet_for_table_or_404(
+        session,
+        current_user,
+        trusted_device,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    return _build_note_sheet_table_response(
+        document,
+        workbook=workbook,
+        include_grid=include_grid,
+        value_mode=value_mode,
+    )
+
+
+@router.patch("/sheets/{sheet_id}/table", response_model=NoteSheetTablePatchResponse)
+def patch_note_sheet_table(
+    sheet_id: int,
+    payload: NoteSheetTablePatchRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+    trusted_device: Any | None = Depends(_get_optional_trusted_device),
+):
+    document, access, workbook = _get_note_sheet_for_table_or_404(
+        session,
+        current_user,
+        trusted_device,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if current_user is None and trusted_device is None:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+    if payload.expected_version is not None and int(document.version or 1) != payload.expected_version:
+        raise HTTPException(status_code=409, detail="表格版本已变化，请重新读取后再写入")
+    if not payload.operations:
+        raise HTTPException(status_code=400, detail="缺少表格操作")
+
+    current_document = dict(document.document_json or {})
+    next_document, updated_cell_count, updated_row_count = _apply_note_sheet_table_patch(
+        current_document,
+        payload.operations,
+    )
+    if next_document != current_document:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id if current_user is not None else None
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    sheet = NoteSheetDetailResponse.model_validate(
+        _serialize_sheet_detail(
+            document,
+            workbook_items=workbook_items,
+            access=access,
+        ),
+    )
+    return NoteSheetTablePatchResponse(
+        sheet=sheet,
+        table=_build_note_sheet_table_response(document, workbook=workbook, include_grid=False),
+        updated_cell_count=updated_cell_count,
+        updated_row_count=updated_row_count,
+    )
+
+
 @router.get("/sheets/{sheet_id}/access", response_model=NoteSheetResourceAccessResponse)
 def get_sheet_access(
     sheet_id: int,
@@ -4098,6 +6475,8 @@ async def import_note_sheet_excel_reset(
     sheet_id: int,
     file: UploadFile = File(...),
     instruction: str = Form(default=""),
+    action_document_row: int | None = Form(default=None),
+    action_column: int | None = Form(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
@@ -4120,12 +6499,20 @@ async def import_note_sheet_excel_reset(
     raw_bytes = await file.read()
     workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
     current_document = _normalize_document_json(dict(document.document_json or {}))
-    import_rows, warnings, mapping_notes = _run_note_sheet_excel_import_codex(
+    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_codex(
         document_json=current_document,
         workbook_payload=workbook_payload,
         instruction=instruction,
+        action_document_row=action_document_row,
+        action_column=action_column,
     )
-    next_document, preserved_row_count = _replace_document_rows_for_excel_import(current_document, import_rows)
+    next_document, preserved_row_count = _replace_document_rows_for_excel_import(
+        current_document,
+        import_rows,
+        extra_columns=extra_columns,
+        action_document_row=action_document_row,
+        action_column=action_column,
+    )
 
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
@@ -4152,8 +6539,139 @@ async def import_note_sheet_excel_reset(
         sheet=detail,
         imported_count=len(import_rows),
         preserved_row_count=preserved_row_count,
+        extra_columns=extra_columns,
         warnings=warnings,
         mapping_notes=mapping_notes,
+    )
+
+
+@router.post(
+    "/sheets/{sheet_id}/registration/match-runs",
+    response_model=NoteSheetRegistrationMatchRunResponse,
+)
+def start_note_sheet_registration_match_run(
+    sheet_id: int,
+    payload: NoteSheetRegistrationMatchRunRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+    if payload.action != NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
+        raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
+    if current_user.id is None:
+        raise HTTPException(status_code=403, detail="当前用户无效")
+
+    run_response = _start_registration_match_run(
+        sheet_id=_require_sheet_numeric_id(document),
+        workbook_id=workbook_id,
+        action=payload.action,
+        current_user=current_user,
+        use_browser_fallback=payload.use_browser_fallback,
+        force_restart=payload.force_restart,
+    )
+    return run_response
+
+
+@router.get(
+    "/sheets/{sheet_id}/registration/match-runs/active",
+    response_model=NoteSheetRegistrationMatchRunResponse,
+)
+def get_note_sheet_active_registration_match_run(
+    sheet_id: int,
+    action: Literal["registration_order_match", "registration_user_match"] = Query(...),
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    run = _get_active_registration_match_run_snapshot(_require_sheet_numeric_id(document), action)
+    sheet = _serialize_note_sheet_action_detail(session, document, access)
+    return _serialize_registration_match_run(
+        run,
+        sheet=sheet,
+        sheet_id=_require_sheet_numeric_id(document),
+        action=action,
+        workbook_id=workbook_id,
+    )
+
+
+@router.get(
+    "/sheets/{sheet_id}/registration/match-runs/{run_id}",
+    response_model=NoteSheetRegistrationMatchRunResponse,
+)
+def get_note_sheet_registration_match_run(
+    sheet_id: int,
+    run_id: str,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    run = _get_registration_match_run_snapshot(run_id)
+    if run is None or int(run.get("sheet_id") or 0) != _require_sheet_numeric_id(document):
+        raise HTTPException(status_code=404, detail="匹配任务不存在")
+    sheet = _serialize_note_sheet_action_detail(session, document, access)
+    return _serialize_registration_match_run(run, sheet=sheet)
+
+
+@router.post(
+    "/sheets/{sheet_id}/registration/update-order-match",
+    response_model=NoteSheetRegistrationMatchResponse,
+)
+def update_note_sheet_registration_order_match(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return _run_registration_match_action(
+        sheet_id=sheet_id,
+        action=NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+        workbook_id=workbook_id,
+        session=session,
+        current_user=current_user,
+    )
+
+
+@router.post(
+    "/sheets/{sheet_id}/registration/update-user-match",
+    response_model=NoteSheetRegistrationMatchResponse,
+)
+def update_note_sheet_registration_user_match(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    use_browser_fallback: bool = Query(default=NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return _run_registration_match_action(
+        sheet_id=sheet_id,
+        action=NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+        workbook_id=workbook_id,
+        session=session,
+        current_user=current_user,
+        use_browser_fallback=use_browser_fallback,
     )
 
 
@@ -4286,7 +6804,11 @@ def generate_attendance_summary_course_template(
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     course_type = _resolve_attendance_course_template_type(current_document, payload)
-    target_date = _get_attendance_course_template_target_date(course_type, payload)
+    target_date = _get_attendance_course_template_target_date(
+        course_type,
+        payload,
+        document_json=current_document,
+    )
     next_document, generated, skipped = _generate_attendance_course_templates(
         current_document,
         targets=[(course_type, target_date)],

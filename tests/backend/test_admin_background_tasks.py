@@ -28,6 +28,8 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "note_metadata_feedback_optimization",
         "codex_diary_yesterday_import",
         "attendance_summary_monthly_templates",
+        "attendance_fanbei_evening_steps",
+        "attendance_fanbei_morning_steps",
         "storage_analysis",
     }.issubset(task_keys)
     assert "queue" in payload
@@ -63,3 +65,17 @@ def test_admin_background_tasks_can_trigger_codex_diary_job(client, monkeypatch)
     assert payload["task_key"] == "codex_diary_yesterday_import"
     assert payload["queued"] is True
     assert payload["queue_task_id"] == "queued-manual_admin"
+
+
+def test_admin_background_tasks_can_trigger_fanbei_placeholder_job(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.post("/api/admin/background-tasks/attendance_fanbei_evening_steps/trigger")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["task_key"] == "attendance_fanbei_evening_steps"
+    assert payload["queued"] is True
+    assert payload["queue_task_id"]

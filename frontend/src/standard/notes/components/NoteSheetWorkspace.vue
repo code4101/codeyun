@@ -9,17 +9,23 @@ import { registerLanguageDictionary, zhCN } from 'handsontable/i18n'
 
 import {
   fetchNoteSheet,
+  fetchNoteSheetActiveRegistrationMatchRun,
+  fetchNoteSheetRegistrationMatchRun,
   fetchAttendanceCourseScriptStatuses,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
   importNoteSheetFromExcelReset,
   organizeAttendanceCourseScripts,
   setAttendanceRowCompleted,
+  startNoteSheetRegistrationMatchRun,
   updateAttendanceLinkCounts,
+  updateNoteSheetRegistrationOrderMatch,
   type AttendanceLinkCountFieldKey,
   type AttendanceCourseScriptStatusItem,
   type NoteSheetAccessCapabilities,
   type NoteSheetPaginationState,
+  type NoteSheetRegistrationMatchRunResponse,
+  type WorkbookRefItem,
   sortNoteSheet,
   updateNoteSheet,
   type NoteSheetDetail,
@@ -53,7 +59,6 @@ const TABLE_CELL_VERTICAL_PADDING = 4
 const TABLE_CELL_HORIZONTAL_PADDING = 8
 const TABLE_CELL_BORDER_WIDTH = 1
 const DEFAULT_COLUMN_FONT_SIZE = 13
-const MIN_COLUMN_FONT_SIZE = 10
 const MAX_COLUMN_FONT_SIZE = 32
 const DEFAULT_COLUMN_DISPLAY_MODE: ColumnDisplayMode = 'single_line'
 const DEFAULT_COLUMN_TEXT_ALIGN: ColumnTextAlign = 'auto'
@@ -94,7 +99,16 @@ const ATTENDANCE_SUMMARY_SHEET_ID = 4
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
 const PAGED_ROW_EXPANSION_MESSAGE = '分页模式下不能跨页粘贴并自动新增行。请切到最后一页追加，或关闭分页后再粘贴。'
 const PAGED_AUTO_ROW_INSERT_MESSAGE = '分页模式只允许在最后一页自动新增行。请切到最后一页追加，或关闭分页后再操作。'
-const EXCEL_IMPORT_ACTION_TEXT = '导入excel'
+const SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = 'excel_import_reset'
+const SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = 'registration_order_match'
+const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
+const SHEET_CELL_ACTION_LABELS = {
+  [SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]: '导入excel',
+  [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]: '更新订单匹配',
+  [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]: '更新用户匹配',
+} as const
+const EXCEL_IMPORT_ACTION_LABEL = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]
+const REGISTRATION_MATCH_RUN_POLL_MS = 2000
 const ATTENDANCE_FIELD_BINDINGS = {
   courseType: { header: '课程类型', fallbackIndex: 0 },
   onlineSheet: { header: '在线考勤表', fallbackIndex: 2 },
@@ -175,6 +189,13 @@ type SheetCellLink = {
   title?: string
 }
 
+type SheetCellActionType = keyof typeof SHEET_CELL_ACTION_LABELS
+
+type SheetCellAction = {
+  type: SheetCellActionType
+  label?: string
+}
+
 type SheetCellStyle = {
   background_color?: string
   text_color?: string
@@ -188,6 +209,7 @@ type HashColorStyle = {
 
 type SheetCellMeta = {
   link?: SheetCellLink
+  action?: SheetCellAction
   style?: SheetCellStyle
 }
 
@@ -208,6 +230,13 @@ type SelectedDataCell = {
   row: number
   column: number
   documentRow: number
+}
+
+type FormulaBarCell = {
+  gridRow: number
+  dataRow: number
+  column: number
+  documentGridRow: number
 }
 
 type SelectedSheetCell = {
@@ -354,6 +383,7 @@ type SheetViewSettings = {
   show_column_markers?: boolean
   column_marker_style?: ColumnMarkerStyle
   column_note_display?: ColumnNoteDisplayMode
+  frozen_column_count?: number
   pagination?: {
     enabled?: boolean
     page_size?: number
@@ -390,6 +420,22 @@ type SheetWorkspaceSyncPayload = {
   title: string
   version: number
   updatedAt: number
+  workbookItems: WorkbookRefItem[]
+}
+
+type SheetRowDetailItem = {
+  columnIndex: number
+  marker: string
+  label: string
+  value: string
+  empty: boolean
+  link?: SheetCellLink | null
+}
+
+type SheetRowDetail = {
+  rowIndex: number
+  rowLabel: string
+  items: SheetRowDetailItem[]
 }
 
 type SheetPagePatchState = {
@@ -424,8 +470,10 @@ type FormulaEngineInstance = {
   destroy: () => void
 }
 
+type FormulaEngineCellValue = string | number | boolean | null
+
 type FormulaEngineClass = {
-  buildFromArray: (data: string[][], config: { licenseKey: string }) => FormulaEngineInstance
+  buildFromArray: (data: FormulaEngineCellValue[][], config: { licenseKey: string }) => FormulaEngineInstance
   getFunctionPlugin?: (functionId: string) => unknown
   registerFunctionPlugin?: (plugin: unknown, translations?: Record<string, Record<string, string>>) => void
 }
@@ -542,6 +590,42 @@ const excelImportFileInputRef = ref<HTMLInputElement | null>(null)
 const excelImportFile = ref<File | null>(null)
 const excelImportInstruction = ref('')
 const excelImportRunning = ref(false)
+const excelImportActionCell = ref<{ documentRow: number; column: number } | null>(null)
+const userMatchDialogVisible = ref(false)
+const userMatchUseBrowserFallback = ref(false)
+const userMatchStartPending = ref(false)
+const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(null)
+const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
+const rowDetailDialogVisible = ref(false)
+const rowDetail = ref<SheetRowDetail | null>(null)
+function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunResponse | null) {
+  return run?.status === 'pending' || run?.status === 'running'
+}
+
+const activeUserMatchRun = computed(() => isRegistrationMatchRunActive(userMatchRunStatus.value))
+const userMatchRunSummary = computed(() => {
+  const run = userMatchRunStatus.value
+  if (!run || run.status === 'idle') {
+    return ''
+  }
+  if (run.status === 'failed') {
+    return run.error_message || run.message || '上次用户匹配失败'
+  }
+  if (run.status === 'cancelled') {
+    return run.message || '上次用户匹配已取消'
+  }
+  if (run.status === 'completed') {
+    const errorSuffix = run.error_count ? `，${run.error_count} 行异常` : ''
+    return run.message || `已完成，更新 ${run.updated_count} 行，跳过 ${run.skipped_count} 行${errorSuffix}`
+  }
+  const total = run.total_count || 0
+  const progress = total ? `${run.processed_count}/${total}` : `${run.processed_count}`
+  const fallbackSuffix = run.use_browser_fallback ? '，含小鹅通兜底' : ''
+  return `后台匹配中：${progress}，已更新 ${run.updated_count} 行${fallbackSuffix}`
+})
+const rowDetailDialogTitle = computed(() => (
+  rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显式此条'
+))
 const sheetSettingsRowMarkerMode = computed<RowMarkerMode>({
   get() {
     if (!sheetSettingsDraft.value.show_row_numbers) {
@@ -597,7 +681,7 @@ const cellStyleDraftTouched = ref<SheetCellStyleDraftTouched>({
   font_family: false,
 })
 const copiedCellFormat = ref<{ style: SheetCellStyle | null } | null>(null)
-const formulaBarCell = ref<SelectedDataCell | null>(null)
+const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
 const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
@@ -640,6 +724,10 @@ const pageWorkingRowCount = computed(() => trimTrailingBlankRows(
   rows.value.map((row) => normalizeRow(row, columnHeaders.value)),
 ).length)
 const paginationEnabled = computed(() => sheetViewSettings.value.pagination.enabled)
+const fixedColumnsStart = computed(() => normalizeFrozenColumnCount(
+  sheetViewSettings.value.frozen_column_count,
+  columnHeaders.value.length,
+))
 const effectivePaginationEnabled = computed(() => (
   paginationEnabled.value && (pageCount.value > 1 || totalRowCount.value > pageSize.value)
 ))
@@ -676,7 +764,7 @@ const formulaBarAddress = computed(() => {
   if (!cell) {
     return ''
   }
-  return getCellReferenceLabel(cell.row, cell.column)
+  return getCellReferenceLabelForSheetRow(cell.documentGridRow, cell.column)
 })
 
 const duplicateHighlightMap = computed(() => {
@@ -769,7 +857,10 @@ const cellAccentStyleMap = computed(() => {
 
 const hasFormulaExpressions = computed(() => {
   const headers = normalizeHeaders(columnHeaders.value)
-  return rows.value.some((row) => normalizeRow(row, headers).some(isFormulaExpression))
+  return [
+    ...getCurrentFormulaHeaderRows(headers),
+    ...rows.value,
+  ].some((row) => normalizeRow(row, headers).some(isFormulaExpression))
 })
 
 const formulaDisplayState = shallowRef<FormulaDisplayState>(createEmptyFormulaDisplayState())
@@ -1188,41 +1279,56 @@ let editingHeaderInputEl: HTMLInputElement | null = null
 let formulaEngineImportPromise: Promise<FormulaEngineClass | null> | null = null
 let sheetFormulaPluginRegistered = false
 let columnMarkerSelectionAnchor: number | null = null
+let userMatchRunPollTimer: ReturnType<typeof setTimeout> | null = null
+let lastNotifiedUserMatchRunId = ''
+let lastNotifiedUserMatchRunStatus = ''
 
 const contextMenu = {
   items: {
+    row_detail: {
+      name: '单独显式此条',
+      hidden: () => !canOpenSelectedRowDetailDialog(),
+      callback: () => {
+        openSelectedRowDetailDialog()
+      },
+    },
+    hsep_row_detail: {
+      name: '---------',
+      hidden: () => !(canOpenSelectedRowDetailDialog() && canEditData.value),
+    },
     row_above: {
       name: '上方插入行',
-      hidden: () => !shouldShowRowActions(),
-      disabled: () => !canEditData.value,
+      hidden: () => !shouldShowRowActions() || !canEditData.value,
       callback: () => {
         insertRowFromSelection('above')
       },
     },
     row_below: {
       name: '下方插入行',
-      hidden: () => !shouldShowRowActions(),
-      disabled: () => !canEditData.value,
+      hidden: () => !shouldShowRowActions() || !canEditData.value,
       callback: () => {
         insertRowFromSelection('below')
       },
     },
     hsep1: {
       name: '---------',
-      hidden: () => !shouldShowRowActions() || !shouldShowColumnActions(),
+      hidden: () => !(
+        shouldShowRowActions()
+        && canEditData.value
+        && shouldShowColumnActions()
+        && canEditConfig.value
+      ),
     },
     insert_col_left: {
       name: '左方插入列',
-      hidden: () => !shouldShowColumnActions(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !shouldShowColumnActions() || !canEditConfig.value,
       callback: () => {
         insertColumnFromSelection('left')
       },
     },
     insert_col_right: {
       name: '右方插入列',
-      hidden: () => !shouldShowColumnActions(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !shouldShowColumnActions() || !canEditConfig.value,
       callback: () => {
         insertColumnFromSelection('right')
       },
@@ -1249,121 +1355,130 @@ const contextMenu = {
         ],
       },
     },
+    hsep_freeze_pane: {
+      name: '---------',
+      hidden: () => !shouldShowFreezePaneContextMenuGroup(),
+    },
+    freeze_pane_here: {
+      name: '在此处冻结窗口',
+      hidden: () => !canFreezePaneAtSelection(),
+      callback: () => {
+        freezePanesAtSelectedColumn()
+      },
+    },
+    unfreeze_pane: {
+      name: '取消冻结窗口',
+      hidden: () => !canUnfreezePanesFromSelection(),
+      callback: () => {
+        setFrozenColumnCount(0)
+      },
+    },
     column_settings: {
       name: '设置',
-      hidden: () => !hasColumnHeaderSelection(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !hasColumnHeaderSelection() || !canEditConfig.value,
       callback: () => {
         openSelectedColumnSettings()
       },
     },
     hide_column: {
       name: '隐藏字段',
-      hidden: () => !shouldShowHideColumnAction(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !shouldShowHideColumnAction() || !canEditConfig.value,
       callback: () => {
         hideSelectedColumns()
       },
     },
     show_column: {
       name: '显示字段',
-      hidden: () => !shouldShowShowColumnAction(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !shouldShowShowColumnAction() || !canEditConfig.value,
       callback: () => {
         showHiddenColumnsFromSelection()
       },
     },
     remove_col: {
       name: '删除选中列',
-      hidden: () => !shouldShowRemoveColumnAction(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !shouldShowRemoveColumnAction() || !canEditConfig.value,
       callback: () => {
         removeSelectedColumns()
       },
     },
     remove_row: {
       name: '删除选中行',
-      hidden: () => !shouldShowRemoveRowAction(),
-      disabled: () => !canEditData.value,
+      hidden: () => !shouldShowRemoveRowAction() || !canEditData.value,
       callback: () => {
         removeSelectedRows()
       },
     },
     hsep_attendance_completion: {
       name: '---------',
-      hidden: () => !canSetAttendanceCompletedFromSelection(),
+      hidden: () => !canSetAttendanceCompletedFromSelection() || !canRunSheetActions.value,
     },
     set_attendance_completed: {
-      name: () => (canRunSheetActions.value ? '设置完结' : '设置完结（只读）'),
-      hidden: () => !canSetAttendanceCompletedFromSelection(),
-      disabled: () => !canRunSheetActions.value,
+      name: '设置完结',
+      hidden: () => !canSetAttendanceCompletedFromSelection() || !canRunSheetActions.value,
       callback: () => {
         void handleSetAttendanceCompletedFromSelection()
       },
     },
     hsep_attendance_course_template: {
       name: '---------',
-      hidden: () => !canGenerateAttendanceCourseTemplateFromSelection(),
+      hidden: () => !canGenerateAttendanceCourseTemplateFromSelection() || !canRunSheetActions.value,
     },
     generate_attendance_course_template: {
-      name: () => (canRunSheetActions.value ? '生成新课模板' : '生成新课模板（只读）'),
-      hidden: () => !canGenerateAttendanceCourseTemplateFromSelection(),
-      disabled: () => !canRunSheetActions.value,
+      name: '生成新课模板',
+      hidden: () => !canGenerateAttendanceCourseTemplateFromSelection() || !canRunSheetActions.value,
       callback: () => {
         void handleGenerateAttendanceCourseTemplateFromSelection()
       },
     },
     hsep_attendance_course_script: {
       name: '---------',
-      hidden: () => !canGenerateAttendanceCourseScriptFromSelection() && !canOrganizeAttendanceCourseScriptsFromColumn(),
+      hidden: () => !canRunSheetActions.value || (
+        !canGenerateAttendanceCourseScriptFromSelection()
+        && !canOrganizeAttendanceCourseScriptsFromColumn()
+      ),
     },
     generate_attendance_course_script: {
-      name: () => (canRunSheetActions.value ? '生成py脚本' : '生成py脚本（只读）'),
-      hidden: () => !canGenerateAttendanceCourseScriptFromSelection(),
-      disabled: () => !canRunSheetActions.value,
+      name: '生成py脚本',
+      hidden: () => !canGenerateAttendanceCourseScriptFromSelection() || !canRunSheetActions.value,
       callback: () => {
         void handleGenerateAttendanceCourseScriptFromSelection()
       },
     },
     organize_attendance_course_scripts: {
-      name: () => (canRunSheetActions.value ? '整理py脚本' : '整理py脚本（只读）'),
-      hidden: () => !canOrganizeAttendanceCourseScriptsFromColumn(),
-      disabled: () => !canRunSheetActions.value,
+      name: '整理py脚本',
+      hidden: () => !canOrganizeAttendanceCourseScriptsFromColumn() || !canRunSheetActions.value,
       callback: () => {
         void handleOrganizeAttendanceCourseScriptsFromColumn()
       },
     },
     hsep_attendance_link_counts: {
       name: '---------',
-      hidden: () => (
+      hidden: () => !canRunSheetActions.value || (
         !canUpdateAttendanceLinkCountsFromSelection('lesson_links')
         && !canUpdateAttendanceLinkCountsFromSelection('clockin_links')
       ),
     },
     update_attendance_lesson_link_counts: {
-      name: () => (canRunSheetActions.value ? '更新数据' : '更新数据（只读）'),
-      hidden: () => !canUpdateAttendanceLinkCountsFromSelection('lesson_links'),
-      disabled: () => !canRunSheetActions.value,
+      name: '更新数据',
+      hidden: () => !canUpdateAttendanceLinkCountsFromSelection('lesson_links') || !canRunSheetActions.value,
       callback: () => {
         void handleUpdateAttendanceLinkCountsFromSelection('lesson_links')
       },
     },
     update_attendance_clockin_link_counts: {
-      name: () => (canRunSheetActions.value ? '更新数据' : '更新数据（只读）'),
-      hidden: () => !canUpdateAttendanceLinkCountsFromSelection('clockin_links'),
-      disabled: () => !canRunSheetActions.value,
+      name: '更新数据',
+      hidden: () => !canUpdateAttendanceLinkCountsFromSelection('clockin_links') || !canRunSheetActions.value,
       callback: () => {
         void handleUpdateAttendanceLinkCountsFromSelection('clockin_links')
       },
     },
     hsep_style: {
       name: '---------',
-      hidden: () => !hasSheetCellSelection(),
+      hidden: () => !shouldShowStyleContextMenuGroup(),
     },
     set_cell_style: {
       name: () => (getSelectedSheetCells().length > 1 ? '设置选区格式' : '设置单元格格式'),
-      hidden: () => !hasSheetCellSelection(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !hasSheetCellSelection() || !canEditConfig.value,
       callback: () => {
         openSelectedCellStyleDialog()
       },
@@ -1377,36 +1492,32 @@ const contextMenu = {
     },
     paste_cell_format: {
       name: () => (getSelectedSheetCells().length > 1 ? '粘贴格式到选区' : '粘贴格式'),
-      hidden: () => !hasSheetCellSelection(),
-      disabled: () => !canEditConfig.value || !hasCopiedCellFormat(),
+      hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !hasCopiedCellFormat(),
       callback: () => {
         pasteCellFormatToSelectedCells()
       },
     },
     merge_cells: {
       name: '合并单元格',
-      hidden: () => !hasSheetCellSelection(),
-      disabled: () => !canEditConfig.value || !canMergeSelectedCells(),
+      hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !canMergeSelectedCells(),
       callback: () => {
         mergeSelectedCells()
       },
     },
     unmerge_cells: {
       name: '取消合并',
-      hidden: () => !hasSelectedMergedCell(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !hasSelectedMergedCell() || !canEditConfig.value,
       callback: () => {
         unmergeSelectedCells()
       },
     },
     hsep_link: {
       name: '---------',
-      hidden: () => !hasSingleLinkTargetSelection(),
+      hidden: () => !shouldShowLinkContextMenuGroup(),
     },
     set_cell_link: {
       name: '设置超链接',
-      hidden: () => !hasSingleLinkTargetSelection(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !hasSingleLinkTargetSelection() || !canEditConfig.value,
       callback: () => {
         openSelectedCellLinkDialog()
       },
@@ -1420,8 +1531,7 @@ const contextMenu = {
     },
     remove_cell_link: {
       name: '移除超链接',
-      hidden: () => !hasSelectedCellLink(),
-      disabled: () => !canEditConfig.value,
+      hidden: () => !hasSelectedCellLink() || !canEditConfig.value,
       callback: () => {
         removeSelectedCellLink()
       },
@@ -1457,7 +1567,10 @@ function canEditDataColumn(columnIndex: number) {
 
 function canEditFormulaBarCell() {
   const cell = formulaBarCell.value
-  return !!cell && canEditDataColumn(cell.column)
+  if (!cell) {
+    return false
+  }
+  return cell.dataRow >= 0 ? canEditDataColumn(cell.column) : canEditConfig.value
 }
 
 function isColumnRangeEditable(startColumn: number, endColumn: number) {
@@ -1500,31 +1613,113 @@ function ensureCanRunSheetActions() {
   return false
 }
 
-function normalizeExcelImportActionText(value: unknown) {
-  return normalizeCellValue(value).replace(/\s+/g, '').toLowerCase()
-}
-
-function isExcelImportActionCell(dataRow: number, columnIndex: number) {
-  return normalizeExcelImportActionText(rows.value[dataRow]?.[columnIndex] ?? '') === EXCEL_IMPORT_ACTION_TEXT
+function getSheetCellActionAtDocumentCell(documentRow: number, columnIndex: number) {
+  return getCellActionAt(documentRow, columnIndex)
 }
 
 function canOpenExcelImportDialog() {
   return props.sheetId != null && canEditData.value && canRunSheetActions.value
 }
 
-function getExcelImportErrorMessage(error: unknown) {
+function canRunRegistrationMatchAction() {
+  return props.sheetId != null && canEditData.value && canRunSheetActions.value
+}
+
+function getSheetActionErrorMessage(error: unknown, fallback: string) {
   const maybeError = error as { response?: { data?: { detail?: unknown } }, message?: string }
   const detail = maybeError?.response?.data?.detail
   return typeof detail === 'string' && detail.trim()
     ? detail
-    : maybeError?.message || '导入 Excel 失败'
+    : maybeError?.message || fallback
 }
 
-function openExcelImportDialog() {
+function getExcelImportErrorMessage(error: unknown) {
+  return getSheetActionErrorMessage(error, '导入 Excel 失败')
+}
+
+function clearUserMatchRunPollTimer() {
+  if (userMatchRunPollTimer) {
+    clearTimeout(userMatchRunPollTimer)
+    userMatchRunPollTimer = null
+  }
+}
+
+function scheduleUserMatchRunPolling() {
+  clearUserMatchRunPollTimer()
+  const runId = userMatchRunStatus.value?.run_id
+  if (!runId || !activeUserMatchRun.value || props.sheetId == null) {
+    return
+  }
+  userMatchRunPollTimer = setTimeout(() => {
+    void refreshUserMatchRunStatus(runId)
+  }, REGISTRATION_MATCH_RUN_POLL_MS)
+}
+
+function notifyUserMatchRunTerminalStatus(run: NoteSheetRegistrationMatchRunResponse) {
+  if (!run.run_id || isRegistrationMatchRunActive(run) || run.status === 'idle') {
+    return
+  }
+  if (lastNotifiedUserMatchRunId === run.run_id && lastNotifiedUserMatchRunStatus === run.status) {
+    return
+  }
+  lastNotifiedUserMatchRunId = run.run_id
+  lastNotifiedUserMatchRunStatus = run.status
+
+  if (run.status === 'completed') {
+    const errorSuffix = run.error_count ? `，${run.error_count} 行异常` : ''
+    ElMessage.success(`${run.message || '用户匹配已完成'}${errorSuffix}`)
+  } else if (run.status === 'failed') {
+    ElMessage.error(run.error_message || run.message || '用户匹配失败')
+  } else if (run.status === 'cancelled') {
+    ElMessage.warning(run.message || '用户匹配已取消')
+  }
+}
+
+async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boolean } = {}) {
+  if (props.sheetId == null) {
+    return null
+  }
+  try {
+    const status = runId
+      ? await fetchNoteSheetRegistrationMatchRun(props.sheetId, runId, { workbookId: props.workbookId })
+      : await fetchNoteSheetActiveRegistrationMatchRun(
+        props.sheetId,
+        SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+        { workbookId: props.workbookId },
+      )
+
+    userMatchRunStatus.value = status.status === 'idle' ? null : status
+    if (status.status !== 'idle') {
+      userMatchUseBrowserFallback.value = status.use_browser_fallback
+    }
+    if (status.sheet) {
+      applyUserMatchRunSheetDetail(status.sheet)
+    }
+    if (isRegistrationMatchRunActive(status)) {
+      scheduleUserMatchRunPolling()
+    } else {
+      clearUserMatchRunPollTimer()
+      if (!options.silent) {
+        notifyUserMatchRunTerminalStatus(status)
+      }
+    }
+    return status
+  } catch (error) {
+    clearUserMatchRunPollTimer()
+    console.warn('Failed to refresh registration user match run', error)
+    if (!options.silent) {
+      ElMessage.error(getSheetActionErrorMessage(error, '刷新用户匹配状态失败'))
+    }
+    return null
+  }
+}
+
+function openExcelImportDialog(actionCell: { documentRow: number; column: number }) {
   if (!canOpenExcelImportDialog()) {
     warnReadOnlyAction()
     return
   }
+  excelImportActionCell.value = actionCell
   excelImportFile.value = null
   excelImportInstruction.value = ''
   if (excelImportFileInputRef.value) {
@@ -1538,10 +1733,30 @@ function closeExcelImportDialog(force = false) {
     return
   }
   excelImportDialogVisible.value = false
+  excelImportActionCell.value = null
   excelImportFile.value = null
   excelImportInstruction.value = ''
   if (excelImportFileInputRef.value) {
     excelImportFileInputRef.value.value = ''
+  }
+}
+
+function openUserMatchDialog() {
+  if (!canRunRegistrationMatchAction()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (!activeUserMatchRun.value) {
+    userMatchUseBrowserFallback.value = false
+  }
+  userMatchDialogVisible.value = true
+  void refreshUserMatchRunStatus(undefined, { silent: true })
+}
+
+function closeUserMatchDialog() {
+  userMatchDialogVisible.value = false
+  if (!activeUserMatchRun.value) {
+    userMatchUseBrowserFallback.value = false
   }
 }
 
@@ -1569,12 +1784,16 @@ async function applyExcelImportReset() {
       {
         file: excelImportFile.value,
         instruction: excelImportInstruction.value,
+        actionCell: excelImportActionCell.value ?? undefined,
       },
       { workbookId: props.workbookId },
     )
     applyRemoteSheetDetail(result.sheet)
+    const extraColumnSuffix = result.extra_columns.length
+      ? `，追加 ${result.extra_columns.length} 列`
+      : ''
     const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
-    ElMessage.success(`已导入 ${result.imported_count} 行${warningSuffix}`)
+    ElMessage.success(`已导入 ${result.imported_count} 行${extraColumnSuffix}${warningSuffix}`)
     closeExcelImportDialog(true)
   } catch (error) {
     console.warn('Failed to import note sheet from Excel', error)
@@ -1582,6 +1801,104 @@ async function applyExcelImportReset() {
   } finally {
     excelImportRunning.value = false
   }
+}
+
+async function applyRegistrationMatchAction(
+  type: SheetCellActionType,
+  options: { useBrowserFallback?: boolean } = {},
+) {
+  if (
+    type !== SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+    && type !== SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+  ) {
+    return
+  }
+  if (props.sheetId == null) {
+    return
+  }
+  if (type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
+    await startUserMatchRun(false, options.useBrowserFallback)
+    return
+  }
+  if (!canRunRegistrationMatchAction()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (sheetCellActionRunning.value) {
+    return
+  }
+
+  sheetCellActionRunning.value = type
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const result = await updateNoteSheetRegistrationOrderMatch(props.sheetId, { workbookId: props.workbookId })
+    applyRemoteSheetDetail(result.sheet)
+    const errorSuffix = result.error_count ? `，${result.error_count} 行异常` : ''
+    ElMessage.success(`${result.message || SHEET_CELL_ACTION_LABELS[type]}${errorSuffix}`)
+  } catch (error) {
+    console.warn('Failed to run note sheet action', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '执行动作失败'))
+  } finally {
+    sheetCellActionRunning.value = null
+  }
+}
+
+async function startUserMatchRun(forceRestart = false, useBrowserFallback = userMatchUseBrowserFallback.value) {
+  if (props.sheetId == null) {
+    return
+  }
+  if (!canRunRegistrationMatchAction()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (userMatchStartPending.value) {
+    return
+  }
+
+  userMatchStartPending.value = true
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const status = await startNoteSheetRegistrationMatchRun(
+      props.sheetId,
+      {
+        action: SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+        useBrowserFallback,
+        forceRestart,
+      },
+      { workbookId: props.workbookId },
+    )
+    userMatchRunStatus.value = status
+    userMatchUseBrowserFallback.value = status.use_browser_fallback
+    if (status.sheet) {
+      applyUserMatchRunSheetDetail(status.sheet)
+    }
+    closeUserMatchDialog()
+    ElMessage.success(status.already_running ? '已有用户匹配任务正在运行' : '已在后台开始用户匹配')
+    if (isRegistrationMatchRunActive(status)) {
+      scheduleUserMatchRunPolling()
+    } else {
+      notifyUserMatchRunTerminalStatus(status)
+    }
+  } catch (error) {
+    console.warn('Failed to start registration user match run', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '启动用户匹配失败'))
+  } finally {
+    userMatchStartPending.value = false
+  }
+}
+
+function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: number; column: number }) {
+  if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
+    openExcelImportDialog(actionCell)
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
+    openUserMatchDialog()
+    return
+  }
+  void applyRegistrationMatchAction(action.type)
 }
 
 function createEmptyRow(columnCount = columnHeaders.value.length): SheetRow {
@@ -1679,6 +1996,12 @@ function resetWorkspaceState() {
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings()
   closeExcelImportDialog()
+  clearUserMatchRunPollTimer()
+  userMatchDialogVisible.value = false
+  userMatchUseBrowserFallback.value = false
+  userMatchStartPending.value = false
+  userMatchRunStatus.value = null
+  sheetCellActionRunning.value = null
   columnSettingsDialogVisible.value = false
   columnSettingsColumnIndex.value = null
   columnSettingsSelectionBounds.value = null
@@ -2084,6 +2407,32 @@ function normalizeCellLink(source: unknown): SheetCellLink | null {
   return title ? { url, title } : { url }
 }
 
+function normalizeCellActionType(value: unknown): SheetCellActionType | null {
+  const normalized = normalizeCellValue(value).trim()
+  return normalized in SHEET_CELL_ACTION_LABELS
+    ? (normalized as SheetCellActionType)
+    : null
+}
+
+function normalizeCellAction(source: unknown): SheetCellAction | null {
+  if (typeof source === 'string') {
+    const type = normalizeCellActionType(source)
+    return type ? { type } : null
+  }
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+
+  const record = source as Record<string, unknown>
+  const type = normalizeCellActionType(record.type ?? record.name)
+  if (!type) {
+    return null
+  }
+
+  const label = normalizeCellValue(record.label).trim()
+  return label ? { type, label } : { type }
+}
+
 function normalizeCellFontFamily(value: unknown): CellFontFamily | '' {
   if (value === 'default' || value === 'monospace') {
     return value
@@ -2124,14 +2473,18 @@ function normalizeCellMetaEntry(source: unknown): SheetCellMeta | null {
 
   const record = source as Record<string, unknown>
   const link = normalizeCellLink(record.link)
+  const action = normalizeCellAction(record.action)
   const style = normalizeCellStyle(record.style)
-  if (!link && !style) {
+  if (!link && !action && !style) {
     return null
   }
 
   const meta: SheetCellMeta = {}
   if (link) {
     meta.link = link
+  }
+  if (action) {
+    meta.action = action
   }
   if (style) {
     meta.style = style
@@ -2157,6 +2510,53 @@ function normalizeCellMetaMap(source: unknown, columnCount: number): SheetCellMe
     }
   }
   return normalized
+}
+
+function normalizeLegacySheetCellActionType(value: unknown): SheetCellActionType | null {
+  const compactValue = normalizeCellValue(value).replace(/\s+/g, '').toLowerCase()
+  const legacyLabels: Array<[SheetCellActionType, string]> = [
+    [SHEET_CELL_ACTION_EXCEL_IMPORT_RESET, EXCEL_IMPORT_ACTION_LABEL],
+    [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]],
+    [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]],
+  ]
+  const matched = legacyLabels.find(([, label]) => compactValue === label.replace(/\s+/g, '').toLowerCase())
+  return matched?.[0] ?? null
+}
+
+function addLegacySheetCellActions(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  columnCount: number,
+) {
+  if (columnCount <= 0) {
+    return sourceMeta
+  }
+
+  let changed = false
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  normalizedGridRows.forEach((row, rowIndex) => {
+    row.forEach((value, columnIndex) => {
+      const actionType = normalizeLegacySheetCellActionType(value)
+      if (!actionType) {
+        return
+      }
+      const key = createCellMetaKey(rowIndex, columnIndex)
+      const currentMeta = nextMeta[key]
+      if (currentMeta?.action) {
+        return
+      }
+      nextMeta[key] = {
+        ...(currentMeta ?? {}),
+        action: {
+          type: actionType,
+          label: SHEET_CELL_ACTION_LABELS[actionType],
+        },
+      }
+      changed = true
+    })
+  })
+
+  return changed ? normalizeCellMetaMap(nextMeta, columnCount) : sourceMeta
 }
 
 function splitColumnNoteLeadingLink(source: unknown) {
@@ -2369,7 +2769,7 @@ function normalizeColumnFontSize(value: unknown) {
   if (!Number.isFinite(numeric) || numeric <= 0) {
     return DEFAULT_COLUMN_FONT_SIZE
   }
-  return Math.min(Math.max(Math.round(numeric), MIN_COLUMN_FONT_SIZE), MAX_COLUMN_FONT_SIZE)
+  return Math.min(Math.round(numeric), MAX_COLUMN_FONT_SIZE)
 }
 
 function normalizeColumnNote(value: unknown) {
@@ -2419,6 +2819,7 @@ function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
     show_column_markers: true,
     column_marker_style: 'letters',
     column_note_display: 'hover',
+    frozen_column_count: 0,
     pagination: {
       enabled: false,
       page_size: DEFAULT_PAGE_SIZE,
@@ -2460,7 +2861,18 @@ function normalizeSheetPageSize(value: unknown) {
   return Math.min(Math.max(Math.round(numeric), 1), 1000)
 }
 
-function normalizeSheetViewSettings(source: unknown): Required<SheetViewSettings> {
+function normalizeFrozenColumnCount(value: unknown, columnCount = Number.MAX_SAFE_INTEGER) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return 0
+  }
+  const maxColumnCount = Number.isFinite(columnCount)
+    ? Math.max(0, Math.floor(columnCount))
+    : Number.MAX_SAFE_INTEGER
+  return Math.min(Math.max(Math.floor(numeric), 0), maxColumnCount)
+}
+
+function normalizeSheetViewSettings(source: unknown, columnCount = Number.MAX_SAFE_INTEGER): Required<SheetViewSettings> {
   const defaults = createDefaultSheetViewSettings()
   if (!source || typeof source !== 'object') {
     return defaults
@@ -2474,6 +2886,7 @@ function normalizeSheetViewSettings(source: unknown): Required<SheetViewSettings
     show_column_markers: record.show_column_markers !== false,
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
     column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
+    frozen_column_count: normalizeFrozenColumnCount(record.frozen_column_count, columnCount),
     pagination: (() => {
       const pagination = record.pagination
       if (!pagination || typeof pagination !== 'object') {
@@ -2851,7 +3264,7 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   const normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
   const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
-  const normalizedSettings = normalizeSheetViewSettings(record.view_settings)
+  const normalizedSettings = normalizeSheetViewSettings(record.view_settings, headers.length)
   const formulaHeaderRows = getFormulaHeaderRowsForDocument(
     headers,
     sourceHeaderGroups,
@@ -2897,9 +3310,14 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
   const normalizedHeaderGroups = hasUnifiedGridRows
     ? createSingleCellHeaderGroupsFromGridRows(normalizedGridRows, fieldRowIndex, headers)
     : expandHeaderGroupsToSingleCellRows(sourceHeaderGroups, headers.length)
-  const normalizedCellMeta = hasUnifiedGridRows
+  const sourceCellMeta = hasUnifiedGridRows
     ? normalizeCellMetaMap(record.cell_meta, headers.length)
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
+  const normalizedCellMeta = addLegacySheetCellActions(
+    sourceCellMeta,
+    normalizedGridRows,
+    headers.length,
+  )
   const formulaDisplayForWidths = buildFormulaDisplayStateForRows(
     headers,
     normalizedRows,
@@ -2956,7 +3374,7 @@ function buildCurrentDocument(): SheetDocument {
       normalizedRows,
       normalizeColumnConfigs(columnConfigs.value, headers),
     )),
-    view_settings: normalizeSheetViewSettings(sheetViewSettings.value),
+    view_settings: normalizeSheetViewSettings(sheetViewSettings.value, headers.length),
   }
 }
 
@@ -3035,9 +3453,11 @@ function readNormalizedFormulaStringToken(value: string, startIndex: number) {
 function readFormulaFunctionAlias(value: string, startIndex: number) {
   const aliases = [
     { source: '日期解析', target: 'DATE_PARSE' },
+    { source: 'DATEDIF', target: 'DATEDIF_COMPAT' },
+    { source: 'TEXTJOIN', target: 'TEXTJOIN_COMPAT' },
   ]
   for (const alias of aliases) {
-    if (!value.startsWith(alias.source, startIndex)) {
+    if (value.slice(startIndex, startIndex + alias.source.length).toUpperCase() !== alias.source) {
       continue
     }
     const nextIndex = findNextNonWhitespaceIndex(value, startIndex + alias.source.length)
@@ -3046,6 +3466,32 @@ function readFormulaFunctionAlias(value: string, startIndex: number) {
         endIndex: startIndex + alias.source.length - 1,
         value: alias.target,
       }
+    }
+  }
+  return null
+}
+
+function isFormulaIdentifierChar(char: string | undefined) {
+  return !!char && /[A-Za-z0-9_.]/.test(char)
+}
+
+function readFormulaBooleanLiteral(value: string, startIndex: number) {
+  for (const source of ['TRUE', 'FALSE']) {
+    if (value.slice(startIndex, startIndex + source.length).toUpperCase() !== source) {
+      continue
+    }
+    if (isFormulaIdentifierChar(value[startIndex - 1]) || isFormulaIdentifierChar(value[startIndex + source.length])) {
+      continue
+    }
+
+    const nextIndex = findNextNonWhitespaceIndex(value, startIndex + source.length)
+    if (nextIndex >= 0 && (value[nextIndex] === '(' || value[nextIndex] === '（')) {
+      continue
+    }
+
+    return {
+      endIndex: startIndex + source.length - 1,
+      value: `${source}()`,
     }
   }
   return null
@@ -3070,6 +3516,13 @@ function normalizeFormulaInputExpression(value: string) {
     if (functionAlias) {
       normalized += functionAlias.value
       index = functionAlias.endIndex
+      continue
+    }
+
+    const booleanLiteral = readFormulaBooleanLiteral(value, index)
+    if (booleanLiteral) {
+      normalized += booleanLiteral.value
+      index = booleanLiteral.endIndex
       continue
     }
 
@@ -3118,6 +3571,13 @@ function normalizeFormulaExpressionForPagedEngine(
       ? headerRowCount + localDataRowIndex
       : null
   })
+}
+
+function normalizeFormulaEngineCellValue(cellValue: string): FormulaEngineCellValue {
+  if (isFormulaExpression(cellValue)) {
+    return cellValue
+  }
+  return cellValue === '' ? null : cellValue
 }
 
 function isFormulaErrorValue(value: unknown): value is { value: string } {
@@ -3324,6 +3784,33 @@ function formulaDateSerialToParts(value: number): FormulaDateParts | null {
   return isValidDateParts(parts) && isValidFormulaTimeParts(parts) ? parts : null
 }
 
+function formulaDatePartsToUtcDate(parts: FormulaDateParts) {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day))
+}
+
+function formulaDateSerialToUtcDate(value: number) {
+  const parts = formulaDateSerialToParts(Math.floor(value))
+  return parts ? formulaDatePartsToUtcDate(parts) : null
+}
+
+function formulaUtcDateToSerial(value: Date) {
+  return Math.floor(value.getTime() / MS_PER_DAY) + EXCEL_DATE_UNIX_EPOCH_SERIAL
+}
+
+function parseSeparatedFormulaDate(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  const match = text.match(/^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?$/)
+  if (!match) {
+    return null
+  }
+  const parts = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+  }
+  return isValidDateParts(parts) ? parts : null
+}
+
 function parseCompactFormulaDate(value: unknown, patternValue: unknown) {
   const text = normalizeCellValue(value)
   const pattern = normalizeDateParsePattern(patternValue)
@@ -3355,6 +3842,86 @@ function parseCompactFormulaDate(value: unknown, patternValue: unknown) {
     return null
   }
   return parts
+}
+
+function normalizeFormulaDateSerial(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value)
+  }
+
+  const text = normalizeCellValue(value).trim()
+  if (!text) {
+    return null
+  }
+  const numericValue = Number(text)
+  if (Number.isFinite(numericValue)) {
+    return Math.floor(numericValue)
+  }
+
+  const parts = parseSeparatedFormulaDate(text)
+    ?? parseCompactFormulaDate(text, 'yyyymmdd')
+  return parts ? formulaDatePartsToSerial(parts) : null
+}
+
+function getFormulaFullYearsBetween(start: Date, end: Date) {
+  let years = end.getUTCFullYear() - start.getUTCFullYear()
+  const endMonth = end.getUTCMonth()
+  const startMonth = start.getUTCMonth()
+  if (endMonth < startMonth || (endMonth === startMonth && end.getUTCDate() < start.getUTCDate())) {
+    years -= 1
+  }
+  return years
+}
+
+function getFormulaFullMonthsBetween(start: Date, end: Date) {
+  let months = (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + end.getUTCMonth() - start.getUTCMonth()
+  if (end.getUTCDate() < start.getUTCDate()) {
+    months -= 1
+  }
+  return months
+}
+
+function daysInFormulaUtcMonth(year: number, monthIndex: number) {
+  return new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate()
+}
+
+function calculateFormulaDateDif(startSerial: number, endSerial: number, unitValue: unknown) {
+  const unit = normalizeCellValue(unitValue).trim().toUpperCase()
+  const start = formulaDateSerialToUtcDate(startSerial)
+  const end = formulaDateSerialToUtcDate(endSerial)
+  if (!start || !end || endSerial < startSerial) {
+    return null
+  }
+
+  const days = Math.floor(endSerial) - Math.floor(startSerial)
+  if (unit === 'D') {
+    return days
+  }
+  if (unit === 'Y') {
+    return getFormulaFullYearsBetween(start, end)
+  }
+  if (unit === 'M') {
+    return getFormulaFullMonthsBetween(start, end)
+  }
+  if (unit === 'YM') {
+    return ((getFormulaFullMonthsBetween(start, end) % 12) + 12) % 12
+  }
+  if (unit === 'MD') {
+    if (end.getUTCDate() >= start.getUTCDate()) {
+      return end.getUTCDate() - start.getUTCDate()
+    }
+    const previousEndMonthDayCount = daysInFormulaUtcMonth(end.getUTCFullYear(), end.getUTCMonth() - 1)
+    return previousEndMonthDayCount - start.getUTCDate() + end.getUTCDate()
+  }
+  if (unit === 'YD') {
+    const adjustedStart = new Date(Date.UTC(end.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()))
+    if (adjustedStart > end) {
+      adjustedStart.setUTCFullYear(adjustedStart.getUTCFullYear() - 1)
+    }
+    return Math.floor((end.getTime() - adjustedStart.getTime()) / MS_PER_DAY)
+  }
+
+  return null
 }
 
 function padDatePart(value: number) {
@@ -3802,6 +4369,8 @@ function registerSheetFormulaPlugins(module: unknown) {
   const hasRegisteredSheetFormulas = (
     !!HyperFormula?.getFunctionPlugin?.('RE_SUB')
     && !!HyperFormula.getFunctionPlugin?.('DATE_PARSE')
+    && !!HyperFormula.getFunctionPlugin?.('DATEDIF_COMPAT')
+    && !!HyperFormula.getFunctionPlugin?.('TEXTJOIN_COMPAT')
   )
   if (!HyperFormula?.registerFunctionPlugin || hasRegisteredSheetFormulas) {
     sheetFormulaPluginRegistered = true
@@ -3820,7 +4389,14 @@ function registerSheetFormulaPlugins(module: unknown) {
   const FunctionArgumentType = formulaModule.FunctionArgumentType as Record<string, unknown> | undefined
   const CellError = formulaModule.CellError as (new (type: unknown, message?: string) => unknown) | undefined
   const ErrorType = formulaModule.ErrorType as Record<string, unknown> | undefined
-  if (!FunctionPlugin || !FunctionArgumentType?.STRING || !FunctionArgumentType?.NUMBER || !CellError || !ErrorType?.VALUE) {
+  if (
+    !FunctionPlugin
+    || !FunctionArgumentType?.STRING
+    || !FunctionArgumentType?.NUMBER
+    || !FunctionArgumentType?.ANY
+    || !CellError
+    || !ErrorType?.VALUE
+  ) {
     return
   }
 
@@ -3843,6 +4419,24 @@ function registerSheetFormulaPlugins(module: unknown) {
           { argumentType: FunctionArgumentType.STRING, defaultValue: 'yyyymmdd' },
           { argumentType: FunctionArgumentType.STRING, defaultValue: '' },
         ],
+      },
+      DATEDIF_COMPAT: {
+        method: 'dateDifCompat',
+        parameters: [
+          { argumentType: FunctionArgumentType.ANY },
+          { argumentType: FunctionArgumentType.ANY },
+          { argumentType: FunctionArgumentType.STRING },
+        ],
+      },
+      TEXTJOIN_COMPAT: {
+        method: 'textJoinCompat',
+        parameters: [
+          { argumentType: FunctionArgumentType.STRING },
+          { argumentType: FunctionArgumentType.ANY },
+          { argumentType: FunctionArgumentType.ANY },
+        ],
+        repeatLastArgs: 1,
+        expandRanges: true,
       },
     }
 
@@ -3881,12 +4475,50 @@ function registerSheetFormulaPlugins(module: unknown) {
         },
       )
     }
+
+    dateDifCompat(ast: { args: unknown[] }, state: unknown) {
+      return this.runFunction(
+        ast.args,
+        state,
+        this.metadata('DATEDIF_COMPAT'),
+        (startValue: unknown, endValue: unknown, unit: string) => {
+          const startSerial = normalizeFormulaDateSerial(startValue)
+          const endSerial = normalizeFormulaDateSerial(endValue)
+          if (startSerial == null || endSerial == null) {
+            return new CellError(ErrorType.VALUE, 'Invalid date value')
+          }
+
+          const result = calculateFormulaDateDif(startSerial, endSerial, unit)
+          return result == null
+            ? new CellError(ErrorType.VALUE, 'Invalid DATEDIF arguments')
+            : result
+        },
+      )
+    }
+
+    textJoinCompat(ast: { args: unknown[] }, state: unknown) {
+      return this.runFunction(
+        ast.args,
+        state,
+        this.metadata('TEXTJOIN_COMPAT'),
+        (delimiter: string, ignoreEmptyValue: unknown, ...items: unknown[]) => {
+          const ignoreEmpty = Boolean(ignoreEmptyValue)
+          const values = items
+            .flat(Number.POSITIVE_INFINITY)
+            .map((item) => normalizeCellValue(item))
+            .filter((item) => !ignoreEmpty || item !== '')
+          return values.join(delimiter)
+        },
+      )
+    }
   }
 
   HyperFormula.registerFunctionPlugin(SheetFormulaPlugin, {
     enGB: {
       RE_SUB: 'RE_SUB',
       DATE_PARSE: 'DATE_PARSE',
+      DATEDIF_COMPAT: 'DATEDIF_COMPAT',
+      TEXTJOIN_COMPAT: 'TEXTJOIN_COMPAT',
     },
   })
   sheetFormulaPluginRegistered = true
@@ -3971,7 +4603,7 @@ function buildFormulaDisplayStateForRows(
   const engineRows = normalizedRows.map((row) => row.map((cellValue) => (
     isFormulaExpression(cellValue)
       ? normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedDataRows.length, headerRowCount)
-      : cellValue
+      : normalizeFormulaEngineCellValue(cellValue)
   )))
   const cells = normalizedRows.map((row) => row.map(() => null as FormulaCellModel | null))
   const errorKeys = new Set<string>()
@@ -4043,7 +4675,13 @@ function getFormulaCellModel(rowIndex: number, columnIndex: number) {
   if (!row || !isFormulaExpression(row[columnIndex])) {
     return null
   }
-  const gridRowIndex = formulaDisplayState.value.dataStartRow + rowIndex
+  return getFormulaCellModelAtGridRow(formulaDisplayState.value.dataStartRow + rowIndex, columnIndex)
+}
+
+function getFormulaCellModelAtGridRow(gridRowIndex: number, columnIndex: number) {
+  if (gridRowIndex < 0 || columnIndex < 0) {
+    return null
+  }
   return formulaDisplayState.value.cells[gridRowIndex]?.[columnIndex] ?? null
 }
 
@@ -4340,6 +4978,33 @@ function setRenderedCellText(TD: HTMLTableCellElement, text: string) {
   if (TD.textContent !== text) {
     TD.textContent = text
   }
+}
+
+function getCellActionDisplayLabel(action: SheetCellAction, rawText: string) {
+  return rawText.trim() || action.label?.trim() || SHEET_CELL_ACTION_LABELS[action.type]
+}
+
+function getCellActionTitle(action: SheetCellAction) {
+  if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
+    return '导入 Excel：上传文件并重置此按钮后的数据行'
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH) {
+    return '更新订单匹配：按微信支付订单号补全订单日期、商户订单号、订单金额和已返款'
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
+    return '更新用户匹配：默认查本地用户库，可选择 codepc_mi15 小鹅通兜底'
+  }
+  return ''
+}
+
+function renderCellActionButton(TD: HTMLTableCellElement, label: string) {
+  TD.textContent = ''
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.tabIndex = -1
+  button.className = 'sheet-cell-action-button-inner'
+  button.textContent = label
+  TD.appendChild(button)
 }
 
 function areDefaultSheetHeaders(headers: string[]) {
@@ -5029,6 +5694,7 @@ function refreshGridStructure() {
     colWidths: [...columnWidths.value],
     rowHeaders: sheetRowHeaders.value,
     fixedRowsTop: sheetHeaderRowCount.value,
+    fixedColumnsStart: fixedColumnsStart.value,
     hiddenColumns: {
       columns: [...hiddenColumnIndexes.value],
       indicators: false,
@@ -5559,6 +6225,7 @@ function handleBeforeColumnMove(
       colHeaders: sheetColumnHeaders.value,
       colWidths: [...nextWidths],
       fixedRowsTop: sheetHeaderRowCount.value,
+      fixedColumnsStart: fixedColumnsStart.value,
       mergeCells: sheetMergeCells.value,
     })
     hot.render()
@@ -5833,6 +6500,11 @@ function isManualColumnResizerMouseTarget(event: MouseEvent) {
   return target instanceof Element && !!target.closest('.manualColumnResizer')
 }
 
+function isSheetCellActionButtonMouseTarget(event: MouseEvent) {
+  const target = event.target
+  return target instanceof Element && !!target.closest('.sheet-cell-action-button-inner')
+}
+
 function handleBeforeCellMouseDown(
   event: MouseEvent,
   coords: { row: number; col: number },
@@ -5843,12 +6515,30 @@ function handleBeforeCellMouseDown(
     return
   }
 
-  if (isSheetHeaderGridRow(coords.row) && coords.col >= 0) {
-    if (isManualColumnResizerMouseTarget(event)) {
-      return
-    }
+  if (coords.col < 0) {
+    return
+  }
 
-    const anchor = getMergeAnchorForGridCell(coords.row, coords.col)
+  const anchor = getMergeAnchorForGridCell(coords.row, coords.col)
+
+  if (isSheetHeaderGridRow(coords.row) && isManualColumnResizerMouseTarget(event)) {
+    return
+  }
+
+  const sheetCellAction = event.button === 0
+    ? getSheetCellActionAtDocumentCell(anchor.documentRow, anchor.column)
+    : null
+  if (sheetCellAction && isSheetCellActionButtonMouseTarget(event)) {
+    event.preventDefault()
+    event.stopPropagation()
+    runSheetCellAction(sheetCellAction, {
+      documentRow: anchor.documentRow,
+      column: anchor.column,
+    })
+    return
+  }
+
+  if (isSheetHeaderGridRow(coords.row)) {
     const headerLevel = getSheetHeaderGridLevel(anchor.row)
     if (
       event.button === 0
@@ -5868,25 +6558,17 @@ function handleBeforeCellMouseDown(
         return
       }
     }
-    clearFormulaBarSelection()
     selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
     return
   }
 
-  if (coords.col < 0 || event.button !== 0) {
+  if (event.button !== 0) {
     return
   }
 
   clearSheetHeaderSelection()
-  const anchor = getMergeAnchorForGridCell(coords.row, coords.col)
   const dataRow = getDataRowIndex(anchor.row)
   if (dataRow < 0) {
-    return
-  }
-  if (event.button === 0 && isExcelImportActionCell(dataRow, anchor.column)) {
-    event.preventDefault()
-    event.stopPropagation()
-    openExcelImportDialog()
     return
   }
   if (beginFormulaReferenceRange(dataRow, anchor.column)) {
@@ -5991,10 +6673,14 @@ function applyCellMetaStyle(TD: HTMLTableCellElement, style: SheetCellStyle | nu
 
 function resetRenderedCellState(TD: HTMLTableCellElement) {
   TD.classList.remove(
+    'htDimmed',
     'sheet-cell-has-link',
+    'sheet-cell-has-action',
     'sheet-cell-formula',
     'sheet-cell-formula-error',
     'sheet-cell-formula-reference-preview',
+    'sheet-freeze-column-boundary',
+    'sheet-freeze-row-boundary',
     'sheet-grid-header-cell',
     'sheet-grid-group-header-cell',
     'sheet-grid-field-header-cell',
@@ -6098,41 +6784,80 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   resetRenderedCellState(TD)
   TD.classList.add('sheet-grid-header-cell')
   TD.classList.toggle('sheet-grid-header-cell-selected', isSheetHeaderCellSelected(column, row))
+  applyFreezePaneBoundaryClasses(TD, row, column)
   TD.dataset.sheetHeaderLevel = String(row)
   TD.dataset.sheetHeaderColumn = String(column)
+
+  const documentRow = getDocumentGridRowIndex(row)
+  const formulaCell = isFormulaExpression(value)
+    ? getFormulaCellModelAtGridRow(row, column)
+    : null
+  const formulaText = formulaCell?.text ?? null
+  const action = getCellActionAt(documentRow, column)
+  if (action) {
+    if (row < normalizedHeaderGroups.value.length) {
+      TD.classList.add('sheet-grid-group-header-cell')
+    } else if (row === columnHeaderLevel.value) {
+      TD.classList.add('sheet-grid-field-header-cell')
+    } else {
+      TD.classList.add('sheet-grid-note-header-cell')
+    }
+    TD.classList.add('sheet-cell-has-action')
+    applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
+    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+    renderCellActionButton(TD, getCellActionDisplayLabel(action, value))
+    const actionTitle = getCellActionTitle(action)
+    if (actionTitle) {
+      TD.title = actionTitle
+    }
+    return
+  }
 
   if (row < normalizedHeaderGroups.value.length) {
     TD.classList.add('sheet-grid-group-header-cell')
     applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
-    applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
-    const link = getCellLinkAt(getDocumentGridRowIndex(row), column)
+    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+    const link = getCellLinkAt(documentRow, column)
     if (link) {
       TD.classList.add('sheet-cell-has-link')
       TD.dataset.hyperlinkUrl = link.url
       TD.title = link.url
     }
-    setRenderedCellText(TD, value)
+    setRenderedCellText(TD, formulaText ?? value)
+    TD.classList.toggle('sheet-cell-formula', formulaText != null)
+    TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
+    if (formulaText != null) {
+      TD.title = value && value !== formulaText ? `${value}\n= ${formulaText}` : formulaText
+    }
     return
   }
 
   if (row === columnHeaderLevel.value) {
     TD.classList.add('sheet-grid-field-header-cell')
     applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
-    applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
+    applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
     renderFieldHeaderCell(TD, column)
     return
   }
 
   TD.classList.add('sheet-grid-note-header-cell')
-  const note = getColumnNote(column)
-  applyCellMetaStyle(TD, getCellStyleAt(getDocumentGridRowIndex(row), column))
-  const link = getCellLinkAt(getDocumentGridRowIndex(row), column)
+  const note = value
+  const renderedNote = formulaText ?? note
+  applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
+  const link = getCellLinkAt(documentRow, column)
   if (link) {
     TD.classList.add('sheet-cell-has-link')
     TD.dataset.hyperlinkUrl = link.url
   }
-  setRenderedCellText(TD, note)
-  if (note || link) {
+  setRenderedCellText(TD, renderedNote)
+  TD.classList.toggle('sheet-cell-formula', formulaText != null)
+  TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
+  if (formulaText != null) {
+    TD.title = [
+      note && note !== formulaText ? `${note}\n= ${formulaText}` : formulaText,
+      link?.url,
+    ].filter(Boolean).join('\n')
+  } else if (note || link) {
     TD.title = [note, link?.url].filter(Boolean).join('\n')
   }
 }
@@ -6141,13 +6866,19 @@ function handleAfterGetColHeader(column: number, th: HTMLTableHeaderCellElement,
   th.classList.remove(
     'sheet-col-marker',
     'sheet-column-marker-header-selected',
+    'sheet-freeze-column-boundary',
   )
   th.classList.add('sheet-col-marker')
   th.dataset.sheetHeaderColumn = String(column)
   th.classList.toggle('sheet-column-marker-header-selected', isColumnMarkerSelected(column))
+  th.classList.toggle('sheet-freeze-column-boundary', isFreezeColumnBoundary(column))
   if (column < 0) {
     return
   }
+}
+
+function handleAfterGetRowHeader(row: number, th: HTMLTableHeaderCellElement) {
+  th.classList.toggle('sheet-freeze-row-boundary', isFreezeRowBoundary(row))
 }
 
 function getColumnMarkerLabel(index: number) {
@@ -6166,6 +6897,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
     && normalizedLeft.show_column_markers === normalizedRight.show_column_markers
     && normalizedLeft.column_marker_style === normalizedRight.column_marker_style
     && normalizedLeft.column_note_display === normalizedRight.column_note_display
+    && normalizedLeft.frozen_column_count === normalizedRight.frozen_column_count
     && normalizedLeft.pagination.enabled === normalizedRight.pagination.enabled
     && normalizedLeft.pagination.page_size === normalizedRight.pagination.page_size
   )
@@ -6196,7 +6928,7 @@ async function applySheetSettings() {
     return
   }
 
-  const nextSettings = normalizeSheetViewSettings(sheetSettingsDraft.value)
+  const nextSettings = normalizeSheetViewSettings(sheetSettingsDraft.value, columnHeaders.value.length)
   closeSheetSettings()
 
   if (areSheetViewSettingsEqual(sheetViewSettings.value, nextSettings)) {
@@ -6289,7 +7021,7 @@ function loadSheetDocument(document: SheetDocument) {
     normalizedHeaders.length,
   )
   cellMeta.value = normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length)
-  sheetViewSettings.value = normalizeSheetViewSettings(document.view_settings)
+  sheetViewSettings.value = normalizeSheetViewSettings(document.view_settings, normalizedHeaders.length)
   pageSize.value = sheetViewSettings.value.pagination.page_size
   const formulaDisplayForWidths = buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
   columnWidths.value = document.column_widths?.length
@@ -6312,6 +7044,7 @@ function loadSheetDocument(document: SheetDocument) {
       colWidths: [...columnWidths.value],
       rowHeaders: sheetRowHeaders.value,
       fixedRowsTop: sheetHeaderRowCount.value,
+      fixedColumnsStart: fixedColumnsStart.value,
       mergeCells: sheetMergeCells.value,
       hiddenColumns: {
         columns: [...hiddenColumnIndexes.value],
@@ -6387,6 +7120,7 @@ function emitSheetSync(detail: NoteSheetDetail) {
     title: detail.title || '未命名表格',
     version: Number(detail.version || 1),
     updatedAt: Number(detail.updated_at || 0),
+    workbookItems: detail.workbook_items ?? [],
   })
 }
 
@@ -6404,6 +7138,74 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     lastQueuedSerial = 0
     clearDraftStorage()
     void refreshAttendanceCourseScriptStatuses()
+  } finally {
+    suppressPersistence = false
+  }
+}
+
+function findHeaderIndex(headers: string[], target: string) {
+  return headers.findIndex((header) => normalizeCellValue(header).trim() === target)
+}
+
+function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
+  const remoteDocument = normalizeSheetDocument(detail.document_json)
+  const remoteColumns = normalizeHeaders(remoteDocument.columns)
+  const currentUserIdColumn = findHeaderIndex(columnHeaders.value, '用户ID')
+  const currentScoreColumn = findHeaderIndex(columnHeaders.value, '匹配得分')
+  const remoteUserIdColumn = findHeaderIndex(remoteColumns, '用户ID')
+  const remoteScoreColumn = findHeaderIndex(remoteColumns, '匹配得分')
+
+  if (
+    currentUserIdColumn < 0
+    || currentScoreColumn < 0
+    || remoteUserIdColumn < 0
+    || remoteScoreColumn < 0
+  ) {
+    applyRemoteSheetDetail(detail)
+    return
+  }
+
+  const remoteRows = remoteDocument.rows.map((row) => normalizeRow(row, remoteColumns))
+  const currentRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  const currentBaseOffset = effectivePaginationEnabled.value ? pageRowOffset.value : 0
+  const remoteBaseOffset = detail.pagination?.row_offset ?? 0
+  const remoteIsPaged = !!detail.pagination
+  let changed = false
+
+  for (let rowIndex = 0; rowIndex < currentRows.length; rowIndex += 1) {
+    const remoteRowIndex = remoteIsPaged
+      ? rowIndex + currentBaseOffset - remoteBaseOffset
+      : rowIndex + currentBaseOffset
+    const remoteRow = remoteRows[remoteRowIndex]
+    if (!remoteRow) {
+      continue
+    }
+
+    const nextUserId = remoteRow[remoteUserIdColumn] ?? ''
+    const nextScore = remoteRow[remoteScoreColumn] ?? ''
+    if (
+      currentRows[rowIndex][currentUserIdColumn] !== nextUserId
+      || currentRows[rowIndex][currentScoreColumn] !== nextScore
+    ) {
+      currentRows[rowIndex][currentUserIdColumn] = nextUserId
+      currentRows[rowIndex][currentScoreColumn] = nextScore
+      changed = true
+    }
+  }
+
+  suppressPersistence = true
+  try {
+    remoteAccessCapabilities.value = detail.access?.capabilities ?? remoteAccessCapabilities.value
+    sheetTitle.value = detail.title || sheetTitle.value
+    sheetVersion.value = Number(detail.version || sheetVersion.value || 1)
+    emitSheetSync(detail)
+    if (changed) {
+      rows.value = currentRows
+      refreshFormulaDisplayState()
+      refreshGridStructure()
+      void refreshComputedRowHeights()
+    }
+    sheetContentReady.value = true
   } finally {
     suppressPersistence = false
   }
@@ -6907,7 +7709,7 @@ async function handleUpdateAttendanceLinkCountsFromSelection(fieldKey: Attendanc
 
 function resolveFetchPaginationPreference(localDraft: SheetDraftPayload | null) {
   if (localDraft) {
-    const localSettings = normalizeSheetViewSettings(localDraft.document.view_settings)
+    const localSettings = normalizeSheetViewSettings(localDraft.document.view_settings, localDraft.document.columns.length)
     return {
       paginate: localSettings.pagination.enabled,
       pageSize: localSettings.pagination.page_size,
@@ -6959,7 +7761,7 @@ async function restoreInitialDocument() {
 
     applyPaginationState(remote.pagination)
     let remoteDocument = normalizeSheetDocument(remote.document_json)
-    const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings)
+    const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings, remoteDocument.columns.length)
     if (
       paginationPreference
       && paginationPreference.paginate !== remoteSettings.pagination.enabled
@@ -7660,6 +8462,76 @@ function getSingleSelectedColumnIndex() {
   return bounds.start
 }
 
+function getSingleFreezePaneTargetColumnIndex() {
+  const selectedColumn = getSingleSelectedColumnIndex()
+  if (selectedColumn != null) {
+    return selectedColumn
+  }
+  return getSelectedColumnHeaderCellIndex()
+}
+
+function hasFreezePaneContextSelection() {
+  return hasColumnHeaderSelection() || !!selectedSheetHeaderCell.value
+}
+
+function canFreezePaneAtSelection() {
+  return canEditConfig.value && getSingleFreezePaneTargetColumnIndex() != null
+}
+
+function canUnfreezePanesFromSelection() {
+  return canEditConfig.value && fixedColumnsStart.value > 0 && hasFreezePaneContextSelection()
+}
+
+function shouldShowFreezePaneContextMenuGroup() {
+  return canFreezePaneAtSelection() || canUnfreezePanesFromSelection()
+}
+
+function setFrozenColumnCount(columnCount: number) {
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  const nextCount = normalizeFrozenColumnCount(columnCount, columnHeaders.value.length)
+  const currentCount = fixedColumnsStart.value
+  if (nextCount === currentCount && sheetViewSettings.value.frozen_column_count === nextCount) {
+    return
+  }
+
+  sheetViewSettings.value = normalizeSheetViewSettings({
+    ...sheetViewSettings.value,
+    frozen_column_count: nextCount,
+  }, columnHeaders.value.length)
+  refreshGridStructure()
+  scheduleRemoteSave(0)
+
+  if (nextCount > 0) {
+    ElMessage.success(`已冻结到 ${getColumnMarkerLabel(nextCount - 1)} 列`)
+  } else {
+    ElMessage.success('已取消冻结窗口')
+  }
+}
+
+function freezePanesAtSelectedColumn() {
+  const columnIndex = getSingleFreezePaneTargetColumnIndex()
+  if (columnIndex == null) {
+    return
+  }
+  setFrozenColumnCount(columnIndex + 1)
+}
+
+function isFreezeColumnBoundary(columnIndex: number) {
+  return fixedColumnsStart.value > 0 && columnIndex === fixedColumnsStart.value - 1
+}
+
+function isFreezeRowBoundary(rowIndex: number) {
+  return sheetHeaderRowCount.value > 0 && rowIndex === sheetHeaderRowCount.value - 1
+}
+
+function applyFreezePaneBoundaryClasses(element: HTMLElement, rowIndex: number, columnIndex: number) {
+  element.classList.toggle('sheet-freeze-column-boundary', isFreezeColumnBoundary(columnIndex))
+  element.classList.toggle('sheet-freeze-row-boundary', isFreezeRowBoundary(rowIndex))
+}
+
 function areColumnMarkerBoundsEqual(
   left: { start: number; end: number } | null,
   right: { start: number; end: number } | null,
@@ -7791,6 +8663,36 @@ function getRawCellValue(rowIndex: number, columnIndex: number) {
   return normalizeCellValue(rows.value[rowIndex]?.[columnIndex] ?? '')
 }
 
+function createFormulaBarCellFromGridCell(gridRowIndex: number, columnIndex: number): FormulaBarCell | null {
+  if (
+    !Number.isInteger(gridRowIndex)
+    || !Number.isInteger(columnIndex)
+    || gridRowIndex < 0
+    || columnIndex < 0
+    || columnIndex >= columnHeaders.value.length
+    || gridRowIndex >= sheetGridRows.value.length
+  ) {
+    return null
+  }
+
+  const anchor = getMergeAnchorForGridCell(gridRowIndex, columnIndex)
+  if (anchor.row < 0 || anchor.column < 0 || anchor.column >= columnHeaders.value.length) {
+    return null
+  }
+  return {
+    gridRow: anchor.row,
+    dataRow: getDataRowIndex(anchor.row),
+    column: anchor.column,
+    documentGridRow: anchor.documentRow,
+  }
+}
+
+function getFormulaBarCellRawValue(cell: FormulaBarCell) {
+  return cell.dataRow >= 0
+    ? getRawCellValue(cell.dataRow, cell.column)
+    : getGridCellRenderSourceValue(cell.gridRow, cell.column)
+}
+
 function getCellEditText(columnIndex: number, rawValue: unknown) {
   const normalizedValue = normalizeCellValue(rawValue)
   if (isFormulaExpression(normalizedValue)) {
@@ -7807,6 +8709,11 @@ function getCellEditText(columnIndex: number, rawValue: unknown) {
   return normalizedValue
 }
 
+function getFormulaBarCellEditText(cell: FormulaBarCell) {
+  const rawValue = getFormulaBarCellRawValue(cell)
+  return cell.dataRow >= 0 ? getCellEditText(cell.column, rawValue) : rawValue
+}
+
 function syncFormulaBarDraftFromSelectedCell(force = false) {
   const cell = formulaBarCell.value
   if (!cell) {
@@ -7816,7 +8723,7 @@ function syncFormulaBarDraftFromSelectedCell(force = false) {
   if (formulaBarFocused.value && !force) {
     return
   }
-  formulaBarDraft.value = getCellEditText(cell.column, getRawCellValue(cell.row, cell.column))
+  formulaBarDraft.value = getFormulaBarCellEditText(cell)
 }
 
 function clearScheduledFormulaBarDraftSync() {
@@ -7837,7 +8744,7 @@ function scheduleFormulaBarDraftFromSelectedCell(force = false) {
 
 function isSameFormulaBarCell(rowIndex: number, columnIndex: number) {
   const cell = formulaBarCell.value
-  return !!cell && cell.row === rowIndex && cell.column === columnIndex
+  return !!cell && cell.gridRow === rowIndex && cell.column === columnIndex
 }
 
 function isFormulaReferencePickMode() {
@@ -8067,7 +8974,7 @@ function getFormulaReferenceTargetCell(target: FormulaReferenceEditTarget) {
   }
 
   const cell = formulaBarCell.value
-  return cell ? { row: cell.row, column: cell.column } : null
+  return cell && cell.dataRow >= 0 ? { row: cell.dataRow, column: cell.column } : null
 }
 
 function getFormulaReferenceArrowDirection(event: KeyboardEvent): FormulaReferenceArrowDirection | null {
@@ -8488,15 +9395,11 @@ function syncFormulaBarFromInlineEditor(editor: SheetActiveEditor, value: string
   if (typeof editor.row !== 'number' || typeof editor.col !== 'number') {
     return
   }
-  const dataRow = getDataRowIndex(editor.row)
-  if (dataRow < 0) {
+  const cell = createFormulaBarCellFromGridCell(editor.row, editor.col)
+  if (!cell) {
     return
   }
-  formulaBarCell.value = {
-    row: dataRow,
-    column: editor.col,
-    documentRow: getDocumentRowIndex(dataRow),
-  }
+  formulaBarCell.value = cell
   formulaBarDraft.value = value
 }
 
@@ -8505,12 +9408,12 @@ function syncInlineEditorToCellEditText(editor: SheetActiveEditor) {
     return
   }
 
-  const dataRow = getDataRowIndex(editor.row)
-  if (dataRow < 0) {
+  const cell = createFormulaBarCellFromGridCell(editor.row, editor.col)
+  if (!cell) {
     return
   }
-  const rawValue = getRawCellValue(dataRow, editor.col)
-  const editText = getCellEditText(editor.col, rawValue)
+  const rawValue = getFormulaBarCellRawValue(cell)
+  const editText = getFormulaBarCellEditText(cell)
   if (editText === rawValue || getActiveEditorDraft(editor) !== rawValue) {
     return
   }
@@ -8525,7 +9428,11 @@ function syncInlineEditorToCellEditText(editor: SheetActiveEditor) {
 
 function isEditorForFormulaBarCell(editor: SheetActiveEditor) {
   const cell = formulaBarCell.value
-  return !!cell && getDataRowIndex(editor.row) === cell.row && editor.col === cell.column
+  if (!cell || typeof editor.row !== 'number' || typeof editor.col !== 'number') {
+    return false
+  }
+  const editorCell = createFormulaBarCellFromGridCell(editor.row, editor.col)
+  return !!editorCell && editorCell.gridRow === cell.gridRow && editorCell.column === cell.column
 }
 
 function syncFormulaBarFromActiveInlineEditor() {
@@ -8616,7 +9523,7 @@ function isFormulaBarDraftSyncedWithCell() {
   if (!cell) {
     return false
   }
-  return formulaBarDraft.value === getCellEditText(cell.column, getRawCellValue(cell.row, cell.column))
+  return formulaBarDraft.value === getFormulaBarCellEditText(cell)
 }
 
 function canRouteFormulaBarUndoRedo(event: KeyboardEvent) {
@@ -8697,6 +9604,36 @@ function commitFormulaBarDraft() {
   if (!cell) {
     return
   }
+
+  if (cell.dataRow < 0) {
+    if (!canEditConfig.value) {
+      syncFormulaBarDraftFromSelectedCell(true)
+      clearFormulaReferenceReplacementSpan()
+      clearFormulaReferencePreviewRange()
+      return
+    }
+
+    const nextValue = normalizeCellValue(formulaBarDraft.value)
+    if (nextValue === getFormulaBarCellRawValue(cell)) {
+      formulaBarDraft.value = nextValue
+      clearFormulaReferenceReplacementSpan()
+      clearFormulaReferencePreviewRange()
+      return
+    }
+
+    if (applySheetHeaderGridChange(cell.gridRow, cell.column, nextValue)) {
+      clearEditingColumnState()
+      refreshGridStructure()
+      refreshFormulaDisplayState()
+      void refreshComputedRowHeights()
+    }
+    syncFormulaBarDraftFromSelectedCell(true)
+    clearFormulaReferenceReplacementSpan()
+    clearFormulaReferencePreviewRange()
+    getHotInstance()?.render()
+    return
+  }
+
   if (!canEditDataColumn(cell.column)) {
     syncFormulaBarDraftFromSelectedCell(true)
     clearFormulaReferenceReplacementSpan()
@@ -8705,7 +9642,7 @@ function commitFormulaBarDraft() {
   }
 
   const nextValue = normalizeCellInputValueForColumn(formulaBarDraft.value, cell.column)
-  if (nextValue === getRawCellValue(cell.row, cell.column)) {
+  if (nextValue === getRawCellValue(cell.dataRow, cell.column)) {
     formulaBarDraft.value = getCellEditText(cell.column, nextValue)
     clearFormulaReferenceReplacementSpan()
     clearFormulaReferencePreviewRange()
@@ -8714,13 +9651,13 @@ function commitFormulaBarDraft() {
 
   const hot = getHotInstance()
   if (hot) {
-    hot.setDataAtCell(getGridRowIndex(cell.row), cell.column, nextValue, 'formula-bar')
+    hot.setDataAtCell(cell.gridRow, cell.column, nextValue, 'formula-bar')
   } else {
     const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
-    if (!nextRows[cell.row]) {
-      nextRows[cell.row] = createEmptyRow(columnHeaders.value.length)
+    if (!nextRows[cell.dataRow]) {
+      nextRows[cell.dataRow] = createEmptyRow(columnHeaders.value.length)
     }
-    nextRows[cell.row][cell.column] = nextValue
+    nextRows[cell.dataRow][cell.column] = nextValue
     rows.value = nextRows
   }
 
@@ -8732,28 +9669,18 @@ function commitFormulaBarDraft() {
   void refreshComputedRowHeights()
 }
 
-function setFormulaBarCell(rowIndex: number, columnIndex: number) {
-  if (
-    !Number.isInteger(rowIndex)
-    || !Number.isInteger(columnIndex)
-    || rowIndex < 0
-    || columnIndex < 0
-    || rowIndex >= rows.value.length
-    || columnIndex >= columnHeaders.value.length
-  ) {
+function setFormulaBarGridCell(gridRowIndex: number, columnIndex: number) {
+  const nextCell = createFormulaBarCellFromGridCell(gridRowIndex, columnIndex)
+  if (!nextCell) {
     clearFormulaBarSelection()
     return
   }
 
-  if (formulaBarFocused.value && !isSameFormulaBarCell(rowIndex, columnIndex)) {
+  if (formulaBarFocused.value && !isSameFormulaBarCell(nextCell.gridRow, nextCell.column)) {
     commitFormulaBarDraft()
   }
 
-  formulaBarCell.value = {
-    row: rowIndex,
-    column: columnIndex,
-    documentRow: getDocumentRowIndex(rowIndex),
-  }
+  formulaBarCell.value = nextCell
   scheduleFormulaBarDraftFromSelectedCell(true)
 }
 
@@ -8800,13 +9727,13 @@ function resetFormulaBarDraftAndExit() {
 function handleAfterSelection(row: number, column: number) {
   refreshContextMenuFallbackSelectionState()
   if (isSheetHeaderGridRow(row) && column >= 0) {
-    clearFormulaBarSelection()
     const anchor = getMergeAnchorForGridCell(row, column)
     const headerLevel = getSheetHeaderGridLevel(anchor.row)
     if (!isSheetHeaderCellSelected(anchor.column, headerLevel)) {
       selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
       getHotInstance()?.render()
     }
+    setFormulaBarGridCell(anchor.row, anchor.column)
     syncColumnMarkerSelection()
     return
   }
@@ -8831,9 +9758,9 @@ function handleAfterSelection(row: number, column: number) {
   clearFormulaReferencePreviewRange()
   if (row >= 0 && column >= 0) {
     const anchor = getMergeAnchorForGridCell(row, column)
-    setFormulaBarCell(getDataRowIndex(anchor.row), anchor.column)
+    setFormulaBarGridCell(anchor.row, anchor.column)
   } else {
-    setFormulaBarCell(dataRow, column)
+    clearFormulaBarSelection()
   }
   syncColumnMarkerSelection()
 }
@@ -9179,6 +10106,10 @@ function getCellMetaAt(documentRow: number, columnIndex: number) {
 
 function getCellLinkAt(documentRow: number, columnIndex: number) {
   return getCellMetaAt(documentRow, columnIndex)?.link ?? null
+}
+
+function getCellActionAt(documentRow: number, columnIndex: number) {
+  return getCellMetaAt(documentRow, columnIndex)?.action ?? null
 }
 
 function getCellStyleAt(documentRow: number, columnIndex: number) {
@@ -9541,6 +10472,23 @@ function getSelectedLinkTargetLink() {
 
 function hasSelectedCellLink() {
   return !!getSelectedLinkTargetLink()
+}
+
+function shouldShowStyleContextMenuGroup() {
+  return (
+    hasSingleSheetCellSelection()
+    || (hasSheetCellSelection() && canEditConfig.value)
+    || (hasSheetCellSelection() && canEditConfig.value && hasCopiedCellFormat())
+    || (hasSheetCellSelection() && canEditConfig.value && canMergeSelectedCells())
+    || (hasSelectedMergedCell() && canEditConfig.value)
+  )
+}
+
+function shouldShowLinkContextMenuGroup() {
+  return (
+    hasSelectedCellLink()
+    || (hasSingleLinkTargetSelection() && canEditConfig.value)
+  )
 }
 
 function openSelectedCellLink() {
@@ -10155,6 +11103,71 @@ function shouldShowRemoveRowAction() {
   return shouldShowRowActions() && !!getSelectionRowBounds() && !!hot?.countSourceRows()
 }
 
+function getSingleSelectedRowDetailIndex() {
+  if (!isSelectedByRowHeader() || isSelectedByCorner()) {
+    return null
+  }
+  const bounds = getSelectionRowBounds()
+  if (!bounds || bounds.start !== bounds.end) {
+    return null
+  }
+  return bounds.start >= 0 && bounds.start < rows.value.length ? bounds.start : null
+}
+
+function canOpenSelectedRowDetailDialog() {
+  return getSingleSelectedRowDetailIndex() != null
+}
+
+function buildRowDetail(rowIndex: number): SheetRowDetail | null {
+  if (rowIndex < 0 || rowIndex >= rows.value.length) {
+    return null
+  }
+
+  const row = normalizeRow(rows.value[rowIndex], columnHeaders.value)
+  const gridRow = getGridRowIndex(rowIndex)
+  const documentGridRow = getDocumentGridRowIndex(gridRow)
+  const rowLabel = getSheetRowHeaderLabel(gridRow)
+  const items = columnHeaders.value
+    .map((header, columnIndex): SheetRowDetailItem | null => {
+      if (columnConfigs.value[header]?.hidden === true) {
+        return null
+      }
+
+      const rawValue = row[columnIndex] ?? ''
+      const link = getCellLinkAt(documentGridRow, columnIndex)
+      const action = getCellActionAt(documentGridRow, columnIndex)
+      const displayValue = action
+        ? getCellActionDisplayLabel(action, normalizeCellValue(rawValue))
+        : getCellDisplayText(rowIndex, columnIndex, rawValue)
+      const linkDisplayValue = link ? (displayValue || link.title || link.url) : displayValue
+      const value = normalizeCellValue(linkDisplayValue)
+      return {
+        columnIndex,
+        marker: getColumnMarkerLabel(columnIndex),
+        label: header || createFallbackHeader(columnIndex),
+        value,
+        empty: !value.trim(),
+        link,
+      }
+    })
+    .filter((item): item is SheetRowDetailItem => !!item)
+
+  return { rowIndex, rowLabel, items }
+}
+
+function openSelectedRowDetailDialog() {
+  const rowIndex = getSingleSelectedRowDetailIndex()
+  if (rowIndex == null) {
+    return
+  }
+  const detail = buildRowDetail(rowIndex)
+  if (!detail) {
+    return
+  }
+  rowDetail.value = detail
+  rowDetailDialogVisible.value = true
+}
+
 function getNextCustomColumnNumber(headers: string[]) {
   const usedNumbers = headers
     .map((header) => header.match(new RegExp(`^${CUSTOM_COLUMN_PREFIX}(\\d+)$`)))
@@ -10364,11 +11377,14 @@ function resolveCellMeta(row: number, col: number) {
     }
   }
 
+  const action = row >= 0
+    ? getCellActionAt(getDocumentGridRowIndex(row), col)
+    : null
   if (isSheetHeaderGridRow(row)) {
     return {
       wordWrap: true,
       textEllipsis: false,
-      readOnly: !canEditConfig.value,
+      readOnly: !!action || !canEditConfig.value,
       className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
     }
   }
@@ -10377,14 +11393,14 @@ function resolveCellMeta(row: number, col: number) {
     return {
       wordWrap: false,
       textEllipsis: true,
-      readOnly: !canEditDataColumn(col),
+      readOnly: !!action || !canEditDataColumn(col),
     }
   }
 
   return {
     wordWrap: true,
     textEllipsis: false,
-    readOnly: !canEditDataColumn(col),
+    readOnly: !!action || !canEditDataColumn(col),
   }
 }
 
@@ -10522,6 +11538,7 @@ function handleAfterRenderer(
   const renderColumn = anchor.column
   const dataRow = anchor.row >= 0 ? getDataRowIndex(anchor.row) : -1
   resetRenderedCellState(TD)
+  applyFreezePaneBoundaryClasses(TD, anchor.row, renderColumn)
   const documentRow = dataRow >= 0 ? anchor.documentRow : -1
   const rawText = dataRow >= 0 && renderColumn >= 0
     ? getGridCellRawValue(anchor.row, renderColumn)
@@ -10531,13 +11548,18 @@ function handleAfterRenderer(
   const link = documentRow >= 0 && renderColumn >= 0
     ? getCellLinkAt(documentRow, renderColumn)
     : null
+  const action = documentRow >= 0 && renderColumn >= 0
+    ? getCellActionAt(documentRow, renderColumn)
+    : null
   const linkDisplayText = rawText.trim() ? '' : (link?.title || link?.url || '')
   const formulaCell = dataRow >= 0 && renderColumn >= 0 && isFormulaExpression(rawText)
     ? getFormulaCellModel(dataRow, renderColumn)
     : null
   const formulaText = formulaCell?.text ?? null
   let renderedText = rawText
-  if (formulaCell) {
+  if (action) {
+    renderedText = getCellActionDisplayLabel(action, rawText)
+  } else if (formulaCell) {
     renderedText = formulaCell.text
   } else if (linkDisplayText) {
     renderedText = linkDisplayText
@@ -10545,7 +11567,9 @@ function handleAfterRenderer(
     renderedText = formatCellDisplayValueCached(rawText, columnConfig)
   }
 
-  if (formulaText != null || renderedText !== rawText) {
+  if (action) {
+    renderCellActionButton(TD, renderedText)
+  } else if (formulaText != null || renderedText !== rawText) {
     setRenderedCellText(TD, renderedText)
   }
 
@@ -10601,6 +11625,7 @@ function handleAfterRenderer(
 
   const hasLink = !!link
   TD.classList.toggle('sheet-cell-has-link', hasLink)
+  TD.classList.toggle('sheet-cell-has-action', !!action)
   TD.classList.toggle('sheet-cell-formula', hasFormula)
   TD.classList.toggle('sheet-cell-formula-error', hasFormulaError)
   TD.classList.toggle('sheet-cell-formula-reference-preview', isFormulaReferencePreview)
@@ -10628,6 +11653,12 @@ function handleAfterRenderer(
 
   if (link) {
     title = title ? `${title}\n${link.url}` : link.url
+  }
+  if (action) {
+    const actionTitle = getCellActionTitle(action)
+    if (actionTitle) {
+      title = title ? `${title}\n${actionTitle}` : actionTitle
+    }
   }
   if (title) {
     if (TD.title !== title) {
@@ -10691,7 +11722,7 @@ watch(
 watch(
   () => {
     const cell = formulaBarCell.value
-    return cell ? getRawCellValue(cell.row, cell.column) : ''
+    return cell ? getFormulaBarCellRawValue(cell) : ''
   },
   () => {
     syncFormulaBarDraftFromSelectedCell()
@@ -10732,6 +11763,9 @@ watch(
 watch(
   () => props.sheetId,
   (nextSheetId, previousSheetId) => {
+    clearUserMatchRunPollTimer()
+    userMatchRunStatus.value = null
+    userMatchStartPending.value = false
     clearSaveTimer()
     if (!nextSheetId) {
       suppressPersistence = true
@@ -10765,6 +11799,9 @@ watch(
     if (nextWorkbookId === previousWorkbookId || props.sheetId == null) {
       return
     }
+    clearUserMatchRunPollTimer()
+    userMatchRunStatus.value = null
+    userMatchStartPending.value = false
     clearSaveTimer()
     void restoreInitialDocument().finally(() => {
       void updateSheetViewportHeight()
@@ -10796,6 +11833,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearSaveTimer()
+  clearUserMatchRunPollTimer()
   finishFormulaReferenceRange()
   clearScheduledFormulaBarDraftSync()
   clearScheduledInlineEditorFormulaBarSync()
@@ -10858,7 +11896,16 @@ defineExpose({
       />
     </div>
 
-    <div v-if="sheetId == null || shouldRenderSheetContent" ref="sheetFrameRef" class="sheet-frame" :class="{ 'is-empty': sheetId == null }">
+    <div
+      v-if="sheetId == null || shouldRenderSheetContent"
+      ref="sheetFrameRef"
+      class="sheet-frame"
+      :class="{
+        'is-empty': sheetId == null,
+        'has-frozen-columns': fixedColumnsStart > 0,
+        'has-frozen-rows': sheetHeaderRowCount > 0,
+      }"
+    >
       <HotTable
         v-if="shouldRenderSheetContent"
         ref="hotTableRef"
@@ -10868,6 +11915,7 @@ defineExpose({
         :col-widths="columnWidths"
         :row-headers="sheetRowHeaders"
         :fixed-rows-top="sheetHeaderRowCount"
+        :fixed-columns-start="fixedColumnsStart"
         :merge-cells="sheetMergeCells"
         :hidden-columns="{ columns: hiddenColumnIndexes, indicators: false }"
         :manual-column-resize="canEditConfig"
@@ -10915,6 +11963,7 @@ defineExpose({
         :after-selection="handleAfterSelection"
         :after-deselect="handleAfterDeselect"
         :after-get-col-header="handleAfterGetColHeader"
+        :after-get-row-header="handleAfterGetRowHeader"
         :after-renderer="handleAfterRenderer"
       />
 
@@ -10934,6 +11983,37 @@ defineExpose({
         @current-change="handlePageChange"
       />
     </div>
+
+    <el-dialog
+      v-model="rowDetailDialogVisible"
+      :title="rowDetailDialogTitle"
+      width="560px"
+      destroy-on-close
+      append-to-body
+    >
+      <div v-if="rowDetail" class="sheet-row-detail-list">
+        <div
+          v-for="item in rowDetail.items"
+          :key="item.columnIndex"
+          class="sheet-row-detail-item"
+          :class="{ 'is-empty': item.empty }"
+        >
+          <div class="sheet-row-detail-key">
+            <span class="sheet-row-detail-marker">{{ item.marker }}</span>
+            <span class="sheet-row-detail-label">{{ item.label }}</span>
+          </div>
+          <div class="sheet-row-detail-value">
+            <a
+              v-if="item.link"
+              :href="item.link.url"
+              target="_blank"
+              rel="noreferrer"
+            >{{ item.value || item.link.url }}</a>
+            <span v-else>{{ item.value || '--' }}</span>
+          </div>
+        </div>
+      </div>
+    </el-dialog>
 
     <el-dialog
       v-model="excelImportDialogVisible"
@@ -10982,6 +12062,55 @@ defineExpose({
             @click="applyExcelImportReset"
           >
             导入并重置
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="userMatchDialogVisible"
+      title="更新用户匹配"
+      width="420px"
+      destroy-on-close
+      append-to-body
+    >
+      <div class="sheet-settings-form">
+        <div class="sheet-settings-field">
+          <el-checkbox
+            v-model="userMatchUseBrowserFallback"
+            :disabled="userMatchStartPending || activeUserMatchRun"
+          >
+            未命中时回查小鹅通
+          </el-checkbox>
+          <div class="sheet-excel-import-hint">
+            默认只查本地用户库。勾选后会调用 codepc_mi15 打开小鹅通用户列表逐行兜底，耗时更长。
+          </div>
+        </div>
+        <div v-if="userMatchRunSummary" class="sheet-action-run-status">
+          {{ userMatchRunSummary }}
+        </div>
+      </div>
+      <template #footer>
+        <div class="sheet-settings-footer">
+          <el-button :disabled="userMatchStartPending" @click="() => closeUserMatchDialog()">
+            {{ activeUserMatchRun ? '关闭' : '取消' }}
+          </el-button>
+          <el-button
+            v-if="activeUserMatchRun"
+            type="danger"
+            plain
+            :loading="userMatchStartPending"
+            @click="() => startUserMatchRun(true)"
+          >
+            强制重启
+          </el-button>
+          <el-button
+            v-else
+            type="primary"
+            :loading="userMatchStartPending"
+            @click="() => startUserMatchRun(false)"
+          >
+            开始匹配
           </el-button>
         </div>
       </template>
@@ -11232,7 +12361,6 @@ defineExpose({
               <el-input-number
                 :model-value="getColumnSettingNumberModel('font_size')"
                 class="sheet-settings-number-input"
-                :min="MIN_COLUMN_FONT_SIZE"
                 :max="MAX_COLUMN_FONT_SIZE"
                 :step="1"
                 controls-position="right"
@@ -11663,6 +12791,74 @@ defineExpose({
   color: #8b7355;
 }
 
+.sheet-action-run-status {
+  padding: 8px 10px;
+  border: 1px solid #d7e6fb;
+  border-radius: 6px;
+  background: #f4f8ff;
+  color: #24558f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sheet-row-detail-list {
+  max-height: min(68vh, 680px);
+  overflow: auto;
+  border-top: 1px solid #ebe2d4;
+}
+
+.sheet-row-detail-item {
+  display: grid;
+  grid-template-columns: minmax(128px, 190px) minmax(0, 1fr);
+  min-height: 38px;
+  border-bottom: 1px solid #ebe2d4;
+}
+
+.sheet-row-detail-key {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 9px 10px;
+  background: #faf7f1;
+  color: #5f4b32;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sheet-row-detail-marker {
+  flex: 0 0 auto;
+  color: #9a7b4f;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sheet-row-detail-label {
+  min-width: 0;
+  word-break: break-word;
+}
+
+.sheet-row-detail-value {
+  min-width: 0;
+  padding: 9px 12px;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sheet-row-detail-value a {
+  color: #1d4ed8;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sheet-row-detail-item.is-empty .sheet-row-detail-value {
+  color: #9ca3af;
+}
+
 .sheet-settings-inline-field {
   display: flex;
   align-items: center;
@@ -11934,11 +13130,56 @@ defineExpose({
   vertical-align: top;
 }
 
+.sheet-frame :deep(.handsontable tbody th) {
+  vertical-align: middle;
+}
+
+.sheet-frame :deep(.handsontable tbody th .relative) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 100%;
+}
+
 .sheet-frame :deep(.handsontable td.sheet-cell-has-link) {
   color: #1d4ed8;
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-has-action) {
+  text-align: center !important;
+  vertical-align: middle;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-grid-note-header-cell.sheet-cell-has-action) {
+  background: #f2f2f2 !important;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-has-action .sheet-cell-action-button-inner) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-height: 24px;
+  padding: 0 12px;
+  border: 1px solid #b8c7e8;
+  border-radius: 6px;
+  background: #eef5ff;
+  color: #1f4f99;
+  font: 600 12px/22px Inter, "Segoe UI", sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-has-action:hover .sheet-cell-action-button-inner) {
+  border-color: #7ea4e8;
+  background: #e3efff;
 }
 
 .sheet-frame :deep(.handsontable td.sheet-cell-formula-error) {
@@ -11950,6 +13191,62 @@ defineExpose({
   outline: 2px solid #409eff;
   outline-offset: -2px;
   background-color: rgba(64, 158, 255, 0.08) !important;
+}
+
+.sheet-frame.has-frozen-columns :deep(.handsontable .ht_clone_inline_start::after),
+.sheet-frame.has-frozen-columns :deep(.handsontable .ht_clone_left::after),
+.sheet-frame.has-frozen-columns :deep(.handsontable .ht_clone_top_inline_start_corner::after),
+.sheet-frame.has-frozen-columns :deep(.handsontable .ht_clone_top_left_corner::after) {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 5;
+  width: 2px;
+  background: #8f8f8f;
+  pointer-events: none;
+}
+
+.sheet-frame.has-frozen-rows :deep(.handsontable .ht_clone_top::after) {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+  height: 2px;
+  background: #7f9b70;
+  pointer-events: none;
+}
+
+.sheet-frame.has-frozen-rows :deep(.handsontable .ht_clone_top_inline_start_corner::before),
+.sheet-frame.has-frozen-rows :deep(.handsontable .ht_clone_top_left_corner::before) {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 6;
+  height: 2px;
+  background: #7f9b70;
+  pointer-events: none;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-freeze-column-boundary),
+.sheet-frame :deep(.handsontable th.sheet-freeze-column-boundary) {
+  box-shadow: inset -2px 0 0 #8f8f8f;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-freeze-row-boundary),
+.sheet-frame :deep(.handsontable tbody th.sheet-freeze-row-boundary) {
+  box-shadow: inset 0 -2px 0 #7f9b70;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-freeze-column-boundary.sheet-freeze-row-boundary) {
+  box-shadow:
+    inset -2px 0 0 #8f8f8f,
+    inset 0 -2px 0 #7f9b70;
 }
 
 .sheet-frame :deep(th.sheet-col-marker) {

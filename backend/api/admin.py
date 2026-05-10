@@ -17,6 +17,7 @@ from backend.core.auto_git_commit import (
 from backend.core.background_task_runner import (
     BACKGROUND_TASK_SPECS,
     get_background_task_runner_snapshot,
+    get_background_task_spec,
     refresh_background_task_schedule_states,
     reset_background_task_schedule,
     set_background_task_enabled,
@@ -491,13 +492,21 @@ def get_background_task_status(session: Session = Depends(get_session)):
         return False
 
     latest_by_key = {
+        spec.key: _queue_run_payload(queue, spec.key)
+        for spec in BACKGROUND_TASK_SPECS
+    }
+    latest_by_key.update({
         "auto_git_commit": auto_git_latest if isinstance(auto_git_latest, dict) else None,
         "note_metadata_feedback_optimization": metadata_latest if isinstance(metadata_latest, dict) else None,
         CODEX_DIARY_AUTO_IMPORT_TASK_NAME: codex_diary_latest if isinstance(codex_diary_latest, dict) else None,
         "attendance_summary_monthly_templates": _queue_run_payload(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_run_payload(queue, "storage_analysis"),
-    }
+    })
     active_by_key = {
+        spec.key: _queue_task_is_active(queue, spec.key)
+        for spec in BACKGROUND_TASK_SPECS
+    }
+    active_by_key.update({
         "auto_git_commit": _run_is_active(auto_git_status.get("active_run") if isinstance(auto_git_status, dict) else None)
         or _queue_task_is_active(queue, "auto_git_commit"),
         "note_metadata_feedback_optimization": _run_is_active(metadata_latest if isinstance(metadata_latest, dict) else None)
@@ -506,7 +515,7 @@ def get_background_task_status(session: Session = Depends(get_session)):
         or _queue_task_is_active(queue, CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
         "attendance_summary_monthly_templates": _queue_task_is_active(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_task_is_active(queue, "storage_analysis"),
-    }
+    })
 
     tasks = []
     for spec in BACKGROUND_TASK_SPECS:
@@ -592,6 +601,15 @@ def trigger_background_task(
             task_key=normalized_key,
             queue_task_id=run.queue_task_id,
             run=get_auto_git_commit_status(session).get("latest_run"),
+        )
+
+    spec = get_background_task_spec(normalized_key)
+    if spec is not None:
+        queue_task_id = spec.action()
+        return BackgroundTaskTriggerResponse(
+            task_key=normalized_key,
+            queued=queue_task_id is not None,
+            queue_task_id=queue_task_id,
         )
 
     raise HTTPException(status_code=404, detail="后台任务不存在")

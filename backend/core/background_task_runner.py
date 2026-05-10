@@ -13,6 +13,14 @@ from sqlmodel import Session
 from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, IdleUntilNextWake, MemorySelector, Root, Sequence, Status
 
 from backend.core.background_task_queue import background_task_queue
+from backend.core.fanbei_attendance_schedule import (
+    FANBEI_ATTENDANCE_EVENING_RUN_TIME,
+    FANBEI_ATTENDANCE_EVENING_TASK_KEY,
+    FANBEI_ATTENDANCE_MORNING_RUN_TIME,
+    FANBEI_ATTENDANCE_MORNING_TASK_KEY,
+    enqueue_fanbei_attendance_evening_steps,
+    enqueue_fanbei_attendance_morning_steps,
+)
 from backend.core.settings import get_settings
 from backend.models import AppSetting
 
@@ -180,6 +188,26 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         action=_enqueue_attendance_summary_if_due,
     ),
     BackgroundTaskSpec(
+        key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
+        title="梵呗考勤晚间流程",
+        category="考勤",
+        description="梵呗课程每天晚间执行 step1-step3。step1 会调用执行设备下载小鹅通数据，step2 会从执行设备读取考勤数据并写回表格，step3 会在本机计算返款并渲染课程进度高亮。",
+        schedule_label=f"每天 {FANBEI_ATTENDANCE_EVENING_RUN_TIME}",
+        retry_label="无额外重试",
+        action=enqueue_fanbei_attendance_evening_steps,
+        manual_warning="会调用考勤配置里的执行设备运行 step1，将 step2 结果写回当前梵呗考勤表，并在本机执行 step3 返款计算与进度高亮。",
+    ),
+    BackgroundTaskSpec(
+        key=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
+        title="梵呗考勤上午流程",
+        category="考勤",
+        description="梵呗课程每天上午执行 step4-step6。当前仅保留调度框架，具体步骤为空实现。",
+        schedule_label=f"每天 {FANBEI_ATTENDANCE_MORNING_RUN_TIME}",
+        retry_label="无额外重试",
+        action=enqueue_fanbei_attendance_morning_steps,
+        manual_warning="当前仅执行空的 step4-step6 框架，不会修改考勤数据。",
+    ),
+    BackgroundTaskSpec(
         key="storage_analysis",
         title="存储分析",
         category="存储",
@@ -287,6 +315,18 @@ class BackgroundTaskRunner:
                     label="attendance_summary_monthly_templates",
                     start="next",
                     enabled=_is_task_enabled("attendance_summary_monthly_templates"),
+                ),
+                Action(self._run_task_if_enabled, FANBEI_ATTENDANCE_EVENING_TASK_KEY).daily(
+                    FANBEI_ATTENDANCE_EVENING_RUN_TIME,
+                    label=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
+                    start="next",
+                    enabled=_is_task_enabled(FANBEI_ATTENDANCE_EVENING_TASK_KEY),
+                ),
+                Action(self._run_task_if_enabled, FANBEI_ATTENDANCE_MORNING_TASK_KEY).daily(
+                    FANBEI_ATTENDANCE_MORNING_RUN_TIME,
+                    label=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
+                    start="next",
+                    enabled=_is_task_enabled(FANBEI_ATTENDANCE_MORNING_TASK_KEY),
                 ),
                 Action(self._run_task_if_enabled, "storage_analysis").daily(
                     "03:00",

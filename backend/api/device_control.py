@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 import psutil
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.core.attendance_service import apply_attendance_order_operation_password_env
 from backend.core.auth import verify_api_token
@@ -22,6 +22,19 @@ from backend.core.device import (
     match_cmdline,
 )
 from backend.core.ui_automation import ensure_ui_automation_thread_context
+from backend.core.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
+from backend.core.fanbei_attendance_schedule import (
+    FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
+    FANBEI_ATTENDANCE_COURSE_NAME,
+    run_fanbei_attendance_step3_for_sheet,
+)
+from kq5034.attendance_api import (
+    build_fanbei_attendance_step2_data,
+    inspect_fanbei_lesson_export_page,
+    inspect_fanbei_attendance_step2_source,
+    lookup_registration_users_browser,
+    sync_fanbei_attendance_step1,
+)
 
 router = APIRouter(dependencies=[Depends(verify_api_token)])
 
@@ -95,6 +108,21 @@ class ExecCmdRequest(BaseModel):
     env: Optional[Dict[str, str]] = None
 
 
+class PythonRunRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    mode: Literal["script", "module_call"] = "script"
+    script: str = ""
+    module: str = ""
+    callable_name: str = Field(default="", alias="callable")
+    args: List[Any] = Field(default_factory=list)
+    kwargs: Dict[str, Any] = Field(default_factory=dict)
+    cwd: Optional[str] = None
+    env: Optional[Dict[str, str]] = None
+    async_run: bool = Field(default=False, alias="async")
+    timeout: int = Field(default=3600, ge=1, le=86400)
+
+
 @router.post("/exec_cmd")
 def execute_command(req: ExecCmdRequest):
     try:
@@ -125,6 +153,35 @@ def execute_command(req: ExecCmdRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/python-runs")
+def create_python_run(req: PythonRunRequest):
+    try:
+        return start_trusted_python_run(
+            mode=req.mode,
+            script=req.script,
+            module=req.module,
+            callable_name=req.callable_name,
+            args=req.args,
+            kwargs=req.kwargs,
+            cwd=req.cwd,
+            env=req.env,
+            async_run=req.async_run,
+            timeout=req.timeout,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/python-runs/{run_id}")
+def get_python_run(run_id: str):
+    try:
+        return get_trusted_python_run(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
 
 
 @router.get("/status")
@@ -180,6 +237,53 @@ class AttendanceOrderRefundDetailRequest(BaseModel):
     login_users: List[str] = Field(default_factory=list)
 
 
+class AttendanceUserMatchLookupItem(BaseModel):
+    key: str
+    names: List[str] = Field(default_factory=list)
+    phones: List[str] = Field(default_factory=list)
+
+
+class AttendanceUserMatchLookupRequest(BaseModel):
+    course_name: str = ""
+    course_product_name: str = ""
+    shop_id: int = 1
+    close_browser: bool = True
+    items: List[AttendanceUserMatchLookupItem] = Field(default_factory=list)
+
+
+class AttendanceFanbeiStep1Request(BaseModel):
+    course_name: str
+    shop_id: int = 1
+    update_lessons: bool = True
+    update_clockins: bool = True
+    clockin_pattern: str = ""
+    close_browser: bool = True
+
+
+class AttendanceFanbeiStep2Request(BaseModel):
+    course_name: str
+    user_ids: List[str] = Field(default_factory=list)
+    clockin_names: List[str] = Field(default_factory=list)
+    clockin_titles: List[str] = Field(default_factory=list)
+
+
+class AttendanceFanbeiStep3Request(BaseModel):
+    sheet_id: int = FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID
+    course_name: str = FANBEI_ATTENDANCE_COURSE_NAME
+
+
+class AttendanceFanbeiStep2InspectRequest(BaseModel):
+    course_name: str
+    user_ids: List[str] = Field(default_factory=list)
+    limit: int = 10
+
+
+class AttendanceFanbeiLessonExportInspectRequest(BaseModel):
+    course_name: str
+    lesson_number: int = 1
+    shop_id: int = 1
+
+
 @router.post("/attendance/order/execute")
 def execute_attendance_order(req: AttendanceOrderExecuteRequest):
     try:
@@ -197,6 +301,91 @@ def execute_attendance_order(req: AttendanceOrderExecuteRequest):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/attendance/fanbei/step1")
+def run_attendance_fanbei_step1(req: AttendanceFanbeiStep1Request):
+    try:
+        with ensure_ui_automation_thread_context():
+            return sync_fanbei_attendance_step1(
+                course_name=req.course_name,
+                shop_id=req.shop_id,
+                update_lessons=req.update_lessons,
+                update_clockins=req.update_clockins,
+                clockin_pattern=req.clockin_pattern,
+                close_browser=req.close_browser,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/step2-data")
+def build_attendance_fanbei_step2_data(req: AttendanceFanbeiStep2Request):
+    try:
+        return build_fanbei_attendance_step2_data(
+            course_name=req.course_name,
+            user_ids=req.user_ids,
+            clockin_names=req.clockin_names or None,
+            clockin_titles=req.clockin_titles or None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/step3")
+def run_attendance_fanbei_step3(req: AttendanceFanbeiStep3Request | None = None):
+    req = req or AttendanceFanbeiStep3Request()
+    try:
+        return run_fanbei_attendance_step3_for_sheet(
+            sheet_id=req.sheet_id,
+            course_name=req.course_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/step2-inspect")
+def inspect_attendance_fanbei_step2_source(req: AttendanceFanbeiStep2InspectRequest):
+    try:
+        return inspect_fanbei_attendance_step2_source(
+            course_name=req.course_name,
+            user_ids=req.user_ids,
+            limit=req.limit,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/lesson-export-inspect")
+def inspect_attendance_fanbei_lesson_export(req: AttendanceFanbeiLessonExportInspectRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            return inspect_fanbei_lesson_export_page(
+                course_name=req.course_name,
+                lesson_number=req.lesson_number,
+                shop_id=req.shop_id,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/user-match/lookup")
+def lookup_attendance_users(req: AttendanceUserMatchLookupRequest):
+    if not req.items:
+        return {"results": []}
+
+    try:
+        with ensure_ui_automation_thread_context():
+            results = lookup_registration_users_browser(
+                [item.model_dump() for item in req.items],
+                course_name=req.course_name,
+                course_product_name=req.course_product_name,
+                shop_id=req.shop_id,
+                close_browser=req.close_browser,
+            )
+            return {"results": results}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/attendance/order/refund-details")
 def query_attendance_order_refund_details(req: AttendanceOrderRefundDetailRequest):
     try:
@@ -210,4 +399,3 @@ def query_attendance_order_refund_details(req: AttendanceOrderRefundDetailReques
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-
