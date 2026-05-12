@@ -789,7 +789,7 @@ def test_remote_entry_git_generate_message_reads_remote_context(client, session,
         def json(self):
             return remote_payload
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -899,7 +899,7 @@ def test_remote_entry_git_reduce_reads_remote_reduction_input(client, session, a
         def json(self):
             return remote_payload
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -1005,7 +1005,7 @@ def test_remote_entry_git_generate_and_commit_reads_context_then_commits(client,
         def json(self):
             return self._payload
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured_calls.append(
             {
                 "method": method,
@@ -1142,7 +1142,7 @@ def test_remote_entry_git_reduce_and_commit_reads_reduction_input_then_commits(c
         def json(self):
             return self._payload
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured_calls.append(
             {
                 "method": method,
@@ -1273,7 +1273,7 @@ def test_remote_entry_git_reduction_run_auto_commit_polls_to_completion(client, 
         def json(self):
             return self._payload
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured_calls.append({"method": method, "url": url, "json": json})
         if url.endswith("/api/git-tools/reduction-input"):
             return FakeResponse(remote_reduction_payload)

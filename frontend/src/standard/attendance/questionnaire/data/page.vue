@@ -11,9 +11,8 @@ onMounted(async () => {
   try {
     const location = await fetchAttendanceWjxDataSheetLocation()
     await router.replace({
-      path: '/notes/sheets',
+      path: `/workbook/${location.workbook_id}`,
       query: {
-        workbook: String(location.workbook_id),
         sheet: String(location.sheet_id),
       },
     })

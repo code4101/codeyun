@@ -228,7 +228,7 @@ def test_ai_notebook_remote_entry_proxies_to_device_api(client, session, auth_us
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured.update(
             {
                 "method": method,

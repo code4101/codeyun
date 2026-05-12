@@ -109,7 +109,6 @@ const parseNlp = () => {
 
 const deviceForm = ref({
   mode: 'remote' as 'local' | 'remote',
-  device_id: '',
   server_url: '',
   name: '',
   token: ''
@@ -456,11 +455,6 @@ const handleAddDevice = async () => {
   }
 
   if (deviceForm.value.mode === 'remote') {
-    if (!deviceForm.value.device_id.trim()) {
-      ElMessage.warning('远程模式必须填写设备 ID');
-      return;
-    }
-
     let serverUrl = deviceForm.value.server_url.trim();
     if (!serverUrl) {
       ElMessage.warning('远程模式必须填写后端地址');
@@ -496,7 +490,6 @@ const handleAddDevice = async () => {
   try {
     const newDevice = await taskStore.addDevice({
         mode: deviceForm.value.mode,
-        device_id: deviceForm.value.mode === 'remote' ? deviceForm.value.device_id.trim() : undefined,
         name: deviceForm.value.name,
         server_url: deviceForm.value.mode === 'remote' ? deviceForm.value.server_url : undefined,
         token: deviceForm.value.token.trim()
@@ -504,7 +497,7 @@ const handleAddDevice = async () => {
     
     ElMessage.success('Device added successfully');
     
-    deviceForm.value = { mode: 'remote', device_id: '', server_url: '', name: '', token: '' };
+    deviceForm.value = { mode: 'remote', server_url: '', name: '', token: '' };
     currentDeviceId.value = newDevice.id;
     deviceDialogVisible.value = false;
     
@@ -923,14 +916,9 @@ onUnmounted(() => {
           <div class="form-tip">本地设备由平台后端直接执行；远程设备由平台后端使用这条入口资产去代理访问。</div>
         </el-form-item>
 
-        <el-form-item v-if="deviceForm.mode === 'remote'" label="设备ID" required>
-            <el-input v-model="deviceForm.device_id" placeholder="目标设备的 device_id" style="width: 100%;" />
-            <div class="form-tip">这是目标设备自身的稳定身份 ID，由对方管理员提供。</div>
-        </el-form-item>
-
         <el-form-item v-if="deviceForm.mode === 'remote'" label="后端地址" required>
             <el-input v-model="deviceForm.server_url" placeholder="例如 http://192.168.1.5:8000" style="width: 100%;" />
-            <div class="form-tip">这里填写的是平台后端可访问的目标设备后端地址；不允许填写 localhost、127.0.0.1、::1。</div>
+            <div class="form-tip">系统会用后端地址和 Token 自动读取目标设备身份；不允许填写 localhost、127.0.0.1、::1。</div>
         </el-form-item>
         
         <el-form-item label="别名">

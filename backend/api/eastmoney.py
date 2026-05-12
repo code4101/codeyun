@@ -14,9 +14,14 @@ from backend.core.stock import (
     EastmoneyTradeError,
     get_latest_asset_snapshot,
     import_mobile_trade_detail_record,
+    list_fund_flow_categories,
+    list_fund_flow_filter_options,
+    list_fund_flow_records,
+    list_latest_position_snapshots,
     list_sync_runs,
     list_trade_records,
     read_trade_snapshot,
+    refresh_eastmoney_sheet_workbook,
     snapshot_to_dict,
     sync_trade_data,
 )
@@ -55,16 +60,36 @@ def sync_eastmoney_trade_data(
     current_user: User = Depends(get_current_active_user),
 ):
     try:
-        return sync_trade_data(
+        run = sync_trade_data(
             session,
             user_id=int(current_user.id),
             start_date=payload.start_date,
             end_date=payload.end_date,
         )
+        return {
+            **run,
+            "sheet_workbook": refresh_eastmoney_sheet_workbook(
+                session,
+                user_id=int(current_user.id),
+                actor_user_id=int(current_user.id),
+            ),
+        }
     except EastmoneyTradeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"同步东方财富数据失败：{exc}") from exc
+
+
+@router.post("/sheet-workbook/refresh")
+def refresh_eastmoney_sheet_file(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return refresh_eastmoney_sheet_workbook(
+        session,
+        user_id=int(current_user.id),
+        actor_user_id=int(current_user.id),
+    )
 
 
 @router.post("/trade-detail/import/ocr")
@@ -89,12 +114,20 @@ async def import_eastmoney_trade_detail_from_ocr(
             temp_path = Path(temp_file.name)
         preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
         row, lines = parse_mobile_trade_detail_from_ocr_document(preview.get("document") or {})
-        return import_mobile_trade_detail_record(
+        result = import_mobile_trade_detail_record(
             session,
             user_id=int(current_user.id),
             row=row,
             ocr_lines=lines,
         )
+        return {
+            **result,
+            "sheet_workbook": refresh_eastmoney_sheet_workbook(
+                session,
+                user_id=int(current_user.id),
+                actor_user_id=int(current_user.id),
+            ),
+        }
     except OcrPreviewError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except (EastmoneyTradeError, ValueError) as exc:
@@ -129,6 +162,47 @@ def get_local_trade_records(
     )
 
 
+@router.get("/fund-flows")
+def get_local_fund_flow_records(
+    start_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    end_date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    flow_category: str | None = Query(default=None),
+    security_code: str | None = Query(default=None),
+    security_name: str | None = Query(default=None),
+    limit: int = Query(default=300, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return list_fund_flow_records(
+        session,
+        user_id=int(current_user.id),
+        start_date=start_date,
+        end_date=end_date,
+        flow_category=flow_category,
+        security_code=security_code,
+        security_name=security_name,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/fund-flow-categories")
+def get_local_fund_flow_categories(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return {"items": list_fund_flow_categories(session, user_id=int(current_user.id))}
+
+
+@router.get("/fund-flow-filter-options")
+def get_local_fund_flow_filter_options(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return list_fund_flow_filter_options(session, user_id=int(current_user.id))
+
+
 @router.get("/sync-runs")
 def get_eastmoney_sync_runs(
     limit: int = Query(default=20, ge=1, le=100),
@@ -144,3 +218,11 @@ def get_latest_eastmoney_asset_snapshot(
     current_user: User = Depends(get_current_active_user),
 ):
     return {"item": get_latest_asset_snapshot(session, user_id=int(current_user.id))}
+
+
+@router.get("/positions/latest")
+def get_latest_eastmoney_positions(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    return list_latest_position_snapshots(session, user_id=int(current_user.id))

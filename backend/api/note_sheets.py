@@ -4815,6 +4815,47 @@ def _fetch_resource_grants(session: Session, resource_type: str, resource_id: st
     ).all())
 
 
+def _delete_resource_access_grants(
+    session: Session,
+    *,
+    resource_type: str,
+    resource_ids: list[str],
+) -> None:
+    if not resource_ids:
+        return
+    session.exec(
+        delete(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == resource_type)
+        .where(ResourceAccessGrant.resource_id.in_(resource_ids))
+    )
+
+
+def _get_sheet_ids_owned_only_by_workbook(
+    session: Session,
+    *,
+    workbook_id: str,
+    sheet_ids: list[str],
+) -> list[str]:
+    if not sheet_ids:
+        return []
+
+    links = session.exec(
+        select(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id.in_(sheet_ids))
+    ).all()
+    link_counts: dict[str, int] = {}
+    target_sheet_ids: set[str] = set()
+    for link in links:
+        link_counts[link.sheet_id] = link_counts.get(link.sheet_id, 0) + 1
+        if link.workbook_id == workbook_id:
+            target_sheet_ids.add(link.sheet_id)
+    return [
+        sheet_id
+        for sheet_id in sheet_ids
+        if link_counts.get(sheet_id, 0) <= 1
+        and sheet_id in target_sheet_ids
+    ]
+
+
 def _resolve_subject_grant_role(
     grants: list[ResourceAccessGrant],
     current_user: User | None,
@@ -7021,6 +7062,11 @@ def delete_note_sheet(
     _require_note_sheets_feature(session, current_user)
     document, _access, _workbook = _get_note_sheet_or_404(session, current_user, sheet_id, required_role="manager")
     session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id == document.id))
+    _delete_resource_access_grants(
+        session,
+        resource_type=RESOURCE_TYPE_SHEET,
+        resource_ids=[document.id],
+    )
     session.delete(document)
     session.commit()
     return {"ok": True}
@@ -7032,15 +7078,44 @@ def list_workbooks(
     current_user: User = Depends(get_current_active_user),
 ):
     _require_note_sheets_feature(session, current_user)
-    workbooks = session.exec(
-        select(WorkbookDocument)
-        .where(WorkbookDocument.owner_user_id == current_user.id)
-        .order_by(WorkbookDocument.updated_at.desc(), WorkbookDocument.created_at.desc())
-    ).all()
-    if not workbooks:
+
+    if current_user.is_superuser:
+        candidate_workbooks = session.exec(select(WorkbookDocument)).all()
+    else:
+        owned_workbooks = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.owner_user_id == current_user.id)
+        ).all()
+        subject_keys = _current_user_subject_keys(current_user)
+        grants = session.exec(
+            select(ResourceAccessGrant)
+            .where(ResourceAccessGrant.resource_type == RESOURCE_TYPE_WORKBOOK)
+            .where(ResourceAccessGrant.subject_key.in_(subject_keys))
+        ).all()
+        granted_workbook_ids = sorted({grant.resource_id for grant in grants})
+        granted_workbooks = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.id.in_(granted_workbook_ids))
+        ).all() if granted_workbook_ids else []
+        workbook_map = {workbook.id: workbook for workbook in [*owned_workbooks, *granted_workbooks]}
+        candidate_workbooks = list(workbook_map.values())
+
+    workbook_access_items = [
+        (workbook, _resolve_workbook_resource_access(session, workbook, current_user))
+        for workbook in candidate_workbooks
+    ]
+    workbook_access_items = [
+        (workbook, access)
+        for workbook, access in workbook_access_items
+        if access.capabilities.can_read
+    ]
+    workbook_access_items.sort(
+        key=lambda item: (float(item[0].updated_at or 0.0), float(item[0].created_at or 0.0)),
+        reverse=True,
+    )
+
+    if not workbook_access_items:
         return []
 
-    workbook_ids = [workbook.id for workbook in workbooks]
+    workbook_ids = [workbook.id for workbook, _access in workbook_access_items]
     links = session.exec(
         select(WorkbookSheetLink)
         .where(WorkbookSheetLink.workbook_id.in_(workbook_ids))
@@ -7054,10 +7129,10 @@ def list_workbooks(
             _serialize_workbook_summary(
                 workbook,
                 sheet_count=counts.get(workbook.id, 0),
-                access=_resolve_workbook_resource_access(session, workbook, current_user),
+                access=access,
             ),
         )
-        for workbook in workbooks
+        for workbook, access in workbook_access_items
     ]
 
 
@@ -7313,6 +7388,25 @@ def remove_sheet_from_workbook(
     )
 
 
+@router.post("/workbooks/{workbook_id}/unpack")
+def unpack_workbook(
+    workbook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    _require_note_sheets_feature(session, current_user)
+    workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
+    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id))
+    _delete_resource_access_grants(
+        session,
+        resource_type=RESOURCE_TYPE_WORKBOOK,
+        resource_ids=[workbook.id],
+    )
+    session.delete(workbook)
+    session.commit()
+    return {"ok": True}
+
+
 @router.delete("/workbooks/{workbook_id}")
 def delete_workbook(
     workbook_id: int,
@@ -7321,7 +7415,34 @@ def delete_workbook(
 ):
     _require_note_sheets_feature(session, current_user)
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
+    links = session.exec(
+        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)
+    ).all()
+    sheet_ids = sorted({link.sheet_id for link in links})
+    owned_sheet_ids = _get_sheet_ids_owned_only_by_workbook(
+        session,
+        workbook_id=workbook.id,
+        sheet_ids=sheet_ids,
+    )
+    sheets = session.exec(
+        select(SheetDocument).where(SheetDocument.id.in_(owned_sheet_ids))
+    ).all() if owned_sheet_ids else []
+
     session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id))
+    if owned_sheet_ids:
+        _delete_resource_access_grants(
+            session,
+            resource_type=RESOURCE_TYPE_SHEET,
+            resource_ids=owned_sheet_ids,
+        )
+
+    _delete_resource_access_grants(
+        session,
+        resource_type=RESOURCE_TYPE_WORKBOOK,
+        resource_ids=[workbook.id],
+    )
+    for sheet in sheets:
+        session.delete(sheet)
     session.delete(workbook)
     session.commit()
     return {"ok": True}

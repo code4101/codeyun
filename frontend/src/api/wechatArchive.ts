@@ -78,6 +78,7 @@ export interface WeChatArchiveImportResult {
   matched_name: string | null
   chat_id: number | null
   db_path: string
+  media_dir: string
   seen: number
   inserted: number
   scroll_count: number
@@ -97,6 +98,7 @@ export interface WeChatArchiveSyncPlanItem {
   reached_top: boolean
   message_count: number
   latest_collected_at: string | null
+  first_message_time?: string | null
   last_message_time: string | null
   last_incremental_at: string | null
   last_history_at: string | null
@@ -109,7 +111,7 @@ export interface WeChatArchiveSyncPlanItem {
 }
 
 export interface WeChatArchiveSyncStartPayload {
-  mode?: 'incremental' | 'latest' | 'history' | 'full'
+  mode?: 'incremental' | 'latest' | 'history' | 'history_clearance' | 'full'
   chat_name?: string | null
   chat_names?: string[] | null
   max_runtime?: number
@@ -121,7 +123,6 @@ export interface WeChatArchiveSyncStartPayload {
 }
 
 export interface WeChatArchiveSyncStatus {
-  startup_sync_enabled: boolean
   active: boolean
   queue: {
     is_idle: boolean
@@ -181,6 +182,7 @@ export async function importWeChatArchive(payload: WeChatArchiveImportPayload) {
 export async function fetchWeChatArchiveSyncPlan(params: {
   max_chats?: number
   chat_name?: string
+  kind?: 'incremental' | 'history'
 } = {}) {
   const response = await api.get<{ items: WeChatArchiveSyncPlanItem[]; db_path: string }>('/wechat-archive/sync-plan', {
     params,
@@ -198,14 +200,6 @@ export async function startWeChatArchiveSync(payload: WeChatArchiveSyncStartPayl
     '/wechat-archive/sync/start',
     payload,
     { timeout: 30 * 1000 },
-  )
-  return response.data
-}
-
-export async function setWeChatArchiveStartupSyncEnabled(enabled: boolean) {
-  const response = await api.post<{ success: boolean; startup_sync_enabled: boolean }>(
-    '/wechat-archive/sync/startup-enabled',
-    { enabled },
   )
   return response.data
 }

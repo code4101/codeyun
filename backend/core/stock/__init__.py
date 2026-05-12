@@ -24,13 +24,20 @@ from .eastmoney_sync import (
     get_latest_asset_snapshot,
     import_pdf_statement,
     import_mobile_trade_detail_record,
+    list_fund_flow_categories,
+    list_fund_flow_filter_options,
+    list_fund_flow_records,
+    list_latest_position_snapshots,
     list_sync_runs,
     list_trade_records,
     serialize_asset_snapshot,
+    serialize_fund_flow_record,
+    serialize_position_snapshot,
     serialize_sync_run,
     serialize_trade_record,
     sync_trade_data,
 )
+from .eastmoney_sheet import refresh_eastmoney_sheet_workbook
 
 __all__ = [
     "EASTMONEY_HOME_URL",
@@ -54,10 +61,17 @@ __all__ = [
     "get_latest_asset_snapshot",
     "import_pdf_statement",
     "import_mobile_trade_detail_record",
+    "list_fund_flow_categories",
+    "list_fund_flow_filter_options",
+    "list_fund_flow_records",
+    "list_latest_position_snapshots",
     "list_sync_runs",
     "list_trade_records",
     "serialize_asset_snapshot",
+    "serialize_fund_flow_record",
+    "serialize_position_snapshot",
     "serialize_sync_run",
     "serialize_trade_record",
     "sync_trade_data",
+    "refresh_eastmoney_sheet_workbook",
 ]

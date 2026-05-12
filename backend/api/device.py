@@ -1,9 +1,10 @@
 import ipaddress
 import socket
 import time
-from typing import List, Optional
+from typing import Any, List, Optional
 from urllib.parse import urlparse
 
+import requests
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
@@ -14,6 +15,7 @@ from backend.models import User, UserDevice
 from backend.schemas import DeviceRead, UserDeviceCreate, UserDeviceRead, UserDeviceTokenRead, UserDeviceUpdate
 
 router = APIRouter()
+REMOTE_DEVICE_DIRECT_PROXIES = {"http": "", "https": "", "all": "", "no_proxy": "*"}
 
 
 def _get_next_order_index(session: Session, user_id: int) -> int:
@@ -113,6 +115,58 @@ def _normalize_remote_server_url(raw_url: Optional[str]) -> str:
     return normalized
 
 
+def _remote_device_headers(token: str) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {token}",
+        "X-Device-Token": token,
+    }
+
+
+def _extract_remote_error(resp: requests.Response) -> str:
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = None
+
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+
+    return resp.text.strip() or f"远程设备返回 HTTP {resp.status_code}"
+
+
+def _fetch_remote_device_identity(server_url: str, token: str) -> tuple[str, str]:
+    target_url = f"{server_url.rstrip('/')}/api/device-control/status"
+    try:
+        resp = requests.get(
+            target_url,
+            headers=_remote_device_headers(token),
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程设备不可达：{exc}") from exc
+
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=_extract_remote_error(resp))
+
+    try:
+        payload: Any = resp.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程设备身份接口返回了无效 JSON") from exc
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=502, detail="远程设备身份接口返回格式无效")
+
+    device_id = str(payload.get("id") or payload.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=502, detail="远程设备未返回 device_id")
+
+    hostname = str(payload.get("hostname") or "").strip()
+    return device_id, hostname
+
+
 @router.get("/", response_model=List[UserDeviceRead])
 def read_user_devices(
     session: Session = Depends(get_session),
@@ -167,11 +221,12 @@ def add_user_device(
     else:
         if not token:
             raise HTTPException(status_code=400, detail="Token 不能为空")
-        device_id = (device_in.device_id or "").strip()
-        if not device_id:
-            raise HTTPException(status_code=400, detail="远程设备模式必须填写设备 ID")
-        name = (device_in.name or device_in.alias or device_id).strip() or device_id
         server_url = _normalize_remote_server_url(device_in.server_url)
+        device_id = (device_in.device_id or "").strip()
+        detected_name = ""
+        if not device_id:
+            device_id, detected_name = _fetch_remote_device_identity(server_url, token)
+        name = (device_in.name or device_in.alias or detected_name or device_id).strip() or device_id
 
     new_link = UserDevice(
         user_id=current_user.id,
@@ -200,6 +255,10 @@ def update_user_device(
     if not link or link.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Device entry not found")
 
+    next_token = link.token
+    next_server_url = link.server_url
+    should_refresh_remote_identity = False
+
     if device_in.token is not None:
         if link.mode == "local":
             _sync_local_entry_token(session, link)
@@ -207,15 +266,29 @@ def update_user_device(
         token = device_in.token.strip()
         if not token:
             raise HTTPException(status_code=400, detail="Token 不能为空")
-        link.token = token
+        next_token = token
+        should_refresh_remote_identity = True
+    if device_in.server_url is not None:
+        if link.mode != "remote":
+            raise HTTPException(status_code=400, detail="本地设备入口不支持后端地址")
+        next_server_url = _normalize_remote_server_url(device_in.server_url)
+        should_refresh_remote_identity = True
+
+    detected_name = ""
+    if link.mode == "remote" and should_refresh_remote_identity:
+        if not next_token or not next_server_url:
+            raise HTTPException(status_code=400, detail="远程执行设备缺少后端地址或访问令牌")
+        device_id, detected_name = _fetch_remote_device_identity(next_server_url, next_token)
+        link.device_id = device_id
+        link.token = next_token
+        link.server_url = next_server_url
+
     if device_in.alias is not None:
         link.name = device_in.alias.strip() or link.name
     if device_in.name is not None:
         link.name = device_in.name.strip() or link.name
-    if device_in.server_url is not None:
-        if link.mode != "remote":
-            raise HTTPException(status_code=400, detail="本地设备入口不支持后端地址")
-        link.server_url = _normalize_remote_server_url(device_in.server_url)
+    elif detected_name and not link.name:
+        link.name = detected_name
     if device_in.is_active is not None:
         link.is_active = device_in.is_active
 

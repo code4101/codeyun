@@ -41,6 +41,88 @@ def test_add_devices_append_order(client, session, auth_user):
     assert [(link.device_id, link.order_index) for link in links] == [("remote-1", 0), ("remote-2", 1)]
 
 
+def test_add_remote_device_without_device_id_detects_identity(client, auth_user, monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"id": "auto-remote-device", "hostname": "codepc_auto"}
+
+    def fake_get(url, headers=None, proxies=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["proxies"] = proxies
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.device.requests.get", fake_get)
+
+    resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "remote",
+            "token": "auto-token",
+            "server_url": "http://auto-node:8000",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["device_id"] == "auto-remote-device"
+    assert payload["name"] == "codepc_auto"
+    assert payload["server_url"] == "http://auto-node:8000"
+    assert captured["url"] == "http://auto-node:8000/api/device-control/status"
+    assert captured["headers"]["Authorization"] == "Bearer auto-token"
+    assert captured["headers"]["X-Device-Token"] == "auto-token"
+    assert captured["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
+    assert captured["timeout"] == 10
+
+
+def test_update_remote_device_connection_refreshes_identity(client, session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="old-remote-device",
+        mode="remote",
+        name="Old Remote",
+        server_url="http://old-node:8000",
+        token="old-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"id": "new-remote-device", "hostname": "new-host"}
+
+    monkeypatch.setattr("backend.api.device.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    resp = client.put(
+        f"/api/devices/{entry.entry_id}",
+        json={
+            "token": "new-token",
+            "server_url": "http://new-node:8000",
+        },
+    )
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["device_id"] == "new-remote-device"
+    assert payload["name"] == "Old Remote"
+    assert payload["server_url"] == "http://new-node:8000"
+
+    session.refresh(entry)
+    assert entry.device_id == "new-remote-device"
+    assert entry.token == "new-token"
+    assert entry.server_url == "http://new-node:8000"
+
+
 def test_device_list_hides_token_until_revealed(client, auth_user):
     resp = client.post(
         "/api/devices/add",

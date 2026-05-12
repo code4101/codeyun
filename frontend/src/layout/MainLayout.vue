@@ -58,6 +58,11 @@ const asideWidth = computed(() => (
     : `${(manualExpandedAsideWidthPx.value ?? expandedAsideWidthPx.value)}px`
 ));
 let pendingAsideMeasureFrame = 0;
+const menuRenderKey = ref(0);
+const lastMenuPointerIntent = ref<{
+  modified: boolean;
+  time: number;
+} | null>(null);
 const HOME_PATH = requirePageMenuPath('Home');
 const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
@@ -526,10 +531,57 @@ const standaloneRouteHref = computed(() => (
     : ''
 ));
 
-const handleMenuTitleNavigate = (path: string) => {
+const openMenuPathInNewTab = (path: string) => {
+  window.open(router.resolve(path).href, '_blank', 'noopener,noreferrer');
+};
+
+const navigateMenuPath = (path: string) => {
   if (route.path !== path) {
     void router.push(path);
   }
+};
+
+const restoreMenuActiveState = () => {
+  void nextTick(() => {
+    menuRenderKey.value += 1;
+  });
+};
+
+const recordMenuPointerIntent = (event: MouseEvent) => {
+  if (!(event.target instanceof Element) || !event.target.closest('.el-menu-item')) {
+    return;
+  }
+  lastMenuPointerIntent.value = {
+    modified: event.ctrlKey || event.metaKey,
+    time: Date.now(),
+  };
+};
+
+const consumeMenuPointerIntent = () => {
+  const intent = lastMenuPointerIntent.value;
+  lastMenuPointerIntent.value = null;
+  if (!intent || Date.now() - intent.time > 1500) {
+    return null;
+  }
+  return intent;
+};
+
+const handleMenuSelect = (index: string) => {
+  const intent = consumeMenuPointerIntent();
+  if (intent?.modified) {
+    openMenuPathInNewTab(index);
+    restoreMenuActiveState();
+    return;
+  }
+  navigateMenuPath(index);
+};
+
+const handleMenuTitleNavigate = (path: string, event?: MouseEvent) => {
+  if (event?.ctrlKey || event?.metaKey) {
+    openMenuPathInNewTab(path);
+    return;
+  }
+  navigateMenuPath(path);
 };
 
 const resetAsideWidth = () => {
@@ -649,11 +701,13 @@ watch(
           <el-icon v-else><Fold /></el-icon>
         </div>
         <el-menu
+          :key="menuRenderKey"
           :default-active="activeMenu"
           :default-openeds="defaultOpeneds"
           class="el-menu-vertical-demo"
           :collapse="isCollapse"
-          router
+          @click.capture="recordMenuPointerIntent"
+          @select="handleMenuSelect"
           @open="handleMenuStructureChange"
           @close="handleMenuStructureChange"
         >
@@ -719,7 +773,7 @@ watch(
               <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
               <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">
                 <template #title>
-                  <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath)">
+                  <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath, $event)">
                     {{ FANXIU_ACTIVITY_LIST_TITLE }}
                   </span>
                 </template>
@@ -763,7 +817,7 @@ watch(
                 <el-menu-item v-if="canAccessMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH)" :index="FANXIU_SPIRIT_BEAST_HALL_PATH">{{ FANXIU_SPIRIT_BEAST_HALL_TITLE }}</el-menu-item>
                 <el-sub-menu v-if="fanxiuMagicTreasureMenuVisible" :index="FANXIU_MAGIC_TREASURE_SUBMENU_INDEX">
                   <template #title>
-                    <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuMagicTreasureMenuEntryPath)">
+                    <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuMagicTreasureMenuEntryPath, $event)">
                       {{ FANXIU_MAGIC_TREASURE_HALL_TITLE }}
                     </span>
                   </template>
@@ -823,7 +877,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
             <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
               <template #title>
-                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterFilesMenuEntryPath)">
+                <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterFilesMenuEntryPath, $event)">
                   {{ CLUSTER_FILES_TITLE }}
                 </span>
               </template>

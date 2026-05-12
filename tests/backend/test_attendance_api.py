@@ -819,7 +819,7 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
         _clear_user_override()
 
     assert payload["workbook_id"] == 2
-    assert payload["path"] == f"/notes/sheets?workbook=2&sheet={payload['sheet_id']}"
+    assert payload["path"] == f"/workbook/2?sheet={payload['sheet_id']}"
     sheet = session.exec(select(SheetDocument).where(SheetDocument.numeric_id == payload["sheet_id"])).one()
     assert sheet.title == "问卷数据"
     assert sheet.scope == "notes"

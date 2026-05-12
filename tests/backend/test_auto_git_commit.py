@@ -279,10 +279,13 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
             "reason": "",
         }
 
+    def unexpected_pre_commit_optimizer(candidate, inspect_payload):
+        raise AssertionError("codeyun should skip pre-commit optimization")
+
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        pre_commit_optimizer=_noop_pre_commit_optimizer,
+        pre_commit_optimizer=unexpected_pre_commit_optimizer,
         draft_generator=fake_draft_generator,
     )
 
@@ -296,7 +299,8 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     result_statuses = {item["name"]: item["status"] for item in updated.result_json["repos"]}
     assert result_statuses == {"codeyun": "committed", "pyxllib": "clean"}
     repo_result = next(item for item in updated.result_json["repos"] if item["name"] == "codeyun")
-    assert repo_result["pre_commit_review"]["summary"] == "已检查 codeyun"
+    assert repo_result["pre_commit_review"]["status"] == "skipped"
+    assert "codeyun 自动提交只生成提交信息" in repo_result["pre_commit_review"]["summary"]
     assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "自动提交凌晨检查改动"
     assert _run_git(dirty_repo, "status", "--short") == ""
 
@@ -309,7 +313,7 @@ def test_auto_git_commit_worker_runs_pre_commit_optimizer_before_draft(session, 
         session,
         auth_user.id,
         [
-            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+            {"id": "py", "name": "pyxllib", "cwd": dirty_repo},
         ],
     )
     run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)

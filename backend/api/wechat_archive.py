@@ -8,20 +8,16 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlmodel import Session
 
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.settings import get_settings
-from backend.db import engine
-from backend.models import AppSetting
 
 
 FEATURE_KEY = "notes.wechat"
 DEFAULT_PAGE_SIZE = 80
 MAX_PAGE_SIZE = 500
 WECHAT_ARCHIVE_SYNC_TASK_NAME = "wechat_archive_incremental_sync"
-WECHAT_ARCHIVE_STARTUP_SYNC_SETTING_KEY = "wechat_archive.startup_sync.enabled"
 _WECHAT_ARCHIVE_LAST_SYNC_RESULT: dict[str, Any] | None = None
 
 router = APIRouter(
@@ -38,7 +34,7 @@ class WeChatArchiveImportRequest(BaseModel):
 
 
 class WeChatArchiveSyncStartRequest(BaseModel):
-    mode: Literal["incremental", "latest", "history", "full"] = "incremental"
+    mode: Literal["incremental", "latest", "history", "history_clearance", "full"] = "incremental"
     chat_name: str | None = Field(default=None, max_length=120)
     chat_names: list[str] | None = None
     max_runtime: int = Field(default=90, ge=5, le=3600)
@@ -47,10 +43,6 @@ class WeChatArchiveSyncStartRequest(BaseModel):
     max_scrolls_per_chat: int = Field(default=1, ge=0, le=1000)
     exact: bool = True
     save_media: bool = False
-
-
-class WeChatArchiveStartupSyncRequest(BaseModel):
-    enabled: bool
 
 
 def _settings_archive_db_path() -> Path:
@@ -90,25 +82,6 @@ def _chat_names_from_payload(payload: WeChatArchiveSyncStartRequest) -> list[str
     return deduped or None
 
 
-def _is_startup_sync_enabled() -> bool:
-    with Session(engine) as session:
-        row = session.get(AppSetting, WECHAT_ARCHIVE_STARTUP_SYNC_SETTING_KEY)
-        if row and isinstance(row.value, dict):
-            return bool(row.value.get("enabled", True))
-    return True
-
-
-def _set_startup_sync_enabled(enabled: bool) -> None:
-    with Session(engine) as session:
-        row = session.get(AppSetting, WECHAT_ARCHIVE_STARTUP_SYNC_SETTING_KEY)
-        if row is None:
-            row = AppSetting(key=WECHAT_ARCHIVE_STARTUP_SYNC_SETTING_KEY)
-        row.value = {"enabled": bool(enabled)}
-        row.updated_at = time.time()
-        session.add(row)
-        session.commit()
-
-
 def _is_wechat_sync_task(snapshot: dict[str, Any] | None) -> bool:
     return bool(snapshot and snapshot.get("name") == WECHAT_ARCHIVE_SYNC_TASK_NAME)
 
@@ -145,6 +118,14 @@ def _run_wechat_archive_sync_job(payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("full sync requires chat_name")
         result = archive.full_chat(
             chat_names[0],
+            exact=bool(payload.get("exact", True)),
+            save_media=bool(payload.get("save_media", False)),
+        )
+    elif mode == "history_clearance":
+        result = archive.sync_history_clearance(
+            chat_name=chat_names[0] if chat_names else None,
+            max_runtime=payload.get("max_runtime", 1800),
+            max_scrolls=payload.get("max_scrolls_total", 200),
             exact=bool(payload.get("exact", True)),
             save_media=bool(payload.get("save_media", False)),
         )
@@ -206,31 +187,6 @@ def _enqueue_wechat_archive_sync(payload: dict[str, Any]) -> str:
             "max_runtime": payload.get("max_runtime"),
             "max_scrolls_total": payload.get("max_scrolls_total"),
         },
-    )
-
-
-def enqueue_wechat_archive_startup_sync() -> str | None:
-    if get_settings().is_test or not _is_startup_sync_enabled():
-        return None
-    if not _settings_archive_db_path().exists():
-        return None
-    if _queue_has_wechat_sync_task():
-        return None
-    return background_task_queue.enqueue(
-        WECHAT_ARCHIVE_SYNC_TASK_NAME,
-        _run_wechat_archive_sync_job,
-        {
-            "mode": "incremental",
-            "chat_names": None,
-            "max_runtime": 60,
-            "max_chats": 4,
-            "max_scrolls_total": 4,
-            "max_scrolls_per_chat": 1,
-            "exact": True,
-            "save_media": False,
-            "trigger": "startup",
-        },
-        metadata={"mode": "incremental", "trigger": "startup", "max_runtime": 60},
     )
 
 
@@ -439,6 +395,7 @@ def list_wechat_archive_message_types(chat_id: Annotated[int | None, Query(ge=1)
 def get_wechat_archive_sync_plan(
     max_chats: Annotated[int, Query(ge=1, le=50)] = 12,
     chat_name: Annotated[str | None, Query(max_length=120)] = None,
+    kind: Annotated[Literal["incremental", "history"], Query()] = "incremental",
 ):
     db_path = _settings_archive_db_path()
     if not db_path.exists():
@@ -448,10 +405,16 @@ def get_wechat_archive_sync_plan(
         from pyxllib.autogui.wechat_archive import WeChatArchive
 
         archive = WeChatArchive(db_path)
-        items = archive.plan_sync_chats(
-            manual_chat_names=[chat_name] if chat_name else None,
-            limit=max_chats,
-        )
+        if kind == "history":
+            items = archive.plan_history_chats(
+                manual_chat_names=[chat_name] if chat_name else None,
+                limit=max_chats,
+            )
+        else:
+            items = archive.plan_sync_chats(
+                manual_chat_names=[chat_name] if chat_name else None,
+                limit=max_chats,
+            )
         return {"items": items, "db_path": os.fspath(db_path)}
     except Exception as exc:
         raise HTTPException(status_code=502, detail="微信归档同步计划生成失败：{}".format(exc)) from exc
@@ -461,7 +424,6 @@ def get_wechat_archive_sync_plan(
 def get_wechat_archive_sync_status():
     queue = background_task_queue.snapshot()
     return {
-        "startup_sync_enabled": _is_startup_sync_enabled(),
         "active": _queue_has_wechat_sync_task(),
         "queue": queue,
         "latest_queue_run": _latest_wechat_sync_queue_run(queue),
@@ -487,12 +449,6 @@ def start_wechat_archive_sync(payload: WeChatArchiveSyncStartRequest):
         "task_name": WECHAT_ARCHIVE_SYNC_TASK_NAME,
         "sync_status": get_wechat_archive_sync_status(),
     }
-
-
-@router.post("/sync/startup-enabled")
-def set_wechat_archive_startup_sync_enabled(payload: WeChatArchiveStartupSyncRequest):
-    _set_startup_sync_enabled(payload.enabled)
-    return {"success": True, "startup_sync_enabled": _is_startup_sync_enabled()}
 
 
 @router.post("/import")

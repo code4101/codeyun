@@ -404,6 +404,7 @@ def _fetch_remote_thumbnail(entry: UserDevice, params: Dict[str, Any]) -> reques
             url=target_url,
             headers=_proxy_headers(entry),
             params=params,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
             timeout=20,
         )
     except requests.RequestException as exc:
@@ -483,6 +484,7 @@ def _proxy_request(
             headers=headers,
             params=params,
             json=json_body,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
             timeout=timeout,
             stream=stream_response,
         )

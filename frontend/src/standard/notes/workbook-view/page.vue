@@ -10,20 +10,22 @@ function normalizePositiveInt(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null
 }
 
-function redirectToManager() {
+function redirectToWorkbookWindow() {
   const workbookId = normalizePositiveInt(route.params.workbookId)
   const sheetId = normalizePositiveInt(route.query.sheet)
 
-  const nextQuery: Record<string, string> = {}
-  if (workbookId != null) {
-    nextQuery.workbook = String(workbookId)
+  if (workbookId == null) {
+    void router.replace('/notes/sheets')
+    return
   }
+
+  const nextQuery: Record<string, string> = {}
   if (sheetId != null) {
     nextQuery.sheet = String(sheetId)
   }
 
   void router.replace({
-    path: '/notes/sheets',
+    path: `/workbook/${workbookId}`,
     query: nextQuery,
   })
 }
@@ -31,12 +33,12 @@ function redirectToManager() {
 watch(
   [() => route.params.workbookId, () => route.query.sheet],
   () => {
-    redirectToManager()
+    redirectToWorkbookWindow()
   },
 )
 
 onMounted(() => {
-  redirectToManager()
+  redirectToWorkbookWindow()
 })
 </script>
 
