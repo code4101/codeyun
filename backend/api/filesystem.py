@@ -6,7 +6,9 @@ import json
 import math
 import mimetypes
 import os
+import platform
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -16,9 +18,10 @@ from dataclasses import dataclass
 from functools import cmp_to_key
 from pathlib import Path
 from threading import RLock
-from typing import Iterable, Iterator, List, Literal, Optional
+from typing import Any, Iterable, Iterator, List, Literal, Optional
 from uuid import uuid4
 
+import psutil
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -81,6 +84,11 @@ DUPLICATE_CLUSTER_VISUAL_HASH_SIZE = 8
 DUPLICATE_CLUSTER_VISUAL_THRESHOLD = 3
 VISUAL_HASH_LOOKUP_CHUNK_SIZE = 500
 VISUAL_HASH_PREWARM_BATCH_SIZE = 256
+FILESYSTEM_DELETE_TASK_NAME = "filesystem_delete"
+FILESYSTEM_DELETE_TASKS_STATE_FILE = "filesystem-delete-tasks.json"
+
+_filesystem_delete_task_lock = RLock()
+_filesystem_delete_processes: dict[str, subprocess.Popen] = {}
 
 
 @dataclass(slots=True)
@@ -116,6 +124,9 @@ _media_listing_snapshot_lock = RLock()
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
 _visual_hash_prewarm_lock = RLock()
 _visual_hash_prewarm_active_keys: set[str] = set()
+_EVERYTHING3_UINT64_MAX = (1 << 64) - 1
+_everything3_dll = None
+_everything3_dll_path: str | None = None
 
 
 class LegacyPathRequest(BaseModel):
@@ -785,6 +796,14 @@ def _paths_equal(left: Path, right: Path) -> bool:
     return os.path.normcase(os.fspath(left.resolve(strict=False))) == os.path.normcase(os.fspath(right.resolve(strict=False)))
 
 
+def _is_filesystem_root_path(path: Path) -> bool:
+    try:
+        resolved = path.resolve(strict=False)
+    except Exception:
+        resolved = path
+    return resolved.parent == resolved
+
+
 def _iter_scan_files(target_path: Path, *, recursive: bool) -> list[Path]:
     if target_path.is_file():
         return [target_path]
@@ -901,6 +920,8 @@ def _entry_payload(entry: os.DirEntry[str], base_path: Path, *, use_absolute_pat
 
 def _build_empty_directory_stats() -> dict[str, int | None]:
     return {
+        "direct_file_bytes": None,
+        "direct_file_count": None,
         "recursive_total_bytes": None,
         "recursive_file_count": None,
         "latest_descendant_modified_at": None,
@@ -960,7 +981,9 @@ def _build_directory_stats_by_name(
             continue
 
         normalized_relative = relative_path.replace("/", "\\")
-        first_segment = normalized_relative.split("\\", 1)[0].strip()
+        relative_segments = normalized_relative.split("\\", 1)
+        first_segment = relative_segments[0].strip()
+        child_relative_path = relative_segments[1] if len(relative_segments) > 1 else ""
         if not first_segment:
             continue
 
@@ -975,6 +998,9 @@ def _build_directory_stats_by_name(
 
         stats["recursive_total_bytes"] = int(stats["recursive_total_bytes"] or 0) + size_value
         stats["recursive_file_count"] = int(stats["recursive_file_count"] or 0) + 1
+        if child_relative_path and "\\" not in child_relative_path:
+            stats["direct_file_bytes"] = int(stats["direct_file_bytes"] or 0) + size_value
+            stats["direct_file_count"] = int(stats["direct_file_count"] or 0) + 1
         if modified_value is not None:
             stats["latest_descendant_modified_at"] = max(
                 int(stats["latest_descendant_modified_at"] or 0),
@@ -985,6 +1011,221 @@ def _build_directory_stats_by_name(
             stats["weighted_file_count"] = int(stats["weighted_file_count"] or 0) + 1
 
     return stats_by_name
+
+
+def _build_direct_file_stats(path: Path) -> dict[str, int | None]:
+    direct_file_bytes = 0
+    direct_file_count = 0
+    try:
+        with os.scandir(path) as entries:
+            for entry in entries:
+                try:
+                    if not entry.is_file():
+                        continue
+                    stat_result = entry.stat()
+                except OSError:
+                    continue
+                direct_file_bytes += int(stat_result.st_size)
+                direct_file_count += 1
+    except (FileNotFoundError, NotADirectoryError, PermissionError, OSError):
+        return {}
+
+    return {
+        "direct_file_bytes": direct_file_bytes,
+        "direct_file_count": direct_file_count,
+    }
+
+
+def _build_direct_directory_stats_by_name(
+    *,
+    target_path: Path,
+    directory_items: list[dict],
+    existing_stats_by_name: dict[str, dict[str, int | None]] | None = None,
+) -> dict[str, dict[str, int | None]]:
+    if not directory_items:
+        return {}
+
+    stats_by_name: dict[str, dict[str, int | None]] = {}
+    for item in directory_items:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        existing_stats = (existing_stats_by_name or {}).get(name)
+        if existing_stats and existing_stats.get("direct_file_bytes") is not None:
+            continue
+
+        direct_stats = _build_direct_file_stats(Path(target_path) / name)
+        if direct_stats:
+            stats_by_name[name] = direct_stats
+
+    return stats_by_name
+
+
+def _iter_everything3_dll_candidates() -> Iterator[Path]:
+    env_paths = [
+        os.environ.get("CODEYUN_EVERYTHING3_DLL", ""),
+        os.environ.get("EVERYTHING3_DLL", ""),
+    ]
+    for raw_path in env_paths:
+        if raw_path:
+            yield Path(raw_path)
+
+    if os.name != "nt":
+        return
+
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    machine = platform.machine().lower()
+    dll_name = "Everything3_x64.dll" if "64" in machine else "Everything3_x86.dll"
+    for base_path in [
+        Path(local_app_data) / "CodeYun" / "EverythingSDK3" / "dll" / dll_name if local_app_data else None,
+        Path(program_files) / "Everything 1.5a" / dll_name,
+        Path(program_files) / "Everything" / dll_name,
+        Path(program_files_x86) / "Everything 1.5a" / dll_name,
+        Path(program_files_x86) / "Everything" / dll_name,
+    ]:
+        if base_path is not None:
+            yield base_path
+
+
+def _find_everything3_dll_path() -> Path | None:
+    for candidate in _iter_everything3_dll_candidates():
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _load_everything3_dll():
+    global _everything3_dll, _everything3_dll_path
+
+    if os.name != "nt":
+        return None
+
+    dll_path = _find_everything3_dll_path()
+    if dll_path is None:
+        return None
+
+    resolved_path = os.fspath(dll_path)
+    if _everything3_dll is not None and _everything3_dll_path == resolved_path:
+        return _everything3_dll
+
+    try:
+        import ctypes
+
+        dll = ctypes.WinDLL(resolved_path)
+        dll.Everything3_ConnectW.argtypes = [ctypes.c_wchar_p]
+        dll.Everything3_ConnectW.restype = ctypes.c_void_p
+        dll.Everything3_DestroyClient.argtypes = [ctypes.c_void_p]
+        dll.Everything3_DestroyClient.restype = ctypes.c_bool
+        dll.Everything3_GetFolderSizeFromFilenameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+        dll.Everything3_GetFolderSizeFromFilenameW.restype = ctypes.c_ulonglong
+    except Exception:
+        return None
+
+    _everything3_dll = dll
+    _everything3_dll_path = resolved_path
+    return dll
+
+
+def _iter_everything_instance_names() -> Iterator[str]:
+    configured = [
+        os.environ.get("CODEYUN_EVERYTHING_INSTANCE", ""),
+        os.environ.get("EVERYTHING_INSTANCE", ""),
+    ]
+    yielded: set[str] = set()
+    for name in configured:
+        if name and name not in yielded:
+            yielded.add(name)
+            yield name
+
+    for name in ("1.5a", ""):
+        if name not in yielded:
+            yielded.add(name)
+            yield name
+
+
+def _connect_everything3_client(dll):
+    for instance_name in _iter_everything_instance_names():
+        try:
+            client = dll.Everything3_ConnectW(instance_name)
+        except Exception:
+            continue
+        if client:
+            return client
+    return None
+
+
+def _build_everything_directory_stats_by_name(
+    *,
+    target_path: Path,
+    directory_items: list[dict],
+    existing_stats_by_name: dict[str, dict[str, int | None]] | None = None,
+) -> dict[str, dict[str, int | None]]:
+    if os.name != "nt" or not directory_items:
+        return {}
+
+    dll = _load_everything3_dll()
+    if dll is None:
+        return {}
+
+    pending_items = []
+    for item in directory_items:
+        name = str(item.get("name") or "")
+        if not name:
+            continue
+        pending_items.append((name, Path(target_path) / name))
+
+    if not pending_items:
+        return {}
+
+    client = _connect_everything3_client(dll)
+    if not client:
+        return {}
+
+    stats_by_name: dict[str, dict[str, int | None]] = {}
+    try:
+        for name, directory_path in pending_items:
+            try:
+                size_value = int(dll.Everything3_GetFolderSizeFromFilenameW(client, os.fspath(directory_path)))
+            except Exception:
+                continue
+            if size_value < 0 or size_value == _EVERYTHING3_UINT64_MAX:
+                continue
+            stats = _build_empty_directory_stats()
+            stats["recursive_total_bytes"] = size_value
+            stats_by_name[name] = stats
+    finally:
+        try:
+            dll.Everything3_DestroyClient(client)
+        except Exception:
+            pass
+
+    return stats_by_name
+
+
+def _merge_directory_stats(
+    primary_stats: dict[str, dict[str, int | None]],
+    fallback_stats: dict[str, dict[str, int | None]],
+    *,
+    override_keys: set[str] | None = None,
+) -> dict[str, dict[str, int | None]]:
+    if not fallback_stats:
+        return primary_stats
+
+    normalized_override_keys = override_keys or set()
+    merged_stats = {name: dict(stats) for name, stats in primary_stats.items()}
+    for name, stats in fallback_stats.items():
+        target_stats = merged_stats.setdefault(name, _build_empty_directory_stats())
+        for key, value in stats.items():
+            if value is None:
+                continue
+            if key in normalized_override_keys or target_stats.get(key) is None:
+                target_stats[key] = value
+    return merged_stats
 
 
 DIRECTORY_SORT_FALLBACK_RULES = [DirectorySortRule(field="name", direction="asc", nulls="last")]
@@ -1073,6 +1314,35 @@ def _sort_directory_entries(entries: list[dict], sort_program: DirectorySortProg
 
 
 def _list_system_root_entries() -> list[dict]:
+    def build_entry(candidate: str, name: str) -> dict:
+        disk_total_bytes: int | None = None
+        disk_free_bytes: int | None = None
+        disk_used_bytes: int | None = None
+        try:
+            usage = shutil.disk_usage(candidate)
+            disk_total_bytes = int(usage.total)
+            disk_free_bytes = int(usage.free)
+            disk_used_bytes = int(usage.used)
+        except (OSError, ValueError):
+            pass
+
+        direct_file_stats = _build_direct_file_stats(Path(candidate))
+        return {
+            "name": name,
+            "path": candidate,
+            "is_dir": True,
+            "size": None,
+            "modified_at": None,
+            "direct_file_bytes": direct_file_stats.get("direct_file_bytes"),
+            "direct_file_count": direct_file_stats.get("direct_file_count"),
+            "recursive_total_bytes": disk_used_bytes,
+            "recursive_file_count": None,
+            "latest_descendant_modified_at": None,
+            "disk_total_bytes": disk_total_bytes,
+            "disk_free_bytes": disk_free_bytes,
+            "disk_used_bytes": disk_used_bytes,
+        }
+
     if os.name == "nt":
         candidates: list[str] = []
         try:
@@ -1094,24 +1364,12 @@ def _list_system_root_entries() -> list[dict]:
                     candidates.append(candidate)
 
         return [
-            {
-                "name": candidate.rstrip("\\/"),
-                "path": candidate,
-                "is_dir": True,
-                "size": None,
-                "modified_at": None,
-            }
+            build_entry(candidate, candidate.rstrip("\\/"))
             for candidate in candidates
         ]
 
     return [
-        {
-            "name": "/",
-            "path": "/",
-            "is_dir": True,
-            "size": None,
-            "modified_at": None,
-        }
+        build_entry("/", "/")
     ]
 
 
@@ -1149,6 +1407,22 @@ def list_directory_items(
     directory_items = [item for item in items if item["is_dir"]]
     file_items = [item for item in items if not item["is_dir"]]
     stats_by_name = _build_directory_stats_by_name(session, target_path=target_path, directory_items=directory_items)
+    everything_stats_by_name = _build_everything_directory_stats_by_name(
+        target_path=target_path,
+        directory_items=directory_items,
+        existing_stats_by_name=stats_by_name,
+    )
+    stats_by_name = _merge_directory_stats(
+        stats_by_name,
+        everything_stats_by_name,
+        override_keys={"recursive_total_bytes"},
+    )
+    direct_stats_by_name = _build_direct_directory_stats_by_name(
+        target_path=target_path,
+        directory_items=directory_items,
+        existing_stats_by_name=stats_by_name,
+    )
+    stats_by_name = _merge_directory_stats(stats_by_name, direct_stats_by_name)
     for item in directory_items:
         item.update(stats_by_name.get(str(item.get("name") or ""), _build_empty_directory_stats()))
     _sort_directory_entries(directory_items, sort_program)
@@ -2278,21 +2552,17 @@ def delete_scoped_entry(
     absolute_path: str = "",
     recursive: bool = False,
 ) -> dict:
-    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
-    if not target_path.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
-    if not resolved["is_absolute"] and target_path == resolve_root_path(resolved["root"]):
-        raise HTTPException(status_code=400, detail="Root path cannot be deleted")
+    target_path, resolved = _resolve_deletable_entry(
+        root_key,
+        rel_path,
+        absolute_path=absolute_path,
+        recursive=recursive,
+    )
 
     try:
-        if target_path.is_dir():
-            if not recursive:
-                raise HTTPException(status_code=400, detail="Directory deletion requires recursive=true")
-            shutil.rmtree(target_path)
-        else:
-            target_path.unlink()
+        _delete_path_with_permission_retry(target_path)
     except PermissionError as exc:
-        raise HTTPException(status_code=403, detail="Permission denied") from exc
+        raise HTTPException(status_code=403, detail=_format_delete_permission_error(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -2301,6 +2571,498 @@ def delete_scoped_entry(
         "root": resolved["root"],
         "path": resolved["path"],
         "absolute_path": resolved["absolute_path"],
+    }
+
+
+def _resolve_deletable_entry(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+    recursive: bool = False,
+) -> tuple[Path, dict]:
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if _is_filesystem_root_path(target_path):
+        raise HTTPException(status_code=400, detail="Filesystem root cannot be deleted")
+    if not resolved["is_absolute"] and target_path == resolve_root_path(resolved["root"]):
+        raise HTTPException(status_code=400, detail="Root path cannot be deleted")
+    if target_path.is_dir() and not recursive:
+        raise HTTPException(status_code=400, detail="Directory deletion requires recursive=true")
+
+    return target_path, resolved
+
+
+def _make_path_writable(path: str | Path) -> None:
+    try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def _delete_path_with_permission_retry(target_path: Path) -> None:
+    if target_path.is_dir():
+        def retry_after_chmod(function, path, excinfo):
+            _make_path_writable(path)
+            function(path)
+
+        shutil.rmtree(target_path, onexc=retry_after_chmod)
+        return
+
+    try:
+        target_path.unlink()
+    except PermissionError:
+        _make_path_writable(target_path)
+        target_path.unlink()
+
+
+def _format_delete_permission_error(exc: BaseException) -> str:
+    return f"Permission denied. Close apps using this file or check ACL permissions: {exc}"
+
+
+def _compact_task_error(error_message: Any) -> str | None:
+    if not isinstance(error_message, str):
+        return None
+    first_line = error_message.strip().splitlines()[0] if error_message.strip() else ""
+    return first_line or None
+
+
+_DELETE_SCOPED_ENTRY_PROCESS_CODE = r"""
+import json
+import os
+import pathlib
+import shutil
+import stat
+import sys
+import time
+import traceback
+
+
+def read_records(state_path):
+    path = pathlib.Path(state_path)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_records(state_path, records):
+    path = pathlib.Path(state_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
+def update_record(state_path, task_id, updates):
+    records = read_records(state_path)
+    record = dict(records.get(task_id) or {})
+    record.update(updates)
+    records[task_id] = record
+    write_records(state_path, records)
+
+
+def make_path_writable(path):
+    try:
+        os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+    except OSError:
+        pass
+
+
+def format_delete_error(exc):
+    if isinstance(exc, PermissionError):
+        return f"Permission denied. Close apps using this file or check ACL permissions: {exc}"
+    return str(exc)
+
+
+def append_skipped(skipped, path, exc):
+    skipped.append({"path": str(path), "error": format_delete_error(exc)})
+
+
+def delete_path_with_permission_retry(target):
+    skipped = []
+    if target.is_dir():
+        def retry_after_chmod(function, path, excinfo):
+            make_path_writable(path)
+            try:
+                function(path)
+            except Exception as retry_exc:
+                append_skipped(skipped, path, retry_exc)
+
+        shutil.rmtree(target, onexc=retry_after_chmod)
+        return skipped
+
+    try:
+        target.unlink()
+    except PermissionError:
+        make_path_writable(target)
+        try:
+            target.unlink()
+        except Exception as retry_exc:
+            append_skipped(skipped, target, retry_exc)
+    except Exception as exc:
+        append_skipped(skipped, target, exc)
+    return skipped
+
+
+def main():
+    task_id, target_path, recursive_raw, state_path = sys.argv[1:5]
+    try:
+        target = pathlib.Path(target_path)
+        if target.is_dir():
+            if recursive_raw != "1":
+                raise RuntimeError("Directory deletion requires recursive=true")
+            skipped = delete_path_with_permission_retry(target)
+        else:
+            skipped = delete_path_with_permission_retry(target)
+        if skipped:
+            first_skipped = skipped[0]
+            update_record(
+                state_path,
+                task_id,
+                {
+                    "status": "partial_failed",
+                    "finished_at": time.time(),
+                    "return_code": 2,
+                    "error_message": f"Skipped {len(skipped)} entries; first: {first_skipped['path']}: {first_skipped['error']}",
+                    "skipped_count": len(skipped),
+                    "skipped_paths": skipped[:50],
+                },
+            )
+            return
+        update_record(
+            state_path,
+            task_id,
+            {
+                "status": "completed",
+                "finished_at": time.time(),
+                "return_code": 0,
+                "error_message": None,
+                "skipped_count": 0,
+                "skipped_paths": [],
+            },
+        )
+    except Exception as exc:
+        update_record(
+            state_path,
+            task_id,
+            {
+                "status": "failed",
+                "finished_at": time.time(),
+                "return_code": 1,
+                "error_message": f"{format_delete_error(exc)}\n{traceback.format_exc()}",
+            },
+        )
+        raise
+
+
+if __name__ == "__main__":
+    main()
+"""
+
+
+def _delete_tasks_state_path() -> Path:
+    settings = get_settings()
+    return settings.data_dir / FILESYSTEM_DELETE_TASKS_STATE_FILE
+
+
+def _read_delete_task_records_unlocked() -> dict[str, dict[str, Any]]:
+    state_path = _delete_tasks_state_path()
+    if not state_path.exists():
+        return {}
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): value for key, value in data.items() if isinstance(value, dict)}
+
+
+def _write_delete_task_records_unlocked(records: dict[str, dict[str, Any]]) -> None:
+    state_path = _delete_tasks_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+    temp_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, state_path)
+
+
+def _read_delete_task_records() -> dict[str, dict[str, Any]]:
+    with _filesystem_delete_task_lock:
+        return _read_delete_task_records_unlocked()
+
+
+def _update_delete_task_record(task_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+    with _filesystem_delete_task_lock:
+        records = _read_delete_task_records_unlocked()
+        record = dict(records.get(task_id) or {})
+        record.update(updates)
+        records[task_id] = record
+        _write_delete_task_records_unlocked(records)
+        return record
+
+
+def _process_create_time(pid: int) -> float | None:
+    try:
+        return float(psutil.Process(pid).create_time())
+    except (psutil.NoSuchProcess, psutil.AccessDenied, ValueError):
+        return None
+
+
+def _delete_process_is_alive(pid: Any, pid_started_at: Any = None) -> bool:
+    try:
+        normalized_pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        process = psutil.Process(normalized_pid)
+        if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+            return False
+        if pid_started_at is not None:
+            try:
+                expected_started_at = float(pid_started_at)
+            except (TypeError, ValueError):
+                expected_started_at = 0.0
+            if expected_started_at and abs(float(process.create_time()) - expected_started_at) > 2:
+                return False
+        return True
+    except psutil.AccessDenied:
+        return True
+    except psutil.NoSuchProcess:
+        return False
+
+
+def _poll_known_delete_process(task_id: str) -> int | None:
+    with _filesystem_delete_task_lock:
+        process = _filesystem_delete_processes.get(task_id)
+    if process is None:
+        return None
+
+    return_code = process.poll()
+    if return_code is not None:
+        with _filesystem_delete_task_lock:
+            _filesystem_delete_processes.pop(task_id, None)
+    return return_code
+
+
+def _target_path_exists(record: dict[str, Any]) -> bool:
+    metadata = dict(record.get("metadata") or {})
+    target_path = str(record.get("target_path") or metadata.get("target_path") or "")
+    if not target_path:
+        return False
+    try:
+        return Path(target_path).exists()
+    except OSError:
+        return True
+
+
+def _refresh_delete_task_record(record: dict[str, Any]) -> dict[str, Any]:
+    task_id = str(record.get("id") or record.get("task_id") or "")
+    if not task_id:
+        return record
+
+    latest = dict(_read_delete_task_records().get(task_id) or record)
+    status = str(latest.get("status") or "unknown")
+    if status not in {"pending", "running"}:
+        return latest
+
+    return_code = _poll_known_delete_process(task_id)
+    refreshed = dict(_read_delete_task_records().get(task_id) or latest)
+    if str(refreshed.get("status") or "unknown") not in {"pending", "running"}:
+        return refreshed
+    latest = refreshed
+    pid = latest.get("pid")
+    if _delete_process_is_alive(pid, latest.get("pid_started_at")):
+        if status == "running":
+            return latest
+        return _update_delete_task_record(
+            task_id,
+            {
+                "status": "running",
+                "started_at": latest.get("started_at") or time.time(),
+            },
+        )
+
+    finished_at = latest.get("finished_at") or time.time()
+    if _target_path_exists(latest):
+        return _update_delete_task_record(
+            task_id,
+            {
+                "status": "failed",
+                "finished_at": finished_at,
+                "return_code": return_code,
+                "error_message": latest.get("error_message") or "Delete process exited before reporting completion",
+            },
+        )
+
+    return _update_delete_task_record(
+        task_id,
+        {
+            "status": "completed",
+            "finished_at": finished_at,
+            "return_code": 0 if return_code is None else return_code,
+            "error_message": None,
+        },
+    )
+
+
+def _iter_delete_task_snapshots() -> Iterator[dict[str, Any]]:
+    records = _read_delete_task_records()
+    snapshots = sorted(
+        records.values(),
+        key=lambda item: float(item.get("queued_at") or 0),
+        reverse=True,
+    )
+    for snapshot in snapshots:
+        yield _refresh_delete_task_record(snapshot)
+
+
+def _serialize_delete_task_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(snapshot.get("metadata") or {})
+    return {
+        "id": snapshot.get("id") or "",
+        "task_id": snapshot.get("task_id") or snapshot.get("id") or "",
+        "name": snapshot.get("name") or "",
+        "status": snapshot.get("status") or "unknown",
+        "queued_at": snapshot.get("queued_at"),
+        "started_at": snapshot.get("started_at"),
+        "finished_at": snapshot.get("finished_at"),
+        "pid": snapshot.get("pid"),
+        "pid_started_at": snapshot.get("pid_started_at"),
+        "return_code": snapshot.get("return_code"),
+        "skipped_count": snapshot.get("skipped_count") or 0,
+        "skipped_paths": snapshot.get("skipped_paths") or [],
+        "error_message": _compact_task_error(snapshot.get("error_message")),
+        "metadata": metadata,
+        "target_path": metadata.get("target_path") or "",
+        "entry_name": metadata.get("entry_name") or "",
+    }
+
+
+def list_delete_task_snapshots(*, entry_id: str | None = None) -> dict:
+    normalized_entry_id = str(entry_id or "").strip()
+    tasks: list[dict[str, Any]] = []
+    for snapshot in _iter_delete_task_snapshots():
+        if snapshot.get("name") != FILESYSTEM_DELETE_TASK_NAME:
+            continue
+        metadata = dict(snapshot.get("metadata") or {})
+        if normalized_entry_id and metadata.get("entry_id") not in {normalized_entry_id, None, ""}:
+            continue
+        tasks.append(_serialize_delete_task_snapshot(snapshot))
+    return {"tasks": tasks}
+
+
+def get_delete_task_snapshot(task_id: str, *, entry_id: str | None = None) -> dict:
+    normalized_task_id = str(task_id or "").strip()
+    if not normalized_task_id:
+        raise HTTPException(status_code=404, detail="Delete task not found")
+
+    for task in list_delete_task_snapshots(entry_id=entry_id)["tasks"]:
+        if task["id"] == normalized_task_id:
+            return task
+    raise HTTPException(status_code=404, detail="Delete task not found")
+
+
+def enqueue_delete_scoped_entry(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    *,
+    absolute_path: str = "",
+    recursive: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> dict:
+    target_path, resolved = _resolve_deletable_entry(
+        root_key,
+        rel_path,
+        absolute_path=absolute_path,
+        recursive=recursive,
+    )
+    task_metadata = {
+        "root": resolved["root"],
+        "path": resolved["path"],
+        "absolute_path": resolved["absolute_path"],
+        "target_path": os.fspath(target_path),
+        "entry_name": target_path.name or os.fspath(target_path),
+        "recursive": bool(recursive),
+        "is_directory": target_path.is_dir(),
+    }
+    task_metadata.update(dict(metadata or {}))
+    task_id = uuid4().hex
+    now = time.time()
+    _update_delete_task_record(
+        task_id,
+        {
+            "id": task_id,
+            "task_id": task_id,
+            "name": FILESYSTEM_DELETE_TASK_NAME,
+            "status": "pending",
+            "queued_at": now,
+            "started_at": None,
+            "finished_at": None,
+            "pid": None,
+            "pid_started_at": None,
+            "return_code": None,
+            "skipped_count": 0,
+            "skipped_paths": [],
+            "error_message": None,
+            "metadata": task_metadata,
+        },
+    )
+    state_path = _delete_tasks_state_path()
+    command = [
+        sys.executable,
+        "-c",
+        _DELETE_SCOPED_ENTRY_PROCESS_CODE,
+        task_id,
+        os.fspath(target_path),
+        "1" if recursive else "0",
+        os.fspath(state_path),
+    ]
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+    try:
+        process = subprocess.Popen(  # noqa: S603 - arguments are explicit, no shell is used.
+            command,
+            cwd=os.fspath(ROOT_DIR),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except OSError as exc:
+        _update_delete_task_record(
+            task_id,
+            {
+                "status": "failed",
+                "finished_at": time.time(),
+                "error_message": str(exc),
+            },
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to start delete process: {exc}") from exc
+
+    with _filesystem_delete_task_lock:
+        _filesystem_delete_processes[task_id] = process
+    pid_started_at = _process_create_time(process.pid)
+    _update_delete_task_record(
+        task_id,
+        {
+            "status": "running",
+            "started_at": time.time(),
+            "pid": process.pid,
+            "pid_started_at": pid_started_at,
+        },
+    )
+    return {
+        "ok": True,
+        "queued": True,
+        "task_id": task_id,
+        "pid": process.pid,
+        "task": get_delete_task_snapshot(task_id, entry_id=metadata.get("entry_id") if metadata else None),
     }
 
 
@@ -3092,6 +3854,26 @@ def delete_entry(req: DeleteEntryRequest):
         absolute_path=req.absolute_path,
         recursive=req.recursive,
     )
+
+
+@router.post("/delete/async")
+def start_delete_entry(req: DeleteEntryRequest):
+    return enqueue_delete_scoped_entry(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        recursive=req.recursive,
+    )
+
+
+@router.get("/delete-tasks")
+def list_delete_tasks():
+    return list_delete_task_snapshots()
+
+
+@router.get("/delete-tasks/{task_id}")
+def get_delete_task(task_id: str):
+    return get_delete_task_snapshot(task_id)
 
 
 @router.post("/reveal")

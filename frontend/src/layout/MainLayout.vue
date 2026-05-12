@@ -69,6 +69,7 @@ const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
 const AI_CONFIG_PATH = requirePageMenuPath('AiConfig');
 const AI_CODEX_SAVER_PATH = requirePageMenuPath('AiCodexSaver');
+const AI_EVOMIND_PATH = requirePageMenuPath('AiEvoMind');
 const AI_CHAT_PATH = requirePageMenuPath('AiChat');
 const AI_REDUCTION_PATH = requirePageMenuPath('AiReduction');
 const AI_GIT_COMMIT_PATH = requirePageMenuPath('AiGitCommit');
@@ -101,11 +102,13 @@ const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
 const NOTES_CENTER_MENU_PATH = requirePageMenuPath('NotesCenter');
 const EASTMONEY_PATH = requirePageMenuPath('Eastmoney');
+const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
+const CLUSTER_STORAGE_PATH = requirePageMenuPath('ClusterStorageManager');
 const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
 const CLUSTER_VIEW_MN_PATH = requirePageMenuPath('ClusterViewMn');
 const CLUSTER_LABELME_PATH = requirePageMenuPath('DeviceLabelmeBrowser');
@@ -124,6 +127,7 @@ const COLOR_TOOLS_TITLE = requirePermissionTitleByMenuPath(COLOR_TOOLS_PATH);
 const AI_TOOLS_TITLE = requirePermissionTitle('ai-tools');
 const AI_CONFIG_TITLE = requirePermissionTitleByMenuPath(AI_CONFIG_PATH);
 const AI_CODEX_SAVER_TITLE = requirePermissionTitleByMenuPath(AI_CODEX_SAVER_PATH);
+const AI_EVOMIND_TITLE = requirePermissionTitleByMenuPath(AI_EVOMIND_PATH);
 const AI_CHAT_TITLE = requirePermissionTitleByMenuPath(AI_CHAT_PATH);
 const AI_REDUCTION_TITLE = requirePermissionTitleByMenuPath(AI_REDUCTION_PATH);
 const AI_GIT_COMMIT_TITLE = requirePermissionTitleByMenuPath(AI_GIT_COMMIT_PATH);
@@ -162,12 +166,14 @@ const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJI
 const NOTE_TOOLS_TITLE = requirePermissionTitle('note-tools');
 const NOTES_CENTER_TITLE = requirePermissionTitleByMenuPath(NOTES_CENTER_MENU_PATH);
 const EASTMONEY_TITLE = requirePermissionTitleByMenuPath(EASTMONEY_PATH);
+const FREEBILL_TITLE = requirePermissionTitleByMenuPath(FREEBILL_PATH);
 const NOTES_SHEETS_MANAGER_TITLE = requirePermissionTitleByMenuPath(NOTES_SHEETS_MANAGER_PATH);
 const NOTES_WECHAT_TITLE = requirePermissionTitleByMenuPath(NOTES_WECHAT_PATH);
 const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFINITE_CANVAS_PATH);
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
+const CLUSTER_STORAGE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_STORAGE_PATH);
 const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
 const CLUSTER_VIEW_MN_TITLE = requirePermissionTitleByMenuPath(CLUSTER_VIEW_MN_PATH);
 const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_PATH);
@@ -339,6 +345,7 @@ const aiToolsMenuVisible = computed(() =>
   && [
     AI_CONFIG_PATH,
     AI_CODEX_SAVER_PATH,
+    AI_EVOMIND_PATH,
     CLUSTER_CODEX_PATH,
     AI_CHAT_PATH,
     AI_REDUCTION_PATH,
@@ -428,6 +435,7 @@ const noteToolsMenuVisible = computed(() =>
   && [
     NOTES_CENTER_MENU_PATH,
     EASTMONEY_PATH,
+    FREEBILL_PATH,
     NOTES_SHEETS_MANAGER_PATH,
     NOTES_WECHAT_PATH,
     NOTES_INFINITE_CANVAS_PATH,
@@ -467,6 +475,7 @@ const clusterMenuVisible = computed(() =>
   && (
     [
       CLUSTER_TASKS_PATH,
+      CLUSTER_STORAGE_PATH,
       CLUSTER_LABELME_PATH,
     ].some((path) => canAccessMenuPath(path))
     || clusterFilesMenuVisible.value
@@ -733,6 +742,7 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(AI_CONFIG_PATH)" :index="AI_CONFIG_PATH">{{ AI_CONFIG_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CODEX_SAVER_PATH)" :index="AI_CODEX_SAVER_PATH">{{ AI_CODEX_SAVER_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(AI_EVOMIND_PATH)" :index="AI_EVOMIND_PATH">{{ AI_EVOMIND_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_CODEX_PATH)" :index="CLUSTER_CODEX_PATH">{{ CLUSTER_CODEX_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_CHAT_PATH)" :index="AI_CHAT_PATH">{{ AI_CHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(AI_REDUCTION_PATH)" :index="AI_REDUCTION_PATH">{{ AI_REDUCTION_TITLE }}</el-menu-item>
@@ -847,6 +857,7 @@ watch(
             <el-menu-item v-if="canAccessMenuPath(NOTES_CENTER_MENU_PATH)" :index="NOTES_CENTER_MENU_PATH">{{ NOTES_CENTER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_SHEETS_MANAGER_PATH)" :index="NOTES_SHEETS_MANAGER_PATH">{{ NOTES_SHEETS_MANAGER_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(EASTMONEY_PATH)" :index="EASTMONEY_PATH">{{ EASTMONEY_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(FREEBILL_PATH)" :index="FREEBILL_PATH">{{ FREEBILL_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_WECHAT_PATH)" :index="NOTES_WECHAT_PATH">{{ NOTES_WECHAT_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(NOTES_INFINITE_CANVAS_PATH)" :index="NOTES_INFINITE_CANVAS_PATH">{{ NOTES_INFINITE_CANVAS_TITLE }}</el-menu-item>
           </el-sub-menu>
@@ -875,6 +886,7 @@ watch(
               <span>{{ CLUSTER_TOOLS_TITLE }}</span>
             </template>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_STORAGE_PATH)" :index="CLUSTER_STORAGE_PATH">{{ CLUSTER_STORAGE_TITLE }}</el-menu-item>
             <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
               <template #title>
                 <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(clusterFilesMenuEntryPath, $event)">

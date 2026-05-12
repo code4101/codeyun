@@ -71,6 +71,44 @@ class BackgroundTaskQueue:
                 "recent": [self._serialize_snapshot(item) for item in self._recent],
             }
 
+    def delete(self, task_id: str) -> str:
+        normalized_id = str(task_id or "").strip()
+        if not normalized_id:
+            return "missing"
+
+        with self._lock:
+            if self._running is not None and self._running.id == normalized_id:
+                return "running"
+
+            for index, task in enumerate(self._pending):
+                if task.snapshot.id == normalized_id:
+                    del self._pending[index]
+                    return "deleted"
+
+            for index, item in enumerate(self._recent):
+                if item.id == normalized_id:
+                    del self._recent[index]
+                    return "deleted"
+
+        return "missing"
+
+    def delete_pending_by_name(self, name: str) -> int:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return 0
+
+        deleted_count = 0
+        with self._lock:
+            kept: deque[_QueuedBackgroundTask] = deque()
+            while self._pending:
+                task = self._pending.popleft()
+                if task.snapshot.name == normalized_name:
+                    deleted_count += 1
+                    continue
+                kept.append(task)
+            self._pending = kept
+        return deleted_count
+
     def reset_for_tests(self) -> None:
         with self._lock:
             self._pending.clear()

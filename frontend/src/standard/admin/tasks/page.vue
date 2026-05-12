@@ -24,6 +24,7 @@
       table-layout="auto"
       :fit="false"
       class="tasks-table"
+      @row-contextmenu="handleTaskRowContextMenu"
     >
       <el-table-column label="任务" min-width="250">
         <template #default="{ row }">
@@ -92,7 +93,7 @@
         </template>
       </el-table-column>
 
-      <el-table-column label="操作" width="190" fixed="right">
+      <el-table-column label="操作" width="110" fixed="right">
         <template #default="{ row }">
           <div class="action-buttons">
             <el-button
@@ -106,53 +107,80 @@
             >
               执行
             </el-button>
-            <el-button
-              size="small"
-              plain
-              :loading="resettingKey === row.key"
-              @click="handleResetSchedule(row)"
-            >
-              重置
-            </el-button>
           </div>
         </template>
       </el-table-column>
     </el-table>
 
-    <section v-if="recentItems.length" class="recent-section">
+    <section v-if="queueItems.length" class="recent-section">
       <div class="section-title">队列记录</div>
       <div class="recent-list">
-        <div v-for="item in recentItems" :key="item.id" class="recent-row">
+        <div
+          v-for="item in queueItems"
+          :key="item.id"
+          :class="['recent-row', { deleting: deletingQueueItemId === item.id }]"
+          @contextmenu.prevent.stop="handleQueueItemContextMenu(item, $event)"
+        >
           <span>{{ item.name }}</span>
           <el-tag size="small" :type="statusType(item.status)" effect="plain">{{ statusLabel(item.status) }}</el-tag>
           <span class="muted">{{ formatTimestamp(item.finished_at || item.started_at || item.queued_at) }}</span>
         </div>
       </div>
     </section>
+
+    <div
+      v-if="contextMenu.visible"
+      class="task-context-menu"
+      :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <button type="button" class="context-menu-item danger" @click="handleContextDelete">
+        <el-icon><Delete /></el-icon>
+        <span>删除</span>
+      </button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Refresh, VideoPlay } from '@element-plus/icons-vue';
+import { Delete, Refresh, VideoPlay } from '@element-plus/icons-vue';
 import {
+  deleteBackgroundTask,
+  deleteBackgroundQueueTask,
   fetchBackgroundTaskStatus,
-  resetBackgroundTaskSchedule,
   triggerBackgroundTask,
   toggleBackgroundTask,
   type BackgroundTaskItem,
+  type BackgroundTaskRunSummary,
   type BackgroundTaskStatusResponse,
 } from '@/api/admin';
 
 type TagType = 'success' | 'warning' | 'info' | 'danger' | 'primary';
+type ContextMenuTarget =
+  | { kind: 'task'; item: BackgroundTaskItem }
+  | { kind: 'queue'; item: BackgroundTaskRunSummary };
 
 const status = ref<BackgroundTaskStatusResponse | null>(null);
 const initialLoading = ref(false);
 const manualRefreshing = ref(false);
 const triggeringKey = ref('');
 const togglingKey = ref('');
-const resettingKey = ref('');
+const deletingTaskKey = ref('');
+const deletingQueueItemId = ref('');
+const contextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  target: ContextMenuTarget | null;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  target: null,
+});
 let refreshTimer = 0;
 let silentRefreshRunning = false;
 let latestStatusRequestId = 0;
@@ -160,7 +188,10 @@ let latestStatusRequestId = 0;
 const tableLoading = computed(() => initialLoading.value && !status.value);
 const tasks = computed(() => status.value?.tasks || []);
 const pendingCount = computed(() => status.value?.queue.pending?.length || 0);
-const recentItems = computed(() => (status.value?.queue.recent || []).slice(0, 8));
+const queueItems = computed(() => [
+  ...(status.value?.queue.pending || []),
+  ...(status.value?.queue.recent || []),
+].slice(0, 8));
 
 const loadStatus = async (options: { silent?: boolean } = {}) => {
   const silent = options.silent === true;
@@ -275,13 +306,49 @@ const handleToggle = async (row: BackgroundTaskItem, val: string | number | bool
   }
 };
 
-const handleResetSchedule = async (row: BackgroundTaskItem) => {
+const openContextMenu = (target: ContextMenuTarget, event: MouseEvent) => {
+  event.preventDefault();
+  event.stopPropagation();
+  contextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    target,
+  };
+};
+
+const closeContextMenu = () => {
+  contextMenu.value.visible = false;
+  contextMenu.value.target = null;
+};
+
+const handleTaskRowContextMenu = (row: BackgroundTaskItem, _column: unknown, event: MouseEvent) => {
+  openContextMenu({ kind: 'task', item: row }, event);
+};
+
+const handleQueueItemContextMenu = (item: BackgroundTaskRunSummary, event: MouseEvent) => {
+  openContextMenu({ kind: 'queue', item }, event);
+};
+
+const handleContextDelete = () => {
+  const target = contextMenu.value.target;
+  closeContextMenu();
+  if (!target) return;
+  if (target.kind === 'task') {
+    void handleDeleteTask(target.item);
+  } else {
+    void handleDeleteQueueItem(target.item);
+  }
+};
+
+const handleDeleteTask = async (row: BackgroundTaskItem) => {
+  if (!row.key || deletingTaskKey.value) return;
   try {
     await ElMessageBox.confirm(
-      '将清空该任务的下次运行时间，行为树会按当前时间重新计算下一次调度。',
-      `重置调度：${row.title}`,
+      '删除后会停用并隐藏该任务，不会中断已经在运行的队列任务。',
+      `删除：${row.title}`,
       {
-        confirmButtonText: '重置',
+        confirmButtonText: '删除',
         cancelButtonText: '取消',
         type: 'warning',
       },
@@ -290,16 +357,43 @@ const handleResetSchedule = async (row: BackgroundTaskItem) => {
     return;
   }
 
-  resettingKey.value = row.key;
+  deletingTaskKey.value = row.key;
   try {
-    await resetBackgroundTaskSchedule(row.key);
-    ElMessage.success('调度状态已重置');
+    await deleteBackgroundTask(row.key);
+    ElMessage.success('已删除任务');
     await loadStatus();
   } catch (error: any) {
     console.error(error);
-    ElMessage.error(error?.response?.data?.detail || '重置失败');
+    ElMessage.error(error?.response?.data?.detail || '删除失败');
   } finally {
-    resettingKey.value = '';
+    deletingTaskKey.value = '';
+  }
+};
+
+const handleDeleteQueueItem = async (item: BackgroundTaskRunSummary) => {
+  if (!item.id || deletingQueueItemId.value) return;
+  const isPending = item.status === 'pending';
+  const message = isPending ? '删除后不会继续执行。' : '只删除这条队列记录，不影响已完成结果。';
+  try {
+    await ElMessageBox.confirm(message, `删除：${item.name || item.id}`, {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+    });
+  } catch {
+    return;
+  }
+
+  deletingQueueItemId.value = item.id;
+  try {
+    await deleteBackgroundQueueTask(item.id);
+    ElMessage.success(isPending ? '已删除等待任务' : '已删除队列记录');
+    await loadStatus();
+  } catch (error: any) {
+    console.error(error);
+    ElMessage.error(error?.response?.data?.detail || '删除失败');
+  } finally {
+    deletingQueueItemId.value = '';
   }
 };
 
@@ -310,12 +404,16 @@ onMounted(() => {
       loadStatus({ silent: true });
     }
   }, 3000);
+  window.addEventListener('click', closeContextMenu);
+  window.addEventListener('scroll', closeContextMenu, true);
 });
 
 onBeforeUnmount(() => {
   if (refreshTimer) {
     window.clearInterval(refreshTimer);
   }
+  window.removeEventListener('click', closeContextMenu);
+  window.removeEventListener('scroll', closeContextMenu, true);
 });
 </script>
 
@@ -456,8 +554,55 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  width: fit-content;
   min-height: 28px;
+  padding: 0 4px;
+  border-radius: 4px;
   color: #303133;
   font-size: 13px;
+  cursor: context-menu;
+}
+
+.recent-row:hover {
+  background: #f5f7fa;
+}
+
+.recent-row.deleting {
+  opacity: 0.55;
+}
+
+.task-context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 112px;
+  padding: 6px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 14%);
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #303133;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover {
+  background: #f5f7fa;
+}
+
+.context-menu-item.danger {
+  color: #f56c6c;
 }
 </style>

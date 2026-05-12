@@ -37,7 +37,10 @@ from backend.api.filesystem import (
     build_file_response,
     build_thumbnail_response,
     delete_scoped_entry,
+    enqueue_delete_scoped_entry,
+    get_delete_task_snapshot,
     list_available_roots,
+    list_delete_task_snapshots,
     list_directory_items,
     list_image_entries,
     list_media_entries,
@@ -2516,7 +2519,54 @@ def delete_file_for_entry(
             absolute_path=req.absolute_path,
             recursive=req.recursive,
     )
-    return _proxy_request(entry, "POST", "/fs/delete", json_body=_filesystem_payload(req))
+    return _proxy_request(entry, "POST", "/fs/delete", json_body=_filesystem_payload(req), timeout=15 * 60)
+
+
+@router.post("/{entry_id}/files/delete/async")
+def start_delete_file_for_entry(
+    entry_id: str,
+    req: DeleteEntryRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return enqueue_delete_scoped_entry(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            recursive=req.recursive,
+            metadata={
+                "entry_id": entry.entry_id,
+                "device_id": entry.device_id,
+            },
+        )
+    return _proxy_request(entry, "POST", "/fs/delete/async", json_body=_filesystem_payload(req), timeout=20)
+
+
+@router.get("/{entry_id}/files/delete-tasks")
+def list_delete_tasks_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return list_delete_task_snapshots(entry_id=entry.entry_id)
+    return _proxy_request(entry, "GET", "/fs/delete-tasks", timeout=20)
+
+
+@router.get("/{entry_id}/files/delete-tasks/{task_id}")
+def get_delete_task_for_entry(
+    entry_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return get_delete_task_snapshot(task_id, entry_id=entry.entry_id)
+    return _proxy_request(entry, "GET", f"/fs/delete-tasks/{task_id}", timeout=20)
 
 
 @router.post("/{entry_id}/files/labelme/rename")

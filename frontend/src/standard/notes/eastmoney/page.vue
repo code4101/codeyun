@@ -318,6 +318,7 @@ onBeforeUnmount(() => {
           :key="getSheetWorkspaceKey(tab.key)"
           :workbook-id="workbookId"
           :sheet-id="tab.sheet.sheet_id"
+          default-height-mode="content"
           :empty-text="tab.emptyText"
         />
         <el-empty
@@ -426,27 +427,16 @@ onBeforeUnmount(() => {
 }
 
 .data-tabs {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 560px;
   min-width: 0;
 }
 
 .data-tabs :deep(.el-tabs__content) {
-  flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .data-tabs :deep(.el-tab-pane) {
-  height: 100%;
   min-height: 0;
-}
-
-.eastmoney-sheet-workspace {
-  height: 100%;
-  min-height: 560px;
 }
 
 @media (max-width: 760px) {

@@ -262,8 +262,13 @@ export const toggleBackgroundTask = async (taskKey: string, enabled: boolean) =>
   return response.data;
 };
 
-export const resetBackgroundTaskSchedule = async (taskKey: string) => {
-  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/reset-schedule`);
+export const deleteBackgroundQueueTask = async (taskId: string) => {
+  const response = await api.delete(`/admin/background-tasks/queue/${encodeURIComponent(taskId)}`);
+  return response.data;
+};
+
+export const deleteBackgroundTask = async (taskKey: string) => {
+  const response = await api.delete(`/admin/background-tasks/${encodeURIComponent(taskKey)}`);
   return response.data;
 };
 

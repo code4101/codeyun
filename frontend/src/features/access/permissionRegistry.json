@@ -98,6 +98,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "tools.ai-evomind",
+      "title": "EvoMind",
+      "node_type": "feature",
+      "parent_key": "ai-tools",
+      "sort_order": 24,
+      "route_paths": ["/tools/ai-evomind"],
+      "menu_paths": ["/tools/ai-evomind"],
+      "api_scopes": ["ai-tools.evomind"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster.codex",
       "title": "Codex",
       "node_type": "feature",
@@ -524,6 +535,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "notes.freebill",
+      "title": "Freebill",
+      "node_type": "feature",
+      "parent_key": "note-tools",
+      "sort_order": 38,
+      "route_paths": ["/notes/freebill"],
+      "menu_paths": ["/notes/freebill"],
+      "api_scopes": ["note-tools.freebill"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "notes.wechat",
       "title": "微信",
       "node_type": "feature",
@@ -586,6 +608,17 @@
       "route_paths": ["/cluster/files", "/cluster/media", "/cluster/images"],
       "menu_paths": ["/cluster/files"],
       "api_scopes": ["cluster-tools.files"],
+      "default_anonymous_allow": false
+    },
+    {
+      "key": "cluster.storage",
+      "title": "TreeSize",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 23,
+      "route_paths": ["/cluster/storage"],
+      "menu_paths": ["/cluster/storage"],
+      "api_scopes": ["cluster-tools.storage"],
       "default_anonymous_allow": false
     },
     {

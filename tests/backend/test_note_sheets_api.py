@@ -2486,6 +2486,65 @@ def test_note_sheet_respects_document_pagination_settings(client, session):
         _clear_user_override()
 
 
+def test_note_sheet_column_options_use_full_sheet_when_paginated(client, session):
+    user = _create_user(session, username="note-sheet-column-options-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "选项统计表格",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["来源", "金额"],
+                    "rows": [
+                        ["支付宝", "10"],
+                        ["微信", "20"],
+                        ["支付宝", "30"],
+                        ["微信", "40"],
+                        ["支付宝", "50"],
+                        ["", "60"],
+                    ],
+                    "view_settings": {
+                        "pagination": {
+                            "enabled": True,
+                            "page_size": 2,
+                        },
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet_id = create_sheet_response.json()["id"]
+
+        page_response = client.get(f"/api/note-sheets/sheets/{sheet_id}")
+        assert page_response.status_code == 200
+        assert page_response.json()["document_json"]["rows"] == [
+            ["支付宝", "10"],
+            ["微信", "20"],
+        ]
+
+        options_response = client.get(
+            f"/api/note-sheets/sheets/{sheet_id}/column-options",
+            params={"column_index": 0},
+        )
+        assert options_response.status_code == 200
+        assert options_response.json() == {
+            "column_index": 0,
+            "header": "来源",
+            "total_rows": 6,
+            "options": [
+                {"value": "支付宝", "label": "支付宝", "count": 3},
+                {"value": "微信", "label": "微信", "count": 2},
+                {"value": "", "label": "(空白)", "count": 1},
+            ],
+        }
+    finally:
+        _clear_user_override()
+
+
 def test_note_sheet_sort_action_reorders_full_sheet_and_returns_first_page(client, session):
     user = _create_user(session, username="note-sheet-sort-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

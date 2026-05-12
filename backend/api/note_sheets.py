@@ -52,7 +52,7 @@ from backend.models import (
 router = APIRouter()
 
 DEFAULT_NOTE_SHEET_COLUMNS = ["列1", "列2", "列3"]
-DEFAULT_NOTE_SHEET_PAGE_SIZE = 100
+DEFAULT_NOTE_SHEET_PAGE_SIZE = 50
 MAX_NOTE_SHEET_PAGE_SIZE = 1000
 NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "note-sheet-excel-import-codex"
 NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
@@ -265,6 +265,19 @@ class NoteSheetPaginationResponse(BaseModel):
     page_count: int = 1
     row_offset: int = 0
     loaded_row_count: int = 0
+
+
+class NoteSheetColumnOptionItemResponse(BaseModel):
+    value: str
+    label: str
+    count: int
+
+
+class NoteSheetColumnOptionsResponse(BaseModel):
+    column_index: int
+    header: str
+    total_rows: int = 0
+    options: list[NoteSheetColumnOptionItemResponse] = Field(default_factory=list)
 
 
 class NoteSheetPagePatchRequest(BaseModel):
@@ -887,6 +900,53 @@ def _extract_sort_cell_text(row: Any, column_index: int, columns: list[Any]) -> 
     else:
         raw_value = ""
     return "" if raw_value is None else str(raw_value).strip()
+
+
+def _normalize_column_option_value(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _get_column_option_label(value: str) -> str:
+    return value or "(空白)"
+
+
+def _build_note_sheet_column_options_response(
+    document: SheetDocument,
+    *,
+    column_index: int,
+) -> NoteSheetColumnOptionsResponse:
+    normalized = _normalize_document_json(dict(document.document_json or {}))
+    columns = _normalize_document_columns(normalized)
+    if column_index < 0 or column_index >= len(columns):
+        raise HTTPException(status_code=400, detail="列索引超出范围")
+
+    rows = _extract_document_rows(normalized)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    text_grid = _build_table_text_grid(normalized, columns=columns, rows=rows)
+    text_rows = text_grid[data_start_row: data_start_row + len(rows)]
+
+    counts: dict[str, int] = {}
+    for row in text_rows:
+        cells = _normalize_sheet_row(row, len(columns))
+        value = _normalize_column_option_value(cells[column_index])
+        counts[value] = counts.get(value, 0) + 1
+
+    options = [
+        NoteSheetColumnOptionItemResponse(
+            value=value,
+            label=_get_column_option_label(value),
+            count=count,
+        )
+        for value, count in counts.items()
+    ]
+    options.sort(key=lambda item: (-item.count, item.label))
+
+    return NoteSheetColumnOptionsResponse(
+        column_index=column_index,
+        header=columns[column_index],
+        total_rows=len(rows),
+        options=options,
+    )
 
 
 def _extract_row_cell_value(row: Any, column_index: int, columns: list[Any]) -> Any:
@@ -6300,6 +6360,25 @@ def get_note_sheet(
             access=access,
         ),
     )
+
+
+@router.get("/sheets/{sheet_id}/column-options", response_model=NoteSheetColumnOptionsResponse)
+def get_note_sheet_column_options(
+    sheet_id: int,
+    column_index: int = Query(..., ge=0),
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, _access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    _sync_attendance_questionnaire_sheet_document(session, document)
+    return _build_note_sheet_column_options_response(document, column_index=column_index)
 
 
 @router.get("/sheets/{sheet_id}/table", response_model=NoteSheetTableResponse)
