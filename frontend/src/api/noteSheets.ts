@@ -81,6 +81,19 @@ export interface NoteSheetPaginationState {
   loaded_row_count: number
 }
 
+export interface NoteSheetColumnOptionItem {
+  value: string
+  label: string
+  count: number
+}
+
+export interface NoteSheetColumnOptionsResponse {
+  column_index: number
+  header: string
+  total_rows: number
+  options: NoteSheetColumnOptionItem[]
+}
+
 export interface WorkbookSummary {
   id: number
   title: string
@@ -308,6 +321,19 @@ export async function fetchNoteSheet(
     }
     throw error
   }
+}
+
+export async function fetchNoteSheetColumnOptions(
+  sheetId: number,
+  options: { columnIndex: number; workbookId?: number | null },
+) {
+  const response = await api.get<NoteSheetColumnOptionsResponse>(`/note-sheets/sheets/${sheetId}/column-options`, {
+    params: {
+      column_index: options.columnIndex,
+      workbook_id: options.workbookId ?? undefined,
+    },
+  })
+  return response.data
 }
 
 export async function updateNoteSheet(

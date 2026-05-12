@@ -140,11 +140,16 @@ export interface DeviceDirectoryItem {
   is_dir: boolean;
   size: number | null;
   modified_at: number | null;
+  direct_file_bytes?: number | null;
+  direct_file_count?: number | null;
   recursive_total_bytes?: number | null;
   recursive_file_count?: number | null;
   latest_descendant_modified_at?: number | null;
   max_weight?: number | null;
   weighted_file_count?: number | null;
+  disk_total_bytes?: number | null;
+  disk_free_bytes?: number | null;
+  disk_used_bytes?: number | null;
 }
 
 export interface DeviceDirectoryListing {
@@ -223,6 +228,62 @@ export interface DeviceOcrPreviewResponse {
   shape_count: number;
   document: Record<string, unknown>;
 }
+
+export type DeviceDeleteTaskStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed' | 'unknown';
+
+export interface DeviceDeleteTask {
+  id: string;
+  task_id: string;
+  name: string;
+  status: DeviceDeleteTaskStatus;
+  queued_at: number | null;
+  started_at: number | null;
+  finished_at: number | null;
+  pid: number | null;
+  pid_started_at: number | null;
+  return_code: number | null;
+  skipped_count: number;
+  skipped_paths: Array<{ path: string; error: string }>;
+  error_message: string | null;
+  metadata: Record<string, unknown>;
+  target_path: string;
+  entry_name: string;
+}
+
+export interface DeviceDeleteTaskStartResult {
+  ok: boolean;
+  queued: boolean;
+  task_id: string;
+  pid: number | null;
+  task: DeviceDeleteTask;
+}
+
+const normalizeNullableNumber = (value: unknown): number | null => {
+  if (value == null || value === '') {
+    return null;
+  }
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+};
+
+const normalizeDeleteTask = (raw: any): DeviceDeleteTask => ({
+  id: raw?.id ?? raw?.task_id ?? '',
+  task_id: raw?.task_id ?? raw?.id ?? '',
+  name: raw?.name ?? '',
+  status: raw?.status ?? 'unknown',
+  queued_at: raw?.queued_at ?? null,
+  started_at: raw?.started_at ?? null,
+  finished_at: raw?.finished_at ?? null,
+  pid: normalizeNullableNumber(raw?.pid),
+  pid_started_at: normalizeNullableNumber(raw?.pid_started_at),
+  return_code: normalizeNullableNumber(raw?.return_code),
+  skipped_count: Number(raw?.skipped_count ?? 0),
+  skipped_paths: Array.isArray(raw?.skipped_paths) ? raw.skipped_paths : [],
+  error_message: raw?.error_message ?? null,
+  metadata: raw?.metadata ?? {},
+  target_path: raw?.target_path ?? '',
+  entry_name: raw?.entry_name ?? '',
+});
 
 export const fetchDeviceRoots = async (entryId: string): Promise<DeviceFilesystemRoot[]> => {
   const response = await api.get(getDeviceEntryPath(entryId, '/files/roots'));
@@ -437,8 +498,39 @@ export const deleteDeviceEntry = async (
   entryId: string,
   payload: DeviceFileSelector & { recursive?: boolean }
 ) => {
-  const response = await api.post(getDeviceEntryPath(entryId, '/files/delete'), payload);
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/delete'), payload, {
+    timeout: 0,
+  });
   return response.data;
+};
+
+export const startDeviceEntryDelete = async (
+  entryId: string,
+  payload: DeviceFileSelector & { recursive?: boolean }
+): Promise<DeviceDeleteTaskStartResult> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/delete/async'), payload);
+  return {
+    ok: Boolean(response.data.ok),
+    queued: Boolean(response.data.queued),
+    task_id: response.data.task_id ?? response.data.task?.task_id ?? '',
+    pid: normalizeNullableNumber(response.data.pid ?? response.data.task?.pid),
+    task: normalizeDeleteTask(response.data.task ?? {}),
+  };
+};
+
+export const fetchDeviceEntryDeleteTasks = async (
+  entryId: string
+): Promise<DeviceDeleteTask[]> => {
+  const response = await api.get(getDeviceEntryPath(entryId, '/files/delete-tasks'));
+  return (response.data.tasks ?? []).map(normalizeDeleteTask);
+};
+
+export const fetchDeviceEntryDeleteTask = async (
+  entryId: string,
+  taskId: string
+): Promise<DeviceDeleteTask> => {
+  const response = await api.get(getDeviceEntryPath(entryId, `/files/delete-tasks/${encodeURIComponent(taskId)}`));
+  return normalizeDeleteTask(response.data);
 };
 
 export const revealDeviceEntryInFolder = async (

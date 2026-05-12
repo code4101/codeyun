@@ -1,5 +1,9 @@
+import time
+
 from backend.app import app
 from backend.core.auth import get_current_active_superuser
+from backend.core.background_task_queue import background_task_queue
+from backend.core.background_task_runner import set_background_task_deleted
 from backend.models import User
 
 
@@ -79,3 +83,40 @@ def test_admin_background_tasks_can_trigger_fanbei_placeholder_job(client):
     assert payload["task_key"] == "attendance_fanbei_evening_steps"
     assert payload["queued"] is True
     assert payload["queue_task_id"]
+
+
+def test_admin_background_tasks_can_delete_queue_record(client):
+    background_task_queue.reset_for_tests()
+
+    task_id = background_task_queue.enqueue("delete-me", lambda: None)
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        snapshot = background_task_queue.snapshot()
+        if snapshot["is_idle"] and any(item["id"] == task_id for item in snapshot["recent"]):
+            break
+        time.sleep(0.02)
+
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.delete(f"/api/admin/background-tasks/queue/{task_id}")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+        background_task_queue.reset_for_tests()
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+
+
+def test_admin_background_tasks_can_delete_managed_task(client):
+    app.dependency_overrides[get_current_active_superuser] = _admin_user
+    try:
+        response = client.delete("/api/admin/background-tasks/storage_analysis")
+        status_response = client.get("/api/admin/background-tasks/status")
+    finally:
+        app.dependency_overrides.pop(get_current_active_superuser, None)
+        set_background_task_deleted("storage_analysis", False)
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] is True
+    task_keys = {item["key"] for item in status_response.json()["tasks"]}
+    assert "storage_analysis" not in task_keys

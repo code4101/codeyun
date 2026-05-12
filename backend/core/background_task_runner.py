@@ -69,10 +69,30 @@ def _setting_key(task_key: str) -> str:
     return f"background_task.{task_key}.enabled"
 
 
+def _deleted_setting_key(task_key: str) -> str:
+    return f"background_task.{task_key}.deleted"
+
+
+def _is_task_deleted(task_key: str, session: Session | None = None) -> bool:
+    def _read(current_session: Session) -> bool:
+        row = current_session.get(AppSetting, _deleted_setting_key(task_key))
+        return bool(row and isinstance(row.value, dict) and row.value.get("deleted", False))
+
+    if session is not None:
+        return _read(session)
+
+    from backend.db import engine
+
+    with Session(engine) as current_session:
+        return _read(current_session)
+
+
 def _is_task_enabled(task_key: str) -> bool:
     from backend.db import engine
 
     with Session(engine) as session:
+        if _is_task_deleted(task_key, session):
+            return False
         row = session.get(AppSetting, _setting_key(task_key))
         if row and isinstance(row.value, dict):
             return bool(row.value.get("enabled", False))
@@ -93,6 +113,28 @@ def set_background_task_enabled(task_key: str, enabled: bool) -> None:
         row.value = {"enabled": bool(enabled)}
         row.updated_at = time.time()
         session.add(row)
+        session.commit()
+
+
+def set_background_task_deleted(task_key: str, deleted: bool = True) -> None:
+    from backend.db import engine
+
+    with Session(engine) as session:
+        deleted_row = session.get(AppSetting, _deleted_setting_key(task_key))
+        if deleted_row is None:
+            deleted_row = AppSetting(key=_deleted_setting_key(task_key))
+        deleted_row.value = {"deleted": bool(deleted)}
+        deleted_row.updated_at = time.time()
+        session.add(deleted_row)
+
+        if deleted:
+            enabled_row = session.get(AppSetting, _setting_key(task_key))
+            if enabled_row is None:
+                enabled_row = AppSetting(key=_setting_key(task_key))
+            enabled_row.value = {"enabled": False}
+            enabled_row.updated_at = time.time()
+            session.add(enabled_row)
+
         session.commit()
 
 
@@ -379,6 +421,7 @@ class BackgroundTaskRunner:
                     "retry_label": spec.retry_label,
                 }
                 for spec in BACKGROUND_TASK_SPECS
+                if not _is_task_deleted(spec.key)
             },
         }
 
@@ -428,7 +471,7 @@ def _iter_tree_nodes(node: Any):
 
 
 def _build_enabled_by_key() -> dict[str, bool]:
-    return {spec.key: _is_task_enabled(spec.key) for spec in BACKGROUND_TASK_SPECS}
+    return {spec.key: _is_task_enabled(spec.key) for spec in BACKGROUND_TASK_SPECS if not _is_task_deleted(spec.key)}
 
 
 def _sync_runner_enabled_states(
@@ -480,3 +523,7 @@ def refresh_background_task_schedule_states(task_key: str | None = None) -> None
 
 def reset_background_task_schedule(task_key: str) -> bool:
     return background_task_runner.reset_task(task_key)
+
+
+def is_background_task_deleted(task_key: str) -> bool:
+    return _is_task_deleted(task_key)

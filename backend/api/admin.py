@@ -18,8 +18,10 @@ from backend.core.background_task_runner import (
     BACKGROUND_TASK_SPECS,
     get_background_task_runner_snapshot,
     get_background_task_spec,
+    is_background_task_deleted,
     refresh_background_task_schedule_states,
     reset_background_task_schedule,
+    set_background_task_deleted,
     set_background_task_enabled,
 )
 from backend.core.background_task_queue import background_task_queue
@@ -519,6 +521,8 @@ def get_background_task_status(session: Session = Depends(get_session)):
 
     tasks = []
     for spec in BACKGROUND_TASK_SPECS:
+        if is_background_task_deleted(spec.key):
+            continue
         task_state = runner_tasks.get(spec.key) if isinstance(runner_tasks.get(spec.key), dict) else {}
         tasks.append(
             BackgroundTaskRead(
@@ -632,6 +636,32 @@ def toggle_background_task(
     set_background_task_enabled(normalized_key, enabled)
     refresh_background_task_schedule_states(normalized_key)
     return {"success": True, "enabled": enabled}
+
+
+@tasks_router.delete("/background-tasks/queue/{task_id}", response_model=dict)
+def delete_background_queue_task(task_id: str):
+    status = background_task_queue.delete(task_id)
+    if status == "missing":
+        raise HTTPException(status_code=404, detail="队列任务不存在")
+    if status == "running":
+        raise HTTPException(status_code=409, detail="正在运行的任务不能删除")
+    return {"success": True, "deleted": True, "task_id": task_id}
+
+
+@tasks_router.delete("/background-tasks/{task_key}", response_model=dict)
+def delete_background_task(task_key: str):
+    normalized_key = task_key.strip()
+    if not any(spec.key == normalized_key for spec in BACKGROUND_TASK_SPECS):
+        raise HTTPException(status_code=404, detail="后台任务不存在")
+    set_background_task_deleted(normalized_key, True)
+    deleted_pending_count = background_task_queue.delete_pending_by_name(normalized_key)
+    refresh_background_task_schedule_states(normalized_key)
+    return {
+        "success": True,
+        "deleted": True,
+        "task_key": normalized_key,
+        "deleted_pending_count": deleted_pending_count,
+    }
 
 
 @tasks_router.post("/background-tasks/{task_key}/reset-schedule", response_model=dict)

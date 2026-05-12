@@ -1,11 +1,17 @@
 import os
+import shutil
+import stat
+import time
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+import pytest
+from fastapi import HTTPException
 from PIL import Image
 from sqlmodel import select
 
-from backend.api.filesystem import DEVICE_ROOT_SENTINEL
+from backend.api.filesystem import DEVICE_ROOT_SENTINEL, FILESYSTEM_DELETE_TASKS_STATE_FILE, delete_scoped_entry
 from backend.models import DeviceFile, UserDevice
 from backend.core.settings import get_settings
 
@@ -138,6 +144,126 @@ def test_local_entry_proxy_lists_and_deletes_device_images(client, auth_user, te
     )
     assert delete_resp.status_code == 200
     assert not image_path.exists()
+
+
+def test_local_entry_proxy_starts_background_delete_task(client, auth_user, test_device, tmp_path):
+    delete_tasks_state_path = get_settings().data_dir / FILESYSTEM_DELETE_TASKS_STATE_FILE
+    delete_tasks_state_path.unlink(missing_ok=True)
+    delete_dir = tmp_path / "async-delete-dir"
+    delete_dir.mkdir()
+    child_file = delete_dir / "child.txt"
+    child_file.write_text("delete me", encoding="utf-8")
+    child_file.chmod(stat.S_IREAD)
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    try:
+        start_resp = client.post(
+            f"/api/device-entries/{entry_id}/files/delete/async",
+            json={"absolute_path": str(delete_dir), "recursive": True},
+        )
+        assert start_resp.status_code == 200
+        payload = start_resp.json()
+        assert payload["queued"] is True
+        task_id = payload["task_id"]
+        assert isinstance(payload["pid"], int)
+        assert payload["task"]["pid"] == payload["pid"]
+
+        latest_task = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            status_resp = client.get(f"/api/device-entries/{entry_id}/files/delete-tasks/{task_id}")
+            assert status_resp.status_code == 200
+            latest_task = status_resp.json()
+            if latest_task["status"] in {"completed", "partial_failed", "failed"}:
+                break
+            time.sleep(0.02)
+
+        assert latest_task is not None
+        assert latest_task["status"] == "completed"
+        assert latest_task["pid"] == payload["pid"]
+        assert latest_task["target_path"] == str(delete_dir)
+        assert not delete_dir.exists()
+
+        list_resp = client.get(f"/api/device-entries/{entry_id}/files/delete-tasks")
+        assert list_resp.status_code == 200
+        assert any(item["task_id"] == task_id for item in list_resp.json()["tasks"])
+    finally:
+        if child_file.exists():
+            child_file.chmod(stat.S_IREAD | stat.S_IWRITE)
+        delete_tasks_state_path.unlink(missing_ok=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Open file handles do not block unlink on every platform")
+def test_local_entry_proxy_delete_task_skips_locked_files(client, auth_user, test_device, tmp_path):
+    delete_tasks_state_path = get_settings().data_dir / FILESYSTEM_DELETE_TASKS_STATE_FILE
+    delete_tasks_state_path.unlink(missing_ok=True)
+    delete_dir = tmp_path / "partial-delete-dir"
+    delete_dir.mkdir()
+    locked_file = delete_dir / "locked.txt"
+    removable_file = delete_dir / "removable.txt"
+    locked_file.write_text("locked", encoding="utf-8")
+    removable_file.write_text("delete me", encoding="utf-8")
+    locked_handle = locked_file.open("r", encoding="utf-8")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    try:
+        start_resp = client.post(
+            f"/api/device-entries/{entry_id}/files/delete/async",
+            json={"absolute_path": str(delete_dir), "recursive": True},
+        )
+        assert start_resp.status_code == 200
+        task_id = start_resp.json()["task_id"]
+
+        latest_task = None
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            status_resp = client.get(f"/api/device-entries/{entry_id}/files/delete-tasks/{task_id}")
+            assert status_resp.status_code == 200
+            latest_task = status_resp.json()
+            if latest_task["status"] in {"completed", "partial_failed", "failed"}:
+                break
+            time.sleep(0.02)
+
+        assert latest_task is not None
+        assert latest_task["status"] == "partial_failed"
+        assert latest_task["skipped_count"] >= 1
+        assert any(str(locked_file) == item["path"] for item in latest_task["skipped_paths"])
+        assert locked_file.exists()
+        assert not removable_file.exists()
+    finally:
+        locked_handle.close()
+        shutil.rmtree(delete_dir, ignore_errors=True)
+        delete_tasks_state_path.unlink(missing_ok=True)
+
+
+def test_delete_scoped_entry_refuses_filesystem_root(tmp_path):
+    root_path = Path(tmp_path.anchor)
+
+    with pytest.raises(HTTPException) as exc_info:
+        delete_scoped_entry(absolute_path=os.fspath(root_path), recursive=True)
+
+    assert exc_info.value.status_code == 400
+    assert "root" in exc_info.value.detail.lower()
 
 
 def test_local_entry_proxy_supports_absolute_image_path(client, auth_user, test_device, tmp_path):
@@ -1152,11 +1278,148 @@ def test_local_entry_proxy_sorts_directories_by_indexed_recursive_bytes(
     assert [item["name"] for item in payload["items"][:3]] == ["large", "small", "notes.txt"]
     assert payload["items"][0]["recursive_total_bytes"] == 40
     assert payload["items"][0]["recursive_file_count"] == 2
+    assert payload["items"][0]["direct_file_bytes"] == 10
+    assert payload["items"][0]["direct_file_count"] == 1
     assert payload["items"][0]["latest_descendant_modified_at"] == 3000
     assert payload["items"][0]["max_weight"] == 2
     assert payload["items"][0]["weighted_file_count"] == 2
     assert payload["items"][1]["recursive_total_bytes"] == 5
     assert payload["items"][1]["recursive_file_count"] == 1
+    assert payload["items"][1]["direct_file_bytes"] == 5
+    assert payload["items"][1]["direct_file_count"] == 1
+
+
+def test_local_entry_proxy_uses_everything_directory_stats_when_index_missing(
+    client,
+    session,
+    auth_user,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    (browse_dir / "large").mkdir(parents=True)
+    (browse_dir / "small").mkdir(parents=True)
+
+    def fake_everything_stats(*, target_path, directory_items, existing_stats_by_name=None):
+        assert target_path == browse_dir
+        assert existing_stats_by_name == {}
+        assert {item["name"] for item in directory_items} == {"large", "small"}
+        return {
+            "large": {
+                "recursive_total_bytes": 4096,
+                "recursive_file_count": None,
+                "latest_descendant_modified_at": None,
+                "max_weight": None,
+                "weighted_file_count": None,
+            },
+            "small": {
+                "recursive_total_bytes": 128,
+                "recursive_file_count": None,
+                "latest_descendant_modified_at": None,
+                "max_weight": None,
+                "weighted_file_count": None,
+            },
+        }
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        fake_everything_stats,
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={"absolute_path": str(browse_dir)},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert [item["name"] for item in payload["items"][:2]] == ["large", "small"]
+    assert payload["items"][0]["recursive_total_bytes"] == 4096
+    assert payload["items"][0]["recursive_file_count"] is None
+    assert payload["items"][0]["direct_file_bytes"] == 0
+    assert payload["items"][1]["recursive_total_bytes"] == 128
+
+
+def test_local_entry_proxy_prefers_everything_recursive_size_over_stale_index(
+    client,
+    session,
+    auth_user,
+    test_device,
+    monkeypatch,
+    tmp_path,
+):
+    browse_dir = tmp_path / "browse-root"
+    indexed_dir = browse_dir / "indexed"
+    indexed_dir.mkdir(parents=True)
+    indexed_file = indexed_dir / "old-index.txt"
+    indexed_file.write_bytes(b"a" * 10)
+
+    monkeypatch.setattr("backend.api.filesystem.get_device_id", lambda: test_device["id"])
+    session.add(
+        DeviceFile(
+            device_id=test_device["id"],
+            absolute_path=str(indexed_file),
+            last_known_path=str(indexed_file),
+            file_size=10,
+            modified_at_ms=1000,
+            match_status="matched",
+            weight=0,
+        )
+    )
+    session.commit()
+
+    def fake_everything_stats(*, target_path, directory_items, existing_stats_by_name=None):
+        assert target_path == browse_dir
+        assert {item["name"] for item in directory_items} == {"indexed"}
+        assert existing_stats_by_name["indexed"]["recursive_total_bytes"] == 10
+        return {
+            "indexed": {
+                "recursive_total_bytes": 4096,
+                "recursive_file_count": None,
+                "latest_descendant_modified_at": None,
+                "max_weight": None,
+                "weighted_file_count": None,
+            },
+        }
+
+    monkeypatch.setattr(
+        "backend.api.filesystem._build_everything_directory_stats_by_name",
+        fake_everything_stats,
+    )
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    resp = client.post(
+        f"/api/device-entries/{entry_id}/files/list_dir",
+        json={"absolute_path": str(browse_dir)},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["items"][0]["name"] == "indexed"
+    assert payload["items"][0]["recursive_total_bytes"] == 4096
+    assert payload["items"][0]["recursive_file_count"] == 1
+    assert payload["items"][0]["direct_file_bytes"] == 10
 
 
 def test_remote_entry_proxy_forwards_files_request(client, session, auth_user, monkeypatch):

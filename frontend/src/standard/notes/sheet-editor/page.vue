@@ -22,6 +22,7 @@ function handleMissing() {
 <template>
   <NoteSheetWorkspace
     :sheet-id="sheetId"
+    default-height-mode="fill"
     show-back-button
     back-to="/notes/sheets"
     back-label="返回星云表格"

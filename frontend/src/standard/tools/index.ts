@@ -3,6 +3,7 @@ import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 import aiChatPage from './ai-chat'
 import aiCodexSaverPage from './ai-codex-saver'
 import aiConfigPage from './ai-config'
+import aiEvoMindPage from './ai-evomind'
 import aiGitCommitPage from './ai-git-commit'
 import aiNotebookPage from './ai-notebook'
 import aiReductionPage from './ai-reduction'
@@ -17,6 +18,7 @@ const pages: AppPageDefinition[] = [
   imageBrowserPage,
   aiConfigPage,
   aiCodexSaverPage,
+  aiEvoMindPage,
   aiChatPage,
   aiReductionPage,
   aiGitCommitPage,

@@ -10,6 +10,7 @@ import { registerLanguageDictionary, zhCN } from 'handsontable/i18n'
 import {
   fetchNoteSheet,
   fetchNoteSheetActiveRegistrationMatchRun,
+  fetchNoteSheetColumnOptions,
   fetchNoteSheetRegistrationMatchRun,
   fetchAttendanceCourseScriptStatuses,
   generateAttendanceCourseScript,
@@ -23,6 +24,7 @@ import {
   type AttendanceLinkCountFieldKey,
   type AttendanceCourseScriptStatusItem,
   type NoteSheetAccessCapabilities,
+  type NoteSheetColumnOptionItem,
   type NoteSheetPaginationState,
   type NoteSheetRegistrationMatchRunResponse,
   type WorkbookRefItem,
@@ -49,7 +51,7 @@ registerLanguageDictionary(zhCN)
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
 const REMOTE_SAVE_DEBOUNCE_MS = 1200
-const DEFAULT_PAGE_SIZE = 100
+const DEFAULT_PAGE_SIZE = 50
 const TABLE_FONT_FAMILY = 'Inter, "Segoe UI", sans-serif'
 const TABLE_FONT = `400 14px ${TABLE_FONT_FAMILY}`
 const TABLE_HEADER_FONT = '600 13px Inter, "Segoe UI", sans-serif'
@@ -155,9 +157,49 @@ const COLUMN_SETTINGS_KEYS = [
 ] as const satisfies readonly ColumnSettingsDraftKey[]
 
 type SheetRow = string[]
+type ColumnFilterNumberOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'between'
 type ColumnFilterState = {
   query: string
   excludedValues: string[]
+  dateStart: string
+  dateEnd: string
+  numberOperator: ColumnFilterNumberOperator
+  numberValue: string
+  numberValueTo: string
+}
+type ExternalSheetRowFilterOperator =
+  | 'eq'
+  | 'neq'
+  | 'in'
+  | 'not_in'
+  | 'contains'
+  | 'not_contains'
+  | 'gte'
+  | 'lte'
+  | 'between'
+type ExternalSheetRowFilterMatcher = {
+  kind?: 'all' | 'none' | 'field' | 'full_text_contains'
+  field?: string | null
+  op?: ExternalSheetRowFilterOperator | null
+  value?: unknown
+  values?: unknown[]
+}
+type ExternalSheetRowFilterRule = {
+  action?: 'include' | 'exclude' | 'filter'
+  matcher?: ExternalSheetRowFilterMatcher | null
+}
+type ExternalSheetRowFilterProgram = {
+  default?: boolean
+  rules?: ExternalSheetRowFilterRule[]
+}
+type NormalizedExternalSheetRowFilterMatcher = Required<ExternalSheetRowFilterMatcher>
+type NormalizedExternalSheetRowFilterRule = {
+  action: 'include' | 'exclude' | 'filter'
+  matcher: NormalizedExternalSheetRowFilterMatcher
+}
+type NormalizedExternalSheetRowFilterProgram = {
+  default: boolean
+  rules: NormalizedExternalSheetRowFilterRule[]
 }
 type ColumnFilterOptionStat = {
   value: string
@@ -167,6 +209,21 @@ type ColumnFilterOptionStat = {
 type ColumnFilterOptionView = ColumnFilterOptionStat & {
   selected: boolean
 }
+type ColumnFilterGlobalOptionsCacheEntry = {
+  options: ColumnFilterOptionStat[]
+  totalRows: number
+  sheetVersion: number
+}
+const DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR: ColumnFilterNumberOperator = 'gte'
+const COLUMN_FILTER_NUMBER_OPERATOR_OPTIONS: { value: ColumnFilterNumberOperator; label: string }[] = [
+  { value: 'eq', label: '等于' },
+  { value: 'neq', label: '不等于' },
+  { value: 'gt', label: '大于' },
+  { value: 'gte', label: '大于等于' },
+  { value: 'lt', label: '小于' },
+  { value: 'lte', label: '小于等于' },
+  { value: 'between', label: '介于' },
+]
 type SheetGridChangeRecord = {
   rowIndex: number
   hotColumnIndex: number
@@ -183,6 +240,8 @@ type RowMarkerMode = 'none' | 'page_numbers' | 'global_numbers'
 type RowMarkerOrigin = 'data' | 'sheet' | 'sheet_zero'
 type ColumnNoteDisplayMode = 'hover' | 'row'
 type FormulaReferenceOrigin = 'data' | 'sheet' | 'sheet_v2'
+type SheetHeightMode = 'fill' | 'content'
+const DEFAULT_SHEET_HEIGHT_MODE: SheetHeightMode = 'content'
 type SortDirection = 'asc' | 'desc'
 type ColumnWidthMode = 'adaptive' | 'fixed'
 type ColumnValueType = 'text' | 'multi_text' | 'number' | 'percent' | 'date'
@@ -466,6 +525,7 @@ type SheetViewSettings = {
   show_column_markers?: boolean
   column_marker_style?: ColumnMarkerStyle
   column_note_display?: ColumnNoteDisplayMode
+  height_mode?: SheetHeightMode
   frozen_column_count?: number
   pagination?: {
     enabled?: boolean
@@ -595,6 +655,8 @@ interface Props {
   backTo?: string
   backLabel?: string
   emptyText?: string
+  rowFilterProgram?: ExternalSheetRowFilterProgram | null
+  defaultHeightMode?: SheetHeightMode | null
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -607,6 +669,8 @@ const props = withDefaults(defineProps<Props>(), {
   backTo: '/notes/sheets',
   backLabel: '返回星云表格',
   emptyText: '请选择表格',
+  rowFilterProgram: null,
+  defaultHeightMode: null,
 })
 
 const emit = defineEmits<{
@@ -654,6 +718,7 @@ const textMeasureCache = new Map<string, number>()
 const cellDisplayTextCache = new Map<string, string>()
 const duplicateHighlightStyleCache = new Map<string, { backgroundColor: string }>()
 const cellHashColorStyleCache = new Map<string, HashColorStyle | null>()
+const columnFilterGlobalOptionsCache = new Map<string, ColumnFilterGlobalOptionsCacheEntry>()
 
 const hotTableRef = ref<{ hotInstance: Handsontable } | null>(null)
 const sheetFrameRef = ref<HTMLElement | null>(null)
@@ -667,7 +732,7 @@ const columnConfigs = ref<Record<string, SheetColumnConfig>>({})
 const cellMeta = ref<SheetCellMetaMap>({})
 const attendanceCourseScriptStatuses = ref<Record<number, AttendanceCourseScriptStatusItem>>({})
 const formulaEngineClass = shallowRef<FormulaEngineClass | null>(null)
-const sheetViewSettings = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings())
+const sheetViewSettings = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
 const columnWidths = ref<number[]>(DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header)))
 const editingColumnIndex = ref<number | null>(null)
 const editingColumnTitle = ref('')
@@ -676,7 +741,7 @@ const sheetTitle = ref('未命名表格')
 const sheetVersion = ref<number>(0)
 const sheetViewportHeight = ref<number | 'auto'>('auto')
 const sheetSettingsDialogVisible = ref(false)
-const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings())
+const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
 const sheetSettingsColumnFilterDraft = ref<Record<string, boolean>>({})
 const excelImportDialogVisible = ref(false)
 const excelImportFileInputRef = ref<HTMLInputElement | null>(null)
@@ -810,6 +875,15 @@ const columnFilterPopover = ref<{
   header: string
   draftQuery: string
   draftExcludedValues: string[]
+  draftDateRange: string[]
+  draftNumberOperator: ColumnFilterNumberOperator
+  draftNumberValue: string
+  draftNumberValueTo: string
+  globalOptions: ColumnFilterOptionStat[]
+  globalOptionTotalRows: number
+  globalOptionsLoaded: boolean
+  globalOptionsLoading: boolean
+  globalOptionsError: string
 }>({
   visible: false,
   x: 0,
@@ -818,10 +892,20 @@ const columnFilterPopover = ref<{
   header: '',
   draftQuery: '',
   draftExcludedValues: [],
+  draftDateRange: [],
+  draftNumberOperator: DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR,
+  draftNumberValue: '',
+  draftNumberValueTo: '',
+  globalOptions: [],
+  globalOptionTotalRows: 0,
+  globalOptionsLoaded: false,
+  globalOptionsLoading: false,
+  globalOptionsError: '',
 })
 const columnFilters = ref<Record<string, ColumnFilterState>>({})
 const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
+let columnFilterOptionRequestSeq = 0
 let formulaReferencePointerDown = false
 let formulaReferencePointerDownResetTimer: number | null = null
 let formulaReferenceRangeState: FormulaReferenceRangeState | null = null
@@ -866,16 +950,27 @@ const pageStatusText = computed(() => {
     return ''
   }
 
-  if (activeColumnFilterEntries.value.length > 0) {
-    return `筛选 ${filteredVisibleRowCount.value}/${rows.value.length} 行`
+  const totalText = effectivePaginationEnabled.value
+    ? `共 ${formatSheetStatusNumber(totalRowCount.value)} 行，每页 ${formatSheetStatusNumber(pageSize.value)} 行`
+    : `共 ${formatSheetStatusNumber(pageWorkingRowCount.value)} 行`
+  if (activeColumnFilterEntries.value.length > 0 || externalRowFilterProgramActive.value) {
+    const sourceCount = effectivePaginationEnabled.value
+      ? pageLoadedRowCount.value || rows.value.length
+      : rows.value.length
+    const filterText = effectivePaginationEnabled.value ? '当前页筛选' : '筛选'
+    return `${filterText} ${formatSheetStatusNumber(filteredVisibleRowCount.value)}/${formatSheetStatusNumber(sourceCount)} 行，${totalText}`
   }
 
-  if (!effectivePaginationEnabled.value) {
-    return `共 ${pageWorkingRowCount.value} 行`
-  }
-
-  return `每页 ${pageSize.value} 行`
+  return totalText
 })
+
+function formatSheetStatusNumber(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return '0'
+  }
+  return Math.max(0, Math.round(numeric)).toLocaleString('zh-CN')
+}
 
 const cellStyleDialogTitle = computed(() => {
   const count = cellStyleDialogCells.value.length
@@ -989,6 +1084,8 @@ const hasFormulaExpressions = computed(() => {
 const formulaDisplayState = shallowRef<FormulaDisplayState>(createEmptyFormulaDisplayState())
 
 const activeColumnFilterEntries = computed(() => getActiveColumnFilterEntries())
+const normalizedExternalRowFilterProgram = computed(() => normalizeExternalRowFilterProgram(props.rowFilterProgram))
+const externalRowFilterProgramActive = computed(() => isExternalRowFilterProgramActive(normalizedExternalRowFilterProgram.value))
 const filteredVisibleRowCount = computed(() => Math.max(0, rows.value.length - sheetFilterHiddenRows.value.length))
 
 const columnHashColorStyleMap = computed(() => {
@@ -1058,6 +1155,19 @@ const columnFilterPopoverIsOptionMode = computed(() => {
   const columnIndex = columnFilterPopover.value.columnIndex
   return columnIndex != null && isColumnFilterOptionMode(columnIndex)
 })
+const columnFilterPopoverShouldUseGlobalOptions = computed(() => (
+  columnFilterPopoverIsOptionMode.value
+  && effectivePaginationEnabled.value
+  && props.sheetId != null
+))
+const columnFilterPopoverIsDateMode = computed(() => {
+  const columnIndex = columnFilterPopover.value.columnIndex
+  return columnIndex != null && isColumnFilterDateMode(columnIndex)
+})
+const columnFilterPopoverIsNumberMode = computed(() => {
+  const columnIndex = columnFilterPopover.value.columnIndex
+  return columnIndex != null && isColumnFilterNumberMode(columnIndex)
+})
 const columnFilterPopoverOptions = computed<ColumnFilterOptionView[]>(() => {
   const columnIndex = columnFilterPopover.value.columnIndex
   if (columnIndex == null || !columnFilterPopoverIsOptionMode.value) {
@@ -1065,14 +1175,55 @@ const columnFilterPopoverOptions = computed<ColumnFilterOptionView[]>(() => {
   }
 
   const excludedSet = new Set(columnFilterPopover.value.draftExcludedValues)
-  return getColumnFilterOptions(columnIndex).map((option) => ({
+  if (columnFilterPopoverShouldUseGlobalOptions.value && !columnFilterPopover.value.globalOptionsLoaded) {
+    return []
+  }
+
+  const sourceOptions = columnFilterPopoverShouldUseGlobalOptions.value
+    ? columnFilterPopover.value.globalOptions
+    : getColumnFilterOptions(columnIndex)
+  return sourceOptions.map((option) => ({
     ...option,
     selected: !excludedSet.has(option.value),
   }))
 })
-const columnFilterPopoverOptionRowCount = computed(() => (
-  columnFilterPopoverOptions.value.reduce((total, option) => total + option.count, 0)
-))
+const columnFilterPopoverOptionScopeText = computed(() => {
+  if (!columnFilterPopoverIsOptionMode.value) {
+    return ''
+  }
+  if (columnFilterPopoverShouldUseGlobalOptions.value) {
+    if (columnFilterPopover.value.globalOptionsLoading) {
+      return '读取全表选项...'
+    }
+    if (columnFilterPopover.value.globalOptionsLoaded) {
+      return `全表 ${formatColumnFilterCount(columnFilterPopover.value.globalOptionTotalRows)}行`
+    }
+    if (columnFilterPopover.value.globalOptionsError) {
+      return '全表读取失败'
+    }
+    return '读取全表选项...'
+  }
+
+  if (effectivePaginationEnabled.value) {
+    return '当前页'
+  }
+  return ''
+})
+const columnFilterPopoverOptionEmptyText = computed(() => {
+  if (!columnFilterPopoverIsOptionMode.value) {
+    return ''
+  }
+  if (!columnFilterPopoverShouldUseGlobalOptions.value) {
+    return '暂无选项'
+  }
+  if (columnFilterPopover.value.globalOptionsError) {
+    return '全表选项读取失败'
+  }
+  if (!columnFilterPopover.value.globalOptionsLoaded || columnFilterPopover.value.globalOptionsLoading) {
+    return '正在读取全表选项...'
+  }
+  return '暂无选项'
+})
 
 const hiddenColumnIndexes = computed(() => (
   columnHeaders.value
@@ -1102,10 +1253,8 @@ const sheetHeaderRowCount = computed(() => (
   + 1
   + (shouldShowColumnNoteRow.value ? 1 : 0)
 ))
-const sheetFilterHiddenRows = computed(() => {
-  if (activeColumnFilterEntries.value.length === 0) {
-    return []
-  }
+const columnFilterHiddenRows = computed(() => {
+  if (activeColumnFilterEntries.value.length === 0) return []
 
   const hiddenRows: number[] = []
   rows.value.forEach((row, rowIndex) => {
@@ -1114,6 +1263,24 @@ const sheetFilterHiddenRows = computed(() => {
     }
   })
   return hiddenRows
+})
+const externalRowFilterHiddenRows = computed(() => {
+  if (!externalRowFilterProgramActive.value) return []
+
+  const hiddenRows: number[] = []
+  rows.value.forEach((row, rowIndex) => {
+    if (!doesRowMatchExternalRowFilterProgram(row, rowIndex, normalizedExternalRowFilterProgram.value)) {
+      hiddenRows.push(sheetHeaderRowCount.value + rowIndex)
+    }
+  })
+  return hiddenRows
+})
+const sheetFilterHiddenRows = computed(() => {
+  const hiddenRowSet = new Set<number>([
+    ...columnFilterHiddenRows.value,
+    ...externalRowFilterHiddenRows.value,
+  ])
+  return [...hiddenRowSet].sort((left, right) => left - right)
 })
 const rowMarkerColumnCount = computed(() => (sheetViewSettings.value.show_row_numbers ? 1 : 0))
 
@@ -1241,6 +1408,20 @@ const sheetHotColumnWidths = computed(() => (
 
 const hotHiddenColumnIndexes = computed(() => (
   hiddenColumnIndexes.value.map((index) => toHotColumnIndex(index))
+))
+
+const sheetContentWidth = computed(() => {
+  const hiddenHotColumnSet = new Set(hotHiddenColumnIndexes.value)
+  const visibleWidth = sheetHotColumnWidths.value.reduce((total, width, index) => (
+    hiddenHotColumnSet.has(index) ? total : total + normalizeColumnWidthValue(width)
+  ), 0)
+  return Math.max(240, Math.ceil(visibleWidth) + 2)
+})
+
+const sheetWorkspaceStyle = computed(() => (
+  isContentHeightMode.value
+    ? { '--sheet-content-width': `${sheetContentWidth.value}px` }
+    : {}
 ))
 
 const fixedHotColumnsStart = computed(() => (
@@ -1485,6 +1666,7 @@ const nestedHeaderStyleRows = computed<(SheetHeaderCellStyle | null)[][]>(() => 
 const sheetRowHeaders = computed<false | ((index: number) => string)>(() => (
   sheetViewSettings.value.show_row_numbers ? getSheetRowHeaderLabel : false
 ))
+const isContentHeightMode = computed(() => sheetViewSettings.value.height_mode === 'content')
 
 function findColumnIndexByBinding(binding: { header: string, fallbackIndex: number }) {
   const headerIndex = columnHeaders.value.findIndex((header) => normalizeCellValue(header).trim() === binding.header)
@@ -1499,7 +1681,7 @@ function findColumnIndexByBinding(binding: { header: string, fallbackIndex: numb
 const attendanceCompletedColumnIndex = computed(() => findColumnIndexByBinding(ATTENDANCE_FIELD_BINDINGS.completedDate))
 
 const sheetGridHeight = computed(() => {
-  if (sheetViewportHeight.value === 'auto') {
+  if (isContentHeightMode.value || sheetViewportHeight.value === 'auto') {
     return 'auto'
   }
   return Math.max(sheetViewportHeight.value, 80)
@@ -1509,6 +1691,7 @@ let suppressPersistence = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 let changeSerial = 0
 let lastQueuedSerial = 0
+let savedChangeSerial = 0
 let saveInFlight = false
 let sheetLayoutObserver: ResizeObserver | null = null
 let editingHeaderInputEl: HTMLInputElement | null = null
@@ -2171,11 +2354,21 @@ function openColumnNotePopover(columnIndex: number, anchorRect: DOMRect) {
 }
 
 function closeColumnFilterPopover() {
+  columnFilterOptionRequestSeq += 1
   columnFilterPopover.value.visible = false
   columnFilterPopover.value.columnIndex = null
   columnFilterPopover.value.header = ''
   columnFilterPopover.value.draftQuery = ''
   columnFilterPopover.value.draftExcludedValues = []
+  columnFilterPopover.value.draftDateRange = []
+  columnFilterPopover.value.draftNumberOperator = DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR
+  columnFilterPopover.value.draftNumberValue = ''
+  columnFilterPopover.value.draftNumberValueTo = ''
+  columnFilterPopover.value.globalOptions = []
+  columnFilterPopover.value.globalOptionTotalRows = 0
+  columnFilterPopover.value.globalOptionsLoaded = false
+  columnFilterPopover.value.globalOptionsLoading = false
+  columnFilterPopover.value.globalOptionsError = ''
 }
 
 function bindColumnFilterPopoverPosition(anchorRect: DOMRect) {
@@ -2196,6 +2389,196 @@ function bindColumnFilterPopoverPosition(anchorRect: DOMRect) {
   })
 }
 
+function normalizeColumnFilterGlobalOptions(options: NoteSheetColumnOptionItem[]): ColumnFilterOptionStat[] {
+  const counts = new Map<string, number>()
+  options.forEach((option) => {
+    const value = normalizeColumnFilterOptionValue(option.value)
+    const count = Math.max(0, Number(option.count) || 0)
+    counts.set(value, (counts.get(value) ?? 0) + count)
+  })
+  return [...counts.entries()]
+    .map(([value, count]) => ({
+      value,
+      label: getColumnFilterOptionLabel(value),
+      count,
+    }))
+    .sort((left, right) => (
+      right.count - left.count
+      || HASH_COLOR_SEED_COLLATOR.compare(left.label, right.label)
+    ))
+}
+
+function getColumnFilterGlobalOptionsCacheKey(columnIndex: number) {
+  if (props.sheetId == null || sheetVersion.value <= 0) {
+    return ''
+  }
+  return [
+    props.workbookId ?? 'sheet',
+    props.sheetId,
+    sheetVersion.value,
+    columnIndex,
+  ].join(':')
+}
+
+function getCachedColumnFilterGlobalOptions(columnIndex: number) {
+  const cacheKey = getColumnFilterGlobalOptionsCacheKey(columnIndex)
+  if (!cacheKey) {
+    return null
+  }
+  const entry = columnFilterGlobalOptionsCache.get(cacheKey)
+  return entry?.sheetVersion === sheetVersion.value ? entry : null
+}
+
+function setCachedColumnFilterGlobalOptions(columnIndex: number, entry: ColumnFilterGlobalOptionsCacheEntry) {
+  const cacheKey = getColumnFilterGlobalOptionsCacheKey(columnIndex)
+  if (!cacheKey) {
+    return
+  }
+  columnFilterGlobalOptionsCache.set(cacheKey, entry)
+}
+
+function applyColumnFilterGlobalOptionsEntry(entry: ColumnFilterGlobalOptionsCacheEntry) {
+  columnFilterPopover.value.globalOptions = entry.options
+  columnFilterPopover.value.globalOptionTotalRows = entry.totalRows
+  columnFilterPopover.value.globalOptionsLoaded = true
+  columnFilterPopover.value.globalOptionsLoading = false
+  columnFilterPopover.value.globalOptionsError = ''
+}
+
+function invalidateColumnFilterGlobalOptionsCache() {
+  columnFilterGlobalOptionsCache.clear()
+}
+
+function isSheetDataDirtyForColumnFilterStats() {
+  return changeSerial !== savedChangeSerial || saveTimer != null || saveInFlight
+}
+
+function waitForRemoteSaveIdle(timeoutMs = 10_000) {
+  if (!saveInFlight) {
+    return Promise.resolve(true)
+  }
+
+  const startedAt = Date.now()
+  return new Promise<boolean>((resolve) => {
+    const check = () => {
+      if (!saveInFlight) {
+        resolve(true)
+        return
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        resolve(false)
+        return
+      }
+      window.setTimeout(check, 50)
+    }
+    check()
+  })
+}
+
+async function ensureColumnFilterStatsSourceClean() {
+  if (!isSheetDataDirtyForColumnFilterStats()) {
+    return true
+  }
+  if (!canPersistSheet.value || props.sheetId == null) {
+    return false
+  }
+
+  if (saveTimer) {
+    await flushRemoteSave()
+  }
+  if (saveInFlight) {
+    await waitForRemoteSaveIdle()
+  }
+  if (saveTimer) {
+    await flushRemoteSave()
+  }
+  if (saveInFlight) {
+    await waitForRemoteSaveIdle()
+  }
+  return !isSheetDataDirtyForColumnFilterStats()
+}
+
+async function loadColumnFilterGlobalOptions(columnIndex: number, header: string) {
+  if (props.sheetId == null) {
+    return
+  }
+
+  const requestSeq = ++columnFilterOptionRequestSeq
+  const cachedEntry = !isSheetDataDirtyForColumnFilterStats()
+    ? getCachedColumnFilterGlobalOptions(columnIndex)
+    : null
+  if (cachedEntry) {
+    applyColumnFilterGlobalOptionsEntry(cachedEntry)
+    return
+  }
+
+  columnFilterPopover.value.globalOptions = []
+  columnFilterPopover.value.globalOptionTotalRows = 0
+  columnFilterPopover.value.globalOptionsLoaded = false
+  columnFilterPopover.value.globalOptionsLoading = true
+  columnFilterPopover.value.globalOptionsError = ''
+
+  try {
+    const sourceClean = await ensureColumnFilterStatsSourceClean()
+    if (!sourceClean) {
+      throw new Error('dirty')
+    }
+    const freshCachedEntry = getCachedColumnFilterGlobalOptions(columnIndex)
+    if (freshCachedEntry) {
+      if (
+        requestSeq !== columnFilterOptionRequestSeq
+        || !columnFilterPopover.value.visible
+        || columnFilterPopover.value.columnIndex !== columnIndex
+        || columnFilterPopover.value.header !== header
+      ) {
+        return
+      }
+      applyColumnFilterGlobalOptionsEntry(freshCachedEntry)
+      return
+    }
+
+    const result = await fetchNoteSheetColumnOptions(props.sheetId, {
+      columnIndex,
+      workbookId: props.workbookId,
+    })
+    if (
+      requestSeq !== columnFilterOptionRequestSeq
+      || !columnFilterPopover.value.visible
+      || columnFilterPopover.value.columnIndex !== columnIndex
+      || columnFilterPopover.value.header !== header
+    ) {
+      return
+    }
+
+    const entry = {
+      options: normalizeColumnFilterGlobalOptions(result.options),
+      totalRows: Math.max(0, Number(result.total_rows) || 0),
+      sheetVersion: sheetVersion.value,
+    }
+    setCachedColumnFilterGlobalOptions(columnIndex, entry)
+    applyColumnFilterGlobalOptionsEntry(entry)
+  } catch {
+    if (
+      requestSeq !== columnFilterOptionRequestSeq
+      || !columnFilterPopover.value.visible
+      || columnFilterPopover.value.columnIndex !== columnIndex
+      || columnFilterPopover.value.header !== header
+    ) {
+      return
+    }
+    columnFilterPopover.value.globalOptionsError = 'failed'
+  } finally {
+    if (
+      requestSeq === columnFilterOptionRequestSeq
+      && columnFilterPopover.value.visible
+      && columnFilterPopover.value.columnIndex === columnIndex
+      && columnFilterPopover.value.header === header
+    ) {
+      columnFilterPopover.value.globalOptionsLoading = false
+    }
+  }
+}
+
 function openColumnFilterPopover(columnIndex: number, anchorRect: DOMRect) {
   const header = columnHeaders.value[columnIndex]
   if (!header || !isColumnFilterEnabled(columnIndex)) {
@@ -2203,15 +2586,35 @@ function openColumnFilterPopover(columnIndex: number, anchorRect: DOMRect) {
     return
   }
 
+  columnFilterOptionRequestSeq += 1
+  const optionMode = isColumnFilterOptionMode(columnIndex)
+  const dateMode = isColumnFilterDateMode(columnIndex)
+  const numberMode = isColumnFilterNumberMode(columnIndex)
   columnFilterPopover.value.visible = true
   columnFilterPopover.value.columnIndex = columnIndex
   columnFilterPopover.value.header = header
+  columnFilterPopover.value.globalOptions = []
+  columnFilterPopover.value.globalOptionTotalRows = 0
+  columnFilterPopover.value.globalOptionsLoaded = false
+  columnFilterPopover.value.globalOptionsLoading = false
+  columnFilterPopover.value.globalOptionsError = ''
   const state = getColumnFilterState(header)
-  columnFilterPopover.value.draftQuery = state.query
-  columnFilterPopover.value.draftExcludedValues = isColumnFilterOptionMode(columnIndex)
+  columnFilterPopover.value.draftQuery = dateMode || numberMode ? '' : state.query
+  columnFilterPopover.value.draftExcludedValues = optionMode
     ? [...state.excludedValues]
     : []
+  columnFilterPopover.value.draftDateRange = dateMode
+    ? getColumnFilterDateDraftRange(state)
+    : []
+  columnFilterPopover.value.draftNumberOperator = numberMode
+    ? state.numberOperator
+    : DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR
+  columnFilterPopover.value.draftNumberValue = numberMode ? state.numberValue : ''
+  columnFilterPopover.value.draftNumberValueTo = numberMode ? state.numberValueTo : ''
   bindColumnFilterPopoverPosition(anchorRect)
+  if (optionMode && effectivePaginationEnabled.value) {
+    void loadColumnFilterGlobalOptions(columnIndex, header)
+  }
 }
 
 function applyColumnFilterPopover() {
@@ -2222,11 +2625,31 @@ function applyColumnFilterPopover() {
   }
 
   const columnIndex = columnFilterPopover.value.columnIndex
-  const query = normalizeColumnFilterQuery(columnFilterPopover.value.draftQuery)
+  const dateMode = columnIndex != null && isColumnFilterDateMode(columnIndex)
+  const numberMode = columnIndex != null && isColumnFilterNumberMode(columnIndex)
+  const query = dateMode || numberMode ? '' : normalizeColumnFilterQuery(columnFilterPopover.value.draftQuery)
   const excludedValues = columnIndex != null && isColumnFilterOptionMode(columnIndex)
     ? columnFilterPopover.value.draftExcludedValues
     : []
-  setColumnFilterState(header, { query, excludedValues })
+  const { dateStart, dateEnd } = dateMode
+    ? normalizeColumnFilterDateRange(columnFilterPopover.value.draftDateRange)
+    : { dateStart: '', dateEnd: '' }
+  const { numberOperator, numberValue, numberValueTo } = numberMode
+    ? normalizeColumnFilterNumberState({
+      numberOperator: columnFilterPopover.value.draftNumberOperator,
+      numberValue: columnFilterPopover.value.draftNumberValue,
+      numberValueTo: columnFilterPopover.value.draftNumberValueTo,
+    })
+    : createEmptyColumnFilterNumberState()
+  setColumnFilterState(header, {
+    query,
+    excludedValues,
+    dateStart,
+    dateEnd,
+    numberOperator,
+    numberValue,
+    numberValueTo,
+  })
   closeColumnFilterPopover()
 }
 
@@ -2278,6 +2701,23 @@ function selectColumnFilterUniqueOptions() {
     .map((option) => option.value)
 }
 
+function setColumnFilterDateShortcut(shortcut: 'today' | 'this_month' | 'this_year') {
+  const now = new Date()
+  let start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  let end = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (shortcut === 'this_month') {
+    start = new Date(now.getFullYear(), now.getMonth(), 1)
+    end = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+  } else if (shortcut === 'this_year') {
+    start = new Date(now.getFullYear(), 0, 1)
+    end = new Date(now.getFullYear(), 11, 31)
+  }
+  columnFilterPopover.value.draftDateRange = [
+    formatDateInputValue(start),
+    formatDateInputValue(end),
+  ]
+}
+
 function handleGlobalMouseDown(event: MouseEvent) {
   const target = event.target as Node | null
   if (target && isFormulaReferenceEditableMouseTarget(target)) {
@@ -2316,13 +2756,13 @@ function resetWorkspaceState() {
   cellMeta.value = {}
   attendanceCourseScriptStatuses.value = {}
   remoteAccessCapabilities.value = null
-  sheetViewSettings.value = createDefaultSheetViewSettings()
+  sheetViewSettings.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
   columnWidths.value = DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header))
   rows.value = [createEmptyRow(DEFAULT_SHEET_COLUMNS.length)]
   sheetTitle.value = '未命名表格'
   sheetVersion.value = 0
   sheetSettingsDialogVisible.value = false
-  sheetSettingsDraft.value = createDefaultSheetViewSettings()
+  sheetSettingsDraft.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
   sheetSettingsColumnFilterDraft.value = {}
   columnFilters.value = {}
   closeColumnFilterPopover()
@@ -3288,7 +3728,7 @@ function isColumnHiddenConfigValue(value: unknown) {
   return value === true
 }
 
-function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
+function createDefaultSheetViewSettings(heightMode: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE): Required<SheetViewSettings> {
   return {
     show_row_numbers: true,
     row_marker_numbering: 'global',
@@ -3296,6 +3736,7 @@ function createDefaultSheetViewSettings(): Required<SheetViewSettings> {
     show_column_markers: true,
     column_marker_style: 'letters',
     column_note_display: 'hover',
+    height_mode: heightMode,
     frozen_column_count: 0,
     pagination: {
       enabled: false,
@@ -3321,6 +3762,17 @@ function normalizeRowMarkerOrigin(value: unknown): RowMarkerOrigin {
 
 function normalizeColumnNoteDisplayMode(value: unknown): ColumnNoteDisplayMode {
   return value === 'row' ? 'row' : 'hover'
+}
+
+function normalizeSheetHeightMode(value: unknown, fallback: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE): SheetHeightMode {
+  if (value === 'fill' || value === 'content') {
+    return value
+  }
+  return fallback
+}
+
+function getDefaultSheetHeightMode() {
+  return normalizeSheetHeightMode(props.defaultHeightMode)
 }
 
 function normalizeFormulaReferenceOrigin(value: unknown): FormulaReferenceOrigin {
@@ -3349,8 +3801,12 @@ function normalizeFrozenColumnCount(value: unknown, columnCount = Number.MAX_SAF
   return Math.min(Math.max(Math.floor(numeric), 0), maxColumnCount)
 }
 
-function normalizeSheetViewSettings(source: unknown, columnCount = Number.MAX_SAFE_INTEGER): Required<SheetViewSettings> {
-  const defaults = createDefaultSheetViewSettings()
+function normalizeSheetViewSettings(
+  source: unknown,
+  columnCount = Number.MAX_SAFE_INTEGER,
+  defaultHeightMode: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE,
+): Required<SheetViewSettings> {
+  const defaults = createDefaultSheetViewSettings(defaultHeightMode)
   if (!source || typeof source !== 'object') {
     return defaults
   }
@@ -3363,6 +3819,7 @@ function normalizeSheetViewSettings(source: unknown, columnCount = Number.MAX_SA
     show_column_markers: record.show_column_markers !== false,
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
     column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
+    height_mode: normalizeSheetHeightMode(record.height_mode, defaultHeightMode),
     frozen_column_count: normalizeFrozenColumnCount(record.frozen_column_count, columnCount),
     pagination: (() => {
       const pagination = record.pagination
@@ -3707,7 +4164,7 @@ function trimTrailingBlankRows(sourceRows: SheetRow[]): SheetRow[] {
   return sourceRows.slice(0, end)
 }
 
-function createDefaultDocument(): SheetDocument {
+function createDefaultDocument(defaultHeightMode: SheetHeightMode = getDefaultSheetHeightMode()): SheetDocument {
   const gridRows = [[...DEFAULT_SHEET_COLUMNS]]
   return {
     schema_version: 1,
@@ -3722,7 +4179,7 @@ function createDefaultDocument(): SheetDocument {
     cell_meta: {},
     column_configs: {},
     column_widths: DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header)),
-    view_settings: createDefaultSheetViewSettings(),
+    view_settings: createDefaultSheetViewSettings(defaultHeightMode),
   }
 }
 
@@ -3744,9 +4201,13 @@ function normalizeRowsFormulaReferencesForOrigin(
   return sourceRows
 }
 
-function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayBuildOptions = {}): SheetDocument {
+function normalizeSheetDocument(
+  source: unknown,
+  formulaOptions: FormulaDisplayBuildOptions = {},
+  defaultHeightMode: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE,
+): SheetDocument {
   if (!source || typeof source !== 'object') {
-    return createDefaultDocument()
+    return createDefaultDocument(defaultHeightMode)
   }
 
   const record = source as Record<string, unknown>
@@ -3755,7 +4216,7 @@ function normalizeSheetDocument(source: unknown, formulaOptions: FormulaDisplayB
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   const normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
   const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
-  const normalizedSettings = normalizeSheetViewSettings(record.view_settings, headers.length)
+  const normalizedSettings = normalizeSheetViewSettings(record.view_settings, headers.length, defaultHeightMode)
   const formulaHeaderRows = getFormulaHeaderRowsForDocument(
     headers,
     sourceHeaderGroups,
@@ -5228,6 +5689,14 @@ function normalizeColumnFilterOptionValue(value: unknown) {
   return normalizeCellValue(value).trim()
 }
 
+function formatColumnFilterCount(value: unknown) {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric)) {
+    return '0'
+  }
+  return Math.max(0, Math.round(numeric)).toLocaleString('zh-CN')
+}
+
 function getColumnFilterOptionLabel(value: string) {
   return value || '(空白)'
 }
@@ -5250,29 +5719,167 @@ function normalizeColumnFilterExcludedValues(value: unknown) {
   return values
 }
 
+function formatColumnFilterDateParts(parts: FormulaDateParts) {
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`
+}
+
+function formatDateInputValue(value: Date) {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+}
+
+function normalizeColumnFilterDateValue(value: unknown) {
+  const parts = parseDateDisplayValue(value)
+  return parts ? formatColumnFilterDateParts(parts) : ''
+}
+
+function normalizeColumnFilterDateRange(value: unknown): Pick<ColumnFilterState, 'dateStart' | 'dateEnd'> {
+  const source = Array.isArray(value) ? value : []
+  const dateStart = normalizeColumnFilterDateValue(source[0])
+  const dateEnd = normalizeColumnFilterDateValue(source[1])
+  if (dateStart && dateEnd && dateStart > dateEnd) {
+    return { dateStart: dateEnd, dateEnd: dateStart }
+  }
+  return { dateStart, dateEnd }
+}
+
+function getColumnFilterDateDraftRange(state: ColumnFilterState) {
+  return state.dateStart && state.dateEnd ? [state.dateStart, state.dateEnd] : []
+}
+
+function normalizeColumnFilterNumberOperator(value: unknown): ColumnFilterNumberOperator {
+  return COLUMN_FILTER_NUMBER_OPERATOR_OPTIONS.some((option) => option.value === value)
+    ? value as ColumnFilterNumberOperator
+    : DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR
+}
+
+function parseColumnFilterNumberValue(value: unknown) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : Number.NaN
+  }
+
+  let text = normalizeCellValue(value).trim()
+  if (!text) {
+    return Number.NaN
+  }
+
+  let sign = 1
+  const parenthesizedNegative = text.match(/^\((.+)\)$/)
+  if (parenthesizedNegative) {
+    sign = -1
+    text = parenthesizedNegative[1].trim()
+  }
+
+  let multiplier = 1
+  if (/%$/.test(text)) {
+    multiplier = 0.01
+    text = text.replace(/%$/, '')
+  }
+  if (/万$/.test(text)) {
+    multiplier *= 10_000
+    text = text.replace(/万$/, '')
+  } else if (/亿$/.test(text)) {
+    multiplier *= 100_000_000
+    text = text.replace(/亿$/, '')
+  }
+
+  const normalized = text.replace(/[￥¥,，\s]/g, '')
+  if (!/^[-+]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(normalized)) {
+    return Number.NaN
+  }
+  return Number(normalized) * multiplier * sign
+}
+
+function normalizeColumnFilterNumberInput(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  return Number.isFinite(parseColumnFilterNumberValue(text)) ? text : ''
+}
+
+function createEmptyColumnFilterNumberState(): Pick<ColumnFilterState, 'numberOperator' | 'numberValue' | 'numberValueTo'> {
+  return {
+    numberOperator: DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR,
+    numberValue: '',
+    numberValueTo: '',
+  }
+}
+
+function normalizeColumnFilterNumberState(value: unknown): Pick<ColumnFilterState, 'numberOperator' | 'numberValue' | 'numberValueTo'> {
+  if (!value || typeof value !== 'object') {
+    return createEmptyColumnFilterNumberState()
+  }
+
+  const record = value as Record<string, unknown>
+  const numberOperator = normalizeColumnFilterNumberOperator(record.numberOperator ?? record.number_operator)
+  let numberValue = normalizeColumnFilterNumberInput(record.numberValue ?? record.number_value)
+  let numberValueTo = numberOperator === 'between'
+    ? normalizeColumnFilterNumberInput(record.numberValueTo ?? record.number_value_to)
+    : ''
+
+  if (numberOperator === 'between' && numberValue && numberValueTo) {
+    const leftNumber = parseColumnFilterNumberValue(numberValue)
+    const rightNumber = parseColumnFilterNumberValue(numberValueTo)
+    if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber > rightNumber) {
+      [numberValue, numberValueTo] = [numberValueTo, numberValue]
+    }
+  }
+
+  return { numberOperator, numberValue, numberValueTo }
+}
+
+function isColumnFilterNumberStateActive(state: ColumnFilterState) {
+  if (!Number.isFinite(parseColumnFilterNumberValue(state.numberValue))) {
+    return false
+  }
+  if (state.numberOperator !== 'between') {
+    return true
+  }
+  return Number.isFinite(parseColumnFilterNumberValue(state.numberValueTo))
+}
+
 function normalizeColumnFilterState(value: unknown): ColumnFilterState {
   if (typeof value === 'string') {
     return {
       query: normalizeColumnFilterQuery(value),
       excludedValues: [],
+      dateStart: '',
+      dateEnd: '',
+      ...createEmptyColumnFilterNumberState(),
     }
   }
   if (!value || typeof value !== 'object') {
     return {
       query: '',
       excludedValues: [],
+      dateStart: '',
+      dateEnd: '',
+      ...createEmptyColumnFilterNumberState(),
     }
   }
 
   const record = value as Record<string, unknown>
+  const legacyRange = normalizeColumnFilterDateRange(record.dateRange ?? record.date_range)
+  const explicitDateStart = normalizeColumnFilterDateValue(record.dateStart ?? record.date_start)
+  const explicitDateEnd = normalizeColumnFilterDateValue(record.dateEnd ?? record.date_end)
+  const dateStart = explicitDateStart || legacyRange.dateStart
+  const dateEnd = explicitDateEnd || legacyRange.dateEnd
+  const numberState = normalizeColumnFilterNumberState(record)
   return {
     query: normalizeColumnFilterQuery(record.query),
     excludedValues: normalizeColumnFilterExcludedValues(record.excludedValues ?? record.excluded_values),
+    ...(dateStart && dateEnd && dateStart > dateEnd
+      ? { dateStart: dateEnd, dateEnd: dateStart }
+      : { dateStart, dateEnd }),
+    ...numberState,
   }
 }
 
 function isColumnFilterStateEmpty(state: ColumnFilterState) {
-  return !state.query && state.excludedValues.length === 0
+  return (
+    !state.query
+    && state.excludedValues.length === 0
+    && !state.dateStart
+    && !state.dateEnd
+    && !isColumnFilterNumberStateActive(state)
+  )
 }
 
 function getColumnFilterState(header: string) {
@@ -5300,6 +5907,17 @@ function isColumnFilterOptionMode(columnIndex: number) {
   return !!header && normalizeColumnConfig(columnConfigs.value[header]).value_mode === 'fixed_options'
 }
 
+function isColumnFilterDateMode(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex]
+  return !!header && normalizeColumnConfig(columnConfigs.value[header]).value_type === 'date'
+}
+
+function isColumnFilterNumberMode(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex]
+  const valueType = header ? normalizeColumnConfig(columnConfigs.value[header]).value_type : null
+  return valueType === 'number' || valueType === 'percent'
+}
+
 function getColumnFilterOptions(columnIndex: number): ColumnFilterOptionStat[] {
   const counts = new Map<string, number>()
   rows.value.forEach((row, rowIndex) => {
@@ -5321,13 +5939,216 @@ function getColumnFilterOptions(columnIndex: number): ColumnFilterOptionStat[] {
     ))
 }
 
+function normalizeExternalRowFilterProgram(value?: ExternalSheetRowFilterProgram | null): NormalizedExternalSheetRowFilterProgram {
+  return {
+    default: typeof value?.default === 'boolean' ? value.default : false,
+    rules: Array.isArray(value?.rules) ? value.rules.map((rule) => ({
+      action: rule.action === 'exclude' || rule.action === 'filter' ? rule.action : 'include',
+      matcher: normalizeExternalRowFilterMatcher(rule.matcher),
+    })) : [],
+  }
+}
+
+function normalizeExternalRowFilterMatcher(value?: ExternalSheetRowFilterMatcher | null): NormalizedExternalSheetRowFilterMatcher {
+  const kind = value?.kind === 'none' || value?.kind === 'field' || value?.kind === 'full_text_contains'
+    ? value.kind
+    : 'all'
+  return {
+    kind,
+    field: typeof value?.field === 'string' ? value.field : null,
+    op: value?.op ?? (kind === 'field' ? 'contains' : null),
+    value: value?.value ?? '',
+    values: Array.isArray(value?.values) ? value.values : [],
+  }
+}
+
+function isExternalRowFilterProgramActive(program: NormalizedExternalSheetRowFilterProgram) {
+  return program.rules.some((rule) => isExternalRowFilterRuleMeaningful(rule))
+}
+
+function isExternalRowFilterRuleMeaningful(rule: NormalizedExternalSheetRowFilterRule) {
+  const matcher = normalizeExternalRowFilterMatcher(rule.matcher)
+  if (matcher.kind === 'none') return true
+  if (matcher.kind === 'all') return rule.action !== 'include'
+  if (matcher.kind === 'full_text_contains') return String(matcher.value ?? '').trim() !== ''
+  if (matcher.kind !== 'field' || !matcher.field) return false
+  if (matcher.op === 'between' || matcher.op === 'in' || matcher.op === 'not_in') {
+    return matcher.values.some((item) => String(item ?? '').trim() !== '')
+  }
+  return String(matcher.value ?? '').trim() !== ''
+}
+
+function doesRowMatchExternalRowFilterProgram(
+  row: SheetRow,
+  rowIndex: number,
+  program: NormalizedExternalSheetRowFilterProgram,
+) {
+  let decision = program.default
+  for (const rule of program.rules) {
+    const matcher = normalizeExternalRowFilterMatcher(rule.matcher)
+    if (!isExternalRowFilterRuleMeaningful({ ...rule, matcher })) {
+      continue
+    }
+    const matched = doesRowMatchExternalRowFilterMatcher(row, rowIndex, matcher)
+    if (rule.action === 'filter') {
+      decision = decision && matched
+    } else if (rule.action === 'exclude') {
+      decision = decision && !matched
+    } else {
+      decision = decision || matched
+    }
+  }
+  return decision
+}
+
+function doesRowMatchExternalRowFilterMatcher(
+  row: SheetRow,
+  rowIndex: number,
+  matcher: NormalizedExternalSheetRowFilterMatcher,
+) {
+  if (matcher.kind === 'all') return true
+  if (matcher.kind === 'none') return false
+  if (matcher.kind === 'full_text_contains') {
+    const keyword = normalizeColumnFilterSearchText(String(matcher.value ?? ''))
+    if (!keyword) return true
+    return row.some((rawValue, columnIndex) => {
+      const displayText = getCellDisplayText(rowIndex, columnIndex, rawValue)
+      return normalizeColumnFilterSearchText(displayText).includes(keyword)
+    })
+  }
+  if (matcher.kind !== 'field' || !matcher.field) return true
+
+  const columnIndex = getExternalRowFilterFieldIndex(matcher.field)
+  if (columnIndex < 0) return true
+  const displayText = getCellDisplayText(rowIndex, columnIndex, row[columnIndex] ?? '')
+  return compareExternalRowFilterValue(displayText, matcher)
+}
+
+function getExternalRowFilterFieldIndex(field: string) {
+  const normalizedField = normalizeCellValue(field).trim()
+  return columnHeaders.value.findIndex((header) => normalizeCellValue(header).trim() === normalizedField)
+}
+
+function compareExternalRowFilterValue(
+  rawText: string,
+  matcher: NormalizedExternalSheetRowFilterMatcher,
+) {
+  const op = matcher.op || 'contains'
+  const text = normalizeCellValue(rawText).trim()
+  const value = normalizeCellValue(matcher.value).trim()
+  const values = matcher.values.map((item) => normalizeCellValue(item).trim())
+
+  if (op === 'contains') return normalizeColumnFilterSearchText(text).includes(normalizeColumnFilterSearchText(value))
+  if (op === 'not_contains') return !normalizeColumnFilterSearchText(text).includes(normalizeColumnFilterSearchText(value))
+  if (op === 'eq') return text === value
+  if (op === 'neq') return text !== value
+  if (op === 'in') return values.includes(text)
+  if (op === 'not_in') return !values.includes(text)
+  if (op === 'between') {
+    if (values.length < 2 || !values[0] || !values[1]) return true
+    return compareExternalComparableValue(text, values[0]) >= 0
+      && compareExternalComparableValue(text, values[1]) <= 0
+  }
+  if (op === 'gte') return compareExternalComparableValue(text, value) >= 0
+  if (op === 'lte') return compareExternalComparableValue(text, value) <= 0
+  return true
+}
+
+function compareExternalComparableValue(left: string, right: string) {
+  const leftNumber = parseExternalNumber(left)
+  const rightNumber = parseExternalNumber(right)
+  if (Number.isFinite(leftNumber) && Number.isFinite(rightNumber)) {
+    return leftNumber - rightNumber
+  }
+
+  const leftDate = parseExternalDate(left)
+  const rightDate = parseExternalDate(right)
+  if (Number.isFinite(leftDate) && Number.isFinite(rightDate)) {
+    return leftDate - rightDate
+  }
+
+  return left.localeCompare(right, 'zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+}
+
+function parseExternalNumber(value: string) {
+  const normalized = value.replace(/[,，￥¥\s]/g, '')
+  if (!normalized || !/^[+-]?\d+(\.\d+)?$/.test(normalized)) return Number.NaN
+  return Number(normalized)
+}
+
+function parseExternalDate(value: string) {
+  const match = value.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+  if (!match) return Number.NaN
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return date.getTime()
+}
+
+function getColumnFilterDateDayValue(value: unknown) {
+  const parts = parseDateDisplayValue(value)
+  if (!parts) {
+    return Number.NaN
+  }
+  return Date.UTC(parts.year, parts.month - 1, parts.day) / 86_400_000
+}
+
+function getRowColumnFilterDateDayValue(rowIndex: number, columnIndex: number, rawValue: unknown) {
+  const semanticValue = getCellSemanticValue(rowIndex, columnIndex, rawValue)
+  const semanticDay = getColumnFilterDateDayValue(semanticValue)
+  if (Number.isFinite(semanticDay)) {
+    return semanticDay
+  }
+
+  const rawDay = getColumnFilterDateDayValue(rawValue)
+  if (Number.isFinite(rawDay)) {
+    return rawDay
+  }
+
+  return getColumnFilterDateDayValue(getCellDisplayText(rowIndex, columnIndex, rawValue))
+}
+
+function getRowColumnFilterNumberValue(rowIndex: number, columnIndex: number, rawValue: unknown) {
+  const semanticValue = getCellSemanticValue(rowIndex, columnIndex, rawValue)
+  const semanticNumber = parseColumnFilterNumberValue(semanticValue)
+  if (Number.isFinite(semanticNumber)) {
+    return semanticNumber
+  }
+
+  const rawNumber = parseColumnFilterNumberValue(rawValue)
+  if (Number.isFinite(rawNumber)) {
+    return rawNumber
+  }
+
+  return parseColumnFilterNumberValue(getCellDisplayText(rowIndex, columnIndex, rawValue))
+}
+
+function doesNumberValueMatchColumnFilter(
+  value: number,
+  operator: ColumnFilterNumberOperator,
+  left: number,
+  right: number,
+) {
+  if (operator === 'eq') return value === left
+  if (operator === 'neq') return value !== left
+  if (operator === 'gt') return value > left
+  if (operator === 'gte') return value >= left
+  if (operator === 'lt') return value < left
+  if (operator === 'lte') return value <= left
+  if (operator === 'between') return value >= left && value <= right
+  return true
+}
+
 function isColumnFilterActive(columnIndex: number) {
   const header = columnHeaders.value[columnIndex]
   if (!header || !isColumnFilterEnabled(columnIndex)) {
     return false
   }
   const state = getColumnFilterState(header)
-  return state.query !== '' || (isColumnFilterOptionMode(columnIndex) && state.excludedValues.length > 0)
+  return (
+    state.query !== ''
+    || (isColumnFilterOptionMode(columnIndex) && state.excludedValues.length > 0)
+    || (isColumnFilterDateMode(columnIndex) && (!!state.dateStart || !!state.dateEnd))
+    || (isColumnFilterNumberMode(columnIndex) && isColumnFilterNumberStateActive(state))
+  )
 }
 
 function getActiveColumnFilterEntries() {
@@ -5337,16 +6158,32 @@ function getActiveColumnFilterEntries() {
       const excludedValues = isColumnFilterOptionMode(columnIndex)
         ? state.excludedValues
         : []
+      const dateMode = isColumnFilterDateMode(columnIndex)
+      const numberMode = isColumnFilterNumberMode(columnIndex)
       return {
         header,
         columnIndex,
         query: state.query,
         excludedValues: new Set(excludedValues),
+        dateStartDay: dateMode ? getColumnFilterDateDayValue(state.dateStart) : Number.NaN,
+        dateEndDay: dateMode ? getColumnFilterDateDayValue(state.dateEnd) : Number.NaN,
+        numberOperator: state.numberOperator,
+        numberValue: numberMode ? parseColumnFilterNumberValue(state.numberValue) : Number.NaN,
+        numberValueTo: numberMode ? parseColumnFilterNumberValue(state.numberValueTo) : Number.NaN,
       }
     })
     .filter((item) => (
       isColumnFilterEnabled(item.columnIndex)
-      && (item.query !== '' || item.excludedValues.size > 0)
+      && (
+        item.query !== ''
+        || item.excludedValues.size > 0
+        || Number.isFinite(item.dateStartDay)
+        || Number.isFinite(item.dateEndDay)
+        || (
+          Number.isFinite(item.numberValue)
+          && (item.numberOperator !== 'between' || Number.isFinite(item.numberValueTo))
+        )
+      )
     ))
 }
 
@@ -5363,6 +6200,35 @@ function doesRowMatchColumnFilters(row: SheetRow, rowIndex: number) {
     if (filter.excludedValues.has(normalizeColumnFilterOptionValue(displayText))) {
       return false
     }
+    if (Number.isFinite(filter.dateStartDay) || Number.isFinite(filter.dateEndDay)) {
+      const dayValue = getRowColumnFilterDateDayValue(rowIndex, filter.columnIndex, rawValue)
+      if (!Number.isFinite(dayValue)) {
+        return false
+      }
+      if (Number.isFinite(filter.dateStartDay) && dayValue < filter.dateStartDay) {
+        return false
+      }
+      if (Number.isFinite(filter.dateEndDay) && dayValue > filter.dateEndDay) {
+        return false
+      }
+    }
+    if (
+      Number.isFinite(filter.numberValue)
+      && (filter.numberOperator !== 'between' || Number.isFinite(filter.numberValueTo))
+    ) {
+      const numberValue = getRowColumnFilterNumberValue(rowIndex, filter.columnIndex, rawValue)
+      if (!Number.isFinite(numberValue)) {
+        return false
+      }
+      if (!doesNumberValueMatchColumnFilter(
+        numberValue,
+        filter.numberOperator,
+        filter.numberValue,
+        filter.numberValueTo,
+      )) {
+        return false
+      }
+    }
   }
   return true
 }
@@ -5377,6 +6243,11 @@ function pruneColumnFilters() {
     const normalized: ColumnFilterState = {
       query: state.query,
       excludedValues: isColumnFilterOptionMode(columnIndex) ? state.excludedValues : [],
+      dateStart: isColumnFilterDateMode(columnIndex) ? state.dateStart : '',
+      dateEnd: isColumnFilterDateMode(columnIndex) ? state.dateEnd : '',
+      ...(isColumnFilterNumberMode(columnIndex)
+        ? normalizeColumnFilterNumberState(state)
+        : createEmptyColumnFilterNumberState()),
     }
     if (!isColumnFilterStateEmpty(normalized)) {
       nextFilters[header] = normalized
@@ -5767,7 +6638,7 @@ function readDraftPayload(): SheetDraftPayload | null {
       title: String(payload.title ?? '').trim() || '未命名表格',
       document: normalizeSheetDocument(payload.document, {
         rowOffset: pageState?.paginationEnabled ? pageState.rowOffset : 0,
-      }),
+      }, getDefaultSheetHeightMode()),
       pageState,
     }
   } catch (error) {
@@ -6388,8 +7259,12 @@ async function updateSheetViewportHeight() {
   await nextTick()
 
   const sheetFrame = sheetFrameRef.value
-  if (!sheetFrame || props.sheetId == null) {
+  if (!sheetFrame || props.sheetId == null || isContentHeightMode.value) {
+    const changed = sheetViewportHeight.value !== 'auto'
     sheetViewportHeight.value = 'auto'
+    if (changed) {
+      getHotInstance()?.render()
+    }
     return
   }
 
@@ -7777,6 +8652,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
     && normalizedLeft.show_column_markers === normalizedRight.show_column_markers
     && normalizedLeft.column_marker_style === normalizedRight.column_marker_style
     && normalizedLeft.column_note_display === normalizedRight.column_note_display
+    && normalizedLeft.height_mode === normalizedRight.height_mode
     && normalizedLeft.frozen_column_count === normalizedRight.frozen_column_count
     && normalizedLeft.pagination.enabled === normalizedRight.pagination.enabled
     && normalizedLeft.pagination.page_size === normalizedRight.pagination.page_size
@@ -7961,7 +8837,11 @@ function loadSheetDocument(document: SheetDocument) {
   )
   const normalizedRows = repairedRows.length ? repairedRows : [createEmptyRow(normalizedHeaders.length)]
   cellMeta.value = normalizeCellMetaMap(document.cell_meta, normalizedHeaders.length)
-  sheetViewSettings.value = normalizeSheetViewSettings(document.view_settings, normalizedHeaders.length)
+  sheetViewSettings.value = normalizeSheetViewSettings(
+    document.view_settings,
+    normalizedHeaders.length,
+    getDefaultSheetHeightMode(),
+  )
   pageSize.value = sheetViewSettings.value.pagination.page_size
   const formulaDisplayForWidths = buildFormulaDisplayStateForRows(normalizedHeaders, normalizedRows, columnConfigs.value)
   columnWidths.value = document.column_widths?.length
@@ -8076,10 +8956,12 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     sheetVersion.value = Number(detail.version || 1)
     applyPaginationState(detail.pagination)
     emitSheetSync(detail)
-    loadSheetDocument(normalizeSheetDocument(detail.document_json))
+    loadSheetDocument(normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode()))
     sheetContentReady.value = true
     changeSerial = 0
     lastQueuedSerial = 0
+    savedChangeSerial = 0
+    invalidateColumnFilterGlobalOptionsCache()
     clearDraftStorage()
     void refreshAttendanceCourseScriptStatuses()
   } finally {
@@ -8101,11 +8983,13 @@ function applyInlineSheetDocument() {
     remoteAccessCapabilities.value = INLINE_READONLY_ACCESS_CAPABILITIES
     sheetTitle.value = props.inlineTitle || '未命名表格'
     sheetVersion.value = 0
-    loadSheetDocument(normalizeSheetDocument(props.inlineDocument))
+    loadSheetDocument(normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()))
     applyPaginationState(null)
     sheetContentReady.value = true
     changeSerial = 0
     lastQueuedSerial = 0
+    savedChangeSerial = 0
+    invalidateColumnFilterGlobalOptionsCache()
     clearSaveTimer()
     void refreshAttendanceCourseScriptStatuses()
   } finally {
@@ -8118,7 +9002,7 @@ function findHeaderIndex(headers: string[], target: string) {
 }
 
 function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
-  const remoteDocument = normalizeSheetDocument(detail.document_json)
+  const remoteDocument = normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode())
   const remoteColumns = normalizeHeaders(remoteDocument.columns)
   const currentUserIdColumn = findHeaderIndex(columnHeaders.value, '用户ID')
   const currentScoreColumn = findHeaderIndex(columnHeaders.value, '匹配得分')
@@ -8168,6 +9052,7 @@ function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
     remoteAccessCapabilities.value = detail.access?.capabilities ?? remoteAccessCapabilities.value
     sheetTitle.value = detail.title || sheetTitle.value
     sheetVersion.value = Number(detail.version || sheetVersion.value || 1)
+    invalidateColumnFilterGlobalOptionsCache()
     emitSheetSync(detail)
     if (changed) {
       rows.value = currentRows
@@ -8205,6 +9090,7 @@ async function flushRemoteSave() {
     sheetVersion.value = Number(saved.version || 1)
     applyPaginationState(saved.pagination)
     emitSheetSync(saved)
+    savedChangeSerial = Math.max(savedChangeSerial, serial)
 
     if (serial === changeSerial) {
       clearDraftStorage()
@@ -8235,6 +9121,7 @@ function scheduleRemoteSave(delayMs = REMOTE_SAVE_DEBOUNCE_MS) {
   persistDraftDocument(buildCurrentDocument())
   changeSerial += 1
   lastQueuedSerial = changeSerial
+  invalidateColumnFilterGlobalOptionsCache()
   clearSaveTimer()
   saveTimer = setTimeout(() => {
     void flushRemoteSave()
@@ -8730,7 +9617,7 @@ async function restoreInitialDocument() {
     }
 
     applyPaginationState(remote.pagination)
-    let remoteDocument = normalizeSheetDocument(remote.document_json)
+    let remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
     const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings, remoteDocument.columns.length)
     if (
       paginationPreference
@@ -8754,7 +9641,7 @@ async function restoreInitialDocument() {
       }
       remoteAccessCapabilities.value = remote.access?.capabilities ?? null
       applyPaginationState(remote.pagination)
-      remoteDocument = normalizeSheetDocument(remote.document_json)
+      remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
     }
 
     sheetTitle.value = remote.title || '未命名表格'
@@ -8786,6 +9673,8 @@ async function restoreInitialDocument() {
     sheetContentReady.value = true
     changeSerial = 0
     lastQueuedSerial = 0
+    savedChangeSerial = 0
+    invalidateColumnFilterGlobalOptionsCache()
     suppressPersistence = false
 
     if (shouldSyncLocalDraft) {
@@ -13345,7 +14234,11 @@ defineExpose({
 </script>
 
 <template>
-  <div class="note-sheet-workspace">
+  <div
+    class="note-sheet-workspace"
+    :class="{ 'is-content-height': isContentHeightMode }"
+    :style="sheetWorkspaceStyle"
+  >
     <div v-if="shouldRenderSheetContent && (showTitleInput || showBackButton)" class="sheet-topbar">
       <el-input
         v-if="showTitleInput"
@@ -13466,9 +14359,10 @@ defineExpose({
       <div v-else class="sheet-empty-state">{{ emptyText }}</div>
     </div>
 
-    <div v-if="shouldRenderSheetContent && effectivePaginationEnabled" class="sheet-pagination-bar">
+    <div v-if="shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
       <div class="sheet-pagination-status">{{ pageStatusText }}</div>
       <el-pagination
+        v-if="effectivePaginationEnabled"
         small
         background
         layout="prev, pager, next"
@@ -13649,6 +14543,13 @@ defineExpose({
           <el-select v-model="sheetSettingsDraft.column_note_display" class="sheet-settings-inline-select">
             <el-option label="悬停展示" value="hover" />
             <el-option label="备注行展示" value="row" />
+          </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">表格高度</div>
+          <el-select v-model="sheetSettingsDraft.height_mode" class="sheet-settings-inline-select">
+            <el-option label="填满区域" value="fill" />
+            <el-option label="贴合内容" value="content" />
           </el-select>
         </div>
         <div class="sheet-settings-inline-field">
@@ -14149,7 +15050,69 @@ defineExpose({
         @mousedown.stop
       >
         <div class="sheet-column-filter-popover-title">{{ columnFilterPopover.header }}</div>
+        <template v-if="columnFilterPopoverIsDateMode">
+          <el-date-picker
+            v-model="columnFilterPopover.draftDateRange"
+            class="sheet-column-filter-date-range"
+            type="daterange"
+            unlink-panels
+            size="small"
+            clearable
+            value-format="YYYY-MM-DD"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+          />
+          <div class="sheet-column-filter-date-toolbar">
+            <button type="button" @click="setColumnFilterDateShortcut('today')">今天</button>
+            <span>|</span>
+            <button type="button" @click="setColumnFilterDateShortcut('this_month')">本月</button>
+            <span>|</span>
+            <button type="button" @click="setColumnFilterDateShortcut('this_year')">今年</button>
+          </div>
+        </template>
+        <template v-else-if="columnFilterPopoverIsNumberMode">
+          <div class="sheet-column-filter-number-rule">
+            <el-select
+              v-model="columnFilterPopover.draftNumberOperator"
+              class="sheet-column-filter-number-operator"
+              size="small"
+            >
+              <el-option
+                v-for="option in COLUMN_FILTER_NUMBER_OPERATOR_OPTIONS"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+            <el-input
+              v-model="columnFilterPopover.draftNumberValue"
+              class="sheet-column-filter-number-input"
+              size="small"
+              clearable
+              inputmode="decimal"
+              placeholder="数值"
+              @keyup.enter="applyColumnFilterPopover"
+            />
+          </div>
+          <div
+            v-if="columnFilterPopover.draftNumberOperator === 'between'"
+            class="sheet-column-filter-number-between"
+          >
+            <span>至</span>
+            <el-input
+              v-model="columnFilterPopover.draftNumberValueTo"
+              class="sheet-column-filter-number-input"
+              size="small"
+              clearable
+              inputmode="decimal"
+              placeholder="数值"
+              @keyup.enter="applyColumnFilterPopover"
+            />
+          </div>
+        </template>
         <el-input
+          v-else
           v-model="columnFilterPopover.draftQuery"
           size="small"
           clearable
@@ -14158,9 +15121,15 @@ defineExpose({
         />
         <template v-if="columnFilterPopoverIsOptionMode">
           <div class="sheet-column-filter-option-toolbar">
-            <button type="button" @click="selectAllColumnFilterOptions">
-              全选({{ columnFilterPopoverOptionRowCount }})
-            </button>
+            <span
+              v-if="columnFilterPopoverOptionScopeText"
+              class="sheet-column-filter-option-scope"
+              :class="{ 'is-error': columnFilterPopover.globalOptionsError }"
+            >
+              {{ columnFilterPopoverOptionScopeText }}
+            </span>
+            <span v-if="columnFilterPopoverOptionScopeText">|</span>
+            <button type="button" @click="selectAllColumnFilterOptions">全选</button>
             <span>|</span>
             <button type="button" @click="invertColumnFilterOptions">反选</button>
             <span>|</span>
@@ -14183,7 +15152,7 @@ defineExpose({
               <span class="sheet-column-filter-option-count">({{ option.count }})</span>
             </label>
           </div>
-          <div v-else class="sheet-column-filter-option-empty">暂无选项</div>
+          <div v-else class="sheet-column-filter-option-empty">{{ columnFilterPopoverOptionEmptyText }}</div>
         </template>
         <div class="sheet-column-filter-popover-actions">
           <el-button size="small" @click="clearColumnFilterPopover">清除</el-button>
@@ -14215,6 +15184,24 @@ defineExpose({
   padding: 10px 18px 18px;
   overflow: hidden;
   gap: 10px;
+}
+
+.note-sheet-workspace.is-content-height {
+  align-items: flex-start;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.note-sheet-workspace.is-content-height .sheet-formula-bar,
+.note-sheet-workspace.is-content-height .sheet-frame,
+.note-sheet-workspace.is-content-height .sheet-pagination-bar {
+  width: min(100%, var(--sheet-content-width, 100%));
+}
+
+.note-sheet-workspace.is-content-height .sheet-frame {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .sheet-topbar {
@@ -15048,6 +16035,64 @@ defineExpose({
   line-height: 1.3;
 }
 
+.sheet-column-filter-date-range {
+  width: 100%;
+}
+
+.sheet-column-filter-date-range :deep(.el-range-input) {
+  font-size: 12px;
+}
+
+.sheet-column-filter-date-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sheet-column-filter-date-toolbar button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #334155;
+  font: inherit;
+  line-height: inherit;
+  cursor: pointer;
+}
+
+.sheet-column-filter-date-toolbar button:hover {
+  color: #1d4ed8;
+}
+
+.sheet-column-filter-number-rule {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.sheet-column-filter-number-operator,
+.sheet-column-filter-number-input {
+  width: 100%;
+}
+
+.sheet-column-filter-number-between {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.sheet-column-filter-number-between span {
+  justify-self: end;
+}
+
 .sheet-column-filter-option-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -15071,6 +16116,14 @@ defineExpose({
 
 .sheet-column-filter-option-toolbar button:hover {
   color: #1d4ed8;
+}
+
+.sheet-column-filter-option-scope {
+  color: #64748b;
+}
+
+.sheet-column-filter-option-scope.is-error {
+  color: #b45309;
 }
 
 .sheet-column-filter-option-list {
