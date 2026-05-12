@@ -16,7 +16,11 @@ from backend.core.stock.eastmoney_sync import (
     _normalize_trade_row,
     import_pdf_statement,
     import_mobile_trade_detail_record,
+    list_fund_flow_filter_options,
+    list_fund_flow_records,
+    list_latest_position_snapshots,
 )
+from backend.core.stock.eastmoney_sheet import refresh_eastmoney_sheet_workbook
 from backend.models import (
     EastmoneyAssetSnapshot,
     EastmoneyFundFlowRecord,
@@ -24,7 +28,10 @@ from backend.models import (
     EastmoneyStatementImport,
     EastmoneyTradeRecord,
     EastmoneyTradeSyncRun,
+    SheetDocument,
     User,
+    WorkbookDocument,
+    WorkbookSheetLink,
 )
 
 
@@ -373,6 +380,10 @@ def test_import_pdf_statement_stores_flows_positions_and_trades(session, monkeyp
     assert len(session.exec(select(EastmoneyStatementImport)).all()) == 1
     assert len(session.exec(select(EastmoneyFundFlowRecord)).all()) == 2
     assert len(session.exec(select(EastmoneyPositionSnapshot)).all()) == 1
+    latest_positions = list_latest_position_snapshots(session, user_id=int(user.id))
+    assert latest_positions["total"] == 1
+    assert latest_positions["items"][0]["security_code"] == "159278"
+    assert latest_positions["items"][0]["market_value"] == "32060.00"
     trades = session.exec(select(EastmoneyTradeRecord)).all()
     assert len(trades) == 1
     trade = trades[0]
@@ -380,3 +391,62 @@ def test_import_pdf_statement_stores_flows_positions_and_trades(session, monkeyp
     assert trade.amount == "2242"
     assert trade.source == TRADE_SOURCE_NORMAL
     assert "pdf_statement_flow" in trade.raw_json
+
+    filter_options = list_fund_flow_filter_options(session, user_id=int(user.id))
+    assert set(filter_options["categories"]) == {"证券卖出", "证券转银行"}
+    assert filter_options["security_codes"] == ["159278"]
+    assert filter_options["security_names"] == ["机器人PH"]
+
+    filtered_by_name = list_fund_flow_records(session, user_id=int(user.id), security_name="机器人PH")
+    assert filtered_by_name["total"] == 1
+    assert filtered_by_name["items"][0]["flow_category"] == "证券卖出"
+
+    filtered_by_code_and_category = list_fund_flow_records(
+        session,
+        user_id=int(user.id),
+        flow_category="证券卖出",
+        security_code="159278",
+    )
+    assert filtered_by_code_and_category["total"] == 1
+
+    workbook_payload = refresh_eastmoney_sheet_workbook(
+        session,
+        user_id=int(user.id),
+        actor_user_id=int(user.id),
+    )
+
+    assert workbook_payload["workbook"]["title"] == "东方财富"
+    assert {sheet["key"] for sheet in workbook_payload["sheets"]} == {
+        "operation-history",
+        "local-history",
+        "positions",
+        "sync-runs",
+    }
+    assert next(sheet for sheet in workbook_payload["sheets"] if sheet["key"] == "operation-history")["row_count"] == 2
+
+    workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.title == "东方财富")).first()
+    assert workbook is not None
+    links = session.exec(select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)).all()
+    assert len(links) == 4
+
+    operation_sheet = session.exec(
+        select(SheetDocument).where(
+            SheetDocument.owner_type == "eastmoney",
+            SheetDocument.owner_key == str(user.id),
+            SheetDocument.sheet_key == "operation-history",
+        )
+    ).first()
+    assert operation_sheet is not None
+    assert operation_sheet.document_json["view_settings"]["pagination"] == {"enabled": True, "page_size": 50}
+    assert operation_sheet.document_json["rows"][0][:4] == ["2026-05-08", "证券卖出", "159278", "机器人PH"]
+
+    trade_sheet = session.exec(
+        select(SheetDocument).where(
+            SheetDocument.owner_type == "eastmoney",
+            SheetDocument.owner_key == str(user.id),
+            SheetDocument.sheet_key == "local-history",
+        )
+    ).first()
+    assert trade_sheet is not None
+    assert trade_sheet.document_json["rows"][0][5] == "-2000"
+    assert trade_sheet.document_json["rows"][0][9] == "-0.11"

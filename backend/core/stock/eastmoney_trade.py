@@ -144,10 +144,21 @@ def _open_tab(browser: Chromium, url: str) -> Any:
         if str(getattr(tab, "url", "") or "").startswith(url):
             tab.get(url)
             return tab
+    login_tab = _find_trade_login_tab(browser)
+    if login_tab is not None:
+        return login_tab
     tab = browser.new_tab(url)
     tab.set.timeouts(base=10, page_load=30)
     tab.wait.doc_loaded(timeout=20, raise_err=False)
     return tab
+
+
+def _find_trade_login_tab(browser: Chromium) -> Any | None:
+    for tab in browser.get_tabs():
+        tab_url = str(getattr(tab, "url", "") or "")
+        if "jywg.18.cn/Login" in tab_url:
+            return tab
+    return None
 
 
 def _normalize_date(value: str | None) -> str | None:

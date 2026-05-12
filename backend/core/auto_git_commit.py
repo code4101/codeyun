@@ -37,6 +37,7 @@ AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID = "auto-git-pre-commit-codex"
 AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS = 1800
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS + 900
 AUTO_GIT_PRE_COMMIT_RESULT_LIMIT = 3000
+AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS = ("codeyun",)
 
 auto_git_commit_scheduler = BackgroundScheduler()
 
@@ -474,6 +475,27 @@ def _limit_codex_result_text(value: Any) -> str:
     return text[: AUTO_GIT_PRE_COMMIT_RESULT_LIMIT - 1].rstrip() + "…"
 
 
+def _skip_pre_commit_optimizer_reason(candidate: AutoGitCommitCandidate) -> str | None:
+    repo_key = _normalize_repo_key(candidate.name)
+    if repo_key in AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS:
+        return f"{candidate.name} 自动提交只生成提交信息，不执行提交前 Codex 优化"
+    return None
+
+
+def _build_skipped_pre_commit_review(reason: str) -> dict[str, str]:
+    return {
+        "status": "skipped",
+        "reason": reason,
+        "summary": reason,
+    }
+
+
+def _auto_git_processing_stage_label(candidate: AutoGitCommitCandidate) -> str:
+    if _skip_pre_commit_optimizer_reason(candidate):
+        return f"检查/提交 {candidate.name}"
+    return f"检查/优化 {candidate.name}"
+
+
 def _build_auto_git_pre_commit_codex_provider(cwd: str) -> AiProviderConfig:
     return AiProviderConfig(
         id=AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID,
@@ -623,7 +645,11 @@ def _run_one_repo(
         )
         return result
 
-    result["pre_commit_review"] = pre_commit_optimizer(candidate, inspect_payload) or {"status": "skipped"}
+    skip_pre_commit_reason = _skip_pre_commit_optimizer_reason(candidate)
+    if skip_pre_commit_reason:
+        result["pre_commit_review"] = _build_skipped_pre_commit_review(skip_pre_commit_reason)
+    else:
+        result["pre_commit_review"] = pre_commit_optimizer(candidate, inspect_payload) or {"status": "skipped"}
 
     inspect_payload = inspect_func(candidate.cwd)
     _update_result_from_inspect(result, inspect_payload)
@@ -750,7 +776,7 @@ def run_auto_git_commit_worker(
             final_results: list[dict[str, Any]] = []
             for candidate in candidates:
                 run.stage = "processing_repo"
-                run.stage_label = f"检查/优化 {candidate.name}"
+                run.stage_label = _auto_git_processing_stage_label(candidate)
                 run.heartbeat_at = time.time()
                 run.updated_at = run.heartbeat_at
                 session.add(run)

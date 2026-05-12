@@ -361,6 +361,81 @@ def list_trade_records(
     }
 
 
+def list_fund_flow_records(
+    session: Session,
+    *,
+    user_id: int,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    flow_category: str | None = None,
+    security_code: str | None = None,
+    security_name: str | None = None,
+    limit: int = 300,
+    offset: int = 0,
+) -> dict[str, Any]:
+    conditions = [EastmoneyFundFlowRecord.user_id == user_id]
+    if start_date:
+        conditions.append(EastmoneyFundFlowRecord.flow_date >= start_date)
+    if end_date:
+        conditions.append(EastmoneyFundFlowRecord.flow_date <= end_date)
+    if flow_category:
+        conditions.append(EastmoneyFundFlowRecord.flow_category == flow_category.strip())
+    if security_code:
+        conditions.append(EastmoneyFundFlowRecord.security_code == security_code.strip())
+    if security_name:
+        conditions.append(EastmoneyFundFlowRecord.security_name == security_name.strip())
+
+    total = session.exec(select(func.count()).select_from(EastmoneyFundFlowRecord).where(*conditions)).first() or 0
+    rows = session.exec(
+        select(EastmoneyFundFlowRecord)
+        .where(*conditions)
+        .order_by(
+            EastmoneyFundFlowRecord.flow_date.desc(),
+            EastmoneyFundFlowRecord.last_seen_at.desc(),
+        )
+        .offset(max(offset, 0))
+        .limit(max(min(limit, 1000), 1))
+    ).all()
+    return {
+        "total": int(total),
+        "items": [serialize_fund_flow_record(row) for row in rows],
+    }
+
+
+def list_fund_flow_categories(session: Session, *, user_id: int) -> list[str]:
+    return list_fund_flow_filter_options(session, user_id=user_id)["categories"]
+
+
+def list_fund_flow_filter_options(session: Session, *, user_id: int) -> dict[str, list[str]]:
+    return {
+        "categories": _list_distinct_fund_flow_values(
+            session,
+            user_id=user_id,
+            column=EastmoneyFundFlowRecord.flow_category,
+        ),
+        "security_codes": _list_distinct_fund_flow_values(
+            session,
+            user_id=user_id,
+            column=EastmoneyFundFlowRecord.security_code,
+        ),
+        "security_names": _list_distinct_fund_flow_values(
+            session,
+            user_id=user_id,
+            column=EastmoneyFundFlowRecord.security_name,
+        ),
+    }
+
+
+def _list_distinct_fund_flow_values(session: Session, *, user_id: int, column: Any) -> list[str]:
+    rows = session.exec(
+        select(column)
+        .where(EastmoneyFundFlowRecord.user_id == user_id)
+        .distinct()
+        .order_by(column)
+    ).all()
+    return [str(row or "").strip() for row in rows if str(row or "").strip()]
+
+
 def list_sync_runs(session: Session, *, user_id: int, limit: int = 20) -> list[dict[str, Any]]:
     rows = session.exec(
         select(EastmoneyTradeSyncRun)
@@ -381,6 +456,32 @@ def get_latest_asset_snapshot(session: Session, *, user_id: int) -> dict[str, An
         )
     ).first()
     return serialize_asset_snapshot(row) if row is not None else None
+
+
+def list_latest_position_snapshots(session: Session, *, user_id: int) -> dict[str, Any]:
+    latest_captured_at = session.exec(
+        select(func.max(EastmoneyPositionSnapshot.captured_at)).where(
+            EastmoneyPositionSnapshot.user_id == user_id,
+        )
+    ).first()
+    if latest_captured_at is None:
+        return {"total": 0, "items": []}
+
+    rows = session.exec(
+        select(EastmoneyPositionSnapshot)
+        .where(
+            EastmoneyPositionSnapshot.user_id == user_id,
+            EastmoneyPositionSnapshot.captured_at == latest_captured_at,
+        )
+        .order_by(
+            EastmoneyPositionSnapshot.market,
+            EastmoneyPositionSnapshot.security_code,
+        )
+    ).all()
+    return {
+        "total": len(rows),
+        "items": [serialize_position_snapshot(row) for row in rows],
+    }
 
 
 def _get_latest_account_label(session: Session, *, user_id: int) -> str:
@@ -435,6 +536,29 @@ def serialize_asset_snapshot(snapshot: EastmoneyAssetSnapshot) -> dict[str, Any]
     }
 
 
+def serialize_position_snapshot(snapshot: EastmoneyPositionSnapshot) -> dict[str, Any]:
+    return {
+        "id": snapshot.id,
+        "sync_run_id": snapshot.sync_run_id,
+        "account_label": snapshot.account_label,
+        "source": snapshot.source,
+        "market": snapshot.market,
+        "captured_at": snapshot.captured_at,
+        "security_code": snapshot.security_code,
+        "security_name": snapshot.security_name,
+        "quantity": snapshot.quantity,
+        "available_quantity": snapshot.available_quantity,
+        "cost_price": snapshot.cost_price,
+        "current_price": snapshot.current_price,
+        "market_value": snapshot.market_value,
+        "pnl": snapshot.pnl,
+        "pnl_ratio": snapshot.pnl_ratio,
+        "currency": snapshot.currency,
+        "raw_json": snapshot.raw_json,
+        "created_at": snapshot.created_at,
+    }
+
+
 def serialize_trade_record(record: EastmoneyTradeRecord) -> dict[str, Any]:
     return {
         "id": record.id,
@@ -476,6 +600,42 @@ def serialize_trade_record(record: EastmoneyTradeRecord) -> dict[str, Any]:
         "transfer_fee_value": record.transfer_fee_value,
         "other_fee_value": record.other_fee_value,
         "share_balance_value": record.share_balance_value,
+        "fund_balance_value": record.fund_balance_value,
+        "first_seen_at": record.first_seen_at,
+        "last_seen_at": record.last_seen_at,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def serialize_fund_flow_record(record: EastmoneyFundFlowRecord) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "statement_import_id": record.statement_import_id,
+        "sync_run_id": record.sync_run_id,
+        "account_label": record.account_label,
+        "source": record.source,
+        "source_key": record.source_key,
+        "flow_date": record.flow_date,
+        "flow_category": record.flow_category,
+        "market": record.market,
+        "security_code": record.security_code,
+        "security_name": record.security_name,
+        "quantity": record.quantity,
+        "price": record.price,
+        "occurrence_amount": record.occurrence_amount,
+        "fee": record.fee,
+        "stamp_tax": record.stamp_tax,
+        "transfer_fee": record.transfer_fee,
+        "fund_balance": record.fund_balance,
+        "currency": record.currency,
+        "raw_json": record.raw_json,
+        "quantity_value": record.quantity_value,
+        "price_value": record.price_value,
+        "occurrence_amount_value": record.occurrence_amount_value,
+        "fee_value": record.fee_value,
+        "stamp_tax_value": record.stamp_tax_value,
+        "transfer_fee_value": record.transfer_fee_value,
         "fund_balance_value": record.fund_balance_value,
         "first_seen_at": record.first_seen_at,
         "last_seen_at": record.last_seen_at,

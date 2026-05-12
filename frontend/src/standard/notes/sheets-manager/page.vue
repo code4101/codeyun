@@ -1,60 +1,33 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import {
+  Delete,
+  Edit,
+  MoreFilled,
+  Plus,
+  Refresh,
+  Search,
+  Share,
+} from '@element-plus/icons-vue'
 
 import {
-  createNoteSheet,
   createWorkbook,
-  deleteNoteSheet,
   deleteWorkbook,
-  fetchSheetAccess,
-  fetchNoteSheets,
-  fetchWorkbook,
   fetchWorkbookAccess,
   fetchWorkbooks,
-  removeSheetFromWorkbook,
   saveAsWorkbook,
-  updateSheetAccess,
-  updateNoteSheet,
   updateWorkbook,
   updateWorkbookAccess,
   type NoteSheetResourceAccessGrantUpdate,
   type NoteSheetResourceRole,
-  type NoteSheetResourceType,
-  type NoteSheetSummary,
-  type WorkbookDetail,
   type WorkbookSummary,
 } from '@/api/noteSheets'
-import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
+import { useUserStore } from '@/store/userStore'
 
-type SheetSyncPayload = {
-  id: number
-  title: string
-  version: number
-  updatedAt: number
-}
-
-type WorkbookContextMenuState = {
-  kind: 'workbook'
-  row: WorkbookSummary
-}
-
-type SheetContextMenuState = {
-  kind: 'sheet'
-  row: NoteSheetSummary
-}
-
-type WorkbookPanelContextMenuState = {
-  kind: 'workbook-panel'
-}
-
-type ListContextMenuState =
-  | WorkbookContextMenuState
-  | SheetContextMenuState
-  | WorkbookPanelContextMenuState
-
-type AccessAnonymousRole = 'inherit' | 'none' | 'deny' | 'viewer'
+type WorkbookFilter = 'all' | 'mine' | 'other'
+type AccessAnonymousRole = 'none' | 'viewer'
 
 type AccessUserGrantDraft = {
   key: string
@@ -66,95 +39,57 @@ type AccessUserGrantDraft = {
 
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 
 const loading = ref(false)
-const initialized = ref(false)
 const workbooks = ref<WorkbookSummary[]>([])
-const sheets = ref<NoteSheetSummary[]>([])
-const selectedWorkbookId = ref<number | null>(null)
-const selectedWorkbookDetail = ref<WorkbookDetail | null>(null)
-const activeSheetId = ref<number | null>(null)
-const editingSheetId = ref<number | null>(null)
-const editingSheetTitle = ref('')
-const editingSheetInputRef = ref<HTMLInputElement | null>(null)
-const savingSheetRenameId = ref<number | null>(null)
-const workspaceRenderKey = ref(0)
-const workspaceRef = ref<{ openSheetSettings: () => void } | null>(null)
-const pendingSheetSettingsId = ref<number | null>(null)
-const listContextMenuRef = ref<HTMLElement | null>(null)
-const listContextMenu = ref<{
-  visible: boolean
-  x: number
-  y: number
-  payload: ListContextMenuState | null
-}>({
-  visible: false,
-  x: 0,
-  y: 0,
-  payload: null,
-})
+const searchText = ref('')
+const workbookFilter = ref<WorkbookFilter>('all')
+
 const accessDialogVisible = ref(false)
 const accessDialogLoading = ref(false)
 const accessDialogSaving = ref(false)
-const accessDialogResource = ref<{
-  type: NoteSheetResourceType
-  id: number
-  title: string
-} | null>(null)
+const accessDialogWorkbook = ref<WorkbookSummary | null>(null)
 const accessAnonymousRole = ref<AccessAnonymousRole>('none')
 const accessUserGrants = ref<AccessUserGrantDraft[]>([])
-let textMeasureCanvas: HTMLCanvasElement | null = null
 
-const queryWorkbookId = computed(() => normalizePositiveInt(route.query.workbook))
-const querySheetId = computed(() => normalizePositiveInt(route.query.sheet))
-const selectedWorkbookSummary = computed(() => (
-  workbooks.value.find((item) => item.id === selectedWorkbookId.value) ?? null
+const currentUserId = computed(() => userStore.user?.id ?? null)
+const normalizedSearchText = computed(() => searchText.value.trim().toLowerCase())
+
+const totalSheetCount = computed(() => (
+  workbooks.value.reduce((total, workbook) => total + workbook.sheet_count, 0)
 ))
-const selectedWorkbookTitle = computed(() => (
-  selectedWorkbookDetail.value?.title || selectedWorkbookSummary.value?.title || ''
-).trim())
-const selectedWorkbookLabel = computed(() => selectedWorkbookSummary.value?.title || '工作簿')
-const pageDocumentTitle = computed(() => (
-  selectedWorkbookTitle.value ? `${selectedWorkbookTitle.value} - CodeYun` : '星云表格 - CodeYun'
-))
-const workbookSwitcherWidth = computed(() => {
-  const textWidth = measureTextWidth(selectedWorkbookLabel.value, "500 16px 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
-  return Math.min(Math.max(Math.ceil(textWidth) + 46, 152), 360)
+
+const filteredWorkbooks = computed(() => {
+  const query = normalizedSearchText.value
+  return workbooks.value.filter((workbook) => {
+    const isMine = workbook.owner_user_id != null && workbook.owner_user_id === currentUserId.value
+    if (workbookFilter.value === 'mine' && !isMine) {
+      return false
+    }
+    if (workbookFilter.value === 'other' && isMine) {
+      return false
+    }
+    if (!query) {
+      return true
+    }
+    return workbook.title.toLowerCase().includes(query)
+      || String(workbook.id).includes(query)
+      || accessRoleLabel(workbook.access?.role).toLowerCase().includes(query)
+  })
 })
-const editingSheetInputWidth = computed(() => {
-  const text = editingSheetTitle.value || ' '
-  const textWidth = measureTextWidth(text, "600 13px 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif")
-  return `${Math.min(Math.max(Math.ceil(textWidth) + 12, 20), 420)}px`
-})
 
-const visibleSheets = computed(() => (
-  selectedWorkbookDetail.value?.sheets ?? []
-))
+const filterOptions: Array<{ value: WorkbookFilter; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'mine', label: '我创建的' },
+  { value: 'other', label: '其他可访问' },
+]
 
-const listContextMenuStyle = computed(() => ({
-  left: `${listContextMenu.value.x}px`,
-  top: `${listContextMenu.value.y}px`,
-}))
-const isSheetAccessDialog = computed(() => accessDialogResource.value?.type === 'sheet')
 const accessDialogTitle = computed(() => {
-  const resource = accessDialogResource.value
-  if (!resource) {
-    return '共享权限'
-  }
-  return `共享权限：${resource.title}`
+  const title = accessDialogWorkbook.value?.title || '工作簿'
+  return `共享权限：${title}`
 })
-const anonymousAccessOptions = computed(() => (
-  isSheetAccessDialog.value
-    ? [
-      { value: 'inherit', label: '继承工作簿' },
-      { value: 'deny', label: '无权限' },
-      { value: 'viewer', label: '只读' },
-    ]
-    : [
-      { value: 'none', label: '无权限' },
-      { value: 'viewer', label: '只读' },
-    ]
-))
+
 const userAccessRoleOptions = [
   { value: 'deny', label: '无权限' },
   { value: 'viewer', label: '只读' },
@@ -162,82 +97,188 @@ const userAccessRoleOptions = [
   { value: 'manager', label: '可管理' },
 ] as const
 
+function canManageWorkbook(workbook: WorkbookSummary) {
+  return workbook.access?.capabilities.can_manage_access ?? true
+}
+
+function accessRoleLabel(role?: NoteSheetResourceRole | null) {
+  switch (role) {
+    case 'manager':
+      return '可管理'
+    case 'editor':
+      return '可编辑'
+    case 'viewer':
+      return '只读'
+    case 'deny':
+      return '无权限'
+    default:
+      return '未知'
+  }
+}
+
+function formatDateTime(timestamp: number) {
+  if (!timestamp) {
+    return '-'
+  }
+  const date = new Date(timestamp * 1000)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  const minute = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
 function normalizePositiveInt(value: unknown): number | null {
-  const numeric = Number(value)
+  const raw = Array.isArray(value) ? value[0] : value
+  const numeric = Number(raw)
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null
 }
 
-function measureTextWidth(text: string, font: string) {
-  if (typeof document === 'undefined') {
-    return text.length * 16
-  }
-
-  textMeasureCanvas ??= document.createElement('canvas')
-  const context = textMeasureCanvas.getContext('2d')
-  if (!context) {
-    return text.length * 16
-  }
-
-  context.font = font
-  return context.measureText(text).width
-}
-
-function buildManagerQuery(workbookId: number | null, sheetId: number | null) {
-  const nextQuery = { ...route.query }
-
+function redirectLegacyWorkbookQuery() {
+  const workbookId = normalizePositiveInt(route.query.workbook)
   if (workbookId == null) {
-    delete nextQuery.workbook
-  } else {
-    nextQuery.workbook = String(workbookId)
+    return false
   }
 
-  if (sheetId == null) {
-    delete nextQuery.sheet
-  } else {
-    nextQuery.sheet = String(sheetId)
-  }
-
-  return nextQuery
-}
-
-function updateManagerRoute(workbookId: number | null, sheetId: number | null, replace = false) {
-  const nextQuery = buildManagerQuery(workbookId, sheetId)
-  const currentWorkbook = String(route.query.workbook ?? '')
-  const currentSheet = String(route.query.sheet ?? '')
-  const nextWorkbook = String(nextQuery.workbook ?? '')
-  const nextSheet = String(nextQuery.sheet ?? '')
-
-  if (currentWorkbook === nextWorkbook && currentSheet === nextSheet) {
-    return
-  }
-
-  void router[replace ? 'replace' : 'push']({
-    path: '/notes/sheets',
-    query: nextQuery,
+  const sheetId = normalizePositiveInt(route.query.sheet)
+  void router.replace({
+    path: `/workbook/${workbookId}`,
+    query: sheetId != null ? { sheet: String(sheetId) } : undefined,
   })
+  return true
 }
 
-function closeListContextMenu() {
-  listContextMenu.value.visible = false
-  listContextMenu.value.payload = null
-}
-
-function canManageResourceAccess(item: WorkbookSummary | NoteSheetSummary) {
-  return item.access?.capabilities.can_manage_access ?? true
-}
-
-function createAccessUserGrantDraft() {
+function createAccessUserGrantDraft(): AccessUserGrantDraft {
   return {
     key: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
     username: '',
     nickname: '',
     subjectUserId: null,
-    role: 'viewer' as const,
+    role: 'viewer',
+  }
+}
+
+async function reloadWorkbooks() {
+  loading.value = true
+  try {
+    workbooks.value = await fetchWorkbooks()
+  } catch (error) {
+    console.warn('Failed to load note sheet workbooks:', error)
+    ElMessage.error('加载工作簿失败')
+  } finally {
+    loading.value = false
+  }
+}
+
+async function initializeLibraryPage() {
+  if (redirectLegacyWorkbookQuery()) {
+    return
+  }
+  if (userStore.isAuthenticated && !userStore.user && !userStore.loading) {
+    await userStore.fetchUserProfile()
+  }
+  await reloadWorkbooks()
+}
+
+function resolveWorkbookHref(workbookId: number, sheetId?: number | null) {
+  return router.resolve({
+    path: `/workbook/${workbookId}`,
+    query: sheetId != null ? { sheet: String(sheetId) } : undefined,
+  }).href
+}
+
+function openWorkbook(workbook: WorkbookSummary, sheetId?: number | null) {
+  const href = resolveWorkbookHref(workbook.id, sheetId)
+  window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+async function handleCreateWorkbook() {
+  try {
+    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '新建工作簿', {
+      inputValue: '',
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const workbook = await createWorkbook({ title: value.trim() })
+    await reloadWorkbooks()
+    openWorkbook(workbook)
+  } catch {
+    return
+  }
+}
+
+async function handleRenameWorkbook(workbook: WorkbookSummary) {
+  if (!canManageWorkbook(workbook)) {
+    ElMessage.warning('没有权限重命名该工作簿')
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '重命名工作簿', {
+      inputValue: workbook.title,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const nextTitle = value.trim()
+    if (nextTitle === workbook.title) {
+      return
+    }
+    await updateWorkbook(workbook.id, { title: nextTitle })
+    await reloadWorkbooks()
+  } catch {
+    return
+  }
+}
+
+async function handleSaveAsWorkbook(workbook: WorkbookSummary, mode: 'template' | 'duplicate') {
+  const modeLabel = mode === 'template' ? '模版' : '副本'
+  const defaultTitle = `${workbook.title} ${modeLabel}`
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新工作簿名称', `另存为${modeLabel}`, {
+      inputValue: defaultTitle,
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const nextWorkbook = await saveAsWorkbook(workbook.id, {
+      mode,
+      title: value.trim(),
+    })
+    await reloadWorkbooks()
+    openWorkbook(nextWorkbook, nextWorkbook.sheets[0]?.id ?? null)
+  } catch {
+    return
+  }
+}
+
+async function handleDeleteWorkbook(workbook: WorkbookSummary) {
+  if (!canManageWorkbook(workbook)) {
+    ElMessage.warning('没有权限删除该工作簿')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `删除工作簿“${workbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其共享权限。此操作不可恢复。`,
+      '删除工作簿',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    await deleteWorkbook(workbook.id)
+    await reloadWorkbooks()
+  } catch {
+    return
   }
 }
 
 function normalizeAccessDialogFromGrants(
-  resourceType: NoteSheetResourceType,
   grants: Array<{
     subject_type: 'anonymous' | 'user'
     subject_key: string
@@ -248,14 +289,7 @@ function normalizeAccessDialogFromGrants(
   }>,
 ) {
   const anonymousGrant = grants.find((grant) => grant.subject_type === 'anonymous')
-  if (resourceType === 'sheet') {
-    accessAnonymousRole.value = anonymousGrant?.role === 'deny' || anonymousGrant?.role === 'viewer'
-      ? anonymousGrant.role
-      : 'inherit'
-  } else {
-    accessAnonymousRole.value = anonymousGrant?.role === 'viewer' ? 'viewer' : 'none'
-  }
-
+  accessAnonymousRole.value = anonymousGrant?.role === 'viewer' ? 'viewer' : 'none'
   accessUserGrants.value = grants
     .filter((grant) => grant.subject_type === 'user')
     .map((grant) => ({
@@ -267,66 +301,28 @@ function normalizeAccessDialogFromGrants(
     }))
 }
 
-async function openAccessDialog(resourceType: NoteSheetResourceType, resourceId: number, title: string) {
-  closeListContextMenu()
-  accessDialogResource.value = {
-    type: resourceType,
-    id: resourceId,
-    title,
+async function openAccessDialog(workbook: WorkbookSummary) {
+  if (!canManageWorkbook(workbook)) {
+    ElMessage.warning('没有权限管理该工作簿')
+    return
   }
+
+  accessDialogWorkbook.value = workbook
   accessDialogVisible.value = true
   accessDialogLoading.value = true
   accessUserGrants.value = []
-  accessAnonymousRole.value = resourceType === 'sheet' ? 'inherit' : 'none'
+  accessAnonymousRole.value = 'none'
 
   try {
-    const detail = resourceType === 'workbook'
-      ? await fetchWorkbookAccess(resourceId)
-      : await fetchSheetAccess(resourceId)
-    normalizeAccessDialogFromGrants(resourceType, detail.grants)
+    const detail = await fetchWorkbookAccess(workbook.id)
+    normalizeAccessDialogFromGrants(detail.grants)
   } catch (error) {
-    console.warn('Failed to load resource access grants:', error)
+    console.warn('Failed to load workbook access grants:', error)
     accessDialogVisible.value = false
     ElMessage.error('读取共享权限失败')
   } finally {
     accessDialogLoading.value = false
   }
-}
-
-function handleContextMenuOpenWorkbookAccess(workbook: WorkbookSummary) {
-  if (!canManageResourceAccess(workbook)) {
-    ElMessage.warning('没有权限管理该工作簿')
-    closeListContextMenu()
-    return
-  }
-  void openAccessDialog('workbook', workbook.id, workbook.title)
-}
-
-function handleContextMenuOpenSheetAccess(sheet: NoteSheetSummary) {
-  if (!canManageResourceAccess(sheet)) {
-    ElMessage.warning('没有权限管理该工作表')
-    closeListContextMenu()
-    return
-  }
-  void openAccessDialog('sheet', sheet.id, sheet.title)
-}
-
-function openSharedResourceLink(path: string, query?: Record<string, string>) {
-  const href = router.resolve({ path, query }).href
-  window.open(href, '_blank', 'noopener,noreferrer')
-}
-
-function handleContextMenuOpenWorkbookSharedLink(workbook: WorkbookSummary) {
-  closeListContextMenu()
-  openSharedResourceLink(
-    `/workbook/${workbook.id}`,
-    activeSheetId.value != null ? { sheet: String(activeSheetId.value) } : undefined,
-  )
-}
-
-function handleContextMenuOpenSheetSharedLink(sheet: NoteSheetSummary) {
-  closeListContextMenu()
-  openSharedResourceLink(`/sheet/${sheet.id}`)
 }
 
 function addAccessUserGrant() {
@@ -338,23 +334,11 @@ function removeAccessUserGrant(key: string) {
 }
 
 function buildAccessGrantUpdates(): NoteSheetResourceAccessGrantUpdate[] {
-  const resource = accessDialogResource.value
-  if (!resource) {
-    return []
-  }
-
   const grants: NoteSheetResourceAccessGrantUpdate[] = []
-  if (resource.type === 'workbook') {
-    if (accessAnonymousRole.value === 'viewer') {
-      grants.push({
-        subject_type: 'anonymous',
-        role: 'viewer',
-      })
-    }
-  } else if (accessAnonymousRole.value === 'deny' || accessAnonymousRole.value === 'viewer') {
+  if (accessAnonymousRole.value === 'viewer') {
     grants.push({
       subject_type: 'anonymous',
-      role: accessAnonymousRole.value,
+      role: 'viewer',
     })
   }
 
@@ -376,666 +360,158 @@ function buildAccessGrantUpdates(): NoteSheetResourceAccessGrantUpdate[] {
 }
 
 async function saveAccessDialog() {
-  const resource = accessDialogResource.value
-  if (!resource) {
+  const workbook = accessDialogWorkbook.value
+  if (!workbook) {
     return
   }
 
   accessDialogSaving.value = true
   try {
-    const grants = buildAccessGrantUpdates()
-    const detail = resource.type === 'workbook'
-      ? await updateWorkbookAccess(resource.id, grants)
-      : await updateSheetAccess(resource.id, grants)
-    normalizeAccessDialogFromGrants(resource.type, detail.grants)
+    const detail = await updateWorkbookAccess(workbook.id, buildAccessGrantUpdates())
+    normalizeAccessDialogFromGrants(detail.grants)
     ElMessage.success('共享权限已保存')
     accessDialogVisible.value = false
-    await reloadAll()
+    await reloadWorkbooks()
   } catch (error) {
-    console.warn('Failed to save resource access grants:', error)
+    console.warn('Failed to save workbook access grants:', error)
     ElMessage.error('保存共享权限失败，请检查用户名')
   } finally {
     accessDialogSaving.value = false
   }
 }
 
-function bindContextMenuPosition(clientX: number, clientY: number) {
-  listContextMenu.value.x = clientX
-  listContextMenu.value.y = clientY
-
-  void nextTick(() => {
-    const menuEl = listContextMenuRef.value
-    if (!menuEl) {
-      return
-    }
-    const margin = 12
-    const rect = menuEl.getBoundingClientRect()
-    const maxX = Math.max(margin, window.innerWidth - rect.width - margin)
-    const maxY = Math.max(margin, window.innerHeight - rect.height - margin)
-    listContextMenu.value.x = Math.min(clientX, maxX)
-    listContextMenu.value.y = Math.min(clientY, maxY)
-  })
-}
-
-function openListContextMenu(payload: ListContextMenuState, event: MouseEvent) {
-  event.preventDefault()
-  event.stopPropagation()
-  listContextMenu.value.visible = true
-  listContextMenu.value.payload = payload
-  bindContextMenuPosition(event.clientX, event.clientY)
-}
-
-function resolveSheetId(candidates: Array<number | null | undefined>, availableItems: NoteSheetSummary[]) {
-  const validIds = new Set(availableItems.map((item) => item.id))
-  return candidates.find((id) => id != null && validIds.has(id)) ?? null
-}
-
-async function loadWorkbooks() {
-  workbooks.value = await fetchWorkbooks()
-}
-
-async function loadSheets() {
-  sheets.value = await fetchNoteSheets()
-}
-
-async function loadSelectedWorkbookDetail() {
-  if (!selectedWorkbookId.value) {
-    selectedWorkbookDetail.value = null
-    return
-  }
-
-  selectedWorkbookDetail.value = await fetchWorkbook(selectedWorkbookId.value)
-  if (!selectedWorkbookDetail.value) {
-    selectedWorkbookId.value = null
+function handleWorkbookCommand(command: string | number | object, workbook: WorkbookSummary) {
+  switch (command) {
+    case 'rename':
+      void handleRenameWorkbook(workbook)
+      break
+    case 'access':
+      void openAccessDialog(workbook)
+      break
+    case 'template':
+      void handleSaveAsWorkbook(workbook, 'template')
+      break
+    case 'duplicate':
+      void handleSaveAsWorkbook(workbook, 'duplicate')
+      break
+    case 'delete':
+      void handleDeleteWorkbook(workbook)
+      break
   }
 }
 
-async function syncSelectionFromRoute(replaceInvalid = false) {
-  const workbookIds = new Set(workbooks.value.map((item) => item.id))
-  const sheetFromQuery = querySheetId.value == null
-    ? null
-    : sheets.value.find((item) => item.id === querySheetId.value) ?? null
-  const workbookFromSheetQuery = sheetFromQuery?.workbook_items.find((item) => workbookIds.has(item.id))?.id ?? null
-  const nextWorkbookId = queryWorkbookId.value != null && workbookIds.has(queryWorkbookId.value)
-    ? queryWorkbookId.value
-    : workbookFromSheetQuery
-      ?? workbooks.value[0]?.id
-      ?? null
-  const workbookChanged = nextWorkbookId !== selectedWorkbookId.value
-
-  selectedWorkbookId.value = nextWorkbookId
-
-  if (nextWorkbookId == null) {
-    selectedWorkbookDetail.value = null
-  } else if (workbookChanged || selectedWorkbookDetail.value?.id !== nextWorkbookId) {
-    await loadSelectedWorkbookDetail()
-  }
-
-  const availableItems = visibleSheets.value
-  const nextSheetId = resolveSheetId(
-    [querySheetId.value, activeSheetId.value, availableItems[0]?.id ?? null],
-    availableItems,
-  )
-  activeSheetId.value = nextSheetId
-
-  if (editingSheetId.value != null && !availableItems.some((item) => item.id === editingSheetId.value)) {
-    cancelInlineRenameSheet()
-  }
-
-  if (!replaceInvalid) {
-    return
-  }
-
-  const shouldNormalizeQuery = nextWorkbookId !== (queryWorkbookId.value ?? null)
-    || nextSheetId !== (querySheetId.value ?? null)
-  if (shouldNormalizeQuery) {
-    updateManagerRoute(nextWorkbookId, nextSheetId, true)
-  }
-}
-
-async function reloadAll() {
-  loading.value = true
-  try {
-    await Promise.all([
-      loadWorkbooks(),
-      loadSheets(),
-    ])
-    await syncSelectionFromRoute(true)
-  } finally {
-    loading.value = false
-  }
-}
-
-async function handleCreateWorkbook() {
-  try {
-    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '新建工作簿', {
-      inputValue: '',
-      confirmButtonText: '创建',
-      cancelButtonText: '取消',
-      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
-    })
-    const workbook = await createWorkbook({ title: value.trim() })
-    await Promise.all([loadWorkbooks(), loadSheets()])
-    updateManagerRoute(workbook.id, null)
-  } catch {
-    return
-  }
-}
-
-async function handleCreateSheet(targetWorkbookId = selectedWorkbookId.value) {
-  try {
-    const { value } = await ElMessageBox.prompt('请输入表格名称', '新建表格', {
-      inputValue: '',
-      confirmButtonText: '创建',
-      cancelButtonText: '取消',
-      inputValidator: (inputValue) => inputValue.trim() ? true : '表格名称不能为空',
-    })
-    const sheet = await createNoteSheet({
-      title: value.trim(),
-      workbook_id: targetWorkbookId,
-    })
-    await reloadAll()
-    updateManagerRoute(targetWorkbookId, sheet.id)
-  } catch {
-    return
-  }
-}
-
-function handleWorkbookSwitchChange(value: number | string) {
-  const workbookId = Number(value)
-  if (!Number.isInteger(workbookId) || workbookId <= 0) {
-    return
-  }
-  updateManagerRoute(workbookId, null)
-}
-
-function handleWorkbookSwitchContextMenu(event: MouseEvent) {
-  const currentWorkbook = selectedWorkbookSummary.value
-  if (currentWorkbook) {
-    openListContextMenu({ kind: 'workbook', row: currentWorkbook }, event)
-    return
-  }
-  openListContextMenu({ kind: 'workbook-panel' }, event)
-}
-
-function handleSheetRowClick(sheet: NoteSheetSummary) {
-  const nextWorkbookId = selectedWorkbookId.value ?? sheet.workbook_items[0]?.id ?? null
-  updateManagerRoute(nextWorkbookId, sheet.id)
-}
-
-function handleSheetTabContextMenu(sheet: NoteSheetSummary, event: MouseEvent) {
-  openListContextMenu({ kind: 'sheet', row: sheet }, event)
-}
-
-function focusEditingSheetInput() {
-  void nextTick(() => {
-    editingSheetInputRef.value?.focus()
-    editingSheetInputRef.value?.select()
-  })
-}
-
-function cancelInlineRenameSheet() {
-  editingSheetId.value = null
-  editingSheetTitle.value = ''
-}
-
-function startInlineRenameSheet(sheet: NoteSheetSummary) {
-  closeListContextMenu()
-  editingSheetId.value = sheet.id
-  editingSheetTitle.value = sheet.title
-  focusEditingSheetInput()
-}
-
-async function handleDeleteWorkbook(workbook: WorkbookSummary) {
-  closeListContextMenu()
-  try {
-    await ElMessageBox.confirm(
-      `删除工作簿“${workbook.title}”后，只会解除打包关系，不会删除里面的表格。`,
-      '删除工作簿',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    )
-    await deleteWorkbook(workbook.id)
-    await reloadAll()
-  } catch {
-    return
-  }
-}
-
-async function handleRenameWorkbook(workbook: WorkbookSummary) {
-  closeListContextMenu()
-  if (!canManageResourceAccess(workbook)) {
-    ElMessage.warning('没有权限重命名该工作簿')
-    return
-  }
-
-  try {
-    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '重命名工作簿', {
-      inputValue: workbook.title,
-      confirmButtonText: '保存',
-      cancelButtonText: '取消',
-      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
-    })
-    const nextTitle = value.trim()
-    if (nextTitle === workbook.title) {
-      return
-    }
-
-    const nextWorkbook = await updateWorkbook(workbook.id, { title: nextTitle })
-    await Promise.all([loadWorkbooks(), loadSheets()])
-    if (selectedWorkbookId.value === workbook.id) {
-      selectedWorkbookDetail.value = nextWorkbook
-    }
-  } catch {
-    return
-  }
-}
-
-async function handleSaveAsWorkbook(workbook: WorkbookSummary, mode: 'template' | 'duplicate') {
-  closeListContextMenu()
-  const modeLabel = mode === 'template' ? '模版' : '副本'
-  const defaultTitle = `${workbook.title} ${modeLabel}`
-
-  try {
-    const { value } = await ElMessageBox.prompt('请输入新工作簿名称', `另存为${modeLabel}`, {
-      inputValue: defaultTitle,
-      confirmButtonText: '创建',
-      cancelButtonText: '取消',
-      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
-    })
-    const nextWorkbook = await saveAsWorkbook(workbook.id, {
-      mode,
-      title: value.trim(),
-    })
-    await reloadAll()
-    updateManagerRoute(nextWorkbook.id, nextWorkbook.sheets[0]?.id ?? null)
-  } catch {
-    return
-  }
-}
-
-async function handleDeleteSheet(sheet: NoteSheetSummary) {
-  closeListContextMenu()
-  try {
-    await ElMessageBox.confirm(
-      `删除表格“${sheet.title}”后不可恢复，并会从所有工作簿中移除。`,
-      '删除表格',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    )
-    await deleteNoteSheet(sheet.id)
-    await reloadAll()
-  } catch {
-    return
-  }
-}
-
-async function commitInlineRenameSheet(sheet: NoteSheetSummary) {
-  if (editingSheetId.value !== sheet.id || savingSheetRenameId.value === sheet.id) {
-    return
-  }
-
-  const nextTitle = editingSheetTitle.value.trim()
-  if (!nextTitle || nextTitle === sheet.title) {
-    cancelInlineRenameSheet()
-    return
-  }
-
-  try {
-    savingSheetRenameId.value = sheet.id
-    const saved = await updateNoteSheet(sheet.id, {
-      title: nextTitle,
-    })
-    handleSheetSync({
-      id: saved.id,
-      title: saved.title,
-      version: saved.version,
-      updatedAt: saved.updated_at,
-    })
-
-    if (activeSheetId.value === sheet.id) {
-      workspaceRenderKey.value += 1
-    }
-    cancelInlineRenameSheet()
-  } catch {
-    focusEditingSheetInput()
-  } finally {
-    if (savingSheetRenameId.value === sheet.id) {
-      savingSheetRenameId.value = null
-    }
-  }
-}
-
-async function handleDetachSheet(sheetId: number) {
-  closeListContextMenu()
-  if (selectedWorkbookId.value == null) {
-    return
-  }
-
-  selectedWorkbookDetail.value = await removeSheetFromWorkbook(selectedWorkbookId.value, sheetId)
-  await Promise.all([loadWorkbooks(), loadSheets()])
-
-  const nextSheetId = resolveSheetId(
-    [activeSheetId.value, selectedWorkbookDetail.value.sheets[0]?.id ?? null],
-    selectedWorkbookDetail.value.sheets,
-  )
-  activeSheetId.value = nextSheetId
-  updateManagerRoute(selectedWorkbookId.value, nextSheetId, true)
-}
-
-function handleSheetMissing() {
-  pendingSheetSettingsId.value = null
-  void reloadAll()
-}
-
-function handleContextMenuOpenSingleSheet(sheetId: number) {
-  closeListContextMenu()
-  void router.push(`/notes/sheets/${sheetId}`)
-}
-
-function handleContextMenuOpenSheetSettings(sheet: NoteSheetSummary) {
-  closeListContextMenu()
-  if (sheet.id === activeSheetId.value) {
-    void nextTick(() => {
-      workspaceRef.value?.openSheetSettings()
-    })
-    return
-  }
-
-  pendingSheetSettingsId.value = sheet.id
-  handleSheetRowClick(sheet)
-}
-
-function handleContextMenuCreateWorkbook() {
-  closeListContextMenu()
-  void handleCreateWorkbook()
-}
-
-function handleCreateSheetCurrent() {
-  void handleCreateSheet()
-}
-
-function handleWindowInteraction() {
-  closeListContextMenu()
-}
-
-function handleSheetSync(payload: SheetSyncPayload) {
-  const updateEntry = (item: NoteSheetSummary) => {
-    item.title = payload.title
-    item.updated_at = payload.updatedAt
-  }
-
-  sheets.value.find((item) => item.id === payload.id) && updateEntry(
-    sheets.value.find((item) => item.id === payload.id)!,
-  )
-  selectedWorkbookDetail.value?.sheets.find((item) => item.id === payload.id) && updateEntry(
-    selectedWorkbookDetail.value.sheets.find((item) => item.id === payload.id)!,
-  )
-
-  if (pendingSheetSettingsId.value === payload.id) {
-    pendingSheetSettingsId.value = null
-    void nextTick(() => {
-      workspaceRef.value?.openSheetSettings()
-    })
-  }
-}
-
-function syncPageDocumentTitle() {
-  document.title = pageDocumentTitle.value
-}
-
-watch(pageDocumentTitle, syncPageDocumentTitle, { immediate: true })
-
-watch(
-  [() => queryWorkbookId.value, () => querySheetId.value],
-  async ([nextWorkbookId], [previousWorkbookId]) => {
-    if (!initialized.value) {
-      return
-    }
-
-    const shouldShowLoading = nextWorkbookId !== previousWorkbookId
-    if (shouldShowLoading) {
-      loading.value = true
-    }
-    try {
-      await syncSelectionFromRoute(true)
-    } finally {
-      if (shouldShowLoading) {
-        loading.value = false
-      }
-    }
-  },
-)
-
-onMounted(async () => {
-  window.addEventListener('mousedown', handleWindowInteraction)
-  window.addEventListener('resize', handleWindowInteraction)
-  window.addEventListener('scroll', handleWindowInteraction, true)
-  await reloadAll()
-  initialized.value = true
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('mousedown', handleWindowInteraction)
-  window.removeEventListener('resize', handleWindowInteraction)
-  window.removeEventListener('scroll', handleWindowInteraction, true)
+onMounted(() => {
+  void initializeLibraryPage()
 })
 </script>
 
 <template>
-  <div class="sheet-manager-page">
-    <div class="manager-grid" v-loading="loading">
-      <section class="content-panel">
-        <div class="sheet-tabs-bar">
-          <div class="sheet-flow">
-            <div
-              class="workbook-switcher-shell"
-              :style="{ width: `${workbookSwitcherWidth}px` }"
-              @contextmenu.prevent.stop="handleWorkbookSwitchContextMenu"
-            >
-              <el-select
-                :model-value="selectedWorkbookId ?? undefined"
-                class="workbook-switcher"
-                @change="handleWorkbookSwitchChange"
-              >
-                <el-option
-                  v-for="workbook in workbooks"
-                  :key="workbook.id"
-                  :value="workbook.id"
-                  :label="workbook.title"
-                />
-              </el-select>
-            </div>
-
-            <div
-              v-for="sheet in visibleSheets"
-              :key="sheet.id"
-              class="sheet-tab"
-              :class="{ active: sheet.id === activeSheetId, editing: sheet.id === editingSheetId }"
-              @click="sheet.id !== editingSheetId && handleSheetRowClick(sheet)"
-              @dblclick.stop="startInlineRenameSheet(sheet)"
-              @contextmenu="handleSheetTabContextMenu(sheet, $event)"
-            >
-              <input
-                v-if="sheet.id === editingSheetId"
-                ref="editingSheetInputRef"
-                v-model="editingSheetTitle"
-                class="sheet-tab-input"
-                :style="{ width: editingSheetInputWidth }"
-                maxlength="120"
-                :disabled="sheet.id === savingSheetRenameId"
-                @click.stop
-                @mousedown.stop
-                @dblclick.stop
-                @keydown.enter.prevent="void commitInlineRenameSheet(sheet)"
-                @keydown.esc.prevent="cancelInlineRenameSheet"
-                @blur="void commitInlineRenameSheet(sheet)"
-              >
-              <template v-else>
-                {{ sheet.title }}
-              </template>
-            </div>
-            <button
-              type="button"
-              class="sheet-create-button"
-              :disabled="!selectedWorkbookId"
-              @click="handleCreateSheetCurrent"
-            >
-              +
-            </button>
-          </div>
+  <div class="workbook-library-page" v-loading="loading">
+    <header class="library-header">
+      <div class="library-heading">
+        <h1>星云表格</h1>
+        <div class="library-count">
+          {{ workbooks.length }} 个工作簿 / {{ totalSheetCount }} 个工作表
         </div>
-
-        <div class="content-panel-body">
-          <NoteSheetWorkspace
-            ref="workspaceRef"
-            :key="`${activeSheetId ?? 'empty'}-${workspaceRenderKey}`"
-            :workbook-id="selectedWorkbookId"
-            :sheet-id="activeSheetId"
-            :show-title-input="false"
-            empty-text="请选择工作表"
-            @missing="handleSheetMissing"
-            @sheet-sync="handleSheetSync"
-          />
-        </div>
-      </section>
-    </div>
-
-    <Teleport to="body">
-      <div
-        v-if="listContextMenu.visible && listContextMenu.payload"
-        ref="listContextMenuRef"
-        class="list-context-menu"
-        :style="listContextMenuStyle"
-        @mousedown.stop
-        @contextmenu.prevent
-      >
-        <template v-if="listContextMenu.payload.kind === 'workbook-panel'">
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuCreateWorkbook"
-          >
-            新建工作簿
-          </button>
-        </template>
-
-        <template v-else-if="listContextMenu.payload.kind === 'workbook'">
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuCreateWorkbook"
-          >
-            新建工作簿
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleRenameWorkbook(listContextMenu.payload.row)"
-          >
-            重命名
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenWorkbookSharedLink(listContextMenu.payload.row)"
-          >
-            共享链接打开
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenWorkbookAccess(listContextMenu.payload.row)"
-          >
-            共享权限
-          </button>
-          <div class="list-context-submenu-shell">
-            <button
-              type="button"
-              class="list-context-menu-item list-context-menu-item--submenu"
-            >
-              <span>另存为</span>
-              <span class="list-context-menu-caret">›</span>
-            </button>
-            <div class="list-context-submenu">
-              <button
-                type="button"
-                class="list-context-menu-item"
-                @click="handleSaveAsWorkbook(listContextMenu.payload.row, 'template')"
-              >
-                模版
-              </button>
-              <button
-                type="button"
-                class="list-context-menu-item"
-                @click="handleSaveAsWorkbook(listContextMenu.payload.row, 'duplicate')"
-              >
-                副本
-              </button>
-            </div>
-          </div>
-          <button
-            type="button"
-            class="list-context-menu-item danger"
-            @click="handleDeleteWorkbook(listContextMenu.payload.row)"
-          >
-            删除工作簿
-          </button>
-        </template>
-
-        <template v-else-if="listContextMenu.payload.kind === 'sheet'">
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenSheetSettings(listContextMenu.payload.row)"
-          >
-            设置
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenSingleSheet(listContextMenu.payload.row.id)"
-          >
-            单表打开
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenSheetSharedLink(listContextMenu.payload.row)"
-          >
-            共享链接打开
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item"
-            @click="handleContextMenuOpenSheetAccess(listContextMenu.payload.row)"
-          >
-            共享权限
-          </button>
-          <button
-            v-if="selectedWorkbookDetail"
-            type="button"
-            class="list-context-menu-item"
-            @click="handleDetachSheet(listContextMenu.payload.row.id)"
-          >
-            移出当前工作簿
-          </button>
-          <button
-            type="button"
-            class="list-context-menu-item danger"
-            @click="handleDeleteSheet(listContextMenu.payload.row)"
-          >
-            删除表格
-          </button>
-        </template>
       </div>
-    </Teleport>
+
+      <div class="library-actions">
+        <el-input
+          v-model="searchText"
+          class="library-search"
+          :prefix-icon="Search"
+          clearable
+          placeholder="搜索工作簿"
+        />
+        <button
+          v-for="option in filterOptions"
+          :key="option.value"
+          type="button"
+          class="filter-button"
+          :class="{ active: workbookFilter === option.value }"
+          @click="workbookFilter = option.value"
+        >
+          {{ option.label }}
+        </button>
+        <el-button :icon="Refresh" @click="reloadWorkbooks">刷新</el-button>
+        <el-button type="primary" :icon="Plus" @click="handleCreateWorkbook">新建工作簿</el-button>
+      </div>
+    </header>
+
+    <section class="workbook-table" aria-label="星云表格工作簿文件库">
+      <div v-if="filteredWorkbooks.length" class="workbook-table-scroll">
+        <table class="workbook-table-inner">
+          <thead>
+            <tr>
+              <th scope="col">工作簿</th>
+              <th scope="col">权限</th>
+              <th scope="col">工作表</th>
+              <th scope="col">更新时间</th>
+              <th scope="col" class="workbook-actions-heading">操作</th>
+              <th scope="col" class="workbook-spacer-cell" aria-hidden="true"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="workbook in filteredWorkbooks"
+              :key="workbook.id"
+              class="workbook-row"
+            >
+              <td class="workbook-name-cell">
+                <a
+                  class="workbook-title-button"
+                  :href="resolveWorkbookHref(workbook.id)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  :title="workbook.title"
+                >
+                  <span class="workbook-subtitle">
+                    #{{ workbook.id }}
+                  </span>
+                  <span class="workbook-title">{{ workbook.title }}</span>
+                </a>
+              </td>
+              <td class="workbook-role">{{ accessRoleLabel(workbook.access?.role) }}</td>
+              <td class="workbook-sheet-count">{{ workbook.sheet_count }}</td>
+              <td class="workbook-updated">{{ formatDateTime(workbook.updated_at) }}</td>
+              <td class="workbook-actions-cell">
+                <div class="workbook-row-actions">
+                  <el-dropdown trigger="click" @command="(command) => handleWorkbookCommand(command, workbook)">
+                    <el-button size="small" :icon="MoreFilled" title="更多操作" />
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item command="rename" :icon="Edit" :disabled="!canManageWorkbook(workbook)">
+                          重命名
+                        </el-dropdown-item>
+                        <el-dropdown-item command="access" :icon="Share" :disabled="!canManageWorkbook(workbook)">
+                          共享权限
+                        </el-dropdown-item>
+                        <el-dropdown-item command="template">
+                          另存为模版
+                        </el-dropdown-item>
+                        <el-dropdown-item command="duplicate">
+                          另存为副本
+                        </el-dropdown-item>
+                        <el-dropdown-item divided command="delete" :icon="Delete" :disabled="!canManageWorkbook(workbook)">
+                          删除工作簿
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </div>
+              </td>
+              <td class="workbook-spacer-cell" aria-hidden="true"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <el-empty
+        v-else
+        class="workbook-empty"
+        :description="workbooks.length ? '没有匹配的工作簿' : '暂无工作簿'"
+      />
+    </section>
 
     <el-dialog
       v-model="accessDialogVisible"
@@ -1047,12 +523,8 @@ onBeforeUnmount(() => {
         <div class="resource-access-row">
           <label class="resource-access-label">游客</label>
           <el-select v-model="accessAnonymousRole" class="resource-access-control">
-            <el-option
-              v-for="option in anonymousAccessOptions"
-              :key="option.value"
-              :value="option.value"
-              :label="option.label"
-            />
+            <el-option value="none" label="无权限" />
+            <el-option value="viewer" label="只读" />
           </el-select>
         </div>
 
@@ -1100,200 +572,211 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.sheet-manager-page {
+.workbook-library-page {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  padding: 12px 16px 16px;
+  padding: 16px 18px;
+  background: #f8fafc;
   overflow: hidden;
-  gap: 12px;
+  gap: 14px;
 }
 
-.manager-grid {
-  flex: 1;
-  min-height: 0;
+.library-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.library-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
+  gap: 4px;
+  min-width: 160px;
 }
 
-.content-panel {
+.library-heading h1 {
+  margin: 0;
+  color: #172033;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 30px;
+}
+
+.library-count {
+  color: #697386;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.library-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.library-search {
+  width: 240px;
+}
+
+.filter-button {
+  height: 32px;
+  border: 1px solid #d8e0ea;
+  border-radius: 6px;
+  background: #fff;
+  padding: 0 12px;
+  color: #526071;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filter-button:hover {
+  border-color: #9ab9ee;
+  color: #2f6fd6;
+}
+
+.filter-button.active {
+  border-color: #2f6fd6;
+  background: #edf4ff;
+  color: #1f5fbe;
+}
+
+.workbook-table {
+  flex: 1 1 auto;
   min-height: 0;
   display: flex;
   flex-direction: column;
-}
-
-.content-panel-body {
-  flex: 1;
-  min-height: 0;
+  border: 1px solid #dfe7f0;
+  border-radius: 8px;
+  background: #fff;
   overflow: hidden;
 }
 
-.sheet-tabs-bar {
-  padding: 8px 12px 0;
-  border-bottom: 1px solid #efe4d3;
+.workbook-table-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
 }
 
-.sheet-flow {
-  display: flex;
-  align-items: flex-end;
-  align-content: flex-end;
-  flex-wrap: wrap;
-  gap: 8px 0;
-  margin-bottom: -1px;
-}
-
-.workbook-switcher-shell {
-  flex: 0 0 auto;
-  max-width: 100%;
-}
-
-.workbook-switcher {
+.workbook-table-inner {
   width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
 }
 
-.sheet-tab {
-  flex: 0 0 auto;
-  border: 1px solid #ebe2d4;
-  border-bottom: 0;
-  border-radius: 10px 10px 0 0;
-  background: #f7f1e8;
-  padding: 10px 15px 11px;
-  color: #7b654a;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
-}
-
-.sheet-tab.editing {
-  background: #fff;
-  color: #2f2414;
-  cursor: text;
-}
-
-.sheet-tab:hover {
-  background: #f1e7d9;
-  color: #5c4932;
-}
-
-.sheet-tab.active {
-  border-color: #e7dcc9;
-  background: #fff;
-  color: #2f2414;
-  box-shadow: inset 0 3px 0 #5b8def;
-  font-weight: 700;
-}
-
-.sheet-tab-input {
-  border: 0;
-  outline: none;
-  background: transparent;
-  padding: 0;
-  margin: 0;
-  color: inherit;
-  font: inherit;
-  line-height: 1;
-}
-
-.sheet-create-button {
-  flex: 0 0 auto;
-  min-width: 36px;
-  height: 32px;
-  border: 1px solid #d8dfeb;
-  border-radius: 8px;
-  background: #fff;
-  padding: 0 10px;
-  color: #6f7f94;
-  font-size: 20px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-  transition: border-color 120ms ease, color 120ms ease, background-color 120ms ease;
-}
-
-.sheet-create-button:hover {
-  border-color: #7aa7f7;
-  color: #3c74dd;
-  background: #f7fbff;
-}
-
-.sheet-create-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.list-context-menu {
-  position: fixed;
-  z-index: 2200;
-  min-width: 156px;
-  padding: 6px;
-  border: 1px solid rgba(209, 221, 232, 0.92);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
-  backdrop-filter: blur(10px);
-}
-
-.list-context-menu-item {
-  width: 100%;
-  border: 0;
-  border-radius: 10px;
-  background: transparent;
-  padding: 9px 12px;
+.workbook-table-inner th,
+.workbook-table-inner td {
+  box-sizing: border-box;
+  padding: 0 14px;
   text-align: left;
-  color: #173042;
-  font-size: 13px;
-  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.workbook-table-inner th {
+  height: 38px;
+  border-bottom: 1px solid #e5ebf2;
+  background: #f3f6fa;
+  color: #5a6677;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.workbook-table-inner td {
+  height: 48px;
+  border-bottom: 1px solid #eef2f6;
+}
+
+.workbook-table-inner th + th,
+.workbook-table-inner td + td {
+  padding-left: 24px;
+}
+
+.workbook-row:hover {
+  background: #f8fbff;
+}
+
+.workbook-name-cell {
+  max-width: min(52vw, 520px);
+}
+
+.workbook-title-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(52vw, 520px);
+  color: inherit;
+  text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 
-.list-context-menu-item--submenu {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.list-context-menu-caret {
-  color: #8b7355;
+.workbook-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #182235;
   font-size: 14px;
-  line-height: 1;
+  font-weight: 700;
+  line-height: 22px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.list-context-menu-item:hover {
-  background: rgba(64, 158, 255, 0.08);
+.workbook-title-button:hover .workbook-title {
+  color: #2368d1;
 }
 
-.list-context-submenu-shell {
-  position: relative;
+.workbook-subtitle {
+  flex: 0 0 auto;
+  min-width: 24px;
+  color: #8a96a8;
+  font-size: 12px;
+  line-height: 22px;
 }
 
-.list-context-submenu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 8px);
-  display: none;
-  min-width: 108px;
-  padding: 6px;
-  border: 1px solid rgba(209, 221, 232, 0.92);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
-  backdrop-filter: blur(10px);
+.workbook-role,
+.workbook-sheet-count,
+.workbook-updated {
+  color: #4f5d70;
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
 }
 
-.list-context-submenu-shell:hover .list-context-submenu,
-.list-context-submenu-shell:focus-within .list-context-submenu {
-  display: block;
+.workbook-sheet-count {
+  color: #172033;
+  font-weight: 700;
 }
 
-.list-context-menu-item.danger {
-  color: #c45656;
+.workbook-actions-heading,
+.workbook-actions-cell {
+  text-align: right;
+}
+
+.workbook-spacer-cell {
+  width: 100%;
+  padding: 0 !important;
+}
+
+.workbook-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.workbook-empty {
+  flex: 1 1 auto;
+  min-height: 220px;
 }
 
 .resource-access-body {
@@ -1371,14 +854,48 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1100px) {
-  .sheet-flow {
+  .library-header {
     align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .library-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .workbook-table-inner th,
+  .workbook-table-inner td {
+    padding-right: 12px;
+  }
+
+  .workbook-table-inner th + th,
+  .workbook-table-inner td + td {
+    padding-left: 18px;
+  }
+
+  .workbook-name-cell,
+  .workbook-title-button {
+    max-width: min(48vw, 420px);
   }
 }
 
-@media (max-width: 900px) {
-  .sheet-manager-page {
+@media (max-width: 760px) {
+  .workbook-library-page {
     padding: 12px;
+  }
+
+  .library-search {
+    width: 100%;
+  }
+
+  .workbook-table-inner {
+    min-width: 720px;
+  }
+
+  .workbook-name-cell,
+  .workbook-title-button {
+    max-width: 260px;
   }
 }
 </style>

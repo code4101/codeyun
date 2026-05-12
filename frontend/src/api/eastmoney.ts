@@ -42,6 +42,7 @@ export interface EastmoneySyncRun {
   error_message: string | null
   started_at: number
   finished_at: number | null
+  sheet_workbook?: EastmoneySheetWorkbook
 }
 
 export interface EastmoneyTradeRecord {
@@ -96,12 +97,84 @@ export interface EastmoneyTradeRecordPage {
   items: EastmoneyTradeRecord[]
 }
 
+export interface EastmoneyFundFlowRecord {
+  id: string
+  statement_import_id: string
+  sync_run_id: string
+  account_label: string
+  source: string
+  source_key: string
+  flow_date: string
+  flow_category: string
+  market: string
+  security_code: string
+  security_name: string
+  quantity: string
+  price: string
+  occurrence_amount: string
+  fee: string
+  stamp_tax: string
+  transfer_fee: string
+  fund_balance: string
+  currency: string
+  raw_json: Record<string, string>
+  quantity_value: number | null
+  price_value: number | null
+  occurrence_amount_value: number | null
+  fee_value: number | null
+  stamp_tax_value: number | null
+  transfer_fee_value: number | null
+  fund_balance_value: number | null
+  first_seen_at: number
+  last_seen_at: number
+  created_at: number
+  updated_at: number
+}
+
+export interface EastmoneyFundFlowRecordPage {
+  total: number
+  items: EastmoneyFundFlowRecord[]
+}
+
+export interface EastmoneyPositionRecord {
+  id: string
+  sync_run_id: string
+  account_label: string
+  source: string
+  market: string
+  captured_at: number
+  security_code: string
+  security_name: string
+  quantity: string
+  available_quantity: string
+  cost_price: string
+  current_price: string
+  market_value: string
+  pnl: string
+  pnl_ratio: string
+  currency: string
+  raw_json: Record<string, string>
+  created_at: number
+}
+
+export interface EastmoneyPositionRecordPage {
+  total: number
+  items: EastmoneyPositionRecord[]
+}
+
+export interface EastmoneyFundFlowFilterOptions {
+  categories: string[]
+  security_codes: string[]
+  security_names: string[]
+}
+
 export interface EastmoneyTradeDetailOcrImportResponse {
   created: boolean
   record: EastmoneyTradeRecord
   run: EastmoneySyncRun
   row: Record<string, string>
   lines: string[]
+  sheet_workbook?: EastmoneySheetWorkbook
 }
 
 export interface EastmoneyAssetSnapshot {
@@ -120,6 +193,24 @@ export interface EastmoneyAssetSnapshot {
   created_at: number
 }
 
+export interface EastmoneySheetWorkbookSheet {
+  key: string
+  title: string
+  sheet_id: number
+  row_count: number
+  updated_at: number
+}
+
+export interface EastmoneySheetWorkbook {
+  workbook: {
+    id: number
+    title: string
+    updated_at: number
+  }
+  sheets: EastmoneySheetWorkbookSheet[]
+  refreshed_at: number
+}
+
 export async function fetchEastmoneyTradeSnapshot(params: FetchTradeSnapshotParams = {}) {
   const response = await api.get<EastmoneyTradeSnapshot>('/eastmoney/trade-snapshot', {
     params,
@@ -135,6 +226,11 @@ export async function syncEastmoneyTradeData(params: FetchTradeSnapshotParams = 
   return response.data
 }
 
+export async function refreshEastmoneySheetWorkbook() {
+  const response = await api.post<EastmoneySheetWorkbook>('/eastmoney/sheet-workbook/refresh')
+  return response.data
+}
+
 export async function fetchEastmoneyTradeRecords(
   params: FetchTradeSnapshotParams & {
     source?: string
@@ -146,6 +242,31 @@ export async function fetchEastmoneyTradeRecords(
   const response = await api.get<EastmoneyTradeRecordPage>('/eastmoney/trade-records', {
     params,
   })
+  return response.data
+}
+
+export async function fetchEastmoneyFundFlowRecords(
+  params: FetchTradeSnapshotParams & {
+    flow_category?: string
+    security_code?: string
+    security_name?: string
+    limit?: number
+    offset?: number
+  } = {},
+) {
+  const response = await api.get<EastmoneyFundFlowRecordPage>('/eastmoney/fund-flows', {
+    params,
+  })
+  return response.data
+}
+
+export async function fetchEastmoneyFundFlowCategories() {
+  const response = await api.get<{ items: string[] }>('/eastmoney/fund-flow-categories')
+  return response.data
+}
+
+export async function fetchEastmoneyFundFlowFilterOptions() {
+  const response = await api.get<EastmoneyFundFlowFilterOptions>('/eastmoney/fund-flow-filter-options')
   return response.data
 }
 
@@ -174,5 +295,10 @@ export async function fetchLatestEastmoneyAssetSnapshot() {
   const response = await api.get<{ item: EastmoneyAssetSnapshot | null }>(
     '/eastmoney/asset-snapshot/latest',
   )
+  return response.data
+}
+
+export async function fetchLatestEastmoneyPositions() {
+  const response = await api.get<EastmoneyPositionRecordPage>('/eastmoney/positions/latest')
   return response.data
 }

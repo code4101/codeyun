@@ -8,6 +8,7 @@ from backend.core.stock.eastmoney_browser import (
     ensure_eastmoney_browser_paths,
     get_eastmoney_browser_paths,
 )
+from backend.core.stock.eastmoney_trade import _open_tab
 
 
 def test_get_eastmoney_browser_paths_uses_data_dir():
@@ -53,3 +54,41 @@ def test_capture_tab_snapshot_reads_basic_state():
     assert snapshot.url == "https://www.eastmoney.com/"
     assert snapshot.login_hint is True
     assert snapshot.html_sample == "<html>登录</html>"
+
+
+class FakeTradeTab:
+    def __init__(self, url: str):
+        self.url = url
+        self.get_calls: list[str] = []
+
+    def get(self, url: str):
+        self.get_calls.append(url)
+        self.url = url
+
+
+class FakeTradeBrowser:
+    def __init__(self, tabs: list[FakeTradeTab]):
+        self.tabs = tabs
+        self.new_tab_calls: list[str] = []
+
+    def get_tabs(self):
+        return self.tabs
+
+    def new_tab(self, url: str):
+        self.new_tab_calls.append(url)
+        tab = FakeTradeTab(url)
+        tab.set = SimpleNamespace(timeouts=lambda **_kwargs: None)
+        tab.wait = SimpleNamespace(doc_loaded=lambda **_kwargs: None)
+        self.tabs.append(tab)
+        return tab
+
+
+def test_open_tab_reuses_existing_trade_login_without_reopening_target():
+    login_tab = FakeTradeTab("https://jywg.18.cn/Login?returl=%2fSearch%2fPosition")
+    browser = FakeTradeBrowser([login_tab])
+
+    tab = _open_tab(browser, "https://jywg.18.cn/Search/Position")
+
+    assert tab is login_tab
+    assert login_tab.get_calls == []
+    assert browser.new_tab_calls == []

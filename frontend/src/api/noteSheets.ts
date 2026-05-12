@@ -654,6 +654,10 @@ export async function removeSheetFromWorkbook(workbookId: number, sheetId: numbe
   return response.data
 }
 
+export async function unpackWorkbook(workbookId: number) {
+  await api.post(`/note-sheets/workbooks/${workbookId}/unpack`)
+}
+
 export async function deleteWorkbook(workbookId: number) {
   await api.delete(`/note-sheets/workbooks/${workbookId}`)
 }

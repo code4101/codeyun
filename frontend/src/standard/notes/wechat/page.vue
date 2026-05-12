@@ -11,7 +11,6 @@ import {
   fetchWeChatArchiveSyncStatus,
   fetchWeChatArchiveStatus,
   importWeChatArchive,
-  setWeChatArchiveStartupSyncEnabled,
   startWeChatArchiveSync,
   type WeChatArchiveChat,
   type WeChatArchiveImportResult,
@@ -39,11 +38,11 @@ const importing = ref(false)
 const syncStartingMode = ref('')
 const importChatName = ref('文件传输助手')
 const importScrolls = ref(1)
+const saveMedia = ref(false)
 const lastImportResult = ref<WeChatArchiveImportResult | null>(null)
 const syncPlan = ref<WeChatArchiveSyncPlanItem[]>([])
 const syncStatus = ref<WeChatArchiveSyncStatus | null>(null)
-const startupSyncEnabled = ref(true)
-const startupSwitchSaving = ref(false)
+const seenSyncFinishedAt = ref<number | null>(null)
 let syncStatusTimer: number | undefined
 
 const selectedChat = computed(() => (
@@ -153,12 +152,23 @@ async function loadMessageTypes() {
 
 async function loadSyncStatus() {
   const payload = await fetchWeChatArchiveSyncStatus()
+  const finishedAt = payload.latest_result?.finished_at ?? null
+  const shouldRefreshArchive = Boolean(
+    finishedAt && seenSyncFinishedAt.value && finishedAt !== seenSyncFinishedAt.value && !payload.active,
+  )
   syncStatus.value = payload
-  startupSyncEnabled.value = payload.startup_sync_enabled
+  seenSyncFinishedAt.value = finishedAt
+  if (shouldRefreshArchive) {
+    await loadStatus()
+    await loadChats()
+    await loadSyncPlan()
+    await loadMessageTypes()
+    await loadMessages()
+  }
 }
 
 async function loadSyncPlan() {
-  const payload = await fetchWeChatArchiveSyncPlan({ max_chats: 8 })
+  const payload = await fetchWeChatArchiveSyncPlan({ max_chats: 8, kind: 'history' })
   syncPlan.value = payload.items
 }
 
@@ -230,7 +240,7 @@ async function runImport(mode: 'loaded' | 'scroll' | 'full') {
       mode,
       max_scrolls: mode === 'scroll' ? importScrolls.value : 0,
       exact: true,
-      save_media: false,
+      save_media: saveMedia.value,
     })
     lastImportResult.value = result
     ElMessage.success(`导入完成：新增 ${result.inserted} 条，读取 ${result.seen} 条`)
@@ -246,20 +256,34 @@ async function runImport(mode: 'loaded' | 'scroll' | 'full') {
   }
 }
 
-async function runSync(mode: 'incremental' | 'history') {
-  const payload = {
-    mode,
-    chat_name: mode === 'history' ? selectedChatName.value : undefined,
-    max_runtime: mode === 'history' ? 180 : 90,
-    max_chats: mode === 'history' ? 1 : 6,
-    max_scrolls_total: mode === 'history' ? 5 : 8,
-    max_scrolls_per_chat: mode === 'history' ? 5 : 1,
-    exact: true,
-    save_media: false,
-  }
-  if (mode === 'history' && !payload.chat_name) {
+async function runSync(mode: 'incremental' | 'history_current' | 'history_auto') {
+  if (mode === 'history_current' && !selectedChatName.value) {
     ElMessage.warning('请先选择会话')
     return
+  }
+
+  if (mode !== 'incremental') {
+    try {
+      const targetText = mode === 'history_current' ? `“${selectedChatName.value}”` : '清仓计划里的下一个会话'
+      await ElMessageBox.confirm(
+        `将连续控制微信窗口清仓 ${targetText} 的历史消息，直到到顶或预算耗尽。`,
+        '确认历史清仓',
+        { type: 'warning', confirmButtonText: '开始', cancelButtonText: '取消' },
+      )
+    } catch {
+      return
+    }
+  }
+
+  const payload = {
+    mode: mode === 'incremental' ? 'incremental' : 'history_clearance',
+    chat_name: mode === 'history_current' ? selectedChatName.value : undefined,
+    max_runtime: mode === 'incremental' ? 90 : 1800,
+    max_chats: mode === 'incremental' ? 6 : 1,
+    max_scrolls_total: mode === 'incremental' ? 8 : 200,
+    max_scrolls_per_chat: mode === 'incremental' ? 1 : 200,
+    exact: true,
+    save_media: saveMedia.value,
   }
 
   syncStartingMode.value = mode
@@ -271,18 +295,6 @@ async function runSync(mode: 'incremental' | 'history') {
     ElMessage.error(getErrorMessage(error))
   } finally {
     syncStartingMode.value = ''
-  }
-}
-
-async function changeStartupSyncEnabled(value: string | number | boolean) {
-  startupSwitchSaving.value = true
-  try {
-    const payload = await setWeChatArchiveStartupSyncEnabled(Boolean(value))
-    startupSyncEnabled.value = payload.startup_sync_enabled
-  } catch (error) {
-    ElMessage.error(getErrorMessage(error))
-  } finally {
-    startupSwitchSaving.value = false
   }
 }
 
@@ -355,6 +367,9 @@ onBeforeUnmount(() => {
         <el-button :loading="importing" size="small" type="primary" @click="runImport('full')">
           全量
         </el-button>
+        <el-checkbox v-model="saveMedia" :disabled="importing || syncActive" size="small">
+          保存媒体
+        </el-checkbox>
         <el-button :icon="Refresh" :loading="loading" size="small" text @click="refreshAll">
           刷新
         </el-button>
@@ -370,13 +385,6 @@ onBeforeUnmount(() => {
 
     <section class="sync-strip">
       <div class="sync-actions">
-        <span class="sync-label">启动同步</span>
-        <el-switch
-          v-model="startupSyncEnabled"
-          :loading="startupSwitchSaving"
-          size="small"
-          @change="changeStartupSyncEnabled"
-        />
         <el-button
           :icon="Timer"
           :loading="syncStartingMode === 'incremental'"
@@ -388,13 +396,23 @@ onBeforeUnmount(() => {
           增量同步
         </el-button>
         <el-button
-          :loading="syncStartingMode === 'history'"
+          :loading="syncStartingMode === 'history_current'"
           :disabled="syncActive || !selectedChatName"
           size="small"
           plain
-          @click="runSync('history')"
+          @click="runSync('history_current')"
         >
-          继续补历史
+          清仓当前
+        </el-button>
+        <el-button
+          :loading="syncStartingMode === 'history_auto'"
+          :disabled="syncActive || !syncPlan.length"
+          size="small"
+          type="primary"
+          plain
+          @click="runSync('history_auto')"
+        >
+          自动清仓下一个
         </el-button>
       </div>
       <div class="sync-state">
@@ -405,13 +423,14 @@ onBeforeUnmount(() => {
 
     <section v-if="syncPlan.length" class="sync-plan">
       <div class="panel-title compact">
-        <h2>本轮计划</h2>
+        <h2>清仓计划</h2>
         <span>{{ syncPlan.length }} 个</span>
       </div>
       <div class="plan-list">
         <div v-for="item in syncPlan.slice(0, 6)" :key="item.name" class="plan-row">
           <strong>{{ item.name }}</strong>
           <span>{{ formatNumber(item.message_count) }} 条</span>
+          <span>{{ item.first_message_time || '未知起点' }}</span>
           <span>分值 {{ item.score }}</span>
           <el-tag v-if="item.consecutive_failures" size="small" effect="plain" type="warning">
             失败 {{ item.consecutive_failures }}

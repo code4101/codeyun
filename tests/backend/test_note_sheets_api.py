@@ -135,17 +135,90 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         assert updated_sheet["version"] == 2
         assert updated_sheet["document_json"]["columns"] == ["姓名", "手机号", "组号"]
 
+        workbook_record = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook["id"])
+        ).first()
+        sheet_record = session.exec(
+            select(SheetDocument).where(SheetDocument.numeric_id == sheet["id"])
+        ).first()
+        assert workbook_record is not None
+        assert sheet_record is not None
+        session.add(ResourceAccessGrant(
+            resource_type="workbook",
+            resource_id=workbook_record.id,
+            subject_key="anonymous",
+            subject_type="anonymous",
+            role="viewer",
+        ))
+        session.add(ResourceAccessGrant(
+            resource_type="sheet",
+            resource_id=sheet_record.id,
+            subject_key="anonymous",
+            subject_type="anonymous",
+            role="viewer",
+        ))
+        session.commit()
+
         delete_workbook_response = client.delete(f"/api/note-sheets/workbooks/{workbook['id']}")
         assert delete_workbook_response.status_code == 200
 
         workbook_count = len(session.exec(select(WorkbookDocument)).all())
         sheet_count = len(session.exec(select(SheetDocument).where(SheetDocument.scope == "notes")).all())
         link_count = len(session.exec(select(WorkbookSheetLink)).all())
+        grant_count = len(session.exec(select(ResourceAccessGrant)).all())
         assert workbook_count == 0
-        assert sheet_count == 1
+        assert sheet_count == 0
         assert link_count == 0
+        assert grant_count == 0
+    finally:
+        _clear_user_override()
 
-        delete_sheet_response = client.delete(f"/api/note-sheets/sheets/{sheet['id']}")
+
+def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
+    user = _create_user(session, username="note-sheet-unpack-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "待解包工作簿"})
+        assert workbook_response.status_code == 200
+        workbook_id = workbook_response.json()["id"]
+
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={"title": "解包后保留的表", "workbook_id": workbook_id},
+        )
+        assert sheet_response.status_code == 200
+        sheet_id = sheet_response.json()["id"]
+
+        workbook_record = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)
+        ).first()
+        assert workbook_record is not None
+        session.add(ResourceAccessGrant(
+            resource_type="workbook",
+            resource_id=workbook_record.id,
+            subject_key="anonymous",
+            subject_type="anonymous",
+            role="viewer",
+        ))
+        session.commit()
+
+        unpack_response = client.post(f"/api/note-sheets/workbooks/{workbook_id}/unpack")
+        assert unpack_response.status_code == 200
+
+        workbooks = session.exec(select(WorkbookDocument)).all()
+        sheets = session.exec(select(SheetDocument).where(SheetDocument.scope == "notes")).all()
+        links = session.exec(select(WorkbookSheetLink)).all()
+        workbook_grants = session.exec(
+            select(ResourceAccessGrant).where(ResourceAccessGrant.resource_type == "workbook")
+        ).all()
+        assert workbooks == []
+        assert [item.numeric_id for item in sheets] == [sheet_id]
+        assert links == []
+        assert workbook_grants == []
+
+        delete_sheet_response = client.delete(f"/api/note-sheets/sheets/{sheet_id}")
         assert delete_sheet_response.status_code == 200
         assert session.exec(select(SheetDocument).where(SheetDocument.scope == "notes")).all() == []
     finally:
@@ -173,6 +246,119 @@ def test_note_sheet_attach_existing_sheet_to_workbook(client, session):
         assert attach_response.status_code == 200
         detail = attach_response.json()
         assert [item["id"] for item in detail["sheets"]] == [sheet_id]
+    finally:
+        _clear_user_override()
+
+
+def test_delete_workbook_preserves_sheets_linked_from_other_workbooks(client, session):
+    user = _create_user(session, username="note-sheet-shared-delete-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        first_workbook = client.post("/api/note-sheets/workbooks", json={"title": "工作簿A"}).json()
+        second_workbook = client.post("/api/note-sheets/workbooks", json={"title": "工作簿B"}).json()
+        sheet = client.post(
+            "/api/note-sheets/sheets",
+            json={"title": "共享表", "workbook_id": first_workbook["id"]},
+        ).json()
+        attach_response = client.post(
+            f"/api/note-sheets/workbooks/{second_workbook['id']}/sheets",
+            json={"sheet_id": sheet["id"]},
+        )
+        assert attach_response.status_code == 200
+
+        sheet_record = session.exec(
+            select(SheetDocument).where(SheetDocument.numeric_id == sheet["id"])
+        ).first()
+        assert sheet_record is not None
+        session.add(ResourceAccessGrant(
+            resource_type="sheet",
+            resource_id=sheet_record.id,
+            subject_key="anonymous",
+            subject_type="anonymous",
+            role="viewer",
+        ))
+        session.commit()
+
+        delete_first_response = client.delete(f"/api/note-sheets/workbooks/{first_workbook['id']}")
+        assert delete_first_response.status_code == 200
+        assert session.exec(select(SheetDocument).where(SheetDocument.id == sheet_record.id)).first() is not None
+        assert len(session.exec(select(WorkbookSheetLink)).all()) == 1
+        assert len(session.exec(select(ResourceAccessGrant)).all()) == 1
+
+        delete_second_response = client.delete(f"/api/note-sheets/workbooks/{second_workbook['id']}")
+        assert delete_second_response.status_code == 200
+        assert session.exec(select(SheetDocument).where(SheetDocument.id == sheet_record.id)).first() is None
+        assert session.exec(select(ResourceAccessGrant)).all() == []
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_workbook_library_lists_owned_shared_and_superuser_items(client, session):
+    owner = _create_user(session, username="workbook-library-owner")
+    viewer = _create_user(session, username="workbook-library-viewer")
+    outsider = _create_user(session, username="workbook-library-outsider")
+    superuser = _create_user(session, username="workbook-library-superuser", is_superuser=True)
+    for user in [viewer, superuser]:
+        _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+
+    owned_by_viewer = WorkbookDocument(
+        numeric_id=11,
+        title="查看者自己的工作簿",
+        owner_user_id=viewer.id,
+        created_by_user_id=viewer.id,
+        updated_by_user_id=viewer.id,
+        created_at=10,
+        updated_at=10,
+    )
+    shared_to_viewer = WorkbookDocument(
+        numeric_id=12,
+        title="共享给查看者的工作簿",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        created_at=20,
+        updated_at=20,
+    )
+    outsider_only = WorkbookDocument(
+        numeric_id=13,
+        title="其他人的工作簿",
+        owner_user_id=outsider.id,
+        created_by_user_id=outsider.id,
+        updated_by_user_id=outsider.id,
+        created_at=30,
+        updated_at=30,
+    )
+    session.add(owned_by_viewer)
+    session.add(shared_to_viewer)
+    session.add(outsider_only)
+    session.commit()
+    session.refresh(shared_to_viewer)
+
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=shared_to_viewer.id,
+        subject_key=f"user:{viewer.id}",
+        subject_type="user",
+        subject_user_id=viewer.id,
+        role="viewer",
+    ))
+    session.commit()
+
+    _override_user(viewer)
+    try:
+        viewer_response = client.get("/api/note-sheets/workbooks")
+        assert viewer_response.status_code == 200
+        assert [item["id"] for item in viewer_response.json()] == [12, 11]
+    finally:
+        _clear_user_override()
+
+    _override_user(superuser)
+    try:
+        superuser_response = client.get("/api/note-sheets/workbooks")
+        assert superuser_response.status_code == 200
+        assert {item["id"] for item in superuser_response.json()} == {11, 12, 13}
     finally:
         _clear_user_override()
 

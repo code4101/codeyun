@@ -3006,7 +3006,7 @@ def get_attendance_wjx_data_sheet_location(
     return AttendanceWjxDataSheetLocation(
         workbook_id=ATTENDANCE_WJX_DATA_WORKBOOK_ID,
         sheet_id=sheet_id,
-        path=f"/notes/sheets?workbook={ATTENDANCE_WJX_DATA_WORKBOOK_ID}&sheet={sheet_id}",
+        path=f"/workbook/{ATTENDANCE_WJX_DATA_WORKBOOK_ID}?sheet={sheet_id}",
     )
 
 

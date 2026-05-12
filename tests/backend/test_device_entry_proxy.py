@@ -68,12 +68,13 @@ def test_remote_entry_proxy_forwards_request(client, session, auth_user, monkeyp
         def content(self):
             return b'[]'
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
         captured["params"] = params
         captured["json"] = json
+        captured["proxies"] = proxies
         captured["timeout"] = timeout
         captured["stream"] = stream
         return FakeResponse()
@@ -88,6 +89,7 @@ def test_remote_entry_proxy_forwards_request(client, session, auth_user, monkeyp
     assert captured["url"] == "http://remote-device:8000/api/task/"
     assert captured["headers"]["Authorization"] == "Bearer remote-token"
     assert captured["headers"]["X-Device-Token"] == "remote-token"
+    assert captured["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
     assert captured["timeout"] == 10
 
 
@@ -1183,12 +1185,13 @@ def test_remote_entry_proxy_forwards_files_request(client, session, auth_user, m
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
         captured["params"] = params
         captured["json"] = json
+        captured["proxies"] = proxies
         captured["timeout"] = timeout
         captured["stream"] = stream
         return FakeResponse()
@@ -1236,12 +1239,13 @@ def test_remote_entry_proxy_forwards_device_root_directory_request(client, sessi
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
         captured["params"] = params
         captured["json"] = json
+        captured["proxies"] = proxies
         captured["timeout"] = timeout
         captured["stream"] = stream
         return FakeResponse()
@@ -1289,7 +1293,7 @@ def test_remote_entry_proxy_forwards_media_request(client, session, auth_user, m
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -1388,7 +1392,7 @@ def test_remote_entry_proxy_forwards_media_sort_mode(client, session, auth_user,
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["json"] = json
         return FakeResponse()
 
@@ -1428,7 +1432,7 @@ def test_remote_entry_proxy_forwards_reveal_file_request(client, session, auth_u
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["json"] = json
         captured["url"] = url
         return FakeResponse()
@@ -1470,7 +1474,7 @@ def test_remote_entry_proxy_forwards_media_sort_program(client, session, auth_us
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["json"] = json
         return FakeResponse()
 
@@ -1528,7 +1532,7 @@ def test_remote_entry_proxy_forwards_media_recursive_flag(client, session, auth_
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["json"] = json
         return FakeResponse()
 
@@ -1568,7 +1572,7 @@ def test_remote_entry_proxy_forwards_media_snapshot_pagination(client, session, 
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["json"] = json
         return FakeResponse()
 
@@ -1698,7 +1702,7 @@ def test_remote_entry_proxy_updates_device_media_weight_and_mirrors_local_cache(
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -1773,7 +1777,7 @@ def test_remote_entry_proxy_syncs_device_files_and_mirrors_local_cache(client, s
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -1811,6 +1815,7 @@ def test_remote_entry_proxy_syncs_device_files_and_mirrors_local_cache(client, s
                 "absolute_path": "root://attachments/videos/clip.mp4",
                 "hash_algorithm": "sha256",
                 "content_hash": "remote-hash",
+                "visual_hash_algorithm": "dhash-8",
                 "file_size": 4096,
                 "media_kind": "video",
                 "mime_type": "video/mp4",
@@ -1892,7 +1897,7 @@ def test_remote_entry_proxy_scans_device_files_and_mirrors_local_cache(client, s
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -1961,7 +1966,7 @@ def test_remote_entry_proxy_forwards_directory_request(client, session, auth_use
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -2014,7 +2019,7 @@ def test_remote_entry_proxy_forwards_directory_sort_program(client, session, aut
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["json"] = json
@@ -2082,7 +2087,7 @@ def test_remote_entry_proxy_forwards_absolute_files_request(client, session, aut
         def content(self):
             return b"{}"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -2141,7 +2146,7 @@ def test_remote_entry_proxy_streams_file_content(client, session, auth_user, mon
         def close(self):
             captured["closed"] = True
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -2246,7 +2251,7 @@ def test_remote_entry_proxy_stream_url_forwards_range_requests(client, session, 
         def close(self):
             captured["closed"] = True
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
@@ -2297,12 +2302,13 @@ def test_remote_entry_proxy_forwards_thumbnail_request(client, session, auth_use
         def content(self):
             return b"thumb"
 
-    def fake_request(method, url, headers=None, params=None, json=None, timeout=None, stream=False):
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
         captured["method"] = method
         captured["url"] = url
         captured["headers"] = headers
         captured["params"] = params
         captured["json"] = json
+        captured["proxies"] = proxies
         captured["timeout"] = timeout
         captured["stream"] = stream
         return FakeResponse()
@@ -2326,6 +2332,7 @@ def test_remote_entry_proxy_forwards_thumbnail_request(client, session, auth_use
     }
     assert captured["headers"]["Authorization"] == "Bearer remote-token"
     assert captured["headers"]["X-Device-Token"] == "remote-token"
+    assert captured["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
     assert captured["stream"] is False
     assert captured["timeout"] == 20
 
