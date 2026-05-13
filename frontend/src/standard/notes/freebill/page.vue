@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { FolderOpened, QuestionFilled, Refresh, Upload } from '@element-plus/icons-vue'
 import { BarChart, type BarSeriesOption } from 'echarts/charts'
@@ -14,18 +14,26 @@ import type { ComposeOption, ECharts } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
 
 import {
+  applyFreebillRecordOverrides,
+  clearFreebillRecordOverrides,
+  cloneFreebillProgramChannel,
+  createFreebillDateRangeRule,
   createFreebillIncludeAllProgram,
+  fetchFreebillCategoryBranchRecords,
   fetchFreebillDashboardByProgram,
   fetchFreebillFilterOptions,
   fetchFreebillSheetWorkbook,
   fetchFreebillStatus,
   importFreebillFiles,
+  normalizeFreebillProgramChannel,
   refreshFreebillSheetWorkbook,
   upsertFreebillDateRangeRule,
+  type FreebillCategoryStat,
   type FreebillDashboard,
   type FreebillFilterOptions,
   type FreebillImportSource,
   type FreebillProgramChannel,
+  type FreebillRecord,
   type FreebillSheetWorkbookSheet,
   type FreebillSheetWorkbook,
   type FreebillStatus,
@@ -60,6 +68,13 @@ const FREEBILL_SHEET_TABS = [
 ] as const
 type FreebillSheetTabKey = (typeof FREEBILL_SHEET_TABS)[number]['key']
 type NoteSheetWorkspaceInstance = InstanceType<typeof NoteSheetWorkspace>
+type CategoryBranchDetailState = {
+  loading: boolean
+  loaded: boolean
+  total: number
+  items: FreebillRecord[]
+  error: string
+}
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 140
 const SHEET_TAB_CONTEXT_MENU_HEIGHT = 90
 const RECORD_SHEET_FILTER_FIELDS = [
@@ -74,9 +89,38 @@ const RECORD_SHEET_FILTER_FIELDS = [
   { value: '金额', label: '金额', field: '金额', mode: 'number' },
   { value: '状态', label: '状态', field: '状态', mode: 'text' },
 ] as const
+const RECORD_SHEET_BACKEND_FIELD_MAP: Record<string, string> = {
+  create_time: '交易时间',
+  source: '来源',
+  direction: '收支',
+  type: '分类',
+  counterparty: '交易对方',
+  product_name: '商品',
+  amount: '金额',
+  status: '状态',
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const MIN_TREND_ZOOM_DAYS = 1
+const FREEBILL_FILTER_STATE_STORAGE_KEY = 'codeyun.freebill.filterState.v1'
+const CATEGORY_DETAIL_POPOVER_WIDTH = 760
+const CATEGORY_DETAIL_POPOVER_MAX_HEIGHT = 360
+const CATEGORY_DETAIL_POINTER_OFFSET_X = 12
+const CATEGORY_DETAIL_POINTER_OFFSET_Y = 14
+const CATEGORY_DIRECTION_COLORS: Record<string, string> = {
+  支出: '#d78377',
+  收入: '#86b96f',
+  不计收支: '#94a3b8',
+  '(空白)': '#7aa2c7',
+}
+const CATEGORY_DIRECTION_COLOR_PALETTE = [
+  '#7aa2c7',
+  '#c9985a',
+  '#9a86c8',
+  '#5da8a3',
+  '#c77b93',
+  '#8b9f5e',
+]
 
 const loading = ref(false)
 const sheetWorkbookLoading = ref(false)
@@ -85,32 +129,78 @@ const status = ref<FreebillStatus | null>(null)
 const dashboard = ref<FreebillDashboard | null>(null)
 const sheetWorkbook = ref<FreebillSheetWorkbook | null>(null)
 const sheetReloadToken = ref(0)
-const dataProgram = ref<FreebillProgramChannel>(createFreebillIncludeAllProgram())
-const sheetViewProgram = ref<FreebillProgramChannel>(createFreebillIncludeAllProgram())
+const restoredFilterState = readFreebillFilterState()
+const backendProgram = ref<FreebillProgramChannel>(restoredFilterState?.backendProgram ?? createFreebillIncludeAllProgram())
+const frontendProgram = ref<FreebillProgramChannel>(restoredFilterState?.frontendProgram ?? createDefaultPassThroughProgram())
+const sheetViewProgram = ref<FreebillProgramChannel>(restoredFilterState?.sheetViewProgram ?? createDefaultPassThroughProgram())
 const filterOptions = ref<FreebillFilterOptions>({
   sources: [],
   directions: [],
   categories: [],
 })
-const trendGranularity = ref<FreebillTrendGranularity>('month')
+const trendGranularity = ref<FreebillTrendGranularity>(restoredFilterState?.trendGranularity ?? 'month')
 const alipayFileInput = ref<HTMLInputElement | null>(null)
 const wechatFileInput = ref<HTMLInputElement | null>(null)
 const trendChartRef = ref<HTMLDivElement | null>(null)
+const expandedCategoryKeys = ref<Set<string>>(new Set())
+const recordOverrideLoadingTradeNos = ref<Set<string>>(new Set())
 const sheetWorkspaceRefs = new Map<FreebillSheetTabKey, NoteSheetWorkspaceInstance>()
+const autoExpandedCategoryKeys = new Set<string>()
 const sheetTabContextMenu = ref({
   visible: false,
   key: null as FreebillSheetTabKey | null,
   left: 0,
   top: 0,
 })
+const categoryDetailPopover = reactive({
+  visible: false,
+  key: '',
+  direction: '',
+  category: null as string | null,
+  counterparty: null as string | null,
+  left: 0,
+  top: 0,
+})
 let trendZoomTimer: ReturnType<typeof window.setTimeout> | undefined
+let categoryDetailHideTimer: ReturnType<typeof window.setTimeout> | undefined
 let trendChart: ECharts | null = null
 let trendResizeObserver: ResizeObserver | undefined
+let lastAppliedDefaultFrontendRangeKey = restoredFilterState?.lastAppliedDefaultFrontendRangeKey ?? ''
+let persistedBackendProgram = cloneFreebillProgramChannel(backendProgram.value)
+let suppressNextFrontendProgramQuery = false
+const categoryBranchDetailCache = reactive<Record<string, CategoryBranchDetailState>>({})
 
 const summary = computed(() => dashboard.value?.summary ?? emptySummary)
-const dateRangeText = computed(() => {
-  if (!status.value?.min_date || !status.value.max_date) return '暂无账单'
-  return `${status.value.min_date} 至 ${status.value.max_date}`
+const activeCategoryDetailState = computed(() => {
+  if (!categoryDetailPopover.visible || !categoryDetailPopover.direction) return null
+  return getCategoryDetailState(
+    categoryDetailPopover.direction,
+    categoryDetailPopover.category,
+    categoryDetailPopover.counterparty,
+  )
+})
+const categoryDetailPopoverStyle = computed(() => {
+  if (typeof window === 'undefined') {
+    return { left: '0px', top: '0px' }
+  }
+  const margin = 10
+  const width = Math.min(CATEGORY_DETAIL_POPOVER_WIDTH, window.innerWidth - margin * 2)
+  const height = Math.min(CATEGORY_DETAIL_POPOVER_MAX_HEIGHT, window.innerHeight - margin * 2)
+  let left = categoryDetailPopover.left + CATEGORY_DETAIL_POINTER_OFFSET_X
+  let top = categoryDetailPopover.top + CATEGORY_DETAIL_POINTER_OFFSET_Y
+
+  if (left + width > window.innerWidth - margin) {
+    left = Math.max(margin, window.innerWidth - margin - width)
+  }
+  if (top + height > window.innerHeight - margin) {
+    top = Math.max(margin, categoryDetailPopover.top - height - CATEGORY_DETAIL_POINTER_OFFSET_Y)
+  }
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${width}px`,
+    maxHeight: `${height}px`,
+  }
 })
 const lastImportedText = computed(() => {
   const value = status.value?.last_imported_at
@@ -121,8 +211,6 @@ const summaryItems = computed(() => [
   { key: 'expense', label: '支出', value: formatMoney(summary.value.total_expense), tone: 'expense' },
   { key: 'balance', label: '结余', value: formatMoney(summary.value.balance), tone: summary.value.balance < 0 ? 'expense' : 'balance' },
   { key: 'count', label: '记录', value: formatNumber(summary.value.total_count), tone: 'muted' },
-  { key: 'raw', label: '原始文件', value: formatNumber(status.value?.raw_file_count ?? 0), tone: 'muted' },
-  { key: 'range', label: '跨度', value: dateRangeText.value, tone: 'muted' },
 ])
 const trendGranularityOptions: Array<{ label: string; value: FreebillTrendGranularity }> = [
   { label: '日', value: 'day' },
@@ -144,9 +232,11 @@ const trendItems = computed(() => {
   return items.map((item, index) => {
     const fullPeriod = formatTrendPeriod(item.month)
     const previousFullPeriod = index > 0 ? formatTrendPeriod(items[index - 1]?.month) : ''
+    const axisAnchor = isTrendAxisAnchor(fullPeriod, previousFullPeriod, index)
     return {
       ...item,
       fullPeriod,
+      axisAnchor,
       axisLabel: buildTrendAxisLabel(fullPeriod, previousFullPeriod, index),
     }
   })
@@ -154,23 +244,22 @@ const trendItems = computed(() => {
 const trendChartStyle = computed(() => ({
   width: `${Math.max(360, 66 + trendItems.value.length * 44)}px`,
 }))
-const maxExpenseCategory = computed(() => Math.max(
-  0,
-  ...(dashboard.value?.expense_categories ?? []).map((item) => Number(item.value || 0)),
-))
-const maxIncomeCategory = computed(() => Math.max(
-  0,
-  ...(dashboard.value?.income_categories ?? []).map((item) => Number(item.value || 0)),
-))
+const categoryTreeItems = computed(() => {
+  const tree = dashboard.value?.category_tree ?? []
+  if (tree.length) return tree
+  return buildLegacyCategoryTree()
+})
+const maxCategoryValue = computed(() => Math.max(0, ...flattenCategoryValues(categoryTreeItems.value)))
 const workbookId = computed(() => sheetWorkbook.value?.workbook.id ?? null)
 const sheetTabs = computed(() => FREEBILL_SHEET_TABS.map((tab) => ({
   ...tab,
   sheet: getSheetItem(tab.key),
 })))
 const activeSheetKey = ref<(typeof FREEBILL_SHEET_TABS)[number]['key']>('records')
-const activeSheetRowFilterProgram = computed(() => (
-  activeSheetKey.value === 'records' ? sheetViewProgram.value : null
-))
+const recordsBaseRowFilterPrograms = computed(() => [
+  mapProgramFields(backendProgram.value, RECORD_SHEET_BACKEND_FIELD_MAP),
+  mapProgramFields(frontendProgram.value, RECORD_SHEET_BACKEND_FIELD_MAP),
+])
 const sheetTabContextMenuTab = computed(() => (
   sheetTabs.value.find((tab) => tab.key === sheetTabContextMenu.value.key) ?? null
 ))
@@ -185,8 +274,10 @@ async function loadStatus() {
 }
 
 async function loadDashboard() {
+  clearCategoryDetailCache()
   dashboard.value = await fetchFreebillDashboardByProgram({
-    program: dataProgram.value,
+    program: backendProgram.value,
+    programs: [backendProgram.value, frontendProgram.value],
     trend_granularity: trendGranularity.value,
   })
 }
@@ -232,8 +323,9 @@ function openWorkbookSheet(sheet: FreebillSheetWorkbookSheet | null | undefined)
 async function refreshAll() {
   loading.value = true
   try {
+    await loadStatus()
+    suppressNextFrontendProgramQuery = ensureFrontendDefaultProgram()
     await Promise.all([
-      loadStatus(),
       loadDashboard(),
       loadFilterOptions(),
       loadSheetWorkbook(),
@@ -248,14 +340,19 @@ async function refreshAll() {
 async function executeQuery() {
   try {
     await loadDashboard()
+    return true
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
+    return false
   }
 }
 
-async function applyDataProgram() {
+async function applyBackendProgram() {
   syncTrendGranularityToProgramRange()
-  await executeQuery()
+  if (await executeQuery()) {
+    persistedBackendProgram = cloneFreebillProgramChannel(backendProgram.value)
+    persistFreebillFilterState()
+  }
 }
 
 async function changeTrendGranularity() {
@@ -267,7 +364,12 @@ async function changeTrendGranularity() {
 }
 
 function resetSheetViewProgram() {
-  sheetViewProgram.value = createFreebillIncludeAllProgram()
+  sheetViewProgram.value = createDefaultPassThroughProgram()
+}
+
+function resetFrontendProgram() {
+  ensureFrontendDefaultProgram(true)
+  syncTrendGranularityToProgramRange()
 }
 
 function applySheetWorkbook(payload: FreebillSheetWorkbook | null | undefined) {
@@ -290,6 +392,151 @@ function getSheetItem(key: string): FreebillSheetWorkbookSheet | null {
 function getSheetWorkspaceKey(key: string) {
   const sheet = getSheetItem(key)
   return `${workbookId.value ?? 'none'}:${sheet?.sheet_id ?? 'none'}:${sheet?.updated_at ?? 0}:${sheetReloadToken.value}`
+}
+
+function mapProgramFields(program: FreebillProgramChannel, fieldMap: Record<string, string>) {
+  const draft = cloneFreebillProgramChannel(program)
+  draft.rules.forEach((rule) => {
+    if (rule.matcher.kind !== 'field' || !rule.matcher.field) return
+    rule.matcher.field = fieldMap[rule.matcher.field] ?? rule.matcher.field
+  })
+  return draft
+}
+
+function ensureFrontendDefaultProgram(force = false) {
+  const range = getLatestDataYearRange()
+  if (!range) {
+    if (force) {
+      frontendProgram.value = createDefaultPassThroughProgram()
+      lastAppliedDefaultFrontendRangeKey = ''
+      return true
+    }
+    return false
+  }
+
+  const nextProgram = createFrontendDateRangeProgram(range)
+  const nextRangeKey = getProgramDateRangeKey(nextProgram, 'create_time')
+  const currentRangeKey = getProgramDateRangeKey(frontendProgram.value, 'create_time')
+  const shouldApply = force
+    || isIncludeAllProgram(frontendProgram.value)
+    || !frontendProgram.value.rules.length
+    || (
+      isOnlyDateRangeProgram(frontendProgram.value, 'create_time')
+      && (!lastAppliedDefaultFrontendRangeKey || currentRangeKey === lastAppliedDefaultFrontendRangeKey)
+    )
+
+  if (!shouldApply) return false
+  frontendProgram.value = nextProgram
+  lastAppliedDefaultFrontendRangeKey = nextRangeKey
+  syncTrendGranularityToProgramRange()
+  return true
+}
+
+function createDefaultPassThroughProgram(): FreebillProgramChannel {
+  return {
+    default: true,
+    rules: [],
+  }
+}
+
+type FreebillFilterState = {
+  backendProgram: FreebillProgramChannel
+  frontendProgram: FreebillProgramChannel
+  sheetViewProgram: FreebillProgramChannel
+  trendGranularity: FreebillTrendGranularity
+  lastAppliedDefaultFrontendRangeKey: string
+}
+
+function canUseLocalStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeTrendGranularityValue(value: unknown): FreebillTrendGranularity {
+  return value === 'day' || value === 'week' || value === 'year' ? value : 'month'
+}
+
+function normalizeStoredProgram(value: unknown, fallback: FreebillProgramChannel) {
+  return isRecord(value)
+    ? normalizeFreebillProgramChannel(value)
+    : cloneFreebillProgramChannel(fallback)
+}
+
+function readFreebillFilterState(): FreebillFilterState | null {
+  if (!canUseLocalStorage()) return null
+
+  try {
+    const raw = window.localStorage.getItem(FREEBILL_FILTER_STATE_STORAGE_KEY)
+    if (!raw) return null
+    const payload = JSON.parse(raw) as Record<string, unknown>
+    return {
+      backendProgram: normalizeStoredProgram(payload.backendProgram, createFreebillIncludeAllProgram()),
+      frontendProgram: normalizeStoredProgram(payload.frontendProgram, createDefaultPassThroughProgram()),
+      sheetViewProgram: normalizeStoredProgram(payload.sheetViewProgram, createDefaultPassThroughProgram()),
+      trendGranularity: normalizeTrendGranularityValue(payload.trendGranularity),
+      lastAppliedDefaultFrontendRangeKey: typeof payload.lastAppliedDefaultFrontendRangeKey === 'string'
+        ? payload.lastAppliedDefaultFrontendRangeKey
+        : '',
+    }
+  } catch (error) {
+    console.warn('Failed to restore freebill filter state', error)
+    window.localStorage.removeItem(FREEBILL_FILTER_STATE_STORAGE_KEY)
+    return null
+  }
+}
+
+function persistFreebillFilterState() {
+  if (!canUseLocalStorage()) return
+
+  window.localStorage.setItem(FREEBILL_FILTER_STATE_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    updatedAt: Date.now(),
+    backendProgram: cloneFreebillProgramChannel(persistedBackendProgram),
+    frontendProgram: cloneFreebillProgramChannel(frontendProgram.value),
+    sheetViewProgram: cloneFreebillProgramChannel(sheetViewProgram.value),
+    trendGranularity: normalizeTrendGranularityValue(trendGranularity.value),
+    lastAppliedDefaultFrontendRangeKey,
+  }))
+}
+
+function createFrontendDateRangeProgram(range: DateRange): FreebillProgramChannel {
+  const normalized = normalizeDateRange(range)
+  return {
+    default: true,
+    rules: [
+      createFreebillDateRangeRule(
+        'create_time',
+        formatLocalDate(normalized.start),
+        formatLocalDate(normalized.end),
+      ),
+    ],
+  }
+}
+
+function isIncludeAllProgram(program: FreebillProgramChannel) {
+  return program.default === false
+    && program.rules.length === 1
+    && program.rules[0]?.action === 'include'
+    && program.rules[0]?.matcher.kind === 'all'
+}
+
+function isOnlyDateRangeProgram(program: FreebillProgramChannel, field: string) {
+  const rule = program.rules[0]
+  return program.default === true
+    && program.rules.length === 1
+    && rule?.action === 'filter'
+    && rule.matcher.kind === 'field'
+    && rule.matcher.field === field
+    && rule.matcher.op === 'between'
+}
+
+function getProgramDateRangeKey(program: FreebillProgramChannel, field: string) {
+  const range = getProgramDateRange(program, field)
+  if (!range) return ''
+  return `${formatLocalDate(range.start)}:${formatLocalDate(range.end)}`
 }
 
 function setSheetWorkspaceRef(key: FreebillSheetTabKey, instance: unknown) {
@@ -389,16 +636,32 @@ function handleTrendWheel(event: WheelEvent) {
   const nextRange = zoomDateRange(currentRange, anchorRatio, zoomFactor, bounds)
   const nextStart = formatLocalDate(nextRange.start)
   const nextEnd = formatLocalDate(nextRange.end)
-  const currentProgramRange = getProgramDateRange(dataProgram.value, 'create_time')
+  const currentProgramRange = getProgramDateRange(frontendProgram.value, 'create_time')
   if (
     currentProgramRange
     && nextStart === formatLocalDate(currentProgramRange.start)
     && nextEnd === formatLocalDate(currentProgramRange.end)
   ) return
 
-  dataProgram.value = upsertFreebillDateRangeRule(dataProgram.value, 'create_time', nextStart, nextEnd)
+  frontendProgram.value = ensureDateRangeRuleFirst(
+    upsertFreebillDateRangeRule(frontendProgram.value, 'create_time', nextStart, nextEnd),
+    'create_time',
+  )
   trendGranularity.value = pickTrendGranularity(nextRange)
-  scheduleTrendZoomQuery()
+}
+
+function ensureDateRangeRuleFirst(program: FreebillProgramChannel, field: string) {
+  const draft = cloneFreebillProgramChannel(program)
+  const index = draft.rules.findIndex((rule) => (
+    rule.matcher.kind === 'field'
+    && rule.matcher.field === field
+    && rule.matcher.op === 'between'
+  ))
+  if (index > 0) {
+    const [rule] = draft.rules.splice(index, 1)
+    if (rule) draft.rules.unshift(rule)
+  }
+  return draft
 }
 
 function scheduleTrendZoomQuery() {
@@ -454,15 +717,311 @@ function formatNumber(value: number | null | undefined) {
 function formatMoney(value: number | null | undefined) {
   const numberValue = Number(value || 0)
   const normalized = Object.is(numberValue, -0) ? 0 : numberValue
-  return `¥${normalized.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  return formatSignificantUnitNumber(normalized)
 }
 
 function formatCompactMoney(value: number | null | undefined) {
   const numberValue = Number(value || 0)
-  const sign = numberValue < 0 ? '-' : ''
-  const absValue = Math.abs(numberValue)
-  if (absValue >= 10000) return `${sign}${(absValue / 10000).toFixed(1)}万`
-  return `${sign}${absValue.toFixed(absValue >= 100 ? 0 : 2)}`
+  return formatSignificantUnitNumber(numberValue)
+}
+
+function formatSignificantUnitNumber(value: number, significantDigits = 4) {
+  if (!Number.isFinite(value)) return '0'
+  const normalized = Object.is(value, -0) ? 0 : value
+  const sign = normalized < 0 ? '-' : ''
+  const absValue = Math.abs(normalized)
+  if (absValue >= 100000000) {
+    return `${sign}${formatSignificantDigits(absValue / 100000000, significantDigits)}亿`
+  }
+  if (absValue >= 10000) {
+    return `${sign}${formatSignificantDigits(absValue / 10000, significantDigits)}万`
+  }
+  return `${sign}${formatSignificantDigits(absValue, significantDigits, false)}`
+}
+
+function formatSignificantDigits(value: number, significantDigits: number, useGrouping = true) {
+  if (!Number.isFinite(value) || value === 0) return '0'
+  const decimalDigits = Math.max(0, significantDigits - Math.floor(Math.log10(Math.abs(value))) - 1)
+  return value.toLocaleString(undefined, {
+    useGrouping,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimalDigits,
+  })
+}
+
+function formatCategoryBarLabel(value: number | null | undefined) {
+  return formatCompactMoney(value)
+}
+
+function buildLegacyCategoryTree(): FreebillCategoryStat[] {
+  const tree: FreebillCategoryStat[] = []
+  if (dashboard.value?.expense_categories.length) {
+    tree.push({
+      name: '支出',
+      value: dashboard.value.summary.total_expense,
+      count: dashboard.value.expense_categories.reduce((sum, item) => sum + Number(item.count || 0), 0),
+      children: dashboard.value.expense_categories,
+    })
+  }
+  if (dashboard.value?.income_categories.length) {
+    tree.push({
+      name: '收入',
+      value: dashboard.value.summary.total_income,
+      count: dashboard.value.income_categories.reduce((sum, item) => sum + Number(item.count || 0), 0),
+      children: dashboard.value.income_categories,
+    })
+  }
+  return tree
+}
+
+function flattenCategoryValues(items: FreebillCategoryStat[]): number[] {
+  const values: number[] = []
+  items.forEach((item) => {
+    values.push(Number(item.value || 0))
+    values.push(...flattenCategoryValues(getCategoryChildren(item)))
+  })
+  return values
+}
+
+function getCategoryKey(...parts: string[]) {
+  return parts.map((part) => encodeURIComponent(part)).join('/')
+}
+
+function getCategoryChildren(item: FreebillCategoryStat) {
+  return Array.isArray(item.children) ? item.children : []
+}
+
+function hasCategoryChildren(item: FreebillCategoryStat) {
+  return getCategoryChildren(item).length > 0
+}
+
+function isCategoryExpanded(...parts: string[]) {
+  return expandedCategoryKeys.value.has(getCategoryKey(...parts))
+}
+
+function toggleCategoryExpanded(...parts: string[]) {
+  const key = getCategoryKey(...parts)
+  const next = new Set(expandedCategoryKeys.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  expandedCategoryKeys.value = next
+}
+
+function getCategoryDetailKey(direction: string, category?: string | null, counterparty?: string | null) {
+  return getCategoryKey('detail', direction, category || '', counterparty || '')
+}
+
+function createCategoryDetailState(): CategoryBranchDetailState {
+  return {
+    loading: false,
+    loaded: false,
+    total: 0,
+    items: [],
+    error: '',
+  }
+}
+
+function getCategoryDetailState(direction: string, category?: string | null, counterparty?: string | null) {
+  const key = getCategoryDetailKey(direction, category, counterparty)
+  if (!categoryBranchDetailCache[key]) {
+    categoryBranchDetailCache[key] = createCategoryDetailState()
+  }
+  return categoryBranchDetailCache[key]
+}
+
+function clearCategoryDetailCache() {
+  hideCategoryDetailPopover()
+  Object.keys(categoryBranchDetailCache).forEach((key) => {
+    delete categoryBranchDetailCache[key]
+  })
+}
+
+function updateCategoryDetailPopoverPosition(event: MouseEvent) {
+  categoryDetailPopover.left = event.clientX
+  categoryDetailPopover.top = event.clientY
+}
+
+function keepCategoryDetailPopoverVisible() {
+  if (categoryDetailHideTimer !== undefined) {
+    window.clearTimeout(categoryDetailHideTimer)
+    categoryDetailHideTimer = undefined
+  }
+}
+
+function showCategoryDetailPopover(
+  event: MouseEvent,
+  direction: string,
+  category?: string | null,
+  counterparty?: string | null,
+) {
+  keepCategoryDetailPopoverVisible()
+  updateCategoryDetailPopoverPosition(event)
+  categoryDetailPopover.key = getCategoryDetailKey(direction, category, counterparty)
+  categoryDetailPopover.direction = direction
+  categoryDetailPopover.category = category ?? null
+  categoryDetailPopover.counterparty = counterparty ?? null
+  categoryDetailPopover.visible = true
+  void loadCategoryBranchRecords(direction, category, counterparty)
+}
+
+function moveCategoryDetailPopover(event: MouseEvent) {
+  updateCategoryDetailPopoverPosition(event)
+}
+
+function scheduleCategoryDetailPopoverHide() {
+  keepCategoryDetailPopoverVisible()
+  categoryDetailHideTimer = window.setTimeout(() => {
+    categoryDetailPopover.visible = false
+    categoryDetailHideTimer = undefined
+  }, 160)
+}
+
+function hideCategoryDetailPopover() {
+  keepCategoryDetailPopoverVisible()
+  categoryDetailPopover.visible = false
+  categoryDetailPopover.key = ''
+  categoryDetailPopover.direction = ''
+  categoryDetailPopover.category = null
+  categoryDetailPopover.counterparty = null
+}
+
+async function loadCategoryBranchRecords(direction: string, category?: string | null, counterparty?: string | null) {
+  const state = getCategoryDetailState(direction, category, counterparty)
+  if (state.loading || state.loaded) return
+  state.loading = true
+  state.error = ''
+  try {
+    const result = await fetchFreebillCategoryBranchRecords({
+      program: backendProgram.value,
+      programs: [backendProgram.value, frontendProgram.value],
+      direction,
+      category,
+      counterparty,
+      limit: 10,
+    })
+    state.items = result.items
+    state.total = result.total
+    state.loaded = true
+  } catch (error) {
+    state.error = getErrorMessage(error)
+  } finally {
+    state.loading = false
+  }
+}
+
+function formatCategoryDetailTime(value: string | null | undefined) {
+  const text = (value || '').trim()
+  if (!text) return '-'
+  return text.slice(0, 16).replaceAll('-', '/')
+}
+
+function formatCategoryDetailText(value: string | number | null | undefined) {
+  const text = String(value ?? '').trim()
+  return text || '-'
+}
+
+function getRecordTradeNo(record: FreebillRecord) {
+  return String(record.trade_no || '').trim()
+}
+
+function isFlowOverrideRecord(record: FreebillRecord) {
+  return record.direction === '不计收支' && record.type === '流水'
+}
+
+function isRecordOverrideLoading(record: FreebillRecord) {
+  const tradeNo = getRecordTradeNo(record)
+  return Boolean(tradeNo && recordOverrideLoadingTradeNos.value.has(tradeNo))
+}
+
+function setRecordOverrideLoading(record: FreebillRecord, loadingState: boolean) {
+  const tradeNo = getRecordTradeNo(record)
+  if (!tradeNo) return
+  const next = new Set(recordOverrideLoadingTradeNos.value)
+  if (loadingState) {
+    next.add(tradeNo)
+  } else {
+    next.delete(tradeNo)
+  }
+  recordOverrideLoadingTradeNos.value = next
+}
+
+async function reloadAfterRecordOverride() {
+  clearCategoryDetailCache()
+  await Promise.all([
+    loadStatus(),
+    loadDashboard(),
+    refreshFreebillSheetWorkbook().then(applySheetWorkbook),
+  ])
+}
+
+async function markRecordAsFlow(record: FreebillRecord) {
+  const tradeNo = getRecordTradeNo(record)
+  if (!tradeNo) {
+    ElMessage.warning('这条记录没有交易单号，不能保存人工标记')
+    return
+  }
+  setRecordOverrideLoading(record, true)
+  try {
+    const result = await applyFreebillRecordOverrides({
+      trade_nos: [tradeNo],
+      direction: '不计收支',
+      category: '流水',
+      note: '人工确认不计收支流水',
+    })
+    if (!result.matched) {
+      ElMessage.warning('没有找到对应账单记录')
+      return
+    }
+    await reloadAfterRecordOverride()
+    ElMessage.success('已标记为不计收支 / 流水')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    setRecordOverrideLoading(record, false)
+  }
+}
+
+async function clearRecordFlowOverride(record: FreebillRecord) {
+  const tradeNo = getRecordTradeNo(record)
+  if (!tradeNo) {
+    ElMessage.warning('这条记录没有交易单号，不能还原')
+    return
+  }
+  setRecordOverrideLoading(record, true)
+  try {
+    const result = await clearFreebillRecordOverrides({ trade_nos: [tradeNo] })
+    if (!result.cleared) {
+      ElMessage.warning('这条记录没有人工标记')
+      return
+    }
+    await reloadAfterRecordOverride()
+    ElMessage.success('已还原人工标记')
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error))
+  } finally {
+    setRecordOverrideLoading(record, false)
+  }
+}
+
+function getCategoryColor(direction: string) {
+  const normalized = (direction || '(空白)').trim() || '(空白)'
+  const fixedColor = CATEGORY_DIRECTION_COLORS[normalized]
+  if (fixedColor) return fixedColor
+  let hash = 0
+  Array.from(normalized).forEach((char) => {
+    hash = (hash * 31 + char.codePointAt(0)!) % CATEGORY_DIRECTION_COLOR_PALETTE.length
+  })
+  return CATEGORY_DIRECTION_COLOR_PALETTE[hash]
+}
+
+function getCategoryBarStyle(direction: string, value: number | null | undefined, maxValue: number) {
+  return {
+    width: barWidth(value, maxValue),
+    backgroundColor: getCategoryColor(direction),
+  }
 }
 
 function formatTrendPeriod(value: string | null | undefined) {
@@ -476,16 +1035,37 @@ function formatTrendPeriod(value: string | null | undefined) {
 function buildTrendAxisLabel(current: string, previous: string, index: number) {
   if (current === '-') return current
   if (trendGranularity.value === 'year') return current
+  if (isTrendAxisAnchor(current, previous, index)) return current
   if (trendGranularity.value === 'month') {
-    return index === 0 || current.slice(0, 4) !== previous.slice(0, 4)
-      ? current
-      : current.slice(5, 7)
+    return current.slice(5, 7)
   }
-  if (index === 0 || current.slice(0, 4) !== previous.slice(0, 4)) return current
   if (trendGranularity.value === 'day' && current.slice(0, 7) === previous.slice(0, 7)) {
     return current.slice(8, 10)
   }
   return current.slice(5, 10)
+}
+
+function isTrendAxisAnchor(current: string, previous: string, index: number) {
+  if (current === '-') return false
+  if (index === 0 || !previous || previous === '-') return true
+  if (trendGranularity.value === 'month') {
+    return current.slice(0, 4) !== previous.slice(0, 4)
+  }
+  if (trendGranularity.value === 'day' || trendGranularity.value === 'week') {
+    return current.slice(0, 7) !== previous.slice(0, 7)
+  }
+  return false
+}
+
+function shouldShowTrendAxisLabel(
+  index: number,
+  items: Array<{ axisAnchor: boolean }>,
+  labelStep: number,
+) {
+  if (items.length <= 18) return true
+  if (items[index]?.axisAnchor) return true
+  if (items[index - 1]?.axisAnchor || items[index + 1]?.axisAnchor) return false
+  return index % labelStep === 0
 }
 
 async function updateTrendChart() {
@@ -527,10 +1107,7 @@ function buildTrendChartOption(): TrendChartOption {
       containLabel: false,
     },
     tooltip: {
-      trigger: 'axis',
-      axisPointer: {
-        type: 'shadow',
-      },
+      trigger: 'item',
       borderColor: '#dfe5ee',
       confine: true,
       formatter: buildTrendTooltip,
@@ -555,7 +1132,7 @@ function buildTrendChartOption(): TrendChartOption {
       axisLabel: {
         color: '#334155',
         fontSize: 11,
-        interval: (index: number) => items.length <= 18 || index % labelStep === 0,
+        interval: (index: number) => shouldShowTrendAxisLabel(index, items, labelStep),
       },
     },
     yAxis: {
@@ -616,10 +1193,13 @@ function buildTrendTooltip(params: unknown) {
   if (!item) return ''
   return [
     `<div style="font-weight:650;margin-bottom:5px;">${escapeHtml(item.fullPeriod)}</div>`,
-    `<div><span style="display:inline-block;width:7px;height:7px;background:#d78377;margin-right:6px;"></span>支出 ${formatMoney(item.expense)}</div>`,
-    `<div><span style="display:inline-block;width:7px;height:7px;background:#86b96f;margin-right:6px;"></span>收入 ${formatMoney(item.income)}</div>`,
-    `<div style="color:#64748b;margin-top:4px;">${formatNumber(Number(item.count || 0))} 条</div>`,
+    buildTrendTooltipLine('支出', '#d78377', item.expense, item.expense_count),
+    buildTrendTooltipLine('收入', '#86b96f', item.income, item.income_count),
   ].join('')
+}
+
+function buildTrendTooltipLine(label: string, color: string, value: number | null | undefined, count: number | null | undefined) {
+  return `<div><span style="display:inline-block;width:7px;height:7px;background:${color};margin-right:6px;"></span>${label} ${formatMoney(value)} · ${formatNumber(Number(count || 0))} 条</div>`
 }
 
 function escapeHtml(value: string) {
@@ -632,7 +1212,8 @@ function escapeHtml(value: string) {
 }
 
 function syncTrendGranularityToProgramRange() {
-  const range = getProgramDateRange(dataProgram.value, 'create_time')
+  const range = getProgramDateRange(frontendProgram.value, 'create_time')
+    ?? getProgramDateRange(backendProgram.value, 'create_time')
   if (!range) return
   trendGranularity.value = pickTrendGranularity(range)
 }
@@ -648,7 +1229,9 @@ function pickTrendGranularity(range: DateRange): FreebillTrendGranularity {
 function getActiveTrendDateRange(): DateRange | null {
   const bounds = getDataDateBounds()
   const chartRange = getTrendDateRange()
-  const programRange = getProgramDateRange(dataProgram.value, 'create_time')
+  const frontendRange = getProgramDateRange(frontendProgram.value, 'create_time')
+  const backendRange = getProgramDateRange(backendProgram.value, 'create_time')
+  const programRange = frontendRange ?? backendRange
   const start = programRange?.start ?? chartRange?.start ?? bounds?.start
   const end = programRange?.end ?? chartRange?.end ?? bounds?.end
   if (!start || !end) return null
@@ -659,11 +1242,22 @@ function getActiveTrendDateRange(): DateRange | null {
 function getProgramDateRange(program: FreebillProgramChannel, field: string): DateRange | null {
   for (let index = program.rules.length - 1; index >= 0; index -= 1) {
     const rule = program.rules[index]
-    if (rule?.matcher.kind !== 'field' || rule.matcher.field !== field || rule.matcher.op !== 'between') continue
-    const values = Array.isArray(rule.matcher.values) ? rule.matcher.values : []
-    const start = parseLocalDate(String(values[0] || ''))
-    const end = parseLocalDate(String(values[1] || ''))
-    if (start && end) return normalizeDateRange({ start, end })
+    if (rule?.matcher.kind !== 'field' || rule.matcher.field !== field) continue
+    if (rule.matcher.op === 'year') {
+      const year = Number(rule.matcher.value)
+      if (Number.isInteger(year) && year >= 1 && year <= 9999) {
+        return normalizeDateRange({
+          start: new Date(year, 0, 1),
+          end: new Date(year, 11, 31),
+        })
+      }
+    }
+    if (rule.matcher.op === 'between') {
+      const values = Array.isArray(rule.matcher.values) ? rule.matcher.values : []
+      const start = parseLocalDate(String(values[0] || ''))
+      const end = parseLocalDate(String(values[1] || ''))
+      if (start && end) return normalizeDateRange({ start, end })
+    }
   }
   return null
 }
@@ -682,6 +1276,16 @@ function getDataDateBounds(): DateRange | null {
   const end = parseLocalDate(status.value?.max_date)
   if (!start || !end) return null
   return normalizeDateRange({ start, end })
+}
+
+function getLatestDataYearRange(): DateRange | null {
+  const bounds = getDataDateBounds()
+  if (!bounds) return null
+  const year = bounds.end.getFullYear()
+  return clampDateRange({
+    start: new Date(year, 0, 1),
+    end: new Date(year, 11, 31),
+  }, bounds)
 }
 
 function parseTrendPeriodStart(value: string | null | undefined) {
@@ -811,6 +1415,38 @@ watch(trendItems, () => {
   void updateTrendChart()
 })
 
+watch(categoryTreeItems, (items) => {
+  const next = new Set(expandedCategoryKeys.value)
+  let changed = false
+  items.forEach((item) => {
+    const key = getCategoryKey(item.name)
+    if (autoExpandedCategoryKeys.has(key)) return
+    autoExpandedCategoryKeys.add(key)
+    next.add(key)
+    changed = true
+  })
+  if (changed) {
+    expandedCategoryKeys.value = next
+  }
+}, { immediate: true })
+
+watch(frontendProgram, () => {
+  if (suppressNextFrontendProgramQuery) {
+    suppressNextFrontendProgramQuery = false
+    return
+  }
+  syncTrendGranularityToProgramRange()
+  scheduleTrendZoomQuery()
+}, { deep: true })
+
+watch([
+  frontendProgram,
+  sheetViewProgram,
+  trendGranularity,
+], () => {
+  persistFreebillFilterState()
+}, { deep: true })
+
 onMounted(() => {
   document.addEventListener('mousedown', handleGlobalMouseDown)
   document.addEventListener('keydown', handleGlobalKeydown)
@@ -822,6 +1458,9 @@ onUnmounted(() => {
   document.removeEventListener('keydown', handleGlobalKeydown)
   if (trendZoomTimer !== undefined) {
     window.clearTimeout(trendZoomTimer)
+  }
+  if (categoryDetailHideTimer !== undefined) {
+    window.clearTimeout(categoryDetailHideTimer)
   }
   disposeTrendChart()
 })
@@ -904,15 +1543,37 @@ onUnmounted(() => {
     </header>
 
     <FreebillProgramBar
-      v-model="dataProgram"
+      v-model="backendProgram"
       class="backend-program"
       title="后端筛选"
-      help-text="决定统计图和汇总从后端加载哪些账单；点击执行后生效。规则按顺序执行，后面的包含、排除、筛选可以覆盖前面的结果。"
+      help-text="第一层筛选，决定从后端账单库里取哪些候选账单；点击执行后刷新下方统计。"
       :filter-options="filterOptions"
       :show-reset="false"
       :loading="loading"
-      @apply="applyDataProgram"
+      @apply="applyBackendProgram"
     />
+
+    <FreebillProgramBar
+      v-model="frontendProgram"
+      class="frontend-program"
+      title="前端筛选"
+      help-text="第二层筛选，基于后端筛选结果继续收窄；摘要、趋势、分类和账单明细都按它统计。图表 Ctrl+滚轮缩放会自动写入这里的交易时间范围。"
+      :filter-options="filterOptions"
+      :loading="loading"
+      :show-apply="false"
+      :show-reset="false"
+    >
+      <template #title-actions>
+        <el-button
+          class="program-title-action"
+          size="small"
+          text
+          @click="resetFrontendProgram"
+        >
+          最近年份
+        </el-button>
+      </template>
+    </FreebillProgramBar>
 
     <section class="summary-strip">
       <div
@@ -970,38 +1631,166 @@ onUnmounted(() => {
       <section class="category-panel">
         <div class="panel-title">
           <h2>分类</h2>
-          <span>Top 10</span>
+          <span>收支 / 分类 / 交易对方</span>
         </div>
-        <div class="category-columns">
-          <div class="category-column">
-            <div class="category-heading">支出</div>
-            <div v-if="dashboard?.expense_categories.length" class="category-list">
-              <div v-for="item in dashboard.expense_categories" :key="`expense-${item.name}`" class="category-row">
-                <span class="category-name">{{ item.name }}</span>
-                <div class="category-track">
-                  <i class="category-bar expense" :style="{ width: barWidth(item.value, maxExpenseCategory) }" />
-                </div>
-                <span>{{ formatCompactMoney(item.value) }}</span>
+        <div v-if="categoryTreeItems.length" class="category-list category-tree-list">
+          <template v-for="direction in categoryTreeItems" :key="`direction-${direction.name}`">
+            <div class="category-row category-tree-row category-level-0">
+              <button
+                v-if="hasCategoryChildren(direction)"
+                type="button"
+                class="category-toggle"
+                :title="isCategoryExpanded(direction.name) ? '收起' : '展开'"
+                @click="toggleCategoryExpanded(direction.name)"
+              >
+                {{ isCategoryExpanded(direction.name) ? '-' : '+' }}
+              </button>
+              <span v-else class="category-toggle-placeholder"></span>
+              <div
+                class="category-track"
+                @mouseenter="showCategoryDetailPopover($event, direction.name)"
+                @mousemove="moveCategoryDetailPopover"
+                @mouseleave="scheduleCategoryDetailPopoverHide"
+              >
+                <i
+                  class="category-bar"
+                  :style="getCategoryBarStyle(direction.name, direction.value, maxCategoryValue)"
+                />
+                <span class="category-name-label">
+                  <span
+                    class="category-direction-swatch"
+                    :style="{ backgroundColor: getCategoryColor(direction.name) }"
+                  ></span>
+                  <span class="category-name-text">{{ direction.name }}</span>
+                  <span class="category-value-text">{{ formatCategoryBarLabel(direction.value) }}</span>
+                </span>
               </div>
             </div>
-            <div v-else class="empty-inline">暂无支出</div>
-          </div>
-          <div class="category-column">
-            <div class="category-heading">收入</div>
-            <div v-if="dashboard?.income_categories.length" class="category-list">
-              <div v-for="item in dashboard.income_categories" :key="`income-${item.name}`" class="category-row">
-                <span class="category-name">{{ item.name }}</span>
-                <div class="category-track">
-                  <i class="category-bar income" :style="{ width: barWidth(item.value, maxIncomeCategory) }" />
+            <template v-for="category in getCategoryChildren(direction)" :key="`category-${direction.name}-${category.name}`">
+              <div
+                v-show="isCategoryExpanded(direction.name)"
+                class="category-row category-tree-row category-level-1"
+              >
+                <button
+                  v-if="hasCategoryChildren(category)"
+                  type="button"
+                  class="category-toggle"
+                  :title="isCategoryExpanded(direction.name, category.name) ? '收起' : '展开'"
+                  @click="toggleCategoryExpanded(direction.name, category.name)"
+                >
+                  {{ isCategoryExpanded(direction.name, category.name) ? '-' : '+' }}
+                </button>
+                <span v-else class="category-toggle-placeholder"></span>
+                <div
+                  class="category-track"
+                  @mouseenter="showCategoryDetailPopover($event, direction.name, category.name)"
+                  @mousemove="moveCategoryDetailPopover"
+                  @mouseleave="scheduleCategoryDetailPopoverHide"
+                >
+                  <i
+                    class="category-bar"
+                    :style="getCategoryBarStyle(direction.name, category.value, maxCategoryValue)"
+                  />
+                  <span class="category-name-label">
+                    <span class="category-name-text">{{ category.name }}</span>
+                    <span class="category-value-text">{{ formatCategoryBarLabel(category.value) }}</span>
+                  </span>
                 </div>
-                <span>{{ formatCompactMoney(item.value) }}</span>
               </div>
-            </div>
-            <div v-else class="empty-inline">暂无收入</div>
-          </div>
+              <div
+                v-for="counterparty in getCategoryChildren(category)"
+                v-show="isCategoryExpanded(direction.name) && isCategoryExpanded(direction.name, category.name)"
+                :key="`counterparty-${direction.name}-${category.name}-${counterparty.name}`"
+                class="category-row category-tree-row category-level-2"
+              >
+                <span class="category-toggle-placeholder"></span>
+                <div
+                  class="category-track"
+                  @mouseenter="showCategoryDetailPopover($event, direction.name, category.name, counterparty.name)"
+                  @mousemove="moveCategoryDetailPopover"
+                  @mouseleave="scheduleCategoryDetailPopoverHide"
+                >
+                  <i
+                    class="category-bar"
+                    :style="getCategoryBarStyle(direction.name, counterparty.value, maxCategoryValue)"
+                  />
+                  <span class="category-name-label">
+                    <span class="category-name-text">{{ counterparty.name }}</span>
+                    <span class="category-value-text">{{ formatCategoryBarLabel(counterparty.value) }}</span>
+                  </span>
+                </div>
+              </div>
+            </template>
+          </template>
         </div>
+        <div v-else class="empty-inline">暂无分类</div>
       </section>
     </main>
+
+    <div
+      v-if="categoryDetailPopover.visible"
+      class="category-detail-floating"
+      :style="categoryDetailPopoverStyle"
+      @mouseenter="keepCategoryDetailPopoverVisible"
+      @mouseleave="scheduleCategoryDetailPopoverHide"
+    >
+      <div class="category-detail-popover-content">
+        <div class="category-detail-caption">金额 Top 10</div>
+        <div v-if="!activeCategoryDetailState || activeCategoryDetailState.loading" class="category-detail-status">
+          加载中...
+        </div>
+        <div v-else-if="activeCategoryDetailState.error" class="category-detail-status is-error">
+          {{ activeCategoryDetailState.error }}
+        </div>
+        <div v-else-if="!activeCategoryDetailState.loaded" class="category-detail-status">
+          加载中...
+        </div>
+        <div v-else-if="!activeCategoryDetailState.items.length" class="category-detail-status">
+          暂无明细
+        </div>
+        <table v-else class="category-detail-table">
+          <thead>
+            <tr>
+              <th>交易时间</th>
+              <th>来源</th>
+              <th>金额</th>
+              <th>商品</th>
+              <th>备注</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="record in activeCategoryDetailState.items" :key="record.id">
+              <td>{{ formatCategoryDetailTime(record.create_time) }}</td>
+              <td>{{ formatCategoryDetailText(record.source) }}</td>
+              <td class="amount-cell">{{ formatMoney(record.amount) }}</td>
+              <td>{{ formatCategoryDetailText(record.product_name) }}</td>
+              <td>{{ formatCategoryDetailText(record.remark) }}</td>
+              <td class="action-cell">
+                <el-button
+                  v-if="isFlowOverrideRecord(record)"
+                  link
+                  size="small"
+                  :loading="isRecordOverrideLoading(record)"
+                  @click.stop="clearRecordFlowOverride(record)"
+                >
+                  还原
+                </el-button>
+                <el-button
+                  v-else
+                  link
+                  size="small"
+                  :loading="isRecordOverrideLoading(record)"
+                  @click.stop="markRecordAsFlow(record)"
+                >
+                  流水
+                </el-button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <section class="sheet-panel" v-loading="sheetWorkbookLoading">
       <div class="panel-title sheet-title">
@@ -1029,11 +1818,12 @@ onUnmounted(() => {
             v-if="tab.key === 'records'"
             v-model="sheetViewProgram"
             class="sheet-view-program"
-            title="前端筛选"
-            help-text="只隐藏当前账单明细工作表里的行，不影响上方统计图和汇总。"
+            title="表格筛选"
+            help-text="账单明细表自用筛选。它基于上方前端筛选结果继续收窄，只影响表格查看，不影响上方统计。"
             apply-text="即时生效"
             reset-text="清空"
             :show-apply="false"
+            :show-reset="sheetViewProgram.rules.length > 0"
             :filter-options="filterOptions"
             :field-options="RECORD_SHEET_FILTER_FIELDS"
             @reset="resetSheetViewProgram"
@@ -1047,7 +1837,8 @@ onUnmounted(() => {
             :sheet-id="tab.sheet.sheet_id"
             :show-title-input="false"
             :empty-text="tab.emptyText"
-            :row-filter-program="tab.key === 'records' ? activeSheetRowFilterProgram : null"
+            :base-row-filter-programs="tab.key === 'records' ? recordsBaseRowFilterPrograms : null"
+            :row-filter-program="tab.key === 'records' ? sheetViewProgram : null"
             default-height-mode="content"
           />
           <el-empty
@@ -1150,7 +1941,13 @@ h2 {
   display: none;
 }
 
-.backend-program {
+.program-title-action {
+  height: 24px;
+  padding: 0 4px;
+}
+
+.backend-program,
+.frontend-program {
   margin-bottom: 12px;
 }
 
@@ -1244,15 +2041,56 @@ h2 {
 
 .category-list {
   display: grid;
-  gap: 1px;
-  background: #edf1f6;
+  gap: 2px;
+  background: transparent;
+}
+
+.category-tree-list {
+  padding: 8px 0;
 }
 
 .category-row {
   min-width: 0;
-  gap: 10px;
-  padding: 8px 12px;
-  background: #fff;
+  padding: 1px 12px;
+  background: transparent;
+}
+
+.category-tree-row {
+  align-items: center;
+  gap: 6px;
+}
+
+.category-level-1 {
+  padding-left: 32px;
+}
+
+.category-level-2 {
+  padding-left: 52px;
+}
+
+.category-toggle,
+.category-toggle-placeholder {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+}
+
+.category-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: #f8fafc;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.category-toggle:hover {
+  border-color: #93c5fd;
+  color: #1d4ed8;
 }
 
 .trend-chart-scroll {
@@ -1267,58 +2105,144 @@ h2 {
 }
 
 .category-track {
+  position: relative;
   overflow: hidden;
   border-radius: 2px;
   background: #edf1f6;
 }
 
 .category-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
   display: block;
   height: 100%;
 }
 
-.category-bar.income {
-  background: #86b96f;
-}
-
-.category-bar.expense {
-  background: #d78377;
-}
-
-.category-columns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  min-height: 220px;
-}
-
-.category-column + .category-column {
-  border-left: 1px solid #edf1f6;
-}
-
-.category-heading {
-  padding: 8px 12px;
-  border-bottom: 1px solid #edf1f6;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.category-name {
-  width: 84px;
-  overflow: hidden;
-  color: #334155;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.category-level-0 .category-track {
+  height: 22px;
 }
 
 .category-track {
   flex: 1;
-  height: 8px;
+  min-width: 0;
+  height: 20px;
 }
 
-.category-row > span:last-child {
-  width: 58px;
-  text-align: right;
+.category-row .category-name-label {
+  position: absolute;
+  inset: 3px 5px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  pointer-events: none;
+}
+
+.category-direction-swatch {
+  flex: 0 0 9px;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.12);
+}
+
+.category-row .category-name-text {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 2px;
+  flex: 0 1 auto;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.55);
+  white-space: nowrap;
+}
+
+.category-row .category-value-text {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  color: #111827;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  line-height: 14px;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.58);
+  white-space: nowrap;
+}
+
+.category-detail-floating {
+  position: fixed;
+  z-index: 3200;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+}
+
+.category-detail-popover-content {
+  min-width: 0;
+}
+
+.category-detail-caption {
+  margin-bottom: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.category-detail-status {
+  padding: 10px 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.category-detail-status.is-error {
+  color: #b91c1c;
+}
+
+.category-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 12px;
+}
+
+.category-detail-table th,
+.category-detail-table td {
+  max-width: 240px;
+  overflow: hidden;
+  padding: 5px 8px;
+  border-bottom: 1px solid #eef2f7;
+  text-align: left;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.category-detail-table th {
+  background: #f8fafc;
+  color: #475569;
+  font-weight: 650;
+}
+
+.category-detail-table .amount-cell {
+  color: #991b1b;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.category-detail-table .action-cell {
+  width: 48px;
+  max-width: 48px;
+  text-align: center;
+}
+
+.category-detail-table .action-cell :deep(.el-button) {
+  padding: 0;
 }
 
 .empty-inline {
@@ -1401,14 +2325,8 @@ h2 {
     justify-content: flex-start;
   }
 
-  .analytics-layout,
-  .category-columns {
+  .analytics-layout {
     grid-template-columns: 1fr;
-  }
-
-  .category-column + .category-column {
-    border-top: 1px solid #edf1f6;
-    border-left: 0;
   }
 
 }

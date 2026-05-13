@@ -266,6 +266,122 @@ def test_delete_scoped_entry_refuses_filesystem_root(tmp_path):
     assert "root" in exc_info.value.detail.lower()
 
 
+def test_local_entry_proxy_lists_duplicate_files_by_size_and_hash(client, auth_user, test_device, tmp_path):
+    duplicate_root = tmp_path / "duplicate-root"
+    left_dir = duplicate_root / "left"
+    right_dir = duplicate_root / "right"
+    extra_dir = duplicate_root / "extra"
+    left_dir.mkdir(parents=True)
+    right_dir.mkdir()
+    extra_dir.mkdir()
+    (left_dir / "same.bin").write_bytes(b"same-content")
+    (right_dir / "same-copy.bin").write_bytes(b"same-content")
+    (extra_dir / "same-size.bin").write_bytes(b"same-contend")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    size_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size"],
+        },
+    )
+    assert size_resp.status_code == 200
+    size_payload = size_resp.json()
+    assert size_payload["total_groups"] == 1
+    assert size_payload["groups"][0]["file_count"] == 3
+    assert size_payload["groups"][0]["reclaimable_bytes"] == len(b"same-content") * 2
+
+    hash_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size", "sha256"],
+        },
+    )
+    assert hash_resp.status_code == 200
+    hash_payload = hash_resp.json()
+    assert hash_payload["total_groups"] == 1
+    assert hash_payload["hash_computed_count"] == 3
+    hash_group = hash_payload["groups"][0]
+    assert hash_group["file_count"] == 2
+    assert {item["name"] for item in hash_group["files"]} == {"same.bin", "same-copy.bin"}
+
+
+def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, auth_user, test_device, tmp_path):
+    duplicate_root = tmp_path / "duplicate-page-root"
+    first_dir = duplicate_root / "first"
+    second_dir = duplicate_root / "second"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir()
+    for index in range(11):
+        payload = bytes([65 + index]) * (index + 1)
+        filename = f"dup-{index:02d}.bin"
+        (first_dir / filename).write_bytes(payload)
+        (second_dir / filename).write_bytes(payload)
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    first_page_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size", "name"],
+            "page_size": 10,
+        },
+    )
+    assert first_page_resp.status_code == 200
+    first_page = first_page_resp.json()
+    assert first_page["total_groups"] == 11
+    assert first_page["has_next"] is True
+    assert len(first_page["groups"]) == 10
+    assert first_page["snapshot_id"]
+
+    second_page_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size", "name"],
+            "snapshot_id": first_page["snapshot_id"],
+            "page": 2,
+            "page_size": 10,
+        },
+    )
+    assert second_page_resp.status_code == 200
+    second_page = second_page_resp.json()
+    assert second_page["snapshot_id"] == first_page["snapshot_id"]
+    assert second_page["has_previous"] is True
+    assert second_page["has_next"] is False
+    assert len(second_page["groups"]) == 1
+
+
 def test_local_entry_proxy_supports_absolute_image_path(client, auth_user, test_device, tmp_path):
     image_dir = tmp_path / "absolute-images"
     image_dir.mkdir(parents=True, exist_ok=True)
@@ -2322,6 +2438,82 @@ def test_remote_entry_proxy_forwards_directory_sort_program(client, session, aut
             ]
         },
     }
+
+
+def test_remote_entry_proxy_forwards_duplicate_file_request(client, session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-device-duplicates",
+        mode="remote",
+        name="Remote Duplicate Device",
+        server_url="http://remote-device:8000",
+        token="remote-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {
+                "ok": True,
+                "snapshot_id": "remote-snapshot",
+                "page": 1,
+                "page_size": 10,
+                "has_previous": False,
+                "has_next": False,
+                "total_groups": 0,
+                "total_reclaimable_bytes": 0,
+                "duplicate_file_count": 0,
+                "scanned_file_count": 0,
+                "candidate_file_count": 0,
+                "hash_computed_count": 0,
+                "source": "everything",
+                "source_detail": "remote",
+                "complete": True,
+                "groups": [],
+            }
+
+        @property
+        def content(self):
+            return b"{}"
+
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
+        captured["method"] = method
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        captured["stream"] = stream
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
+
+    resp = client.post(
+        f"/api/device-entries/{entry.entry_id}/files/duplicates",
+        json={
+            "absolute_path": r"D:\data",
+            "rules": ["size", "sha256"],
+            "source": "auto",
+            "min_size": 1048576,
+            "page": 1,
+        },
+    )
+    assert resp.status_code == 200
+    assert resp.json()["snapshot_id"] == "remote-snapshot"
+
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://remote-device:8000/api/fs/duplicates"
+    assert captured["json"]["absolute_path"] == r"D:\data"
+    assert captured["json"]["rules"] == ["size", "sha256"]
+    assert captured["json"]["source"] == "auto"
+    assert captured["headers"]["Authorization"] == "Bearer remote-token"
+    assert captured["timeout"] == 120
 
 
 def test_remote_entry_proxy_forwards_absolute_files_request(client, session, auth_user, monkeypatch):

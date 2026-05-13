@@ -14,6 +14,7 @@ export type FreebillProgramOperator =
   | 'gte'
   | 'lte'
   | 'between'
+  | 'year'
 
 export interface FreebillStatus {
   exists: boolean
@@ -46,12 +47,17 @@ export interface FreebillCategoryStat {
   name: string
   value: number
   count: number
+  children?: FreebillCategoryStat[]
 }
 
 export interface FreebillMonthlyTrendItem {
   month: string
   income: number
   expense: number
+  income_count: number
+  expense_count: number
+  ignore_count?: number
+  other_count?: number
   count: number
 }
 
@@ -60,6 +66,7 @@ export interface FreebillDashboard {
   sources: FreebillSourceBreakdown[]
   expense_categories: FreebillCategoryStat[]
   income_categories: FreebillCategoryStat[]
+  category_tree?: FreebillCategoryStat[]
   monthly_trend: FreebillMonthlyTrendItem[]
   trend_granularity?: FreebillTrendGranularity
 }
@@ -130,7 +137,38 @@ export interface FreebillProgramChannel {
 
 export interface FreebillDashboardProgramRequest {
   program: FreebillProgramChannel
+  programs?: FreebillProgramChannel[]
   trend_granularity?: FreebillTrendGranularity
+}
+
+export interface FreebillCategoryBranchRecordsRequest {
+  program: FreebillProgramChannel
+  programs?: FreebillProgramChannel[]
+  direction: string
+  category?: string | null
+  counterparty?: string | null
+  limit?: number
+}
+
+export interface FreebillRecordOverrideRequest {
+  trade_nos: string[]
+  direction: string
+  category: string
+  note?: string | null
+}
+
+export interface FreebillRecordOverrideClearRequest {
+  trade_nos: string[]
+}
+
+export interface FreebillRecordOverrideResult {
+  requested: number
+  matched?: number
+  updated?: number
+  cleared?: number
+  missing_trade_nos: string[]
+  direction?: string
+  category?: string
 }
 
 export interface FreebillImportResultItem {
@@ -186,6 +224,21 @@ export async function fetchFreebillDashboardByProgram(payload: FreebillDashboard
 
 export async function fetchFreebillRecords(params: FreebillQueryParams = {}) {
   const response = await api.get<FreebillRecordPage>('/freebill/records', { params })
+  return response.data
+}
+
+export async function fetchFreebillCategoryBranchRecords(payload: FreebillCategoryBranchRecordsRequest) {
+  const response = await api.post<FreebillRecordPage>('/freebill/category-branch-records', payload)
+  return response.data
+}
+
+export async function applyFreebillRecordOverrides(payload: FreebillRecordOverrideRequest) {
+  const response = await api.post<FreebillRecordOverrideResult>('/freebill/record-overrides', payload)
+  return response.data
+}
+
+export async function clearFreebillRecordOverrides(payload: FreebillRecordOverrideClearRequest) {
+  const response = await api.post<FreebillRecordOverrideResult>('/freebill/record-overrides/clear', payload)
   return response.data
 }
 
@@ -303,14 +356,20 @@ export function upsertFreebillDateRangeRule(
   const index = draft.rules.findIndex((rule) => (
     rule.matcher.kind === 'field'
     && rule.matcher.field === field
-    && rule.matcher.op === 'between'
   ))
   const nextRule = createFreebillDateRangeRule(field, startDate, endDate)
+  let keepIndex = index
   if (index >= 0) {
     draft.rules[index] = nextRule
   } else {
     draft.rules.push(nextRule)
+    keepIndex = draft.rules.length - 1
   }
+  draft.rules = draft.rules.filter((rule, ruleIndex) => (
+    ruleIndex === keepIndex
+    || rule.matcher.kind !== 'field'
+    || rule.matcher.field !== field
+  ))
   return normalizeFreebillProgramChannel(draft)
 }
 

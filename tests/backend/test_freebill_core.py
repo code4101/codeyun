@@ -8,16 +8,21 @@ from sqlmodel import select
 
 from backend.core.freebill import (
     archive_freebill_raw_directory,
+    clear_freebill_record_overrides,
     deduplicate_freebill_records,
     get_freebill_connection,
     get_freebill_status,
     get_freebill_dashboard,
     import_bill_records,
     import_alipay_csv_bytes,
+    import_alipay_excel_bytes,
     import_wechat_excel_bytes,
+    list_freebill_category_branch_records,
     list_freebill_filter_options,
     list_freebill_raw_files,
     list_freebill_records,
+    rebuild_freebill_records_from_raw_files,
+    upsert_freebill_record_overrides,
 )
 from backend.core.freebill_sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
@@ -69,6 +74,42 @@ def _build_wechat_excel_bytes() -> bytes:
     return output.getvalue()
 
 
+def _build_wechat_compact_excel_bytes() -> bytes:
+    output = io.BytesIO()
+    columns = [
+        "交易时间",
+        "交易类型",
+        "交易对方",
+        "商品",
+        "收/支",
+        "金额(元)",
+        "当前状态",
+        "交易单号",
+        "商户单号",
+        "备注",
+    ]
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df = pd.DataFrame(
+            [["2026-01-04 10:00:00", "餐饮美食", "午餐店", "盖饭", "支出", "22", "支付成功", "WXCOMPACT001", "WMC001", "/"]],
+            columns=columns,
+        )
+        df.to_excel(writer, index=False)
+    return output.getvalue()
+
+
+def _build_alipay_legacy_csv_bytes() -> bytes:
+    lines = [
+        "支付宝交易记录明细查询",
+        "账号:[test]",
+        "起始日期:[2026-01-01 00:00:00]    终止日期:[2026-02-01 00:00:00]",
+        "---------------------------------交易记录明细列表------------------------------------",
+        "交易号,商家订单号,交易创建时间,付款时间,最近修改时间,交易来源地,类型,交易对方,商品名称,金额（元）,收/支,交易状态,服务费（元）,成功退款（元）,备注,资金状态,",
+        "202601010001,M-OLD,2026-01-01 08:00:00,2026-01-01 08:00:00,2026-01-01 08:00:00,支付宝网站,即时到账交易,旧早餐店,旧商品,99.00,支出,交易成功,0.00,0.00,,已支出,",
+        "202601030001,M-OTHER,2026-01-03 08:00:00,2026-01-03 08:00:00,2026-01-03 08:00:00,支付宝网站,即时到账交易,余额宝,余额宝-收益发放,1.23,其他,交易成功,0.00,0.00,,已收入,",
+    ]
+    return "\n".join(lines).encode("gb18030")
+
+
 def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
     alipay_result = import_alipay_csv_bytes("alipay.csv", _build_alipay_csv_bytes(), work_dir=tmp_path)
     wechat_result = import_wechat_excel_bytes("wechat.xlsx", _build_wechat_excel_bytes(), work_dir=tmp_path)
@@ -78,14 +119,42 @@ def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
     assert alipay_result["raw_file"]["sha256"]
     assert wechat_result["raw_file"]["sha256"]
 
+    duplicate_alipay_result = import_alipay_csv_bytes("alipay.csv", _build_alipay_csv_bytes(), work_dir=tmp_path)
+    assert duplicate_alipay_result["processed"] == 2
+    assert duplicate_alipay_result["inserted"] == 0
+    assert duplicate_alipay_result["skipped"] == 2
+
     dashboard = get_freebill_dashboard(work_dir=tmp_path)
     assert dashboard["summary"]["total_count"] == 3
     assert dashboard["summary"]["total_income"] == 1000
     assert dashboard["summary"]["total_expense"] == 18.5
     assert dashboard["summary"]["balance"] == 981.5
     assert dashboard["expense_categories"][0]["name"] == "餐饮美食"
+    assert dashboard["expense_categories"][0]["children"][0] == {
+        "name": "早餐店",
+        "value": 12.5,
+        "count": 1,
+    }
+    assert dashboard["income_categories"][0]["children"][0]["name"] == "公司"
+    assert [item["name"] for item in dashboard["category_tree"]] == ["支出", "收入"]
+    assert dashboard["category_tree"][0]["children"][0]["name"] == "餐饮美食"
+    assert dashboard["category_tree"][0]["children"][0]["children"][0]["name"] == "早餐店"
+    branch_records = list_freebill_category_branch_records(
+        direction="支出",
+        category="餐饮美食",
+        work_dir=tmp_path,
+    )
+    assert branch_records["total"] == 1
+    assert branch_records["items"][0]["product_name"] == "豆浆"
+    assert [
+        item["amount"]
+        for item in list_freebill_category_branch_records(direction="支出", work_dir=tmp_path)["items"]
+    ] == [12.5, 6.0]
     assert dashboard["trend_granularity"] == "month"
     assert [item["month"] for item in dashboard["monthly_trend"]] == ["2026-01"]
+    assert dashboard["monthly_trend"][0]["income_count"] == 1
+    assert dashboard["monthly_trend"][0]["expense_count"] == 2
+    assert dashboard["monthly_trend"][0]["count"] == 3
 
     daily_dashboard = get_freebill_dashboard(work_dir=tmp_path, trend_granularity="day")
     assert daily_dashboard["trend_granularity"] == "day"
@@ -120,13 +189,40 @@ def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
     assert expense_program_dashboard["summary"]["total_income"] == 0
     assert expense_program_dashboard["summary"]["total_expense"] == 18.5
 
+    layered_program_dashboard = get_freebill_dashboard(
+        work_dir=tmp_path,
+        programs=[
+            {
+                "default": False,
+                "rules": [
+                    {"action": "include", "matcher": {"kind": "all"}},
+                    {
+                        "action": "filter",
+                        "matcher": {"kind": "field", "field": "source", "op": "eq", "value": "支付宝"},
+                    },
+                ],
+            },
+            {
+                "default": False,
+                "rules": [
+                    {"action": "include", "matcher": {"kind": "all"}},
+                    {
+                        "action": "filter",
+                        "matcher": {"kind": "field", "field": "direction", "op": "eq", "value": "支出"},
+                    },
+                ],
+            },
+        ],
+    )
+    assert layered_program_dashboard["summary"]["total_count"] == 1
+    assert layered_program_dashboard["summary"]["total_expense"] == 12.5
+
     date_program_dashboard = get_freebill_dashboard(
         work_dir=tmp_path,
         trend_granularity="day",
         program={
-            "default": False,
+            "default": True,
             "rules": [
-                {"action": "include", "matcher": {"kind": "all"}},
                 {
                     "action": "filter",
                     "matcher": {
@@ -142,6 +238,43 @@ def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
     assert date_program_dashboard["summary"]["total_count"] == 2
     assert [item["month"] for item in date_program_dashboard["monthly_trend"]] == ["2026-01-02", "2026-01-03"]
 
+    year_program_dashboard = get_freebill_dashboard(
+        work_dir=tmp_path,
+        program={
+            "default": True,
+            "rules": [
+                {
+                    "action": "filter",
+                    "matcher": {
+                        "kind": "field",
+                        "field": "create_time",
+                        "op": "year",
+                        "value": 2026,
+                    },
+                },
+            ],
+        },
+    )
+    assert year_program_dashboard["summary"]["total_count"] == 3
+    empty_year_program_dashboard = get_freebill_dashboard(
+        work_dir=tmp_path,
+        program={
+            "default": True,
+            "rules": [
+                {
+                    "action": "filter",
+                    "matcher": {
+                        "kind": "field",
+                        "field": "create_time",
+                        "op": "year",
+                        "value": 2025,
+                    },
+                },
+            ],
+        },
+    )
+    assert empty_year_program_dashboard["summary"]["total_count"] == 0
+
     records = list_freebill_records(source="微信", work_dir=tmp_path)
     assert records["total"] == 1
     assert records["items"][0]["counterparty"] == "地铁"
@@ -152,6 +285,154 @@ def test_freebill_import_and_dashboard(tmp_path: Path) -> None:
 
     status = get_freebill_status(work_dir=tmp_path)
     assert status["raw_file_count"] == 2
+
+
+def test_freebill_imports_legacy_alipay_csv_and_compact_wechat_excel(tmp_path: Path) -> None:
+    alipay_result = import_alipay_csv_bytes("alipay_record_legacy.csv", _build_alipay_legacy_csv_bytes(), work_dir=tmp_path)
+    wechat_result = import_wechat_excel_bytes("wechat-compact.xlsx", _build_wechat_compact_excel_bytes(), work_dir=tmp_path)
+
+    assert alipay_result["format"] == "alipay-legacy-csv"
+    assert alipay_result["inserted"] == 2
+    assert wechat_result["inserted"] == 1
+
+    records = list_freebill_records(work_dir=tmp_path, limit=10)
+    legacy_other = next(item for item in records["items"] if item["trade_no"] == "202601030001")
+    assert legacy_other["direction"] == "不计收支"
+    compact_wechat = next(item for item in records["items"] if item["trade_no"] == "WXCOMPACT001")
+    assert compact_wechat["counterparty"] == "午餐店"
+
+
+def test_freebill_imports_legacy_alipay_excel(tmp_path: Path) -> None:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df = pd.DataFrame(
+            [
+                [
+                    "202601040001",
+                    "M-EXCEL",
+                    "2026-01-04 09:00:00",
+                    "2026-01-04 09:00:00",
+                    "2026-01-04 09:00:00",
+                    "支付宝网站",
+                    "即时到账交易",
+                    "余利宝",
+                    "余利宝转出到支付宝-基金赎回",
+                    "100",
+                    "其他",
+                    "交易成功",
+                    "0",
+                    "0",
+                    "",
+                    "已收入",
+                    "支付宝",
+                ],
+                [
+                    None,
+                    None,
+                    "2026-01-04 00:00:00",
+                    None,
+                    None,
+                    None,
+                    "往来款",
+                    "银行",
+                    None,
+                    "100",
+                    "往来款",
+                    None,
+                    None,
+                    None,
+                    None,
+                    "1000",
+                    "建行",
+                ],
+            ],
+            columns=[
+                "交易号",
+                "商家订单号",
+                "交易创建时间",
+                "付款时间",
+                "最近修改时间",
+                "交易来源地",
+                "类型",
+                "交易对方",
+                "商品名称",
+                "金额（元）",
+                "收/支",
+                "交易状态",
+                "服务费（元）",
+                "成功退款（元）",
+                "备注",
+                "资金状态",
+                "类别",
+            ],
+        )
+        df.to_excel(writer, index=False, sheet_name="2026年")
+
+    result = import_alipay_excel_bytes("legacy-alipay.xlsx", output.getvalue(), work_dir=tmp_path)
+    assert result["inserted"] == 1
+    records = list_freebill_records(work_dir=tmp_path, limit=10)
+    assert records["total"] == 1
+    assert records["items"][0]["direction"] == "不计收支"
+
+
+def test_freebill_rebuild_from_raw_files_prefers_detail_sources(tmp_path: Path) -> None:
+    import_alipay_csv_bytes("alipay_record_legacy.csv", _build_alipay_legacy_csv_bytes(), work_dir=tmp_path)
+    import_alipay_csv_bytes("支付宝交易明细(20260101-20260131).csv", _build_alipay_csv_bytes(), work_dir=tmp_path)
+
+    before = list_freebill_records(work_dir=tmp_path, limit=10)
+    duplicate_before = next(item for item in before["items"] if item["trade_no"] == "202601010001")
+    assert duplicate_before["amount"] == 99
+
+    result = rebuild_freebill_records_from_raw_files(work_dir=tmp_path)
+    assert result["before_records"] == 3
+    assert result["after_records"] == 3
+    assert result["duplicate_records"] == 1
+    assert result["backup_path"]
+
+    after = list_freebill_records(work_dir=tmp_path, limit=10)
+    duplicate_after = next(item for item in after["items"] if item["trade_no"] == "202601010001")
+    assert duplicate_after["amount"] == 12.5
+    assert duplicate_after["type"] == "餐饮美食"
+    legacy_other = next(item for item in after["items"] if item["trade_no"] == "202601030001")
+    assert legacy_other["direction"] == "不计收支"
+
+
+def test_freebill_record_overrides_survive_raw_rebuild(tmp_path: Path) -> None:
+    import_alipay_csv_bytes("支付宝交易明细(20260101-20260131).csv", _build_alipay_csv_bytes(), work_dir=tmp_path)
+
+    override_result = upsert_freebill_record_overrides(
+        ["202601010001"],
+        direction="不计收支",
+        category="流水",
+        note="人工确认不计收支",
+        work_dir=tmp_path,
+    )
+    assert override_result["matched"] == 1
+    assert override_result["updated"] == 1
+    overridden = next(
+        item for item in list_freebill_records(work_dir=tmp_path, limit=10)["items"]
+        if item["trade_no"] == "202601010001"
+    )
+    assert overridden["direction"] == "不计收支"
+    assert overridden["type"] == "流水"
+
+    rebuild_result = rebuild_freebill_records_from_raw_files(work_dir=tmp_path, backup=False)
+    assert rebuild_result["applied_overrides"] == 1
+    rebuilt = next(
+        item for item in list_freebill_records(work_dir=tmp_path, limit=10)["items"]
+        if item["trade_no"] == "202601010001"
+    )
+    assert rebuilt["direction"] == "不计收支"
+    assert rebuilt["type"] == "流水"
+
+    clear_result = clear_freebill_record_overrides(["202601010001"], work_dir=tmp_path)
+    assert clear_result["cleared"] == 1
+    restored = next(
+        item for item in list_freebill_records(work_dir=tmp_path, limit=10)["items"]
+        if item["trade_no"] == "202601010001"
+    )
+    assert restored["direction"] == "支出"
+    assert restored["type"] == "餐饮美食"
 
 
 def test_freebill_raw_directory_excludes_derived_files(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@
       </div>
       <div class="head-actions">
         <el-button :loading="scanning" :icon="MagicStick" @click="scanRealCases()">扫描真实记录</el-button>
+        <el-button :loading="scanning" :icon="MagicStick" @click="scanLearningMarkerCases">扫描学习标记</el-button>
         <el-button :loading="scanning" :icon="RefreshRight" @click="rescanRealCases">重置缓存并重扫</el-button>
         <el-button :icon="RefreshRight" @click="resetWorkspaceState">重置</el-button>
         <el-button type="primary" :icon="Plus" @click="addCase">新增案例</el-button>
@@ -126,12 +127,49 @@
                   <el-tag size="small" effect="plain">{{ selectedMaterialEntry.charCount }} 字</el-tag>
                 </div>
                 <el-input
+                  v-if="selectedMaterialEntry.sourceKey"
                   :model-value="selectedMaterialEntry.value"
                   type="textarea"
                   :rows="18"
                   resize="vertical"
                   @update:model-value="updateSelectedMaterialText"
                 />
+                <section v-else class="evidence-group-detail">
+                  <details
+                    v-if="selectedMaterialEntry.processTurns?.length"
+                    class="evidence-process-details"
+                    open
+                  >
+                    <summary class="evidence-process-summary">
+                      <span>过程 {{ selectedMaterialEntry.processTurns.length }} 条</span>
+                      <small>同组连续消息</small>
+                    </summary>
+                    <section class="evidence-message-list">
+                      <article
+                        v-for="turn in selectedMaterialEntry.processTurns"
+                        :key="`process-${turn.seq ?? turn.text}`"
+                        class="evidence-message-card"
+                      >
+                        <div class="evidence-message-head">
+                          <strong>{{ evidenceMessageTitle(turn) }}</strong>
+                          <el-tag size="small" effect="plain" :type="evidenceTurnTagType(turn)">
+                            {{ evidenceTurnLabel(turn) }}
+                          </el-tag>
+                        </div>
+                        <pre class="evidence-message-text">{{ turn.text }}</pre>
+                      </article>
+                    </section>
+                  </details>
+                  <article v-if="selectedMaterialEntry.displayTurn" class="evidence-message-card">
+                    <div class="evidence-message-head">
+                      <strong>{{ evidenceMessageTitle(selectedMaterialEntry.displayTurn) }}</strong>
+                      <el-tag size="small" effect="plain" :type="evidenceTurnTagType(selectedMaterialEntry.displayTurn)">
+                        {{ evidenceTurnLabel(selectedMaterialEntry.displayTurn) }}
+                      </el-tag>
+                    </div>
+                    <pre class="evidence-message-text">{{ selectedMaterialEntry.displayTurn.text }}</pre>
+                  </article>
+                </section>
               </section>
             </div>
           </div>
@@ -371,7 +409,9 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Delete, MagicStick, Plus, RefreshRight } from '@element-plus/icons-vue'
 
 import {
+  consumeEvoMindPendingCaseImports,
   deriveEvoMindCaseCard,
+  fetchEvoMindPendingCaseImports,
   generateEvoMindProposal,
   scanEvoMindCodexCases,
   type EvoMindCaseCandidate,
@@ -385,7 +425,7 @@ type EvidenceStrength = 'p0' | 'p1' | 'p2'
 type CaseStatus = 'captured' | 'proposed' | 'verified' | 'active' | 'archived'
 type PromptStage = 'case' | 'proposal' | 'verify' | 'cleanup'
 type SummaryMaterialKey = 'originalTask' | 'badAttempt' | 'userCorrections' | 'finalPattern'
-type MaterialKey = SummaryMaterialKey | `turn:${number}`
+type MaterialKey = SummaryMaterialKey | `evidence:${number}`
 type MaterialTagType = '' | 'success' | 'warning' | 'danger' | 'info'
 
 interface MaterialField {
@@ -399,7 +439,6 @@ interface MaterialField {
 interface MaterialEntry {
   key: MaterialKey
   sourceKey?: SummaryMaterialKey
-  turnIndex?: number
   label: string
   tag: string
   tagType: MaterialTagType
@@ -407,6 +446,9 @@ interface MaterialEntry {
   value: string
   summary: string
   charCount: number
+  turns?: EvoMindEvidenceTurn[]
+  displayTurn?: EvoMindEvidenceTurn
+  processTurns?: EvoMindEvidenceTurn[]
 }
 
 interface Proposal {
@@ -550,7 +592,11 @@ const materialFields: MaterialField[] = [
 const makeId = (prefix: string) => `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
 const nowText = () => new Date().toISOString()
 type ScanRealCasesOptions = {
+  maxThreads?: number
   maxCases?: number
+  minScore?: number
+  signalType?: SignalType | null
+  label?: string
   quiet?: boolean
   resetCache?: boolean
 }
@@ -788,21 +834,7 @@ const materialEntries = computed<MaterialEntry[]>(() => {
       charCount: value.trim().length,
     }
   })
-  const turnEntries = item.evidenceTurns.map((turn, index) => {
-    const role = evidenceRoleLabel(turn.role)
-    return {
-      key: `turn:${index}` as MaterialKey,
-      turnIndex: index,
-      label: `对话 ${turn.seq ?? index + 1} · ${role}`,
-      tag: evidenceTurnLabel(turn),
-      tagType: evidenceTurnTagType(turn),
-      hint: '信号点附近的多轮原始对话证据。多轮反复纠正、试错和最终收敛都保留在这里，不受四个摘要字段限制。',
-      value: turn.text || '',
-      summary: compactSummary(turn.text || ''),
-      charCount: (turn.text || '').trim().length,
-    }
-  })
-  return [...summaryEntries, ...turnEntries]
+  return [...summaryEntries, ...buildEvidenceGroupEntries(item.evidenceTurns)]
 })
 const selectedMaterialEntry = computed(() => {
   return materialEntries.value.find((entry) => entry.key === activeMaterialKey.value) ?? materialEntries.value[0] ?? null
@@ -820,6 +852,7 @@ watch(
 
 onMounted(() => {
   void repairExistingCaseCards()
+  void importPendingCaseImportsWithRetry()
 })
 
 function stageCount(stage: StageValue) {
@@ -864,13 +897,84 @@ function evidenceTurnTagType(turn: EvoMindEvidenceTurn): MaterialTagType {
   return ''
 }
 
+function evidenceMessageTitle(turn: EvoMindEvidenceTurn) {
+  const seq = turn.seq ? `对话 ${turn.seq}` : '对话'
+  return `${seq} · ${evidenceRoleLabel(turn.role)}`
+}
+
+function evidenceGroupSeqRange(turns: EvoMindEvidenceTurn[]) {
+  const seqs = turns.map((turn) => turn.seq).filter((seq): seq is number => typeof seq === 'number')
+  if (!seqs.length) return ''
+  const first = Math.min(...seqs)
+  const last = Math.max(...seqs)
+  return first === last ? `对话 ${first}` : `对话 ${first}-${last}`
+}
+
+function evidenceGroupTag(turns: EvoMindEvidenceTurn[]) {
+  const signalTurn = turns.find((turn) => turn.kind === 'key' || turn.is_signal)
+  if (signalTurn) return evidenceTurnLabel(signalTurn)
+  const positiveTurn = turns.find((turn) => turn.kind === 'positive')
+  if (positiveTurn) return evidenceTurnLabel(positiveTurn)
+  const antiTurn = turns.find((turn) => turn.kind === 'anti')
+  if (antiTurn) return evidenceTurnLabel(antiTurn)
+  const correctionTurn = turns.find((turn) => turn.kind === 'correction')
+  if (correctionTurn) return evidenceTurnLabel(correctionTurn)
+  return evidenceTurnLabel(turns[0] || { role: '', text: '' })
+}
+
+function evidenceGroupTagType(turns: EvoMindEvidenceTurn[]): MaterialTagType {
+  if (turns.some((turn) => turn.kind === 'key' || turn.is_signal)) return 'danger'
+  if (turns.some((turn) => turn.kind === 'positive')) return 'success'
+  if (turns.some((turn) => turn.kind === 'anti')) return 'warning'
+  if (turns.some((turn) => turn.kind === 'task' || turn.kind === 'correction')) return 'info'
+  return ''
+}
+
+function buildEvidenceGroupEntries(turns: EvoMindEvidenceTurn[]) {
+  const entries: MaterialEntry[] = []
+  let index = 0
+  let userTurnIndex = 0
+  let groupIndex = 0
+
+  while (index < turns.length) {
+    const role = turns[index].role
+    const group: EvoMindEvidenceTurn[] = []
+    while (index < turns.length && turns[index].role === role) {
+      group.push(turns[index])
+      index += 1
+    }
+    if (!group.length) continue
+    if (role === 'user') userTurnIndex += 1
+
+    const displayTurn = group[group.length - 1]
+    const processTurns = group.slice(0, -1)
+    const roleLabel = evidenceRoleLabel(role)
+    const turnLabel = userTurnIndex ? `回合 ${userTurnIndex}` : '证据'
+    const seqRange = evidenceGroupSeqRange(group)
+    const countText = group.length > 1 ? `，共 ${group.length} 条${roleLabel}消息` : ''
+    entries.push({
+      key: `evidence:${groupIndex}` as MaterialKey,
+      label: `${turnLabel} · ${roleLabel}`,
+      tag: evidenceGroupTag(group),
+      tagType: evidenceGroupTagType(group),
+      hint: [seqRange, countText.replace(/^，/, '')].filter(Boolean).join(' · '),
+      value: group.map((turn) => turn.text || '').join('\n\n'),
+      summary: compactSummary(displayTurn.text || ''),
+      charCount: group.reduce((total, turn) => total + (turn.text || '').trim().length, 0),
+      turns: group,
+      displayTurn,
+      processTurns,
+    })
+    groupIndex += 1
+  }
+
+  return entries
+}
+
 function updateSelectedMaterialText(value: string) {
   if (!selectedCase.value || !selectedMaterialEntry.value) return
   if (selectedMaterialEntry.value.sourceKey) {
     selectedCase.value[selectedMaterialEntry.value.sourceKey] = value
-  } else if (selectedMaterialEntry.value.turnIndex !== undefined) {
-    const turn = selectedCase.value.evidenceTurns[selectedMaterialEntry.value.turnIndex]
-    if (turn) turn.text = value
   }
   selectedCase.value.updatedAt = nowText()
 }
@@ -1163,10 +1267,12 @@ function mapCandidateToCase(candidate: EvoMindCaseCandidate): EvoCase {
 async function scanRealCases(options: ScanRealCasesOptions = {}) {
   scanning.value = true
   try {
+    const importLabel = options.label || '真实案例'
     const payload = await scanEvoMindCodexCases({
-      max_threads: 240,
+      max_threads: options.maxThreads ?? 240,
       max_cases: options.maxCases ?? 40,
-      min_score: 55,
+      min_score: options.minScore ?? 55,
+      signal_type: options.signalType ?? null,
       use_codex_cli: true,
       codex_cli_limit: options.maxCases ?? 40,
       reset_cache: Boolean(options.resetCache),
@@ -1187,14 +1293,14 @@ async function scanRealCases(options: ScanRealCasesOptions = {}) {
     const cacheText = payload.codex_cli_used
       ? `，缓存 ${payload.cache_hit_count}/${payload.cache_hit_count + payload.cache_miss_count}，规则 ${payload.cache_rule_hash.slice(0, 8)}`
       : ''
-    lastScanSummary.value = `${scanMode}：扫描 ${payload.scanned_threads}/${payload.total_threads} 个会话，预筛 ${payload.heuristic_candidate_count} 个候选，命中 ${payload.items.length} 个候选，导入 ${imported.length} 个新案例${cacheText}。`
+    lastScanSummary.value = `${importLabel}：${scanMode}，扫描 ${payload.scanned_threads}/${payload.total_threads} 个会话，预筛 ${payload.heuristic_candidate_count} 个候选，命中 ${payload.items.length} 个候选，导入 ${imported.length} 个新案例${cacheText}。`
     if (options.quiet) {
       return
     }
     if (imported.length) {
-      ElMessage.success(`已导入 ${imported.length} 个真实案例`)
+      ElMessage.success(`已导入 ${imported.length} 个${importLabel}`)
     } else {
-      ElMessage.info('没有新的真实案例可导入')
+      ElMessage.info(`没有新的${importLabel}可导入`)
     }
   } catch (error) {
     if (!options.quiet) {
@@ -1203,6 +1309,48 @@ async function scanRealCases(options: ScanRealCasesOptions = {}) {
   } finally {
     scanning.value = false
   }
+}
+
+async function scanLearningMarkerCases() {
+  await scanRealCases({
+    maxThreads: 500,
+    maxCases: 80,
+    minScore: 0,
+    signalType: 'explicit_learning_marker',
+    label: '学习标记案例',
+  })
+}
+
+function mergeCandidateCases(candidates: EvoMindCaseCandidate[]) {
+  const existingIds = new Set(state.cases.map((item) => item.id))
+  const imported = candidates
+    .filter((item) => !existingIds.has(item.id))
+    .map(mapCandidateToCase)
+  if (!imported.length) return imported
+  state.cases = [...imported, ...state.cases]
+  state.selectedCaseId = imported[0].id
+  activeStage.value = 'case'
+  return imported
+}
+
+async function importPendingCaseImports() {
+  const payload = await fetchEvoMindPendingCaseImports()
+  if (!payload.items.length) return false
+  const imported = mergeCandidateCases(payload.items)
+  await consumeEvoMindPendingCaseImports()
+  lastScanSummary.value = `待导入案例：读取 ${payload.items.length} 个候选，导入 ${imported.length} 个新案例。`
+  return true
+}
+
+function importPendingCaseImportsWithRetry() {
+  const delays = [0, 5000, 15000, 45000]
+  delays.forEach((delay) => {
+    window.setTimeout(() => {
+      void importPendingCaseImports().catch(() => {
+        // Backend may still be restarting after code changes; later retries cover it.
+      })
+    }, delay)
+  })
 }
 
 async function rescanRealCases() {
@@ -1623,6 +1771,74 @@ h3 {
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
+}
+
+.evidence-group-detail,
+.evidence-message-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.evidence-process-details {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.evidence-process-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.evidence-process-summary small {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.evidence-process-details[open] .evidence-message-list {
+  padding: 0 10px 10px;
+}
+
+.evidence-message-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.evidence-message-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.evidence-message-head strong {
+  color: #334155;
+  font-size: 13px;
+}
+
+.evidence-message-text {
+  max-height: 520px;
+  margin: 0;
+  overflow: auto;
+  padding: 10px;
+  color: #334155;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
 
 .two-column,

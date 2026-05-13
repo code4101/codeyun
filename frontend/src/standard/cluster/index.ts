@@ -4,14 +4,16 @@ import clusterCodexPage from './codex'
 import deviceFileBrowserPage from './files'
 import deviceLabelmeBrowserPage from './labelme'
 import taskLogsPage from './logs'
-import clusterStorageManagerPage from './storage'
+import clusterRimeContextPredictionPage from './rime-context'
+import clusterTreeSizePage from './storage'
 import deviceTasksPage from './tasks'
 import clusterViewMnPage from './view-mn'
 
 const pages: AppPageDefinition[] = [
   deviceTasksPage,
+  clusterRimeContextPredictionPage,
   deviceFileBrowserPage,
-  clusterStorageManagerPage,
+  clusterTreeSizePage,
   clusterCodexPage,
   clusterViewMnPage,
   deviceLabelmeBrowserPage,

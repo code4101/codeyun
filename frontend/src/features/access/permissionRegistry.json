@@ -600,6 +600,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "cluster.rime-context",
+      "title": "小狼毫输入法",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 15,
+      "route_paths": ["/cluster/rime-context"],
+      "menu_paths": ["/cluster/rime-context"],
+      "api_scopes": ["cluster-tools.rime-context"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster.files",
       "title": "浏览文件",
       "node_type": "feature",
@@ -616,8 +627,8 @@
       "node_type": "feature",
       "parent_key": "cluster-tools",
       "sort_order": 23,
-      "route_paths": ["/cluster/storage"],
-      "menu_paths": ["/cluster/storage"],
+      "route_paths": ["/cluster/treesize", "/cluster/storage"],
+      "menu_paths": ["/cluster/treesize"],
       "api_scopes": ["cluster-tools.storage"],
       "default_anonymous_allow": false
     },

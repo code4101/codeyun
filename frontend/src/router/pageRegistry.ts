@@ -50,6 +50,12 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   },
   {
     scope: 'main',
+    path: '/cluster/storage',
+    redirect: to => ({ path: '/cluster/treesize', query: to.query }),
+    requiresAuth: true,
+  },
+  {
+    scope: 'main',
     path: '/tools/labelme-lite',
     redirect: '/cluster/labelme',
     requiresAuth: true,

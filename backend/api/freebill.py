@@ -9,12 +9,15 @@ from sqlmodel import Session
 from backend.core.auth import get_current_active_user
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.freebill import (
+    clear_freebill_record_overrides,
     get_freebill_dashboard,
     get_freebill_status,
     import_alipay_csv_bytes,
     import_wechat_excel_bytes,
+    list_freebill_category_branch_records,
     list_freebill_filter_options,
     list_freebill_records,
+    upsert_freebill_record_overrides,
 )
 from backend.core.freebill_sheet import get_freebill_sheet_workbook, refresh_freebill_sheet_workbook
 from backend.db import get_session
@@ -38,6 +41,7 @@ FreebillProgramOperator = Literal[
     "gte",
     "lte",
     "between",
+    "year",
 ]
 
 
@@ -62,7 +66,28 @@ class FreebillProgramChannel(BaseModel):
 
 class FreebillDashboardProgramRequest(BaseModel):
     program: FreebillProgramChannel = Field(default_factory=FreebillProgramChannel)
+    programs: list[FreebillProgramChannel] = Field(default_factory=list)
     trend_granularity: Literal["day", "week", "month", "year"] = "month"
+
+
+class FreebillCategoryBranchRecordsRequest(BaseModel):
+    program: FreebillProgramChannel = Field(default_factory=FreebillProgramChannel)
+    programs: list[FreebillProgramChannel] = Field(default_factory=list)
+    direction: str
+    category: str | None = None
+    counterparty: str | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class FreebillRecordOverrideRequest(BaseModel):
+    trade_nos: list[str] = Field(min_length=1)
+    direction: str = "不计收支"
+    category: str = "流水"
+    note: str | None = None
+
+
+class FreebillRecordOverrideClearRequest(BaseModel):
+    trade_nos: list[str] = Field(min_length=1)
 
 
 @router.get("/status")
@@ -96,6 +121,7 @@ def get_dashboard_by_program(payload: FreebillDashboardProgramRequest):
     try:
         return get_freebill_dashboard(
             program=payload.program.model_dump(),
+            programs=[program.model_dump() for program in payload.programs] or None,
             trend_granularity=payload.trend_granularity,
         )
     except ValueError as exc:
@@ -125,9 +151,45 @@ def get_records(
     )
 
 
+@router.post("/category-branch-records")
+def get_category_branch_records(payload: FreebillCategoryBranchRecordsRequest):
+    try:
+        return list_freebill_category_branch_records(
+            program=payload.program.model_dump(),
+            programs=[program.model_dump() for program in payload.programs] or None,
+            direction=payload.direction,
+            category=payload.category,
+            counterparty=payload.counterparty,
+            limit=payload.limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/filter-options")
 def get_filter_options():
     return list_freebill_filter_options()
+
+
+@router.post("/record-overrides")
+def apply_record_overrides(payload: FreebillRecordOverrideRequest):
+    try:
+        return upsert_freebill_record_overrides(
+            payload.trade_nos,
+            direction=payload.direction,
+            category=payload.category,
+            note=payload.note,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/record-overrides/clear")
+def clear_record_overrides(payload: FreebillRecordOverrideClearRequest):
+    try:
+        return clear_freebill_record_overrides(payload.trade_nos)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/sheet-workbook")

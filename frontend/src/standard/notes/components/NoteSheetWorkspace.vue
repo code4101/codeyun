@@ -17,6 +17,7 @@ import {
   generateAttendanceCourseTemplate,
   importNoteSheetFromExcelReset,
   organizeAttendanceCourseScripts,
+  queryNoteSheet,
   setAttendanceRowCompleted,
   startNoteSheetRegistrationMatchRun,
   updateAttendanceLinkCounts,
@@ -70,7 +71,9 @@ const EXCEL_DATE_UNIX_EPOCH_SERIAL = 25569
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const MIN_COLUMN_WIDTH = 88
 const MAX_COLUMN_WIDTH = 360
-const ROW_MARKER_COLUMN_WIDTH = 76
+const ROW_MARKER_MIN_COLUMN_WIDTH = 40
+const ROW_MARKER_MAX_COLUMN_WIDTH = 76
+const ROW_MARKER_WIDTH_PADDING = 18
 const HEADER_WIDTH_PADDING = 34
 const INLINE_HEADER_INPUT_PADDING = 16
 const INVALID_VALUE_HIGHLIGHT_COLOR = '#E98296'
@@ -209,20 +212,36 @@ type ColumnFilterOptionStat = {
 type ColumnFilterOptionView = ColumnFilterOptionStat & {
   selected: boolean
 }
+type ColumnFilterOptionGroupChildView = ColumnFilterOptionView & {
+  displayLabel: string
+}
+type ColumnFilterOptionGroupView = {
+  key: string
+  label: string
+  count: number
+  selected: boolean
+  indeterminate: boolean
+  expanded: boolean
+  children: ColumnFilterOptionGroupChildView[]
+}
+type ColumnFilterOptionListEntry =
+  | { kind: 'group'; group: ColumnFilterOptionGroupView }
+  | { kind: 'option'; option: ColumnFilterOptionView }
 type ColumnFilterGlobalOptionsCacheEntry = {
   options: ColumnFilterOptionStat[]
   totalRows: number
   sheetVersion: number
 }
+const COLUMN_FILTER_OPTION_GROUP_MIN_CHILDREN = 3
 const DEFAULT_COLUMN_FILTER_NUMBER_OPERATOR: ColumnFilterNumberOperator = 'gte'
 const COLUMN_FILTER_NUMBER_OPERATOR_OPTIONS: { value: ColumnFilterNumberOperator; label: string }[] = [
-  { value: 'eq', label: '等于' },
-  { value: 'neq', label: '不等于' },
-  { value: 'gt', label: '大于' },
-  { value: 'gte', label: '大于等于' },
-  { value: 'lt', label: '小于' },
-  { value: 'lte', label: '小于等于' },
-  { value: 'between', label: '介于' },
+  { value: 'eq', label: '=' },
+  { value: 'neq', label: '≠' },
+  { value: 'gt', label: '>' },
+  { value: 'gte', label: '≥' },
+  { value: 'lt', label: '<' },
+  { value: 'lte', label: '≤' },
+  { value: 'between', label: '范围' },
 ]
 type SheetGridChangeRecord = {
   rowIndex: number
@@ -587,6 +606,7 @@ type SheetPagePatchState = {
   pageSize: number
   rowOffset: number
   loadedRowCount: number
+  rowIndexes?: number[] | null
 }
 
 type FormulaCellModel = {
@@ -655,6 +675,8 @@ interface Props {
   backTo?: string
   backLabel?: string
   emptyText?: string
+  baseRowFilterProgram?: ExternalSheetRowFilterProgram | null
+  baseRowFilterPrograms?: ExternalSheetRowFilterProgram[] | null
   rowFilterProgram?: ExternalSheetRowFilterProgram | null
   defaultHeightMode?: SheetHeightMode | null
 }
@@ -669,6 +691,8 @@ const props = withDefaults(defineProps<Props>(), {
   backTo: '/notes/sheets',
   backLabel: '返回星云表格',
   emptyText: '请选择表格',
+  baseRowFilterProgram: null,
+  baseRowFilterPrograms: null,
   rowFilterProgram: null,
   defaultHeightMode: null,
 })
@@ -706,8 +730,10 @@ const currentPage = ref(1)
 const pageSize = ref(DEFAULT_PAGE_SIZE)
 const pageCount = ref(1)
 const totalRowCount = ref(0)
+const unfilteredTotalRowCount = ref(0)
 const pageRowOffset = ref(0)
 const pageLoadedRowCount = ref(0)
+const pageRowIndexes = ref<number[] | null>(null)
 
 const storageKey = computed(() => (
   `notes.sheet.${props.sheetId ?? 'empty'}.page.${currentPage.value}.size.${pageSize.value}.draft.v2`
@@ -903,6 +929,7 @@ const columnFilterPopover = ref<{
   globalOptionsError: '',
 })
 const columnFilters = ref<Record<string, ColumnFilterState>>({})
+const expandedColumnFilterOptionGroups = ref<Set<string>>(new Set())
 const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
 let columnFilterOptionRequestSeq = 0
@@ -950,18 +977,22 @@ const pageStatusText = computed(() => {
     return ''
   }
 
-  const totalText = effectivePaginationEnabled.value
-    ? `共 ${formatSheetStatusNumber(totalRowCount.value)} 行，每页 ${formatSheetStatusNumber(pageSize.value)} 行`
-    : `共 ${formatSheetStatusNumber(pageWorkingRowCount.value)} 行`
-  if (activeColumnFilterEntries.value.length > 0 || externalRowFilterProgramActive.value) {
-    const sourceCount = effectivePaginationEnabled.value
-      ? pageLoadedRowCount.value || rows.value.length
-      : rows.value.length
-    const filterText = effectivePaginationEnabled.value ? '当前页筛选' : '筛选'
-    return `${filterText} ${formatSheetStatusNumber(filteredVisibleRowCount.value)}/${formatSheetStatusNumber(sourceCount)} 行，${totalText}`
+  const pageSizeText = effectivePaginationEnabled.value
+    ? `，每页 ${formatSheetStatusNumber(pageSize.value)} 行`
+    : ''
+  const hasActiveFilters = activeColumnFilterEntries.value.length > 0 || externalRowFilterProgramActive.value
+  if (!hasActiveFilters) {
+    const total = effectivePaginationEnabled.value ? totalRowCount.value : pageWorkingRowCount.value
+    return `共 ${formatSheetStatusNumber(total)} 行${pageSizeText}`
   }
 
-  return totalText
+  const filteredCount = effectivePaginationEnabled.value && pageRowIndexes.value !== null
+    ? totalRowCount.value
+    : filteredVisibleRowCount.value
+  const sourceCount = effectivePaginationEnabled.value
+    ? Math.max(unfilteredTotalRowCount.value, totalRowCount.value, pageLoadedRowCount.value, rows.value.length)
+    : Math.max(rows.value.length, filteredVisibleRowCount.value)
+  return `共 ${formatSheetStatusNumber(filteredCount)}/${formatSheetStatusNumber(sourceCount)} 行${pageSizeText}`
 })
 
 function formatSheetStatusNumber(value: unknown) {
@@ -1084,8 +1115,24 @@ const hasFormulaExpressions = computed(() => {
 const formulaDisplayState = shallowRef<FormulaDisplayState>(createEmptyFormulaDisplayState())
 
 const activeColumnFilterEntries = computed(() => getActiveColumnFilterEntries())
+const normalizedBaseExternalRowFilterPrograms = computed(() => {
+  const programs = [
+    props.baseRowFilterProgram,
+    ...(Array.isArray(props.baseRowFilterPrograms) ? props.baseRowFilterPrograms : []),
+  ]
+  return programs
+    .filter((program): program is ExternalSheetRowFilterProgram => !!program)
+    .map((program) => normalizeExternalRowFilterProgram(program))
+})
 const normalizedExternalRowFilterProgram = computed(() => normalizeExternalRowFilterProgram(props.rowFilterProgram))
-const externalRowFilterProgramActive = computed(() => isExternalRowFilterProgramActive(normalizedExternalRowFilterProgram.value))
+const baseExternalRowFilterProgramActive = computed(() => normalizedBaseExternalRowFilterPrograms.value.some(
+  (program) => isExternalRowFilterProgramActive(program),
+))
+const rowExternalRowFilterProgramActive = computed(() => isExternalRowFilterProgramActive(normalizedExternalRowFilterProgram.value))
+const externalRowFilterProgramActive = computed(() => (
+  baseExternalRowFilterProgramActive.value
+  || rowExternalRowFilterProgramActive.value
+))
 const filteredVisibleRowCount = computed(() => Math.max(0, rows.value.length - sheetFilterHiddenRows.value.length))
 
 const columnHashColorStyleMap = computed(() => {
@@ -1187,6 +1234,9 @@ const columnFilterPopoverOptions = computed<ColumnFilterOptionView[]>(() => {
     selected: !excludedSet.has(option.value),
   }))
 })
+const columnFilterPopoverOptionEntries = computed<ColumnFilterOptionListEntry[]>(() => (
+  buildColumnFilterOptionEntries(columnFilterPopoverOptions.value)
+))
 const columnFilterPopoverOptionScopeText = computed(() => {
   if (!columnFilterPopoverIsOptionMode.value) {
     return ''
@@ -1269,7 +1319,19 @@ const externalRowFilterHiddenRows = computed(() => {
 
   const hiddenRows: number[] = []
   rows.value.forEach((row, rowIndex) => {
-    if (!doesRowMatchExternalRowFilterProgram(row, rowIndex, normalizedExternalRowFilterProgram.value)) {
+    if (
+      (
+        baseExternalRowFilterProgramActive.value
+        && normalizedBaseExternalRowFilterPrograms.value.some((program) => (
+          isExternalRowFilterProgramActive(program)
+          && !doesRowMatchExternalRowFilterProgram(row, rowIndex, program)
+        ))
+      )
+      || (
+        rowExternalRowFilterProgramActive.value
+        && !doesRowMatchExternalRowFilterProgram(row, rowIndex, normalizedExternalRowFilterProgram.value)
+      )
+    ) {
       hiddenRows.push(sheetHeaderRowCount.value + rowIndex)
     }
   })
@@ -1400,9 +1462,32 @@ const sheetHotGridRows = computed<SheetRow[]>(() => {
   ])
 })
 
+const rowMarkerColumnWidth = computed(() => {
+  if (rowMarkerColumnCount.value <= 0) {
+    return 0
+  }
+
+  const rowIndexes = new Set<number>()
+  const gridRowCount = sheetGridRows.value.length
+  for (let rowIndex = 0; rowIndex < Math.min(gridRowCount, sheetHeaderRowCount.value + 80); rowIndex += 1) {
+    rowIndexes.add(rowIndex)
+  }
+  if (gridRowCount > 0) {
+    rowIndexes.add(gridRowCount - 1)
+  }
+
+  const maxTextWidth = Array.from(rowIndexes).reduce((maxWidth, rowIndex) => (
+    Math.max(maxWidth, measureTextWidth(getSheetRowHeaderLabel(rowIndex), TABLE_FONT))
+  ), 0)
+  return Math.min(
+    Math.max(Math.ceil(maxTextWidth) + ROW_MARKER_WIDTH_PADDING, ROW_MARKER_MIN_COLUMN_WIDTH),
+    ROW_MARKER_MAX_COLUMN_WIDTH,
+  )
+})
+
 const sheetHotColumnWidths = computed(() => (
   rowMarkerColumnCount.value > 0
-    ? [ROW_MARKER_COLUMN_WIDTH, ...columnWidths.value]
+    ? [rowMarkerColumnWidth.value, ...columnWidths.value]
     : [...columnWidths.value]
 ))
 
@@ -1488,6 +1573,10 @@ function getCurrentGridRowIndexFromDocumentRow(documentGridRow: number) {
     return documentGridRow
   }
   const dataRow = documentGridRow - sheetHeaderRowCount.value
+  if (pageRowIndexes.value !== null) {
+    const pageLocalRow = pageRowIndexes.value.indexOf(dataRow)
+    return pageLocalRow >= 0 ? sheetHeaderRowCount.value + pageLocalRow : -1
+  }
   const pageLocalRow = dataRow - (effectivePaginationEnabled.value ? pageRowOffset.value : 0)
   return pageLocalRow >= 0 && pageLocalRow < rows.value.length
     ? sheetHeaderRowCount.value + pageLocalRow
@@ -1521,13 +1610,18 @@ function getRenderableMergedCells() {
       return
     }
 
-    const dataStart = cell.row - sheetHeaderRowCount.value
-    const pageStart = effectivePaginationEnabled.value ? pageRowOffset.value : 0
-    const pageEnd = pageStart + rows.value.length
-    if (dataStart < pageStart || dataStart + cell.rowspan > pageEnd) {
+    const row = getCurrentGridRowIndexFromDocumentRow(cell.row)
+    if (row < sheetHeaderRowCount.value) {
       return
     }
-    const row = sheetHeaderRowCount.value + dataStart - pageStart
+    if (cell.rowspan > 1) {
+      const allRowsVisible = Array.from({ length: cell.rowspan }, (_, offset) => (
+        getCurrentGridRowIndexFromDocumentRow(cell.row + offset)
+      )).every((gridRow, index) => gridRow === row + index)
+      if (!allRowsVisible) {
+        return
+      }
+    }
     const key = `${row}:${cell.col}`
     if (!seen.has(key)) {
       seen.add(key)
@@ -1689,6 +1783,11 @@ const sheetGridHeight = computed(() => {
 
 let suppressPersistence = false
 let saveTimer: ReturnType<typeof setTimeout> | null = null
+let sheetFilterReloadTimer: ReturnType<typeof setTimeout> | null = null
+let pendingSheetFilterReloadKey = ''
+let activeSheetFilterReloadKey = ''
+let completedSheetFilterReloadKey = ''
+let failedSheetFilterReloadKey = ''
 let changeSerial = 0
 let lastQueuedSerial = 0
 let savedChangeSerial = 0
@@ -2674,9 +2773,37 @@ function setColumnFilterPopoverOptionSelected(value: string, selected: boolean) 
   columnFilterPopover.value.draftExcludedValues = [...excludedSet]
 }
 
+function setColumnFilterPopoverOptionGroupSelected(group: ColumnFilterOptionGroupView, selected: boolean) {
+  const excludedSet = new Set(columnFilterPopover.value.draftExcludedValues)
+  group.children.forEach((option) => {
+    const normalizedValue = normalizeColumnFilterOptionValue(option.value)
+    if (selected) {
+      excludedSet.delete(normalizedValue)
+    } else {
+      excludedSet.add(normalizedValue)
+    }
+  })
+  columnFilterPopover.value.draftExcludedValues = [...excludedSet]
+}
+
 function handleColumnFilterOptionChange(value: string, event: Event) {
   const target = event.target as HTMLInputElement | null
   setColumnFilterPopoverOptionSelected(value, target?.checked === true)
+}
+
+function handleColumnFilterOptionGroupChange(group: ColumnFilterOptionGroupView, event: Event) {
+  const target = event.target as HTMLInputElement | null
+  setColumnFilterPopoverOptionGroupSelected(group, target?.checked === true)
+}
+
+function toggleColumnFilterOptionGroup(groupKey: string) {
+  const nextExpanded = new Set(expandedColumnFilterOptionGroups.value)
+  if (nextExpanded.has(groupKey)) {
+    nextExpanded.delete(groupKey)
+  } else {
+    nextExpanded.add(groupKey)
+  }
+  expandedColumnFilterOptionGroups.value = nextExpanded
 }
 
 function selectAllColumnFilterOptions() {
@@ -2761,6 +2888,7 @@ function resetWorkspaceState() {
   rows.value = [createEmptyRow(DEFAULT_SHEET_COLUMNS.length)]
   sheetTitle.value = '未命名表格'
   sheetVersion.value = 0
+  unfilteredTotalRowCount.value = 0
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
   sheetSettingsColumnFilterDraft.value = {}
@@ -5701,6 +5829,86 @@ function getColumnFilterOptionLabel(value: string) {
   return value || '(空白)'
 }
 
+function getColumnFilterOptionGroupKey(option: ColumnFilterOptionView) {
+  const label = option.label.trim()
+  if (!label || label === '(空白)') {
+    return ''
+  }
+
+  const match = label.match(/^([^\s/\\:：,，、|;；()（）\[\]【】\-]+)(?:[\s/\\:：,，、|;；()（）\[\]【】\-]|$)/)
+  const key = match?.[1]?.trim() ?? ''
+  return key.length >= 2 ? key : ''
+}
+
+function getGroupedColumnFilterChildLabel(option: ColumnFilterOptionView, groupLabel: string) {
+  const label = option.label.trim()
+  if (!label || label === groupLabel) {
+    return option.label
+  }
+
+  const suffix = label
+    .slice(groupLabel.length)
+    .replace(/^[\s/\\:：,，、|;；()（）\[\]【】\-]+/, '')
+    .trim()
+  return suffix || option.label
+}
+
+function buildColumnFilterOptionEntries(options: ColumnFilterOptionView[]): ColumnFilterOptionListEntry[] {
+  if (options.length < COLUMN_FILTER_OPTION_GROUP_MIN_CHILDREN) {
+    return options.map((option) => ({ kind: 'option', option }))
+  }
+
+  const buckets = new Map<string, ColumnFilterOptionView[]>()
+  options.forEach((option) => {
+    const key = getColumnFilterOptionGroupKey(option)
+    if (!key) {
+      return
+    }
+    buckets.set(key, [...(buckets.get(key) ?? []), option])
+  })
+
+  const groupKeys = new Set(
+    [...buckets.entries()]
+      .filter(([, children]) => children.length >= COLUMN_FILTER_OPTION_GROUP_MIN_CHILDREN)
+      .map(([key]) => key),
+  )
+  if (!groupKeys.size) {
+    return options.map((option) => ({ kind: 'option', option }))
+  }
+
+  const emittedGroups = new Set<string>()
+  return options.flatMap((option) => {
+    const key = getColumnFilterOptionGroupKey(option)
+    if (!key || !groupKeys.has(key)) {
+      return [{ kind: 'option', option } satisfies ColumnFilterOptionListEntry]
+    }
+    if (emittedGroups.has(key)) {
+      return []
+    }
+
+    emittedGroups.add(key)
+    const children = (buckets.get(key) ?? []).map((child) => ({
+      ...child,
+      displayLabel: getGroupedColumnFilterChildLabel(child, key),
+    }))
+    const selectedCount = children.filter((child) => child.selected).length
+    const expanded = expandedColumnFilterOptionGroups.value.has(key)
+      || (selectedCount > 0 && selectedCount < children.length)
+    return [{
+      kind: 'group',
+      group: {
+        key,
+        label: key,
+        count: children.reduce((sum, child) => sum + child.count, 0),
+        selected: selectedCount === children.length,
+        indeterminate: selectedCount > 0 && selectedCount < children.length,
+        expanded,
+        children,
+      },
+    } satisfies ColumnFilterOptionListEntry]
+  })
+}
+
 function normalizeColumnFilterExcludedValues(value: unknown) {
   if (!Array.isArray(value)) {
     return []
@@ -6580,6 +6788,7 @@ function buildCurrentPagePatchState(): SheetPagePatchState {
     pageSize: pageSize.value,
     rowOffset: pageRowOffset.value,
     loadedRowCount: pageLoadedRowCount.value,
+    rowIndexes: pageRowIndexes.value ? [...pageRowIndexes.value] : null,
   }
 }
 
@@ -6595,7 +6804,18 @@ function normalizeDraftPageState(source: unknown): SheetPagePatchState | null {
     pageSize: normalizePositivePageNumber(record.pageSize, pageSize.value),
     rowOffset: normalizeNonNegativeInt(record.rowOffset, pageRowOffset.value),
     loadedRowCount: normalizeNonNegativeInt(record.loadedRowCount, pageLoadedRowCount.value),
+    rowIndexes: normalizePaginationRowIndexes(record.rowIndexes),
   }
+}
+
+function arePaginationRowIndexesEqual(left?: number[] | null, right?: number[] | null) {
+  const normalizedLeft = left ?? null
+  const normalizedRight = right ?? null
+  if (normalizedLeft === null || normalizedRight === null) {
+    return normalizedLeft === normalizedRight
+  }
+  return normalizedLeft.length === normalizedRight.length
+    && normalizedLeft.every((item, index) => item === normalizedRight[index])
 }
 
 function isSamePagePatchState(pageState: SheetPagePatchState | null) {
@@ -6610,6 +6830,7 @@ function isSamePagePatchState(pageState: SheetPagePatchState | null) {
       || (
     pageState.page === currentPage.value
     && pageState.pageSize === pageSize.value
+    && arePaginationRowIndexesEqual(pageState.rowIndexes, pageRowIndexes.value)
       )
     )
   )
@@ -8889,13 +9110,39 @@ function clearSaveTimer() {
   }
 }
 
+function clearSheetFilterReloadTimer() {
+  if (sheetFilterReloadTimer) {
+    clearTimeout(sheetFilterReloadTimer)
+    sheetFilterReloadTimer = null
+  }
+}
+
+function resetSheetFilterReloadState() {
+  clearSheetFilterReloadTimer()
+  pendingSheetFilterReloadKey = ''
+  activeSheetFilterReloadKey = ''
+  completedSheetFilterReloadKey = ''
+  failedSheetFilterReloadKey = ''
+}
+
+function normalizePaginationRowIndexes(value: unknown) {
+  if (!Array.isArray(value)) {
+    return null
+  }
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item >= 0)
+}
+
 function applyPaginationState(pagination?: NoteSheetPaginationState | null) {
   if (!pagination) {
     currentPage.value = 1
     pageCount.value = 1
     totalRowCount.value = trimTrailingBlankRows(rows.value.map((row) => normalizeRow(row, columnHeaders.value))).length
+    unfilteredTotalRowCount.value = totalRowCount.value
     pageRowOffset.value = 0
     pageLoadedRowCount.value = totalRowCount.value
+    pageRowIndexes.value = null
     return
   }
 
@@ -8903,12 +9150,17 @@ function applyPaginationState(pagination?: NoteSheetPaginationState | null) {
   pageSize.value = normalizePositivePageNumber(pagination.page_size, pageSize.value)
   pageCount.value = normalizePositivePageNumber(pagination.page_count, 1)
   totalRowCount.value = normalizeNonNegativeInt(pagination.total_rows)
+  unfilteredTotalRowCount.value = Math.max(
+    totalRowCount.value,
+    normalizeNonNegativeInt(pagination.unfiltered_total_rows),
+  )
   pageRowOffset.value = normalizeNonNegativeInt(pagination.row_offset)
   pageLoadedRowCount.value = normalizeNonNegativeInt(pagination.loaded_row_count)
+  pageRowIndexes.value = normalizePaginationRowIndexes(pagination.row_indexes)
 }
 
 function shouldUsePagedPatchForSave() {
-  return pageLoadedRowCount.value < totalRowCount.value
+  return pageRowIndexes.value !== null || pageLoadedRowCount.value < totalRowCount.value
 }
 
 function buildUpdatePagePatch() {
@@ -8921,6 +9173,9 @@ function buildUpdatePagePatch() {
     page_size: pageSize.value,
     row_offset: pageRowOffset.value,
     loaded_row_count: pageLoadedRowCount.value,
+    row_indexes: pageRowIndexes.value && pageRowIndexes.value.length === rows.value.length
+      ? [...pageRowIndexes.value]
+      : undefined,
   }
 }
 
@@ -9080,6 +9335,12 @@ async function flushRemoteSave() {
   saveInFlight = true
   const serial = lastQueuedSerial
   const document = buildCurrentDocument()
+  const savedRowIndexes = pageRowIndexes.value ? [...pageRowIndexes.value] : null
+  const shouldRestoreSavedRowIndexes = (
+    savedRowIndexes !== null
+    && buildActiveSheetQueryFilters().active
+    && savedRowIndexes.length === rows.value.length
+  )
 
   try {
     const saved = await saveDocumentSnapshot(document)
@@ -9089,6 +9350,9 @@ async function flushRemoteSave() {
     sheetTitle.value = saved.title || sheetTitle.value
     sheetVersion.value = Number(saved.version || 1)
     applyPaginationState(saved.pagination)
+    if (shouldRestoreSavedRowIndexes && saved.pagination && !Array.isArray(saved.pagination.row_indexes)) {
+      pageRowIndexes.value = savedRowIndexes
+    }
     emitSheetSync(saved)
     savedChangeSerial = Math.max(savedChangeSerial, serial)
 
@@ -9583,18 +9847,149 @@ function resolveFetchPaginationPreference(localDraft: SheetDraftPayload | null) 
   return null
 }
 
-async function restoreInitialDocument() {
+function getActiveColumnFiltersForQuery() {
+  const filters: Record<string, ColumnFilterState> = {}
+  activeColumnFilterEntries.value.forEach((entry) => {
+    filters[entry.header] = getColumnFilterState(entry.header)
+  })
+  return filters
+}
+
+function getActiveExternalRowFilterProgramsForQuery() {
+  return [
+    ...normalizedBaseExternalRowFilterPrograms.value,
+    normalizedExternalRowFilterProgram.value,
+  ]
+    .filter((program) => isExternalRowFilterProgramActive(program))
+    .map((program) => ({
+      default: program.default,
+      rules: program.rules.map((rule) => ({
+        action: rule.action,
+        matcher: {
+          kind: rule.matcher.kind,
+          field: rule.matcher.field,
+          op: rule.matcher.op,
+          value: rule.matcher.value,
+          values: rule.matcher.values,
+        },
+      })),
+    }))
+}
+
+function buildActiveSheetQueryFilters() {
+  const columnFiltersForQuery = getActiveColumnFiltersForQuery()
+  const rowFilterPrograms = getActiveExternalRowFilterProgramsForQuery()
+  return {
+    columnFilters: columnFiltersForQuery,
+    rowFilterPrograms,
+    active: Object.keys(columnFiltersForQuery).length > 0 || rowFilterPrograms.length > 0,
+  }
+}
+
+function buildSheetFilterReloadKey(filters = buildActiveSheetQueryFilters()) {
+  return JSON.stringify({
+    sheetId: props.sheetId,
+    workbookId: props.workbookId ?? null,
+    pageSize: pageSize.value,
+    filters,
+  })
+}
+
+function isCurrentSheetFilterPaginationReady(filters = buildActiveSheetQueryFilters()) {
+  return filters.active ? pageRowIndexes.value !== null : pageRowIndexes.value === null
+}
+
+async function fetchNoteSheetForCurrentView(
+  options?: { page?: number; pageSize?: number; paginate?: boolean; workbookId?: number | null },
+) {
+  if (props.sheetId == null) {
+    return null
+  }
+
+  const activeFilters = buildActiveSheetQueryFilters()
+  if (options?.paginate === true && activeFilters.active) {
+    return queryNoteSheet(props.sheetId, {
+      page: options.page,
+      page_size: options.pageSize,
+      paginate: true,
+      column_filters: activeFilters.columnFilters,
+      row_filter_programs: activeFilters.rowFilterPrograms,
+    }, {
+      workbookId: options.workbookId,
+    })
+  }
+
+  return fetchNoteSheet(props.sheetId, options)
+}
+
+function scheduleFilteredPaginationReload() {
+  if (props.sheetId == null || !paginationEnabled.value) {
+    return
+  }
+
+  const filters = buildActiveSheetQueryFilters()
+  const reloadKey = buildSheetFilterReloadKey(filters)
+  if (
+    reloadKey === pendingSheetFilterReloadKey
+    || reloadKey === activeSheetFilterReloadKey
+    || reloadKey === failedSheetFilterReloadKey
+    || (reloadKey === completedSheetFilterReloadKey && isCurrentSheetFilterPaginationReady(filters))
+  ) {
+    return
+  }
+
+  pendingSheetFilterReloadKey = reloadKey
+  clearSheetFilterReloadTimer()
+  sheetFilterReloadTimer = setTimeout(runScheduledSheetFilterReload, 80)
+}
+
+function runScheduledSheetFilterReload() {
+  sheetFilterReloadTimer = null
+  if (!pendingSheetFilterReloadKey) {
+    return
+  }
+  if (!sheetContentReady.value || workspaceLoading.value) {
+    sheetFilterReloadTimer = setTimeout(runScheduledSheetFilterReload, 80)
+    return
+  }
+
+  const reloadKey = pendingSheetFilterReloadKey
+  pendingSheetFilterReloadKey = ''
+  activeSheetFilterReloadKey = reloadKey
+  currentPage.value = 1
+  void restoreInitialDocument({ preserveContent: true }).then(() => {
+    completedSheetFilterReloadKey = reloadKey
+    if (failedSheetFilterReloadKey === reloadKey) {
+      failedSheetFilterReloadKey = ''
+    }
+  }).catch((error) => {
+    failedSheetFilterReloadKey = reloadKey
+    console.warn('Failed to reload filtered sheet page', error)
+  }).finally(() => {
+    activeSheetFilterReloadKey = ''
+    if (pendingSheetFilterReloadKey) {
+      clearSheetFilterReloadTimer()
+      sheetFilterReloadTimer = setTimeout(runScheduledSheetFilterReload, 80)
+    }
+    void updateSheetViewportHeight()
+  })
+}
+
+async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
   if (props.sheetId == null) {
     return
   }
 
+  const shouldPreserveContent = options?.preserveContent === true && sheetContentReady.value
   workspaceLoading.value = true
-  sheetContentReady.value = false
+  if (!shouldPreserveContent) {
+    sheetContentReady.value = false
+  }
   suppressPersistence = true
   try {
     let localDraft = readDraftPayload()
     const paginationPreference = resolveFetchPaginationPreference(localDraft)
-    let remote = await fetchNoteSheet(props.sheetId, paginationPreference
+    let remote = await fetchNoteSheetForCurrentView(paginationPreference
       ? {
         page: paginationPreference.paginate ? currentPage.value : undefined,
         pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
@@ -9605,7 +10000,9 @@ async function restoreInitialDocument() {
         workbookId: props.workbookId,
       })
     if (!remote) {
-      sheetContentReady.value = false
+      if (!shouldPreserveContent) {
+        sheetContentReady.value = false
+      }
       emit('missing', props.sheetId)
       return
     }
@@ -9623,7 +10020,7 @@ async function restoreInitialDocument() {
       paginationPreference
       && paginationPreference.paginate !== remoteSettings.pagination.enabled
     ) {
-      remote = await fetchNoteSheet(props.sheetId, remoteSettings.pagination.enabled
+      remote = await fetchNoteSheetForCurrentView(remoteSettings.pagination.enabled
         ? {
           page: currentPage.value,
           pageSize: remoteSettings.pagination.page_size,
@@ -9635,7 +10032,28 @@ async function restoreInitialDocument() {
           workbookId: props.workbookId,
         })
       if (!remote) {
-        sheetContentReady.value = false
+        if (!shouldPreserveContent) {
+          sheetContentReady.value = false
+        }
+        emit('missing', props.sheetId)
+        return
+      }
+      remoteAccessCapabilities.value = remote.access?.capabilities ?? null
+      applyPaginationState(remote.pagination)
+      remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
+    }
+
+    if (remote.pagination && pageRowIndexes.value === null && buildActiveSheetQueryFilters().active) {
+      remote = await fetchNoteSheetForCurrentView({
+        page: currentPage.value,
+        pageSize: remote.pagination.page_size,
+        paginate: true,
+        workbookId: props.workbookId,
+      })
+      if (!remote) {
+        if (!shouldPreserveContent) {
+          sheetContentReady.value = false
+        }
         emit('missing', props.sheetId)
         return
       }
@@ -9662,6 +10080,7 @@ async function restoreInitialDocument() {
         if (localDraft.pageState) {
           pageRowOffset.value = localDraft.pageState.rowOffset
           pageLoadedRowCount.value = localDraft.pageState.loadedRowCount
+          pageRowIndexes.value = localDraft.pageState.rowIndexes ?? null
         }
         shouldSyncLocalDraft = true
       } else {
@@ -9675,6 +10094,7 @@ async function restoreInitialDocument() {
     lastQueuedSerial = 0
     savedChangeSerial = 0
     invalidateColumnFilterGlobalOptionsCache()
+    await nextTick()
     suppressPersistence = false
 
     if (shouldSyncLocalDraft) {
@@ -10627,6 +11047,10 @@ function isColumnMarkerSelected(columnIndex: number) {
 }
 
 function getDocumentRowIndex(rowIndex: number) {
+  const rowIndexes = pageRowIndexes.value
+  if (rowIndexes !== null && rowIndex >= 0 && rowIndex < rowIndexes.length) {
+    return rowIndexes[rowIndex]
+  }
   return (effectivePaginationEnabled.value ? pageRowOffset.value : 0) + rowIndex
 }
 
@@ -10656,6 +11080,7 @@ function getSheetHeaderGridLevel(rowIndex: number) {
 function getSheetRowHeaderLabel(gridRowIndex: number) {
   const rowIndex = getDataRowIndex(gridRowIndex)
   const numbering = sheetViewSettings.value.row_marker_numbering
+  const documentDataRowIndex = rowIndex >= 0 ? getDocumentRowIndex(rowIndex) : rowIndex
   const pageOffset = effectivePaginationEnabled.value && numbering === 'global' ? pageRowOffset.value : 0
 
   if (sheetViewSettings.value.row_marker_origin === 'sheet_zero') {
@@ -10664,6 +11089,9 @@ function getSheetRowHeaderLabel(gridRowIndex: number) {
     }
     if (rowIndex < 0) {
       return String(gridRowIndex)
+    }
+    if (numbering === 'global' && pageRowIndexes.value !== null) {
+      return String(sheetHeaderRowCount.value + documentDataRowIndex)
     }
     return String(pageOffset + sheetHeaderRowCount.value + rowIndex)
   }
@@ -10675,11 +11103,17 @@ function getSheetRowHeaderLabel(gridRowIndex: number) {
     if (rowIndex < 0) {
       return String(gridRowIndex + 1)
     }
+    if (numbering === 'global' && pageRowIndexes.value !== null) {
+      return String(sheetHeaderRowCount.value + documentDataRowIndex + 1)
+    }
     return String(pageOffset + sheetHeaderRowCount.value + rowIndex + 1)
   }
 
   if (rowIndex < 0) {
     return ''
+  }
+  if (numbering === 'global' && pageRowIndexes.value !== null) {
+    return String(documentDataRowIndex + 1)
   }
   return String(pageOffset + rowIndex + 1)
 }
@@ -14100,6 +14534,7 @@ watch(
     userMatchRunStatus.value = null
     userMatchStartPending.value = false
     clearSaveTimer()
+    resetSheetFilterReloadState()
     if (!nextSheetId) {
       if (hasInlineDocument.value) {
         applyInlineSheetDocument()
@@ -14109,8 +14544,10 @@ watch(
         currentPage.value = 1
         pageCount.value = 1
         totalRowCount.value = 0
+        unfilteredTotalRowCount.value = 0
         pageRowOffset.value = 0
         pageLoadedRowCount.value = 0
+        pageRowIndexes.value = null
         suppressPersistence = false
       }
       void updateSheetViewportHeight()
@@ -14124,8 +14561,10 @@ watch(
     currentPage.value = 1
     pageCount.value = 1
     totalRowCount.value = 0
+    unfilteredTotalRowCount.value = 0
     pageRowOffset.value = 0
     pageLoadedRowCount.value = 0
+    pageRowIndexes.value = null
     void restoreInitialDocument().finally(() => {
       void updateSheetViewportHeight()
     })
@@ -14154,6 +14593,7 @@ watch(
     userMatchRunStatus.value = null
     userMatchStartPending.value = false
     clearSaveTimer()
+    resetSheetFilterReloadState()
     void restoreInitialDocument().finally(() => {
       void updateSheetViewportHeight()
     })
@@ -14173,6 +14613,39 @@ watch(
     pruneColumnFilters()
   },
   { deep: true },
+)
+
+watch(
+  [
+    columnFilters,
+    () => props.baseRowFilterProgram,
+    () => props.baseRowFilterPrograms,
+    () => props.rowFilterProgram,
+  ],
+  () => {
+    scheduleFilteredPaginationReload()
+  },
+  { deep: true },
+)
+
+watch(
+  [
+    () => sheetContentReady.value,
+    () => effectivePaginationEnabled.value,
+    () => pageRowIndexes.value,
+    () => activeColumnFilterEntries.value.length,
+    () => externalRowFilterProgramActive.value,
+  ],
+  () => {
+    if (
+      sheetContentReady.value
+      && effectivePaginationEnabled.value
+      && pageRowIndexes.value === null
+      && (activeColumnFilterEntries.value.length > 0 || externalRowFilterProgramActive.value)
+    ) {
+      scheduleFilteredPaginationReload()
+    }
+  },
 )
 
 watch(
@@ -14215,6 +14688,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearSaveTimer()
+  resetSheetFilterReloadState()
   clearUserMatchRunPollTimer()
   finishFormulaReferenceRange()
   clearScheduledFormulaBarDraftSync()
@@ -15137,20 +15611,64 @@ defineExpose({
             <span>|</span>
             <button type="button" @click="selectColumnFilterUniqueOptions">唯一项</button>
           </div>
-          <div v-if="columnFilterPopoverOptions.length" class="sheet-column-filter-option-list">
-            <label
-              v-for="option in columnFilterPopoverOptions"
-              :key="`option:${option.value}`"
-              class="sheet-column-filter-option-row"
+          <div v-if="columnFilterPopoverOptionEntries.length" class="sheet-column-filter-option-list">
+            <template
+              v-for="entry in columnFilterPopoverOptionEntries"
+              :key="entry.kind === 'group' ? `group:${entry.group.key}` : `option:${entry.option.value}`"
             >
-              <input
-                type="checkbox"
-                :checked="option.selected"
-                @change="event => handleColumnFilterOptionChange(option.value, event)"
+              <div
+                v-if="entry.kind === 'group'"
+                class="sheet-column-filter-option-group"
               >
-              <span class="sheet-column-filter-option-label" :title="option.label">{{ option.label }}</span>
-              <span class="sheet-column-filter-option-count">({{ option.count }})</span>
-            </label>
+                <div class="sheet-column-filter-option-group-row">
+                  <button
+                    type="button"
+                    class="sheet-column-filter-option-group-toggle"
+                    :aria-label="entry.group.expanded ? '收起分组' : '展开分组'"
+                    @click="toggleColumnFilterOptionGroup(entry.group.key)"
+                  >
+                    {{ entry.group.expanded ? '▾' : '▸' }}
+                  </button>
+                  <label class="sheet-column-filter-option-row sheet-column-filter-option-row-group">
+                    <input
+                      type="checkbox"
+                      :checked="entry.group.selected"
+                      :indeterminate="entry.group.indeterminate"
+                      @change="event => handleColumnFilterOptionGroupChange(entry.group, event)"
+                    >
+                    <span class="sheet-column-filter-option-label" :title="entry.group.label">{{ entry.group.label }}</span>
+                    <span class="sheet-column-filter-option-count">({{ entry.group.count }})</span>
+                  </label>
+                </div>
+                <div v-if="entry.group.expanded" class="sheet-column-filter-option-children">
+                  <label
+                    v-for="option in entry.group.children"
+                    :key="`group:${entry.group.key}:option:${option.value}`"
+                    class="sheet-column-filter-option-row"
+                  >
+                    <input
+                      type="checkbox"
+                      :checked="option.selected"
+                      @change="event => handleColumnFilterOptionChange(option.value, event)"
+                    >
+                    <span class="sheet-column-filter-option-label" :title="option.label">{{ option.displayLabel }}</span>
+                    <span class="sheet-column-filter-option-count">({{ option.count }})</span>
+                  </label>
+                </div>
+              </div>
+              <label
+                v-else
+                class="sheet-column-filter-option-row"
+              >
+                <input
+                  type="checkbox"
+                  :checked="entry.option.selected"
+                  @change="event => handleColumnFilterOptionChange(entry.option.value, event)"
+                >
+                <span class="sheet-column-filter-option-label" :title="entry.option.label">{{ entry.option.label }}</span>
+                <span class="sheet-column-filter-option-count">({{ entry.option.count }})</span>
+              </label>
+            </template>
           </div>
           <div v-else class="sheet-column-filter-option-empty">{{ columnFilterPopoverOptionEmptyText }}</div>
         </template>
@@ -16136,15 +16654,57 @@ defineExpose({
   overflow: auto;
 }
 
+.sheet-column-filter-option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sheet-column-filter-option-group-row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.sheet-column-filter-option-group-toggle {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 22px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.sheet-column-filter-option-group-toggle:hover {
+  color: #1d4ed8;
+}
+
+.sheet-column-filter-option-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-left: 18px;
+}
+
 .sheet-column-filter-option-row {
   display: flex;
   align-items: center;
+  flex: 1 1 auto;
   min-height: 24px;
+  min-width: 0;
   gap: 6px;
   color: #334155;
   font-size: 13px;
   line-height: 1.35;
   cursor: pointer;
+}
+
+.sheet-column-filter-option-row-group {
+  font-weight: 650;
 }
 
 .sheet-column-filter-option-row input {
@@ -16155,6 +16715,7 @@ defineExpose({
 }
 
 .sheet-column-filter-option-label {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -16163,6 +16724,7 @@ defineExpose({
 
 .sheet-column-filter-option-count {
   flex: 0 0 auto;
+  margin-left: auto;
   color: #64748b;
 }
 

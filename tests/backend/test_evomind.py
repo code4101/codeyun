@@ -55,6 +55,103 @@ def test_scan_codex_cases_detects_explicit_learning_marker(monkeypatch) -> None:
     assert "忽略用户明确要求沉淀的样例" in result["items"][0]["anti_patterns"]
 
 
+def test_scan_codex_cases_can_filter_explicit_learning_markers(monkeypatch) -> None:
+    def fake_overview(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
+            "root_dir": "C:/Users/test/.codex",
+            "total_threads": 2,
+            "groups": [
+                {
+                    "threads": [
+                        {
+                            "id": "thread-marker",
+                            "title": "EvoMind 学习标记",
+                            "archived": False,
+                            "preview": "记录表格宽度案例",
+                            "project_label": "codeyun",
+                        },
+                        {
+                            "id": "thread-friction",
+                            "title": "普通高摩擦纠错",
+                            "archived": False,
+                            "preview": "用户反复纠正",
+                            "project_label": "codeyun",
+                        },
+                    ]
+                }
+            ],
+        }
+
+    def fake_detail(root_dir: str, thread_id: str, session: Any = None) -> dict[str, Any]:
+        if thread_id == "thread-marker":
+            messages = [
+                {"seq": 1, "role": "user", "text": "做表格列宽调整"},
+                {"seq": 2, "role": "assistant", "text": "我把表格铺满整行。"},
+                {
+                    "seq": 3,
+                    "role": "user",
+                    "text": "这个页面宽度自适应问题 evomind 要学习，表格列按内容收口，右侧留白没关系。",
+                },
+            ]
+        else:
+            messages = [
+                {"seq": 1, "role": "user", "text": "做一个配置页面"},
+                {"seq": 2, "role": "assistant", "text": "我加很多摘要卡片。"},
+                {"seq": 3, "role": "user", "text": "我说过不要这么复杂，怎么还反复重复同一个事实？"},
+            ]
+        return {
+            "root_dir": root_dir,
+            "thread": {"id": thread_id, "title": thread_id, "project_label": "codeyun"},
+            "messages": messages,
+        }
+
+    monkeypatch.setattr(evomind, "build_codex_overview", fake_overview)
+    monkeypatch.setattr(evomind, "build_codex_thread_detail", fake_detail)
+
+    result = evomind.scan_evomind_cases_from_codex(  # type: ignore[arg-type]
+        session=None,
+        signal_type_filter="explicit_learning_marker",
+    )
+
+    assert len(result["items"]) == 1
+    assert result["heuristic_candidate_count"] == 1
+    assert result["items"][0]["source"]["thread_id"] == "thread-marker"
+    assert result["items"][0]["signal_type"] == "explicit_learning_marker"
+
+
+def test_evomind_pending_imports_round_trip(monkeypatch, tmp_path) -> None:
+    pending_path = tmp_path / "pending-imports.json"
+    monkeypatch.setattr(evomind, "_evomind_pending_imports_path", lambda: pending_path)
+
+    assert evomind.read_evomind_pending_imports()["items"] == []
+
+    evomind.save_evomind_pending_imports(
+        {
+            "root_dir": "C:/Users/test/.codex",
+            "total_threads": 1,
+            "scanned_threads": 1,
+            "skipped_threads": 0,
+            "scanned_messages": 1,
+            "heuristic_candidate_count": 1,
+            "analysis_mode": "codex_cli_cache",
+            "codex_cli_used": True,
+            "codex_cli_invoked": False,
+            "cache_hit_count": 1,
+            "cache_miss_count": 0,
+            "cache_rule_hash": "rule",
+            "cache_rule_mismatch": False,
+            "cache_reset": False,
+            "items": [{"id": "case-1"}],
+        }
+    )
+
+    assert evomind.read_evomind_pending_imports()["items"] == [{"id": "case-1"}]
+
+    evomind.clear_evomind_pending_imports()
+
+    assert evomind.read_evomind_pending_imports()["items"] == []
+
+
 def test_scan_codex_cases_keeps_multi_turn_evidence_window(monkeypatch) -> None:
     monkeypatch.setattr(
         evomind,
