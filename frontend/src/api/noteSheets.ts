@@ -76,9 +76,11 @@ export interface NoteSheetPaginationState {
   page: number
   page_size: number
   total_rows: number
+  unfiltered_total_rows?: number
   page_count: number
   row_offset: number
   loaded_row_count: number
+  row_indexes?: number[]
 }
 
 export interface NoteSheetColumnOptionItem {
@@ -124,7 +126,16 @@ export interface NoteSheetUpdateRequest {
     page_size: number
     row_offset: number
     loaded_row_count: number
+    row_indexes?: number[]
   }
+}
+
+export interface NoteSheetQueryRequest {
+  page?: number
+  page_size?: number
+  paginate?: boolean
+  column_filters?: Record<string, unknown>
+  row_filter_programs?: Array<Record<string, unknown>>
 }
 
 export interface NoteSheetSortRequest {
@@ -321,6 +332,19 @@ export async function fetchNoteSheet(
     }
     throw error
   }
+}
+
+export async function queryNoteSheet(
+  sheetId: number,
+  payload: NoteSheetQueryRequest,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/query`, payload, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+  })
+  return response.data
 }
 
 export async function fetchNoteSheetColumnOptions(

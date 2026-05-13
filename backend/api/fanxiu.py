@@ -33,6 +33,7 @@ from backend.core.fanxiu_inventory import (
     load_shouyuan_exploration_exchange_list,
     save_shouyuan_exploration_exchange_list,
 )
+from backend.core.fanxiu_processes import match_fanxiu_command_line, list_fanxiu_processes, terminate_fanxiu_processes
 from backend.core.fanxiu_region_data import (
     build_region_character_history_snapshot,
     build_region_character_snapshot,
@@ -42,6 +43,7 @@ from backend.core.fanxiu_region_data import (
     serialize_region_character_record,
     update_region_character_record,
 )
+from backend.core.local_script_processes import list_local_script_processes
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_KIND_FANXIU_CHAR,
@@ -233,6 +235,50 @@ class FanxiuStatusParseRequest(BaseModel):
 
 class FanxiuStatusUpdateRequest(BaseModel):
     raw_status: dict[str, Any]
+
+
+class FanxiuProcessItem(BaseModel):
+    pid: int
+    parent_pid: Optional[int] = None
+    name: str
+    command_line: str
+    created_at: Optional[str] = None
+    matched_reason: str
+
+
+class FanxiuProcessListResponse(BaseModel):
+    items: List[FanxiuProcessItem] = Field(default_factory=list)
+
+
+class LocalScriptProcessItem(BaseModel):
+    pid: int
+    parent_pid: Optional[int] = None
+    name: str
+    kind: str
+    script: str
+    script_path: Optional[str] = None
+    command_line: str
+    cwd: Optional[str] = None
+    created_at: Optional[str] = None
+    runtime_seconds: Optional[int] = None
+    project_hint: str = ""
+    is_fanxiu: bool = False
+
+
+class LocalScriptProcessListResponse(BaseModel):
+    items: List[LocalScriptProcessItem] = Field(default_factory=list)
+
+
+class FanxiuProcessTerminateError(BaseModel):
+    pid: int
+    error: str
+
+
+class FanxiuProcessTerminateResponse(BaseModel):
+    matched: List[FanxiuProcessItem] = Field(default_factory=list)
+    terminated: List[FanxiuProcessItem] = Field(default_factory=list)
+    remaining: List[FanxiuProcessItem] = Field(default_factory=list)
+    errors: List[FanxiuProcessTerminateError] = Field(default_factory=list)
 
 
 class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
@@ -2334,6 +2380,41 @@ def update_fanxiu_status_snapshot(
         snapshot["loaded_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     return FanxiuStatusSnapshot.model_validate(snapshot)
+
+
+@status_router.get("/scripts", response_model=LocalScriptProcessListResponse)
+def get_local_script_processes(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    items = []
+    for item in list_local_script_processes():
+        items.append(
+            {
+                **item,
+                "is_fanxiu": bool(match_fanxiu_command_line(str(item.get("command_line") or ""))),
+            }
+        )
+    return LocalScriptProcessListResponse(items=items)
+
+
+@status_router.get("/processes", response_model=FanxiuProcessListResponse)
+def get_fanxiu_processes(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuProcessListResponse(items=list_fanxiu_processes())
+
+
+@status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse)
+def terminate_fanxiu_scripts(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuProcessTerminateResponse.model_validate(terminate_fanxiu_processes())
 
 
 @inventory_router.get("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)

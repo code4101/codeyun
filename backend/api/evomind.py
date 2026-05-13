@@ -6,7 +6,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlmodel import Session
 
-from backend.core.evomind import derive_evomind_case_card, generate_evomind_rule_proposal, scan_evomind_cases_from_codex
+from backend.core.evomind import (
+    clear_evomind_pending_imports,
+    derive_evomind_case_card,
+    generate_evomind_rule_proposal,
+    read_evomind_pending_imports,
+    scan_evomind_cases_from_codex,
+)
 from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.db import get_session
 
@@ -21,6 +27,10 @@ class EvoMindCodexScanRequest(BaseModel):
     max_threads: int = Field(default=120, ge=1, le=500)
     max_cases: int = Field(default=40, ge=1, le=120)
     min_score: int = Field(default=55, ge=0, le=200)
+    signal_type: str | None = Field(
+        default=None,
+        pattern="^(explicit_learning_marker|friction|repeated_correction|final_artifact_delta)$",
+    )
     use_codex_cli: bool = True
     codex_cli_limit: int = Field(default=40, ge=1, le=120)
     reset_cache: bool = False
@@ -159,6 +169,7 @@ def scan_codex_cases(
             max_threads=payload.max_threads,
             max_cases=payload.max_cases,
             min_score=payload.min_score,
+            signal_type_filter=payload.signal_type,
             use_codex_cli=payload.use_codex_cli,
             codex_cli_limit=payload.codex_cli_limit,
             reset_cache=payload.reset_cache,
@@ -166,6 +177,23 @@ def scan_codex_cases(
         )
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"扫描 Codex 会话失败：{exc}") from exc
+
+
+@router.get("/cases/pending-imports", response_model=EvoMindCodexScanResponse)
+def get_pending_case_imports() -> dict[str, Any]:
+    try:
+        return read_evomind_pending_imports()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"读取 EvoMind 待导入案例失败：{exc}") from exc
+
+
+@router.post("/cases/pending-imports/consume")
+def consume_pending_case_imports() -> dict[str, bool]:
+    try:
+        clear_evomind_pending_imports()
+        return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"清理 EvoMind 待导入案例失败：{exc}") from exc
 
 
 @router.post("/cases/derive-card", response_model=EvoMindCaseCardResponse)

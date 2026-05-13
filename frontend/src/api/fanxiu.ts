@@ -63,6 +63,45 @@ export interface FanxiuStatusSnapshot extends FanxiuStatusConfig {
   raw_status?: Record<string, unknown> | null;
 }
 
+export interface FanxiuProcessItem {
+  pid: number;
+  parent_pid: number | null;
+  name: string;
+  command_line: string;
+  created_at: string | null;
+  matched_reason: string;
+}
+
+export interface FanxiuProcessListResponse {
+  items: FanxiuProcessItem[];
+}
+
+export interface LocalScriptProcessItem {
+  pid: number;
+  parent_pid: number | null;
+  name: string;
+  kind: string;
+  script: string;
+  script_path: string | null;
+  command_line: string;
+  cwd: string | null;
+  created_at: string | null;
+  runtime_seconds: number | null;
+  project_hint: string;
+  is_fanxiu: boolean;
+}
+
+export interface LocalScriptProcessListResponse {
+  items: LocalScriptProcessItem[];
+}
+
+export interface FanxiuProcessTerminateResponse {
+  matched: FanxiuProcessItem[];
+  terminated: FanxiuProcessItem[];
+  remaining: FanxiuProcessItem[];
+  errors: Array<{ pid: number; error: string }>;
+}
+
 export type FanxiuInventoryType = '' | '攻击' | '防御' | '灵力' | '辅助';
 export type FanxiuMagicTreasureCategory = '法宝' | '先天古宝' | '后天古宝';
 
@@ -376,6 +415,18 @@ export const parseFanxiuStatus = (rawStatus: Record<string, unknown>) => {
 
 export const saveFanxiuStatus = (rawStatus: Record<string, unknown>) => {
   return api.put<FanxiuStatusSnapshot>('/fanxiu/status', { raw_status: rawStatus }).then(res => res.data);
+};
+
+export const getFanxiuProcesses = () => {
+  return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
+};
+
+export const getLocalScriptProcesses = () => {
+  return api.get<LocalScriptProcessListResponse>('/fanxiu/scripts').then(res => res.data);
+};
+
+export const terminateFanxiuProcesses = () => {
+  return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
 };
 
 export const getFanxiuWardrobeHall = () => {

@@ -12,7 +12,7 @@ import threading
 import time
 import re
 import uuid
-from math import ceil
+from math import ceil, isfinite
 from typing import Any, Literal, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -285,6 +285,7 @@ class NoteSheetPagePatchRequest(BaseModel):
     page_size: int = Field(default=DEFAULT_NOTE_SHEET_PAGE_SIZE, ge=1, le=MAX_NOTE_SHEET_PAGE_SIZE)
     row_offset: int = Field(default=0, ge=0)
     loaded_row_count: int = Field(default=0, ge=0)
+    row_indexes: list[int] = Field(default_factory=list)
 
 
 class NoteSheetCreateRequest(BaseModel):
@@ -297,6 +298,14 @@ class NoteSheetUpdateRequest(BaseModel):
     title: Optional[str] = None
     document_json: Optional[dict[str, Any]] = None
     page_patch: Optional[NoteSheetPagePatchRequest] = None
+
+
+class NoteSheetQueryRequest(BaseModel):
+    page: int = Field(default=1, ge=1)
+    page_size: int | None = Field(default=None, ge=1, le=MAX_NOTE_SHEET_PAGE_SIZE)
+    paginate: bool | None = None
+    column_filters: dict[str, Any] = Field(default_factory=dict)
+    row_filter_programs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class NoteSheetTableResponse(BaseModel):
@@ -781,6 +790,447 @@ def _build_paged_document(
     )
 
 
+def _normalize_filter_text(value: Any) -> str:
+    return "" if value is None else str(value).strip()
+
+
+def _normalize_filter_search_text(value: Any) -> str:
+    return _normalize_filter_text(value).lower()
+
+
+def _read_filter_field(record: dict[str, Any], camel_key: str, snake_key: str | None = None, default: Any = None) -> Any:
+    if camel_key in record:
+        return record.get(camel_key)
+    if snake_key and snake_key in record:
+        return record.get(snake_key)
+    return default
+
+
+def _normalize_filter_excluded_values(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {_normalize_filter_text(item) for item in value}
+
+
+def _parse_note_sheet_filter_number(value: Any) -> float | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value) if isfinite(float(value)) else None
+
+    text = _normalize_filter_text(value)
+    if not text:
+        return None
+
+    sign = 1.0
+    parenthesized = re.fullmatch(r"\((.*)\)", text)
+    if parenthesized:
+        sign = -1.0
+        text = parenthesized.group(1).strip()
+
+    multiplier = 1.0
+    if text.endswith("%"):
+        multiplier *= 0.01
+        text = text[:-1]
+    if text.endswith("万"):
+        multiplier *= 10_000
+        text = text[:-1]
+    elif text.endswith("亿"):
+        multiplier *= 100_000_000
+        text = text[:-1]
+
+    normalized = re.sub(r"[￥¥,，\s]", "", text)
+    if not re.fullmatch(r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)", normalized):
+        return None
+    return float(normalized) * multiplier * sign
+
+
+def _parse_note_sheet_filter_date_day(value: Any) -> int | None:
+    if isinstance(value, datetime):
+        return value.date().toordinal()
+    if isinstance(value, date):
+        return value.toordinal()
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        parts = _serial_to_date_parts(float(value))
+        return date(parts[0], parts[1], parts[2]).toordinal() if parts else None
+
+    text = _normalize_filter_text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        parts = _serial_to_date_parts(float(text))
+        return date(parts[0], parts[1], parts[2]).toordinal() if parts else None
+
+    separated = re.match(r"^(\d{4})[-/年](\d{1,2})[-/月](\d{1,2})日?(?:[ T]+\d{1,2}(?::\d{1,2}(?::\d{1,2})?)?)?$", text)
+    if separated:
+        try:
+            return date(int(separated.group(1)), int(separated.group(2)), int(separated.group(3))).toordinal()
+        except ValueError:
+            return None
+
+    compact = re.match(r"^(\d{4})(\d{2})(\d{2})(?:\d{2}\d{2}\d{0,2})?$", text)
+    if compact:
+        try:
+            return date(int(compact.group(1)), int(compact.group(2)), int(compact.group(3))).toordinal()
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_note_sheet_filter_date(value: Any) -> str:
+    day = _parse_note_sheet_filter_date_day(value)
+    if day is None:
+        return ""
+    parsed = date.fromordinal(day)
+    return parsed.isoformat()
+
+
+def _is_column_filter_enabled(column_configs: dict[str, Any], header: str) -> bool:
+    config = column_configs.get(header)
+    return isinstance(config, dict) and config.get("filter_enabled") is True
+
+
+def _is_column_filter_option_mode(column_configs: dict[str, Any], header: str) -> bool:
+    config = column_configs.get(header)
+    return isinstance(config, dict) and config.get("value_mode") == "fixed_options"
+
+
+def _is_column_filter_date_mode(column_configs: dict[str, Any], header: str) -> bool:
+    config = column_configs.get(header)
+    return isinstance(config, dict) and config.get("value_type") == "date"
+
+
+def _is_column_filter_number_mode(column_configs: dict[str, Any], header: str) -> bool:
+    config = column_configs.get(header)
+    return isinstance(config, dict) and config.get("value_type") in {"number", "percent"}
+
+
+def _normalize_note_sheet_column_filters(
+    column_filters: dict[str, Any],
+    *,
+    columns: list[str],
+    column_configs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    header_indexes = {header: index for index, header in enumerate(columns)}
+    for header, raw_state in column_filters.items():
+        if header not in header_indexes or not _is_column_filter_enabled(column_configs, header):
+            continue
+        state = raw_state if isinstance(raw_state, dict) else {"query": raw_state}
+        option_mode = _is_column_filter_option_mode(column_configs, header)
+        date_mode = _is_column_filter_date_mode(column_configs, header)
+        number_mode = _is_column_filter_number_mode(column_configs, header)
+        query = "" if date_mode or number_mode else _normalize_filter_text(state.get("query"))
+        excluded_values = _normalize_filter_excluded_values(
+            _read_filter_field(state, "excludedValues", "excluded_values", []),
+        ) if option_mode else set()
+        date_start = _normalize_note_sheet_filter_date(_read_filter_field(state, "dateStart", "date_start", ""))
+        date_end = _normalize_note_sheet_filter_date(_read_filter_field(state, "dateEnd", "date_end", ""))
+        if date_start and date_end and date_start > date_end:
+            date_start, date_end = date_end, date_start
+        number_operator = _read_filter_field(state, "numberOperator", "number_operator", "gte")
+        if number_operator not in {"eq", "neq", "gt", "gte", "lt", "lte", "between"}:
+            number_operator = "gte"
+        number_value = _parse_note_sheet_filter_number(_read_filter_field(state, "numberValue", "number_value", ""))
+        number_value_to = _parse_note_sheet_filter_number(_read_filter_field(state, "numberValueTo", "number_value_to", ""))
+        if number_operator == "between" and number_value is not None and number_value_to is not None and number_value > number_value_to:
+            number_value, number_value_to = number_value_to, number_value
+
+        active = (
+            bool(query)
+            or bool(excluded_values)
+            or (date_mode and (bool(date_start) or bool(date_end)))
+            or (
+                number_mode
+                and number_value is not None
+                and (number_operator != "between" or number_value_to is not None)
+            )
+        )
+        if not active:
+            continue
+        normalized.append({
+            "header": header,
+            "column_index": header_indexes[header],
+            "query": query,
+            "excluded_values": excluded_values,
+            "date_start_day": _parse_note_sheet_filter_date_day(date_start) if date_start else None,
+            "date_end_day": _parse_note_sheet_filter_date_day(date_end) if date_end else None,
+            "number_operator": number_operator,
+            "number_value": number_value,
+            "number_value_to": number_value_to,
+            "number_mode": number_mode,
+        })
+    return normalized
+
+
+def _does_number_match_column_filter(value: float, operator: str, left: float, right: float | None) -> bool:
+    if operator == "eq":
+        return value == left
+    if operator == "neq":
+        return value != left
+    if operator == "gt":
+        return value > left
+    if operator == "gte":
+        return value >= left
+    if operator == "lt":
+        return value < left
+    if operator == "lte":
+        return value <= left
+    if operator == "between":
+        return right is not None and left <= value <= right
+    return True
+
+
+def _does_row_match_column_filters(
+    raw_row: list[Any],
+    display_row: list[Any],
+    filters: list[dict[str, Any]],
+) -> bool:
+    for item in filters:
+        column_index = int(item["column_index"])
+        display_text = _normalize_filter_text(display_row[column_index] if column_index < len(display_row) else "")
+        if item["query"] and _normalize_filter_search_text(item["query"]) not in _normalize_filter_search_text(display_text):
+            return False
+        if display_text in item["excluded_values"]:
+            return False
+        if item["date_start_day"] is not None or item["date_end_day"] is not None:
+            raw_day = _parse_note_sheet_filter_date_day(raw_row[column_index] if column_index < len(raw_row) else "")
+            display_day = _parse_note_sheet_filter_date_day(display_text)
+            day_value = raw_day if raw_day is not None else display_day
+            if day_value is None:
+                return False
+            if item["date_start_day"] is not None and day_value < item["date_start_day"]:
+                return False
+            if item["date_end_day"] is not None and day_value > item["date_end_day"]:
+                return False
+        if item["number_value"] is not None:
+            raw_number = _parse_note_sheet_filter_number(raw_row[column_index] if column_index < len(raw_row) else "")
+            display_number = _parse_note_sheet_filter_number(display_text)
+            number_value = raw_number if raw_number is not None else display_number
+            if number_value is None:
+                return False
+            if not _does_number_match_column_filter(
+                number_value,
+                item["number_operator"],
+                item["number_value"],
+                item["number_value_to"],
+            ):
+                return False
+    return True
+
+
+def _normalize_external_row_filter_program(value: Any) -> dict[str, Any]:
+    program = value if isinstance(value, dict) else {}
+    rules: list[dict[str, Any]] = []
+    for raw_rule in program.get("rules") if isinstance(program.get("rules"), list) else []:
+        rule = raw_rule if isinstance(raw_rule, dict) else {}
+        action = rule.get("action")
+        if action not in {"include", "exclude", "filter"}:
+            action = "include"
+        matcher = rule.get("matcher") if isinstance(rule.get("matcher"), dict) else {}
+        kind = matcher.get("kind")
+        if kind not in {"all", "none", "field", "full_text_contains"}:
+            kind = "all"
+        op = matcher.get("op")
+        if op not in {"eq", "neq", "in", "not_in", "contains", "not_contains", "gte", "lte", "between"}:
+            op = "contains" if kind == "field" else None
+        rules.append({
+            "action": action,
+            "matcher": {
+                "kind": kind,
+                "field": matcher.get("field") if isinstance(matcher.get("field"), str) else None,
+                "op": op,
+                "value": matcher.get("value", ""),
+                "values": matcher.get("values") if isinstance(matcher.get("values"), list) else [],
+            },
+        })
+    return {
+        "default": program.get("default") if isinstance(program.get("default"), bool) else False,
+        "rules": rules,
+    }
+
+
+def _is_external_row_filter_rule_meaningful(rule: dict[str, Any]) -> bool:
+    matcher = rule.get("matcher") if isinstance(rule.get("matcher"), dict) else {}
+    kind = matcher.get("kind")
+    if kind == "none":
+        return True
+    if kind == "all":
+        return rule.get("action") != "include"
+    if kind == "full_text_contains":
+        return _normalize_filter_text(matcher.get("value")) != ""
+    if kind != "field" or not matcher.get("field"):
+        return False
+    op = matcher.get("op")
+    if op in {"between", "in", "not_in"}:
+        return any(_normalize_filter_text(item) for item in matcher.get("values") or [])
+    return _normalize_filter_text(matcher.get("value")) != ""
+
+
+def _is_external_row_filter_program_active(program: dict[str, Any]) -> bool:
+    return any(_is_external_row_filter_rule_meaningful(rule) for rule in program.get("rules", []))
+
+
+def _compare_external_filter_values(left: str, right: str) -> int:
+    left_number = _parse_note_sheet_filter_number(left)
+    right_number = _parse_note_sheet_filter_number(right)
+    if left_number is not None and right_number is not None:
+        return (left_number > right_number) - (left_number < right_number)
+
+    left_day = _parse_note_sheet_filter_date_day(left)
+    right_day = _parse_note_sheet_filter_date_day(right)
+    if left_day is not None and right_day is not None:
+        return (left_day > right_day) - (left_day < right_day)
+
+    left_text = _normalize_filter_search_text(left)
+    right_text = _normalize_filter_search_text(right)
+    return (left_text > right_text) - (left_text < right_text)
+
+
+def _does_external_filter_value_match(text: str, matcher: dict[str, Any]) -> bool:
+    op = matcher.get("op") or "contains"
+    value = _normalize_filter_text(matcher.get("value"))
+    values = [_normalize_filter_text(item) for item in (matcher.get("values") or [])]
+    if op == "contains":
+        return _normalize_filter_search_text(value) in _normalize_filter_search_text(text)
+    if op == "not_contains":
+        return _normalize_filter_search_text(value) not in _normalize_filter_search_text(text)
+    if op == "eq":
+        return text == value
+    if op == "neq":
+        return text != value
+    if op == "in":
+        return text in values
+    if op == "not_in":
+        return text not in values
+    if op == "between":
+        if len(values) < 2 or not values[0] or not values[1]:
+            return True
+        return _compare_external_filter_values(text, values[0]) >= 0 and _compare_external_filter_values(text, values[1]) <= 0
+    if op == "gte":
+        return _compare_external_filter_values(text, value) >= 0
+    if op == "lte":
+        return _compare_external_filter_values(text, value) <= 0
+    return True
+
+
+def _does_row_match_external_filter_matcher(
+    display_row: list[Any],
+    *,
+    columns: list[str],
+    matcher: dict[str, Any],
+) -> bool:
+    kind = matcher.get("kind")
+    if kind == "all":
+        return True
+    if kind == "none":
+        return False
+    if kind == "full_text_contains":
+        keyword = _normalize_filter_search_text(matcher.get("value"))
+        if not keyword:
+            return True
+        return any(keyword in _normalize_filter_search_text(value) for value in display_row)
+    if kind != "field" or not matcher.get("field"):
+        return True
+    field = _normalize_filter_text(matcher.get("field"))
+    try:
+        column_index = columns.index(field)
+    except ValueError:
+        return True
+    text = _normalize_filter_text(display_row[column_index] if column_index < len(display_row) else "")
+    return _does_external_filter_value_match(text, matcher)
+
+
+def _does_row_match_external_filter_program(
+    display_row: list[Any],
+    *,
+    columns: list[str],
+    program: dict[str, Any],
+) -> bool:
+    decision = bool(program.get("default"))
+    for rule in program.get("rules", []):
+        if not _is_external_row_filter_rule_meaningful(rule):
+            continue
+        matcher = rule.get("matcher") if isinstance(rule.get("matcher"), dict) else {}
+        matched = _does_row_match_external_filter_matcher(display_row, columns=columns, matcher=matcher)
+        action = rule.get("action")
+        if action == "filter":
+            decision = decision and matched
+        elif action == "exclude":
+            decision = decision and not matched
+        else:
+            decision = decision or matched
+    return decision
+
+
+def _build_filtered_paged_document(
+    document_json: dict[str, Any],
+    *,
+    page: int,
+    page_size: int,
+    column_filters: dict[str, Any],
+    row_filter_programs: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    column_configs = normalized.get("column_configs")
+    column_configs = column_configs if isinstance(column_configs, dict) else {}
+    all_rows = _extract_document_rows(normalized)
+    data_start_row = _normalize_document_data_start_row(normalized)
+    text_grid = _build_table_text_grid(normalized, columns=columns, rows=all_rows)
+    text_rows = text_grid[data_start_row:data_start_row + len(all_rows)]
+    active_column_filters = _normalize_note_sheet_column_filters(
+        column_filters,
+        columns=columns,
+        column_configs=column_configs,
+    )
+    active_row_filter_programs = [
+        program
+        for program in (_normalize_external_row_filter_program(item) for item in row_filter_programs)
+        if _is_external_row_filter_program_active(program)
+    ]
+
+    filtered_indexes: list[int] = []
+    for row_index, row in enumerate(all_rows):
+        raw_row = _normalize_sheet_row(row, len(columns))
+        display_row = _normalize_sheet_row(text_rows[row_index] if row_index < len(text_rows) else raw_row, len(columns))
+        if not _does_row_match_column_filters(raw_row, display_row, active_column_filters):
+            continue
+        if any(
+            not _does_row_match_external_filter_program(display_row, columns=columns, program=program)
+            for program in active_row_filter_programs
+        ):
+            continue
+        filtered_indexes.append(row_index)
+
+    safe_page_size = _normalize_page_size(page_size)
+    actual_page_count = max(1, ceil(len(filtered_indexes) / safe_page_size) if filtered_indexes else 1)
+    safe_page = min(max(int(page or 1), 1), actual_page_count)
+    row_offset = min((safe_page - 1) * safe_page_size, len(filtered_indexes))
+    page_row_indexes = filtered_indexes[row_offset:row_offset + safe_page_size]
+    page_rows = [all_rows[index] for index in page_row_indexes]
+    page_document = {
+        **normalized,
+        "rows": page_rows,
+    }
+    grid_rows = _extract_document_grid_rows(normalized)
+    if grid_rows:
+        prefix_count = min(data_start_row, len(grid_rows))
+        page_document["grid_rows"] = [*grid_rows[:prefix_count], *page_rows]
+
+    return (
+        page_document,
+        {
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total_rows": len(filtered_indexes),
+            "unfiltered_total_rows": len(all_rows),
+            "page_count": actual_page_count,
+            "row_offset": row_offset,
+            "loaded_row_count": len(page_rows),
+            "row_indexes": page_row_indexes,
+        },
+    )
+
+
 def _build_workspace_pagination(
     *,
     page_patch: NoteSheetPagePatchRequest,
@@ -810,6 +1260,34 @@ def _merge_paged_document(
 
     current_rows = _extract_document_rows(normalized_current)
     incoming_rows = _extract_document_rows(normalized_incoming)
+    row_indexes = [
+        int(index)
+        for index in page_patch.row_indexes
+        if isinstance(index, int) and 0 <= int(index) < len(current_rows)
+    ]
+    if row_indexes:
+        if len(row_indexes) != len(incoming_rows) or len(set(row_indexes)) != len(row_indexes):
+            raise HTTPException(status_code=409, detail="筛选分页保存需要保持行数一致")
+        merged_rows = list(current_rows)
+        for source_index, incoming_row in zip(row_indexes, incoming_rows):
+            merged_rows[source_index] = incoming_row
+        next_document = {
+            **normalized_current,
+            **{
+                key: value
+                for key, value in normalized_incoming.items()
+                if key not in {"rows", "grid_rows"}
+            },
+            "rows": merged_rows,
+        }
+        current_grid_rows = _extract_document_grid_rows(normalized_current)
+        incoming_grid_rows = _extract_document_grid_rows(normalized_incoming)
+        if current_grid_rows or incoming_grid_rows:
+            data_start_row = _normalize_document_data_start_row(next_document)
+            source_grid_rows = incoming_grid_rows or current_grid_rows
+            next_document["grid_rows"] = [*source_grid_rows[:data_start_row], *merged_rows]
+        return next_document
+
     row_offset = min(max(int(page_patch.row_offset or 0), 0), len(current_rows))
     loaded_row_count = max(int(page_patch.loaded_row_count or 0), 0)
     tail_start = min(row_offset + loaded_row_count, len(current_rows))
@@ -6359,6 +6837,48 @@ def get_note_sheet(
             pagination=pagination,
             access=access,
         ),
+    )
+
+
+@router.post("/sheets/{sheet_id}/query")
+def query_note_sheet(
+    sheet_id: int,
+    payload: NoteSheetQueryRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    _sync_attendance_questionnaire_sheet_document(session, document)
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    full_document = dict(document.document_json or {})
+    document_paginate_enabled, document_page_size = _get_document_pagination_settings(full_document)
+    effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
+
+    if effective_paginate:
+        page_document, pagination = _build_filtered_paged_document(
+            full_document,
+            page=payload.page,
+            page_size=payload.page_size if payload.page_size is not None else document_page_size,
+            column_filters=payload.column_filters,
+            row_filter_programs=payload.row_filter_programs,
+        )
+    else:
+        page_document = _normalize_document_json(full_document)
+        pagination = None
+
+    return _serialize_sheet_detail(
+        document,
+        workbook_items=workbook_items,
+        document_json=page_document,
+        pagination=pagination,
+        access=access,
     )
 
 

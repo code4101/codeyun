@@ -89,6 +89,24 @@
     </section>
 
     <template v-else>
+      <nav class="storage-view-tabs" aria-label="TreeSize子页">
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'tree' }"
+          @click="setActiveView('tree')"
+        >
+          目录树
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'duplicates' }"
+          @click="setActiveView('duplicates')"
+        >
+          重复文件
+        </button>
+      </nav>
+
+      <template v-if="activeView === 'tree'">
       <section class="storage-summary">
         <span class="summary-path" :title="currentDisplayPath">
           <strong>当前位置</strong>
@@ -282,6 +300,168 @@
           </tbody>
         </table>
       </section>
+      </template>
+
+      <template v-else>
+        <section class="duplicate-toolbar">
+          <label class="duplicate-field duplicate-field-rules">
+            <span class="storage-field-label">判重规则</span>
+            <el-checkbox-group v-model="duplicateRuleFields" class="duplicate-rule-group">
+              <el-checkbox label="size" disabled>大小</el-checkbox>
+              <el-checkbox label="name">名称</el-checkbox>
+              <el-checkbox label="extension">扩展名</el-checkbox>
+              <el-checkbox label="modified_at">修改时间</el-checkbox>
+              <el-checkbox label="sha256">SHA256</el-checkbox>
+            </el-checkbox-group>
+          </label>
+
+          <label class="duplicate-field duplicate-field-min-size">
+            <span class="storage-field-label">最小大小</span>
+            <el-input-number
+              v-model="duplicateMinSizeMb"
+              class="duplicate-number-input"
+              :min="0"
+              :max="1048576"
+              :step="100"
+              :precision="0"
+              controls-position="right"
+            />
+          </label>
+
+          <label class="duplicate-field duplicate-field-select">
+            <span class="storage-field-label">排序</span>
+            <el-select v-model="duplicateSortMode" class="duplicate-select">
+              <el-option label="可释放空间" value="reclaimable" />
+              <el-option label="单文件大小" value="file_size" />
+              <el-option label="整组大小" value="group_total" />
+            </el-select>
+          </label>
+
+          <label class="duplicate-field duplicate-field-select">
+            <span class="storage-field-label">来源</span>
+            <el-select v-model="duplicateSource" class="duplicate-select">
+              <el-option label="自动" value="auto" />
+              <el-option label="Everything" value="everything" />
+              <el-option label="遍历" value="filesystem" />
+            </el-select>
+          </label>
+
+          <el-button
+            type="primary"
+            :icon="duplicateLoading ? undefined : Search"
+            :disabled="!canBrowse || duplicateLoading"
+            @click="analyzeDuplicates(1, false)"
+          >
+            {{ duplicateLoading ? '分析中' : '分析' }}
+          </el-button>
+        </section>
+
+        <section class="storage-summary duplicate-summary">
+          <span class="summary-path" :title="duplicateDisplayPath">
+            <strong>范围</strong>
+            <code>{{ duplicateDisplayPath }}</code>
+          </span>
+          <span><strong>重复组</strong>{{ duplicateListing?.total_groups ?? 0 }}</span>
+          <span><strong>重复文件</strong>{{ duplicateListing?.duplicate_file_count ?? 0 }}</span>
+          <span><strong>可释放</strong>{{ formatBytes(duplicateListing?.total_reclaimable_bytes ?? 0) }}</span>
+          <span><strong>候选</strong>{{ duplicateListing?.candidate_file_count ?? 0 }}</span>
+          <span v-if="duplicateListing"><strong>来源</strong>{{ formatDuplicateSource(duplicateListing.source) }}</span>
+          <span v-if="duplicateListing && !duplicateListing.complete" class="summary-warning">
+            <strong>未完成</strong>已达到候选上限
+          </span>
+        </section>
+
+        <section
+          class="storage-table-shell duplicate-table-shell"
+        >
+          <div v-if="duplicateError" class="storage-error">
+            {{ duplicateError }}
+          </div>
+          <div v-else-if="!duplicateListing" class="storage-empty">
+            设置范围和规则后开始分析。
+          </div>
+          <div v-else-if="!duplicateListing.groups.length" class="storage-empty">
+            当前页没有重复文件组。
+          </div>
+          <table v-else class="storage-table duplicate-table" aria-label="重复文件组">
+            <thead>
+              <tr class="storage-table-head">
+                <th class="storage-cell duplicate-cell-name" scope="col">组 / 文件</th>
+                <th class="storage-cell duplicate-cell-size" scope="col">单文件</th>
+                <th class="storage-cell duplicate-cell-total" scope="col">整组</th>
+                <th class="storage-cell duplicate-cell-total" scope="col">可释放</th>
+                <th class="storage-cell duplicate-cell-count" scope="col">数量</th>
+                <th class="storage-cell duplicate-cell-time" scope="col">修改时间</th>
+                <th class="storage-cell duplicate-cell-path" scope="col">路径</th>
+                <th class="storage-cell storage-cell-spacer" scope="col" aria-hidden="true"></th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="group in duplicateListing.groups" :key="group.id">
+                <tr class="storage-table-row duplicate-group-row">
+                  <td class="storage-cell duplicate-cell-name">
+                    <span class="duplicate-group-title" :title="group.key_label">
+                      {{ group.key_label }}
+                    </span>
+                  </td>
+                  <td class="storage-cell duplicate-cell-size">{{ formatBytes(group.file_size) }}</td>
+                  <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.group_total_bytes) }}</td>
+                  <td class="storage-cell duplicate-cell-total">{{ formatBytes(group.reclaimable_bytes) }}</td>
+                  <td class="storage-cell duplicate-cell-count">{{ group.file_count }}</td>
+                  <td class="storage-cell duplicate-cell-time">--</td>
+                  <td class="storage-cell duplicate-cell-path">--</td>
+                  <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
+                </tr>
+                <tr
+                  v-for="file in group.files"
+                  :key="file.absolute_path"
+                  class="storage-table-row duplicate-file-row"
+                >
+                  <td class="storage-cell duplicate-cell-name">
+                    <div class="entry-label duplicate-file-label">
+                      <span class="entry-toggle"></span>
+                      <el-icon class="entry-icon entry-icon-file"><Document /></el-icon>
+                      <span class="entry-name" :title="file.name">{{ file.name }}</span>
+                    </div>
+                  </td>
+                  <td class="storage-cell duplicate-cell-size">{{ formatBytes(file.size) }}</td>
+                  <td class="storage-cell duplicate-cell-total">--</td>
+                  <td class="storage-cell duplicate-cell-total">--</td>
+                  <td class="storage-cell duplicate-cell-count">1</td>
+                  <td class="storage-cell duplicate-cell-time">{{ formatTime(file.modified_at) }}</td>
+                  <td class="storage-cell duplicate-cell-path">
+                    <span :title="file.absolute_path || file.path">{{ file.absolute_path || file.path }}</span>
+                  </td>
+                  <td class="storage-cell storage-cell-spacer" aria-hidden="true"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </section>
+
+        <section class="duplicate-pagination">
+          <el-button
+            :icon="ArrowLeft"
+            :disabled="duplicateLoading || !duplicateListing?.has_previous"
+            @click="loadDuplicatePage((duplicateListing?.page ?? 1) - 1)"
+          >
+            上一页
+          </el-button>
+          <span class="duplicate-page-label">
+            第 {{ duplicateListing?.page ?? 1 }} 页
+            <template v-if="duplicateListing">
+              / {{ duplicateTotalPages }} 页
+            </template>
+          </span>
+          <el-button
+            :icon="ArrowRight"
+            :disabled="duplicateLoading || !duplicateListing?.has_next"
+            @click="loadDuplicatePage((duplicateListing?.page ?? 1) + 1)"
+          >
+            下一页
+          </el-button>
+        </section>
+      </template>
     </template>
 
     <teleport to="body">
@@ -311,24 +491,35 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   ArrowDown,
+  ArrowLeft,
+  ArrowRight,
   Delete,
   Document,
   FolderOpened,
   Loading,
   QuestionFilled,
   Refresh,
+  Search,
 } from '@element-plus/icons-vue';
 
 import {
   fetchDeviceEntryDeleteTask,
   fetchDeviceEntryDeleteTasks,
   fetchDeviceDirectoryItems,
+  fetchDeviceDuplicateFiles,
   fetchDeviceRoots,
   startDeviceEntryDelete,
   type DeviceDirectoryItem,
   type DeviceDirectoryListing,
   type DeviceDirectorySortProgram,
   type DeviceDeleteTask,
+  type DeviceDuplicateFilterAction,
+  type DeviceDuplicateFilterMatch,
+  type DeviceDuplicateFilterRule,
+  type DeviceDuplicateListing,
+  type DeviceDuplicateRule,
+  type DeviceDuplicateSortMode,
+  type DeviceDuplicateSource,
   type DeviceFilesystemRoot,
   type DeviceFileSelector,
 } from '@/api/deviceFiles';
@@ -339,12 +530,20 @@ const SYSTEM_ROOT_KEY = '__system_root__';
 const SIZE_BAR_MODE_STORAGE_KEY = 'codeyun.storage.sizeBarMode';
 const SIZE_BAR_COLOR_MODE_STORAGE_KEY = 'codeyun.storage.sizeBarColorMode';
 const SIZE_VALUE_MODE_STORAGE_KEY = 'codeyun.storage.sizeValueMode';
+const STORAGE_VIEW_STORAGE_KEY = 'codeyun.storage.activeView';
+const DUPLICATE_SETTINGS_STORAGE_KEY = 'codeyun.storage.duplicateSettings.v1';
 const WORKSPACE_STATE_STORAGE_KEY = 'codeyun.storage.workspaceState.v1';
 const NODE_PAGE_SIZE = 100;
 const MAX_VISIBLE_LIMIT = 100000;
+const DUPLICATE_PAGE_SIZE = 10;
+const DEFAULT_DUPLICATE_FILTER_RULES: DeviceDuplicateFilterRule[] = [
+  { enabled: true, action: 'exclude', match: 'contains', value: '$Recycle.Bin' },
+  { enabled: true, action: 'exclude', match: 'contains', value: 'System Volume Information' },
+];
 type SizeValueMode = 'total' | 'direct';
 type SizeBarMode = 'siblingMax' | 'siblingTotal' | 'globalMax';
 type SizeBarColorMode = 'depth' | 'uniform';
+type StorageView = 'tree' | 'duplicates';
 
 interface SizeValueModeOption {
   value: SizeValueMode;
@@ -444,6 +643,15 @@ interface StorageWorkspaceState {
   updatedAt: number;
 }
 
+interface DuplicateSettingsState {
+  version: 1;
+  rules: DeviceDuplicateRule[];
+  filterRules: DeviceDuplicateFilterRule[];
+  minSizeMb: number;
+  sortMode: DeviceDuplicateSortMode;
+  source: DeviceDuplicateSource;
+}
+
 interface LoadRootOptions {
   workspaceState?: StorageWorkspaceState | null;
   restoreExpanded?: boolean;
@@ -473,15 +681,24 @@ const pathInput = ref('');
 const rootNodes = ref<StorageNode[]>([]);
 const currentListing = ref<DeviceDirectoryListing | null>(null);
 const currentRequest = ref<DeviceFileSelector | null>(null);
+const activeView = ref<StorageView>('tree');
 const sizeValueMode = ref<SizeValueMode>('total');
 const sizeBarMode = ref<SizeBarMode>('siblingMax');
 const sizeBarColorMode = ref<SizeBarColorMode>('depth');
+const duplicateRuleFields = ref<DeviceDuplicateRule[]>(['size']);
+const duplicateFilterRules = ref<DeviceDuplicateFilterRule[]>(DEFAULT_DUPLICATE_FILTER_RULES.map((rule) => ({ ...rule })));
+const duplicateMinSizeMb = ref(100);
+const duplicateSortMode = ref<DeviceDuplicateSortMode>('reclaimable');
+const duplicateSource = ref<DeviceDuplicateSource>('auto');
+const duplicateListing = ref<DeviceDuplicateListing | null>(null);
 const rootVisibleLimit = ref(NODE_PAGE_SIZE);
 const loadingDevices = ref(false);
 const loadingRoots = ref(false);
 const loading = ref(false);
 const refreshing = ref(false);
+const duplicateLoading = ref(false);
 const loadError = ref('');
+const duplicateError = ref('');
 const deleteSubmittingNodeId = ref('');
 const activeDeleteTask = ref<ActiveDeleteTask | null>(null);
 const tableShellRef = ref<HTMLElement | null>(null);
@@ -542,6 +759,20 @@ const currentDisplayPath = computed(() => {
   return currentRequest.value.absolute_path || currentRequest.value.path || '根目录';
 });
 
+const duplicateDisplayPath = computed(() => {
+  if (duplicateListing.value?.absolute_path) {
+    return duplicateListing.value.absolute_path;
+  }
+  if (duplicateListing.value?.path) {
+    return duplicateListing.value.path;
+  }
+  const request = currentRequest.value ?? buildInputRequest();
+  if (request.absolute_path === DEVICE_ROOT_SENTINEL) {
+    return '请选择具体磁盘或目录';
+  }
+  return request.absolute_path || request.path || '根目录';
+});
+
 const visibleRows = computed<StorageVisibleRow[]>(() => {
   const rows: StorageVisibleRow[] = [];
   appendVisibleGroup(rows, rootNodes.value, null);
@@ -557,6 +788,13 @@ const currentKnownBytes = computed(() =>
 const globalReferenceBytes = computed(() =>
   rootNodes.value.reduce((max, node) => Math.max(max, getNodeSize(node) ?? 0), 0)
 );
+const duplicateTotalPages = computed(() => {
+  const listing = duplicateListing.value;
+  if (!listing) {
+    return 1;
+  }
+  return Math.max(1, Math.ceil(listing.total_groups / Math.max(1, listing.page_size)));
+});
 const sizeValueModeOptions: SizeValueModeOption[] = [
   { value: 'total', label: '包含总量' },
   { value: 'direct', label: '直接文件' },
@@ -612,6 +850,130 @@ function normalizeDeviceFileSelector(value: unknown): DeviceFileSelector | null 
     return { root, path };
   }
   return null;
+}
+
+function normalizeStorageView(value: string | null): StorageView | null {
+  return value === 'tree' || value === 'duplicates' ? value : null;
+}
+
+function normalizeDuplicateRuleFields(value: unknown): DeviceDuplicateRule[] {
+  const allowed = new Set<DeviceDuplicateRule>(['size', 'name', 'extension', 'modified_at', 'sha256']);
+  const normalized: DeviceDuplicateRule[] = ['size'];
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item !== 'string' || !allowed.has(item as DeviceDuplicateRule)) {
+        continue;
+      }
+      const rule = item as DeviceDuplicateRule;
+      if (!normalized.includes(rule)) {
+        normalized.push(rule);
+      }
+    }
+  }
+  return normalized;
+}
+
+function cloneDefaultDuplicateFilterRules(): DeviceDuplicateFilterRule[] {
+  return DEFAULT_DUPLICATE_FILTER_RULES.map((rule) => ({ ...rule }));
+}
+
+function normalizeDuplicateFilterAction(value: unknown): DeviceDuplicateFilterAction {
+  return value === 'include' || value === 'exclude' ? value : 'exclude';
+}
+
+function normalizeDuplicateFilterMatch(value: unknown): DeviceDuplicateFilterMatch {
+  return value === 'contains' || value === 'prefix' || value === 'suffix' || value === 'equals' || value === 'glob'
+    ? value
+    : 'contains';
+}
+
+function normalizeDuplicateFilterRules(
+  value: unknown,
+  fallback: DeviceDuplicateFilterRule[] = cloneDefaultDuplicateFilterRules(),
+): DeviceDuplicateFilterRule[] {
+  if (!Array.isArray(value)) {
+    return fallback.map((rule) => ({ ...rule }));
+  }
+  return value
+    .map((item) => {
+      const raw = item && typeof item === 'object' ? item as Record<string, unknown> : null;
+      if (!raw) {
+        return null;
+      }
+      const ruleValue = typeof raw.value === 'string' ? raw.value.trim() : '';
+      if (!ruleValue) {
+        return null;
+      }
+      return {
+        enabled: raw.enabled !== false,
+        action: normalizeDuplicateFilterAction(raw.action),
+        match: normalizeDuplicateFilterMatch(raw.match),
+        value: ruleValue,
+      };
+    })
+    .filter((rule): rule is DeviceDuplicateFilterRule => rule !== null)
+    .slice(0, 50);
+}
+
+function normalizeDuplicateSortMode(value: unknown): DeviceDuplicateSortMode {
+  return value === 'file_size' || value === 'group_total' || value === 'reclaimable'
+    ? value
+    : 'reclaimable';
+}
+
+function normalizeDuplicateSource(value: unknown): DeviceDuplicateSource {
+  return value === 'auto' || value === 'everything' || value === 'filesystem'
+    ? value
+    : 'auto';
+}
+
+function normalizeDuplicateMinSizeMb(value: unknown): number {
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue) || numericValue < 0) {
+    return 100;
+  }
+  return Math.min(1048576, Math.floor(numericValue));
+}
+
+function readDuplicateSettings(): DuplicateSettingsState | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(DUPLICATE_SETTINGS_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<DuplicateSettingsState>;
+    if (parsed.version !== 1) {
+      return null;
+    }
+    return {
+      version: 1,
+      rules: normalizeDuplicateRuleFields(parsed.rules),
+      filterRules: normalizeDuplicateFilterRules(parsed.filterRules),
+      minSizeMb: normalizeDuplicateMinSizeMb(parsed.minSizeMb),
+      sortMode: normalizeDuplicateSortMode(parsed.sortMode),
+      source: normalizeDuplicateSource(parsed.source),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistDuplicateSettings() {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const payload: DuplicateSettingsState = {
+    version: 1,
+    rules: normalizeDuplicateRuleFields(duplicateRuleFields.value),
+    filterRules: normalizeDuplicateFilterRules(duplicateFilterRules.value, []),
+    minSizeMb: normalizeDuplicateMinSizeMb(duplicateMinSizeMb.value),
+    sortMode: duplicateSortMode.value,
+    source: duplicateSource.value,
+  };
+  window.localStorage.setItem(DUPLICATE_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
 }
 
 function getRequestStateKey(request: DeviceFileSelector | null | undefined): string {
@@ -1080,6 +1442,64 @@ async function reloadCurrent() {
   }
 }
 
+function setActiveView(view: StorageView) {
+  activeView.value = view;
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(STORAGE_VIEW_STORAGE_KEY, view);
+  }
+}
+
+function buildDuplicateRules(): DeviceDuplicateRule[] {
+  return normalizeDuplicateRuleFields(duplicateRuleFields.value);
+}
+
+function buildDuplicateRequest(page: number, reuseSnapshot: boolean) {
+  const request = buildInputRequest();
+  if (request.absolute_path === DEVICE_ROOT_SENTINEL) {
+    throw new Error('请先进入具体磁盘或目录，再分析重复文件。');
+  }
+  return {
+    ...request,
+    recursive: true,
+    rules: buildDuplicateRules(),
+    sort_mode: duplicateSortMode.value,
+    source: duplicateSource.value,
+    min_size: duplicateMinSizeMb.value * 1024 * 1024,
+    scan_limit: 200000,
+    page,
+    page_size: DUPLICATE_PAGE_SIZE,
+    snapshot_id: reuseSnapshot ? duplicateListing.value?.snapshot_id || '' : '',
+  };
+}
+
+async function analyzeDuplicates(page = 1, reuseSnapshot = false) {
+  if (!selectedEntryId.value) {
+    return;
+  }
+  duplicateLoading.value = true;
+  duplicateError.value = '';
+  try {
+    const payload = buildDuplicateRequest(page, reuseSnapshot);
+    duplicateListing.value = await fetchDeviceDuplicateFiles(selectedEntryId.value, payload);
+  } catch (error: any) {
+    const detail = error?.response?.data?.detail || error?.message || '重复文件分析失败';
+    duplicateError.value = detail;
+    ElMessage.error(detail);
+  } finally {
+    duplicateLoading.value = false;
+  }
+}
+
+async function loadDuplicatePage(page: number) {
+  const normalizedPage = Math.max(1, page);
+  await analyzeDuplicates(normalizedPage, true);
+}
+
+function clearDuplicateListing() {
+  duplicateListing.value = null;
+  duplicateError.value = '';
+}
+
 async function toggleNode(node: StorageNode) {
   if (!node.isDir || node.loading) {
     return;
@@ -1121,6 +1541,7 @@ async function handleDeviceChange() {
   currentListing.value = null;
   currentRequest.value = null;
   pathInput.value = '';
+  clearDuplicateListing();
   activeDeleteTask.value = null;
   stopDeleteTaskPolling();
   await loadRootsForDevice();
@@ -1272,6 +1693,16 @@ function formatDeleteTask(task: ActiveDeleteTask): string {
   return `${statusLabel[task.status] ?? '未知'} ${task.name}${pidText}`;
 }
 
+function formatDuplicateSource(source: string): string {
+  if (source === 'everything') {
+    return 'Everything';
+  }
+  if (source === 'filesystem') {
+    return '遍历';
+  }
+  return source || '--';
+}
+
 async function confirmDeleteNode(node: StorageNode) {
   closeContextMenu();
   if (!selectedEntryId.value || !canDeleteNode(node)) {
@@ -1402,10 +1833,10 @@ function getUsageLevelStyle(node: StorageNode): Record<string, string> {
 }
 
 function formatSizePercent(percent: number): string {
-  if (percent >= 99.95) {
-    return '100%';
+  if (!Number.isFinite(percent) || percent <= 0) {
+    return '0%';
   }
-  return `${percent < 0.1 && percent > 0 ? '<0.1' : percent.toFixed(1)}%`;
+  return `${Math.min(100, percent).toPrecision(4)}%`;
 }
 
 function formatSizeBarText(node: StorageNode): string {
@@ -1544,11 +1975,30 @@ watch(sizeBarColorMode, (mode) => {
   }
 });
 
+watch([duplicateRuleFields, duplicateMinSizeMb, duplicateSortMode, duplicateSource], () => {
+  if (!duplicateRuleFields.value.includes('size')) {
+    duplicateRuleFields.value = normalizeDuplicateRuleFields(duplicateRuleFields.value);
+  }
+  clearDuplicateListing();
+  persistDuplicateSettings();
+}, { deep: true });
+
 onMounted(async () => {
   const savedWorkspaceState = readWorkspaceState();
   if (typeof window !== 'undefined') {
     window.addEventListener('click', closeContextMenu);
     window.addEventListener('keydown', handleGlobalKeydown);
+    const savedView = normalizeStorageView(window.localStorage.getItem(STORAGE_VIEW_STORAGE_KEY));
+    if (savedView) {
+      activeView.value = savedView;
+    }
+    const duplicateSettings = readDuplicateSettings();
+    if (duplicateSettings) {
+      duplicateRuleFields.value = duplicateSettings.rules;
+      duplicateMinSizeMb.value = duplicateSettings.minSizeMb;
+      duplicateSortMode.value = duplicateSettings.sortMode;
+      duplicateSource.value = duplicateSettings.source;
+    }
     const savedSizeValueMode = window.localStorage.getItem(SIZE_VALUE_MODE_STORAGE_KEY);
     const normalizedSizeValueMode = normalizeSizeValueMode(savedSizeValueMode);
     if (normalizedSizeValueMode) {
@@ -1701,6 +2151,38 @@ onBeforeUnmount(() => {
   line-height: 1.6;
 }
 
+.storage-view-tabs {
+  min-height: 32px;
+  padding: 0 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.storage-view-tabs button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.storage-view-tabs button:hover {
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.storage-view-tabs button.is-active {
+  border-color: #93c5fd;
+  background: #ffffff;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
 .storage-summary {
   min-height: 38px;
   padding: 0 16px;
@@ -1748,6 +2230,57 @@ onBeforeUnmount(() => {
 
 .summary-delete-task.is-partial_failed {
   color: #b45309;
+}
+
+.summary-warning {
+  color: #b45309;
+}
+
+.duplicate-toolbar {
+  padding: 0 16px 4px;
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.duplicate-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.duplicate-field-rules {
+  min-width: 420px;
+}
+
+.duplicate-field-min-size {
+  width: 140px;
+}
+
+.duplicate-field-select {
+  width: 136px;
+}
+
+.duplicate-rule-group {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid #d5dde8;
+  border-radius: 4px;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.duplicate-rule-group :deep(.el-checkbox) {
+  margin-right: 10px;
+}
+
+.duplicate-number-input,
+.duplicate-select {
+  width: 100%;
 }
 
 .mode-dropdown-button {
@@ -1870,6 +2403,74 @@ onBeforeUnmount(() => {
   width: auto;
   min-width: 24px;
   padding: 0;
+}
+
+.duplicate-cell-name {
+  width: 1%;
+  min-width: 300px;
+  max-width: 520px;
+}
+
+.duplicate-cell-size,
+.duplicate-cell-total,
+.duplicate-cell-count,
+.duplicate-cell-time,
+.duplicate-cell-path {
+  width: 1%;
+}
+
+.duplicate-cell-size,
+.duplicate-cell-total {
+  min-width: 110px;
+}
+
+.duplicate-cell-count {
+  min-width: 72px;
+}
+
+.duplicate-cell-time {
+  min-width: 150px;
+}
+
+.duplicate-cell-path span {
+  display: inline-block;
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #64748b;
+}
+
+.duplicate-group-row .storage-cell {
+  background: #f8fafc;
+  font-weight: 600;
+}
+
+.duplicate-group-title {
+  display: inline-block;
+  max-width: 520px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #334155;
+}
+
+.duplicate-file-label {
+  padding-inline-start: 18px;
+}
+
+.duplicate-pagination {
+  min-height: 36px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.duplicate-page-label {
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .storage-more-row {
@@ -2063,19 +2664,6 @@ onBeforeUnmount(() => {
   color: #b42318;
 }
 
-.is-loading {
-  animation: storage-spin 1s linear infinite;
-}
-
-@keyframes storage-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (max-width: 980px) {
   .storage-toolbar {
     align-items: stretch;
@@ -2088,6 +2676,19 @@ onBeforeUnmount(() => {
 
   .storage-actions {
     justify-content: flex-end;
+  }
+
+  .duplicate-field-rules,
+  .duplicate-field-min-size,
+  .duplicate-field-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .duplicate-rule-group {
+    flex-wrap: wrap;
+    min-height: 40px;
+    padding: 6px 10px;
   }
 
   .summary-path code {

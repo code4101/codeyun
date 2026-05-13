@@ -2411,6 +2411,105 @@ def test_note_sheet_pagination_load_and_page_patch_save(client, session):
         _clear_user_override()
 
 
+def test_note_sheet_query_filters_before_pagination_and_saves_by_row_indexes(client, session):
+    user = _create_user(session, username="note-sheet-filtered-pagination-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        create_sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "筛选分页表格",
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["分类", "内容", "金额"],
+                    "rows": [
+                        ["支出", f"expense-{index}", str(index)]
+                        if index % 2 == 0
+                        else ["收入", f"income-{index}", str(index)]
+                        for index in range(1, 121)
+                    ],
+                    "column_configs": {
+                        "分类": {
+                            "filter_enabled": True,
+                            "value_mode": "fixed_options",
+                        },
+                    },
+                    "view_settings": {
+                        "pagination": {
+                            "enabled": True,
+                            "page_size": 50,
+                        },
+                    },
+                },
+            },
+        )
+        assert create_sheet_response.status_code == 200
+        sheet_id = create_sheet_response.json()["id"]
+
+        query_response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/query",
+            json={
+                "page": 1,
+                "page_size": 50,
+                "paginate": True,
+                "column_filters": {
+                    "分类": {
+                        "excludedValues": ["收入"],
+                    },
+                },
+            },
+        )
+        assert query_response.status_code == 200
+        detail = query_response.json()
+        assert detail["pagination"] == {
+            "page": 1,
+            "page_size": 50,
+            "total_rows": 60,
+            "unfiltered_total_rows": 120,
+            "page_count": 2,
+            "row_offset": 0,
+            "loaded_row_count": 50,
+            "row_indexes": list(range(1, 100, 2)),
+        }
+        assert len(detail["document_json"]["rows"]) == 50
+        assert detail["document_json"]["rows"][0] == ["支出", "expense-2", "2"]
+        assert detail["document_json"]["rows"][-1] == ["支出", "expense-100", "100"]
+
+        edited_rows = detail["document_json"]["rows"]
+        edited_rows[0] = ["支出", "expense-2-edited", "2"]
+        save_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            json={
+                "document_json": {
+                    **detail["document_json"],
+                    "rows": edited_rows,
+                },
+                "page_patch": {
+                    "page": 1,
+                    "page_size": 50,
+                    "row_offset": 0,
+                    "loaded_row_count": 50,
+                    "row_indexes": detail["pagination"]["row_indexes"],
+                },
+            },
+        )
+        assert save_response.status_code == 200
+
+        full_response = client.get(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            params={"paginate": False},
+        )
+        assert full_response.status_code == 200
+        full_rows = full_response.json()["document_json"]["rows"]
+        assert full_rows[0] == ["收入", "income-1", "1"]
+        assert full_rows[1] == ["支出", "expense-2-edited", "2"]
+        assert full_rows[2] == ["收入", "income-3", "3"]
+    finally:
+        _clear_user_override()
+
+
 def test_note_sheet_respects_document_pagination_settings(client, session):
     user = _create_user(session, username="note-sheet-pagination-settings-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

@@ -7,6 +7,7 @@ export interface EvoMindCodexScanRequest {
   max_threads?: number
   max_cases?: number
   min_score?: number
+  signal_type?: string | null
   use_codex_cli?: boolean
   codex_cli_limit?: number
   reset_cache?: boolean
@@ -147,6 +148,16 @@ export async function scanEvoMindCodexCases(payload: EvoMindCodexScanRequest = {
   const response = await api.post<EvoMindCodexScanResponse>('/evomind/cases/scan-codex', payload, {
     timeout: EVOMIND_SCAN_TIMEOUT_MS,
   })
+  return response.data
+}
+
+export async function fetchEvoMindPendingCaseImports() {
+  const response = await api.get<EvoMindCodexScanResponse>('/evomind/cases/pending-imports')
+  return response.data
+}
+
+export async function consumeEvoMindPendingCaseImports() {
+  const response = await api.post<{ ok: boolean }>('/evomind/cases/pending-imports/consume')
   return response.data
 }
 

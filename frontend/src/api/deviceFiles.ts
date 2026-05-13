@@ -230,6 +230,11 @@ export interface DeviceOcrPreviewResponse {
 }
 
 export type DeviceDeleteTaskStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed' | 'unknown';
+export type DeviceDuplicateRule = 'size' | 'name' | 'extension' | 'modified_at' | 'sha256';
+export type DeviceDuplicateSortMode = 'file_size' | 'group_total' | 'reclaimable';
+export type DeviceDuplicateSource = 'auto' | 'everything' | 'filesystem';
+export type DeviceDuplicateFilterAction = 'include' | 'exclude';
+export type DeviceDuplicateFilterMatch = 'contains' | 'prefix' | 'suffix' | 'equals' | 'glob';
 
 export interface DeviceDeleteTask {
   id: string;
@@ -256,6 +261,67 @@ export interface DeviceDeleteTaskStartResult {
   task_id: string;
   pid: number | null;
   task: DeviceDeleteTask;
+}
+
+export interface DeviceDuplicateFile {
+  name: string;
+  path: string;
+  absolute_path: string;
+  size: number;
+  modified_at: number | null;
+}
+
+export interface DeviceDuplicateGroup {
+  id: string;
+  key_label: string;
+  rules: DeviceDuplicateRule[];
+  file_count: number;
+  file_size: number;
+  group_total_bytes: number;
+  reclaimable_bytes: number;
+  files: DeviceDuplicateFile[];
+}
+
+export interface DeviceDuplicateFilterRule {
+  enabled: boolean;
+  action: DeviceDuplicateFilterAction;
+  match: DeviceDuplicateFilterMatch;
+  value: string;
+}
+
+export interface DeviceDuplicateListRequest extends DeviceFileSelector {
+  recursive?: boolean;
+  rules?: DeviceDuplicateRule[];
+  filter_rules?: DeviceDuplicateFilterRule[];
+  sort_mode?: DeviceDuplicateSortMode;
+  source?: DeviceDuplicateSource;
+  min_size?: number;
+  scan_limit?: number;
+  snapshot_id?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface DeviceDuplicateListing {
+  ok: boolean;
+  root: string | null;
+  path: string;
+  absolute_path: string;
+  snapshot_id: string;
+  page: number;
+  page_size: number;
+  has_previous: boolean;
+  has_next: boolean;
+  total_groups: number;
+  total_reclaimable_bytes: number;
+  duplicate_file_count: number;
+  scanned_file_count: number;
+  candidate_file_count: number;
+  hash_computed_count: number;
+  source: string;
+  source_detail: string;
+  complete: boolean;
+  groups: DeviceDuplicateGroup[];
 }
 
 const normalizeNullableNumber = (value: unknown): number | null => {
@@ -336,6 +402,36 @@ export const fetchDeviceDirectoryItems = async (
     current_path: response.data.current_path ?? '',
     absolute_path: response.data.absolute_path ?? '',
     items: response.data.items ?? [],
+  };
+};
+
+export const fetchDeviceDuplicateFiles = async (
+  entryId: string,
+  payload: DeviceDuplicateListRequest
+): Promise<DeviceDuplicateListing> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/duplicates'), payload, {
+    timeout: payload.rules?.includes('sha256') ? 180000 : 120000,
+  });
+  return {
+    ok: Boolean(response.data.ok),
+    root: response.data.root ?? null,
+    path: response.data.path ?? '',
+    absolute_path: response.data.absolute_path ?? '',
+    snapshot_id: response.data.snapshot_id ?? '',
+    page: Number(response.data.page ?? 1),
+    page_size: Number(response.data.page_size ?? 10),
+    has_previous: Boolean(response.data.has_previous),
+    has_next: Boolean(response.data.has_next),
+    total_groups: Number(response.data.total_groups ?? 0),
+    total_reclaimable_bytes: Number(response.data.total_reclaimable_bytes ?? 0),
+    duplicate_file_count: Number(response.data.duplicate_file_count ?? 0),
+    scanned_file_count: Number(response.data.scanned_file_count ?? 0),
+    candidate_file_count: Number(response.data.candidate_file_count ?? 0),
+    hash_computed_count: Number(response.data.hash_computed_count ?? 0),
+    source: response.data.source ?? '',
+    source_detail: response.data.source_detail ?? '',
+    complete: Boolean(response.data.complete),
+    groups: Array.isArray(response.data.groups) ? response.data.groups : [],
   };
 };
 

@@ -80,6 +80,15 @@ RAW_BILL_FILE_EXTENSIONS = {
 }
 RAW_FILE_EXTENSIONS = RAW_BILL_FILE_EXTENSIONS
 RAW_FILE_QUERY_EXTENSIONS = tuple(sorted(RAW_BILL_FILE_EXTENSIONS))
+CSV_ENCODINGS = ("gb18030", "gbk", "utf-8-sig", "utf-8")
+ALIPAY_LEGACY_SOURCE_HINTS = (
+    "支付宝",
+    "淘宝",
+    "天猫",
+    "阿里巴巴",
+    "其他（包括阿里巴巴和外部商家）",
+)
+ALIPAY_LEGACY_FUND_STATUSES = {"已支出", "已收入", "资金转移"}
 
 
 def get_freebill_work_dir() -> Path:
@@ -165,6 +174,26 @@ def ensure_freebill_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_raw_files_source ON freebill_raw_files (source)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_raw_files_extension ON freebill_raw_files (extension)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_raw_files_relative_path ON freebill_raw_files (relative_path)")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS freebill_record_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            trade_no TEXT NOT NULL UNIQUE,
+            source TEXT,
+            original_direction TEXT,
+            original_type TEXT,
+            override_direction TEXT NOT NULL,
+            override_type TEXT NOT NULL,
+            note TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_freebill_record_overrides_trade_no "
+        "ON freebill_record_overrides (trade_no)"
+    )
     conn.commit()
 
 
@@ -187,6 +216,20 @@ def _normalize_text(value: Any) -> str | None:
         return None
     text = str(value).replace("\t", "").strip()
     return text or None
+
+
+def _normalize_datetime_text(value: Any) -> str | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    return text.replace("/", "-")
+
+
+def _normalize_alipay_direction(value: Any) -> str | None:
+    text = _normalize_text(value)
+    if text == "其他":
+        return "不计收支"
+    return text
 
 
 def _normalize_amount(value: Any) -> float | None:
@@ -469,7 +512,7 @@ def _build_alipay_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     now = time.time()
     for _, row in df.iterrows():
-        create_time = _normalize_text(row.get("create_time"))
+        create_time = _normalize_datetime_text(row.get("create_time"))
         records.append(
             {
                 "source": "支付宝",
@@ -483,7 +526,7 @@ def _build_alipay_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "counterparty": _normalize_text(row.get("counterparty")),
                 "product_name": _normalize_text(row.get("product_name")),
                 "amount": _normalize_amount(row.get("amount")),
-                "direction": _normalize_text(row.get("direction")),
+                "direction": _normalize_alipay_direction(row.get("direction")),
                 "status": _normalize_text(row.get("status")),
                 "service_fee": 0,
                 "refund_amount": 0,
@@ -493,6 +536,106 @@ def _build_alipay_records(df: pd.DataFrame) -> list[dict[str, Any]]:
             }
         )
     return records
+
+
+def _build_alipay_legacy_records(df: pd.DataFrame) -> list[dict[str, Any]]:
+    df = _strip_dataframe_text(df)
+    if "交易号" not in df.columns:
+        raise ValueError("未找到“交易号”列，请确认是旧版支付宝交易记录明细")
+
+    rename_map = {
+        "交易号": "trade_no",
+        "商家订单号": "merchant_order_no",
+        "交易创建时间": "create_time",
+        "付款时间": "pay_time",
+        "最近修改时间": "modify_time",
+        "交易来源地": "location",
+        "类型": "type",
+        "交易对方": "counterparty",
+        "商品名称": "product_name",
+        "金额（元）": "amount",
+        "金额(元)": "amount",
+        "收/支": "direction",
+        "交易状态": "status",
+        "服务费（元）": "service_fee",
+        "服务费(元)": "service_fee",
+        "成功退款（元）": "refund_amount",
+        "成功退款(元)": "refund_amount",
+        "备注": "remark",
+        "资金状态": "fund_status",
+        "类别": "source_hint",
+    }
+    df = df.rename(columns=rename_map)
+
+    records: list[dict[str, Any]] = []
+    now = time.time()
+    for _, row in df.iterrows():
+        if not _is_supported_alipay_legacy_row(row):
+            continue
+        create_time = _normalize_datetime_text(row.get("create_time"))
+        amount = _normalize_amount(row.get("amount"))
+        trade_no = _normalize_text(row.get("trade_no"))
+        if not trade_no or trade_no == "/" or amount is None or not _looks_like_datetime_text(create_time):
+            continue
+        pay_time = _normalize_datetime_text(row.get("pay_time"))
+        modify_time = _normalize_datetime_text(row.get("modify_time"))
+        records.append(
+            {
+                "source": "支付宝",
+                "trade_no": trade_no,
+                "merchant_order_no": _normalize_text(row.get("merchant_order_no")),
+                "create_time": create_time,
+                "pay_time": pay_time,
+                "modify_time": modify_time,
+                "location": _normalize_text(row.get("location")),
+                "type": _normalize_text(row.get("type")),
+                "counterparty": _normalize_text(row.get("counterparty")),
+                "product_name": _normalize_text(row.get("product_name")),
+                "amount": amount,
+                "direction": _resolve_alipay_legacy_direction(row),
+                "status": _normalize_text(row.get("status")),
+                "service_fee": _normalize_amount(row.get("service_fee")) or 0,
+                "refund_amount": _normalize_amount(row.get("refund_amount")) or 0,
+                "remark": _normalize_text(row.get("remark")),
+                "fund_status": _normalize_text(row.get("fund_status")),
+                "imported_at": now,
+            }
+        )
+    return records
+
+
+def _is_supported_alipay_legacy_row(row: pd.Series) -> bool:
+    source_hint = _normalize_text(row.get("source_hint"))
+    if source_hint and source_hint != "支付宝":
+        return False
+    if source_hint == "支付宝":
+        return True
+
+    location = _normalize_text(row.get("location")) or ""
+    fund_status = _normalize_text(row.get("fund_status")) or ""
+    if fund_status in ALIPAY_LEGACY_FUND_STATUSES:
+        return True
+    return any(hint in location for hint in ALIPAY_LEGACY_SOURCE_HINTS)
+
+
+def _looks_like_datetime_text(value: str | None) -> bool:
+    if not value or len(value) < 10:
+        return False
+    return value[4] == "-" and value[7] == "-"
+
+
+def _resolve_alipay_legacy_direction(row: pd.Series) -> str | None:
+    direction = _normalize_alipay_direction(row.get("direction"))
+    if direction:
+        return direction
+
+    fund_status = _normalize_text(row.get("fund_status")) or ""
+    product_name = _normalize_text(row.get("product_name")) or ""
+    if fund_status == "资金转移":
+        return "不计收支"
+    if any(keyword in product_name for keyword in ("余额宝", "余利宝", "转入", "转出", "还款")):
+        return "不计收支"
+    return "不计收支"
 
 
 def _build_wechat_records(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -521,7 +664,7 @@ def _build_wechat_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     now = time.time()
     for _, row in df.iterrows():
-        create_time = _normalize_text(row.get("create_time"))
+        create_time = _normalize_datetime_text(row.get("create_time"))
         status = _normalize_text(row.get("status"))
         records.append(
             {
@@ -548,6 +691,136 @@ def _build_wechat_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     return records
 
 
+def _parse_alipay_csv_bytes(
+    content: bytes,
+    *,
+    header_row: int = 24,
+) -> tuple[list[dict[str, Any]], str]:
+    last_error: Exception | None = None
+    for df in _iter_csv_dataframes(
+        content,
+        preferred_header_rows=(header_row,),
+        header_markers=(
+            ("交易订单号", "交易时间"),
+            ("交易号", "交易创建时间"),
+        ),
+    ):
+        try:
+            if "交易订单号" in df.columns:
+                return _build_alipay_records(df), "alipay-detail-csv"
+            if "交易号" in df.columns:
+                return _build_alipay_legacy_records(df), "alipay-legacy-csv"
+        except Exception as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    raise ValueError("未找到可识别的支付宝账单表头")
+
+
+def _parse_alipay_excel_bytes(content: bytes) -> tuple[list[dict[str, Any]], str]:
+    records: list[dict[str, Any]] = []
+    for df in _iter_excel_dataframes(
+        content,
+        header_markers=("交易号", "交易创建时间"),
+    ):
+        records.extend(_build_alipay_legacy_records(df))
+    if not records:
+        raise ValueError("未找到可识别的旧版支付宝账单工作表")
+    return records, "alipay-legacy-excel"
+
+
+def _parse_wechat_excel_bytes(content: bytes) -> tuple[list[dict[str, Any]], str]:
+    records: list[dict[str, Any]] = []
+    for df in _iter_excel_dataframes(
+        content,
+        header_markers=("交易单号", "交易时间"),
+    ):
+        records.extend(_build_wechat_records(df))
+    if not records:
+        raise ValueError("未找到可识别的微信支付账单工作表")
+    return records, "wechat-excel"
+
+
+def _iter_csv_dataframes(
+    content: bytes,
+    *,
+    preferred_header_rows: tuple[int, ...],
+    header_markers: tuple[tuple[str, ...], ...],
+):
+    last_error: Exception | None = None
+    for encoding in CSV_ENCODINGS:
+        try:
+            text = content.decode(encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+        header_rows = _detect_text_header_rows(
+            text,
+            preferred_header_rows=preferred_header_rows,
+            header_markers=header_markers,
+        )
+        for header_index in header_rows:
+            try:
+                df = pd.read_csv(
+                    io.StringIO(text),
+                    skiprows=header_index,
+                    dtype=str,
+                    engine="python",
+                )
+                yield _strip_dataframe_text(df)
+            except Exception as exc:
+                last_error = exc
+                continue
+        return
+    if last_error is not None:
+        raise ValueError(f"读取 CSV 编码失败：{last_error}") from last_error
+
+
+def _detect_text_header_rows(
+    text: str,
+    *,
+    preferred_header_rows: tuple[int, ...],
+    header_markers: tuple[tuple[str, ...], ...],
+) -> list[int]:
+    rows: list[int] = []
+    lines = text.splitlines()
+    for row_index in preferred_header_rows:
+        if 0 <= row_index < len(lines):
+            rows.append(row_index)
+    for index, line in enumerate(lines[:200]):
+        if any(all(marker in line for marker in markers) for markers in header_markers):
+            rows.append(index)
+    return list(dict.fromkeys(rows))
+
+
+def _iter_excel_dataframes(
+    content: bytes,
+    *,
+    header_markers: tuple[str, ...],
+):
+    excel = pd.ExcelFile(io.BytesIO(content))
+    for sheet_name in excel.sheet_names:
+        header_index = _find_excel_header_row(excel, sheet_name, header_markers)
+        if header_index is None:
+            continue
+        df = pd.read_excel(excel, sheet_name=sheet_name, header=header_index, dtype=str)
+        yield _strip_dataframe_text(df)
+
+
+def _find_excel_header_row(
+    excel: pd.ExcelFile,
+    sheet_name: str,
+    header_markers: tuple[str, ...],
+) -> int | None:
+    preview = pd.read_excel(excel, sheet_name=sheet_name, header=None, nrows=80, dtype=str)
+    for index, row in preview.iterrows():
+        values = {_normalize_text(item) for item in row.tolist()}
+        if all(marker in values for marker in header_markers):
+            return int(index)
+    return None
+
+
 def import_alipay_csv_bytes(
     filename: str,
     content: bytes,
@@ -562,23 +835,41 @@ def import_alipay_csv_bytes(
         work_dir=work_dir,
         import_status="parsing",
     )
-    last_error: Exception | None = None
-    for encoding in ("gbk", "utf-8-sig", "utf-8"):
-        try:
-            df = pd.read_csv(io.BytesIO(content), skiprows=header_row, encoding=encoding)
-            records = _build_alipay_records(df)
-            result = import_bill_records(records, filename=filename, work_dir=work_dir)
-            result["raw_file"] = archive
-            _update_raw_import_status(archive["sha256"], "imported", work_dir=work_dir)
-            return result
-        except UnicodeDecodeError as exc:
-            last_error = exc
-            continue
-    if last_error is not None:
-        _update_raw_import_status(archive["sha256"], "error", work_dir=work_dir, note=str(last_error))
-        raise ValueError(f"读取支付宝 CSV 编码失败：{last_error}") from last_error
-    _update_raw_import_status(archive["sha256"], "error", work_dir=work_dir, note="读取支付宝 CSV 失败")
-    raise ValueError("读取支付宝 CSV 失败")
+    try:
+        records, parser_format = _parse_alipay_csv_bytes(content, header_row=header_row)
+        result = import_bill_records(records, filename=filename, work_dir=work_dir)
+        result["format"] = parser_format
+        result["raw_file"] = archive
+        _update_raw_import_status(archive["sha256"], "imported", work_dir=work_dir)
+        return result
+    except Exception as exc:
+        _update_raw_import_status(archive["sha256"], "error", work_dir=work_dir, note=str(exc))
+        raise
+
+
+def import_alipay_excel_bytes(
+    filename: str,
+    content: bytes,
+    *,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    archive = archive_freebill_raw_bytes(
+        filename,
+        content,
+        source="支付宝",
+        work_dir=work_dir,
+        import_status="parsing",
+    )
+    try:
+        records, parser_format = _parse_alipay_excel_bytes(content)
+        result = import_bill_records(records, filename=filename, work_dir=work_dir)
+        result["format"] = parser_format
+        result["raw_file"] = archive
+        _update_raw_import_status(archive["sha256"], "imported", work_dir=work_dir)
+        return result
+    except Exception as exc:
+        _update_raw_import_status(archive["sha256"], "error", work_dir=work_dir, note=str(exc))
+        raise
 
 
 def import_wechat_excel_bytes(
@@ -595,9 +886,9 @@ def import_wechat_excel_bytes(
         import_status="parsing",
     )
     try:
-        df = pd.read_excel(io.BytesIO(content), header=16)
-        records = _build_wechat_records(df)
+        records, parser_format = _parse_wechat_excel_bytes(content)
         result = import_bill_records(records, filename=filename, work_dir=work_dir)
+        result["format"] = parser_format
         result["raw_file"] = archive
         _update_raw_import_status(archive["sha256"], "imported", work_dir=work_dir)
         return result
@@ -663,6 +954,7 @@ def import_bill_records(
         conn.commit()
 
         if inserted:
+            _apply_freebill_record_overrides(conn)
             reset_bill_ids(conn)
             conn.commit()
 
@@ -767,6 +1059,450 @@ def _deduplicate_record_score(row: dict[str, Any]) -> tuple[int, int, int]:
     return score, -record_id, record_id
 
 
+def rebuild_freebill_records_from_raw_files(
+    *,
+    work_dir: Path | None = None,
+    backup: bool = True,
+    strict: bool = True,
+) -> dict[str, Any]:
+    resolved_work_dir = work_dir or get_freebill_work_dir()
+    db_path = get_freebill_db_path(resolved_work_dir)
+    with get_freebill_connection(resolved_work_dir) as conn:
+        raw_files = [
+            _row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM freebill_raw_files
+                WHERE source IN ('支付宝', '微信')
+                  AND extension IN ('.csv', '.xlsx', '.xlsm', '.xls')
+                  AND COALESCE(note, '') != 'legacy-db-snapshot'
+                ORDER BY source, relative_path, original_name, id
+                """
+            ).fetchall()
+        ]
+
+    file_results: list[dict[str, Any]] = []
+    record_candidates: list[dict[str, Any]] = []
+    for raw_file in raw_files:
+        result = _parse_rebuild_raw_file(raw_file)
+        file_results.append(result)
+        for record in result.get("records") or []:
+            record_candidates.append(
+                {
+                    **record,
+                    "_freebill_rebuild_score": _score_rebuild_record(
+                        record,
+                        raw_file,
+                        parser_format=str(result.get("format") or ""),
+                    ),
+                }
+            )
+
+    error_results = [item for item in file_results if item.get("status") == "error"]
+    if strict and error_results:
+        error_summary = "; ".join(
+            f"{item.get('relative_path') or item.get('original_name')}: {item.get('error')}"
+            for item in error_results[:5]
+        )
+        raise ValueError(f"重建前解析失败，未修改账单库：{error_summary}")
+
+    deduped_records = _deduplicate_rebuild_records(record_candidates)
+    backup_path: Path | None = None
+    if backup and db_path.exists():
+        timestamp = time.strftime("%Y%m%d%H%M%S")
+        backup_path = db_path.with_name(f"bill.before-raw-rebuild-{timestamp}.db")
+        shutil.copy2(db_path, backup_path)
+
+    with get_freebill_connection(resolved_work_dir) as conn:
+        before_row = conn.execute("SELECT COUNT(*) AS total FROM bill_records").fetchone()
+        conn.execute("BEGIN")
+        try:
+            conn.execute("DELETE FROM bill_records")
+            conn.execute("DELETE FROM sqlite_sequence WHERE name = 'bill_records'")
+            _insert_bill_records(conn, deduped_records)
+            applied_overrides = _apply_freebill_record_overrides(conn)
+            if deduped_records:
+                reset_bill_ids(conn)
+            _update_rebuild_raw_file_statuses(conn, file_results)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        after_row = conn.execute("SELECT COUNT(*) AS total FROM bill_records").fetchone()
+
+    imported_files = [item for item in file_results if item.get("status") == "imported"]
+    skipped_files = [item for item in file_results if item.get("status") == "skipped"]
+    return {
+        "work_dir": str(resolved_work_dir),
+        "db_path": str(db_path),
+        "backup_path": str(backup_path) if backup_path else None,
+        "before_records": int(before_row["total"] or 0),
+        "after_records": int(after_row["total"] or 0),
+        "candidate_records": len(record_candidates),
+        "duplicate_records": len(record_candidates) - len(deduped_records),
+        "applied_overrides": applied_overrides,
+        "raw_files": len(raw_files),
+        "imported_files": len(imported_files),
+        "skipped_files": len(skipped_files),
+        "error_files": len(error_results),
+        "files": [
+            {
+                key: value
+                for key, value in item.items()
+                if key != "records"
+            }
+            for item in file_results
+        ],
+    }
+
+
+def _parse_rebuild_raw_file(raw_file: dict[str, Any]) -> dict[str, Any]:
+    path = Path(str(raw_file.get("archived_path") or ""))
+    base_result = {
+        "raw_file_id": raw_file.get("id"),
+        "source": raw_file.get("source"),
+        "extension": raw_file.get("extension"),
+        "original_name": raw_file.get("original_name"),
+        "relative_path": raw_file.get("relative_path"),
+    }
+    if not path.exists():
+        return {
+            **base_result,
+            "status": "error",
+            "processed": 0,
+            "error": f"归档文件不存在：{path}",
+            "records": [],
+        }
+
+    content = path.read_bytes()
+    source = str(raw_file.get("source") or "")
+    extension = str(raw_file.get("extension") or "").lower()
+    try:
+        if source == "支付宝" and extension == ".csv":
+            records, parser_format = _parse_alipay_csv_bytes(content)
+        elif source == "支付宝" and extension in {".xlsx", ".xlsm", ".xls"}:
+            records, parser_format = _parse_alipay_excel_bytes(content)
+        elif source == "微信" and extension in {".xlsx", ".xlsm", ".xls"}:
+            records, parser_format = _parse_wechat_excel_bytes(content)
+        else:
+            return {
+                **base_result,
+                "status": "skipped",
+                "processed": 0,
+                "format": None,
+                "error": "没有可用解析器",
+                "records": [],
+            }
+        return {
+            **base_result,
+            "status": "imported",
+            "processed": len(records),
+            "format": parser_format,
+            "error": None,
+            "records": records,
+        }
+    except Exception as exc:
+        return {
+            **base_result,
+            "status": "error",
+            "processed": 0,
+            "format": None,
+            "error": str(exc),
+            "records": [],
+        }
+
+
+def _score_rebuild_record(
+    record: dict[str, Any],
+    raw_file: dict[str, Any],
+    *,
+    parser_format: str,
+) -> tuple[int, int, int]:
+    relative_path = str(raw_file.get("relative_path") or "")
+    original_name = str(raw_file.get("original_name") or "")
+    score = 0
+    if "已导入/" in relative_path:
+        score += 1000
+    if "旧导入/" in relative_path:
+        score += 100
+    if parser_format in {"alipay-detail-csv", "wechat-excel"}:
+        score += 1000
+    if "支付宝交易明细" in original_name or "微信支付账单流水文件" in original_name:
+        score += 1000
+    if parser_format.startswith("alipay-legacy"):
+        score += 100
+    score += sum(1 for column in BILL_RECORD_COLUMNS if _normalize_text(record.get(column)))
+    raw_file_id = int(raw_file.get("id") or 0)
+    return score, raw_file_id, len(str(record.get("trade_no") or ""))
+
+
+def _deduplicate_rebuild_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: dict[str, dict[str, Any]] = {}
+    for record in records:
+        trade_no = str(record.get("trade_no") or "").strip()
+        if not trade_no or trade_no == "/":
+            continue
+        existing = selected.get(trade_no)
+        if existing is None or record["_freebill_rebuild_score"] > existing["_freebill_rebuild_score"]:
+            selected[trade_no] = record
+    return [
+        {column: record.get(column) for column in BILL_RECORD_COLUMNS}
+        for record in sorted(
+            selected.values(),
+            key=lambda item: (
+                str(item.get("create_time") or ""),
+                str(item.get("trade_no") or ""),
+            ),
+        )
+    ]
+
+
+def upsert_freebill_record_overrides(
+    trade_nos: list[str],
+    *,
+    direction: str,
+    category: str,
+    note: str | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    normalized_trade_nos = _normalize_trade_nos(trade_nos)
+    if not normalized_trade_nos:
+        raise ValueError("请选择需要人工标记的账单记录")
+
+    override_direction = _normalize_text(direction)
+    override_type = _normalize_text(category)
+    if not override_direction:
+        raise ValueError("收支不能为空")
+    if not override_type:
+        raise ValueError("分类不能为空")
+
+    now = time.time()
+    with get_freebill_connection(work_dir) as conn:
+        records = _query_bill_records_by_trade_no(conn, normalized_trade_nos)
+        existing_overrides = {
+            str(row["trade_no"]): row
+            for row in conn.execute(
+                f"""
+                SELECT *
+                FROM freebill_record_overrides
+                WHERE trade_no IN ({_sql_placeholders(normalized_trade_nos)})
+                """,
+                normalized_trade_nos,
+            ).fetchall()
+        }
+        for trade_no, record in records.items():
+            existing = existing_overrides.get(trade_no)
+            original_direction = (
+                existing["original_direction"]
+                if existing is not None
+                else record.get("direction")
+            )
+            original_type = (
+                existing["original_type"]
+                if existing is not None
+                else record.get("type")
+            )
+            created_at = float(existing["created_at"]) if existing is not None else now
+            conn.execute(
+                """
+                INSERT INTO freebill_record_overrides (
+                    trade_no, source, original_direction, original_type,
+                    override_direction, override_type, note, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_no) DO UPDATE SET
+                    source = excluded.source,
+                    override_direction = excluded.override_direction,
+                    override_type = excluded.override_type,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    trade_no,
+                    record.get("source"),
+                    original_direction,
+                    original_type,
+                    override_direction,
+                    override_type,
+                    note,
+                    created_at,
+                    now,
+                ),
+            )
+        updated = _apply_freebill_record_overrides(conn, list(records))
+        if updated:
+            reset_bill_ids(conn)
+        conn.commit()
+
+    return {
+        "requested": len(normalized_trade_nos),
+        "matched": len(records),
+        "updated": updated,
+        "missing_trade_nos": [trade_no for trade_no in normalized_trade_nos if trade_no not in records],
+        "direction": override_direction,
+        "category": override_type,
+    }
+
+
+def clear_freebill_record_overrides(
+    trade_nos: list[str],
+    *,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    normalized_trade_nos = _normalize_trade_nos(trade_nos)
+    if not normalized_trade_nos:
+        raise ValueError("请选择需要还原的账单记录")
+
+    with get_freebill_connection(work_dir) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT trade_no, original_direction, original_type
+            FROM freebill_record_overrides
+            WHERE trade_no IN ({_sql_placeholders(normalized_trade_nos)})
+            """,
+            normalized_trade_nos,
+        ).fetchall()
+        for row in rows:
+            conn.execute(
+                """
+                UPDATE bill_records
+                SET direction = ?, type = ?
+                WHERE trade_no = ?
+                """,
+                (row["original_direction"], row["original_type"], row["trade_no"]),
+            )
+        if rows:
+            overridden_trade_nos = [str(row["trade_no"]) for row in rows]
+            conn.execute(
+                f"""
+                DELETE FROM freebill_record_overrides
+                WHERE trade_no IN ({_sql_placeholders(overridden_trade_nos)})
+                """,
+                overridden_trade_nos,
+            )
+            reset_bill_ids(conn)
+        conn.commit()
+
+    cleared_trade_nos = {str(row["trade_no"]) for row in rows}
+    return {
+        "requested": len(normalized_trade_nos),
+        "cleared": len(rows),
+        "missing_trade_nos": [
+            trade_no for trade_no in normalized_trade_nos if trade_no not in cleared_trade_nos
+        ],
+    }
+
+
+def _normalize_trade_nos(trade_nos: list[str]) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for trade_no in trade_nos:
+        text = str(trade_no or "").strip()
+        if not text or text == "/" or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _query_bill_records_by_trade_no(
+    conn: sqlite3.Connection,
+    trade_nos: list[str],
+) -> dict[str, dict[str, Any]]:
+    if not trade_nos:
+        return {}
+    return {
+        str(row["trade_no"]): _row_to_dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT *
+            FROM bill_records
+            WHERE trade_no IN ({_sql_placeholders(trade_nos)})
+            """,
+            trade_nos,
+        ).fetchall()
+    }
+
+
+def _apply_freebill_record_overrides(
+    conn: sqlite3.Connection,
+    trade_nos: list[str] | None = None,
+) -> int:
+    params: list[Any] = []
+    if trade_nos is None:
+        scope_sql = "trade_no IN (SELECT trade_no FROM freebill_record_overrides)"
+    else:
+        normalized_trade_nos = _normalize_trade_nos(trade_nos)
+        if not normalized_trade_nos:
+            return 0
+        scope_sql = f"trade_no IN ({_sql_placeholders(normalized_trade_nos)})"
+        params.extend(normalized_trade_nos)
+    cursor = conn.execute(
+        f"""
+        UPDATE bill_records
+        SET direction = COALESCE((
+                SELECT override_direction
+                FROM freebill_record_overrides
+                WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+            ), direction),
+            type = COALESCE((
+                SELECT override_type
+                FROM freebill_record_overrides
+                WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+            ), type)
+        WHERE {scope_sql}
+          AND EXISTS (
+                SELECT 1
+                FROM freebill_record_overrides
+                WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+          )
+        """,
+        params,
+    )
+    return max(int(cursor.rowcount or 0), 0)
+
+
+def _sql_placeholders(values: list[Any]) -> str:
+    if not values:
+        raise ValueError("SQL 占位列表不能为空")
+    return ", ".join("?" for _ in values)
+
+
+def _insert_bill_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+    placeholders = ", ".join("?" for _ in BILL_RECORD_COLUMNS)
+    columns_sql = ", ".join(BILL_RECORD_COLUMNS)
+    conn.executemany(
+        f"INSERT INTO bill_records ({columns_sql}) VALUES ({placeholders})",
+        ([record.get(column) for column in BILL_RECORD_COLUMNS] for record in records),
+    )
+
+
+def _update_rebuild_raw_file_statuses(
+    conn: sqlite3.Connection,
+    file_results: list[dict[str, Any]],
+) -> None:
+    now = time.time()
+    for item in file_results:
+        raw_file_id = item.get("raw_file_id")
+        if not raw_file_id:
+            continue
+        status = "imported" if item.get("status") == "imported" else str(item.get("status") or "skipped")
+        note = item.get("error")
+        conn.execute(
+            """
+            UPDATE freebill_raw_files
+            SET import_status = ?,
+                note = ?,
+                last_seen_at = ?
+            WHERE id = ?
+            """,
+            (status, note, now, raw_file_id),
+        )
+
+
 def _is_wechat_bill_text(text: str) -> bool:
     return any(
         keyword in text
@@ -859,6 +1595,7 @@ def _build_filter_conditions(
 
 def _build_program_filter_conditions(
     program: dict[str, Any] | None,
+    param_prefix: str = "p",
 ) -> tuple[str, dict[str, Any]]:
     if not program:
         return "1 = 1", {}
@@ -873,7 +1610,7 @@ def _build_program_filter_conditions(
         if not isinstance(raw_rule, dict):
             continue
         action = str(raw_rule.get("action") or "include").strip()
-        matcher_sql = _build_program_matcher_sql(raw_rule.get("matcher"), params, f"p{index}")
+        matcher_sql = _build_program_matcher_sql(raw_rule.get("matcher"), params, f"{param_prefix}{index}")
         matched_sql = f"COALESCE(({matcher_sql}), 0)"
         if action == "filter":
             decision_sql = f"(({decision_sql}) AND ({matched_sql}))"
@@ -883,6 +1620,26 @@ def _build_program_filter_conditions(
             decision_sql = f"(({decision_sql}) OR ({matched_sql}))"
 
     return f"COALESCE(({decision_sql}), 0) = 1", params
+
+
+def _build_programs_filter_conditions(
+    programs: list[dict[str, Any]] | None,
+) -> tuple[str, dict[str, Any]]:
+    if not programs:
+        return "1 = 1", {}
+
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    for index, program in enumerate(programs):
+        if not isinstance(program, dict):
+            continue
+        condition_sql, condition_params = _build_program_filter_conditions(program, f"g{index}_p")
+        conditions.append(f"({condition_sql})")
+        params.update(condition_params)
+
+    if not conditions:
+        return "1 = 1", {}
+    return " AND ".join(conditions), params
 
 
 def _build_program_matcher_sql(
@@ -936,6 +1693,16 @@ def _build_program_matcher_sql(
         operator = "IN" if op == "in" else "NOT IN"
         return f"{_program_field_sql(field_sql, field_mode)} {operator} ({', '.join(placeholders)})"
 
+    if op == "year":
+        if field_mode != "date":
+            return "1 = 1"
+        year = _normalize_program_year(value)
+        if year is None:
+            return "1 = 1"
+        year_name = f"{prefix}_year"
+        params[year_name] = f"{year:04d}"
+        return f"strftime('%Y', {field_sql}) = :{year_name}"
+
     if op == "between":
         if len(values) < 2 or not str(values[0] or "").strip() or not str(values[1] or "").strip():
             return "1 = 1"
@@ -963,6 +1730,19 @@ def _build_program_matcher_sql(
     if op == "lte":
         return f"{comparable_field_sql} <= :{param_name}"
     return f"{comparable_field_sql} = :{param_name}"
+
+
+def _normalize_program_year(value: Any) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        year = int(float(text))
+    except (TypeError, ValueError):
+        return None
+    if year < 1 or year > 9999:
+        return None
+    return year
 
 
 def _program_field_sql(field_sql: str, field_mode: str) -> str:
@@ -994,14 +1774,20 @@ def get_freebill_dashboard(
     category: str | None = None,
     q: str | None = None,
     program: dict[str, Any] | None = None,
+    programs: list[dict[str, Any]] | None = None,
     category_limit: int | None = 10,
+    category_child_limit: int | None = 10,
     monthly_limit: int | None = 12,
     trend_granularity: str = "month",
     work_dir: Path | None = None,
 ) -> dict[str, Any]:
     trend_granularity = _normalize_trend_granularity(trend_granularity)
-    if program is not None:
+    if programs:
+        where_sql, params = _build_programs_filter_conditions(programs)
+        has_date_filter = any(_program_has_date_rule(item) for item in programs)
+    elif program is not None:
         where_sql, params = _build_program_filter_conditions(program)
+        has_date_filter = _program_has_date_rule(program)
     else:
         where_sql, params = _build_filter_conditions(
             start_date=start_date,
@@ -1011,6 +1797,7 @@ def get_freebill_dashboard(
             category=category,
             q=q,
         )
+        has_date_filter = bool(start_date or end_date)
     with get_freebill_connection(work_dir) as conn:
         summary = _row_to_dict(
             conn.execute(
@@ -1046,8 +1833,15 @@ def get_freebill_dashboard(
                 params,
             ).fetchall()
         ]
-        expense_categories = _query_category_stats(conn, where_sql, params, "支出", limit=category_limit)
-        income_categories = _query_category_stats(conn, where_sql, params, "收入", limit=category_limit)
+        category_tree = _query_direction_category_tree(
+            conn,
+            where_sql,
+            params,
+            category_limit=category_limit,
+            category_child_limit=category_child_limit,
+        )
+        expense_categories = _get_direction_categories(category_tree, "支出")
+        income_categories = _get_direction_categories(category_tree, "收入")
         monthly_trend = _query_period_trend(
             conn,
             where_sql,
@@ -1055,7 +1849,7 @@ def get_freebill_dashboard(
             granularity=trend_granularity,
             limit=_resolve_trend_limit(
                 granularity=trend_granularity,
-                has_date_filter=bool(start_date or end_date) or _program_has_date_rule(program),
+                has_date_filter=has_date_filter,
                 monthly_limit=monthly_limit,
             ),
         )
@@ -1065,6 +1859,7 @@ def get_freebill_dashboard(
         "sources": source_breakdown,
         "expense_categories": expense_categories,
         "income_categories": income_categories,
+        "category_tree": category_tree,
         "monthly_trend": monthly_trend,
         "trend_granularity": trend_granularity,
     }
@@ -1112,6 +1907,7 @@ def _query_category_stats(
     direction: str,
     *,
     limit: int | None,
+    child_limit: int | None,
 ) -> list[dict[str, Any]]:
     query_params = {**params, "category_direction": direction}
     limit_sql = ""
@@ -1120,7 +1916,7 @@ def _query_category_stats(
             return []
         query_params["category_limit"] = int(limit)
         limit_sql = "LIMIT :category_limit"
-    return [
+    categories = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
@@ -1128,9 +1924,111 @@ def _query_category_stats(
                    COALESCE(SUM(amount), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
-            WHERE {where_sql} AND TRIM(direction) = :category_direction
+            WHERE {where_sql}
+              AND COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :category_direction
             GROUP BY COALESCE(NULLIF(type, ''), '未分类')
             ORDER BY value DESC, count DESC
+            {limit_sql}
+            """,
+            query_params,
+        ).fetchall()
+    ]
+    for category in categories:
+        category["children"] = _query_category_counterparty_stats(
+            conn,
+            where_sql,
+            params,
+            direction,
+            str(category.get("name") or ""),
+            limit=child_limit,
+        )
+    return categories
+
+
+def _get_direction_categories(category_tree: list[dict[str, Any]], direction: str) -> list[dict[str, Any]]:
+    for item in category_tree:
+        if item.get("name") == direction and isinstance(item.get("children"), list):
+            return item["children"]
+    return []
+
+
+def _query_direction_category_tree(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: dict[str, Any],
+    *,
+    category_limit: int | None,
+    category_child_limit: int | None,
+) -> list[dict[str, Any]]:
+    directions = [
+        _row_to_dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(TRIM(direction), ''), '(空白)') AS name,
+                   COALESCE(SUM(amount), 0) AS value,
+                   COUNT(*) AS count
+            FROM bill_records
+            WHERE {where_sql}
+            GROUP BY COALESCE(NULLIF(TRIM(direction), ''), '(空白)')
+            ORDER BY
+                CASE COALESCE(NULLIF(TRIM(direction), ''), '(空白)')
+                    WHEN '支出' THEN 0
+                    WHEN '收入' THEN 1
+                    WHEN '不计收支' THEN 2
+                    ELSE 3
+                END,
+                value DESC,
+                count DESC,
+                name
+            """,
+            params,
+        ).fetchall()
+    ]
+    for direction in directions:
+        direction["children"] = _query_category_stats(
+            conn,
+            where_sql,
+            params,
+            str(direction.get("name") or ""),
+            limit=category_limit,
+            child_limit=category_child_limit,
+        )
+    return directions
+
+
+def _query_category_counterparty_stats(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: dict[str, Any],
+    direction: str,
+    category_name: str,
+    *,
+    limit: int | None,
+) -> list[dict[str, Any]]:
+    if limit is not None and limit <= 0:
+        return []
+    query_params = {
+        **params,
+        "category_direction": direction,
+        "category_name": category_name,
+    }
+    limit_sql = ""
+    if limit is not None:
+        query_params["category_child_limit"] = int(limit)
+        limit_sql = "LIMIT :category_child_limit"
+    return [
+        _row_to_dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT COALESCE(NULLIF(counterparty, ''), '未标注交易对方') AS name,
+                   COALESCE(SUM(amount), 0) AS value,
+                   COUNT(*) AS count
+            FROM bill_records
+            WHERE {where_sql}
+              AND COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :category_direction
+              AND COALESCE(NULLIF(type, ''), '未分类') = :category_name
+            GROUP BY COALESCE(NULLIF(counterparty, ''), '未标注交易对方')
+            ORDER BY value DESC, count DESC, name
             {limit_sql}
             """,
             query_params,
@@ -1162,6 +2060,10 @@ def _query_period_trend(
                 {period_expr} AS month,
                 COALESCE(SUM(CASE WHEN TRIM(direction) = '收入' THEN amount ELSE 0 END), 0) AS income,
                 COALESCE(SUM(CASE WHEN TRIM(direction) = '支出' THEN amount ELSE 0 END), 0) AS expense,
+                COUNT(CASE WHEN TRIM(direction) = '收入' THEN 1 END) AS income_count,
+                COUNT(CASE WHEN TRIM(direction) = '支出' THEN 1 END) AS expense_count,
+                COUNT(CASE WHEN TRIM(direction) = '不计收支' THEN 1 END) AS ignore_count,
+                COUNT(CASE WHEN TRIM(direction) NOT IN ('收入', '支出', '不计收支') OR direction IS NULL THEN 1 END) AS other_count,
                 COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
@@ -1222,6 +2124,58 @@ def list_freebill_records(
                 LIMIT :limit OFFSET :offset
                 """,
                 {**params, "limit": limit, "offset": offset},
+            ).fetchall()
+        ]
+    return {
+        "total": int(total_row["total"] or 0),
+        "items": rows,
+    }
+
+
+def list_freebill_category_branch_records(
+    *,
+    program: dict[str, Any] | None = None,
+    programs: list[dict[str, Any]] | None = None,
+    direction: str,
+    category: str | None = None,
+    counterparty: str | None = None,
+    limit: int = 10,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    if programs:
+        where_sql, params = _build_programs_filter_conditions(programs)
+    else:
+        where_sql, params = _build_program_filter_conditions(program)
+
+    branch_conditions = [
+        "COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :branch_direction"
+    ]
+    branch_params: dict[str, Any] = {"branch_direction": direction}
+    if category is not None:
+        branch_conditions.append("COALESCE(NULLIF(type, ''), '未分类') = :branch_category")
+        branch_params["branch_category"] = category
+    if counterparty is not None:
+        branch_conditions.append("COALESCE(NULLIF(counterparty, ''), '未标注交易对方') = :branch_counterparty")
+        branch_params["branch_counterparty"] = counterparty
+
+    branch_where_sql = f"({where_sql}) AND " + " AND ".join(branch_conditions)
+    query_params = {**params, **branch_params}
+    with get_freebill_connection(work_dir) as conn:
+        total_row = conn.execute(
+            f"SELECT COUNT(*) AS total FROM bill_records WHERE {branch_where_sql}",
+            query_params,
+        ).fetchone()
+        rows = [
+            _row_to_dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT *
+                FROM bill_records
+                WHERE {branch_where_sql}
+                ORDER BY COALESCE(amount, 0) DESC, datetime(create_time) DESC, id DESC
+                LIMIT :limit
+                """,
+                {**query_params, "limit": limit},
             ).fetchall()
         ]
     return {

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import fnmatch
 import hashlib
 import io
 import json
@@ -11,6 +13,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -80,6 +83,11 @@ MEDIA_LISTING_SNAPSHOT_LIMIT = 32
 MEDIA_LISTING_SNAPSHOT_TTL_SECONDS = 30 * 60
 DEFAULT_MEDIA_SCAN_LIMIT = 2000
 MAX_MEDIA_SCAN_LIMIT = 50000
+DEFAULT_DUPLICATE_SCAN_LIMIT = 200000
+MAX_DUPLICATE_SCAN_LIMIT = 1000000
+DUPLICATE_LISTING_PAGE_SIZE = 10
+DUPLICATE_LISTING_SNAPSHOT_LIMIT = 16
+DUPLICATE_LISTING_SNAPSHOT_TTL_SECONDS = 30 * 60
 DUPLICATE_CLUSTER_VISUAL_HASH_SIZE = 8
 DUPLICATE_CLUSTER_VISUAL_THRESHOLD = 3
 VISUAL_HASH_LOOKUP_CHUNK_SIZE = 500
@@ -107,6 +115,34 @@ class MediaListingSnapshot:
     last_accessed_at: float
 
 
+@dataclass(slots=True)
+class DuplicateListingSnapshot:
+    snapshot_id: str
+    query_signature: str
+    root: str | None
+    path: str
+    absolute_path: str
+    groups: list[dict]
+    scanned_file_count: int
+    candidate_file_count: int
+    hash_computed_count: int
+    source: str
+    source_detail: str
+    complete: bool
+    created_at: float
+    last_accessed_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class DuplicateFileCandidate:
+    name: str
+    path: str
+    absolute_path: str
+    size: int
+    modified_at: int | None
+    file_path: Path | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class VisualHashPrewarmCandidate:
     absolute_path: str
@@ -121,6 +157,8 @@ class VisualHashPrewarmCandidate:
 
 _media_listing_snapshots: OrderedDict[str, MediaListingSnapshot] = OrderedDict()
 _media_listing_snapshot_lock = RLock()
+_duplicate_listing_snapshots: OrderedDict[str, DuplicateListingSnapshot] = OrderedDict()
+_duplicate_listing_snapshot_lock = RLock()
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
 _visual_hash_prewarm_lock = RLock()
 _visual_hash_prewarm_active_keys: set[str] = set()
@@ -158,6 +196,11 @@ class OcrPreviewRequest(RootScopedRequest):
 
 
 MediaSortMode = Literal["path", "modified-desc", "size-desc", "weight-desc"]
+DuplicateRuleField = Literal["size", "name", "extension", "modified_at", "sha256"]
+DuplicateSortMode = Literal["file_size", "group_total", "reclaimable"]
+DuplicateSourceMode = Literal["auto", "everything", "filesystem"]
+DuplicatePathFilterAction = Literal["include", "exclude"]
+DuplicatePathFilterMatch = Literal["contains", "prefix", "suffix", "equals", "glob"]
 GallerySortField = Literal[
     "random",
     "duplicate_cluster",
@@ -225,6 +268,26 @@ class MediaListRequest(RootScopedRequest):
     layout_column_width: int = 0
     layout_gap: int = 0
     layout_column_heights: List[float] = PydanticField(default_factory=list)
+
+
+class DuplicatePathFilterRule(BaseModel):
+    enabled: bool = True
+    action: DuplicatePathFilterAction = "exclude"
+    match: DuplicatePathFilterMatch = "contains"
+    value: str = ""
+
+
+class DuplicateListRequest(RootScopedRequest):
+    recursive: bool = True
+    rules: List[DuplicateRuleField] = PydanticField(default_factory=lambda: ["size"])
+    filter_rules: List[DuplicatePathFilterRule] = PydanticField(default_factory=list)
+    sort_mode: DuplicateSortMode = "reclaimable"
+    source: DuplicateSourceMode = "auto"
+    min_size: int = 1024 * 1024
+    scan_limit: int = DEFAULT_DUPLICATE_SCAN_LIMIT
+    snapshot_id: str = ""
+    page: int = 1
+    page_size: int = DUPLICATE_LISTING_PAGE_SIZE
 
 
 class DeleteEntryRequest(BaseModel):
@@ -854,6 +917,641 @@ def _compute_file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _normalize_duplicate_rules(rules: Iterable[str] | None) -> tuple[str, ...]:
+    allowed = {"size", "name", "extension", "modified_at", "sha256"}
+    normalized: list[str] = ["size"]
+    for rule in rules or []:
+        value = str(rule or "").strip()
+        if value in allowed and value not in normalized:
+            normalized.append(value)
+    return tuple(normalized)
+
+
+def _normalize_duplicate_filter_rules(rules: Iterable[DuplicatePathFilterRule | dict | object] | None) -> tuple[dict, ...]:
+    normalized: list[dict] = []
+    for raw_rule in rules or []:
+        if isinstance(raw_rule, DuplicatePathFilterRule):
+            raw = raw_rule.model_dump()
+        elif isinstance(raw_rule, dict):
+            raw = raw_rule
+        else:
+            continue
+
+        value = str(raw.get("value") or "").strip()
+        if not value:
+            continue
+        action = raw.get("action") if raw.get("action") in {"include", "exclude"} else "exclude"
+        match = raw.get("match") if raw.get("match") in {"contains", "prefix", "suffix", "equals", "glob"} else "contains"
+        normalized.append(
+            {
+                "enabled": bool(raw.get("enabled", True)),
+                "action": action,
+                "match": match,
+                "value": value,
+            }
+        )
+        if len(normalized) >= 50:
+            break
+    return tuple(normalized)
+
+
+def _normalize_duplicate_filter_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").lower()
+
+
+def _duplicate_path_filter_rule_matches(rule: dict, absolute_path: str) -> bool:
+    path_value = _normalize_duplicate_filter_path(absolute_path)
+    rule_value = _normalize_duplicate_filter_path(str(rule.get("value") or ""))
+    if not rule_value:
+        return False
+
+    match = str(rule.get("match") or "contains")
+    if match == "prefix":
+        return path_value.startswith(rule_value)
+    if match == "suffix":
+        return path_value.endswith(rule_value)
+    if match == "equals":
+        return path_value == rule_value
+    if match == "glob":
+        return fnmatch.fnmatch(path_value, rule_value)
+    return rule_value in path_value
+
+
+def _duplicate_path_allowed(absolute_path: str, filter_rules: tuple[dict, ...]) -> bool:
+    allowed = True
+    for rule in filter_rules:
+        if not rule.get("enabled", True):
+            continue
+        if _duplicate_path_filter_rule_matches(rule, absolute_path):
+            allowed = rule.get("action") != "exclude"
+    return allowed
+
+
+def _normalize_duplicate_scan_limit(value: int) -> int:
+    try:
+        numeric_value = int(value)
+    except (TypeError, ValueError):
+        numeric_value = DEFAULT_DUPLICATE_SCAN_LIMIT
+    return max(1, min(MAX_DUPLICATE_SCAN_LIMIT, numeric_value))
+
+
+def _normalize_duplicate_page(value: int) -> int:
+    try:
+        numeric_value = int(value)
+    except (TypeError, ValueError):
+        numeric_value = 1
+    return max(1, numeric_value)
+
+
+def _normalize_duplicate_page_size(value: int) -> int:
+    try:
+        numeric_value = int(value)
+    except (TypeError, ValueError):
+        numeric_value = DUPLICATE_LISTING_PAGE_SIZE
+    return max(1, min(50, numeric_value))
+
+
+def _normalize_duplicate_min_size(value: int) -> int:
+    try:
+        numeric_value = int(value)
+    except (TypeError, ValueError):
+        numeric_value = 0
+    return max(0, numeric_value)
+
+
+def _build_duplicate_query_signature(
+    *,
+    root: str | None,
+    path: str,
+    absolute_path: str,
+    recursive: bool,
+    rules: tuple[str, ...],
+    filter_rules: tuple[dict, ...],
+    sort_mode: str,
+    source: str,
+    min_size: int,
+    scan_limit: int,
+) -> str:
+    return json.dumps(
+        {
+            "root": root,
+            "path": path,
+            "absolute_path": absolute_path,
+            "recursive": bool(recursive),
+            "rules": list(rules),
+            "filter_rules": list(filter_rules),
+            "sort_mode": sort_mode,
+            "source": source,
+            "min_size": min_size,
+            "scan_limit": scan_limit,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _get_duplicate_listing_snapshot(snapshot_id: str, query_signature: str) -> DuplicateListingSnapshot | None:
+    normalized_snapshot_id = str(snapshot_id or "").strip()
+    if not normalized_snapshot_id:
+        return None
+
+    now = time.time()
+    with _duplicate_listing_snapshot_lock:
+        snapshot = _duplicate_listing_snapshots.get(normalized_snapshot_id)
+        if snapshot is None or snapshot.query_signature != query_signature:
+            return None
+        if now - snapshot.created_at > DUPLICATE_LISTING_SNAPSHOT_TTL_SECONDS:
+            _duplicate_listing_snapshots.pop(normalized_snapshot_id, None)
+            return None
+        snapshot.last_accessed_at = now
+        _duplicate_listing_snapshots.move_to_end(normalized_snapshot_id)
+        return snapshot
+
+
+def _store_duplicate_listing_snapshot(
+    *,
+    query_signature: str,
+    root: str | None,
+    path: str,
+    absolute_path: str,
+    groups: list[dict],
+    scanned_file_count: int,
+    candidate_file_count: int,
+    hash_computed_count: int,
+    source: str,
+    source_detail: str,
+    complete: bool,
+) -> DuplicateListingSnapshot:
+    now = time.time()
+    snapshot = DuplicateListingSnapshot(
+        snapshot_id=uuid4().hex,
+        query_signature=query_signature,
+        root=root,
+        path=path,
+        absolute_path=absolute_path,
+        groups=groups,
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=candidate_file_count,
+        hash_computed_count=hash_computed_count,
+        source=source,
+        source_detail=source_detail,
+        complete=complete,
+        created_at=now,
+        last_accessed_at=now,
+    )
+    with _duplicate_listing_snapshot_lock:
+        _duplicate_listing_snapshots[snapshot.snapshot_id] = snapshot
+        _duplicate_listing_snapshots.move_to_end(snapshot.snapshot_id)
+        while len(_duplicate_listing_snapshots) > DUPLICATE_LISTING_SNAPSHOT_LIMIT:
+            _duplicate_listing_snapshots.popitem(last=False)
+    return snapshot
+
+
+def _iter_duplicate_candidate_paths(target_path: Path, *, recursive: bool) -> Iterator[Path]:
+    if target_path.is_file():
+        yield target_path
+        return
+    if not target_path.is_dir():
+        raise HTTPException(status_code=400, detail="Path is neither file nor directory")
+
+    if recursive:
+        for current_root, _, filenames in os.walk(target_path):
+            current_root_path = Path(current_root)
+            for filename in filenames:
+                yield current_root_path / filename
+        return
+
+    try:
+        with os.scandir(target_path) as entries:
+            for entry in entries:
+                try:
+                    if entry.is_file():
+                        yield Path(entry.path)
+                except OSError:
+                    continue
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="Permission denied") from exc
+
+
+def _build_duplicate_candidate_from_path(
+    file_path: Path,
+    *,
+    resolved: dict,
+    root_path: Path | None,
+) -> DuplicateFileCandidate | None:
+    try:
+        stat_result = file_path.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(stat_result.st_mode):
+        return None
+
+    identity_path = os.fspath(file_path.resolve(strict=False))
+    if resolved["is_absolute"] or root_path is None:
+        request_path = identity_path
+    else:
+        try:
+            request_path = os.fspath(file_path.relative_to(root_path)).replace("\\", "/")
+        except ValueError:
+            request_path = identity_path
+
+    return DuplicateFileCandidate(
+        name=file_path.name,
+        path=request_path,
+        absolute_path=identity_path,
+        size=int(stat_result.st_size),
+        modified_at=int(stat_result.st_mtime * 1000),
+        file_path=file_path,
+    )
+
+
+def _find_everything_es_path() -> Path | None:
+    env_paths = [
+        os.environ.get("CODEYUN_EVERYTHING_ES", ""),
+        os.environ.get("EVERYTHING_ES", ""),
+    ]
+    for raw_path in env_paths:
+        if raw_path:
+            candidate = Path(raw_path)
+            try:
+                if candidate.is_file():
+                    return candidate
+            except OSError:
+                continue
+
+    for executable_name in ("es.exe", "es"):
+        resolved = shutil.which(executable_name)
+        if resolved:
+            return Path(resolved)
+
+    if os.name != "nt":
+        return None
+
+    program_files = os.environ.get("ProgramFiles", r"C:\Program Files")
+    program_files_x86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    for candidate in [
+        Path(program_files) / "Everything 1.5a" / "es.exe",
+        Path(program_files) / "Everything" / "es.exe",
+        Path(program_files_x86) / "Everything 1.5a" / "es.exe",
+        Path(program_files_x86) / "Everything" / "es.exe",
+        Path(local_app_data) / "Everything" / "es.exe" if local_app_data else None,
+    ]:
+        if candidate is None:
+            continue
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
+def _everything_dupe_query_for_rules(rules: tuple[str, ...]) -> str:
+    if "sha256" in rules:
+        return "dupe:size"
+
+    fields = ["size"]
+    if "name" in rules:
+        fields.insert(0, "name")
+    if "modified_at" in rules:
+        fields.append("dm")
+    return f"dupe:{';'.join(dict.fromkeys(fields))}"
+
+
+def _parse_everything_filetime_ms(value: str) -> int | None:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return None
+    try:
+        filetime = int(normalized)
+    except ValueError:
+        return None
+    unix_ms = (filetime - 116444736000000000) // 10000
+    return unix_ms if unix_ms > 0 else None
+
+
+def _load_duplicate_candidates_from_everything(
+    target_path: Path,
+    *,
+    resolved: dict,
+    rules: tuple[str, ...],
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    scan_limit: int,
+) -> tuple[list[DuplicateFileCandidate], str] | None:
+    if os.name != "nt" or target_path.is_file():
+        return None
+
+    es_path = _find_everything_es_path()
+    if es_path is None:
+        return None
+
+    with tempfile.NamedTemporaryFile(prefix="codeyun-duplicates-", suffix=".csv", delete=False) as temp_file:
+        export_path = Path(temp_file.name)
+
+    args = [
+        os.fspath(es_path),
+        "-n",
+        str(scan_limit),
+        "-sort",
+        "size",
+        "-sort-descending",
+        "-export-csv",
+        os.fspath(export_path),
+        "-no-header",
+        "-full-path-and-name",
+        "-size",
+        "-dm",
+        "-size-format",
+        "1",
+        "-date-format",
+        "2",
+        "-no-digit-grouping",
+        "-path",
+        os.fspath(target_path),
+        "/a-d",
+        _everything_dupe_query_for_rules(rules),
+    ]
+    if min_size > 0:
+        args.append(f"size:>={min_size}")
+
+    instance_name = os.environ.get("CODEYUN_EVERYTHING_INSTANCE") or os.environ.get("EVERYTHING_INSTANCE") or ""
+    if instance_name:
+        args[1:1] = ["-instance", instance_name]
+
+    try:
+        result = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if result.returncode not in {0, 1}:
+            return None
+
+        candidates: list[DuplicateFileCandidate] = []
+        try:
+            with export_path.open("r", encoding="utf-8-sig", newline="") as file_obj:
+                reader = csv.reader(file_obj)
+                for row in reader:
+                    if len(row) < 3:
+                        continue
+                    file_path = Path(row[0])
+                    try:
+                        stat_result = file_path.stat()
+                    except OSError:
+                        continue
+                    if not stat.S_ISREG(stat_result.st_mode):
+                        continue
+                    size = int(stat_result.st_size)
+                    if size < min_size:
+                        continue
+                    identity_path = os.fspath(file_path.resolve(strict=False))
+                    if not _duplicate_path_allowed(identity_path, filter_rules):
+                        continue
+                    candidates.append(
+                        DuplicateFileCandidate(
+                            name=file_path.name,
+                            path=identity_path if resolved["is_absolute"] else os.fspath(file_path),
+                            absolute_path=identity_path,
+                            size=size,
+                            modified_at=_parse_everything_filetime_ms(row[2]) or int(stat_result.st_mtime * 1000),
+                            file_path=file_path,
+                        )
+                    )
+        except OSError:
+            return None
+        return candidates, f"Everything ES: {es_path}"
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    finally:
+        try:
+            export_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _load_duplicate_candidates_from_filesystem(
+    target_path: Path,
+    *,
+    resolved: dict,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    scan_limit: int,
+    recursive: bool,
+) -> tuple[list[DuplicateFileCandidate], bool]:
+    root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+    candidates: list[DuplicateFileCandidate] = []
+    scanned_file_count = 0
+    complete = True
+    for file_path in _iter_duplicate_candidate_paths(target_path, recursive=recursive):
+        candidate = _build_duplicate_candidate_from_path(file_path, resolved=resolved, root_path=root_path)
+        if candidate is None:
+            continue
+        scanned_file_count += 1
+        if not _duplicate_path_allowed(candidate.absolute_path, filter_rules):
+            continue
+        if candidate.size >= min_size:
+            candidates.append(candidate)
+        if scanned_file_count >= scan_limit:
+            complete = False
+            break
+    return candidates, complete
+
+
+def _load_duplicate_candidates(
+    target_path: Path,
+    *,
+    resolved: dict,
+    source: str,
+    rules: tuple[str, ...],
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    scan_limit: int,
+    recursive: bool,
+) -> tuple[list[DuplicateFileCandidate], int, str, str, bool]:
+    if source in {"auto", "everything"}:
+        everything_result = _load_duplicate_candidates_from_everything(
+            target_path,
+            resolved=resolved,
+            rules=rules,
+            filter_rules=filter_rules,
+            min_size=min_size,
+            scan_limit=scan_limit,
+        )
+        if everything_result is not None:
+            candidates, detail = everything_result
+            complete = len(candidates) < scan_limit
+            return candidates, len(candidates), "everything", detail, complete
+        if source == "everything":
+            raise HTTPException(status_code=501, detail="Everything ES is not available on this device")
+
+    candidates, complete = _load_duplicate_candidates_from_filesystem(
+        target_path,
+        resolved=resolved,
+        filter_rules=filter_rules,
+        min_size=min_size,
+        scan_limit=scan_limit,
+        recursive=recursive,
+    )
+    return candidates, len(candidates), "filesystem", "filesystem traversal", complete
+
+
+def _duplicate_key_for_candidate(
+    candidate: DuplicateFileCandidate,
+    rules: tuple[str, ...],
+    *,
+    content_hash: str | None = None,
+) -> tuple:
+    key_parts: list[object] = [candidate.size]
+    if "name" in rules:
+        key_parts.append(candidate.name.lower())
+    if "extension" in rules:
+        key_parts.append(Path(candidate.name).suffix.lower())
+    if "modified_at" in rules:
+        key_parts.append(candidate.modified_at)
+    if "sha256" in rules:
+        key_parts.append(content_hash or "")
+    return tuple(key_parts)
+
+
+def _rule_label_for_group_key(rules: tuple[str, ...], key: tuple) -> str:
+    labels = []
+    key_index = 0
+    labels.append(f"大小={key[key_index]}")
+    key_index += 1
+    if "name" in rules:
+        labels.append(f"名称={key[key_index]}")
+        key_index += 1
+    if "extension" in rules:
+        labels.append(f"扩展名={key[key_index] or '(无)'}")
+        key_index += 1
+    if "modified_at" in rules:
+        labels.append(f"修改时间={key[key_index]}")
+        key_index += 1
+    if "sha256" in rules:
+        digest = str(key[key_index] or "")
+        labels.append(f"SHA256={digest[:12]}..." if digest else "SHA256=未计算")
+    return " / ".join(labels)
+
+
+def _sort_duplicate_groups(groups: list[dict], sort_mode: str) -> list[dict]:
+    if sort_mode == "file_size":
+        primary = "file_size"
+    elif sort_mode == "group_total":
+        primary = "group_total_bytes"
+    else:
+        primary = "reclaimable_bytes"
+    return sorted(
+        groups,
+        key=lambda group: (
+            -int(group.get(primary) or 0),
+            -int(group.get("file_size") or 0),
+            str(group.get("key_label") or ""),
+        ),
+    )
+
+
+def _build_duplicate_groups(
+    candidates: list[DuplicateFileCandidate],
+    *,
+    rules: tuple[str, ...],
+    sort_mode: str,
+) -> tuple[list[dict], int]:
+    grouped: dict[tuple, list[DuplicateFileCandidate]] = {}
+    for candidate in candidates:
+        grouped.setdefault(_duplicate_key_for_candidate(candidate, tuple(rule for rule in rules if rule != "sha256")), []).append(candidate)
+
+    candidate_groups = [items for items in grouped.values() if len(items) > 1]
+    hash_computed_count = 0
+    if "sha256" in rules:
+        hashed_grouped: dict[tuple, list[DuplicateFileCandidate]] = {}
+        for items in candidate_groups:
+            for candidate in items:
+                if candidate.file_path is None:
+                    continue
+                try:
+                    content_hash = _compute_file_sha256(candidate.file_path)
+                except OSError:
+                    continue
+                hash_computed_count += 1
+                key = _duplicate_key_for_candidate(candidate, rules, content_hash=content_hash)
+                hashed_grouped.setdefault(key, []).append(candidate)
+        grouped_items = [(key, items) for key, items in hashed_grouped.items() if len(items) > 1]
+    else:
+        grouped_items = [(key, items) for key, items in grouped.items() if len(items) > 1]
+
+    groups: list[dict] = []
+    for key, items in grouped_items:
+        sorted_items = sorted(items, key=lambda item: item.absolute_path.lower())
+        total_bytes = sum(item.size for item in sorted_items)
+        max_size = max(item.size for item in sorted_items)
+        key_source = json.dumps([str(part) for part in key], ensure_ascii=False, sort_keys=True)
+        group_id = hashlib.sha1(key_source.encode("utf-8", "ignore")).hexdigest()
+        groups.append(
+            {
+                "id": group_id,
+                "key_label": _rule_label_for_group_key(rules, key),
+                "rules": list(rules),
+                "file_count": len(sorted_items),
+                "file_size": max_size,
+                "group_total_bytes": total_bytes,
+                "reclaimable_bytes": max(0, total_bytes - max_size),
+                "files": [
+                    {
+                        "name": item.name,
+                        "path": item.path,
+                        "absolute_path": item.absolute_path,
+                        "size": item.size,
+                        "modified_at": item.modified_at,
+                    }
+                    for item in sorted_items
+                ],
+            }
+        )
+
+    return _sort_duplicate_groups(groups, sort_mode), hash_computed_count
+
+
+def _build_duplicate_listing_response(
+    snapshot: DuplicateListingSnapshot,
+    *,
+    page: int,
+    page_size: int,
+) -> dict:
+    normalized_page = _normalize_duplicate_page(page)
+    normalized_page_size = _normalize_duplicate_page_size(page_size)
+    start = (normalized_page - 1) * normalized_page_size
+    end = start + normalized_page_size
+    groups = snapshot.groups[start:end]
+    total_groups = len(snapshot.groups)
+    total_reclaimable_bytes = sum(int(group.get("reclaimable_bytes") or 0) for group in snapshot.groups)
+    duplicate_file_count = sum(int(group.get("file_count") or 0) for group in snapshot.groups)
+    return {
+        "ok": True,
+        "root": snapshot.root,
+        "path": snapshot.path,
+        "absolute_path": snapshot.absolute_path,
+        "snapshot_id": snapshot.snapshot_id,
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "has_previous": normalized_page > 1,
+        "has_next": end < total_groups,
+        "total_groups": total_groups,
+        "total_reclaimable_bytes": total_reclaimable_bytes,
+        "duplicate_file_count": duplicate_file_count,
+        "scanned_file_count": snapshot.scanned_file_count,
+        "candidate_file_count": snapshot.candidate_file_count,
+        "hash_computed_count": snapshot.hash_computed_count,
+        "source": snapshot.source,
+        "source_detail": snapshot.source_detail,
+        "complete": snapshot.complete,
+        "groups": groups,
+    }
+
+
 def _should_hash_scanned_file(
     *,
     hash_mode: str,
@@ -1433,6 +2131,95 @@ def list_directory_items(
         "absolute_path": resolved["absolute_path"],
         "items": [*directory_items, *file_items],
     }
+
+
+def list_duplicate_file_groups(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    absolute_path: str = "",
+    *,
+    recursive: bool = True,
+    rules: Iterable[str] | None = None,
+    filter_rules: Iterable[DuplicatePathFilterRule | dict | object] | None = None,
+    sort_mode: DuplicateSortMode = "reclaimable",
+    source: DuplicateSourceMode = "auto",
+    min_size: int = 1024 * 1024,
+    scan_limit: int = DEFAULT_DUPLICATE_SCAN_LIMIT,
+    snapshot_id: str = "",
+    page: int = 1,
+    page_size: int = DUPLICATE_LISTING_PAGE_SIZE,
+) -> dict:
+    if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
+        raise HTTPException(status_code=400, detail="Please choose a concrete disk or directory")
+
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target_path.is_dir() and not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is neither file nor directory")
+
+    normalized_rules = _normalize_duplicate_rules(rules)
+    normalized_filter_rules = _normalize_duplicate_filter_rules(filter_rules)
+    normalized_min_size = _normalize_duplicate_min_size(min_size)
+    normalized_scan_limit = _normalize_duplicate_scan_limit(scan_limit)
+    normalized_page = _normalize_duplicate_page(page)
+    normalized_page_size = _normalize_duplicate_page_size(page_size)
+    normalized_source = source if source in {"auto", "everything", "filesystem"} else "auto"
+    normalized_sort_mode = sort_mode if sort_mode in {"file_size", "group_total", "reclaimable"} else "reclaimable"
+
+    query_signature = _build_duplicate_query_signature(
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        recursive=recursive,
+        rules=normalized_rules,
+        filter_rules=normalized_filter_rules,
+        sort_mode=normalized_sort_mode,
+        source=normalized_source,
+        min_size=normalized_min_size,
+        scan_limit=normalized_scan_limit,
+    )
+    cached_snapshot = _get_duplicate_listing_snapshot(snapshot_id, query_signature)
+    if cached_snapshot is not None:
+        return _build_duplicate_listing_response(
+            cached_snapshot,
+            page=normalized_page,
+            page_size=normalized_page_size,
+        )
+
+    candidates, scanned_file_count, actual_source, source_detail, complete = _load_duplicate_candidates(
+        target_path,
+        resolved=resolved,
+        source=normalized_source,
+        rules=normalized_rules,
+        filter_rules=normalized_filter_rules,
+        min_size=normalized_min_size,
+        scan_limit=normalized_scan_limit,
+        recursive=recursive,
+    )
+    groups, hash_computed_count = _build_duplicate_groups(
+        candidates,
+        rules=normalized_rules,
+        sort_mode=normalized_sort_mode,
+    )
+    snapshot = _store_duplicate_listing_snapshot(
+        query_signature=query_signature,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        groups=groups,
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=len(candidates),
+        hash_computed_count=hash_computed_count,
+        source=actual_source,
+        source_detail=source_detail,
+        complete=complete,
+    )
+    return _build_duplicate_listing_response(
+        snapshot,
+        page=normalized_page,
+        page_size=normalized_page_size,
+    )
 
 
 def _is_supported_image(path: Path) -> bool:
@@ -3843,6 +4630,25 @@ def list_media(req: MediaListRequest, session: Session = Depends(get_session)):
         layout_column_width=req.layout_column_width,
         layout_gap=req.layout_gap,
         layout_column_heights=req.layout_column_heights,
+    )
+
+
+@router.post("/duplicates")
+def list_duplicates(req: DuplicateListRequest):
+    return list_duplicate_file_groups(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        recursive=req.recursive,
+        rules=req.rules,
+        filter_rules=req.filter_rules,
+        sort_mode=req.sort_mode,
+        source=req.source,
+        min_size=req.min_size,
+        scan_limit=req.scan_limit,
+        snapshot_id=req.snapshot_id,
+        page=req.page,
+        page_size=req.page_size,
     )
 
 

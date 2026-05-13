@@ -18,6 +18,7 @@
           aria-label="新增规则"
           @click="addRule"
         />
+        <slot name="title-actions" />
       </div>
     </div>
 
@@ -62,9 +63,10 @@
             @update:model-value="value => updateRuleOp(index, String(value))"
           >
             <el-option label="范围" value="between" />
-            <el-option label="不早于" value="gte" />
-            <el-option label="不晚于" value="lte" />
-            <el-option label="等于" value="eq" />
+            <el-option label="按年查看" value="year" />
+            <el-option label="≥" value="gte" />
+            <el-option label="≤" value="lte" />
+            <el-option label="=" value="eq" />
           </el-select>
           <el-date-picker
             v-if="(rule.matcher.op || 'between') === 'between'"
@@ -76,6 +78,17 @@
             end-placeholder="结束日期"
             class="date-range"
             @update:model-value="value => updateRuleValues(index, Array.isArray(value) ? value : [])"
+          />
+          <el-input-number
+            v-else-if="(rule.matcher.op || 'between') === 'year'"
+            :model-value="getRuleYearValue(rule)"
+            size="small"
+            controls-position="right"
+            step-strictly
+            :min="1"
+            :max="9999"
+            class="year-input"
+            @update:model-value="value => updateRuleYearValue(index, value)"
           />
           <el-date-picker
             v-else
@@ -96,8 +109,8 @@
             class="op-select"
             @update:model-value="value => updateRuleOp(index, String(value))"
           >
-            <el-option label="等于" value="eq" />
-            <el-option label="不等于" value="neq" />
+            <el-option label="=" value="eq" />
+            <el-option label="≠" value="neq" />
           </el-select>
           <el-select
             size="small"
@@ -124,9 +137,9 @@
             @update:model-value="value => updateRuleOp(index, String(value))"
           >
             <el-option label="范围" value="between" />
-            <el-option label="不小于" value="gte" />
-            <el-option label="不大于" value="lte" />
-            <el-option label="等于" value="eq" />
+            <el-option label="≥" value="gte" />
+            <el-option label="≤" value="lte" />
+            <el-option label="=" value="eq" />
           </el-select>
           <div v-if="(rule.matcher.op || 'between') === 'between'" class="number-range">
             <el-input-number
@@ -163,8 +176,8 @@
           >
             <el-option label="包含" value="contains" />
             <el-option label="不包含" value="not_contains" />
-            <el-option label="等于" value="eq" />
-            <el-option label="不等于" value="neq" />
+            <el-option label="=" value="eq" />
+            <el-option label="≠" value="neq" />
           </el-select>
           <el-input
             size="small"
@@ -401,6 +414,9 @@ function updateRuleOp(index: number, value: string) {
     if (value === 'between') {
       rule.matcher.value = undefined
       rule.matcher.values = Array.isArray(rule.matcher.values) ? rule.matcher.values : []
+    } else if (value === 'year') {
+      rule.matcher.value = getRuleYearValue(rule)
+      rule.matcher.values = []
     } else {
       rule.matcher.values = []
     }
@@ -419,6 +435,33 @@ function updateRuleValues(index: number, values: unknown[]) {
     rule.matcher.value = undefined
     rule.matcher.values = values
   })
+}
+
+function getRuleYearValue(rule: FreebillProgramRule) {
+  const candidates = [
+    rule.matcher.value,
+    ...(Array.isArray(rule.matcher.values) ? rule.matcher.values : []),
+  ]
+  for (const candidate of candidates) {
+    const year = parseYearValue(candidate)
+    if (year !== null) return year
+  }
+  return new Date().getFullYear()
+}
+
+function parseYearValue(value: unknown) {
+  const text = String(value ?? '').trim()
+  if (!text) return null
+  const match = text.match(/^\d{1,4}/)
+  if (!match) return null
+  const year = Number(match[0])
+  if (!Number.isInteger(year) || year < 1 || year > 9999) return null
+  return year
+}
+
+function updateRuleYearValue(index: number, value: number | undefined) {
+  const year = Number(value)
+  updateRuleValue(index, Number.isInteger(year) && year >= 1 && year <= 9999 ? year : '')
 }
 
 function getRuleValues(rule: FreebillProgramRule) {
@@ -524,6 +567,18 @@ useSortableList({
   gap: 6px;
 }
 
+.action-select,
+.field-select,
+.op-select,
+.value-select,
+.date-range,
+.date-single,
+.text-input,
+.number-range,
+.number-single {
+  flex: 0 0 auto;
+}
+
 .action-select {
   width: 76px;
 }
@@ -541,11 +596,15 @@ useSortableList({
 }
 
 .date-range {
-  width: 238px;
+  width: 360px;
 }
 
 .date-single {
   width: 136px;
+}
+
+.year-input {
+  width: 116px;
 }
 
 .text-input {

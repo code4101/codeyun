@@ -3,12 +3,17 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { FolderOpened, Refresh, WarningFilled } from '@element-plus/icons-vue';
 import {
+  getFanxiuProcesses,
   getFanxiuStatus,
+  getLocalScriptProcesses,
   parseFanxiuStatus,
   saveFanxiuStatus,
+  terminateFanxiuProcesses,
   updateFanxiuStatusConfig,
   type FanxiuAccountStatusItem,
+  type FanxiuProcessItem,
   type FanxiuStatusSnapshot,
+  type LocalScriptProcessItem,
 } from '@/api/fanxiu';
 import { fetchDeviceDirectoryItems, fetchDeviceFileText, saveDeviceFileText, type DeviceDirectoryItem } from '@/api/deviceFiles';
 import { taskStore } from '@/store/taskStore';
@@ -25,10 +30,15 @@ const sourceMode = ref<SourceMode>('local');
 const loading = ref(false);
 const saving = ref(false);
 const savingStatusFile = ref(false);
+const isLoadingProcesses = ref(false);
+const isLoadingScriptProcesses = ref(false);
+const isTerminatingProcesses = ref(false);
 const isLoadingDevices = ref(false);
 const isLoadingDeviceDirectory = ref(false);
 const isLoadingDeviceFile = ref(false);
 const snapshot = ref<FanxiuStatusSnapshot | null>(null);
+const fanxiuProcesses = ref<FanxiuProcessItem[]>([]);
+const localScriptProcesses = ref<LocalScriptProcessItem[]>([]);
 const loadError = ref('');
 const statusPathInput = ref('');
 const localPathBaseline = ref('');
@@ -84,6 +94,13 @@ const formatTaskDelta = (seconds: number | null | undefined) => {
   return seconds <= 0 ? (abs < 60 ? '已到期' : `已超时 ${body}`) : `${body}后`;
 };
 const taskTagType = (due: boolean, isNext: boolean) => (due ? 'danger' : isNext ? 'warning' : 'info');
+const formatProcessRuntime = (seconds: number | null | undefined) => {
+  if (seconds === null || seconds === undefined) return '--';
+  if (seconds >= 86400) return `${Math.floor(seconds / 86400)} 天`;
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)} 小时`;
+  if (seconds >= 60) return `${Math.floor(seconds / 60)} 分钟`;
+  return `${seconds} 秒`;
+};
 
 const canConfigure = computed(() => {
   const username = userStore.user?.username;
@@ -106,6 +123,8 @@ const jsonFileEntries = computed(() =>
     }),
 );
 const accountCards = computed<FanxiuAccountStatusItem[]>(() => snapshot.value?.accounts ?? []);
+const fanxiuProcessCount = computed(() => fanxiuProcesses.value.length);
+const localScriptProcessCount = computed(() => localScriptProcesses.value.length);
 const pageStatusType = computed(() => {
   if (loadError.value || snapshot.value?.error) return 'danger';
   if (sourceMode.value === 'device' && !selectedDeviceFilePath.value) return 'warning';
@@ -314,6 +333,71 @@ const refreshNow = async () => {
   } else {
     await loadLocalSnapshot(true);
   }
+  void loadFanxiuProcesses();
+  void loadLocalScriptProcesses();
+};
+
+const loadLocalScriptProcesses = async () => {
+  if (!canConfigure.value || isLoadingScriptProcesses.value) return;
+  isLoadingScriptProcesses.value = true;
+  try {
+    const data = await getLocalScriptProcesses();
+    localScriptProcesses.value = data.items ?? [];
+  } catch {
+    localScriptProcesses.value = [];
+  } finally {
+    isLoadingScriptProcesses.value = false;
+  }
+};
+
+const loadFanxiuProcesses = async () => {
+  if (!canConfigure.value || isLoadingProcesses.value) return;
+  isLoadingProcesses.value = true;
+  try {
+    const data = await getFanxiuProcesses();
+    fanxiuProcesses.value = data.items ?? [];
+  } catch {
+    fanxiuProcesses.value = [];
+  } finally {
+    isLoadingProcesses.value = false;
+  }
+};
+
+const terminateAllFanxiuProcesses = async () => {
+  if (!canConfigure.value || isTerminatingProcesses.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '会终止命令行命中 ckz2025\\fx 或 凡修*.py 的进程，并连同它们的子进程一起结束。',
+      '终止凡修脚本',
+      {
+        type: 'warning',
+        confirmButtonText: '终止',
+        cancelButtonText: '取消',
+        distinguishCancelAndClose: true,
+      },
+    );
+  } catch {
+    return;
+  }
+
+  isTerminatingProcesses.value = true;
+  try {
+    const result = await terminateFanxiuProcesses();
+    fanxiuProcesses.value = result.remaining ?? [];
+    await loadLocalScriptProcesses();
+    const killedCount = result.terminated?.length ?? 0;
+    const remainingCount = result.remaining?.length ?? 0;
+    if (remainingCount > 0) {
+      ElMessage.warning(`已终止 ${killedCount} 个进程，仍剩 ${remainingCount} 个匹配进程`);
+    } else {
+      ElMessage.success(killedCount ? `已终止 ${killedCount} 个凡修相关进程` : '没有发现凡修脚本进程');
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '终止凡修脚本失败');
+    await loadFanxiuProcesses();
+  } finally {
+    isTerminatingProcesses.value = false;
+  }
 };
 
 const savePathConfig = async () => {
@@ -493,6 +577,8 @@ watch(selectedEntryId, async (nextEntryId, previousEntryId) => {
 onMounted(async () => {
   syncDevicePathInput();
   await loadLocalSnapshot(false);
+  void loadFanxiuProcesses();
+  void loadLocalScriptProcesses();
   if (userStore.isAuthenticated) void ensureDevicesLoaded();
   refreshTimer = window.setInterval(() => {
     if (document.hidden) return;
@@ -502,6 +588,8 @@ onMounted(async () => {
     } else {
       void loadLocalSnapshot(true);
     }
+    void loadFanxiuProcesses();
+    void loadLocalScriptProcesses();
   }, 30000);
 });
 
@@ -519,6 +607,67 @@ onUnmounted(() => {
         </div>
         <div class="header-actions">
           <el-tag :type="pageStatusType" effect="dark">{{ pageStatusText }}</el-tag>
+          <el-popover v-if="canConfigure" placement="bottom-end" trigger="click" :width="860">
+            <template #reference>
+              <el-button
+                :type="fanxiuProcessCount ? 'danger' : 'success'"
+                plain
+                :loading="isLoadingScriptProcesses"
+              >
+                脚本 {{ localScriptProcessCount }}
+              </el-button>
+            </template>
+            <div class="process-popover">
+              <div class="process-popover-header">
+                <div class="process-popover-title">
+                  <span>本机脚本清单</span>
+                  <el-tag v-if="fanxiuProcessCount" type="danger" effect="plain">凡修 {{ fanxiuProcessCount }}</el-tag>
+                </div>
+                <el-button text :icon="Refresh" :loading="isLoadingScriptProcesses" @click="loadLocalScriptProcesses">刷新</el-button>
+              </div>
+              <el-table
+                v-if="localScriptProcesses.length"
+                :data="localScriptProcesses"
+                size="small"
+                max-height="360"
+                table-layout="auto"
+                :fit="false"
+              >
+                <el-table-column label="PID" prop="pid" width="76" />
+                <el-table-column label="类型" width="116">
+                  <template #default="{ row }">
+                    <el-tag :type="row.is_fanxiu ? 'danger' : 'info'" effect="plain">
+                      {{ row.project_hint || row.kind }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="脚本" min-width="170">
+                  <template #default="{ row }">
+                    <span class="process-script" :title="row.script_path || row.command_line">{{ row.script }}</span>
+                  </template>
+                </el-table-column>
+                <el-table-column label="已运行" width="92">
+                  <template #default="{ row }">{{ formatProcessRuntime(row.runtime_seconds) }}</template>
+                </el-table-column>
+                <el-table-column label="命令" min-width="360">
+                  <template #default="{ row }">
+                    <span class="process-command" :title="row.command_line">{{ row.command_line }}</span>
+                  </template>
+                </el-table-column>
+              </el-table>
+              <div v-else class="empty-inline">当前没有探测到脚本进程</div>
+            </div>
+          </el-popover>
+          <el-button
+            v-if="canConfigure"
+            type="danger"
+            plain
+            :loading="isTerminatingProcesses"
+            :disabled="isLoadingProcesses"
+            @click="terminateAllFanxiuProcesses"
+          >
+            终止凡修脚本
+          </el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
         </div>
       </div>
@@ -748,6 +897,9 @@ onUnmounted(() => {
 
 .page-header,
 .card-header,
+.header-actions,
+.process-popover-header,
+.process-popover-title,
 .tag-list,
 .path-meta,
 .path-actions,
@@ -860,11 +1012,41 @@ onUnmounted(() => {
 .timer-name,
 .timer-time,
 .directory-chip-name,
-.file-chip-name {
+.file-chip-name,
+.process-script,
+.process-command {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.process-popover {
+  min-width: 0;
+}
+
+.process-popover-header {
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.process-popover-title {
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: #47300d;
+}
+
+.process-script,
+.process-command {
+  display: inline-block;
+  max-width: 100%;
+}
+
+.process-command {
+  color: #71604a;
 }
 
 .hash-line {

@@ -69,6 +69,12 @@ CODEX_CLI_CASE_CARD_TIMEOUT_SECONDS = 300
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_CACHE_SCHEMA_VERSION = 1
 SCAN_RULE_VERSION = "2026-05-12.codex-cli-semantic-cache.v5"
+SCAN_SIGNAL_TYPES = {
+    "explicit_learning_marker",
+    "friction",
+    "repeated_correction",
+    "final_artifact_delta",
+}
 CODEX_CLI_SCAN_INSTRUCTIONS = (
     "你是 EvoMind 的真实案例扫描器。你只能分析我提供的候选片段，不要读取文件、不要运行命令、不要改代码。\n"
     "目标：从 Codex 历史对话候选中找出真正值得沉淀为 skill/AGENTS/docs 的高价值操作案例。\n\n"
@@ -222,6 +228,10 @@ def _evomind_cache_path() -> Path:
     return get_settings().data_dir / "evomind" / "scan-cache.json"
 
 
+def _evomind_pending_imports_path() -> Path:
+    return get_settings().data_dir / "evomind" / "pending-imports.json"
+
+
 def _skills_root_path() -> Path:
     return REPO_ROOT.parent / "skills"
 
@@ -295,6 +305,45 @@ def _write_scan_cache(rule_hash: str, cache: dict[str, Any]) -> None:
     tmp_path = path.with_suffix(".tmp")
     tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(path)
+
+
+def save_evomind_pending_imports(payload: dict[str, Any]) -> None:
+    path = _evomind_pending_imports_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def read_evomind_pending_imports() -> dict[str, Any]:
+    path = _evomind_pending_imports_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {
+            "root_dir": "",
+            "total_threads": 0,
+            "scanned_threads": 0,
+            "skipped_threads": 0,
+            "scanned_messages": 0,
+            "heuristic_candidate_count": 0,
+            "analysis_mode": "pending_import",
+            "codex_cli_used": False,
+            "codex_cli_invoked": False,
+            "cache_hit_count": 0,
+            "cache_miss_count": 0,
+            "cache_rule_hash": "",
+            "cache_rule_mismatch": False,
+            "cache_reset": False,
+            "items": [],
+        }
+    if not isinstance(payload.get("items"), list):
+        payload["items"] = []
+    return payload
+
+
+def clear_evomind_pending_imports() -> None:
+    _evomind_pending_imports_path().unlink(missing_ok=True)
 
 
 def _extract_user_request_text(value: Any) -> str:
@@ -392,6 +441,15 @@ def _detect_signal(text: str) -> tuple[str | None, str, int]:
         evidence_strength = "p2"
 
     return signal_type, evidence_strength, score
+
+
+def _normalize_signal_type_filter(value: str | None) -> str | None:
+    signal_type = re.sub(r"\s+", "", str(value or "")).strip()
+    if not signal_type:
+        return None
+    if signal_type not in SCAN_SIGNAL_TYPES:
+        raise ValueError(f"不支持的 EvoMind 信号类型：{signal_type}")
+    return signal_type
 
 
 def _should_skip_evomind_user_text(text: str) -> bool:
@@ -1446,6 +1504,7 @@ def scan_evomind_cases_from_codex(
     max_threads: int = 120,
     max_cases: int = 40,
     min_score: int = 55,
+    signal_type_filter: str | None = None,
     use_codex_cli: bool = False,
     codex_cli_limit: int = CODEX_CLI_DEFAULT_CANDIDATE_LIMIT,
     reset_cache: bool = False,
@@ -1462,6 +1521,7 @@ def scan_evomind_cases_from_codex(
     effective_max_cases = max(1, min(int(max_cases or 40), 120))
     effective_min_score = max(0, int(min_score or 0))
     effective_codex_cli_limit = max(1, min(int(codex_cli_limit or CODEX_CLI_DEFAULT_CANDIDATE_LIMIT), 120))
+    effective_signal_type_filter = _normalize_signal_type_filter(signal_type_filter)
 
     overview = build_codex_overview(
         root_dir,
@@ -1506,6 +1566,8 @@ def scan_evomind_cases_from_codex(
             text = _extract_user_request_text(raw_text)
             signal_type, evidence_strength, score = _detect_signal(text)
             if not signal_type or score < effective_min_score:
+                continue
+            if effective_signal_type_filter and signal_type != effective_signal_type_filter:
                 continue
             signature = re.sub(r"\s+", " ", text).strip().lower()[:500]
             if signature in seen_signatures:
