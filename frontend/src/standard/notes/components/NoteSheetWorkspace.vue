@@ -3,9 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { HotTable } from '@handsontable/vue3'
-import { registerAllModules } from 'handsontable/registry'
 import type Handsontable from 'handsontable/base'
-import { registerLanguageDictionary, zhCN } from 'handsontable/i18n'
 
 import {
   fetchNoteSheet,
@@ -42,12 +40,12 @@ import {
   type StableVisualColorOptions,
   type StableVisualToken,
 } from '@/utils/stableVisualColor'
+import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
 
 import 'handsontable/styles/handsontable.css'
 import 'handsontable/styles/ht-theme-main.css'
 
-registerAllModules()
-registerLanguageDictionary(zhCN)
+registerCodeyunHandsontableModules()
 
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
@@ -16538,6 +16536,7 @@ defineExpose({
   position: fixed;
   z-index: 2450;
   width: min(300px, calc(100vw - 24px));
+  box-sizing: border-box;
   padding: 10px;
   border: 1px solid #d8e4f7;
   border-radius: 8px;
@@ -16554,11 +16553,31 @@ defineExpose({
 }
 
 .sheet-column-filter-date-range {
+  --el-date-editor-width: 100%;
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.sheet-column-filter-date-range.el-range-editor.el-input__wrapper {
+  padding: 0 8px;
 }
 
 .sheet-column-filter-date-range :deep(.el-range-input) {
+  min-width: 0;
   font-size: 12px;
+}
+
+.sheet-column-filter-date-range :deep(.el-range-separator) {
+  flex: 0 0 auto;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.sheet-column-filter-date-range :deep(.el-range__icon),
+.sheet-column-filter-date-range :deep(.el-range__close-icon) {
+  flex: 0 0 auto;
 }
 
 .sheet-column-filter-date-toolbar {

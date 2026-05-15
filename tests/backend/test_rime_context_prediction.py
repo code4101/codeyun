@@ -72,6 +72,7 @@ def test_local_entry_refreshes_rime_context_prediction_from_pending(client, auth
     assert any(row["context"] == "占位" and row["prefix"] == "fu" and row["candidate"] == "符号" for row in payload["rows"])
     assert not (rime_dir / "context_prediction_pending.tsv").exists()
     assert (rime_dir / "context_prediction_model_counts.tsv").exists()
+    assert (rime_dir / "context_prediction_runtime.tsv").exists()
 
 
 def test_local_entry_reads_rime_context_history_as_article(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -143,7 +144,8 @@ def test_local_entry_refresh_rebuilds_prediction_from_history(client, auth_user,
     rime_dir.mkdir()
     (rime_dir / "context_prediction_history.log").write_text(
         "2026-05-13 10:00:00\t你好\t你好\n"
-        "2026-05-13 10:00:01\t世界\t世界\n",
+        "2026-05-13 10:00:01\t世界\t世界\n"
+        "2026-05-13 10:00:02\tChatGPT\tChatGPT\n",
         encoding="utf-8",
     )
     (rime_dir / "context_prediction_pending.tsv").write_text(
@@ -161,9 +163,12 @@ def test_local_entry_refresh_rebuilds_prediction_from_history(client, auth_user,
     assert payload["summary"]["row_count"] > 0
     assert any(row["candidate"] == "世界" for row in payload["rows"])
     assert not (rime_dir / "context_prediction_pending.tsv").exists()
+    assert (rime_dir / "context_prediction_runtime.tsv").exists()
     counts_text = (rime_dir / "context_prediction_model_counts.tsv").read_text(encoding="utf-8")
     assert "世界" in counts_text
     assert "旧词" not in counts_text
+    learned_text = (rime_dir / "codeyun_english_learned.dict.yaml").read_text(encoding="utf-8")
+    assert "ChatGPT\tchatgpt" in learned_text
 
 
 def test_local_entry_saves_edited_history_article_for_prediction(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -192,6 +197,38 @@ def test_local_entry_saves_edited_history_article_for_prediction(client, auth_us
     rows = refresh_response.json()["rows"]
     assert any(row["candidate"] == "服务" for row in rows)
     assert all(row["candidate"] != "符号" for row in rows)
+
+
+def test_local_entry_checks_rime_context_corpus(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction_history.log").write_text(
+        "2026-05-13 10:00:00\t这个才复合降序\t这个才复合降序\n"
+        "2026-05-13 10:00:01\tiashiyaoyou\tiashiyaoyou\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    import_response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/articles",
+        json={"title": "错字文章", "content": "这个因该可以。", "enabled": True},
+    )
+    assert import_response.status_code == 200
+
+    response = client.get(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/lint",
+        params={"source": "all", "mode": "rules"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["summary"]["source_count"] == 2
+    texts = {issue["text"]: issue for issue in payload["issues"]}
+    assert texts["才复合"]["suggestion"] == "才符合"
+    assert texts["因该"]["suggestion"] == "应该"
+    assert texts["iashiyaoyou"]["type"] == "异常片段"
 
 
 def test_local_entry_deletes_rime_context_prediction_candidate(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -314,6 +351,32 @@ def test_local_entry_imports_article_into_rime_context_prediction(client, auth_u
     assert tree_response.status_code == 200
     rows = tree_response.json()["rows"]
     assert any(row["context"] == "占位" and row["prefix"] == "fuhao" and row["candidate"] == "符号" for row in rows)
+
+
+def test_local_entry_imports_english_only_article_for_learned_dictionary(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/articles",
+        json={
+            "title": "英文词条",
+            "content": "codepc_mi15 codepc_mf ChatGPT\n",
+            "enabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["summary"]["article_count"] == 1
+    assert payload["articles"][0]["row_count"] == 0
+    learned_text = (rime_dir / "codeyun_english_learned.dict.yaml").read_text(encoding="utf-8")
+    assert "codepc_mi15\tcodepcmi15" in learned_text
+    assert "codepc_mf\tcodepcmf" in learned_text
+    assert "ChatGPT\tchatgpt" in learned_text
 
 
 def test_local_entry_disables_imported_article_from_snapshot(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -442,6 +505,7 @@ def test_local_main_imports_remote_device_history_as_single_article(client, sess
     manifest_text = (rime_dir / "context_prediction_articles.json").read_text(encoding="utf-8")
     assert manifest_text.count('"source_key": "device_history:mi15"') == 1
     assert (rime_dir / "context_prediction_snapshot.tsv").exists()
+    assert (rime_dir / "context_prediction_runtime.tsv").exists()
 
 
 def test_remote_entry_forwards_rime_context_prediction_request(client, session, auth_user, monkeypatch):

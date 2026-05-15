@@ -9,6 +9,7 @@ from backend.core.rime_context_prediction import (
     RimeContextPredictionError,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
+    collect_rime_context_prediction_lint,
     collect_rime_context_prediction_tree,
     delete_rime_context_prediction_article,
     delete_rime_context_prediction_candidate,
@@ -80,7 +81,7 @@ def post_rime_context_prediction_tree_refresh(
 def get_rime_context_prediction_history_article(
     limit: int = Query(20000, ge=1, le=200000),
     page: int | None = Query(None, ge=1),
-    page_size: int | None = Query(None, ge=1, le=1000),
+    page_size: int | None = Query(None, ge=1, le=5000),
     _: BaseDevice = Depends(verify_api_token),
 ):
     return collect_rime_context_prediction_history_article(limit=limit, page=page, page_size=page_size)
@@ -102,6 +103,22 @@ def get_rime_context_prediction_articles(
     _: BaseDevice = Depends(verify_api_token),
 ):
     return collect_rime_context_prediction_articles()
+
+
+@router.get("/context-prediction/lint")
+def get_rime_context_prediction_lint(
+    source: str = Query("all"),
+    mode: str = Query("rules"),
+    limit: int = Query(200, ge=1, le=1000),
+    history_limit: int = Query(20000, ge=1, le=200000),
+    _: BaseDevice = Depends(verify_api_token),
+):
+    return collect_rime_context_prediction_lint(
+        source=source,
+        mode=mode,
+        limit=limit,
+        history_limit=history_limit,
+    )
 
 
 @router.delete("/context-prediction/candidates")

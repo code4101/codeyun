@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import io
-import os
 import hashlib
+import io
+import json
+import os
+import re
 import shutil
 import sqlite3
 import time
@@ -33,6 +35,13 @@ BILL_RECORD_COLUMNS = [
     "refund_amount",
     "remark",
     "fund_status",
+    "account_no",
+    "currency",
+    "cash_type",
+    "account_balance",
+    "raw_sequence",
+    "standard_nature",
+    "standard_direction",
     "imported_at",
 ]
 
@@ -43,23 +52,37 @@ DEFAULT_TREND_LIMITS = {
     "month": 12,
     "year": None,
 }
+FREEBILL_CATEGORY_BRANCH_RECORD_SORT_FIELDS = {
+    "amount": ("COALESCE(amount, 0)",),
+    "create_time": ("datetime(create_time)", "create_time"),
+    "source": ("COALESCE(NULLIF(source, ''), '') COLLATE NOCASE",),
+    "product_name": ("COALESCE(NULLIF(product_name, ''), '') COLLATE NOCASE",),
+    "remark": ("COALESCE(NULLIF(remark, ''), '') COLLATE NOCASE",),
+}
 FREEBILL_PROGRAM_FIELDS = {
     "id": {"sql": "id", "mode": "number"},
-    "create_time": {"sql": "create_time", "mode": "date"},
-    "pay_time": {"sql": "pay_time", "mode": "date"},
-    "modify_time": {"sql": "modify_time", "mode": "date"},
-    "source": {"sql": "source", "mode": "text"},
-    "direction": {"sql": "TRIM(direction)", "mode": "text"},
-    "type": {"sql": "type", "mode": "text"},
-    "category": {"sql": "type", "mode": "text"},
-    "counterparty": {"sql": "counterparty", "mode": "text"},
-    "product_name": {"sql": "product_name", "mode": "text"},
-    "amount": {"sql": "amount", "mode": "number"},
-    "status": {"sql": "status", "mode": "text"},
-    "remark": {"sql": "remark", "mode": "text"},
+    "create_time": {"sql": "__effective:create_time__", "mode": "date"},
+    "pay_time": {"sql": "__effective:pay_time__", "mode": "date"},
+    "modify_time": {"sql": "__effective:modify_time__", "mode": "date"},
+    "source": {"sql": "__effective:source__", "mode": "text"},
+    "direction": {"sql": "__interpreted_direction__", "mode": "text"},
+    "standard_direction": {"sql": "__interpreted_direction__", "mode": "text"},
+    "standard_nature": {"sql": "__interpreted_type__", "mode": "text"},
+    "type": {"sql": "__effective:type__", "mode": "text"},
+    "category": {"sql": "__effective:type__", "mode": "text"},
+    "counterparty": {"sql": "__effective:counterparty__", "mode": "text"},
+    "product_name": {"sql": "__effective:product_name__", "mode": "text"},
+    "amount": {"sql": "__effective:amount__", "mode": "number"},
+    "status": {"sql": "__effective:status__", "mode": "text"},
+    "remark": {"sql": "__effective:remark__", "mode": "text"},
     "trade_no": {"sql": "trade_no", "mode": "text"},
     "merchant_order_no": {"sql": "merchant_order_no", "mode": "text"},
-    "fund_status": {"sql": "fund_status", "mode": "text"},
+    "fund_status": {"sql": "__effective:fund_status__", "mode": "text"},
+    "account_no": {"sql": "__effective:account_no__", "mode": "text"},
+    "currency": {"sql": "__effective:currency__", "mode": "text"},
+    "cash_type": {"sql": "__effective:cash_type__", "mode": "text"},
+    "account_balance": {"sql": "__effective:account_balance__", "mode": "number"},
+    "raw_sequence": {"sql": "__effective:raw_sequence__", "mode": "text"},
 }
 FREEBILL_FULL_TEXT_FIELDS = [
     "trade_no",
@@ -69,6 +92,8 @@ FREEBILL_FULL_TEXT_FIELDS = [
     "remark",
     "status",
     "fund_status",
+    "account_no",
+    "raw_sequence",
 ]
 
 RAW_BILL_FILE_EXTENSIONS = {
@@ -89,6 +114,297 @@ ALIPAY_LEGACY_SOURCE_HINTS = (
     "其他（包括阿里巴巴和外部商家）",
 )
 ALIPAY_LEGACY_FUND_STATUSES = {"已支出", "已收入", "资金转移"}
+FLOW_OVERRIDE_CATEGORY = "流水"
+FLOW_EXPENSE_CATEGORY = "流水支出"
+FLOW_INCOME_CATEGORY = "流水收入"
+STANDARD_NATURE_REGULAR = "常规"
+STANDARD_NATURE_LOAN = "借贷"
+STANDARD_NATURE_FINANCE = "理财"
+STANDARD_NATURE_TRANSFER = "转账"
+STANDARD_NATURE_FLOW = "流水"
+STANDARD_DIRECTION_EXPENSE = "支出"
+STANDARD_DIRECTION_INCOME = "收入"
+STANDARD_DIRECTION_NEUTRAL = "收支"
+STANDARD_DIRECTIONS = {"支出", "收入"}
+FREEBILL_STANDARD_DIRECTIONS = (
+    STANDARD_DIRECTION_EXPENSE,
+    STANDARD_DIRECTION_NEUTRAL,
+    STANDARD_DIRECTION_INCOME,
+)
+FREEBILL_STANDARDIZATION_VERSION = 29
+FREEBILL_STANDARD_NATURES = (
+    STANDARD_NATURE_REGULAR,
+    STANDARD_NATURE_LOAN,
+    STANDARD_NATURE_FINANCE,
+    STANDARD_NATURE_TRANSFER,
+    STANDARD_NATURE_FLOW,
+)
+FREEBILL_INTERPRET_RULE_FIELDS = {
+    "source": {"label": "来源", "mode": "text"},
+    "direction": {"label": "导入收支", "mode": "text"},
+    "standard_direction": {"label": "当前收支", "mode": "text"},
+    "standard_nature": {"label": "当前类型", "mode": "text"},
+    "type": {"label": "分类", "mode": "text"},
+    "counterparty": {"label": "交易对方", "mode": "text"},
+    "product_name": {"label": "商品", "mode": "text"},
+    "remark": {"label": "备注", "mode": "text"},
+    "status": {"label": "状态", "mode": "text"},
+    "amount": {"label": "金额", "mode": "number"},
+}
+FREEBILL_MANUAL_OVERRIDE_FIELDS = {
+    "create_time": {"label": "交易时间", "mode": "text"},
+    "source": {"label": "来源", "mode": "text"},
+    "standard_direction": {"label": "收支", "mode": "direction"},
+    "standard_nature": {"label": "类型", "mode": "nature"},
+    "type": {"label": "分类", "mode": "text"},
+    "counterparty": {"label": "交易对方", "mode": "text"},
+    "product_name": {"label": "商品", "mode": "text"},
+    "amount": {"label": "金额", "mode": "number"},
+    "status": {"label": "状态", "mode": "text"},
+    "remark": {"label": "备注", "mode": "text"},
+    "pay_time": {"label": "付款时间", "mode": "text"},
+    "modify_time": {"label": "修改时间", "mode": "text"},
+    "location": {"label": "交易来源地", "mode": "text"},
+    "fund_status": {"label": "资金状态", "mode": "text"},
+    "service_fee": {"label": "服务费", "mode": "number"},
+    "refund_amount": {"label": "退款金额", "mode": "number"},
+    "account_no": {"label": "账号", "mode": "text"},
+    "currency": {"label": "币种", "mode": "text"},
+    "cash_type": {"label": "钞汇", "mode": "text"},
+    "account_balance": {"label": "账户余额", "mode": "number"},
+    "raw_sequence": {"label": "原始序号", "mode": "text"},
+}
+FREEBILL_PINNED_MANUAL_OVERRIDE_FIELDS = {"standard_direction", "standard_nature"}
+FREEBILL_INTERPRET_RULE_OPERATORS = {
+    "eq",
+    "neq",
+    "contains",
+    "not_contains",
+    "in",
+    "not_in",
+    "gt",
+    "gte",
+    "lt",
+    "lte",
+}
+FREEBILL_BUILT_IN_INTERPRET_RULES = (
+    {
+        "key": "yuebao-income",
+        "name": "余额宝收益",
+        "target_nature": STANDARD_NATURE_FINANCE,
+        "matcher_text": "商品以“余额宝-”开头，且包含收益/结息/分红",
+        "result_text": "收支=收入，类型=理财",
+        "note": "收益发放不是普通账户转移。",
+    },
+    {
+        "key": "yuebao-transfer",
+        "name": "余额宝转入转出",
+        "target_nature": STANDARD_NATURE_TRANSFER,
+        "matcher_text": "商品为余额宝-单次转入、余额宝-工资理财，或转出到银行卡等账户移动",
+        "result_text": "类型=转账，收支按记录来源参照方向推断",
+        "note": "从支付宝记录方看，余额宝单次转入、工资理财属于外部资金转入支付宝，记为转账收入；转出到银行卡记为转账支出。",
+    },
+    {
+        "key": "yuebao-balance-flow",
+        "name": "余额宝余额流转",
+        "target_nature": STANDARD_NATURE_FLOW,
+        "matcher_text": "商品为余额宝-转出到余额",
+        "result_text": "类型=流水，收支=收支",
+        "note": "余额宝转出到支付宝余额是支付宝应用内账户流转，不计入支出或收入。",
+    },
+    {
+        "key": "regular-income-expense",
+        "name": "常规收支",
+        "target_nature": STANDARD_NATURE_REGULAR,
+        "matcher_text": "导入收支已经是“收入/支出”",
+        "result_text": "类型=常规，收支沿用导入值",
+        "note": "微信、支付宝原本明确的消费/收入默认不改成转账。",
+    },
+    {
+        "key": "loan-keywords",
+        "name": "借贷关键词",
+        "target_nature": STANDARD_NATURE_LOAN,
+        "matcher_text": "分类、商品、交易对方或备注包含借呗、信用借还、还款、借款、借呗放款等；或建行商品包含支付宝-还款",
+        "result_text": "类型=借贷，收支按文本方向推断",
+        "note": "别人与自己之间的借还款先归到借贷。",
+    },
+    {
+        "key": "finance-keywords",
+        "name": "理财关键词",
+        "target_nature": STANDARD_NATURE_FINANCE,
+        "matcher_text": "余利宝；银转证/银行转证券等证券划转；或非常规收支文本包含基金、理财、申购、赎回、保险等",
+        "result_text": "类型=理财，收支按文本方向推断",
+        "note": "投资、赎回、收益类资金流归到理财。",
+    },
+    {
+        "key": "internal-transfer-keywords",
+        "name": "账户转移关键词",
+        "target_nature": STANDARD_NATURE_TRANSFER,
+        "matcher_text": "文本包含零钱充值、提现到银行卡、财付通/微信支付、建设银行等账户移动词；或银联入账且交易对方为支付宝；或建行商品包含支付宝-支付宝-",
+        "result_text": "类型=转账，收支按记录来源参照方向推断",
+        "note": "自己的不同账户、不同 App 之间的移动归到转账。",
+    },
+)
+FREEBILL_INTERPRET_SETTINGS_META_KEY = "interpret_settings"
+CCB_CURRENT_ACCOUNT_PARSER_FORMAT = "ccb-excel"
+CCB_CURRENT_ACCOUNT_TITLE = "中国建设银行个人活期账户全部交易明细"
+CCB_CURRENT_ACCOUNT_HEADER_MARKERS = ("序号", "交易日期", "交易金额")
+CCB_CURRENT_ACCOUNT_REQUIRED_COLUMNS = {
+    "序号",
+    "摘要",
+    "币别",
+    "钞汇",
+    "交易日期",
+    "交易金额",
+    "账户余额",
+}
+CCB_CURRENT_ACCOUNT_COLUMN_MAP = {
+    "序号": "raw_sequence",
+    "摘要": "type",
+    "币别": "currency",
+    "钞汇": "cash_type",
+    "交易日期": "create_time",
+    "交易金额": "signed_amount",
+    "账户余额": "account_balance",
+    "交易地点/附言": "memo",
+    "交易地点／附言": "memo",
+    "对方账号与户名": "counterparty",
+}
+CCB_CURRENT_ACCOUNT_PARSE_STEPS = (
+    "读取建行邮件压缩包解出的 xls/xlsx；文件整理层建议统一转成 xlsx。",
+    "在前 80 行中定位同时包含“序号、交易日期、交易金额”的表头行。",
+    "表头前读取卡号/账号、客户名称、起始日期、结束日期、总收入、总支出等元信息。",
+    "从表头行开始读取明细，交易金额保留原始正负号，入库金额取绝对值。",
+    "交易金额大于 0 解释为收入，小于 0 解释为支出，等于 0 暂记不计收支。",
+    "用账号、日期、序号、摘要、金额、余额、附言、对方账号户名生成稳定去重 key。",
+    "如果表头给出了总收入/总支出，导入前用明细合计做一次一致性校验。",
+)
+FREEBILL_CATEGORY_DIMENSIONS = (
+    "standard_direction",
+    "standard_nature",
+    "type",
+    "counterparty",
+)
+FREEBILL_CATEGORY_DIMENSION_LABELS = {
+    "standard_direction": "收支",
+    "standard_nature": "类型",
+    "type": "分类",
+    "counterparty": "交易对方",
+}
+FREEBILL_CATEGORY_DIMENSION_EMPTY_LABELS = {
+    "standard_direction": "(空白)",
+    "standard_nature": "(空白)",
+    "type": "未分类",
+    "counterparty": "未标注交易对方",
+}
+FLOW_FINANCE_KEYWORDS = (
+    "余利宝",
+    "零钱通",
+    "基金",
+    "理财",
+    "申购",
+    "赎回",
+    "收益发放",
+    "结息",
+    "分红",
+    "保险",
+    "保费",
+)
+FLOW_FINANCE_PRIORITY_KEYWORDS = (
+    "余利宝",
+    "银转证",
+    "银行转证券",
+    "证转银",
+    "证券转银行",
+)
+FLOW_LOAN_PRIORITY_KEYWORDS = (
+    "借呗",
+    "微粒贷",
+    "花呗",
+    "白条",
+    "信用借还",
+    "借款",
+    "借钱",
+    "还款",
+    "借贷",
+    "放款",
+    "还贷",
+    "贷款",
+)
+FLOW_INTERNAL_TRANSFER_KEYWORDS = (
+    "零钱充值",
+    "零钱提现",
+    "支付机构提现",
+    "提现到银行卡",
+    "转出到银行卡",
+    "转出至银行卡",
+    "转回银行卡",
+    "充值到零钱",
+    "银行卡转出",
+    "建设银行",
+    "工商银行",
+    "农业银行",
+    "中国银行",
+    "招商银行",
+    "交通银行",
+    "邮储银行",
+    "网商银行",
+    "银行卡",
+    "财付通",
+    "微信支付",
+)
+TRANSFER_OUT_OF_RECORD_SOURCE_KEYWORDS = (
+    "零钱提现",
+    "提现到银行卡",
+    "转出到银行卡",
+    "转出至银行卡",
+    "转回银行卡",
+    "支付机构提现",
+    "财付通",
+    "微信支付",
+    "微信转账",
+)
+TRANSFER_INTO_RECORD_SOURCE_KEYWORDS = (
+    "零钱充值",
+    "充值到零钱",
+    "银行卡转出",
+    "银行卡转出到支付宝",
+    "转入零钱通",
+    "转入至零钱通",
+    "自动转入",
+    "单次转入",
+    "工资理财",
+)
+STANDARD_DIRECTION_INCOME_KEYWORDS = (
+    "退款",
+    "赎回",
+    "收益发放",
+    "结息",
+    "分红",
+    "卖出",
+    "放款",
+    "回款",
+    "还钱",
+    "还款到账",
+    "提现",
+    "转出",
+    "转回",
+    "收款",
+    "存入",
+)
+STANDARD_DIRECTION_EXPENSE_KEYWORDS = (
+    "买入",
+    "申购",
+    "投保",
+    "保费",
+    "还款",
+    "借出",
+    "借款发放",
+    "充值",
+    "转入",
+    "支付",
+    "消费",
+)
 
 
 def get_freebill_work_dir() -> Path:
@@ -141,16 +457,33 @@ def ensure_freebill_schema(conn: sqlite3.Connection) -> None:
             refund_amount REAL,
             remark TEXT,
             fund_status TEXT,
+            account_no TEXT,
+            currency TEXT,
+            cash_type TEXT,
+            account_balance REAL,
+            raw_sequence TEXT,
+            standard_nature TEXT,
+            standard_direction TEXT,
             imported_at REAL
         )
         """
     )
     _ensure_column(conn, "bill_records", "imported_at", "REAL")
+    _ensure_column(conn, "bill_records", "account_no", "TEXT")
+    _ensure_column(conn, "bill_records", "currency", "TEXT")
+    _ensure_column(conn, "bill_records", "cash_type", "TEXT")
+    _ensure_column(conn, "bill_records", "account_balance", "REAL")
+    _ensure_column(conn, "bill_records", "raw_sequence", "TEXT")
+    _ensure_column(conn, "bill_records", "standard_nature", "TEXT")
+    _ensure_column(conn, "bill_records", "standard_direction", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_source ON bill_records (source)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_trade_no ON bill_records (trade_no)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_create_time ON bill_records (create_time)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_direction ON bill_records (direction)")
     conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_type ON bill_records (type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_account_no ON bill_records (account_no)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_standard_nature ON bill_records (standard_nature)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_freebill_records_standard_direction ON bill_records (standard_direction)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS freebill_raw_files (
@@ -182,8 +515,38 @@ def ensure_freebill_schema(conn: sqlite3.Connection) -> None:
             source TEXT,
             original_direction TEXT,
             original_type TEXT,
+            original_standard_nature TEXT,
+            original_standard_direction TEXT,
             override_direction TEXT NOT NULL,
             override_type TEXT NOT NULL,
+            override_standard_nature TEXT,
+            override_standard_direction TEXT,
+            manual_overrides_json TEXT,
+            note TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    _ensure_column(conn, "freebill_record_overrides", "original_standard_nature", "TEXT")
+    _ensure_column(conn, "freebill_record_overrides", "original_standard_direction", "TEXT")
+    _ensure_column(conn, "freebill_record_overrides", "override_standard_nature", "TEXT")
+    _ensure_column(conn, "freebill_record_overrides", "override_standard_direction", "TEXT")
+    _ensure_column(conn, "freebill_record_overrides", "manual_overrides_json", "TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS ix_freebill_record_overrides_trade_no "
+        "ON freebill_record_overrides (trade_no)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS freebill_interpret_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL DEFAULT '',
+            enabled INTEGER NOT NULL DEFAULT 1,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            matcher_json TEXT NOT NULL DEFAULT '{}',
+            set_direction TEXT,
+            set_nature TEXT,
             note TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL
@@ -191,9 +554,18 @@ def ensure_freebill_schema(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_freebill_record_overrides_trade_no "
-        "ON freebill_record_overrides (trade_no)"
+        "CREATE INDEX IF NOT EXISTS ix_freebill_interpret_rules_enabled_order "
+        "ON freebill_interpret_rules (enabled, order_index, id)"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS freebill_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    _migrate_freebill_standardization(conn)
     conn.commit()
 
 
@@ -209,6 +581,175 @@ def _ensure_column(
     }
     if column_name not in existing_columns:
         conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}")
+
+
+def _migrate_freebill_standardization(conn: sqlite3.Connection) -> None:
+    version_row = conn.execute(
+        "SELECT value FROM freebill_meta WHERE key = 'standardization_version'"
+    ).fetchone()
+    try:
+        standardization_version = int(str(version_row["value"])) if version_row else 0
+    except (TypeError, ValueError):
+        standardization_version = 0
+    needs_rule_backfill = standardization_version < FREEBILL_STANDARDIZATION_VERSION
+    needs_bill_backfill = conn.execute(
+        """
+        SELECT 1
+        FROM bill_records
+        WHERE standard_nature IS NULL
+           OR TRIM(COALESCE(standard_nature, '')) = ''
+           OR standard_direction IS NULL
+           OR TRIM(COALESCE(standard_direction, '')) = ''
+        LIMIT 1
+        """
+    ).fetchone()
+    needs_override_backfill = conn.execute(
+        """
+        SELECT 1
+        FROM freebill_record_overrides
+        WHERE original_standard_nature IS NULL
+           OR TRIM(COALESCE(original_standard_nature, '')) = ''
+           OR original_standard_direction IS NULL
+           OR TRIM(COALESCE(original_standard_direction, '')) = ''
+           OR override_standard_nature IS NULL
+           OR TRIM(COALESCE(override_standard_nature, '')) = ''
+           OR override_standard_direction IS NULL
+           OR TRIM(COALESCE(override_standard_direction, '')) = ''
+        LIMIT 1
+        """
+    ).fetchone()
+    has_legacy_mutated_rows = conn.execute(
+        """
+        SELECT 1
+        FROM bill_records
+        WHERE trade_no IN (SELECT trade_no FROM freebill_record_overrides)
+          AND (
+                TRIM(COALESCE(direction, '')) = '不计收支'
+                OR TRIM(COALESCE(type, '')) IN (?, ?, ?)
+          )
+        LIMIT 1
+        """,
+        (
+            FLOW_OVERRIDE_CATEGORY,
+            FLOW_EXPENSE_CATEGORY,
+            FLOW_INCOME_CATEGORY,
+        ),
+    ).fetchone()
+    if not needs_rule_backfill and not needs_bill_backfill and not needs_override_backfill and not has_legacy_mutated_rows:
+        return
+
+    interpret_settings = _load_freebill_interpret_settings(conn)
+    interpret_rules = _load_enabled_freebill_interpret_rules(conn)
+    override_rows = conn.execute(
+        """
+        SELECT *
+        FROM freebill_record_overrides
+        ORDER BY id
+        """
+    ).fetchall()
+    if override_rows:
+        conn.executemany(
+            """
+            UPDATE bill_records
+            SET direction = COALESCE(?, direction),
+                type = COALESCE(?, type)
+            WHERE trade_no = ?
+            """,
+            [
+                (
+                    row["original_direction"],
+                    row["original_type"],
+                    row["trade_no"],
+                )
+                for row in override_rows
+            ],
+        )
+
+    bill_rows = conn.execute(
+        """
+        SELECT *
+        FROM bill_records
+        ORDER BY id
+        """
+    ).fetchall()
+    if bill_rows:
+        conn.executemany(
+            """
+            UPDATE bill_records
+            SET type = ?,
+                standard_nature = ?,
+                standard_direction = ?
+            WHERE id = ?
+            """,
+            [
+                (
+                    normalized_record["type"],
+                    normalized_record["standard_nature"],
+                    normalized_record["standard_direction"],
+                    row["id"],
+                )
+                for row in bill_rows
+                for normalized_record in [
+                    _apply_freebill_standard_fields(
+                        _row_to_dict(row),
+                        interpret_rules=interpret_rules,
+                        interpret_settings=interpret_settings,
+                    )
+                ]
+            ],
+        )
+
+    if override_rows:
+        record_map = {
+            str(row["trade_no"] or "").strip(): _row_to_dict(row)
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM bill_records
+                WHERE trade_no IN (
+                    SELECT trade_no
+                    FROM freebill_record_overrides
+                )
+                """
+            ).fetchall()
+        }
+        conn.executemany(
+            """
+            UPDATE freebill_record_overrides
+            SET override_type = CASE
+                    WHEN override_direction = '不计收支'
+                     AND override_type IN (?, ?, ?)
+                        THEN COALESCE(NULLIF(TRIM(original_type), ''), override_type)
+                    ELSE override_type
+                END,
+                original_standard_nature = ?,
+                original_standard_direction = ?,
+                override_standard_nature = ?,
+                override_standard_direction = ?
+            WHERE id = ?
+            """,
+            [
+                (
+                    FLOW_OVERRIDE_CATEGORY,
+                    FLOW_EXPENSE_CATEGORY,
+                    FLOW_INCOME_CATEGORY,
+                    *_resolve_freebill_override_standard_fields(
+                        record_map.get(str(row["trade_no"] or "").strip(), {}),
+                        _row_to_dict(row),
+                    ),
+                    row["id"],
+                )
+                for row in override_rows
+            ],
+        )
+    conn.execute(
+        """
+        INSERT INTO freebill_meta (key, value)
+        VALUES ('standardization_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(FREEBILL_STANDARDIZATION_VERSION),),
+    )
 
 
 def _normalize_text(value: Any) -> str | None:
@@ -253,6 +794,664 @@ def _normalize_amount(value: Any) -> float | None:
         return None
 
 
+def _build_freebill_record_text(record: dict[str, Any], *extra_parts: Any) -> str:
+    parts = [
+        record.get("type"),
+        record.get("product_name"),
+        record.get("counterparty"),
+        record.get("remark"),
+        record.get("status"),
+        record.get("fund_status"),
+        record.get("location"),
+        record.get("source"),
+        *extra_parts,
+    ]
+    return " ".join(part for part in (_normalize_text(item) for item in parts) if part)
+
+
+def _is_yuebao_record(record: dict[str, Any]) -> bool:
+    product_name = _normalize_text(record.get("product_name")) or ""
+    record_type = _normalize_text(record.get("type")) or ""
+    return product_name.startswith("余额宝-") or record_type == "余额宝"
+
+
+def _is_yuebao_income_record(record: dict[str, Any]) -> bool:
+    if not _is_yuebao_record(record):
+        return False
+    text = _build_freebill_record_text(record)
+    return any(keyword in text for keyword in ("收益发放", "收益", "结息", "分红"))
+
+
+def _is_yuebao_transfer_record(record: dict[str, Any]) -> bool:
+    if not _is_yuebao_record(record):
+        return False
+    text = _build_freebill_record_text(record)
+    return any(keyword in text for keyword in ("单次转入", "工资理财", "转出到银行卡", "转出至银行卡", "转回银行卡"))
+
+
+def _is_yuebao_balance_flow_record(record: dict[str, Any]) -> bool:
+    if not _is_yuebao_record(record):
+        return False
+    text = _build_freebill_record_text(record)
+    return "转出到余额" in text
+
+
+def _normalize_freebill_record_type(record: dict[str, Any]) -> str | None:
+    return _normalize_text(record.get("type"))
+
+
+def _is_priority_loan_record(record: dict[str, Any]) -> bool:
+    record_type = _normalize_text(record.get("type")) or ""
+    return (
+        any(keyword in record_type for keyword in FLOW_LOAN_PRIORITY_KEYWORDS)
+        or _is_ant_loan_deduction_record(record)
+        or _is_ccb_alipay_repayment_loan_record(record)
+        or _is_alipay_jiebei_disbursement_record(record)
+    )
+
+
+def _is_ant_loan_deduction_record(record: dict[str, Any]) -> bool:
+    text = _build_freebill_record_text(record)
+    return (
+        "花呗借呗扣款" in text
+        or "蚂蚁花呗借呗扣款" in text
+        or ("借呗扣款" in text and ("蚂蚁消金" in text or "蚂蚁花呗" in text))
+    )
+
+
+def _is_ccb_alipay_repayment_loan_record(record: dict[str, Any]) -> bool:
+    source = _normalize_text(record.get("source")) or ""
+    if source != "建设银行":
+        return False
+    text = _build_freebill_record_text(record)
+    return "支付宝-还款" in text
+
+
+def _is_alipay_jiebei_disbursement_record(record: dict[str, Any]) -> bool:
+    source = _normalize_text(record.get("source")) or ""
+    if source != "支付宝":
+        return False
+    text = _build_freebill_record_text(record)
+    return "借呗" in text and "放款" in text
+
+
+def _is_priority_internal_transfer_record(record: dict[str, Any]) -> bool:
+    record_type = _normalize_text(record.get("type")) or ""
+    counterparty = _normalize_text(record.get("counterparty")) or ""
+    return (
+        ("银联入账" in record_type and "支付宝" in counterparty)
+        or _is_ccb_fund_subscription_transfer_record(record)
+        or _is_ccb_alipay_account_transfer_record(record)
+    )
+
+
+def _is_ccb_fund_subscription_transfer_record(record: dict[str, Any]) -> bool:
+    source = _normalize_text(record.get("source")) or ""
+    if source != "建设银行":
+        return False
+    text = _build_freebill_record_text(record)
+    return "基金申购" in text
+
+
+def _is_ccb_alipay_account_transfer_record(record: dict[str, Any]) -> bool:
+    source = _normalize_text(record.get("source")) or ""
+    if source != "建设银行":
+        return False
+    text = _build_freebill_record_text(record)
+    return "支付宝-支付宝-" in text
+
+
+def _infer_freebill_standard_nature(
+    record: dict[str, Any],
+    *,
+    force_flow: bool = False,
+    original_direction: str | None = None,
+    enabled_built_in_rule_keys: set[str] | None = None,
+) -> str:
+    enabled_rules = (
+        _get_enabled_freebill_built_in_rule_keys(None)
+        if enabled_built_in_rule_keys is None
+        else enabled_built_in_rule_keys
+    )
+    normalized_original_direction = _normalize_text(original_direction)
+    normalized_direction = _normalize_text(record.get("direction"))
+    if "loan-keywords" in enabled_rules and _is_priority_loan_record(record):
+        return STANDARD_NATURE_LOAN
+    if "yuebao-income" in enabled_rules and _is_yuebao_income_record(record):
+        return STANDARD_NATURE_FINANCE
+    text = _build_freebill_record_text(record)
+    transfer_text = _build_freebill_record_text({**record, "source": None})
+    if "finance-keywords" in enabled_rules and any(keyword in text for keyword in FLOW_FINANCE_PRIORITY_KEYWORDS):
+        return STANDARD_NATURE_FINANCE
+    if "internal-transfer-keywords" in enabled_rules and _is_priority_internal_transfer_record(record):
+        return STANDARD_NATURE_TRANSFER
+    if "yuebao-transfer" in enabled_rules and _is_yuebao_transfer_record(record):
+        return STANDARD_NATURE_TRANSFER
+    if "internal-transfer-keywords" in enabled_rules and any(keyword in transfer_text for keyword in FLOW_INTERNAL_TRANSFER_KEYWORDS):
+        return STANDARD_NATURE_TRANSFER
+    if "yuebao-balance-flow" in enabled_rules and _is_yuebao_balance_flow_record(record):
+        return STANDARD_NATURE_FLOW
+    if (
+        "regular-income-expense" in enabled_rules
+        and
+        not force_flow
+        and (
+            normalized_original_direction in STANDARD_DIRECTIONS
+            or normalized_direction in STANDARD_DIRECTIONS
+        )
+    ):
+        return STANDARD_NATURE_REGULAR
+
+    if "loan-keywords" in enabled_rules and any(keyword in text for keyword in FLOW_LOAN_PRIORITY_KEYWORDS):
+        return STANDARD_NATURE_LOAN
+    finance_text = _build_freebill_record_text({**record, "type": None})
+    if "finance-keywords" in enabled_rules and any(keyword in finance_text for keyword in FLOW_FINANCE_KEYWORDS):
+        return STANDARD_NATURE_FINANCE
+    if force_flow:
+        return STANDARD_NATURE_FLOW
+    return STANDARD_NATURE_REGULAR
+
+
+def _infer_freebill_standard_direction(
+    record: dict[str, Any],
+    *,
+    standard_nature: str,
+    original_direction: str | None = None,
+    enabled_built_in_rule_keys: set[str] | None = None,
+) -> str:
+    enabled_rules = (
+        _get_enabled_freebill_built_in_rule_keys(None)
+        if enabled_built_in_rule_keys is None
+        else enabled_built_in_rule_keys
+    )
+    text = _build_freebill_record_text(record, original_direction)
+    if standard_nature == STANDARD_NATURE_FLOW:
+        return STANDARD_DIRECTION_NEUTRAL
+
+    normalized_original_direction = _normalize_text(original_direction)
+    if normalized_original_direction in STANDARD_DIRECTIONS:
+        return str(normalized_original_direction)
+
+    normalized_direction = _normalize_text(record.get("direction"))
+    if normalized_direction in STANDARD_DIRECTIONS:
+        return str(normalized_direction)
+
+    if standard_nature == STANDARD_NATURE_FINANCE and (
+        "finance-keywords" in enabled_rules or "yuebao-income" in enabled_rules
+    ):
+        if any(keyword in text for keyword in ("赎回", "收益发放", "结息", "分红", "卖出", "转出")):
+            return "收入"
+        return "支出"
+    if standard_nature == STANDARD_NATURE_LOAN and "loan-keywords" in enabled_rules:
+        if any(keyword in text for keyword in ("还款", "扣款", "借出", "放款给", "放贷")):
+            return "支出"
+        return "收入"
+    if standard_nature == STANDARD_NATURE_TRANSFER and (
+        "internal-transfer-keywords" in enabled_rules or "yuebao-transfer" in enabled_rules
+    ):
+        if any(keyword in text for keyword in TRANSFER_OUT_OF_RECORD_SOURCE_KEYWORDS):
+            return "支出"
+        if any(keyword in text for keyword in TRANSFER_INTO_RECORD_SOURCE_KEYWORDS):
+            return "收入"
+
+    if any(keyword in text for keyword in STANDARD_DIRECTION_INCOME_KEYWORDS):
+        return "收入"
+    if any(keyword in text for keyword in STANDARD_DIRECTION_EXPENSE_KEYWORDS):
+        return "支出"
+    return "支出"
+
+
+def _infer_freebill_standard_fields(
+    record: dict[str, Any],
+    *,
+    original_direction: str | None = None,
+    enabled_built_in_rule_keys: set[str] | None = None,
+) -> tuple[str, str]:
+    nature = _infer_freebill_standard_nature(
+        record,
+        original_direction=original_direction,
+        enabled_built_in_rule_keys=enabled_built_in_rule_keys,
+    )
+    direction = _infer_freebill_standard_direction(
+        record,
+        standard_nature=nature,
+        original_direction=original_direction,
+        enabled_built_in_rule_keys=enabled_built_in_rule_keys,
+    )
+    return nature, direction
+
+
+def _resolve_freebill_override_standard_fields(
+    record: dict[str, Any],
+    override_row: dict[str, Any] | None = None,
+) -> tuple[str, str, str, str]:
+    override = override_row or {}
+    original_nature, original_direction = _infer_freebill_standard_fields(
+        record,
+        original_direction=_normalize_text(override.get("original_direction")),
+    )
+    override_direction = _normalize_text(override.get("override_direction"))
+    override_type = _normalize_text(override.get("override_type"))
+    if override_direction == "不计收支":
+        override_nature = _infer_freebill_standard_nature(
+            {
+                **record,
+                "type": override.get("original_type") or record.get("type"),
+            },
+            force_flow=True,
+            original_direction=original_direction,
+        )
+        override_standard_direction = original_direction
+    else:
+        override_nature = _infer_freebill_standard_nature(
+            {
+                **record,
+                "type": override_type or record.get("type"),
+            },
+            force_flow=override_direction not in STANDARD_DIRECTIONS,
+            original_direction=override_direction or original_direction,
+        )
+        override_standard_direction = _infer_freebill_standard_direction(
+            record,
+            standard_nature=override_nature,
+            original_direction=override_direction or original_direction,
+        )
+    return (
+        original_nature,
+        original_direction,
+        override_nature,
+        override_standard_direction,
+    )
+
+
+def _load_enabled_freebill_interpret_rules(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return _load_freebill_interpret_rules(conn, enabled_only=True)
+
+
+def _default_freebill_interpret_settings() -> dict[str, Any]:
+    return {
+        "signed_category_values": False,
+        "built_in_rules": {
+            str(item["key"]): True
+            for item in FREEBILL_BUILT_IN_INTERPRET_RULES
+        },
+    }
+
+
+def _load_freebill_interpret_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    defaults = _default_freebill_interpret_settings()
+    row = conn.execute(
+        "SELECT value FROM freebill_meta WHERE key = ?",
+        (FREEBILL_INTERPRET_SETTINGS_META_KEY,),
+    ).fetchone()
+    if not row:
+        return defaults
+    try:
+        raw_settings = json.loads(str(row["value"] or "{}"))
+    except json.JSONDecodeError:
+        return defaults
+    if not isinstance(raw_settings, dict):
+        return defaults
+    built_in_rules = dict(defaults["built_in_rules"])
+    raw_built_in_rules = raw_settings.get("built_in_rules")
+    if isinstance(raw_built_in_rules, dict):
+        for key in built_in_rules:
+            if key in raw_built_in_rules:
+                built_in_rules[key] = bool(raw_built_in_rules[key])
+    return {
+        "signed_category_values": bool(raw_settings.get("signed_category_values", defaults["signed_category_values"])),
+        "built_in_rules": built_in_rules,
+    }
+
+
+def _save_freebill_interpret_settings(
+    conn: sqlite3.Connection,
+    settings: dict[str, Any] | None,
+) -> dict[str, Any]:
+    normalized = _normalize_freebill_interpret_settings(settings)
+    conn.execute(
+        """
+        INSERT INTO freebill_meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (
+            FREEBILL_INTERPRET_SETTINGS_META_KEY,
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True),
+        ),
+    )
+    return normalized
+
+
+def _normalize_freebill_interpret_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
+    defaults = _default_freebill_interpret_settings()
+    raw_settings = settings if isinstance(settings, dict) else {}
+    built_in_rules = dict(defaults["built_in_rules"])
+    raw_built_in_rules = raw_settings.get("built_in_rules")
+    if isinstance(raw_built_in_rules, dict):
+        for key in built_in_rules:
+            if key in raw_built_in_rules:
+                built_in_rules[key] = bool(raw_built_in_rules[key])
+    return {
+        "signed_category_values": bool(raw_settings.get("signed_category_values", defaults["signed_category_values"])),
+        "built_in_rules": built_in_rules,
+    }
+
+
+def _get_enabled_freebill_built_in_rule_keys(settings: dict[str, Any] | None) -> set[str]:
+    normalized = _normalize_freebill_interpret_settings(settings)
+    return {
+        key
+        for key, enabled in normalized["built_in_rules"].items()
+        if enabled
+    }
+
+
+def _load_freebill_interpret_rules(
+    conn: sqlite3.Connection,
+    *,
+    enabled_only: bool = False,
+) -> list[dict[str, Any]]:
+    where_sql = "WHERE enabled = 1" if enabled_only else ""
+    rows = conn.execute(
+        f"""
+        SELECT *
+        FROM freebill_interpret_rules
+        {where_sql}
+        ORDER BY order_index, id
+        """
+    ).fetchall()
+    return [_normalize_freebill_interpret_rule_row(_row_to_dict(row)) for row in rows]
+
+
+def _normalize_freebill_interpret_rule_row(row: dict[str, Any]) -> dict[str, Any]:
+    try:
+        matcher = json.loads(str(row.get("matcher_json") or "{}"))
+    except json.JSONDecodeError:
+        matcher = {}
+    return {
+        "id": row.get("id"),
+        "name": _normalize_text(row.get("name")) or "",
+        "enabled": bool(int(row.get("enabled") or 0)),
+        "order_index": int(row.get("order_index") or 0),
+        "matcher": _normalize_freebill_interpret_matcher(matcher),
+        "set_direction": _normalize_freebill_interpret_direction(row.get("set_direction")),
+        "set_nature": _normalize_freebill_interpret_nature(row.get("set_nature")),
+        "note": _normalize_text(row.get("note")),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def _normalize_freebill_interpret_matcher(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        value = {}
+    kind = str(value.get("kind") or "field")
+    if kind not in {"all", "none", "field", "full_text_contains"}:
+        kind = "field"
+    if kind in {"all", "none"}:
+        return {"kind": kind}
+    if kind == "full_text_contains":
+        return {
+            "kind": kind,
+            "value": _normalize_text(value.get("value")) or "",
+            "ignore_case": bool(value.get("ignore_case", True)),
+        }
+
+    field = str(value.get("field") or "product_name")
+    if field not in FREEBILL_INTERPRET_RULE_FIELDS:
+        field = "product_name"
+    field_mode = str(FREEBILL_INTERPRET_RULE_FIELDS[field]["mode"])
+    op = str(value.get("op") or ("eq" if field_mode == "number" else "contains"))
+    if op not in FREEBILL_INTERPRET_RULE_OPERATORS:
+        op = "eq" if field_mode == "number" else "contains"
+    raw_values = value.get("values")
+    values = raw_values if isinstance(raw_values, list) else []
+    return {
+        "kind": "field",
+        "field": field,
+        "op": op,
+        "value": value.get("value"),
+        "values": values,
+        "ignore_case": bool(value.get("ignore_case", True)),
+    }
+
+
+def _normalize_freebill_interpret_direction(value: Any) -> str | None:
+    text = _normalize_text(value)
+    return text if text in FREEBILL_STANDARD_DIRECTIONS else None
+
+
+def _normalize_freebill_interpret_nature(value: Any) -> str | None:
+    text = _normalize_text(value)
+    return text if text in FREEBILL_STANDARD_NATURES else None
+
+
+def _normalize_freebill_manual_overrides(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else {}
+        except json.JSONDecodeError:
+            value = {}
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, Any] = {}
+    for field, config in FREEBILL_MANUAL_OVERRIDE_FIELDS.items():
+        if field not in value:
+            continue
+        mode = str(config.get("mode") or "text")
+        raw_value = value.get(field)
+        if mode == "direction":
+            direction = _normalize_freebill_interpret_direction(raw_value)
+            if direction:
+                normalized[field] = direction
+            continue
+        if mode == "nature":
+            nature = _normalize_freebill_interpret_nature(raw_value)
+            if nature:
+                normalized[field] = nature
+            continue
+        if mode == "number":
+            if raw_value is None or str(raw_value).strip() == "":
+                continue
+            number = _coerce_interpret_float(raw_value)
+            if number is not None:
+                normalized[field] = number
+            continue
+        normalized[field] = "" if raw_value is None else str(raw_value).strip()
+    return normalized
+
+
+def _freebill_manual_override_value_equals_raw(
+    *,
+    field: str,
+    value: Any,
+    record: dict[str, Any],
+) -> bool:
+    mode = str(FREEBILL_MANUAL_OVERRIDE_FIELDS.get(field, {}).get("mode") or "text")
+    raw_value = record.get(field)
+    if mode == "number":
+        if value is None or str(value).strip() == "":
+            normalized_value = None
+        else:
+            normalized_value = _coerce_interpret_float(value)
+        if raw_value is None or str(raw_value).strip() == "":
+            normalized_raw = None
+        else:
+            normalized_raw = _coerce_interpret_float(raw_value)
+        return normalized_value == normalized_raw
+    return _normalize_text(value) == _normalize_text(raw_value)
+
+
+def _compact_freebill_manual_overrides_for_record(
+    record: dict[str, Any],
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    compacted: dict[str, Any] = {}
+    for field, value in overrides.items():
+        if field in FREEBILL_PINNED_MANUAL_OVERRIDE_FIELDS:
+            compacted[field] = value
+            continue
+        if not _freebill_manual_override_value_equals_raw(field=field, value=value, record=record):
+            compacted[field] = value
+    return compacted
+
+
+def _merge_freebill_manual_override_patch_for_record(
+    record: dict[str, Any],
+    existing_overrides: dict[str, Any],
+    patch_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    merged = _compact_freebill_manual_overrides_for_record(record, existing_overrides)
+    for field, value in patch_overrides.items():
+        if field in FREEBILL_PINNED_MANUAL_OVERRIDE_FIELDS:
+            merged[field] = value
+            continue
+        if _freebill_manual_override_value_equals_raw(field=field, value=value, record=record):
+            merged.pop(field, None)
+        else:
+            merged[field] = value
+    return merged
+
+
+def _apply_freebill_standard_fields(
+    record: dict[str, Any],
+    *,
+    interpret_rules: list[dict[str, Any]] | None = None,
+    interpret_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = _apply_freebill_builtin_standard_fields(record, interpret_settings=interpret_settings)
+    for rule in interpret_rules or []:
+        if not rule.get("enabled"):
+            continue
+        if not _freebill_interpret_rule_matches(normalized, rule):
+            continue
+        set_direction = _normalize_freebill_interpret_direction(rule.get("set_direction"))
+        set_nature = _normalize_freebill_interpret_nature(rule.get("set_nature"))
+        if set_direction:
+            normalized["standard_direction"] = set_direction
+        if set_nature:
+            normalized["standard_nature"] = set_nature
+    return normalized
+
+
+def _apply_freebill_builtin_standard_fields(
+    record: dict[str, Any],
+    *,
+    interpret_settings: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    normalized = dict(record)
+    normalized["type"] = _normalize_freebill_record_type(normalized)
+    standard_nature, standard_direction = _infer_freebill_standard_fields(
+        normalized,
+        enabled_built_in_rule_keys=_get_enabled_freebill_built_in_rule_keys(interpret_settings),
+    )
+    normalized["standard_nature"] = standard_nature
+    normalized["standard_direction"] = standard_direction
+    return normalized
+
+
+def _freebill_interpret_rule_matches(record: dict[str, Any], rule: dict[str, Any]) -> bool:
+    matcher = _normalize_freebill_interpret_matcher(rule.get("matcher"))
+    kind = matcher.get("kind")
+    if kind == "all":
+        return True
+    if kind == "none":
+        return False
+    if kind == "full_text_contains":
+        needle = _normalize_interpret_text(matcher.get("value"), ignore_case=bool(matcher.get("ignore_case", True)))
+        if not needle:
+            return False
+        haystack = _normalize_interpret_text(
+            _build_freebill_record_text(
+                record,
+                record.get("standard_direction"),
+                record.get("standard_nature"),
+            ),
+            ignore_case=bool(matcher.get("ignore_case", True)),
+        )
+        return needle in haystack
+    if kind != "field":
+        return False
+
+    field = str(matcher.get("field") or "")
+    if field not in FREEBILL_INTERPRET_RULE_FIELDS:
+        return False
+    field_mode = str(FREEBILL_INTERPRET_RULE_FIELDS[field]["mode"])
+    op = str(matcher.get("op") or "")
+    if op not in FREEBILL_INTERPRET_RULE_OPERATORS:
+        return False
+    if field_mode == "number":
+        return _freebill_interpret_number_rule_matches(record.get(field), matcher)
+    return _freebill_interpret_text_rule_matches(record.get(field), matcher)
+
+
+def _freebill_interpret_text_rule_matches(value: Any, matcher: dict[str, Any]) -> bool:
+    ignore_case = bool(matcher.get("ignore_case", True))
+    text = _normalize_interpret_text(value, ignore_case=ignore_case)
+    op = str(matcher.get("op") or "")
+    if op in {"in", "not_in"}:
+        candidates = [
+            _normalize_interpret_text(item, ignore_case=ignore_case)
+            for item in matcher.get("values") or []
+            if _normalize_text(item) is not None
+        ]
+        matched = text in candidates
+        return matched if op == "in" else not matched
+
+    candidate = _normalize_interpret_text(matcher.get("value"), ignore_case=ignore_case)
+    if op == "eq":
+        return text == candidate
+    if op == "neq":
+        return text != candidate
+    if op == "contains":
+        return bool(candidate) and candidate in text
+    if op == "not_contains":
+        return not candidate or candidate not in text
+    return False
+
+
+def _freebill_interpret_number_rule_matches(value: Any, matcher: dict[str, Any]) -> bool:
+    left = _coerce_interpret_float(value)
+    op = str(matcher.get("op") or "")
+    if op in {"in", "not_in"}:
+        candidates = [
+            number
+            for item in matcher.get("values") or []
+            for number in [_coerce_interpret_float(item)]
+            if number is not None
+        ]
+        matched = left is not None and left in candidates
+        return matched if op == "in" else not matched
+    right = _coerce_interpret_float(matcher.get("value"))
+    if left is None or right is None:
+        return False
+    if op == "eq":
+        return left == right
+    if op == "neq":
+        return left != right
+    if op == "gt":
+        return left > right
+    if op == "gte":
+        return left >= right
+    if op == "lt":
+        return left < right
+    if op == "lte":
+        return left <= right
+    return False
+
+
+def _normalize_interpret_text(value: Any, *, ignore_case: bool) -> str:
+    text = _normalize_text(value) or ""
+    return text.casefold() if ignore_case else text
+
+
+def _coerce_interpret_float(value: Any) -> float | None:
+    normalized = _normalize_amount(value)
+    return float(normalized) if normalized is not None else None
+
+
 def _strip_dataframe_text(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = df.columns.astype(str).str.strip()
@@ -269,6 +1468,8 @@ def _infer_raw_source(path_text: str | None, explicit_source: str | None = None)
         return "支付宝"
     if "微信" in text or "wechat" in text:
         return "微信"
+    if "建设银行" in text or "建行" in text or "ccb" in text:
+        return "建设银行"
     return None
 
 
@@ -514,7 +1715,7 @@ def _build_alipay_records(df: pd.DataFrame) -> list[dict[str, Any]]:
     for _, row in df.iterrows():
         create_time = _normalize_datetime_text(row.get("create_time"))
         records.append(
-            {
+            _apply_freebill_standard_fields({
                 "source": "支付宝",
                 "trade_no": _normalize_text(row.get("trade_no")),
                 "merchant_order_no": _normalize_text(row.get("merchant_order_no")),
@@ -533,7 +1734,7 @@ def _build_alipay_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "remark": _normalize_text(row.get("remark")),
                 "fund_status": None,
                 "imported_at": now,
-            }
+            })
         )
     return records
 
@@ -580,7 +1781,7 @@ def _build_alipay_legacy_records(df: pd.DataFrame) -> list[dict[str, Any]]:
         pay_time = _normalize_datetime_text(row.get("pay_time"))
         modify_time = _normalize_datetime_text(row.get("modify_time"))
         records.append(
-            {
+            _apply_freebill_standard_fields({
                 "source": "支付宝",
                 "trade_no": trade_no,
                 "merchant_order_no": _normalize_text(row.get("merchant_order_no")),
@@ -599,7 +1800,7 @@ def _build_alipay_legacy_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "remark": _normalize_text(row.get("remark")),
                 "fund_status": _normalize_text(row.get("fund_status")),
                 "imported_at": now,
-            }
+            })
         )
     return records
 
@@ -667,7 +1868,7 @@ def _build_wechat_records(df: pd.DataFrame) -> list[dict[str, Any]]:
         create_time = _normalize_datetime_text(row.get("create_time"))
         status = _normalize_text(row.get("status"))
         records.append(
-            {
+            _apply_freebill_standard_fields({
                 "source": "微信",
                 "trade_no": _normalize_text(row.get("trade_no")),
                 "merchant_order_no": _normalize_text(row.get("merchant_order_no")),
@@ -686,9 +1887,189 @@ def _build_wechat_records(df: pd.DataFrame) -> list[dict[str, Any]]:
                 "remark": _normalize_text(row.get("remark")),
                 "fund_status": status,
                 "imported_at": now,
-            }
+            })
         )
     return records
+
+
+def _build_ccb_records(df: pd.DataFrame, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    df = _strip_dataframe_text(df)
+    missing_columns = CCB_CURRENT_ACCOUNT_REQUIRED_COLUMNS - set(df.columns)
+    if missing_columns:
+        missing_text = "、".join(sorted(missing_columns))
+        raise ValueError(f"未找到建行流水必需列：{missing_text}，请确认是{CCB_CURRENT_ACCOUNT_TITLE}")
+
+    df = df.rename(columns=CCB_CURRENT_ACCOUNT_COLUMN_MAP)
+
+    records: list[dict[str, Any]] = []
+    now = time.time()
+    account_no = metadata.get("account_no")
+    for _, row in df.iterrows():
+        raw_sequence = _normalize_text(row.get("raw_sequence"))
+        create_time = _normalize_ccb_trade_date(row.get("create_time"))
+        signed_amount = _parse_signed_amount(row.get("signed_amount"))
+        if not raw_sequence or not create_time or signed_amount is None:
+            continue
+
+        amount = abs(signed_amount)
+        direction = "收入" if signed_amount > 0 else "支出" if signed_amount < 0 else "不计收支"
+        account_balance = _parse_signed_amount(row.get("account_balance"))
+        category = _normalize_text(row.get("type"))
+        memo = _normalize_text(row.get("memo"))
+        counterparty = _normalize_text(row.get("counterparty"))
+        records.append(
+            _apply_freebill_standard_fields({
+                "source": "建设银行",
+                "trade_no": _make_ccb_trade_no(
+                    account_no=account_no,
+                    create_time=create_time,
+                    raw_sequence=raw_sequence,
+                    category=category,
+                    signed_amount=signed_amount,
+                    account_balance=account_balance,
+                    memo=memo,
+                    counterparty=counterparty,
+                ),
+                "merchant_order_no": raw_sequence,
+                "create_time": create_time,
+                "pay_time": create_time,
+                "modify_time": create_time,
+                "location": None,
+                "type": category,
+                "counterparty": counterparty,
+                "product_name": memo or category,
+                "amount": amount,
+                "direction": direction,
+                "status": "已入账",
+                "service_fee": 0,
+                "refund_amount": 0,
+                "remark": memo,
+                "fund_status": None,
+                "account_no": account_no,
+                "currency": _normalize_text(row.get("currency")),
+                "cash_type": _normalize_text(row.get("cash_type")),
+                "account_balance": account_balance,
+                "raw_sequence": raw_sequence,
+                "imported_at": now,
+            })
+        )
+    _validate_ccb_reported_totals(records, metadata)
+    return records
+
+
+def _extract_ccb_metadata(preview: pd.DataFrame) -> dict[str, Any]:
+    text = " ".join(
+        item
+        for item in (
+            _normalize_text(value)
+            for row in preview.itertuples(index=False)
+            for value in row
+        )
+        if item
+    )
+    account_match = re.search(r"卡号/账号[:：]\s*([0-9*]+)", text)
+    customer_match = re.search(r"客户名称[:：]\s*([^\s]+)", text)
+    start_match = re.search(r"起始日期[:：]\s*([0-9/-]+)", text)
+    end_match = re.search(r"结束日期[:：]\s*([0-9/-]+)", text)
+    expense_match = re.search(r"总支出[:：]\s*([+-]?[0-9,，.]+)", text)
+    income_match = re.search(r"总收入[:：]\s*([+-]?[0-9,，.]+)", text)
+    return {
+        "title": CCB_CURRENT_ACCOUNT_TITLE if CCB_CURRENT_ACCOUNT_TITLE in text else None,
+        "account_no": account_match.group(1) if account_match else None,
+        "customer_name": customer_match.group(1) if customer_match else None,
+        "start_date": start_match.group(1) if start_match else None,
+        "end_date": end_match.group(1) if end_match else None,
+        "reported_total_expense": expense_match.group(1) if expense_match else None,
+        "reported_total_income": income_match.group(1) if income_match else None,
+    }
+
+
+def _validate_ccb_reported_totals(records: list[dict[str, Any]], metadata: dict[str, Any]) -> None:
+    _validate_ccb_reported_total(records, metadata.get("reported_total_expense"), "支出", "总支出")
+    _validate_ccb_reported_total(records, metadata.get("reported_total_income"), "收入", "总收入")
+
+
+def _validate_ccb_reported_total(
+    records: list[dict[str, Any]],
+    reported_value: Any,
+    direction: str,
+    label: str,
+) -> None:
+    reported_total = _parse_signed_amount(reported_value)
+    if reported_total is None:
+        return
+    detail_total = round(
+        sum(float(record.get("amount") or 0) for record in records if record.get("direction") == direction),
+        2,
+    )
+    if abs(detail_total - abs(reported_total)) > 0.01:
+        raise ValueError(f"建行流水{label}校验失败：表头 {abs(reported_total):.2f}，明细合计 {detail_total:.2f}")
+
+
+def _parse_signed_amount(value: Any) -> float | None:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    text = (
+        str(value)
+        .replace("¥", "")
+        .replace("￥", "")
+        .replace(",", "")
+        .replace("，", "")
+        .replace("−", "-")
+        .strip()
+    )
+    if not text or text == "/":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def _normalize_ccb_trade_date(value: Any) -> str | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    digits = re.sub(r"\D", "", text)
+    if len(digits) >= 8:
+        year, month, day = digits[:4], digits[4:6], digits[6:8]
+        return f"{year}-{month}-{day} 00:00:00"
+    normalized = _normalize_datetime_text(text)
+    if _looks_like_datetime_text(normalized):
+        return f"{normalized[:10]} 00:00:00"
+    return None
+
+
+def _make_ccb_trade_no(
+    *,
+    account_no: str | None,
+    create_time: str,
+    raw_sequence: str,
+    category: str | None,
+    signed_amount: float,
+    account_balance: float | None,
+    memo: str | None,
+    counterparty: str | None,
+) -> str:
+    trade_date = create_time[:10].replace("-", "")
+    account_key = re.sub(r"\s+", "", account_no or "unknown")
+    digest_text = "|".join(
+        str(item or "")
+        for item in (
+            account_key,
+            trade_date,
+            raw_sequence,
+            category,
+            f"{signed_amount:.2f}",
+            "" if account_balance is None else f"{account_balance:.2f}",
+            memo,
+            counterparty,
+        )
+    )
+    digest = hashlib.sha256(digest_text.encode("utf-8")).hexdigest()[:16]
+    return f"ccb:{account_key}:{trade_date}:{raw_sequence}:{digest}"
 
 
 def _parse_alipay_csv_bytes(
@@ -740,6 +2121,22 @@ def _parse_wechat_excel_bytes(content: bytes) -> tuple[list[dict[str, Any]], str
     if not records:
         raise ValueError("未找到可识别的微信支付账单工作表")
     return records, "wechat-excel"
+
+
+def _parse_ccb_excel_bytes(content: bytes) -> tuple[list[dict[str, Any]], str]:
+    records: list[dict[str, Any]] = []
+    excel = pd.ExcelFile(io.BytesIO(content))
+    for sheet_name in excel.sheet_names:
+        header_index = _find_excel_header_row(excel, sheet_name, CCB_CURRENT_ACCOUNT_HEADER_MARKERS)
+        if header_index is None:
+            continue
+        preview = pd.read_excel(excel, sheet_name=sheet_name, header=None, nrows=header_index, dtype=str)
+        metadata = _extract_ccb_metadata(preview)
+        df = pd.read_excel(excel, sheet_name=sheet_name, header=header_index, dtype=str)
+        records.extend(_build_ccb_records(df, metadata))
+    if not records:
+        raise ValueError("未找到可识别的建行流水工作表")
+    return records, CCB_CURRENT_ACCOUNT_PARSER_FORMAT
 
 
 def _iter_csv_dataframes(
@@ -897,6 +2294,31 @@ def import_wechat_excel_bytes(
         raise
 
 
+def import_ccb_excel_bytes(
+    filename: str,
+    content: bytes,
+    *,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    archive = archive_freebill_raw_bytes(
+        filename,
+        content,
+        source="建设银行",
+        work_dir=work_dir,
+        import_status="parsing",
+    )
+    try:
+        records, parser_format = _parse_ccb_excel_bytes(content)
+        result = import_bill_records(records, filename=filename, work_dir=work_dir)
+        result["format"] = parser_format
+        result["raw_file"] = archive
+        _update_raw_import_status(archive["sha256"], "imported", work_dir=work_dir)
+        return result
+    except Exception as exc:
+        _update_raw_import_status(archive["sha256"], "error", work_dir=work_dir, note=str(exc))
+        raise
+
+
 def _update_raw_import_status(
     sha256: str,
     status: str,
@@ -941,20 +2363,26 @@ def import_bill_records(
         placeholders = ", ".join("?" for _ in BILL_RECORD_COLUMNS)
         columns_sql = ", ".join(BILL_RECORD_COLUMNS)
         insert_sql = f"INSERT INTO bill_records ({columns_sql}) VALUES ({placeholders})"
+        interpret_settings = _load_freebill_interpret_settings(conn)
+        interpret_rules = _load_enabled_freebill_interpret_rules(conn)
 
         for record in records:
-            source = str(record.get("source") or "")
-            trade_no = str(record.get("trade_no") or "").strip()
+            normalized_record = _apply_freebill_standard_fields(
+                record,
+                interpret_rules=interpret_rules,
+                interpret_settings=interpret_settings,
+            )
+            source = str(normalized_record.get("source") or "")
+            trade_no = str(normalized_record.get("trade_no") or "").strip()
             if not source or not trade_no or trade_no == "/" or trade_no in existing_trade_nos:
                 skipped += 1
                 continue
-            conn.execute(insert_sql, [record.get(column) for column in BILL_RECORD_COLUMNS])
+            conn.execute(insert_sql, [normalized_record.get(column) for column in BILL_RECORD_COLUMNS])
             existing_trade_nos.add(trade_no)
             inserted += 1
         conn.commit()
 
         if inserted:
-            _apply_freebill_record_overrides(conn)
             reset_bill_ids(conn)
             conn.commit()
 
@@ -1074,7 +2502,7 @@ def rebuild_freebill_records_from_raw_files(
                 """
                 SELECT *
                 FROM freebill_raw_files
-                WHERE source IN ('支付宝', '微信')
+                WHERE source IN ('支付宝', '微信', '建设银行')
                   AND extension IN ('.csv', '.xlsx', '.xlsm', '.xls')
                   AND COALESCE(note, '') != 'legacy-db-snapshot'
                 ORDER BY source, relative_path, original_name, id
@@ -1121,7 +2549,16 @@ def rebuild_freebill_records_from_raw_files(
             conn.execute("DELETE FROM bill_records")
             conn.execute("DELETE FROM sqlite_sequence WHERE name = 'bill_records'")
             _insert_bill_records(conn, deduped_records)
-            applied_overrides = _apply_freebill_record_overrides(conn)
+            applied_overrides = int(conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM freebill_record_overrides
+                WHERE trade_no IN (
+                    SELECT trade_no
+                    FROM bill_records
+                )
+                """
+            ).fetchone()["total"] or 0)
             if deduped_records:
                 reset_bill_ids(conn)
             _update_rebuild_raw_file_statuses(conn, file_results)
@@ -1185,6 +2622,8 @@ def _parse_rebuild_raw_file(raw_file: dict[str, Any]) -> dict[str, Any]:
             records, parser_format = _parse_alipay_excel_bytes(content)
         elif source == "微信" and extension in {".xlsx", ".xlsm", ".xls"}:
             records, parser_format = _parse_wechat_excel_bytes(content)
+        elif source == "建设银行" and extension in {".xlsx", ".xlsm", ".xls"}:
+            records, parser_format = _parse_ccb_excel_bytes(content)
         else:
             return {
                 **base_result,
@@ -1226,9 +2665,9 @@ def _score_rebuild_record(
         score += 1000
     if "旧导入/" in relative_path:
         score += 100
-    if parser_format in {"alipay-detail-csv", "wechat-excel"}:
+    if parser_format in {"alipay-detail-csv", "wechat-excel", "ccb-excel"}:
         score += 1000
-    if "支付宝交易明细" in original_name or "微信支付账单流水文件" in original_name:
+    if "支付宝交易明细" in original_name or "微信支付账单流水文件" in original_name or "建设银行流水" in original_name:
         score += 1000
     if parser_format.startswith("alipay-legacy"):
         score += 100
@@ -1281,7 +2720,7 @@ def upsert_freebill_record_overrides(
     with get_freebill_connection(work_dir) as conn:
         records = _query_bill_records_by_trade_no(conn, normalized_trade_nos)
         existing_overrides = {
-            str(row["trade_no"]): row
+            str(row["trade_no"]): _row_to_dict(row)
             for row in conn.execute(
                 f"""
                 SELECT *
@@ -1303,18 +2742,48 @@ def upsert_freebill_record_overrides(
                 if existing is not None
                 else record.get("type")
             )
+            base_record = {
+                **record,
+                "direction": original_direction,
+                "type": original_type,
+            }
+            resolved_override_type = _resolve_freebill_flow_override_type(
+                override_type,
+                original_type,
+            )
+            (
+                original_standard_nature,
+                original_standard_direction,
+                override_standard_nature,
+                override_standard_direction,
+            ) = _resolve_freebill_override_standard_fields(
+                base_record,
+                {
+                    "original_direction": original_direction,
+                    "original_type": original_type,
+                    "override_direction": override_direction,
+                    "override_type": resolved_override_type,
+                },
+            )
             created_at = float(existing["created_at"]) if existing is not None else now
             conn.execute(
                 """
                 INSERT INTO freebill_record_overrides (
                     trade_no, source, original_direction, original_type,
-                    override_direction, override_type, note, created_at, updated_at
+                    original_standard_nature, original_standard_direction,
+                    override_direction, override_type,
+                    override_standard_nature, override_standard_direction,
+                    note, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(trade_no) DO UPDATE SET
                     source = excluded.source,
+                    original_standard_nature = excluded.original_standard_nature,
+                    original_standard_direction = excluded.original_standard_direction,
                     override_direction = excluded.override_direction,
                     override_type = excluded.override_type,
+                    override_standard_nature = excluded.override_standard_nature,
+                    override_standard_direction = excluded.override_standard_direction,
                     note = excluded.note,
                     updated_at = excluded.updated_at
                 """,
@@ -1323,16 +2792,18 @@ def upsert_freebill_record_overrides(
                     record.get("source"),
                     original_direction,
                     original_type,
+                    original_standard_nature,
+                    original_standard_direction,
                     override_direction,
-                    override_type,
+                    resolved_override_type,
+                    override_standard_nature,
+                    override_standard_direction,
                     note,
                     created_at,
                     now,
                 ),
             )
-        updated = _apply_freebill_record_overrides(conn, list(records))
-        if updated:
-            reset_bill_ids(conn)
+        updated = len(records)
         conn.commit()
 
     return {
@@ -1340,6 +2811,384 @@ def upsert_freebill_record_overrides(
         "matched": len(records),
         "updated": updated,
         "missing_trade_nos": [trade_no for trade_no in normalized_trade_nos if trade_no not in records],
+        "direction": override_direction,
+        "category": override_type,
+    }
+
+
+def upsert_freebill_record_manual_overrides(
+    trade_no: str,
+    overrides: dict[str, Any],
+    *,
+    note: str | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    normalized_trade_nos = _normalize_trade_nos([trade_no])
+    if not normalized_trade_nos:
+        raise ValueError("请选择需要人工修改的账单记录")
+    trade_no = normalized_trade_nos[0]
+    normalized_overrides = _normalize_freebill_manual_overrides(overrides)
+    now = time.time()
+    with get_freebill_connection(work_dir) as conn:
+        records = _query_bill_records_by_trade_no(conn, [trade_no])
+        record = records.get(trade_no)
+        if record is None:
+            raise ValueError("账单记录不存在或已被重建移除")
+        normalized_overrides = _compact_freebill_manual_overrides_for_record(record, normalized_overrides)
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM freebill_record_overrides
+            WHERE trade_no = ?
+            """,
+            (trade_no,),
+        ).fetchone()
+        existing_override = _row_to_dict(existing)
+        original_direction = existing_override.get("original_direction") or record.get("direction")
+        original_type = existing_override.get("original_type") or record.get("type")
+        override_direction = existing_override.get("override_direction") or original_direction or "支出"
+        override_type = existing_override.get("override_type") or original_type or "未分类"
+        override_standard_nature = (
+            normalized_overrides.get("standard_nature")
+            if "standard_nature" in normalized_overrides
+            else existing_override.get("override_standard_nature")
+        )
+        override_standard_direction = (
+            normalized_overrides.get("standard_direction")
+            if "standard_direction" in normalized_overrides
+            else existing_override.get("override_standard_direction")
+        )
+        original_standard_nature, original_standard_direction = _infer_freebill_standard_fields(
+            {
+                **record,
+                "direction": original_direction,
+                "type": original_type,
+            },
+            original_direction=_normalize_text(original_direction),
+        )
+        created_at = float(existing_override.get("created_at") or now)
+        conn.execute(
+            """
+            INSERT INTO freebill_record_overrides (
+                trade_no, source, original_direction, original_type,
+                original_standard_nature, original_standard_direction,
+                override_direction, override_type,
+                override_standard_nature, override_standard_direction,
+                manual_overrides_json,
+                note, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(trade_no) DO UPDATE SET
+                source = excluded.source,
+                original_standard_nature = excluded.original_standard_nature,
+                original_standard_direction = excluded.original_standard_direction,
+                override_direction = excluded.override_direction,
+                override_type = excluded.override_type,
+                override_standard_nature = excluded.override_standard_nature,
+                override_standard_direction = excluded.override_standard_direction,
+                manual_overrides_json = excluded.manual_overrides_json,
+                note = excluded.note,
+                updated_at = excluded.updated_at
+            """,
+            (
+                trade_no,
+                record.get("source"),
+                original_direction,
+                original_type,
+                original_standard_nature,
+                original_standard_direction,
+                override_direction,
+                override_type,
+                override_standard_nature,
+                override_standard_direction,
+                json.dumps(normalized_overrides, ensure_ascii=False, sort_keys=True),
+                note,
+                created_at,
+                now,
+            ),
+        )
+        conn.commit()
+    return {
+        "trade_no": trade_no,
+        "updated": 1,
+        "overrides": normalized_overrides,
+    }
+
+
+def upsert_freebill_category_branch_manual_overrides(
+    *,
+    program: dict[str, Any] | None = None,
+    programs: list[dict[str, Any]] | None = None,
+    path: list[dict[str, Any]] | None = None,
+    overrides: dict[str, Any],
+    note: str | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    normalized_overrides = _normalize_freebill_manual_overrides(overrides)
+    if not normalized_overrides:
+        raise ValueError("请选择至少一个要批量修改的字段")
+
+    branch_where_sql, query_params = _build_category_branch_filter_conditions(
+        program=program,
+        programs=programs,
+        path=path,
+    )
+    now = time.time()
+    with get_freebill_connection(work_dir) as conn:
+        rows = [
+            _row_to_dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT matched.*,
+                       existing.original_direction AS existing_original_direction,
+                       existing.original_type AS existing_original_type,
+                       existing.override_direction AS existing_override_direction,
+                       existing.override_type AS existing_override_type,
+                       existing.override_standard_nature AS existing_override_standard_nature,
+                       existing.override_standard_direction AS existing_override_standard_direction,
+                       existing.manual_overrides_json AS existing_manual_overrides_json,
+                       existing.created_at AS existing_created_at
+                FROM (
+                    SELECT *
+                    FROM bill_records
+                    WHERE {branch_where_sql}
+                      AND COALESCE(NULLIF(TRIM(trade_no), ''), '/') != '/'
+                ) AS matched
+                LEFT JOIN freebill_record_overrides AS existing
+                  ON existing.trade_no = matched.trade_no
+                ORDER BY COALESCE(matched.amount, 0) DESC, datetime(matched.create_time) DESC, matched.id DESC
+                """,
+                query_params,
+            ).fetchall()
+        ]
+
+        override_rows: list[tuple[Any, ...]] = []
+        seen_trade_nos: set[str] = set()
+        for record in rows:
+            trade_no = str(record.get("trade_no") or "").strip()
+            if not trade_no or trade_no == "/" or trade_no in seen_trade_nos:
+                continue
+            seen_trade_nos.add(trade_no)
+            original_direction = record.get("existing_original_direction") or record.get("direction")
+            original_type = record.get("existing_original_type") or record.get("type")
+            merged_manual_overrides = _merge_freebill_manual_override_patch_for_record(
+                record,
+                _normalize_freebill_manual_overrides(record.get("existing_manual_overrides_json")),
+                normalized_overrides,
+            )
+            override_direction = record.get("existing_override_direction") or original_direction or "支出"
+            override_type = record.get("existing_override_type") or original_type or "未分类"
+            override_standard_nature = (
+                merged_manual_overrides.get("standard_nature")
+                if "standard_nature" in merged_manual_overrides
+                else record.get("existing_override_standard_nature")
+            )
+            override_standard_direction = (
+                merged_manual_overrides.get("standard_direction")
+                if "standard_direction" in merged_manual_overrides
+                else record.get("existing_override_standard_direction")
+            )
+            original_standard_nature, original_standard_direction = _infer_freebill_standard_fields(
+                {
+                    **record,
+                    "direction": original_direction,
+                    "type": original_type,
+                },
+                original_direction=_normalize_text(original_direction),
+            )
+            override_rows.append(
+                (
+                    trade_no,
+                    record.get("source"),
+                    original_direction,
+                    original_type,
+                    original_standard_nature,
+                    original_standard_direction,
+                    override_direction,
+                    override_type,
+                    override_standard_nature,
+                    override_standard_direction,
+                    json.dumps(merged_manual_overrides, ensure_ascii=False, sort_keys=True),
+                    note,
+                    float(record.get("existing_created_at") or now),
+                    now,
+                )
+            )
+
+        if override_rows:
+            conn.executemany(
+                """
+                INSERT INTO freebill_record_overrides (
+                    trade_no, source, original_direction, original_type,
+                    original_standard_nature, original_standard_direction,
+                    override_direction, override_type,
+                    override_standard_nature, override_standard_direction,
+                    manual_overrides_json,
+                    note, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_no) DO UPDATE SET
+                    source = excluded.source,
+                    original_standard_nature = excluded.original_standard_nature,
+                    original_standard_direction = excluded.original_standard_direction,
+                    override_direction = excluded.override_direction,
+                    override_type = excluded.override_type,
+                    override_standard_nature = excluded.override_standard_nature,
+                    override_standard_direction = excluded.override_standard_direction,
+                    manual_overrides_json = excluded.manual_overrides_json,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                override_rows,
+            )
+        conn.commit()
+
+    return {
+        "matched": len(seen_trade_nos),
+        "updated": len(override_rows),
+        "overrides": normalized_overrides,
+    }
+
+
+def upsert_freebill_category_branch_overrides(
+    *,
+    program: dict[str, Any] | None = None,
+    programs: list[dict[str, Any]] | None = None,
+    path: list[dict[str, Any]] | None = None,
+    direction: str | None = None,
+    category: str | None = None,
+    counterparty: str | None = None,
+    override_direction: str,
+    override_category: str,
+    note: str | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    override_direction = _normalize_text(override_direction)
+    override_type = _normalize_text(override_category)
+    if not override_direction:
+        raise ValueError("收支不能为空")
+    if not override_type:
+        raise ValueError("分类不能为空")
+
+    branch_where_sql, query_params = _build_category_branch_filter_conditions(
+        program=program,
+        programs=programs,
+        path=path,
+        direction=direction,
+        category=category,
+        counterparty=counterparty,
+    )
+    now = time.time()
+    with get_freebill_connection(work_dir) as conn:
+        rows = [
+            _row_to_dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT matched.*,
+                       existing.original_direction AS existing_original_direction,
+                       existing.original_type AS existing_original_type,
+                       existing.original_standard_nature AS existing_original_standard_nature,
+                       existing.original_standard_direction AS existing_original_standard_direction,
+                       existing.created_at AS existing_created_at
+                FROM (
+                    SELECT *
+                    FROM bill_records
+                    WHERE {branch_where_sql}
+                      AND COALESCE(NULLIF(TRIM(trade_no), ''), '/') != '/'
+                ) AS matched
+                LEFT JOIN freebill_record_overrides AS existing
+                  ON existing.trade_no = matched.trade_no
+                ORDER BY COALESCE(matched.amount, 0) DESC, datetime(matched.create_time) DESC, matched.id DESC
+                """,
+                query_params,
+            ).fetchall()
+        ]
+
+        override_rows: list[tuple[Any, ...]] = []
+        seen_trade_nos: set[str] = set()
+        for record in rows:
+            trade_no = str(record.get("trade_no") or "").strip()
+            if not trade_no or trade_no == "/" or trade_no in seen_trade_nos:
+                continue
+            seen_trade_nos.add(trade_no)
+            original_direction = record.get("existing_original_direction") or record.get("direction")
+            original_type = record.get("existing_original_type") or record.get("type")
+            base_record = {
+                **record,
+                "direction": original_direction,
+                "type": original_type,
+            }
+            resolved_override_type = _resolve_freebill_flow_override_type(
+                override_type,
+                original_type,
+            )
+            (
+                original_standard_nature,
+                original_standard_direction,
+                override_standard_nature,
+                override_standard_direction,
+            ) = _resolve_freebill_override_standard_fields(
+                base_record,
+                {
+                    "original_direction": original_direction,
+                    "original_type": original_type,
+                    "override_direction": override_direction,
+                    "override_type": resolved_override_type,
+                },
+            )
+            created_at = record.get("existing_created_at") or now
+            override_rows.append(
+                (
+                    trade_no,
+                    record.get("source"),
+                    original_direction,
+                    original_type,
+                    original_standard_nature,
+                    original_standard_direction,
+                    override_direction,
+                    resolved_override_type,
+                    override_standard_nature,
+                    override_standard_direction,
+                    note,
+                    created_at,
+                    now,
+                )
+            )
+
+        if override_rows:
+            conn.executemany(
+                """
+                INSERT INTO freebill_record_overrides (
+                    trade_no, source, original_direction, original_type,
+                    original_standard_nature, original_standard_direction,
+                    override_direction, override_type,
+                    override_standard_nature, override_standard_direction,
+                    note, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(trade_no) DO UPDATE SET
+                    source = excluded.source,
+                    original_standard_nature = excluded.original_standard_nature,
+                    original_standard_direction = excluded.original_standard_direction,
+                    override_direction = excluded.override_direction,
+                    override_type = excluded.override_type,
+                    override_standard_nature = excluded.override_standard_nature,
+                    override_standard_direction = excluded.override_standard_direction,
+                    note = excluded.note,
+                    updated_at = excluded.updated_at
+                """,
+                override_rows,
+            )
+            updated = len(override_rows)
+        else:
+            updated = 0
+        conn.commit()
+
+    return {
+        "requested": len(seen_trade_nos),
+        "matched": len(seen_trade_nos),
+        "updated": updated,
+        "missing_trade_nos": [],
         "direction": override_direction,
         "category": override_type,
     }
@@ -1357,21 +3206,12 @@ def clear_freebill_record_overrides(
     with get_freebill_connection(work_dir) as conn:
         rows = conn.execute(
             f"""
-            SELECT trade_no, original_direction, original_type
+            SELECT trade_no
             FROM freebill_record_overrides
             WHERE trade_no IN ({_sql_placeholders(normalized_trade_nos)})
             """,
             normalized_trade_nos,
         ).fetchall()
-        for row in rows:
-            conn.execute(
-                """
-                UPDATE bill_records
-                SET direction = ?, type = ?
-                WHERE trade_no = ?
-                """,
-                (row["original_direction"], row["original_type"], row["trade_no"]),
-            )
         if rows:
             overridden_trade_nos = [str(row["trade_no"]) for row in rows]
             conn.execute(
@@ -1381,7 +3221,6 @@ def clear_freebill_record_overrides(
                 """,
                 overridden_trade_nos,
             )
-            reset_bill_ids(conn)
         conn.commit()
 
     cleared_trade_nos = {str(row["trade_no"]) for row in rows}
@@ -1392,6 +3231,12 @@ def clear_freebill_record_overrides(
             trade_no for trade_no in normalized_trade_nos if trade_no not in cleared_trade_nos
         ],
     }
+
+
+def _resolve_freebill_flow_override_type(category: str, original_type: Any) -> str:
+    if category not in {FLOW_OVERRIDE_CATEGORY, FLOW_EXPENSE_CATEGORY, FLOW_INCOME_CATEGORY}:
+        return category
+    return _normalize_text(original_type) or FLOW_OVERRIDE_CATEGORY
 
 
 def _normalize_trade_nos(trade_nos: list[str]) -> list[str]:
@@ -1425,42 +3270,77 @@ def _query_bill_records_by_trade_no(
     }
 
 
-def _apply_freebill_record_overrides(
-    conn: sqlite3.Connection,
-    trade_nos: list[str] | None = None,
-) -> int:
-    params: list[Any] = []
-    if trade_nos is None:
-        scope_sql = "trade_no IN (SELECT trade_no FROM freebill_record_overrides)"
-    else:
-        normalized_trade_nos = _normalize_trade_nos(trade_nos)
-        if not normalized_trade_nos:
-            return 0
-        scope_sql = f"trade_no IN ({_sql_placeholders(normalized_trade_nos)})"
-        params.extend(normalized_trade_nos)
-    cursor = conn.execute(
-        f"""
-        UPDATE bill_records
-        SET direction = COALESCE((
-                SELECT override_direction
+def _freebill_effective_standard_nature_sql() -> str:
+    return """
+        COALESCE(
+            (
+                SELECT NULLIF(TRIM(CAST(
+                    CASE
+                        WHEN json_valid(COALESCE(freebill_record_overrides.manual_overrides_json, '{}'))
+                        THEN json_extract(freebill_record_overrides.manual_overrides_json, '$.standard_nature')
+                    END AS TEXT
+                )), '')
                 FROM freebill_record_overrides
                 WHERE freebill_record_overrides.trade_no = bill_records.trade_no
-            ), direction),
-            type = COALESCE((
-                SELECT override_type
+            ),
+            (
+                SELECT NULLIF(TRIM(freebill_record_overrides.override_standard_nature), '')
                 FROM freebill_record_overrides
                 WHERE freebill_record_overrides.trade_no = bill_records.trade_no
-            ), type)
-        WHERE {scope_sql}
-          AND EXISTS (
-                SELECT 1
+            ),
+            NULLIF(TRIM(standard_nature), ''),
+            '常规'
+        )
+    """
+
+
+def _freebill_effective_standard_direction_sql() -> str:
+    return """
+        COALESCE(
+            (
+                SELECT NULLIF(TRIM(CAST(
+                    CASE
+                        WHEN json_valid(COALESCE(freebill_record_overrides.manual_overrides_json, '{}'))
+                        THEN json_extract(freebill_record_overrides.manual_overrides_json, '$.standard_direction')
+                    END AS TEXT
+                )), '')
                 FROM freebill_record_overrides
                 WHERE freebill_record_overrides.trade_no = bill_records.trade_no
-          )
-        """,
-        params,
-    )
-    return max(int(cursor.rowcount or 0), 0)
+            ),
+            (
+                SELECT NULLIF(TRIM(freebill_record_overrides.override_standard_direction), '')
+                FROM freebill_record_overrides
+                WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+            ),
+            NULLIF(TRIM(standard_direction), ''),
+            '支出'
+        )
+    """
+
+
+def _freebill_manual_override_value_sql(field: str) -> str:
+    if field not in FREEBILL_MANUAL_OVERRIDE_FIELDS:
+        raise ValueError(f"不支持的人工覆盖字段：{field}")
+    return f"""
+        (
+            SELECT CASE
+                WHEN json_valid(COALESCE(freebill_record_overrides.manual_overrides_json, '{{}}'))
+                THEN json_extract(freebill_record_overrides.manual_overrides_json, '$.{field}')
+            END
+            FROM freebill_record_overrides
+            WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+        )
+    """
+
+
+def _freebill_effective_text_field_sql(field: str) -> str:
+    if field in {"standard_nature", "standard_direction"}:
+        return _freebill_effective_standard_nature_sql() if field == "standard_nature" else _freebill_effective_standard_direction_sql()
+    return f"COALESCE(CAST({_freebill_manual_override_value_sql(field)} AS TEXT), {field})"
+
+
+def _freebill_effective_number_field_sql(field: str) -> str:
+    return f"COALESCE(CAST({_freebill_manual_override_value_sql(field)} AS REAL), {field})"
 
 
 def _sql_placeholders(values: list[Any]) -> str:
@@ -1472,12 +3352,240 @@ def _sql_placeholders(values: list[Any]) -> str:
 def _insert_bill_records(conn: sqlite3.Connection, records: list[dict[str, Any]]) -> None:
     if not records:
         return
+    interpret_settings = _load_freebill_interpret_settings(conn)
+    interpret_rules = _load_enabled_freebill_interpret_rules(conn)
     placeholders = ", ".join("?" for _ in BILL_RECORD_COLUMNS)
     columns_sql = ", ".join(BILL_RECORD_COLUMNS)
+    normalized_records = [
+        _apply_freebill_standard_fields(
+            record,
+            interpret_rules=interpret_rules,
+            interpret_settings=interpret_settings,
+        )
+        for record in records
+    ]
     conn.executemany(
         f"INSERT INTO bill_records ({columns_sql}) VALUES ({placeholders})",
-        ([record.get(column) for column in BILL_RECORD_COLUMNS] for record in records),
+        ([record.get(column) for column in BILL_RECORD_COLUMNS] for record in normalized_records),
     )
+
+
+def list_freebill_interpret_rules(work_dir: Path | None = None) -> dict[str, Any]:
+    with get_freebill_connection(work_dir) as conn:
+        settings = _load_freebill_interpret_settings(conn)
+        rules = _load_freebill_interpret_rules(conn)
+        return {
+            "settings": settings,
+            "fields": [
+                {"value": key, **metadata}
+                for key, metadata in FREEBILL_INTERPRET_RULE_FIELDS.items()
+            ],
+            "operators": [
+                {"value": "eq", "label": "="},
+                {"value": "neq", "label": "≠"},
+                {"value": "contains", "label": "包含"},
+                {"value": "not_contains", "label": "不包含"},
+                {"value": "in", "label": "属于"},
+                {"value": "not_in", "label": "不属于"},
+                {"value": "gt", "label": ">"},
+                {"value": "gte", "label": "≥"},
+                {"value": "lt", "label": "<"},
+                {"value": "lte", "label": "≤"},
+            ],
+            "directions": list(FREEBILL_STANDARD_DIRECTIONS),
+            "natures": list(FREEBILL_STANDARD_NATURES),
+            "built_in_rules": [
+                {**dict(item), "enabled": bool(settings["built_in_rules"].get(str(item["key"]), True))}
+                for item in FREEBILL_BUILT_IN_INTERPRET_RULES
+            ],
+            "rules": _attach_freebill_interpret_rule_match_counts(conn, rules, interpret_settings=settings),
+        }
+
+
+def save_freebill_interpret_rules(
+    rules: list[dict[str, Any]],
+    *,
+    settings: dict[str, Any] | None = None,
+    work_dir: Path | None = None,
+) -> dict[str, Any]:
+    normalized_rules = [
+        _normalize_freebill_interpret_rule_for_storage(rule, index)
+        for index, rule in enumerate((rules or [])[:100])
+    ]
+    now = time.time()
+    with get_freebill_connection(work_dir) as conn:
+        _save_freebill_interpret_settings(conn, settings)
+        conn.execute("DELETE FROM freebill_interpret_rules")
+        conn.executemany(
+            """
+            INSERT INTO freebill_interpret_rules (
+                name,
+                enabled,
+                order_index,
+                matcher_json,
+                set_direction,
+                set_nature,
+                note,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    rule["name"],
+                    1 if rule["enabled"] else 0,
+                    rule["order_index"],
+                    json.dumps(rule["matcher"], ensure_ascii=False, sort_keys=True),
+                    rule["set_direction"],
+                    rule["set_nature"],
+                    rule["note"],
+                    now,
+                    now,
+                )
+                for rule in normalized_rules
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO freebill_meta (key, value)
+            VALUES ('interpret_rules_updated_at', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(now),),
+        )
+        conn.commit()
+    return list_freebill_interpret_rules(work_dir=work_dir)
+
+
+def recompute_freebill_interpretation(work_dir: Path | None = None) -> dict[str, Any]:
+    with get_freebill_connection(work_dir) as conn:
+        interpret_settings = _load_freebill_interpret_settings(conn)
+        interpret_rules = _load_enabled_freebill_interpret_rules(conn)
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM bill_records
+            ORDER BY id
+            """
+        ).fetchall()
+        updates: list[tuple[Any, Any, Any, Any]] = []
+        for row in rows:
+            row_dict = _row_to_dict(row)
+            normalized_record = _apply_freebill_standard_fields(
+                row_dict,
+                interpret_rules=interpret_rules,
+                interpret_settings=interpret_settings,
+            )
+            if (
+                (_normalize_text(row_dict.get("type")) or None) == (normalized_record.get("type") or None)
+                and (_normalize_text(row_dict.get("standard_nature")) or None) == (normalized_record.get("standard_nature") or None)
+                and (_normalize_text(row_dict.get("standard_direction")) or None) == (normalized_record.get("standard_direction") or None)
+            ):
+                continue
+            updates.append(
+                (
+                    normalized_record.get("type"),
+                    normalized_record.get("standard_nature"),
+                    normalized_record.get("standard_direction"),
+                    row_dict["id"],
+                )
+            )
+        if updates:
+            conn.executemany(
+                """
+                UPDATE bill_records
+                SET type = ?,
+                    standard_nature = ?,
+                    standard_direction = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+        now = time.time()
+        conn.execute(
+            """
+            INSERT INTO freebill_meta (key, value)
+            VALUES ('interpret_rules_recomputed_at', ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (str(now),),
+        )
+        conn.commit()
+    payload = list_freebill_interpret_rules(work_dir=work_dir)
+    return {
+        "total": len(rows),
+        "updated": len(updates),
+        "rules": payload["rules"],
+        "recomputed_at": now,
+    }
+
+
+def _normalize_freebill_interpret_rule_for_storage(rule: dict[str, Any], index: int) -> dict[str, Any]:
+    matcher = _normalize_freebill_interpret_matcher((rule or {}).get("matcher"))
+    set_direction = _normalize_freebill_interpret_direction((rule or {}).get("set_direction"))
+    set_nature = _normalize_freebill_interpret_nature((rule or {}).get("set_nature"))
+    return {
+        "name": _normalize_text((rule or {}).get("name")) or _build_freebill_interpret_rule_name(matcher, set_direction, set_nature),
+        "enabled": bool((rule or {}).get("enabled", True)),
+        "order_index": index,
+        "matcher": matcher,
+        "set_direction": set_direction,
+        "set_nature": set_nature,
+        "note": _normalize_text((rule or {}).get("note")),
+    }
+
+
+def _build_freebill_interpret_rule_name(
+    matcher: dict[str, Any],
+    set_direction: str | None,
+    set_nature: str | None,
+) -> str:
+    matcher_text = str(matcher.get("field") or matcher.get("kind") or "规则")
+    result_parts = [part for part in (set_direction, set_nature) if part]
+    return f"{matcher_text} -> {'/'.join(result_parts) if result_parts else '不改'}"
+
+
+def _attach_freebill_interpret_rule_match_counts(
+    conn: sqlite3.Connection,
+    rules: list[dict[str, Any]],
+    *,
+    interpret_settings: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    if not rules:
+        return []
+    counts = [0 for _ in rules]
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM bill_records
+        ORDER BY id
+        """
+    ).fetchall()
+    for row in rows:
+        normalized_record = _apply_freebill_builtin_standard_fields(
+            _row_to_dict(row),
+            interpret_settings=interpret_settings,
+        )
+        for index, rule in enumerate(rules):
+            if not _freebill_interpret_rule_matches(normalized_record, rule):
+                continue
+            counts[index] += 1
+            if rule.get("enabled"):
+                _apply_freebill_interpret_rule_effect(normalized_record, rule)
+    return [
+        {**rule, "match_count": counts[index]}
+        for index, rule in enumerate(rules)
+    ]
+
+
+def _apply_freebill_interpret_rule_effect(record: dict[str, Any], rule: dict[str, Any]) -> None:
+    set_direction = _normalize_freebill_interpret_direction(rule.get("set_direction"))
+    set_nature = _normalize_freebill_interpret_nature(rule.get("set_nature"))
+    if set_direction:
+        record["standard_direction"] = set_direction
+    if set_nature:
+        record["standard_nature"] = set_nature
 
 
 def _update_rebuild_raw_file_statuses(
@@ -1562,30 +3670,33 @@ def _build_filter_conditions(
 ) -> tuple[str, dict[str, Any]]:
     conditions = ["1 = 1"]
     params: dict[str, Any] = {}
+    create_time_sql = _freebill_effective_text_field_sql("create_time")
+    source_sql = _freebill_effective_text_field_sql("source")
+    type_sql = _freebill_effective_text_field_sql("type")
     if start_date:
-        conditions.append("date(create_time) >= :start_date")
+        conditions.append(f"date({create_time_sql}) >= :start_date")
         params["start_date"] = start_date
     if end_date:
-        conditions.append("date(create_time) <= :end_date")
+        conditions.append(f"date({create_time_sql}) <= :end_date")
         params["end_date"] = end_date
     if source:
-        conditions.append("source = :source")
+        conditions.append(f"{source_sql} = :source")
         params["source"] = source
     if direction:
-        conditions.append("TRIM(direction) = :direction")
+        conditions.append(f"{_freebill_display_direction_sql()} = :direction")
         params["direction"] = direction
     if category:
-        conditions.append("type = :category")
+        conditions.append(f"{type_sql} = :category")
         params["category"] = category
     if q:
         conditions.append(
-            """
+            f"""
             (
                 trade_no LIKE :keyword
                 OR merchant_order_no LIKE :keyword
-                OR counterparty LIKE :keyword
-                OR product_name LIKE :keyword
-                OR remark LIKE :keyword
+                OR {_freebill_effective_text_field_sql("counterparty")} LIKE :keyword
+                OR {_freebill_effective_text_field_sql("product_name")} LIKE :keyword
+                OR {_freebill_effective_text_field_sql("remark")} LIKE :keyword
             )
             """
         )
@@ -1673,7 +3784,7 @@ def _build_program_matcher_sql(
     if field_config is None:
         raise ValueError(f"不支持的 Freebill 筛选字段：{field}")
 
-    field_sql = str(field_config["sql"])
+    field_sql = _resolve_freebill_program_field_sql(str(field_config["sql"]))
     field_mode = str(field_config["mode"])
     op = str(matcher.get("op") or "eq").strip()
     value = matcher.get("value")
@@ -1745,6 +3856,20 @@ def _normalize_program_year(value: Any) -> int | None:
     return year
 
 
+def _resolve_freebill_program_field_sql(field_sql: str) -> str:
+    if field_sql == "__interpreted_direction__":
+        return _freebill_display_direction_sql()
+    if field_sql == "__interpreted_type__":
+        return _freebill_effective_standard_nature_sql()
+    if field_sql.startswith("__effective:") and field_sql.endswith("__"):
+        field = field_sql.removeprefix("__effective:").removesuffix("__")
+        mode = str(FREEBILL_MANUAL_OVERRIDE_FIELDS.get(field, {}).get("mode") or "text")
+        if mode == "number":
+            return _freebill_effective_number_field_sql(field)
+        return _freebill_effective_text_field_sql(field)
+    return field_sql
+
+
 def _program_field_sql(field_sql: str, field_mode: str) -> str:
     if field_mode == "date":
         return f"date({field_sql})"
@@ -1779,9 +3904,12 @@ def get_freebill_dashboard(
     category_child_limit: int | None = 10,
     monthly_limit: int | None = 12,
     trend_granularity: str = "month",
+    trend_standard_nature: str | None = None,
+    category_dimensions: list[str] | tuple[str, ...] | None = None,
     work_dir: Path | None = None,
 ) -> dict[str, Any]:
     trend_granularity = _normalize_trend_granularity(trend_granularity)
+    normalized_category_dimensions = _normalize_freebill_category_dimensions(category_dimensions)
     if programs:
         where_sql, params = _build_programs_filter_conditions(programs)
         has_date_filter = any(_program_has_date_rule(item) for item in programs)
@@ -1798,15 +3926,22 @@ def get_freebill_dashboard(
             q=q,
         )
         has_date_filter = bool(start_date or end_date)
+    display_direction_sql = _freebill_display_direction_sql()
+    amount_sql = _freebill_effective_number_field_sql("amount")
+    source_sql = _freebill_effective_text_field_sql("source")
     with get_freebill_connection(work_dir) as conn:
+        interpret_settings = _load_freebill_interpret_settings(conn)
+        category_value_sql = _freebill_category_value_sql(
+            signed_category_values=bool(interpret_settings.get("signed_category_values")),
+        )
         summary = _row_to_dict(
             conn.execute(
                 f"""
                 SELECT
-                    COALESCE(SUM(CASE WHEN TRIM(direction) = '收入' THEN amount ELSE 0 END), 0) AS total_income,
-                    COALESCE(SUM(CASE WHEN TRIM(direction) = '支出' THEN amount ELSE 0 END), 0) AS total_expense,
-                    COALESCE(SUM(CASE WHEN TRIM(direction) = '不计收支' THEN amount ELSE 0 END), 0) AS total_ignore,
-                    COALESCE(SUM(CASE WHEN TRIM(direction) NOT IN ('收入', '支出', '不计收支') OR direction IS NULL THEN amount ELSE 0 END), 0) AS total_other,
+                    COALESCE(SUM(CASE WHEN {display_direction_sql} = '收入' THEN {amount_sql} ELSE 0 END), 0) AS total_income,
+                    COALESCE(SUM(CASE WHEN {display_direction_sql} = '支出' THEN {amount_sql} ELSE 0 END), 0) AS total_expense,
+                    0 AS total_ignore,
+                    COALESCE(SUM(CASE WHEN {display_direction_sql} NOT IN ('收入', '支出') THEN {amount_sql} ELSE 0 END), 0) AS total_other,
                     COUNT(*) AS total_count
                 FROM bill_records
                 WHERE {where_sql}
@@ -1821,31 +3956,46 @@ def get_freebill_dashboard(
             for row in conn.execute(
                 f"""
                 SELECT
-                    source,
+                    {source_sql} AS source,
                     COUNT(*) AS count,
-                    COALESCE(SUM(CASE WHEN TRIM(direction) = '收入' THEN amount ELSE 0 END), 0) AS income,
-                    COALESCE(SUM(CASE WHEN TRIM(direction) = '支出' THEN amount ELSE 0 END), 0) AS expense
+                    COALESCE(SUM(CASE WHEN {display_direction_sql} = '收入' THEN {amount_sql} ELSE 0 END), 0) AS income,
+                    COALESCE(SUM(CASE WHEN {display_direction_sql} = '支出' THEN {amount_sql} ELSE 0 END), 0) AS expense
                 FROM bill_records
                 WHERE {where_sql}
-                GROUP BY source
+                GROUP BY {source_sql}
                 ORDER BY count DESC, source
                 """,
                 params,
             ).fetchall()
         ]
-        category_tree = _query_direction_category_tree(
+        direction_category_tree = _query_direction_category_tree(
             conn,
             where_sql,
             params,
+            value_sql=category_value_sql,
             category_limit=category_limit,
             category_child_limit=category_child_limit,
         )
-        expense_categories = _get_direction_categories(category_tree, "支出")
-        income_categories = _get_direction_categories(category_tree, "收入")
-        monthly_trend = _query_period_trend(
+        category_tree = _query_category_tree_by_dimensions(
             conn,
             where_sql,
             params,
+            value_sql=category_value_sql,
+            dimensions=normalized_category_dimensions,
+            level_limit=category_limit,
+            child_limit=category_child_limit,
+        )
+        expense_categories = _get_direction_categories(direction_category_tree, "支出")
+        income_categories = _get_direction_categories(direction_category_tree, "收入")
+        trend_where_sql, trend_params = _build_trend_filter_conditions(
+            where_sql,
+            params,
+            standard_nature=trend_standard_nature,
+        )
+        monthly_trend = _query_period_trend(
+            conn,
+            trend_where_sql,
+            trend_params,
             granularity=trend_granularity,
             limit=_resolve_trend_limit(
                 granularity=trend_granularity,
@@ -1860,9 +4010,27 @@ def get_freebill_dashboard(
         "expense_categories": expense_categories,
         "income_categories": income_categories,
         "category_tree": category_tree,
+        "category_dimensions": normalized_category_dimensions,
         "monthly_trend": monthly_trend,
         "trend_granularity": trend_granularity,
     }
+
+
+def _build_trend_filter_conditions(
+    where_sql: str,
+    params: dict[str, Any],
+    *,
+    standard_nature: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    normalized_standard_nature = _normalize_text(standard_nature)
+    if not normalized_standard_nature:
+        return where_sql, params
+    if normalized_standard_nature not in FREEBILL_STANDARD_NATURES:
+        raise ValueError(f"不支持的趋势类型：{standard_nature}")
+    return (
+        f"({where_sql}) AND {_freebill_effective_standard_nature_sql()} = :trend_standard_nature",
+        {**params, "trend_standard_nature": normalized_standard_nature},
+    )
 
 
 def _program_has_date_rule(program: dict[str, Any] | None) -> bool:
@@ -1900,12 +4068,218 @@ def _resolve_trend_limit(
     return DEFAULT_TREND_LIMITS[granularity]
 
 
+def _freebill_display_direction_sql() -> str:
+    standard_direction_sql = _freebill_effective_standard_direction_sql()
+    return f"""
+        COALESCE(NULLIF(({standard_direction_sql}), ''), '支出')
+    """
+
+
+def _freebill_category_value_sql(*, signed_category_values: bool) -> str:
+    amount_sql = _freebill_effective_number_field_sql("amount")
+    if not signed_category_values:
+        return f"COALESCE({amount_sql}, 0)"
+    display_direction_sql = _freebill_display_direction_sql()
+    return f"""
+        CASE
+            WHEN {display_direction_sql} = '支出' THEN -COALESCE({amount_sql}, 0)
+            WHEN {display_direction_sql} = '收入' THEN COALESCE({amount_sql}, 0)
+            WHEN {display_direction_sql} = '收支' THEN COALESCE({amount_sql}, 0)
+            ELSE 0
+        END
+    """
+
+
+def _normalize_freebill_category_dimensions(
+    dimensions: list[str] | tuple[str, ...] | None,
+) -> list[str]:
+    values = list(dimensions or FREEBILL_CATEGORY_DIMENSIONS)
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_value in values:
+        value = str(raw_value or "").strip()
+        if not value or value in seen:
+            continue
+        if value not in FREEBILL_CATEGORY_DIMENSIONS:
+            raise ValueError(f"不支持的分类维度：{value}")
+        normalized.append(value)
+        seen.add(value)
+    return normalized or list(FREEBILL_CATEGORY_DIMENSIONS)
+
+
+def _normalize_freebill_category_path(path: list[dict[str, Any]] | None) -> list[dict[str, str]]:
+    normalized_path: list[dict[str, str]] = []
+    seen_dimensions: set[str] = set()
+    for raw_item in path or []:
+        if not isinstance(raw_item, dict):
+            continue
+        dimension = str(raw_item.get("dimension") or "").strip()
+        value = str(raw_item.get("value") or "").strip()
+        if not dimension or not value:
+            continue
+        if dimension not in FREEBILL_CATEGORY_DIMENSIONS:
+            raise ValueError(f"不支持的分类维度：{dimension}")
+        if dimension in seen_dimensions:
+            raise ValueError(f"分类路径里重复了同一个维度：{dimension}")
+        normalized_path.append({"dimension": dimension, "value": value})
+        seen_dimensions.add(dimension)
+    return normalized_path
+
+
+def _freebill_category_dimension_sql(dimension: str) -> str:
+    empty_label = FREEBILL_CATEGORY_DIMENSION_EMPTY_LABELS[dimension]
+    if dimension == "standard_direction":
+        return f"COALESCE(NULLIF(({_freebill_display_direction_sql()}), ''), '{empty_label}')"
+    if dimension == "standard_nature":
+        return f"COALESCE(NULLIF(({_freebill_effective_standard_nature_sql()}), ''), '{empty_label}')"
+    if dimension == "type":
+        return f"COALESCE(NULLIF({_freebill_effective_text_field_sql('type')}, ''), '{empty_label}')"
+    if dimension == "counterparty":
+        return f"COALESCE(NULLIF({_freebill_effective_text_field_sql('counterparty')}, ''), '{empty_label}')"
+    raise ValueError(f"不支持的分类维度：{dimension}")
+
+
+def _build_category_path_filter_conditions(
+    path: list[dict[str, str]],
+    *,
+    prefix: str,
+) -> tuple[list[str], dict[str, Any]]:
+    conditions: list[str] = []
+    params: dict[str, Any] = {}
+    for index, item in enumerate(path):
+        dimension = item["dimension"]
+        value = item["value"]
+        param_name = f"{prefix}_{index}"
+        conditions.append(f"{_freebill_category_dimension_sql(dimension)} = :{param_name}")
+        params[param_name] = value
+    return conditions, params
+
+
+def _build_category_group_order_sql(dimension: str, expression_sql: str) -> str:
+    if dimension == "standard_direction":
+        return f"""
+            CASE {expression_sql}
+                WHEN '支出' THEN 0
+                WHEN '收支' THEN 1
+                WHEN '收入' THEN 2
+                ELSE 4
+            END,
+            ABS(value) DESC,
+            count DESC,
+            name
+        """
+    if dimension == "standard_nature":
+        return f"""
+            CASE {expression_sql}
+                WHEN '{STANDARD_NATURE_REGULAR}' THEN 0
+                WHEN '{STANDARD_NATURE_LOAN}' THEN 1
+                WHEN '{STANDARD_NATURE_FINANCE}' THEN 2
+                WHEN '{STANDARD_NATURE_TRANSFER}' THEN 3
+                WHEN '{STANDARD_NATURE_FLOW}' THEN 4
+                ELSE 5
+            END,
+            ABS(value) DESC,
+            count DESC,
+            name
+        """
+    return "ABS(value) DESC, count DESC, name"
+
+
+def _query_category_tree_by_dimensions(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: dict[str, Any],
+    *,
+    value_sql: str,
+    dimensions: list[str],
+    level_limit: int | None,
+    child_limit: int | None,
+) -> list[dict[str, Any]]:
+    normalized_dimensions = _normalize_freebill_category_dimensions(dimensions)
+    return _query_category_tree_level(
+        conn,
+        where_sql,
+        params,
+        value_sql=value_sql,
+        dimensions=normalized_dimensions,
+        path=[],
+        depth=0,
+        level_limit=level_limit,
+        child_limit=child_limit,
+    )
+
+
+def _query_category_tree_level(
+    conn: sqlite3.Connection,
+    where_sql: str,
+    params: dict[str, Any],
+    *,
+    value_sql: str,
+    dimensions: list[str],
+    path: list[dict[str, str]],
+    depth: int,
+    level_limit: int | None,
+    child_limit: int | None,
+) -> list[dict[str, Any]]:
+    if depth >= len(dimensions):
+        return []
+
+    dimension = dimensions[depth]
+    dimension_sql = _freebill_category_dimension_sql(dimension)
+    path_conditions, path_params = _build_category_path_filter_conditions(path, prefix=f"tree_{depth}")
+    merged_conditions = [f"({where_sql})", *path_conditions]
+    query_params = {**params, **path_params}
+    limit_sql = ""
+    current_limit = None if depth == 0 else (level_limit if depth == 1 else child_limit)
+    if current_limit is not None:
+        if current_limit <= 0:
+            return []
+        query_params[f"tree_limit_{depth}"] = int(current_limit)
+        limit_sql = f"LIMIT :tree_limit_{depth}"
+
+    rows = [
+        _row_to_dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT {dimension_sql} AS name,
+                   COALESCE(SUM({value_sql}), 0) AS value,
+                   COUNT(*) AS count
+            FROM bill_records
+            WHERE {" AND ".join(merged_conditions)}
+            GROUP BY {dimension_sql}
+            ORDER BY {_build_category_group_order_sql(dimension, dimension_sql)}
+            {limit_sql}
+            """,
+            query_params,
+        ).fetchall()
+    ]
+    next_depth = depth + 1
+    for row in rows:
+        next_path = [*path, {"dimension": dimension, "value": str(row.get("name") or "")}]
+        row["dimension"] = dimension
+        row["path"] = next_path
+        if next_depth < len(dimensions):
+            row["children"] = _query_category_tree_level(
+                conn,
+                where_sql,
+                params,
+                value_sql=value_sql,
+                dimensions=dimensions,
+                path=next_path,
+                depth=next_depth,
+                level_limit=level_limit,
+                child_limit=child_limit,
+            )
+    return rows
+
+
 def _query_category_stats(
     conn: sqlite3.Connection,
     where_sql: str,
     params: dict[str, Any],
     direction: str,
     *,
+    value_sql: str,
     limit: int | None,
     child_limit: int | None,
 ) -> list[dict[str, Any]]:
@@ -1916,18 +4290,20 @@ def _query_category_stats(
             return []
         query_params["category_limit"] = int(limit)
         limit_sql = "LIMIT :category_limit"
+    display_direction_sql = _freebill_display_direction_sql()
+    type_sql = _freebill_effective_text_field_sql("type")
     categories = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
-            SELECT COALESCE(NULLIF(type, ''), '未分类') AS name,
-                   COALESCE(SUM(amount), 0) AS value,
+            SELECT COALESCE(NULLIF({type_sql}, ''), '未分类') AS name,
+                   COALESCE(SUM({value_sql}), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
-              AND COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :category_direction
-            GROUP BY COALESCE(NULLIF(type, ''), '未分类')
-            ORDER BY value DESC, count DESC
+              AND {display_direction_sql} = :category_direction
+            GROUP BY COALESCE(NULLIF({type_sql}, ''), '未分类')
+            ORDER BY ABS(value) DESC, count DESC
             {limit_sql}
             """,
             query_params,
@@ -1940,6 +4316,7 @@ def _query_category_stats(
             params,
             direction,
             str(category.get("name") or ""),
+            value_sql=value_sql,
             limit=child_limit,
         )
     return categories
@@ -1957,27 +4334,29 @@ def _query_direction_category_tree(
     where_sql: str,
     params: dict[str, Any],
     *,
+    value_sql: str,
     category_limit: int | None,
     category_child_limit: int | None,
 ) -> list[dict[str, Any]]:
+    display_direction_sql = _freebill_display_direction_sql()
     directions = [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
-            SELECT COALESCE(NULLIF(TRIM(direction), ''), '(空白)') AS name,
-                   COALESCE(SUM(amount), 0) AS value,
+            SELECT {display_direction_sql} AS name,
+                   COALESCE(SUM({value_sql}), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
-            GROUP BY COALESCE(NULLIF(TRIM(direction), ''), '(空白)')
+            GROUP BY {display_direction_sql}
             ORDER BY
-                CASE COALESCE(NULLIF(TRIM(direction), ''), '(空白)')
+                CASE {display_direction_sql}
                     WHEN '支出' THEN 0
-                    WHEN '收入' THEN 1
-                    WHEN '不计收支' THEN 2
-                    ELSE 3
+                    WHEN '收支' THEN 1
+                    WHEN '收入' THEN 2
+                    ELSE 5
                 END,
-                value DESC,
+                ABS(value) DESC,
                 count DESC,
                 name
             """,
@@ -1990,6 +4369,7 @@ def _query_direction_category_tree(
             where_sql,
             params,
             str(direction.get("name") or ""),
+            value_sql=value_sql,
             limit=category_limit,
             child_limit=category_child_limit,
         )
@@ -2003,6 +4383,7 @@ def _query_category_counterparty_stats(
     direction: str,
     category_name: str,
     *,
+    value_sql: str,
     limit: int | None,
 ) -> list[dict[str, Any]]:
     if limit is not None and limit <= 0:
@@ -2016,19 +4397,22 @@ def _query_category_counterparty_stats(
     if limit is not None:
         query_params["category_child_limit"] = int(limit)
         limit_sql = "LIMIT :category_child_limit"
+    display_direction_sql = _freebill_display_direction_sql()
+    type_sql = _freebill_effective_text_field_sql("type")
+    counterparty_sql = _freebill_effective_text_field_sql("counterparty")
     return [
         _row_to_dict(row)
         for row in conn.execute(
             f"""
-            SELECT COALESCE(NULLIF(counterparty, ''), '未标注交易对方') AS name,
-                   COALESCE(SUM(amount), 0) AS value,
+            SELECT COALESCE(NULLIF({counterparty_sql}, ''), '未标注交易对方') AS name,
+                   COALESCE(SUM({value_sql}), 0) AS value,
                    COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
-              AND COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :category_direction
-              AND COALESCE(NULLIF(type, ''), '未分类') = :category_name
-            GROUP BY COALESCE(NULLIF(counterparty, ''), '未标注交易对方')
-            ORDER BY value DESC, count DESC, name
+              AND {display_direction_sql} = :category_direction
+              AND COALESCE(NULLIF({type_sql}, ''), '未分类') = :category_name
+            GROUP BY COALESCE(NULLIF({counterparty_sql}, ''), '未标注交易对方')
+            ORDER BY ABS(value) DESC, count DESC, name
             {limit_sql}
             """,
             query_params,
@@ -2045,6 +4429,8 @@ def _query_period_trend(
     limit: int | None,
 ) -> list[dict[str, Any]]:
     period_expr = _get_trend_period_sql(granularity)
+    display_direction_sql = _freebill_display_direction_sql()
+    amount_sql = _freebill_effective_number_field_sql("amount")
     query_params = dict(params)
     limit_sql = ""
     if limit is not None:
@@ -2058,12 +4444,13 @@ def _query_period_trend(
             f"""
             SELECT
                 {period_expr} AS month,
-                COALESCE(SUM(CASE WHEN TRIM(direction) = '收入' THEN amount ELSE 0 END), 0) AS income,
-                COALESCE(SUM(CASE WHEN TRIM(direction) = '支出' THEN amount ELSE 0 END), 0) AS expense,
-                COUNT(CASE WHEN TRIM(direction) = '收入' THEN 1 END) AS income_count,
-                COUNT(CASE WHEN TRIM(direction) = '支出' THEN 1 END) AS expense_count,
-                COUNT(CASE WHEN TRIM(direction) = '不计收支' THEN 1 END) AS ignore_count,
-                COUNT(CASE WHEN TRIM(direction) NOT IN ('收入', '支出', '不计收支') OR direction IS NULL THEN 1 END) AS other_count,
+                COALESCE(SUM(CASE WHEN {display_direction_sql} = '收入' THEN {amount_sql} ELSE 0 END), 0) AS income,
+                COALESCE(SUM(CASE WHEN {display_direction_sql} = '支出' THEN {amount_sql} ELSE 0 END), 0) AS expense,
+                COALESCE(SUM(CASE WHEN {display_direction_sql} NOT IN ('收入', '支出') THEN {amount_sql} ELSE 0 END), 0) AS other,
+                COUNT(CASE WHEN {display_direction_sql} = '收入' THEN 1 END) AS income_count,
+                COUNT(CASE WHEN {display_direction_sql} = '支出' THEN 1 END) AS expense_count,
+                0 AS ignore_count,
+                COUNT(CASE WHEN {display_direction_sql} NOT IN ('收入', '支出') THEN 1 END) AS other_count,
                 COUNT(*) AS count
             FROM bill_records
             WHERE {where_sql}
@@ -2079,13 +4466,14 @@ def _query_period_trend(
 
 
 def _get_trend_period_sql(granularity: str) -> str:
+    create_time_sql = _freebill_effective_text_field_sql("create_time")
     if granularity == "day":
-        return "date(create_time)"
+        return f"date({create_time_sql})"
     if granularity == "week":
-        return "date(create_time, '-' || ((CAST(strftime('%w', create_time) AS integer) + 6) % 7) || ' days')"
+        return f"date({create_time_sql}, '-' || ((CAST(strftime('%w', {create_time_sql}) AS integer) + 6) % 7) || ' days')"
     if granularity == "year":
-        return "strftime('%Y', create_time)"
-    return "strftime('%Y-%m', create_time)"
+        return f"strftime('%Y', {create_time_sql})"
+    return f"strftime('%Y-%m', {create_time_sql})"
 
 
 def list_freebill_records(
@@ -2108,19 +4496,34 @@ def list_freebill_records(
         category=category,
         q=q,
     )
+    standard_nature_sql = _freebill_effective_standard_nature_sql()
+    standard_direction_sql = _freebill_effective_standard_direction_sql()
     with get_freebill_connection(work_dir) as conn:
         total_row = conn.execute(
             f"SELECT COUNT(*) AS total FROM bill_records WHERE {where_sql}",
             params,
         ).fetchone()
         rows = [
-            _row_to_dict(row)
+            _normalize_freebill_record_row(_row_to_dict(row))
             for row in conn.execute(
                 f"""
-                SELECT *
+                SELECT
+                    bill_records.*,
+                    {standard_nature_sql} AS effective_standard_nature,
+                    {standard_direction_sql} AS effective_standard_direction,
+                    EXISTS (
+                        SELECT 1
+                        FROM freebill_record_overrides
+                        WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+                    ) AS has_record_override,
+                    (
+                        SELECT freebill_record_overrides.manual_overrides_json
+                        FROM freebill_record_overrides
+                        WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+                    ) AS manual_overrides_json
                 FROM bill_records
                 WHERE {where_sql}
-                ORDER BY datetime(create_time) DESC, create_time DESC, id DESC
+                ORDER BY datetime({_freebill_effective_text_field_sql("create_time")}) DESC, {_freebill_effective_text_field_sql("create_time")} DESC, id DESC
                 LIMIT :limit OFFSET :offset
                 """,
                 {**params, "limit": limit, "offset": offset},
@@ -2136,46 +4539,56 @@ def list_freebill_category_branch_records(
     *,
     program: dict[str, Any] | None = None,
     programs: list[dict[str, Any]] | None = None,
-    direction: str,
+    path: list[dict[str, Any]] | None = None,
+    direction: str | None = None,
     category: str | None = None,
     counterparty: str | None = None,
     limit: int = 10,
+    offset: int = 0,
+    sort_by: str = "amount",
+    sort_order: str = "desc",
     work_dir: Path | None = None,
 ) -> dict[str, Any]:
-    if programs:
-        where_sql, params = _build_programs_filter_conditions(programs)
-    else:
-        where_sql, params = _build_program_filter_conditions(program)
-
-    branch_conditions = [
-        "COALESCE(NULLIF(TRIM(direction), ''), '(空白)') = :branch_direction"
-    ]
-    branch_params: dict[str, Any] = {"branch_direction": direction}
-    if category is not None:
-        branch_conditions.append("COALESCE(NULLIF(type, ''), '未分类') = :branch_category")
-        branch_params["branch_category"] = category
-    if counterparty is not None:
-        branch_conditions.append("COALESCE(NULLIF(counterparty, ''), '未标注交易对方') = :branch_counterparty")
-        branch_params["branch_counterparty"] = counterparty
-
-    branch_where_sql = f"({where_sql}) AND " + " AND ".join(branch_conditions)
-    query_params = {**params, **branch_params}
+    branch_where_sql, query_params = _build_category_branch_filter_conditions(
+        program=program,
+        programs=programs,
+        path=path,
+        direction=direction,
+        category=category,
+        counterparty=counterparty,
+    )
+    order_sql = _build_category_branch_records_order_sql(sort_by, sort_order)
+    standard_nature_sql = _freebill_effective_standard_nature_sql()
+    standard_direction_sql = _freebill_effective_standard_direction_sql()
     with get_freebill_connection(work_dir) as conn:
         total_row = conn.execute(
             f"SELECT COUNT(*) AS total FROM bill_records WHERE {branch_where_sql}",
             query_params,
         ).fetchone()
         rows = [
-            _row_to_dict(row)
+            _normalize_freebill_record_row(_row_to_dict(row))
             for row in conn.execute(
                 f"""
-                SELECT *
+                SELECT
+                       bill_records.*,
+                       {standard_nature_sql} AS effective_standard_nature,
+                       {standard_direction_sql} AS effective_standard_direction,
+                       EXISTS (
+                           SELECT 1
+                           FROM freebill_record_overrides
+                           WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+                       ) AS has_record_override,
+                       (
+                           SELECT freebill_record_overrides.manual_overrides_json
+                           FROM freebill_record_overrides
+                           WHERE freebill_record_overrides.trade_no = bill_records.trade_no
+                       ) AS manual_overrides_json
                 FROM bill_records
                 WHERE {branch_where_sql}
-                ORDER BY COALESCE(amount, 0) DESC, datetime(create_time) DESC, id DESC
-                LIMIT :limit
+                ORDER BY {order_sql}
+                LIMIT :limit OFFSET :offset
                 """,
-                {**query_params, "limit": limit},
+                {**query_params, "limit": limit, "offset": offset},
             ).fetchall()
         ]
     return {
@@ -2184,13 +4597,89 @@ def list_freebill_category_branch_records(
     }
 
 
+def _build_category_branch_records_order_sql(sort_by: str, sort_order: str) -> str:
+    field = sort_by if sort_by in FREEBILL_CATEGORY_BRANCH_RECORD_SORT_FIELDS else "amount"
+    direction = "ASC" if str(sort_order).lower() == "asc" else "DESC"
+    if field == "amount":
+        expressions = (f"COALESCE({_freebill_effective_number_field_sql('amount')}, 0)",)
+    elif field == "create_time":
+        create_time_sql = _freebill_effective_text_field_sql("create_time")
+        expressions = (f"datetime({create_time_sql})", create_time_sql)
+    elif field in {"source", "product_name", "remark"}:
+        expressions = (f"COALESCE(NULLIF({_freebill_effective_text_field_sql(field)}, ''), '') COLLATE NOCASE",)
+    else:
+        expressions = FREEBILL_CATEGORY_BRANCH_RECORD_SORT_FIELDS[field]
+    clauses = [f"{expression} {direction}" for expression in expressions]
+    if field != "amount":
+        clauses.append(f"COALESCE({_freebill_effective_number_field_sql('amount')}, 0) DESC")
+    if field != "create_time":
+        create_time_sql = _freebill_effective_text_field_sql("create_time")
+        clauses.extend([f"datetime({create_time_sql}) DESC", f"{create_time_sql} DESC"])
+    clauses.append("id DESC")
+    return ", ".join(clauses)
+
+
+def _build_category_branch_filter_conditions(
+    *,
+    program: dict[str, Any] | None,
+    programs: list[dict[str, Any]] | None,
+    path: list[dict[str, Any]] | None = None,
+    direction: str | None = None,
+    category: str | None = None,
+    counterparty: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if programs:
+        where_sql, params = _build_programs_filter_conditions(programs)
+    else:
+        where_sql, params = _build_program_filter_conditions(program)
+    normalized_path = _normalize_freebill_category_path(path)
+    if not normalized_path:
+        if not _normalize_text(direction):
+            raise ValueError("请选择一个分类分支")
+        legacy_direction = str(direction).strip()
+        if legacy_direction in STANDARD_DIRECTIONS:
+            normalized_path = [{"dimension": "standard_direction", "value": legacy_direction}]
+            if category is not None:
+                normalized_path.append({"dimension": "type", "value": str(category).strip()})
+            if counterparty is not None:
+                normalized_path.append({"dimension": "counterparty", "value": str(counterparty).strip()})
+        else:
+            display_direction_sql = _freebill_display_direction_sql()
+            branch_conditions = [f"{display_direction_sql} = :branch_direction"]
+            branch_params: dict[str, Any] = {"branch_direction": legacy_direction}
+            if category is not None:
+                branch_conditions.append(f"COALESCE(NULLIF({_freebill_effective_text_field_sql('type')}, ''), '未分类') = :branch_category")
+                branch_params["branch_category"] = category
+            if counterparty is not None:
+                branch_conditions.append(f"COALESCE(NULLIF({_freebill_effective_text_field_sql('counterparty')}, ''), '未标注交易对方') = :branch_counterparty")
+                branch_params["branch_counterparty"] = counterparty
+            return f"({where_sql}) AND " + " AND ".join(branch_conditions), {**params, **branch_params}
+
+    branch_conditions, branch_params = _build_category_path_filter_conditions(normalized_path, prefix="branch")
+    if not branch_conditions:
+        raise ValueError("请选择一个分类分支")
+    return f"({where_sql}) AND " + " AND ".join(branch_conditions), {**params, **branch_params}
+
+
 def list_freebill_filter_options(work_dir: Path | None = None) -> dict[str, list[str]]:
     with get_freebill_connection(work_dir) as conn:
         return {
-            "sources": _query_distinct_strings(conn, "source"),
-            "directions": _query_distinct_strings(conn, "direction"),
-            "categories": _query_distinct_strings(conn, "type"),
+            "sources": _query_distinct_values(conn, _freebill_effective_text_field_sql("source")),
+            "directions": _sort_preferred_values(
+                _query_distinct_values(conn, _freebill_display_direction_sql()),
+                list(FREEBILL_STANDARD_DIRECTIONS),
+            ),
+            "types": _sort_preferred_values(
+                _query_distinct_values(conn, _freebill_effective_standard_nature_sql()),
+                list(FREEBILL_STANDARD_NATURES),
+            ),
+            "categories": _query_distinct_values(conn, _freebill_effective_text_field_sql("type")),
         }
+
+
+def _sort_preferred_values(values: list[str], preferred_values: list[str]) -> list[str]:
+    priority = {value: index for index, value in enumerate(preferred_values)}
+    return sorted(values, key=lambda value: (priority.get(value, len(priority)), value))
 
 
 def list_freebill_raw_files(
@@ -2243,15 +4732,43 @@ def _build_raw_file_query_params() -> dict[str, str]:
 
 
 def _query_distinct_strings(conn: sqlite3.Connection, column_name: str) -> list[str]:
+    return _query_distinct_values(conn, column_name)
+
+
+def _query_distinct_values(conn: sqlite3.Connection, expression_sql: str) -> list[str]:
     rows = conn.execute(
         f"""
-        SELECT DISTINCT {column_name} AS value
+        SELECT DISTINCT {expression_sql} AS value
         FROM bill_records
-        WHERE {column_name} IS NOT NULL AND TRIM({column_name}) != ''
+        WHERE {expression_sql} IS NOT NULL AND TRIM({expression_sql}) != ''
         ORDER BY value
         """
     ).fetchall()
     return [str(row["value"]) for row in rows]
+
+
+def _normalize_freebill_record_row(row: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(row)
+    raw_values = {
+        field: normalized.get(field)
+        for field in FREEBILL_MANUAL_OVERRIDE_FIELDS
+    }
+    raw_direction = normalized.get("direction")
+    raw_type = normalized.get("type")
+    if "effective_standard_nature" in normalized:
+        normalized["standard_nature"] = normalized.pop("effective_standard_nature")
+    if "effective_standard_direction" in normalized:
+        normalized["standard_direction"] = normalized.pop("effective_standard_direction")
+    manual_overrides = _normalize_freebill_manual_overrides(normalized.pop("manual_overrides_json", None))
+    for field, value in manual_overrides.items():
+        normalized[field] = value
+    normalized["raw_direction"] = raw_direction
+    normalized["raw_type"] = raw_type
+    normalized["raw_values"] = raw_values
+    normalized["manual_overrides"] = manual_overrides
+    if normalized.get("standard_direction"):
+        normalized["direction"] = normalized.get("standard_direction")
+    return normalized
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any]:

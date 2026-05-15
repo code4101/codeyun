@@ -88,6 +88,12 @@ MAX_DUPLICATE_SCAN_LIMIT = 1000000
 DUPLICATE_LISTING_PAGE_SIZE = 10
 DUPLICATE_LISTING_SNAPSHOT_LIMIT = 16
 DUPLICATE_LISTING_SNAPSHOT_TTL_SECONDS = 30 * 60
+DUPLICATE_ANALYSIS_TASK_LIMIT = 16
+DUPLICATE_ANALYSIS_TASK_TTL_SECONDS = 30 * 60
+DUPLICATE_CANDIDATE_CACHE_LIMIT = 8
+DUPLICATE_CANDIDATE_CACHE_TTL_SECONDS = 60 * 60
+DUPLICATE_PARTIAL_GROUP_INTERVAL_SECONDS = 0.8
+DUPLICATE_PARTIAL_GROUP_CANDIDATE_STEP = 2000
 DUPLICATE_CLUSTER_VISUAL_HASH_SIZE = 8
 DUPLICATE_CLUSTER_VISUAL_THRESHOLD = 3
 VISUAL_HASH_LOOKUP_CHUNK_SIZE = 500
@@ -143,6 +149,50 @@ class DuplicateFileCandidate:
     file_path: Path | None = None
 
 
+@dataclass(slots=True)
+class DuplicateCandidateCache:
+    cache_id: str
+    root: str | None
+    path: str
+    absolute_path: str
+    recursive: bool
+    source: str
+    source_detail: str
+    filter_rules: tuple[dict, ...]
+    min_size: int
+    candidates: list[DuplicateFileCandidate]
+    scanned_file_count: int
+    complete: bool
+    created_at: float
+    last_accessed_at: float
+
+
+@dataclass(slots=True)
+class DuplicateAnalysisTask:
+    task_id: str
+    query_signature: str
+    root: str | None
+    path: str
+    absolute_path: str
+    status: str
+    stage: str
+    message: str
+    groups: list[dict]
+    scanned_file_count: int
+    candidate_file_count: int
+    hash_computed_count: int
+    source: str
+    source_detail: str
+    complete: bool
+    scan_limit: int
+    snapshot_id: str
+    error: str | None
+    created_at: float
+    started_at: float | None
+    updated_at: float
+    finished_at: float | None
+
+
 @dataclass(frozen=True, slots=True)
 class VisualHashPrewarmCandidate:
     absolute_path: str
@@ -159,6 +209,11 @@ _media_listing_snapshots: OrderedDict[str, MediaListingSnapshot] = OrderedDict()
 _media_listing_snapshot_lock = RLock()
 _duplicate_listing_snapshots: OrderedDict[str, DuplicateListingSnapshot] = OrderedDict()
 _duplicate_listing_snapshot_lock = RLock()
+_duplicate_candidate_caches: OrderedDict[str, DuplicateCandidateCache] = OrderedDict()
+_duplicate_candidate_cache_lock = RLock()
+_duplicate_analysis_tasks: OrderedDict[str, DuplicateAnalysisTask] = OrderedDict()
+_duplicate_analysis_task_lock = RLock()
+_duplicate_analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="duplicate-analysis")
 _visual_hash_prewarm_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="device-visual-hash")
 _visual_hash_prewarm_lock = RLock()
 _visual_hash_prewarm_active_keys: set[str] = set()
@@ -1068,6 +1123,20 @@ def _get_duplicate_listing_snapshot(snapshot_id: str, query_signature: str) -> D
         return snapshot
 
 
+def _find_duplicate_listing_snapshot_by_signature(query_signature: str) -> DuplicateListingSnapshot | None:
+    now = time.time()
+    with _duplicate_listing_snapshot_lock:
+        for snapshot_id, snapshot in list(_duplicate_listing_snapshots.items()):
+            if now - snapshot.created_at > DUPLICATE_LISTING_SNAPSHOT_TTL_SECONDS:
+                _duplicate_listing_snapshots.pop(snapshot_id, None)
+                continue
+            if snapshot.query_signature == query_signature:
+                snapshot.last_accessed_at = now
+                _duplicate_listing_snapshots.move_to_end(snapshot_id)
+                return snapshot
+    return None
+
+
 def _store_duplicate_listing_snapshot(
     *,
     query_signature: str,
@@ -1105,6 +1174,108 @@ def _store_duplicate_listing_snapshot(
         while len(_duplicate_listing_snapshots) > DUPLICATE_LISTING_SNAPSHOT_LIMIT:
             _duplicate_listing_snapshots.popitem(last=False)
     return snapshot
+
+
+def _normalize_duplicate_scope_path(value: str) -> str:
+    return str(value or "").replace("\\", "/").rstrip("/").lower()
+
+
+def _is_duplicate_path_within_scope(parent_path: str, child_path: str) -> bool:
+    parent = _normalize_duplicate_scope_path(parent_path)
+    child = _normalize_duplicate_scope_path(child_path)
+    return bool(parent and (child == parent or child.startswith(f"{parent}/")))
+
+
+def _filter_duplicate_candidates_for_scope(
+    candidates: Iterable[DuplicateFileCandidate],
+    target_path: Path,
+    *,
+    min_size: int,
+) -> list[DuplicateFileCandidate]:
+    target = os.fspath(target_path.resolve(strict=False))
+    if target_path.is_file():
+        target_normalized = _normalize_duplicate_scope_path(target)
+        return [
+            candidate
+            for candidate in candidates
+            if candidate.size >= min_size and _normalize_duplicate_scope_path(candidate.absolute_path) == target_normalized
+        ]
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.size >= min_size and _is_duplicate_path_within_scope(target, candidate.absolute_path)
+    ]
+
+
+def _find_duplicate_candidate_cache(
+    target_path: Path,
+    *,
+    source: str,
+    recursive: bool,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+) -> tuple[DuplicateCandidateCache, list[DuplicateFileCandidate]] | None:
+    now = time.time()
+    target_absolute = os.fspath(target_path.resolve(strict=False))
+    with _duplicate_candidate_cache_lock:
+        for cache_id, cache in list(_duplicate_candidate_caches.items()):
+            if now - cache.created_at > DUPLICATE_CANDIDATE_CACHE_TTL_SECONDS:
+                _duplicate_candidate_caches.pop(cache_id, None)
+                continue
+            if not cache.recursive or not recursive:
+                continue
+            if cache.filter_rules != filter_rules:
+                continue
+            if cache.min_size > min_size:
+                continue
+            if source != "auto" and cache.source != source:
+                continue
+            if not _is_duplicate_path_within_scope(cache.absolute_path, target_absolute):
+                continue
+            cache.last_accessed_at = now
+            _duplicate_candidate_caches.move_to_end(cache_id)
+            return cache, _filter_duplicate_candidates_for_scope(cache.candidates, target_path, min_size=min_size)
+    return None
+
+
+def _store_duplicate_candidate_cache(
+    *,
+    root: str | None,
+    path: str,
+    absolute_path: str,
+    recursive: bool,
+    source: str,
+    source_detail: str,
+    filter_rules: tuple[dict, ...],
+    min_size: int,
+    candidates: list[DuplicateFileCandidate],
+    scanned_file_count: int,
+    complete: bool,
+) -> None:
+    if not recursive or not candidates:
+        return
+    now = time.time()
+    cache = DuplicateCandidateCache(
+        cache_id=uuid4().hex,
+        root=root,
+        path=path,
+        absolute_path=absolute_path,
+        recursive=recursive,
+        source=source,
+        source_detail=source_detail,
+        filter_rules=filter_rules,
+        min_size=min_size,
+        candidates=list(candidates),
+        scanned_file_count=scanned_file_count,
+        complete=complete,
+        created_at=now,
+        last_accessed_at=now,
+    )
+    with _duplicate_candidate_cache_lock:
+        _duplicate_candidate_caches[cache.cache_id] = cache
+        _duplicate_candidate_caches.move_to_end(cache.cache_id)
+        while len(_duplicate_candidate_caches) > DUPLICATE_CANDIDATE_CACHE_LIMIT:
+            _duplicate_candidate_caches.popitem(last=False)
 
 
 def _iter_duplicate_candidate_paths(target_path: Path, *, recursive: bool) -> Iterator[Path]:
@@ -1550,6 +1721,108 @@ def _build_duplicate_listing_response(
         "complete": snapshot.complete,
         "groups": groups,
     }
+
+
+def _duplicate_task_snapshot(task: DuplicateAnalysisTask) -> DuplicateListingSnapshot:
+    return DuplicateListingSnapshot(
+        snapshot_id=task.snapshot_id,
+        query_signature=task.query_signature,
+        root=task.root,
+        path=task.path,
+        absolute_path=task.absolute_path,
+        groups=list(task.groups),
+        scanned_file_count=task.scanned_file_count,
+        candidate_file_count=task.candidate_file_count,
+        hash_computed_count=task.hash_computed_count,
+        source=task.source,
+        source_detail=task.source_detail,
+        complete=task.complete,
+        created_at=task.created_at,
+        last_accessed_at=task.updated_at,
+    )
+
+
+def _build_duplicate_task_response(
+    task: DuplicateAnalysisTask,
+    *,
+    page: int,
+    page_size: int,
+) -> dict:
+    listing = _build_duplicate_listing_response(
+        _duplicate_task_snapshot(task),
+        page=page,
+        page_size=page_size,
+    )
+    now = time.time()
+    elapsed_start = task.started_at or task.created_at
+    listing.update(
+        {
+            "task_id": task.task_id,
+            "status": task.status,
+            "stage": task.stage,
+            "message": task.message,
+            "running": task.status in {"queued", "running"},
+            "error": task.error,
+            "scan_limit": task.scan_limit,
+            "hit_scan_limit": task.scanned_file_count >= task.scan_limit and not task.complete,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "updated_at": task.updated_at,
+            "finished_at": task.finished_at,
+            "elapsed_ms": int(max(0, (task.finished_at or now) - elapsed_start) * 1000),
+        }
+    )
+    return listing
+
+
+def _store_duplicate_analysis_task(task: DuplicateAnalysisTask) -> None:
+    with _duplicate_analysis_task_lock:
+        _duplicate_analysis_tasks[task.task_id] = task
+        _duplicate_analysis_tasks.move_to_end(task.task_id)
+        now = time.time()
+        for task_id, existing in list(_duplicate_analysis_tasks.items()):
+            if (
+                len(_duplicate_analysis_tasks) <= DUPLICATE_ANALYSIS_TASK_LIMIT
+                and now - existing.created_at <= DUPLICATE_ANALYSIS_TASK_TTL_SECONDS
+            ):
+                continue
+            if existing.status in {"queued", "running"}:
+                continue
+            _duplicate_analysis_tasks.pop(task_id, None)
+
+
+def _update_duplicate_analysis_task(task_id: str, **changes: object) -> DuplicateAnalysisTask | None:
+    with _duplicate_analysis_task_lock:
+        task = _duplicate_analysis_tasks.get(task_id)
+        if task is None:
+            return None
+        for key, value in changes.items():
+            if hasattr(task, key):
+                setattr(task, key, value)
+        task.updated_at = time.time()
+        _duplicate_analysis_tasks.move_to_end(task_id)
+        return task
+
+
+def get_duplicate_analysis_task_snapshot(
+    task_id: str,
+    *,
+    page: int = 1,
+    page_size: int = DUPLICATE_LISTING_PAGE_SIZE,
+) -> dict:
+    normalized_task_id = str(task_id or "").strip()
+    with _duplicate_analysis_task_lock:
+        task = _duplicate_analysis_tasks.get(normalized_task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Duplicate analysis task not found")
+        task.updated_at = time.time()
+        _duplicate_analysis_tasks.move_to_end(normalized_task_id)
+        snapshot = _build_duplicate_task_response(
+            task,
+            page=page,
+            page_size=page_size,
+        )
+    return snapshot
 
 
 def _should_hash_scanned_file(
@@ -2217,6 +2490,457 @@ def list_duplicate_file_groups(
     )
     return _build_duplicate_listing_response(
         snapshot,
+        page=normalized_page,
+        page_size=normalized_page_size,
+    )
+
+
+def _complete_duplicate_analysis_task_from_snapshot(
+    *,
+    query_signature: str,
+    snapshot: DuplicateListingSnapshot,
+    scan_limit: int,
+    message: str,
+) -> DuplicateAnalysisTask:
+    now = time.time()
+    task = DuplicateAnalysisTask(
+        task_id=uuid4().hex,
+        query_signature=query_signature,
+        root=snapshot.root,
+        path=snapshot.path,
+        absolute_path=snapshot.absolute_path,
+        status="completed",
+        stage="cached",
+        message=message,
+        groups=list(snapshot.groups),
+        scanned_file_count=snapshot.scanned_file_count,
+        candidate_file_count=snapshot.candidate_file_count,
+        hash_computed_count=snapshot.hash_computed_count,
+        source=snapshot.source,
+        source_detail=snapshot.source_detail,
+        complete=snapshot.complete,
+        scan_limit=scan_limit,
+        snapshot_id=snapshot.snapshot_id,
+        error=None,
+        created_at=now,
+        started_at=now,
+        updated_at=now,
+        finished_at=now,
+    )
+    _store_duplicate_analysis_task(task)
+    return task
+
+
+def _finish_duplicate_analysis_task(
+    task_id: str,
+    *,
+    query_signature: str,
+    root: str | None,
+    path: str,
+    absolute_path: str,
+    groups: list[dict],
+    scanned_file_count: int,
+    candidate_file_count: int,
+    hash_computed_count: int,
+    source: str,
+    source_detail: str,
+    complete: bool,
+) -> None:
+    snapshot = _store_duplicate_listing_snapshot(
+        query_signature=query_signature,
+        root=root,
+        path=path,
+        absolute_path=absolute_path,
+        groups=groups,
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=candidate_file_count,
+        hash_computed_count=hash_computed_count,
+        source=source,
+        source_detail=source_detail,
+        complete=complete,
+    )
+    now = time.time()
+    _update_duplicate_analysis_task(
+        task_id,
+        status="completed",
+        stage="completed",
+        message="分析完成",
+        groups=groups,
+        scanned_file_count=scanned_file_count,
+        candidate_file_count=candidate_file_count,
+        hash_computed_count=hash_computed_count,
+        source=source,
+        source_detail=source_detail,
+        complete=complete,
+        snapshot_id=snapshot.snapshot_id,
+        error=None,
+        finished_at=now,
+    )
+
+
+def _run_duplicate_analysis_task(
+    task_id: str,
+    target_path: Path,
+    resolved: dict,
+    *,
+    query_signature: str,
+    recursive: bool,
+    rules: tuple[str, ...],
+    filter_rules: tuple[dict, ...],
+    sort_mode: str,
+    source: str,
+    min_size: int,
+    scan_limit: int,
+) -> None:
+    now = time.time()
+    _update_duplicate_analysis_task(
+        task_id,
+        status="running",
+        stage="starting",
+        message="准备分析",
+        started_at=now,
+    )
+
+    def publish_partial(
+        *,
+        candidates: list[DuplicateFileCandidate],
+        scanned_file_count: int,
+        source_name: str,
+        source_detail: str,
+        message: str,
+        force_groups: bool = False,
+    ) -> None:
+        groups: list[dict] = []
+        hash_computed_count = 0
+        if candidates and "sha256" not in rules and force_groups:
+            groups, hash_computed_count = _build_duplicate_groups(
+                list(candidates),
+                rules=rules,
+                sort_mode=sort_mode,
+            )
+        _update_duplicate_analysis_task(
+            task_id,
+            groups=groups,
+            scanned_file_count=scanned_file_count,
+            candidate_file_count=len(candidates),
+            hash_computed_count=hash_computed_count,
+            source=source_name,
+            source_detail=source_detail,
+            message=message,
+        )
+
+    try:
+        cached_candidates = _find_duplicate_candidate_cache(
+            target_path,
+            source=source,
+            recursive=recursive,
+            filter_rules=filter_rules,
+            min_size=min_size,
+        )
+        if cached_candidates is not None:
+            cache, candidates = cached_candidates
+            _update_duplicate_analysis_task(
+                task_id,
+                stage="cached",
+                message="复用已扫描缓存",
+                source=cache.source,
+                source_detail=f"cache: {cache.source_detail}",
+                scanned_file_count=len(candidates),
+                candidate_file_count=len(candidates),
+            )
+            groups, hash_computed_count = _build_duplicate_groups(
+                candidates,
+                rules=rules,
+                sort_mode=sort_mode,
+            )
+            _finish_duplicate_analysis_task(
+                task_id,
+                query_signature=query_signature,
+                root=resolved["root"],
+                path=resolved["path"],
+                absolute_path=resolved["absolute_path"],
+                groups=groups,
+                scanned_file_count=len(candidates),
+                candidate_file_count=len(candidates),
+                hash_computed_count=hash_computed_count,
+                source=cache.source,
+                source_detail=f"cache: {cache.source_detail}",
+                complete=cache.complete,
+            )
+            return
+
+        if source in {"auto", "everything"}:
+            _update_duplicate_analysis_task(
+                task_id,
+                stage="everything",
+                message="正在调用 Everything",
+                source="everything",
+                source_detail="Everything ES",
+            )
+            everything_result = _load_duplicate_candidates_from_everything(
+                target_path,
+                resolved=resolved,
+                rules=rules,
+                filter_rules=filter_rules,
+                min_size=min_size,
+                scan_limit=scan_limit,
+            )
+            if everything_result is not None:
+                candidates, source_detail = everything_result
+                complete = len(candidates) < scan_limit
+                _update_duplicate_analysis_task(
+                    task_id,
+                    stage="grouping",
+                    message="正在整理重复组",
+                    scanned_file_count=len(candidates),
+                    candidate_file_count=len(candidates),
+                    source="everything",
+                    source_detail=source_detail,
+                    complete=complete,
+                )
+                groups, hash_computed_count = _build_duplicate_groups(
+                    candidates,
+                    rules=rules,
+                    sort_mode=sort_mode,
+                )
+                _store_duplicate_candidate_cache(
+                    root=resolved["root"],
+                    path=resolved["path"],
+                    absolute_path=resolved["absolute_path"],
+                    recursive=recursive,
+                    source="everything",
+                    source_detail=source_detail,
+                    filter_rules=filter_rules,
+                    min_size=min_size,
+                    candidates=candidates,
+                    scanned_file_count=len(candidates),
+                    complete=complete,
+                )
+                _finish_duplicate_analysis_task(
+                    task_id,
+                    query_signature=query_signature,
+                    root=resolved["root"],
+                    path=resolved["path"],
+                    absolute_path=resolved["absolute_path"],
+                    groups=groups,
+                    scanned_file_count=len(candidates),
+                    candidate_file_count=len(candidates),
+                    hash_computed_count=hash_computed_count,
+                    source="everything",
+                    source_detail=source_detail,
+                    complete=complete,
+                )
+                return
+            if source == "everything":
+                raise HTTPException(status_code=501, detail="Everything ES is not available on this device")
+
+        candidates: list[DuplicateFileCandidate] = []
+        scanned_file_count = 0
+        complete = True
+        root_path = None if resolved["is_absolute"] else resolve_root_path(resolved["root"])
+        last_publish_time = time.monotonic()
+        last_publish_candidate_count = 0
+        _update_duplicate_analysis_task(
+            task_id,
+            stage="scanning",
+            message="正在遍历文件",
+            source="filesystem",
+            source_detail="filesystem traversal",
+        )
+        for file_path in _iter_duplicate_candidate_paths(target_path, recursive=recursive):
+            candidate = _build_duplicate_candidate_from_path(file_path, resolved=resolved, root_path=root_path)
+            if candidate is None:
+                continue
+            scanned_file_count += 1
+            if _duplicate_path_allowed(candidate.absolute_path, filter_rules) and candidate.size >= min_size:
+                candidates.append(candidate)
+            if scanned_file_count >= scan_limit:
+                complete = False
+                break
+
+            now_monotonic = time.monotonic()
+            candidate_delta = len(candidates) - last_publish_candidate_count
+            if (
+                now_monotonic - last_publish_time >= DUPLICATE_PARTIAL_GROUP_INTERVAL_SECONDS
+                or candidate_delta >= DUPLICATE_PARTIAL_GROUP_CANDIDATE_STEP
+            ):
+                last_publish_time = now_monotonic
+                last_publish_candidate_count = len(candidates)
+                publish_partial(
+                    candidates=candidates,
+                    scanned_file_count=scanned_file_count,
+                    source_name="filesystem",
+                    source_detail="filesystem traversal",
+                    message="正在遍历文件",
+                    force_groups="sha256" not in rules,
+                )
+
+        _update_duplicate_analysis_task(
+            task_id,
+            stage="hashing" if "sha256" in rules else "grouping",
+            message="正在计算哈希" if "sha256" in rules else "正在整理重复组",
+            scanned_file_count=scanned_file_count,
+            candidate_file_count=len(candidates),
+            source="filesystem",
+            source_detail="filesystem traversal",
+            complete=complete,
+        )
+        groups, hash_computed_count = _build_duplicate_groups(
+            candidates,
+            rules=rules,
+            sort_mode=sort_mode,
+        )
+        _store_duplicate_candidate_cache(
+            root=resolved["root"],
+            path=resolved["path"],
+            absolute_path=resolved["absolute_path"],
+            recursive=recursive,
+            source="filesystem",
+            source_detail="filesystem traversal",
+            filter_rules=filter_rules,
+            min_size=min_size,
+            candidates=candidates,
+            scanned_file_count=scanned_file_count,
+            complete=complete,
+        )
+        _finish_duplicate_analysis_task(
+            task_id,
+            query_signature=query_signature,
+            root=resolved["root"],
+            path=resolved["path"],
+            absolute_path=resolved["absolute_path"],
+            groups=groups,
+            scanned_file_count=scanned_file_count,
+            candidate_file_count=len(candidates),
+            hash_computed_count=hash_computed_count,
+            source="filesystem",
+            source_detail="filesystem traversal",
+            complete=complete,
+        )
+    except Exception as exc:
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        now = time.time()
+        _update_duplicate_analysis_task(
+            task_id,
+            status="failed",
+            stage="failed",
+            message=str(detail),
+            error=str(detail),
+            finished_at=now,
+            complete=False,
+        )
+
+
+def start_duplicate_file_analysis(
+    root_key: Optional[str] = None,
+    rel_path: str = "",
+    absolute_path: str = "",
+    *,
+    recursive: bool = True,
+    rules: Iterable[str] | None = None,
+    filter_rules: Iterable[DuplicatePathFilterRule | dict | object] | None = None,
+    sort_mode: DuplicateSortMode = "reclaimable",
+    source: DuplicateSourceMode = "auto",
+    min_size: int = 1024 * 1024,
+    scan_limit: int = DEFAULT_DUPLICATE_SCAN_LIMIT,
+    page: int = 1,
+    page_size: int = DUPLICATE_LISTING_PAGE_SIZE,
+) -> dict:
+    if _normalize_input_path(absolute_path) == DEVICE_ROOT_SENTINEL:
+        raise HTTPException(status_code=400, detail="Please choose a concrete disk or directory")
+
+    target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
+    if not target_path.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target_path.is_dir() and not target_path.is_file():
+        raise HTTPException(status_code=400, detail="Path is neither file nor directory")
+
+    normalized_rules = _normalize_duplicate_rules(rules)
+    normalized_filter_rules = _normalize_duplicate_filter_rules(filter_rules)
+    normalized_min_size = _normalize_duplicate_min_size(min_size)
+    normalized_scan_limit = _normalize_duplicate_scan_limit(scan_limit)
+    normalized_page = _normalize_duplicate_page(page)
+    normalized_page_size = _normalize_duplicate_page_size(page_size)
+    normalized_source = source if source in {"auto", "everything", "filesystem"} else "auto"
+    normalized_sort_mode = sort_mode if sort_mode in {"file_size", "group_total", "reclaimable"} else "reclaimable"
+    query_signature = _build_duplicate_query_signature(
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        recursive=recursive,
+        rules=normalized_rules,
+        filter_rules=normalized_filter_rules,
+        sort_mode=normalized_sort_mode,
+        source=normalized_source,
+        min_size=normalized_min_size,
+        scan_limit=normalized_scan_limit,
+    )
+
+    with _duplicate_analysis_task_lock:
+        for task in _duplicate_analysis_tasks.values():
+            if task.query_signature == query_signature and task.status in {"queued", "running"}:
+                return _build_duplicate_task_response(
+                    task,
+                    page=normalized_page,
+                    page_size=normalized_page_size,
+                )
+
+    cached_snapshot = _find_duplicate_listing_snapshot_by_signature(query_signature)
+    if cached_snapshot is not None:
+        task = _complete_duplicate_analysis_task_from_snapshot(
+            query_signature=query_signature,
+            snapshot=cached_snapshot,
+            scan_limit=normalized_scan_limit,
+            message="复用查询缓存",
+        )
+        return _build_duplicate_task_response(
+            task,
+            page=normalized_page,
+            page_size=normalized_page_size,
+        )
+
+    now = time.time()
+    task = DuplicateAnalysisTask(
+        task_id=uuid4().hex,
+        query_signature=query_signature,
+        root=resolved["root"],
+        path=resolved["path"],
+        absolute_path=resolved["absolute_path"],
+        status="queued",
+        stage="queued",
+        message="已加入分析队列",
+        groups=[],
+        scanned_file_count=0,
+        candidate_file_count=0,
+        hash_computed_count=0,
+        source=normalized_source,
+        source_detail="",
+        complete=False,
+        scan_limit=normalized_scan_limit,
+        snapshot_id="",
+        error=None,
+        created_at=now,
+        started_at=None,
+        updated_at=now,
+        finished_at=None,
+    )
+    _store_duplicate_analysis_task(task)
+    _duplicate_analysis_executor.submit(
+        _run_duplicate_analysis_task,
+        task.task_id,
+        target_path,
+        resolved,
+        query_signature=query_signature,
+        recursive=recursive,
+        rules=normalized_rules,
+        filter_rules=normalized_filter_rules,
+        sort_mode=normalized_sort_mode,
+        source=normalized_source,
+        min_size=normalized_min_size,
+        scan_limit=normalized_scan_limit,
+    )
+    return _build_duplicate_task_response(
+        task,
         page=normalized_page,
         page_size=normalized_page_size,
     )
@@ -3480,7 +4204,12 @@ def delete_path_with_permission_retry(target):
             except Exception as retry_exc:
                 append_skipped(skipped, path, retry_exc)
 
-        shutil.rmtree(target, onexc=retry_after_chmod)
+        try:
+            shutil.rmtree(target, onexc=retry_after_chmod)
+        except Exception as exc:
+            if not skipped:
+                raise
+            append_skipped(skipped, target, exc)
         return skipped
 
     try:
@@ -4650,6 +5379,29 @@ def list_duplicates(req: DuplicateListRequest):
         page=req.page,
         page_size=req.page_size,
     )
+
+
+@router.post("/duplicates/tasks")
+def start_duplicates_task(req: DuplicateListRequest):
+    return start_duplicate_file_analysis(
+        req.root,
+        req.path,
+        absolute_path=req.absolute_path,
+        recursive=req.recursive,
+        rules=req.rules,
+        filter_rules=req.filter_rules,
+        sort_mode=req.sort_mode,
+        source=req.source,
+        min_size=req.min_size,
+        scan_limit=req.scan_limit,
+        page=req.page,
+        page_size=req.page_size,
+    )
+
+
+@router.get("/duplicates/tasks/{task_id}")
+def get_duplicates_task(task_id: str, page: int = Query(1, ge=1), page_size: int = Query(DUPLICATE_LISTING_PAGE_SIZE, ge=1, le=50)):
+    return get_duplicate_analysis_task_snapshot(task_id, page=page, page_size=page_size)
 
 
 @router.post("/delete")

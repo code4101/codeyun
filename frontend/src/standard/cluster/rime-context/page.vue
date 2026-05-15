@@ -8,6 +8,7 @@ import {
   deleteRimeContextArticle,
   fetchRimeContextArticles,
   fetchRimeContextHistoryArticle,
+  fetchRimeContextLint,
   fetchRimeContextPredictionTree,
   importRimeContextArticle,
   importRimeContextDeviceHistory,
@@ -18,6 +19,8 @@ import {
   type RimeContextArticle,
   type RimeContextArticlesResponse,
   type RimeContextHistoryArticleResponse,
+  type RimeContextLintIssue,
+  type RimeContextLintResponse,
   type RimeContextPredictionRow,
   type RimeContextPredictionTree,
 } from '@/api/rimeContextPrediction';
@@ -44,14 +47,17 @@ interface ContextTailGroup {
   totalWeight: number;
 }
 
-type RimeView = 'index' | 'history' | 'articles';
+type RimeView = 'index' | 'history' | 'articles' | 'lint';
+type IndexScope = 'summary' | 'detail';
+type PrefixScope = 'summary' | 'detail';
 
-const HISTORY_PAGE_SIZE = 100;
+const HISTORY_PAGE_SIZE = 2000;
 
 const route = useRoute();
 const router = useRouter();
 
 const routeView = (value: unknown): RimeView => {
+  if (value === 'lint') return 'lint';
   if (value === 'articles') return 'articles';
   if (value === 'history') return 'history';
   return 'index';
@@ -62,6 +68,7 @@ const loadingDevices = ref(false);
 const loadingTree = ref(false);
 const loadingArticles = ref(false);
 const loadingHistory = ref(false);
+const loadingLint = ref(false);
 const savingHistory = ref(false);
 const selectedEntryId = ref(
   Array.isArray(route.query.entry_id)
@@ -73,9 +80,16 @@ const searchText = ref('');
 const selectedTailKey = ref('');
 const selectedContextKey = ref('');
 const selectedPrefixKey = ref('');
+const selectedIndexScope = ref<IndexScope>('summary');
+const selectedPrefixScope = ref<PrefixScope>('detail');
 const tree = ref<RimeContextPredictionTree | null>(null);
 const articlesState = ref<RimeContextArticlesResponse | null>(null);
 const historyState = ref<RimeContextHistoryArticleResponse | null>(null);
+const lintState = ref<RimeContextLintResponse | null>(null);
+const lintSource = ref<'all' | 'history' | 'articles'>('all');
+const lintMode = ref<'rules' | 'ai'>('rules');
+const lintLoadedSource = ref<'all' | 'history' | 'articles'>('all');
+const lintLoadedMode = ref<'rules' | 'ai'>('rules');
 const historyPage = ref(1);
 const historyEditing = ref(false);
 const historyDraft = ref('');
@@ -109,8 +123,14 @@ const hasDevices = computed(() => devices.value.length > 0);
 const normalizedSearch = computed(() => searchText.value.trim().toLowerCase());
 const articleSummary = computed(() => articlesState.value?.summary || unavailableArticles('').summary);
 const historySummary = computed(() => historyState.value?.summary || unavailableHistoryArticle('').summary);
+const lintSummary = computed(() => lintState.value?.summary || unavailableLint('').summary);
 const historyPagination = computed(() => historyState.value?.pagination || null);
 const articles = computed(() => articlesState.value?.articles || []);
+const lintIssues = computed(() => lintState.value?.issues || []);
+const lintIsStale = computed(() => Boolean(
+  lintState.value
+  && (lintLoadedSource.value !== lintSource.value || lintLoadedMode.value !== lintMode.value),
+));
 const canImportArticle = computed(() => Boolean(selectedEntryId.value && articlesState.value?.available));
 const historySourceDevices = computed(() => devices.value.filter((device) => device.id !== selectedEntryId.value));
 const canImportDeviceHistory = computed(() => Boolean(
@@ -219,6 +239,24 @@ const unavailableHistoryArticle = (message: string, status = 'request_failed'): 
   content: '',
 });
 
+const unavailableLint = (message: string, status = 'request_failed'): RimeContextLintResponse => ({
+  available: false,
+  status,
+  message,
+  rime_dir: null,
+  files: [],
+  summary: {
+    source_count: 0,
+    issue_count: 0,
+    high_count: 0,
+    medium_count: 0,
+    low_count: 0,
+    rule_count: 0,
+    ai_count: 0,
+  },
+  issues: [],
+});
+
 const groupedContexts = computed<ContextGroup[]>(() => {
   const contextMap = new Map<string, Map<string, RimeContextPredictionRow[]>>();
   for (const row of tree.value?.rows || []) {
@@ -295,7 +333,7 @@ const contextTailGroups = computed<ContextTailGroup[]>(() => {
     groupMap.get(key)!.push(context);
   }
 
-  return Array.from(groupMap.entries()).map(([key, contexts]) => {
+  const groups = Array.from(groupMap.entries()).map(([key, contexts]) => {
     const sortedContexts = contexts.slice().sort((left, right) => (
       right.rowCount - left.rowCount || left.key.localeCompare(right.key, 'zh-CN')
     ));
@@ -307,6 +345,7 @@ const contextTailGroups = computed<ContextTailGroup[]>(() => {
       totalWeight: sortedContexts.reduce((sum, item) => sum + item.totalWeight, 0),
     };
   }).sort((left, right) => right.rowCount - left.rowCount || left.key.localeCompare(right.key, 'zh-CN'));
+  return groups;
 });
 
 const selectedTailGroup = computed(() => (
@@ -321,13 +360,86 @@ const selectedContext = computed(() => (
   || null
 ));
 
+const aggregatePrefixGroups = (contexts: ContextGroup[]): PrefixGroup[] => {
+  const prefixMap = new Map<string, Map<string, RimeContextPredictionRow>>();
+  for (const context of contexts) {
+    for (const prefix of context.prefixes) {
+      if (!prefixMap.has(prefix.key)) {
+        prefixMap.set(prefix.key, new Map());
+      }
+      const candidateMap = prefixMap.get(prefix.key)!;
+      for (const row of prefix.rows) {
+        const existing = candidateMap.get(row.candidate);
+        if (existing) {
+          existing.weight += Number(row.weight || 0);
+        } else {
+          candidateMap.set(row.candidate, {
+            context: selectedTailGroup.value?.key || '',
+            prefix: prefix.key,
+            candidate: row.candidate,
+            weight: Number(row.weight || 0),
+            comment: '',
+          });
+        }
+      }
+    }
+  }
+
+  return Array.from(prefixMap.entries()).map(([prefix, rowsByCandidate]) => {
+    const rows = Array.from(rowsByCandidate.values()).sort((left, right) => (
+      Number(right.weight || 0) - Number(left.weight || 0)
+      || left.candidate.localeCompare(right.candidate, 'zh-CN')
+    ));
+    return {
+      key: prefix,
+      rows,
+      totalWeight: rows.reduce((sum, row) => sum + Number(row.weight || 0), 0),
+    };
+  }).sort(comparePrefixGroups);
+};
+
+const summaryPrefixGroups = computed(() => aggregatePrefixGroups(selectedTailGroup.value?.contexts || []));
+
+const activePrefixGroups = computed(() => (
+  selectedIndexScope.value === 'summary'
+    ? summaryPrefixGroups.value
+    : (selectedContext.value?.prefixes || [])
+));
+
 const selectedPrefix = computed(() => {
-  const context = selectedContext.value;
-  if (!context) return null;
-  return context.prefixes.find((item) => item.key === selectedPrefixKey.value) || context.prefixes[0] || null;
+  const prefixes = activePrefixGroups.value;
+  return prefixes.find((item) => item.key === selectedPrefixKey.value) || prefixes[0] || null;
 });
 
-const selectedRows = computed(() => selectedPrefix.value?.rows || []);
+const prefixSummaryRows = computed(() => {
+  const candidateMap = new Map<string, RimeContextPredictionRow>();
+  for (const prefix of activePrefixGroups.value) {
+    for (const row of prefix.rows) {
+      const existing = candidateMap.get(row.candidate);
+      if (existing) {
+        existing.weight += Number(row.weight || 0);
+      } else {
+        candidateMap.set(row.candidate, {
+          ...row,
+          prefix: '',
+          weight: Number(row.weight || 0),
+          comment: '',
+        });
+      }
+    }
+  }
+  return Array.from(candidateMap.values()).sort((left, right) => (
+  Number(right.weight || 0) - Number(left.weight || 0)
+  || left.candidate.localeCompare(right.candidate, 'zh-CN')
+  ));
+});
+
+const selectedRows = computed(() => (
+  selectedPrefixScope.value === 'summary'
+    ? prefixSummaryRows.value
+    : (selectedPrefix.value?.rows || [])
+));
+const canEditCandidateRows = computed(() => selectedIndexScope.value === 'detail' && selectedPrefixScope.value === 'detail');
 const summary = computed(() => tree.value?.summary || unavailableTree('').summary);
 const visibleFiles = computed(() => tree.value?.files || []);
 
@@ -348,6 +460,13 @@ const historyStatusType = computed(() => {
   if (!historyState.value) return 'info';
   if (historyState.value.status === 'ready') return 'success';
   if (historyState.value.status === 'empty') return 'warning';
+  return 'info';
+});
+
+const lintStatusType = computed(() => {
+  if (!lintState.value) return 'info';
+  if (lintState.value.status === 'ready') return lintSummary.value.issue_count ? 'warning' : 'success';
+  if (lintState.value.status === 'empty') return 'warning';
   return 'info';
 });
 
@@ -399,24 +518,47 @@ const historyStatusText = computed(() => {
   return labels[status] || '未知';
 });
 
+const lintStatusText = computed(() => {
+  const status = lintState.value?.status || '';
+  const labels: Record<string, string> = {
+    ready: lintSummary.value.issue_count ? '有建议' : '未发现问题',
+    empty: '暂无语料',
+    rime_missing: '未安装',
+    remote_unsupported: '旧版设备',
+    remote_unreachable: '不可达',
+    remote_error: '远端异常',
+    read_error: '读取失败',
+    request_failed: '请求失败',
+    unsupported_platform: '不支持',
+  };
+  return labels[status] || '未知';
+});
+
 const currentStatusType = computed(() => {
+  if (activeView.value === 'lint') return lintStatusType.value;
   if (activeView.value === 'articles') return articleStatusType.value;
   if (activeView.value === 'history') return historyStatusType.value;
   return statusType.value;
 });
 const currentStatusText = computed(() => {
+  if (activeView.value === 'lint') return lintStatusText.value;
   if (activeView.value === 'articles') return articleStatusText.value;
   if (activeView.value === 'history') return historyStatusText.value;
   return statusText.value;
 });
 
 const refreshButtonLoading = computed(() => {
+  if (activeView.value === 'lint') return loadingLint.value;
   if (activeView.value === 'articles') return loadingArticles.value;
   if (activeView.value === 'history') return loadingHistory.value;
   return loadingTree.value;
 });
 
-const refreshButtonText = computed(() => (activeView.value === 'index' ? '更新索引' : '刷新'));
+const refreshButtonText = computed(() => {
+  if (activeView.value === 'index') return '更新索引';
+  if (activeView.value === 'lint') return '检查';
+  return '刷新';
+});
 
 const deviceMeta = (device: Device | null) => {
   if (!device) return '';
@@ -457,6 +599,24 @@ const formatHistoryRange = (firstSeen: string, lastSeen: string) => {
 
 const candidateRowKey = (row: RimeContextPredictionRow) => `${row.context}\t${row.prefix}\t${row.candidate}`;
 const articleHashShort = (value: string) => (value ? value.slice(0, 10) : '');
+const lintSourceLabel = (value: string) => {
+  if (value === 'history') return '输入历史';
+  if (value === 'article') return '导入文章';
+  return value || '语料';
+};
+const lintSeverityLabel = (value: string) => {
+  if (value === 'high') return '高';
+  if (value === 'medium') return '中';
+  if (value === 'low') return '低';
+  return value || '-';
+};
+const lintSeverityType = (value: string) => {
+  if (value === 'high') return 'danger';
+  if (value === 'medium') return 'warning';
+  if (value === 'low') return 'info';
+  return 'info';
+};
+const lintConfidenceText = (value: number) => `${Math.round(Number(value || 0) * 100)}%`;
 
 const loadDevices = async () => {
   loadingDevices.value = true;
@@ -535,12 +695,37 @@ const loadHistoryArticle = async (page = historyPage.value) => {
   }
 };
 
+const loadLint = async () => {
+  if (!selectedEntryId.value) {
+    lintState.value = null;
+    return;
+  }
+  loadingLint.value = true;
+  try {
+    lintState.value = await fetchRimeContextLint(selectedEntryId.value, {
+      source: lintSource.value,
+      mode: lintMode.value,
+      limit: 200,
+    });
+    lintLoadedSource.value = lintSource.value;
+    lintLoadedMode.value = lintMode.value;
+  } catch (err: any) {
+    lintState.value = unavailableLint(err.response?.data?.detail || err.message || '语料检查失败。');
+  } finally {
+    loadingLint.value = false;
+  }
+};
+
 const changeHistoryPage = async (page: number) => {
   if (loadingHistory.value || historyEditing.value) return;
   await loadHistoryArticle(Math.max(1, page));
 };
 
 const loadActiveView = async () => {
+  if (activeView.value === 'lint') {
+    await loadLint();
+    return;
+  }
   if (activeView.value === 'articles') {
     await loadArticles();
     return;
@@ -564,6 +749,10 @@ const handleDeviceChange = async () => {
 };
 
 const handleRefresh = async () => {
+  if (activeView.value === 'lint') {
+    await loadLint();
+    return;
+  }
   if (activeView.value === 'articles') {
     await loadArticles();
     return;
@@ -599,9 +788,10 @@ const startHistoryEdit = async () => {
   }
 };
 
-const cancelHistoryEdit = () => {
-  historyDraft.value = historyState.value?.content || '';
+const cancelHistoryEdit = async () => {
   historyEditing.value = false;
+  historyDraft.value = '';
+  await loadHistoryArticle(historyPage.value || 1);
 };
 
 const saveHistoryEdit = async () => {
@@ -614,10 +804,10 @@ const saveHistoryEdit = async () => {
   savingHistory.value = true;
   try {
     historyState.value = await saveRimeContextHistoryArticle(selectedEntryId.value, { content });
-    historyDraft.value = historyState.value.content || '';
     historyEditing.value = false;
     ElMessage.success('输入历史修订稿已保存');
     historyPage.value = 1;
+    await loadHistoryArticle(1);
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || err.message || '保存输入历史失败');
   } finally {
@@ -849,13 +1039,13 @@ watch(selectedTailGroup, (group) => {
   }
 }, { immediate: true });
 
-watch(selectedContext, (context) => {
-  if (!context) {
+watch(activePrefixGroups, (prefixes) => {
+  if (!prefixes.length) {
     selectedPrefixKey.value = '';
     return;
   }
-  if (!context.prefixes.some((item) => item.key === selectedPrefixKey.value)) {
-    selectedPrefixKey.value = context.prefixes[0]?.key || '';
+  if (!prefixes.some((item) => item.key === selectedPrefixKey.value)) {
+    selectedPrefixKey.value = prefixes[0]?.key || '';
   }
 }, { immediate: true });
 
@@ -1001,6 +1191,8 @@ onMounted(async () => {
         <span v-if="activeView === 'index' && tree?.updated_at" class="muted">更新 {{ formatDateTime(tree.updated_at) }}</span>
         <span v-if="activeView === 'history' && historyState?.source" class="muted">来源 {{ historyState.source }}</span>
         <span v-if="activeView === 'history' && historyState?.updated_at" class="muted">更新 {{ formatDateTime(historyState.updated_at) }}</span>
+        <span v-if="activeView === 'lint' && lintIsStale" class="muted">参数已变更，点击检查后生效</span>
+        <span v-else-if="activeView === 'lint' && lintState?.message" class="muted">{{ lintState.message }}</span>
       </section>
 
       <nav class="rime-view-tabs" aria-label="小狼毫输入法视图">
@@ -1024,6 +1216,13 @@ onMounted(async () => {
           @click="switchView('articles')"
         >
           导入文章
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'lint' }"
+          @click="switchView('lint')"
+        >
+          语料检查
         </button>
       </nav>
 
@@ -1093,9 +1292,25 @@ onMounted(async () => {
                   <strong :title="displayContextTailTitle(selectedTailGroup)">{{ displayContextTail(selectedTailGroup.key) }}</strong>
                   <span>{{ formatNumber(selectedTailGroup.contextCount) }} 个前文片段</span>
                   <span>{{ formatNumber(selectedTailGroup.rowCount) }} 条记录</span>
+                  <div class="rime-scope-tabs" aria-label="索引查看方式">
+                    <button
+                      type="button"
+                      :class="{ 'is-active': selectedIndexScope === 'summary' }"
+                      @click="selectedIndexScope = 'summary'"
+                    >
+                      汇总
+                    </button>
+                    <button
+                      type="button"
+                      :class="{ 'is-active': selectedIndexScope === 'detail' }"
+                      @click="selectedIndexScope = 'detail'"
+                    >
+                      明细
+                    </button>
+                  </div>
                 </header>
 
-                <nav class="rime-context-tabs" aria-label="前文片段">
+                <nav v-if="selectedIndexScope === 'detail'" class="rime-context-tabs" aria-label="前文片段">
                   <button
                     v-for="context in selectedTailGroup.contexts"
                     :key="context.key"
@@ -1109,15 +1324,35 @@ onMounted(async () => {
                   </button>
                 </nav>
 
-                <section class="rime-selected-context">
-                  <span>前文片段</span>
-                  <strong :title="displayContextTitle(selectedContext.key)">{{ displayContext(selectedContext.key) }}</strong>
-                  <small>{{ formatNumber(selectedContext.prefixes.length) }} 个拼音</small>
+                <section class="rime-selected-prefix">
+                  <span>{{ selectedPrefixScope === 'summary' ? '候选分布' : '当前拼音' }}</span>
+                  <strong>{{ selectedPrefixScope === 'summary' ? '综合' : (selectedPrefix?.key || '-') }}</strong>
+                  <small>
+                    {{ selectedPrefixScope === 'summary'
+                      ? `${formatNumber(selectedRows.length)} 个候选词`
+                      : `${formatNumber(selectedRows.length)} 个候选词` }}
+                  </small>
+                  <div class="rime-scope-tabs" aria-label="当前拼音查看方式">
+                    <button
+                      type="button"
+                      :class="{ 'is-active': selectedPrefixScope === 'summary' }"
+                      @click="selectedPrefixScope = 'summary'"
+                    >
+                      汇总
+                    </button>
+                    <button
+                      type="button"
+                      :class="{ 'is-active': selectedPrefixScope === 'detail' }"
+                      @click="selectedPrefixScope = 'detail'"
+                    >
+                      明细
+                    </button>
+                  </div>
                 </section>
 
-                <nav class="rime-prefix-tabs" aria-label="当前拼音">
+                <nav v-if="selectedPrefixScope === 'detail'" class="rime-prefix-tabs" aria-label="当前拼音">
                   <button
-                    v-for="prefix in selectedContext.prefixes"
+                    v-for="prefix in activePrefixGroups"
                     :key="prefix.key"
                     type="button"
                     :class="{ 'is-active': selectedPrefix?.key === prefix.key }"
@@ -1134,7 +1369,7 @@ onMounted(async () => {
                     <tr>
                       <th>候选词</th>
                       <th>权重</th>
-                      <th></th>
+                      <th v-if="canEditCandidateRows"></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1142,12 +1377,13 @@ onMounted(async () => {
                       v-for="(row, index) in selectedRows"
                       :key="`${row.context}:${row.prefix}:${row.candidate}:${index}`"
                       class="candidate-row"
-                      :title="`双击修改：${row.candidate}`"
-                      @dblclick="openCandidateDialog(row)"
+                      :class="{ 'is-summary': !canEditCandidateRows }"
+                      :title="canEditCandidateRows ? `双击修改：${row.prefix} ${row.candidate}` : `汇总候选：${row.candidate}`"
+                      @dblclick="canEditCandidateRows && openCandidateDialog(row)"
                     >
                       <td>{{ row.candidate }}</td>
                       <td>{{ formatNumber(row.weight) }}</td>
-                      <td>
+                      <td v-if="canEditCandidateRows">
                         <el-button
                           link
                           type="danger"
@@ -1237,6 +1473,81 @@ onMounted(async () => {
           />
           <pre v-else>{{ historyState.content }}</pre>
         </article>
+      </section>
+
+      <section v-else-if="activeView === 'lint'" class="rime-lint" v-loading="loadingLint">
+        <section class="rime-summary">
+          <span><strong>问题</strong>{{ formatNumber(lintSummary.issue_count) }}</span>
+          <span><strong>高</strong>{{ formatNumber(lintSummary.high_count) }}</span>
+          <span><strong>中</strong>{{ formatNumber(lintSummary.medium_count) }}</span>
+          <span><strong>低</strong>{{ formatNumber(lintSummary.low_count) }}</span>
+          <span><strong>来源</strong>{{ formatNumber(lintSummary.source_count) }}</span>
+          <span v-if="lintSummary.ai_count"><strong>AI</strong>{{ formatNumber(lintSummary.ai_count) }}</span>
+          <span v-if="lintState?.rime_dir" class="summary-path" :title="lintState.rime_dir">
+            <strong>目录</strong>{{ lintState.rime_dir }}
+          </span>
+        </section>
+
+        <section class="rime-lint-controls">
+          <label class="rime-field rime-field-source">
+            <span>范围</span>
+            <el-select v-model="lintSource" class="rime-select" :disabled="loadingLint">
+              <el-option label="全部语料" value="all" />
+              <el-option label="输入历史" value="history" />
+              <el-option label="导入文章" value="articles" />
+            </el-select>
+          </label>
+          <label class="rime-field rime-field-source">
+            <span>方式</span>
+            <el-select v-model="lintMode" class="rime-select" :disabled="loadingLint">
+              <el-option label="规则预检" value="rules" />
+              <el-option label="AI 校对" value="ai" />
+            </el-select>
+          </label>
+        </section>
+
+        <section v-if="!lintState?.available" class="rime-unavailable">
+          <p>{{ lintState?.message || '请选择设备后开始语料检查。' }}</p>
+        </section>
+
+        <table v-else-if="lintIssues.length" class="rime-lint-table" aria-label="语料检查问题">
+          <thead>
+            <tr>
+              <th>级别</th>
+              <th>来源</th>
+              <th>位置</th>
+              <th>问题</th>
+              <th>原文</th>
+              <th>建议</th>
+              <th>置信</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="issue in lintIssues" :key="issue.id">
+              <td>
+                <el-tag size="small" :type="lintSeverityType(issue.severity)">
+                  {{ lintSeverityLabel(issue.severity) }}
+                </el-tag>
+              </td>
+              <td class="lint-source" :title="issue.source_title">
+                <span>{{ lintSourceLabel(issue.source_type) }}</span>
+                <small>{{ issue.source_title }}</small>
+              </td>
+              <td>{{ issue.line }}:{{ issue.column }}</td>
+              <td class="lint-message" :title="issue.message">
+                <strong>{{ issue.type }}</strong>
+                <span>{{ issue.message }}</span>
+              </td>
+              <td class="lint-text" :title="issue.excerpt">{{ issue.text }}</td>
+              <td class="lint-suggestion">{{ issue.suggestion || '-' }}</td>
+              <td>{{ lintConfidenceText(issue.confidence) }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div v-else class="rime-pane-empty article-empty">
+          没有发现需要处理的问题。
+        </div>
       </section>
 
       <section v-else class="rime-articles" v-loading="loadingArticles">
@@ -1433,6 +1744,10 @@ onMounted(async () => {
 
 .rime-field-search {
   width: 280px;
+}
+
+.rime-field-source {
+  width: 160px;
 }
 
 .rime-select {
@@ -1679,6 +1994,32 @@ onMounted(async () => {
   font-size: 13px;
 }
 
+.rime-scope-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 4px;
+  padding: 2px;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.rime-scope-tabs button {
+  height: 24px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: #667085;
+  padding: 0 8px;
+  cursor: pointer;
+}
+
+.rime-scope-tabs button.is-active {
+  background: #eaf2ff;
+  color: #1e5cc8;
+}
+
 .rime-context-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1717,7 +2058,7 @@ onMounted(async () => {
   color: #7b8794;
 }
 
-.rime-selected-context {
+.rime-selected-prefix {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -1726,7 +2067,7 @@ onMounted(async () => {
   color: #667085;
 }
 
-.rime-selected-context strong {
+.rime-selected-prefix strong {
   max-width: 560px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1735,7 +2076,7 @@ onMounted(async () => {
   font-size: 15px;
 }
 
-.rime-selected-context small {
+.rime-selected-prefix small {
   color: #7b8794;
 }
 
@@ -1781,10 +2122,83 @@ onMounted(async () => {
   cursor: pointer;
 }
 
+.candidate-row.is-summary td:first-child {
+  cursor: default;
+}
+
 .rime-articles {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+.rime-lint {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.rime-lint-controls {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #d8dee6;
+  background: #fff;
+}
+
+.rime-lint-table {
+  width: max-content;
+  min-width: 760px;
+  margin: 12px 14px 24px;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.rime-lint-table th,
+.rime-lint-table td {
+  border: 1px solid #e5e7eb;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.rime-lint-table th {
+  background: #f1f5f9;
+  color: #475569;
+  font-weight: 600;
+}
+
+.lint-source,
+.lint-message {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lint-source small,
+.lint-message span {
+  max-width: 360px;
+  color: #667085;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lint-text {
+  max-width: 260px;
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lint-suggestion {
+  max-width: 180px;
+  color: #0f766e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rime-history {
