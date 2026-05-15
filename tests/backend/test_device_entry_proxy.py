@@ -382,6 +382,61 @@ def test_local_entry_proxy_duplicate_files_uses_snapshot_for_pagination(client, 
     assert len(second_page["groups"]) == 1
 
 
+def test_local_entry_proxy_duplicate_file_task_reports_result_and_filters_paths(client, auth_user, test_device, tmp_path):
+    duplicate_root = tmp_path / "duplicate-task-root"
+    keep_dir = duplicate_root / "keep"
+    recycle_dir = duplicate_root / "$Recycle.Bin"
+    keep_dir.mkdir(parents=True)
+    recycle_dir.mkdir()
+    (keep_dir / "same-a.bin").write_bytes(b"same-content")
+    (keep_dir / "same-b.bin").write_bytes(b"same-content")
+    (recycle_dir / "same-c.bin").write_bytes(b"same-content")
+
+    entry_resp = client.post(
+        "/api/devices/add",
+        json={
+            "mode": "local",
+            "token": "local-entry-token",
+            "alias": "当前机器",
+        },
+    )
+    assert entry_resp.status_code == 200
+    entry_id = entry_resp.json()["id"]
+
+    start_resp = client.post(
+        f"/api/device-entries/{entry_id}/files/duplicates/tasks",
+        json={
+            "absolute_path": str(duplicate_root),
+            "source": "filesystem",
+            "min_size": 0,
+            "rules": ["size"],
+            "filter_rules": [
+                {"enabled": True, "action": "exclude", "match": "contains", "value": "$Recycle.Bin"}
+            ],
+        },
+    )
+    assert start_resp.status_code == 200
+    payload = start_resp.json()
+    assert payload["task_id"]
+
+    for _ in range(20):
+        status_resp = client.get(
+            f"/api/device-entries/{entry_id}/files/duplicates/tasks/{payload['task_id']}",
+            params={"page": 1, "page_size": 10},
+        )
+        assert status_resp.status_code == 200
+        payload = status_resp.json()
+        if payload["status"] in {"completed", "failed"}:
+            break
+        time.sleep(0.05)
+
+    assert payload["status"] == "completed"
+    assert payload["total_groups"] == 1
+    group = payload["groups"][0]
+    assert group["file_count"] == 2
+    assert {item["name"] for item in group["files"]} == {"same-a.bin", "same-b.bin"}
+
+
 def test_local_entry_proxy_supports_absolute_image_path(client, auth_user, test_device, tmp_path):
     image_dir = tmp_path / "absolute-images"
     image_dir.mkdir(parents=True, exist_ok=True)

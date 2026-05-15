@@ -3,13 +3,12 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Delete, Search, VideoPlay } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { HotTable } from '@handsontable/vue3'
-import { registerAllModules } from 'handsontable/registry'
 import type Handsontable from 'handsontable/base'
 import type { CellProperties, ColumnSettings } from 'handsontable/settings'
-import { registerLanguageDictionary, zhCN } from 'handsontable/i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useUserStore } from '@/store/userStore'
 import { formatNoteDateTimeDetailed } from '@/utils/noteDate'
+import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
 
 import 'handsontable/styles/handsontable.css'
 import 'handsontable/styles/ht-theme-main.css'
@@ -26,8 +25,7 @@ import {
   type AttendanceOrderRefundHistoryItem,
 } from '@/api/attendance'
 
-registerAllModules()
-registerLanguageDictionary(zhCN)
+registerCodeyunHandsontableModules()
 
 type InputOrderRow = {
   订单号: string

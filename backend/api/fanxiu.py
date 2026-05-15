@@ -33,7 +33,7 @@ from backend.core.fanxiu_inventory import (
     load_shouyuan_exploration_exchange_list,
     save_shouyuan_exploration_exchange_list,
 )
-from backend.core.fanxiu_processes import match_fanxiu_command_line, list_fanxiu_processes, terminate_fanxiu_processes
+from backend.core.fanxiu_processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
 from backend.core.fanxiu_region_data import (
     build_region_character_history_snapshot,
     build_region_character_snapshot,
@@ -2393,7 +2393,13 @@ def get_local_script_processes(
         items.append(
             {
                 **item,
-                "is_fanxiu": bool(match_fanxiu_command_line(str(item.get("command_line") or ""))),
+                "is_fanxiu": bool(
+                    match_fanxiu_process_fields(
+                        name=str(item.get("name") or ""),
+                        command_line=str(item.get("command_line") or ""),
+                        cwd=item.get("cwd"),
+                    )
+                ),
             }
         )
     return LocalScriptProcessListResponse(items=items)

@@ -34,6 +34,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "attendance_summary_monthly_templates",
         "attendance_fanbei_evening_steps",
         "attendance_fanbei_morning_steps",
+        "rime_config_sync",
         "storage_analysis",
     }.issubset(task_keys)
     assert "queue" in payload

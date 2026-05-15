@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 import csv
+from functools import lru_cache
 import hashlib
 import json
 import os
@@ -16,6 +17,7 @@ from pypinyin import Style, lazy_pinyin
 
 
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"
+RUNTIME_FILE = "context_prediction_runtime.tsv"
 COUNTS_FILE = "context_prediction_model_counts.tsv"
 SEED_FILE = "context_prediction.tsv"
 PENDING_FILE = "context_prediction_pending.tsv"
@@ -28,18 +30,180 @@ ARTICLE_CONTENT_DIR = "context_prediction_articles"
 ARTICLE_CONTRIBUTIONS_FILE = "context_prediction_article_counts.tsv"
 DELETED_CANDIDATES_FILE = "context_prediction_deleted_candidates.tsv"
 ARCHIVE_DIR = "context_prediction_archives"
+ENGLISH_DICT_FILE = "codeyun_english.dict.yaml"
+ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
+ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
+ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 
 ARTICLE_EXTRACTOR_VERSION = 1
 MAX_CONTEXT_TOKENS = 4
 MAX_ARTICLE_CHARS = 1_000_000
 DEFAULT_TOPK_PER_KEY = 20
+DEFAULT_RUNTIME_ROW_LIMIT = 5000
+DEFAULT_ENGLISH_LEARNED_ROW_LIMIT = 5000
 DEFAULT_HISTORY_ARTICLE_LIMIT = 20000
-DEFAULT_HISTORY_ARTICLE_PAGE_SIZE = 100
+DEFAULT_HISTORY_ARTICLE_PAGE_SIZE = 2000
 HISTORY_PARAGRAPH_GAP_SECONDS = 5 * 60
+DEFAULT_LINT_ISSUE_LIMIT = 200
+MAX_LINT_AI_CHARS = 8000
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]+")
 _SENTENCE_SPLIT_RE = re.compile(r"[\r\n。！？!?；;]+")
 _HISTORY_TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+_REPEATED_PUNCT_RE = re.compile(r"([，。！？!?、；;：:])\1+")
+_LOWER_LATIN_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_/-])([a-z]{6,})(?![A-Za-z0-9_/-])")
+_ENGLISH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9+#._-]{1,31})(?![A-Za-z0-9_])")
+_REPEATED_CJK_CHUNK_RE = re.compile(r"([\u3400-\u9fff]{2,6})\1+")
+
+_COMMON_TEXT_CORRECTIONS: tuple[tuple[str, str, str], ...] = (
+    ("才复合", "才符合", "这里表达“满足条件/一致”时通常应写“符合”。"),
+    ("不复合", "不符合", "这里表达“不满足条件”时通常应写“不符合”。"),
+    ("复合降序", "符合降序", "这里表达排序结果符合预期，通常应写“符合”。"),
+    ("复合要求", "符合要求", "这里表达满足要求，通常应写“符合要求”。"),
+    ("因该", "应该", "常见错别字，“应该”表示应当。"),
+    ("以经", "已经", "常见错别字，“已经”表示事情完成或发生。"),
+    ("必竟", "毕竟", "常见错别字，“毕竟”表示终究、到底。"),
+    ("帐号", "账号", "当前技术产品文案里通常写“账号”。"),
+)
+
+_LATIN_TOKEN_ALLOWLIST = {
+    "android",
+    "backend",
+    "chrome",
+    "codecli",
+    "codex",
+    "codeyun",
+    "context",
+    "deepseek",
+    "element",
+    "fastapi",
+    "fallback",
+    "frontend",
+    "github",
+    "javascript",
+    "localhost",
+    "openai",
+    "ollama",
+    "playwright",
+    "prediction",
+    "python",
+    "rime",
+    "typescript",
+    "windows",
+    "xlsx",
+}
+
+_PINYIN_SYLLABLES = {
+    "a", "ai", "an", "ang", "ao",
+    "ba", "bai", "ban", "bang", "bao", "bei", "ben", "beng", "bi", "bian", "biao", "bie", "bin", "bing", "bo", "bu",
+    "ca", "cai", "can", "cang", "cao", "ce", "cen", "ceng", "cha", "chai", "chan", "chang", "chao", "che", "chen", "cheng", "chi", "chong", "chou", "chu", "chua", "chuai", "chuan", "chuang", "chui", "chun", "chuo", "ci", "cong", "cou", "cu", "cuan", "cui", "cun", "cuo",
+    "da", "dai", "dan", "dang", "dao", "de", "dei", "den", "deng", "di", "dia", "dian", "diao", "die", "ding", "diu", "dong", "dou", "du", "duan", "dui", "dun", "duo",
+    "e", "ei", "en", "eng", "er",
+    "fa", "fan", "fang", "fei", "fen", "feng", "fo", "fou", "fu",
+    "ga", "gai", "gan", "gang", "gao", "ge", "gei", "gen", "geng", "gong", "gou", "gu", "gua", "guai", "guan", "guang", "gui", "gun", "guo",
+    "ha", "hai", "han", "hang", "hao", "he", "hei", "hen", "heng", "hong", "hou", "hu", "hua", "huai", "huan", "huang", "hui", "hun", "huo",
+    "ji", "jia", "jian", "jiang", "jiao", "jie", "jin", "jing", "jiong", "jiu", "ju", "juan", "jue", "jun",
+    "ka", "kai", "kan", "kang", "kao", "ke", "ken", "keng", "kong", "kou", "ku", "kua", "kuai", "kuan", "kuang", "kui", "kun", "kuo",
+    "la", "lai", "lan", "lang", "lao", "le", "lei", "leng", "li", "lia", "lian", "liang", "liao", "lie", "lin", "ling", "liu", "lo", "long", "lou", "lu", "luan", "lue", "lun", "luo", "lv", "lve",
+    "ma", "mai", "man", "mang", "mao", "me", "mei", "men", "meng", "mi", "mian", "miao", "mie", "min", "ming", "miu", "mo", "mou", "mu",
+    "na", "nai", "nan", "nang", "nao", "ne", "nei", "nen", "neng", "ni", "nian", "niang", "niao", "nie", "nin", "ning", "niu", "nong", "nou", "nu", "nuan", "nue", "nun", "nuo", "nv", "nve",
+    "o", "ou",
+    "pa", "pai", "pan", "pang", "pao", "pei", "pen", "peng", "pi", "pian", "piao", "pie", "pin", "ping", "po", "pou", "pu",
+    "qi", "qia", "qian", "qiang", "qiao", "qie", "qin", "qing", "qiong", "qiu", "qu", "quan", "que", "qun",
+    "ran", "rang", "rao", "re", "ren", "reng", "ri", "rong", "rou", "ru", "ruan", "rui", "run", "ruo",
+    "sa", "sai", "san", "sang", "sao", "se", "sen", "seng", "sha", "shai", "shan", "shang", "shao", "she", "shei", "shen", "sheng", "shi", "shou", "shu", "shua", "shuai", "shuan", "shuang", "shui", "shun", "shuo", "si", "song", "sou", "su", "suan", "sui", "sun", "suo",
+    "ta", "tai", "tan", "tang", "tao", "te", "teng", "ti", "tian", "tiao", "tie", "ting", "tong", "tou", "tu", "tuan", "tui", "tun", "tuo",
+    "wa", "wai", "wan", "wang", "wei", "wen", "weng", "wo", "wu",
+    "xi", "xia", "xian", "xiang", "xiao", "xie", "xin", "xing", "xiong", "xiu", "xu", "xuan", "xue", "xun",
+    "ya", "yan", "yang", "yao", "ye", "yi", "yin", "ying", "yo", "yong", "you", "yu", "yuan", "yue", "yun",
+    "za", "zai", "zan", "zang", "zao", "ze", "zei", "zen", "zeng", "zha", "zhai", "zhan", "zhang", "zhao", "zhe", "zhei", "zhen", "zheng", "zhi", "zhong", "zhou", "zhu", "zhua", "zhuai", "zhuan", "zhuang", "zhui", "zhun", "zhuo", "zi", "zong", "zou", "zu", "zuan", "zui", "zun", "zuo",
+}
+
+_BASE_ENGLISH_TERMS: tuple[tuple[str, str, int], ...] = (
+    ("ChatGPT", "chatgpt", 900),
+    ("OpenAI", "openai", 880),
+    ("Codex", "codex", 860),
+    ("CodeYun", "codeyun", 850),
+    ("Rime", "rime", 840),
+    ("Weasel", "weasel", 830),
+    ("Windows", "windows", 820),
+    ("Chrome", "chrome", 810),
+    ("GitHub", "github", 800),
+    ("Python", "python", 790),
+    ("JavaScript", "javascript", 780),
+    ("TypeScript", "typescript", 770),
+    ("Node.js", "nodejs", 760),
+    ("Vue", "vue", 750),
+    ("React", "react", 740),
+    ("HTML", "html", 730),
+    ("CSS", "css", 720),
+    ("JSON", "json", 710),
+    ("YAML", "yaml", 700),
+    ("Markdown", "markdown", 690),
+    ("PowerShell", "powershell", 680),
+    ("CLI", "cli", 670),
+    ("API", "api", 660),
+    ("HTTP", "http", 650),
+    ("HTTPS", "https", 640),
+    ("URL", "url", 630),
+    ("SQL", "sql", 620),
+    ("SQLite", "sqlite", 610),
+    ("Docker", "docker", 600),
+    ("Git", "git", 590),
+    ("npm", "npm", 580),
+    ("pnpm", "pnpm", 570),
+    ("uv", "uv", 560),
+    ("pytest", "pytest", 550),
+    ("Playwright", "playwright", 540),
+    ("FastAPI", "fastapi", 530),
+    ("fallback", "fallback", 525),
+    ("backend", "backend", 520),
+    ("frontend", "frontend", 510),
+    ("model", "model", 500),
+    ("data", "data", 490),
+    ("index", "index", 480),
+    ("cache", "cache", 470),
+    ("config", "config", 460),
+    ("runtime", "runtime", 450),
+    ("context", "context", 440),
+    ("prompt", "prompt", 430),
+    ("token", "token", 420),
+    ("server", "server", 410),
+    ("client", "client", 400),
+    ("debug", "debug", 390),
+    ("test", "test", 380),
+    ("build", "build", 370),
+    ("deploy", "deploy", 360),
+    ("sync", "sync", 350),
+    ("xlsx", "xlsx", 345),
+    ("update", "update", 340),
+    ("import", "import", 330),
+    ("export", "export", 320),
+    ("function", "function", 310),
+    ("class", "class", 300),
+    ("object", "object", 290),
+    ("string", "string", 280),
+    ("array", "array", 270),
+    ("error", "error", 260),
+    ("warning", "warning", 250),
+    ("message", "message", 240),
+    ("button", "button", 230),
+    ("page", "page", 220),
+    ("input", "input", 210),
+    ("output", "output", 200),
+    ("history", "history", 190),
+    ("article", "article", 180),
+    ("candidate", "candidate", 170),
+    ("prediction", "prediction", 160),
+    ("the", "the", 120),
+    ("and", "and", 110),
+    ("for", "for", 100),
+    ("with", "with", 90),
+    ("from", "from", 80),
+)
+_BASE_ENGLISH_CODES = {code for _candidate, code, _weight in _BASE_ENGLISH_TERMS}
+_KNOWN_ENGLISH_CODES = _LATIN_TOKEN_ALLOWLIST | _BASE_ENGLISH_CODES
+_COMMON_DOMAIN_SUFFIXES = {"com", "cn", "net", "org", "io", "dev", "app", "ai", "me", "cc"}
 
 
 jieba.setLogLevel(50)
@@ -82,6 +246,7 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
         _file_info(rime_dir, item)
         for item in [
             SNAPSHOT_FILE,
+            RUNTIME_FILE,
             COUNTS_FILE,
             SEED_FILE,
             PENDING_FILE,
@@ -91,6 +256,10 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
             ARTICLE_MANIFEST_FILE,
             ARTICLE_CONTRIBUTIONS_FILE,
             DELETED_CANDIDATES_FILE,
+            ENGLISH_DICT_FILE,
+            ENGLISH_BASE_DICT_FILE,
+            ENGLISH_LEARNED_DICT_FILE,
+            ENGLISH_SCHEMA_FILE,
             HTML_REPORT_FILE,
         ]
     ]
@@ -497,7 +666,7 @@ def _read_history_events(path: Path) -> list[dict[str, Any]]:
 
 
 def _read_history_event_page(path: Path, *, page: int, page_size: int) -> dict[str, Any]:
-    normalized_page_size = max(1, min(int(page_size or DEFAULT_HISTORY_ARTICLE_PAGE_SIZE), 1000))
+    normalized_page_size = max(1, min(int(page_size or DEFAULT_HISTORY_ARTICLE_PAGE_SIZE), 5000))
     total = sum(1 for _ in _iter_history_events(path))
     total_pages = max(1, (total + normalized_page_size - 1) // normalized_page_size)
     normalized_page = max(1, min(int(page or 1), total_pages))
@@ -876,14 +1045,550 @@ def collect_rime_context_prediction_history_article(
     }
 
 
+def make_rime_context_prediction_lint_unavailable(
+    *,
+    status: str,
+    message: str,
+    rime_dir: str | None = None,
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "status": status,
+        "message": message,
+        "rime_dir": rime_dir,
+        "files": files or [],
+        "summary": {
+            "source_count": 0,
+            "issue_count": 0,
+            "high_count": 0,
+            "medium_count": 0,
+            "low_count": 0,
+            "rule_count": 0,
+            "ai_count": 0,
+        },
+        "issues": [],
+    }
+
+
+def _looks_like_pinyin_token(value: str) -> bool:
+    token = value.lower().replace("ü", "v")
+    if not token:
+        return False
+    memo: dict[int, bool] = {len(token): True}
+
+    def can_split(index: int) -> bool:
+        if index in memo:
+            return memo[index]
+        for end in range(min(len(token), index + 6), index, -1):
+            if token[index:end] in _PINYIN_SYLLABLES and can_split(end):
+                memo[index] = True
+                return True
+        memo[index] = False
+        return False
+
+    return can_split(0)
+
+
+def _lint_issue_excerpt(content: str, start: int, end: int, width: int = 72) -> str:
+    left = max(0, start - width // 2)
+    right = min(len(content), end + width // 2)
+    prefix = "..." if left > 0 else ""
+    suffix = "..." if right < len(content) else ""
+    return prefix + content[left:right].replace("\n", " ") + suffix
+
+
+def _line_offsets(content: str) -> list[tuple[int, int, str]]:
+    rows: list[tuple[int, int, str]] = []
+    offset = 0
+    for line_no, raw_line in enumerate(content.splitlines(keepends=True), start=1):
+        line = raw_line.rstrip("\r\n")
+        rows.append((line_no, offset, line))
+        offset += len(raw_line)
+    if content and not rows:
+        rows.append((1, 0, content))
+    return rows
+
+
+def _lint_issue(
+    source: dict[str, Any],
+    *,
+    rule: str,
+    issue_type: str,
+    severity: str,
+    line: int,
+    column: int,
+    start: int,
+    end: int,
+    text: str,
+    message: str,
+    suggestion: str = "",
+    confidence: float = 0.8,
+) -> dict[str, Any]:
+    content = str(source.get("content") or "")
+    identity = "\t".join(
+        [
+            str(source.get("source_type") or ""),
+            str(source.get("source_id") or ""),
+            rule,
+            str(start),
+            text,
+            suggestion,
+        ]
+    )
+    return {
+        "id": hashlib.sha1(identity.encode("utf-8")).hexdigest()[:16],
+        "source_type": str(source.get("source_type") or ""),
+        "source_id": str(source.get("source_id") or ""),
+        "source_title": str(source.get("source_title") or ""),
+        "source_enabled": bool(source.get("source_enabled", True)),
+        "rule": rule,
+        "type": issue_type,
+        "severity": severity,
+        "line": line,
+        "column": column,
+        "span_start": start,
+        "span_end": end,
+        "text": text,
+        "message": message,
+        "suggestion": suggestion,
+        "confidence": float(confidence),
+        "excerpt": _lint_issue_excerpt(content, start, end),
+    }
+
+
+def _add_lint_issue(issues: list[dict[str, Any]], seen: set[str], issue: dict[str, Any]) -> None:
+    issue_id = str(issue.get("id") or "")
+    if not issue_id or issue_id in seen:
+        return
+    seen.add(issue_id)
+    issues.append(issue)
+
+
+def _scan_text_lint_rules(source: dict[str, Any]) -> list[dict[str, Any]]:
+    content = str(source.get("content") or "")
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for line_no, line_offset, line in _line_offsets(content):
+        for wrong, suggestion, message in _COMMON_TEXT_CORRECTIONS:
+            start_at = 0
+            while True:
+                index = line.find(wrong, start_at)
+                if index < 0:
+                    break
+                start = line_offset + index
+                _add_lint_issue(
+                    issues,
+                    seen,
+                    _lint_issue(
+                        source,
+                        rule="common_correction",
+                        issue_type="疑似错别字",
+                        severity="medium",
+                        line=line_no,
+                        column=index + 1,
+                        start=start,
+                        end=start + len(wrong),
+                        text=wrong,
+                        message=message,
+                        suggestion=suggestion,
+                        confidence=0.92,
+                    ),
+                )
+                start_at = index + len(wrong)
+
+        for match in _REPEATED_PUNCT_RE.finditer(line):
+            text = match.group(0)
+            start = line_offset + match.start()
+            _add_lint_issue(
+                issues,
+                seen,
+                _lint_issue(
+                    source,
+                    rule="repeated_punctuation",
+                    issue_type="标点异常",
+                    severity="low",
+                    line=line_no,
+                    column=match.start() + 1,
+                    start=start,
+                    end=start + len(text),
+                    text=text,
+                    message="连续重复标点通常会污染语料统计，建议确认是否需要保留。",
+                    suggestion=text[0],
+                    confidence=0.86,
+                ),
+            )
+
+        for match in _REPEATED_CJK_CHUNK_RE.finditer(line):
+            text = match.group(0)
+            chunk = match.group(1)
+            if text == chunk:
+                continue
+            start = line_offset + match.start()
+            _add_lint_issue(
+                issues,
+                seen,
+                _lint_issue(
+                    source,
+                    rule="repeated_cjk_chunk",
+                    issue_type="重复片段",
+                    severity="low",
+                    line=line_no,
+                    column=match.start() + 1,
+                    start=start,
+                    end=start + len(text),
+                    text=text,
+                    message="发现连续重复的中文片段，可能是误输入或复制残留。",
+                    suggestion=chunk,
+                    confidence=0.72,
+                ),
+            )
+
+        for match in _LOWER_LATIN_TOKEN_RE.finditer(line):
+            token = match.group(1)
+            normalized = token.lower()
+            if normalized in _LATIN_TOKEN_ALLOWLIST:
+                continue
+            pinyin_like = _looks_like_pinyin_token(normalized)
+            start = line_offset + match.start(1)
+            _add_lint_issue(
+                issues,
+                seen,
+                _lint_issue(
+                    source,
+                    rule="latin_or_pinyin_residue",
+                    issue_type="异常片段",
+                    severity="medium" if pinyin_like else "low",
+                    line=line_no,
+                    column=match.start(1) + 1,
+                    start=start,
+                    end=start + len(token),
+                    text=token,
+                    message=(
+                        "这段小写字母很像未上屏的拼音残留。"
+                        if pinyin_like
+                        else "这段小写字母出现在中文语料中，建议确认是术语、代码还是误输入残留。"
+                    ),
+                    suggestion="",
+                    confidence=0.78 if pinyin_like else 0.58,
+                ),
+            )
+
+    return issues
+
+
+def _collect_lint_sources(
+    rime_dir: Path,
+    *,
+    source: str,
+    history_limit: int,
+) -> list[dict[str, Any]]:
+    normalized_source = (source or "all").strip().lower()
+    sources: list[dict[str, Any]] = []
+
+    if normalized_source in {"all", "history"}:
+        history_path = rime_dir / HISTORY_FILE
+        if history_path.exists():
+            events = _read_history_events(history_path)
+            if history_limit > 0 and len(events) > history_limit:
+                events = events[-history_limit:]
+            history_article = _resolve_history_article_content(rime_dir, events)
+            content = str(history_article.get("content") or "").strip()
+            if content:
+                sources.append(
+                    {
+                        "source_type": "history",
+                        "source_id": "history",
+                        "source_title": "输入历史",
+                        "source_enabled": True,
+                        "content": content,
+                    }
+                )
+
+    if normalized_source in {"all", "articles"}:
+        manifest = _read_article_manifest(rime_dir)
+        for article in manifest.get("articles", []):
+            if not isinstance(article, dict):
+                continue
+            content_path = _article_content_path(rime_dir, article)
+            try:
+                content = content_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                content = ""
+            if not content:
+                continue
+            sources.append(
+                {
+                    "source_type": "article",
+                    "source_id": str(article.get("id") or ""),
+                    "source_title": str(article.get("title") or "未命名文章"),
+                    "source_enabled": bool(article.get("enabled", True)),
+                    "content": content,
+                }
+            )
+
+    return sources
+
+
+def _severity_rank(value: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(value, 3)
+
+
+def _normalize_lint_source(value: str) -> str:
+    normalized = (value or "all").strip().lower()
+    return normalized if normalized in {"all", "history", "articles"} else "all"
+
+
+def _normalize_lint_mode(value: str) -> str:
+    normalized = (value or "rules").strip().lower()
+    return normalized if normalized in {"rules", "ai"} else "rules"
+
+
+def _strip_json_code_fence(value: str) -> str:
+    text = value.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    first = text.find("{")
+    last = text.rfind("}")
+    if first >= 0 and last > first:
+        return text[first : last + 1]
+    return text
+
+
+def _build_ai_lint_prompt(sources: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    remaining = MAX_LINT_AI_CHARS
+    for source in sources:
+        if remaining <= 0:
+            break
+        content = str(source.get("content") or "")
+        if not content:
+            continue
+        lines = []
+        for line_no, _, line in _line_offsets(content):
+            if not line.strip():
+                continue
+            lines.append(f"{line_no}: {line}")
+            if sum(len(item) for item in lines) >= remaining:
+                break
+        chunk = "\n".join(lines)
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+        remaining -= len(chunk)
+        chunks.append(
+            f"### source_id={source.get('source_id')} source_type={source.get('source_type')} title={source.get('source_title')}\n{chunk}"
+        )
+    joined = "\n\n".join(chunks)
+    return (
+        "请对下面中文语料做高置信校对，只找明显错别字、词语误用、助词误用、残留拼音或明显不通顺的片段。"
+        "忽略口语表达、产品名、代码、路径、英文技术词。只输出 JSON，不要解释。\n"
+        "JSON 格式：{\"issues\":[{\"source_id\":\"...\",\"line\":1,\"text\":\"原文片段\",\"suggestion\":\"建议写法\","
+        "\"type\":\"疑似错别字|助词混用|异常片段|语句不通\",\"severity\":\"high|medium|low\","
+        "\"reason\":\"简短原因\",\"confidence\":0.0}]}\n\n"
+        f"{joined}"
+    )
+
+
+def _collect_ai_lint_issues(sources: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str]:
+    if not sources:
+        return [], ""
+    try:
+        from backend.core.ai_chat import (  # Local import keeps the rule checker lightweight.
+            AiProviderConfig,
+            CODEX_CLI_DEFAULT_COMMAND,
+            CODEX_CLI_DEFAULT_MODEL,
+            OllamaClientError,
+            chat_with_provider,
+        )
+    except ImportError as exc:
+        return [], f"AI 校对模块不可用：{exc}"
+
+    provider = AiProviderConfig(
+        id="rime-codex-cli",
+        label="Codex CLI",
+        kind="codex_cli",
+        base_url=os.environ.get("CODEYUN_RIME_LINT_CODEX_COMMAND", CODEX_CLI_DEFAULT_COMMAND),
+        default_model=os.environ.get("CODEYUN_RIME_LINT_MODEL", CODEX_CLI_DEFAULT_MODEL),
+        timeout_seconds=float(os.environ.get("CODEYUN_RIME_LINT_TIMEOUT", "120")),
+        api_key="",
+        supports_stream=False,
+        supports_vision=False,
+        requires_api_key=False,
+        configured=True,
+        models=(os.environ.get("CODEYUN_RIME_LINT_MODEL", CODEX_CLI_DEFAULT_MODEL),),
+        workspace_dir=str(_resolve_rime_dir() or Path.cwd()),
+        session_id="",
+    )
+
+    source_by_id = {str(item.get("source_id") or ""): item for item in sources}
+    try:
+        result = chat_with_provider(
+            provider_id=provider.id,
+            extra_providers=(provider,),
+            messages=[{"role": "user", "content": _build_ai_lint_prompt(sources)}],
+            model=provider.default_model,
+            system_prompt="你是中文文本校对助手。只返回 JSON。",
+            response_format={"type": "json_object"},
+            timeout_seconds=provider.timeout_seconds,
+        )
+        payload = json.loads(_strip_json_code_fence(str(result.get("content") or "")))
+    except (OllamaClientError, json.JSONDecodeError, OSError, ValueError) as exc:
+        return [], f"AI 检查失败：{exc}"
+
+    raw_issues = payload.get("issues") if isinstance(payload, dict) else None
+    if not isinstance(raw_issues, list):
+        return [], "AI 检查没有返回 issues 列表。"
+
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in raw_issues:
+        if not isinstance(raw, dict):
+            continue
+        source_id = str(raw.get("source_id") or "")
+        source = source_by_id.get(source_id)
+        if not source:
+            continue
+        content = str(source.get("content") or "")
+        line_no = int(raw.get("line") or 1)
+        text = str(raw.get("text") or "").strip()
+        suggestion = str(raw.get("suggestion") or "").strip()
+        if not text:
+            continue
+        line_rows = _line_offsets(content)
+        line_row = next((item for item in line_rows if item[0] == line_no), line_rows[0] if line_rows else (1, 0, content))
+        column_index = max(0, line_row[2].find(text))
+        start = line_row[1] + column_index
+        severity = str(raw.get("severity") or "medium").lower()
+        if severity not in {"high", "medium", "low"}:
+            severity = "medium"
+        confidence = raw.get("confidence")
+        try:
+            normalized_confidence = max(0.0, min(1.0, float(confidence)))
+        except (TypeError, ValueError):
+            normalized_confidence = 0.7
+        _add_lint_issue(
+            issues,
+            seen,
+            _lint_issue(
+                source,
+                rule="ai_codex",
+                issue_type=str(raw.get("type") or "AI校对"),
+                severity=severity,
+                line=line_row[0],
+                column=column_index + 1,
+                start=start,
+                end=start + len(text),
+                text=text,
+                message=str(raw.get("reason") or "AI 判断这里可能需要校对。"),
+                suggestion=suggestion,
+                confidence=normalized_confidence,
+            ),
+        )
+    return issues, ""
+
+
+def collect_rime_context_prediction_lint(
+    *,
+    source: str = "all",
+    mode: str = "rules",
+    limit: int = DEFAULT_LINT_ISSUE_LIMIT,
+    history_limit: int = DEFAULT_HISTORY_ARTICLE_LIMIT,
+) -> dict[str, Any]:
+    rime_dir = _resolve_rime_dir()
+    files = _tracked_files(rime_dir)
+    normalized_source = _normalize_lint_source(source)
+    normalized_mode = _normalize_lint_mode(mode)
+    normalized_limit = max(1, min(int(limit or DEFAULT_LINT_ISSUE_LIMIT), 1000))
+
+    if not rime_dir:
+        return make_rime_context_prediction_lint_unavailable(
+            status="unsupported_platform",
+            message="当前系统没有可识别的 Rime 用户目录位置。",
+            files=files,
+        )
+
+    if not rime_dir.exists():
+        return make_rime_context_prediction_lint_unavailable(
+            status="rime_missing",
+            message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+
+    try:
+        sources = _collect_lint_sources(rime_dir, source=normalized_source, history_limit=int(history_limit or 0))
+    except OSError as exc:
+        return make_rime_context_prediction_lint_unavailable(
+            status="read_error",
+            message=f"读取语料失败：{exc}",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+
+    issues: list[dict[str, Any]] = []
+    for item in sources:
+        issues.extend(_scan_text_lint_rules(item))
+
+    ai_message = ""
+    if normalized_mode == "ai":
+        ai_issues, ai_message = _collect_ai_lint_issues(sources)
+        issues.extend(ai_issues)
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for issue in issues:
+        key = str(issue.get("id") or "")
+        if key and key not in deduped:
+            deduped[key] = issue
+    sorted_issues = sorted(
+        deduped.values(),
+        key=lambda item: (
+            _severity_rank(str(item.get("severity") or "")),
+            str(item.get("source_type") or ""),
+            str(item.get("source_title") or ""),
+            int(item.get("line") or 0),
+            int(item.get("column") or 0),
+        ),
+    )
+    limited_issues = sorted_issues[:normalized_limit]
+    high_count = sum(1 for item in sorted_issues if item.get("severity") == "high")
+    medium_count = sum(1 for item in sorted_issues if item.get("severity") == "medium")
+    low_count = sum(1 for item in sorted_issues if item.get("severity") == "low")
+    rule_count = sum(1 for item in sorted_issues if item.get("rule") != "ai_codex")
+    ai_count = sum(1 for item in sorted_issues if item.get("rule") == "ai_codex")
+    status = "ready" if sources else "empty"
+    message = "已完成语料检查。"
+    if not sources:
+        message = "没有可检查的输入历史或导入文章。"
+    elif ai_message:
+        message = f"{message}{ai_message}"
+
+    return {
+        "available": bool(sources),
+        "status": status,
+        "message": message,
+        "rime_dir": str(rime_dir),
+        "files": files,
+        "summary": {
+            "source_count": len(sources),
+            "issue_count": len(sorted_issues),
+            "high_count": high_count,
+            "medium_count": medium_count,
+            "low_count": low_count,
+            "rule_count": rule_count,
+            "ai_count": ai_count,
+        },
+        "issues": limited_issues,
+    }
+
+
 def _normalize_article_text(content: str) -> str:
     text = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     if not text:
         raise RimeContextPredictionError("文章内容不能为空。")
     if len(text) > MAX_ARTICLE_CHARS:
         raise RimeContextPredictionError(f"文章内容过长，当前上限是 {MAX_ARTICLE_CHARS} 个字符。")
-    if not _CJK_RE.search(text):
-        raise RimeContextPredictionError("文章内容里没有可提炼的中文。")
     return text
 
 
@@ -902,6 +1607,253 @@ def _content_hash(content: str) -> str:
 def _token_to_pinyin(token: str) -> str:
     parts = lazy_pinyin(token, style=Style.NORMAL, strict=False, errors="ignore")
     return "".join(parts).replace("ü", "v").replace("u:", "v").strip().lower()
+
+
+def _normalize_english_code(token: str) -> str:
+    text = str(token or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    special_codes = {
+        "c++": "cplusplus",
+        "c#": "csharp",
+        "f#": "fsharp",
+    }
+    if lowered in special_codes:
+        return special_codes[lowered]
+    lowered = lowered.replace("++", "plusplus").replace("#", "sharp")
+    code = re.sub(r"[^a-z0-9]+", "", lowered)
+    if not code or code.isdigit() or len(code) > 40:
+        return ""
+    return code
+
+
+@lru_cache(maxsize=8192)
+def _looks_like_pinyin_sequence(code: str) -> bool:
+    text = str(code or "").lower()
+    if not text or not text.isalpha():
+        return False
+    reachable = [False] * (len(text) + 1)
+    reachable[0] = True
+    for end in range(1, len(text) + 1):
+        for start in range(max(0, end - 6), end):
+            if reachable[start] and text[start:end] in _PINYIN_SYLLABLES:
+                reachable[end] = True
+                break
+    return reachable[-1]
+
+
+def _is_valid_domain_token(candidate: str) -> bool:
+    text = str(candidate or "").strip().lower()
+    if "." not in text:
+        return False
+    parts = [part for part in text.split(".") if part]
+    if len(parts) < 2:
+        return False
+    suffix = parts[-1]
+    if suffix not in _COMMON_DOMAIN_SUFFIXES:
+        return False
+    return all(re.fullmatch(r"[a-z0-9-]{1,63}", part) for part in parts)
+
+
+def _is_plain_lower_unknown_english(candidate: str, code: str) -> bool:
+    return (
+        bool(candidate)
+        and candidate.islower()
+        and candidate.isalpha()
+        and code not in _KNOWN_ENGLISH_CODES
+    )
+
+
+def _should_skip_english_token(candidate: str, code: str) -> bool:
+    if not candidate or not code:
+        return True
+    normalized = candidate.strip()
+    if len(code) < 3 and code not in {"ai", "api", "ui", "ux", "js", "ts", "uv", "go", "csharp", "fsharp"}:
+        return True
+    lower = normalized.lower()
+    if "." in normalized:
+        return not _is_valid_domain_token(normalized)
+    if lower in _LATIN_TOKEN_ALLOWLIST or code in _KNOWN_ENGLISH_CODES:
+        return False
+    has_upper = any(char.isupper() for char in normalized)
+    has_digit_or_symbol = any(char.isdigit() or char in "+#._-" for char in normalized)
+    if not has_upper and not has_digit_or_symbol and _looks_like_pinyin_sequence(code):
+        return True
+    return False
+
+
+def _english_surface_rank(candidate: str) -> tuple[int, int, int, str]:
+    return (
+        sum(1 for char in candidate if char.isupper()),
+        sum(1 for char in candidate if char in "+#._-"),
+        -len(candidate),
+        candidate,
+    )
+
+
+def _collect_english_entries_from_texts(
+    texts: list[str],
+    *,
+    limit: int = DEFAULT_ENGLISH_LEARNED_ROW_LIMIT,
+) -> list[dict[str, Any]]:
+    surface_counts_by_code: dict[str, Counter[str]] = defaultdict(Counter)
+    total_counts: Counter[str] = Counter()
+    for text in texts:
+        if not text:
+            continue
+        for raw in _ENGLISH_TOKEN_RE.findall(text):
+            candidate = raw.strip("._-")
+            code = _normalize_english_code(candidate)
+            if _should_skip_english_token(candidate, code):
+                continue
+            surface_counts_by_code[code][candidate] += 1
+            total_counts[code] += 1
+
+    entries: list[dict[str, Any]] = []
+    for code, count in total_counts.items():
+        candidate_counts = surface_counts_by_code[code]
+        candidate = max(candidate_counts, key=lambda item: (candidate_counts[item], _english_surface_rank(item)))
+        if _is_plain_lower_unknown_english(candidate, code) and int(count) < 2:
+            continue
+        weight = min(9999, 100 + int(count) * 20)
+        entries.append({"candidate": candidate, "code": code, "count": int(count), "weight": weight})
+
+    entries.sort(key=lambda item: (-int(item["count"]), str(item["code"]), str(item["candidate"])))
+    return entries[: max(1, int(limit or DEFAULT_ENGLISH_LEARNED_ROW_LIMIT))]
+
+
+def _collect_english_source_texts(rime_dir: Path) -> list[str]:
+    texts: list[str] = []
+    history_article = _resolve_history_article_content(rime_dir)
+    history_content = str(history_article.get("content") or "").strip()
+    if history_content:
+        texts.append(history_content)
+
+    manifest = _read_article_manifest(rime_dir)
+    for article in manifest.get("articles", []):
+        if not isinstance(article, dict) or not article.get("enabled", True):
+            continue
+        path = _article_content_path(rime_dir, article)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if content.strip():
+            texts.append(content)
+    return texts
+
+
+def _write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(tmp, path)
+
+
+def _rime_dict_header(name: str) -> str:
+    return (
+        "# Rime dictionary\n"
+        "# encoding: utf-8\n"
+        "---\n"
+        f"name: {name}\n"
+        'version: "1"\n'
+        "sort: by_weight\n"
+        "use_preset_vocabulary: false\n"
+    )
+
+
+def _ensure_english_dict_shell(rime_dir: Path) -> None:
+    path = rime_dir / ENGLISH_DICT_FILE
+    text = (
+        _rime_dict_header("codeyun_english")
+        + "import_tables:\n"
+        + "  - codeyun_english_base\n"
+        + "  - codeyun_english_learned\n"
+        + "...\n"
+    )
+    try:
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    except OSError:
+        existing = ""
+    if "import_tables:" not in existing or "codeyun_english_learned" not in existing:
+        _write_text_atomic(path, text)
+
+
+def _ensure_english_schema(rime_dir: Path) -> None:
+    path = rime_dir / ENGLISH_SCHEMA_FILE
+    if path.exists():
+        return
+    text = (
+        "schema:\n"
+        "  schema_id: codeyun_english\n"
+        "  name: CodeYun English\n"
+        '  version: "1"\n'
+        "  author:\n"
+        "    - CodeYun\n"
+        "  description: CodeYun generated English dictionary.\n"
+        "\n"
+        "engine:\n"
+        "  processors:\n"
+        "    - ascii_composer\n"
+        "    - recognizer\n"
+        "    - key_binder\n"
+        "    - speller\n"
+        "    - selector\n"
+        "    - navigator\n"
+        "    - express_editor\n"
+        "  segmentors:\n"
+        "    - ascii_segmentor\n"
+        "    - abc_segmentor\n"
+        "    - fallback_segmentor\n"
+        "  translators:\n"
+        "    - table_translator\n"
+        "  filters:\n"
+        "    - uniquifier\n"
+        "\n"
+        "translator:\n"
+        "  dictionary: codeyun_english\n"
+        "  enable_completion: true\n"
+        "  enable_sentence: false\n"
+        "  enable_encoder: false\n"
+        "  enable_user_dict: true\n"
+        "  user_dict: codeyun_english_user\n"
+    )
+    _write_text_atomic(path, text)
+
+
+def _ensure_english_base_dict(rime_dir: Path) -> None:
+    path = rime_dir / ENGLISH_BASE_DICT_FILE
+    if path.exists():
+        return
+    rows = [
+        f"{candidate}\t{code}\t{weight}"
+        for candidate, code, weight in sorted(_BASE_ENGLISH_TERMS, key=lambda item: (-item[2], item[1], item[0]))
+    ]
+    _write_text_atomic(path, _rime_dict_header("codeyun_english_base") + "...\n" + "\n".join(rows) + "\n")
+
+
+def _write_english_learned_dict(rime_dir: Path, entries: list[dict[str, Any]]) -> None:
+    rows = [
+        f"{_clean_tsv_field(item['candidate'])}\t{_clean_tsv_field(item['code'])}\t{int(item['weight'])}"
+        for item in entries
+    ]
+    body = "\n".join(rows)
+    text = _rime_dict_header("codeyun_english_learned") + "...\n" + (body + "\n" if body else "")
+    _write_text_atomic(rime_dir / ENGLISH_LEARNED_DICT_FILE, text)
+
+
+def refresh_rime_english_dictionary(rime_dir: Path | None = None) -> dict[str, Any]:
+    target_dir = rime_dir or _ensure_writable_rime_dir()
+    _ensure_english_dict_shell(target_dir)
+    _ensure_english_schema(target_dir)
+    _ensure_english_base_dict(target_dir)
+    entries = _collect_english_entries_from_texts(_collect_english_source_texts(target_dir))
+    _write_english_learned_dict(target_dir, entries)
+    return {
+        "english_learned_rows": len(entries),
+        "english_base_rows": len(_BASE_ENGLISH_TERMS),
+    }
 
 
 def _article_sentence_tokens(text: str) -> list[list[str]]:
@@ -1082,6 +2034,60 @@ def _write_prediction_snapshot(rime_dir: Path, rows: list[tuple[str, str, str, f
     os.replace(tmp, path)
 
 
+def _context_token_count(context: str) -> int:
+    if context == "__global":
+        return 0
+    return len([part for part in str(context or "").split(" ") if part])
+
+
+def _collect_runtime_rows(
+    rows: list[tuple[str, str, str, float, str]],
+    *,
+    limit: int = DEFAULT_RUNTIME_ROW_LIMIT,
+) -> list[tuple[str, str, str, float, str]]:
+    selected: list[tuple[str, str, str, float, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for row in rows:
+        context, prefix, candidate, _weight, _comment = row
+        if context == "__global":
+            selected.append(row)
+            seen.add((context, prefix, candidate))
+
+    remaining = [row for row in rows if (row[0], row[1], row[2]) not in seen]
+    remaining.sort(key=lambda row: (-row[3], _context_token_count(row[0]), row[0], row[1], row[2]))
+    for row in remaining:
+        if len(selected) >= limit:
+            break
+        selected.append(row)
+
+    selected.sort(key=lambda row: (0 if row[0] == "__global" else 1, row[0], row[1], -row[3], row[2]))
+    return selected
+
+
+def _write_prediction_runtime(rime_dir: Path, rows: list[tuple[str, str, str, float, str]]) -> int:
+    runtime_rows = _collect_runtime_rows(rows)
+    path = rime_dir / RUNTIME_FILE
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# context_key\tpinyin_prefix\tcandidate\tweight\tcomment\n")
+        for context, prefix, candidate, weight, comment in runtime_rows:
+            fh.write(
+                "\t".join(
+                    [
+                        _clean_tsv_field(context),
+                        _clean_tsv_field(prefix),
+                        _clean_tsv_field(candidate),
+                        _format_weight(weight),
+                        _clean_tsv_field(comment),
+                    ]
+                )
+                + "\n"
+            )
+    os.replace(tmp, path)
+    return len(runtime_rows)
+
+
 def rebuild_rime_context_prediction_snapshot(
     rime_dir: Path | None = None,
     *,
@@ -1155,7 +2161,14 @@ def rebuild_rime_context_prediction_snapshot(
             output.append((context, prefix, candidate, float(entry.get("weight") or 0), str(entry.get("comment") or "")))
     output.sort(key=lambda row: (row[0], row[1], -row[3], row[2]))
     _write_prediction_snapshot(target_dir, output)
-    return {"snapshot_rows": len(output), "enabled_article_count": len(enabled_ids)}
+    runtime_rows = _write_prediction_runtime(target_dir, output)
+    english_result = refresh_rime_english_dictionary(target_dir)
+    return {
+        "snapshot_rows": len(output),
+        "runtime_rows": runtime_rows,
+        "enabled_article_count": len(enabled_ids),
+        **english_result,
+    }
 
 
 def delete_rime_context_prediction_candidate(
@@ -1257,12 +2270,14 @@ def refresh_rime_context_prediction_tree() -> dict[str, Any]:
         payload["message"] = (
             f"已从{source_label}重建预测索引："
             f"{int(refresh_result.get('history_events') or 0)} 条输入事件，"
-            f"{int(refresh_result.get('count_entries') or 0)} 条索引记录。"
+            f"{int(refresh_result.get('count_entries') or 0)} 条索引记录，"
+            f"{int(refresh_result.get('english_learned_rows') or 0)} 个英文学习词。"
         )
     else:
         payload["message"] = (
             f"已合并增量输入并重建预测索引："
-            f"{int(refresh_result.get('pending_rows') or 0)} 条待合并记录。"
+            f"{int(refresh_result.get('pending_rows') or 0)} 条待合并记录，"
+            f"{int(refresh_result.get('english_learned_rows') or 0)} 个英文学习词。"
         )
     return payload
 

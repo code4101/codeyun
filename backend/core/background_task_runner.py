@@ -189,6 +189,22 @@ def _enqueue_auto_git() -> str | None:
         return run.queue_task_id
 
 
+def _run_rime_config_sync_job() -> None:
+    from scripts.sync_rime_config import sync_rime_config_to_target
+
+    result = sync_rime_config_to_target(skip_unavailable=True)
+    if result.get("skipped"):
+        print(f"Rime config sync skipped: {result.get('message')}")
+        return
+    sync_result = result.get("sync") if isinstance(result.get("sync"), dict) else {}
+    changed = ", ".join(sync_result.get("changed") or []) or "无"
+    print(f"Rime config sync completed: target={result.get('target')} changed={changed} deploy={result.get('deploy')}")
+
+
+def _enqueue_rime_config_sync() -> str | None:
+    return background_task_queue.enqueue("rime_config_sync", _run_rime_config_sync_job)
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     BackgroundTaskSpec(
         key="auto_git_commit",
@@ -248,6 +264,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         retry_label="无额外重试",
         action=enqueue_fanbei_attendance_morning_steps,
         manual_warning="当前仅执行空的 step4-step6 框架，不会修改考勤数据。",
+    ),
+    BackgroundTaskSpec(
+        key="rime_config_sync",
+        title="小狼毫配置同步",
+        category="输入法",
+        description="每小时拉取辅助设备输入历史，刷新主设备预测索引，并把主设备小狼毫共享配置增量同步到辅助设备。",
+        schedule_label="每小时检查",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_rime_config_sync,
+        manual_warning="会刷新主设备小狼毫预测索引，并把共享配置写入默认辅助设备；有变化时会触发辅助设备重新部署小狼毫。",
     ),
     BackgroundTaskSpec(
         key="storage_analysis",
@@ -370,6 +396,14 @@ class BackgroundTaskRunner:
                     start="next",
                     enabled=_is_task_enabled(FANBEI_ATTENDANCE_MORNING_TASK_KEY),
                 ),
+                Action(self._run_task_if_enabled, "rime_config_sync")
+                .every(
+                    minutes=60,
+                    label="rime_config_sync",
+                    persist=True,
+                    enabled=_is_task_enabled("rime_config_sync"),
+                )
+                .retry(minutes=10),
                 Action(self._run_task_if_enabled, "storage_analysis").daily(
                     "03:00",
                     label="storage_analysis",

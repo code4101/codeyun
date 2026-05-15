@@ -238,7 +238,7 @@ export interface FreebillProgramFieldOption {
   label: string
   field?: string
   mode: FieldMode
-  enumKey?: 'sources' | 'directions' | 'categories'
+  enumKey?: 'sources' | 'directions' | 'types' | 'categories'
 }
 
 const ALL_FIELD_VALUE = '__all'
@@ -263,7 +263,7 @@ const props = withDefaults(defineProps<{
   loading: false,
   showApply: true,
   showReset: true,
-  filterOptions: () => ({ sources: [], directions: [], categories: [] }),
+  filterOptions: () => ({ sources: [], directions: [], types: [], categories: [] }),
   fieldOptions: undefined,
 })
 
@@ -278,6 +278,7 @@ const defaultFieldOptions: FreebillProgramFieldOption[] = [
   { value: 'create_time', label: '交易时间', field: 'create_time', mode: 'date' },
   { value: 'source', label: '来源', field: 'source', mode: 'enum', enumKey: 'sources' },
   { value: 'direction', label: '收支', field: 'direction', mode: 'enum', enumKey: 'directions' },
+  { value: 'standard_nature', label: '类型', field: 'standard_nature', mode: 'enum', enumKey: 'types' },
   { value: 'type', label: '分类', field: 'type', mode: 'enum', enumKey: 'categories' },
   { value: FULL_TEXT_FIELD_VALUE, label: '全文搜索', mode: 'full_text' },
   { value: 'counterparty', label: '交易对方', field: 'counterparty', mode: 'text' },

@@ -39,6 +39,7 @@ RECORD_COLUMNS: list[FreebillColumn] = [
     {"key": "create_time", "label": "交易时间", "min_width": 138, "max_width": 176, "value_type": "date", "display_format": "yyyy/mm/dd hh:mm"},
     {"key": "source", "label": "来源", "min_width": 58, "max_width": 82, "value_mode": "fixed_options"},
     {"key": "direction", "label": "收支", "min_width": 58, "max_width": 82, "value_mode": "fixed_options"},
+    {"key": "standard_nature", "label": "类型", "min_width": 58, "max_width": 82, "value_mode": "fixed_options"},
     {"key": "type", "label": "分类", "min_width": 82, "max_width": 150, "value_mode": "fixed_options"},
     {"key": "counterparty", "label": "交易对方", "min_width": 110, "max_width": 210},
     {"key": "product_name", "label": "商品", "min_width": 160, "max_width": 320},
@@ -48,6 +49,11 @@ RECORD_COLUMNS: list[FreebillColumn] = [
     {"key": "merchant_order_no", "label": "商户单号", "min_width": 126, "max_width": 220},
     {"key": "remark", "label": "备注", "min_width": 96, "max_width": 220},
     {"key": "fund_status", "label": "资金状态", "min_width": 78, "max_width": 128, "value_mode": "fixed_options", "default_visible": False},
+    {"key": "account_no", "label": "账号", "min_width": 132, "max_width": 220, "default_visible": False},
+    {"key": "currency", "label": "币别", "min_width": 68, "max_width": 92, "value_mode": "fixed_options", "default_visible": False},
+    {"key": "cash_type", "label": "钞汇", "min_width": 52, "max_width": 72, "value_mode": "fixed_options", "default_visible": False},
+    {"key": "account_balance", "label": "账户余额", "min_width": 82, "max_width": 118, "align": "right", "value_type": "number", "default_visible": False},
+    {"key": "raw_sequence", "label": "原始序号", "min_width": 66, "max_width": 96, "default_visible": False},
     {"key": "pay_time", "label": "支付时间", "min_width": 138, "max_width": 176, "value_type": "date", "display_format": "yyyy/mm/dd hh:mm", "default_visible": False},
     {"key": "modify_time", "label": "修改时间", "min_width": 138, "max_width": 176, "value_type": "date", "display_format": "yyyy/mm/dd hh:mm", "default_visible": False},
 ]
@@ -143,11 +149,22 @@ def get_freebill_sheet_workbook(
     workbook = _find_existing_freebill_workbook(session, user_id=user_id)
     if workbook is None:
         return None
+    sheet_items = _list_freebill_workbook_sheets(session, workbook=workbook)
+    if _is_freebill_sheet_workbook_stale(sheet_items):
+        return None
     return _serialize_freebill_workbook_payload(
         workbook,
-        _list_freebill_workbook_sheets(session, workbook=workbook),
+        sheet_items,
         refreshed_at=float(workbook.updated_at or 0.0),
     )
+
+
+def _is_freebill_sheet_workbook_stale(sheet_items: list[dict[str, Any]]) -> bool:
+    records_sheet = next((item for item in sheet_items if item.get("key") == "records"), None)
+    if records_sheet is None:
+        return True
+    current_records_total = int(list_freebill_records(limit=1, offset=0).get("total") or 0)
+    return int(records_sheet.get("row_count") or 0) != current_records_total
 
 
 def _build_freebill_sheet_datasets() -> dict[str, list[dict[str, Any]]]:

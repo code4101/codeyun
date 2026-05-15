@@ -40,6 +40,7 @@ from backend.api.filesystem import (
     delete_scoped_entry,
     enqueue_delete_scoped_entry,
     get_delete_task_snapshot,
+    get_duplicate_analysis_task_snapshot,
     list_available_roots,
     list_delete_task_snapshots,
     list_directory_items,
@@ -51,6 +52,7 @@ from backend.api.filesystem import (
     reveal_scoped_entry,
     resolve_request_path,
     scan_device_file_records,
+    start_duplicate_file_analysis,
     sync_device_file_records,
     update_device_file_weight_for_request,
     write_text_file,
@@ -152,12 +154,14 @@ from backend.core.rime_context_prediction import (
     RimeContextPredictionError,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
+    collect_rime_context_prediction_lint,
     collect_rime_context_prediction_tree,
     delete_rime_context_prediction_article,
     delete_rime_context_prediction_candidate,
     import_rime_context_prediction_article,
     make_rime_context_prediction_articles_unavailable,
     make_rime_context_prediction_history_unavailable,
+    make_rime_context_prediction_lint_unavailable,
     make_rime_context_prediction_unavailable,
     refresh_rime_context_prediction_tree,
     save_rime_context_prediction_history_article,
@@ -2578,7 +2582,7 @@ def get_rime_context_prediction_history_article_for_entry(
     entry_id: str,
     limit: int = Query(20000, ge=1, le=200000),
     page: int | None = Query(None, ge=1),
-    page_size: int | None = Query(None, ge=1, le=1000),
+    page_size: int | None = Query(None, ge=1, le=5000),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
@@ -2653,6 +2657,62 @@ def get_rime_context_prediction_articles_for_entry(
         return make_rime_context_prediction_articles_unavailable(
             status="remote_error",
             message="远程设备返回了无效的小狼毫导入文章数据。",
+        )
+
+    return payload
+
+
+@router.get("/{entry_id}/rime/context-prediction/lint")
+def get_rime_context_prediction_lint_for_entry(
+    entry_id: str,
+    source: str = Query("all"),
+    mode: str = Query("rules"),
+    limit: int = Query(200, ge=1, le=1000),
+    history_limit: int = Query(20000, ge=1, le=200000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return collect_rime_context_prediction_lint(
+            source=source,
+            mode=mode,
+            limit=limit,
+            history_limit=history_limit,
+        )
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "GET",
+            "/rime/context-prediction/lint",
+            params={
+                "source": source,
+                "mode": mode,
+                "limit": limit,
+                "history_limit": history_limit,
+            },
+            timeout=180 if mode == "ai" else 30,
+        )
+    except HTTPException as exc:
+        return make_rime_context_prediction_lint_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫语料检查接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_context_prediction_lint_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_context_prediction_lint_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫语料检查数据。",
         )
 
     return payload
@@ -3008,6 +3068,61 @@ def list_duplicate_files_for_entry(
         "/fs/duplicates",
         json_body=_filesystem_payload(req),
         timeout=120,
+    )
+
+
+@router.post("/{entry_id}/files/duplicates/tasks")
+def start_duplicate_file_task_for_entry(
+    entry_id: str,
+    req: DuplicateListRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return start_duplicate_file_analysis(
+            req.root,
+            req.path,
+            absolute_path=req.absolute_path,
+            recursive=req.recursive,
+            rules=req.rules,
+            filter_rules=req.filter_rules,
+            sort_mode=req.sort_mode,
+            source=req.source,
+            min_size=req.min_size,
+            scan_limit=req.scan_limit,
+            page=req.page,
+            page_size=req.page_size,
+        )
+
+    return _proxy_request(
+        entry,
+        "POST",
+        "/fs/duplicates/tasks",
+        json_body=_filesystem_payload(req),
+        timeout=120,
+    )
+
+
+@router.get("/{entry_id}/files/duplicates/tasks/{task_id}")
+def get_duplicate_file_task_for_entry(
+    entry_id: str,
+    task_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=50),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return get_duplicate_analysis_task_snapshot(task_id, page=page, page_size=page_size)
+
+    return _proxy_request(
+        entry,
+        "GET",
+        f"/fs/duplicates/tasks/{task_id}",
+        params={"page": page, "page_size": page_size},
+        timeout=30,
     )
 
 

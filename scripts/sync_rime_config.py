@@ -34,13 +34,19 @@ DEFAULT_TARGET_RIME_DIR_BY_NAME = {
 
 SYNC_FILES = [
     "rime.lua",
+    "codeyun_symbols.yaml",
     "default.custom.yaml",
     "luna_pinyin_simp.custom.yaml",
     "weasel.custom.yaml",
     "custom_phrase.txt",
     "radical_pinyin.dict.yaml",
     "radical_pinyin.schema.yaml",
+    "codeyun_english.dict.yaml",
+    "codeyun_english_base.dict.yaml",
+    "codeyun_english_learned.dict.yaml",
+    "codeyun_english.schema.yaml",
     "context_prediction.tsv",
+    "context_prediction_runtime.tsv",
     "context_prediction_snapshot.tsv",
     "context_prediction_model_counts.tsv",
     "context_prediction_deleted_candidates.tsv",
@@ -53,13 +59,19 @@ SYNC_FILES = [
 
 DEPLOY_TRIGGER_FILES = {
     "rime.lua",
+    "codeyun_symbols.yaml",
     "default.custom.yaml",
     "luna_pinyin_simp.custom.yaml",
     "weasel.custom.yaml",
     "custom_phrase.txt",
     "radical_pinyin.dict.yaml",
     "radical_pinyin.schema.yaml",
+    "codeyun_english.dict.yaml",
+    "codeyun_english_base.dict.yaml",
+    "codeyun_english_learned.dict.yaml",
+    "codeyun_english.schema.yaml",
     "context_prediction.tsv",
+    "context_prediction_runtime.tsv",
     "context_prediction_snapshot.tsv",
     "context_prediction_deleted_candidates.tsv",
 }
@@ -188,7 +200,8 @@ def resolve_target_rime_dir(
     )
     if status != 404 and isinstance(payload, dict):
         rime_dir = str(payload.get("rime_dir") or "").strip()
-        if rime_dir:
+        unavailable_status = str(payload.get("status") or "").strip()
+        if rime_dir and unavailable_status not in {"rime_missing", "unsupported_platform"}:
             return rime_dir
 
     by_name = DEFAULT_TARGET_RIME_DIR_BY_NAME.get(entry.name or "")
@@ -199,6 +212,81 @@ def resolve_target_rime_dir(
         "无法自动判断目标 Rime 目录。请传入 --target-rime-dir，例如 "
         r'C:\Users\chen\AppData\Roaming\Rime。'
     )
+
+
+def sync_rime_config_to_target(
+    *,
+    target_name: str | None = DEFAULT_TARGET_NAME,
+    target_entry_id: str | None = None,
+    target_rime_dir: str | None = None,
+    source_dir: str | Path | None = None,
+    dry_run: bool = False,
+    no_deploy: bool = False,
+    refresh_local: bool = True,
+    pull_history: bool = True,
+    history_limit: int = 200000,
+    skip_unavailable: bool = False,
+) -> dict[str, Any]:
+    resolved_source_dir = resolve_source_dir(os.fspath(source_dir) if source_dir else None)
+    if not resolved_source_dir.exists():
+        raise SyncError(f"主设备 Rime 目录不存在：{resolved_source_dir}")
+
+    try:
+        entry = find_target_entry(target_name, target_entry_id)
+    except SyncError as exc:
+        if skip_unavailable:
+            return {"ok": True, "skipped": True, "message": str(exc), "target": target_name or target_entry_id}
+        raise
+
+    if entry.mode != "remote":
+        raise SyncError(f"目标设备必须是 remote，当前 {entry.name} mode={entry.mode}。")
+
+    session = make_http_session()
+    try:
+        resolved_target_rime_dir = resolve_target_rime_dir(session, entry, target_rime_dir)
+    except SyncError as exc:
+        if skip_unavailable:
+            return {"ok": True, "skipped": True, "message": str(exc), "target": entry.name}
+        raise
+
+    history_result = None
+    if pull_history:
+        history_result = pull_target_history_as_article(
+            session,
+            entry,
+            limit=max(1, history_limit),
+            enabled=True,
+        )
+
+    refresh_result = refresh_local_prediction(enabled=refresh_local)
+    sync_result = sync_files(
+        session,
+        entry,
+        source_dir=resolved_source_dir,
+        target_rime_dir=resolved_target_rime_dir,
+        dry_run=dry_run,
+    )
+
+    deploy_result = "skipped"
+    if sync_result["deploy_required"] and not no_deploy:
+        deploy_remote_weasel(session, entry, dry_run=dry_run)
+        deploy_result = "deployed" if not dry_run else "dry_run"
+
+    return {
+        "ok": True,
+        "skipped": False,
+        "source_dir": str(resolved_source_dir),
+        "target": entry.name,
+        "target_rime_dir": resolved_target_rime_dir,
+        "history": history_result,
+        "refresh": {
+            key: refresh_result.get(key)
+            for key in ["available", "status", "message"]
+            if isinstance(refresh_result, dict) and key in refresh_result
+        } if refresh_result else None,
+        "sync": sync_result,
+        "deploy": deploy_result,
+    }
 
 
 def read_local_file(source_dir: Path, relative_path: str) -> tuple[str, str] | None:
@@ -506,67 +594,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    source_dir = resolve_source_dir(args.source_dir or None)
-    if not source_dir.exists():
-        raise SyncError(f"主设备 Rime 目录不存在：{source_dir}")
-
-    entry = find_target_entry(args.target_name, args.target_entry_id or None)
-    if entry.mode != "remote":
-        raise SyncError(f"目标设备必须是 remote，当前 {entry.name} mode={entry.mode}。")
-
-    session = make_http_session()
-    target_rime_dir = resolve_target_rime_dir(session, entry, args.target_rime_dir or None)
-
-    history_result = None
-    if not args.no_pull_history:
-        history_result = pull_target_history_as_article(
-            session,
-            entry,
-            limit=max(1, args.history_limit),
-            enabled=True,
-        )
-
-    refresh_result = refresh_local_prediction(enabled=not args.no_refresh_local)
-    sync_result = sync_files(
-        session,
-        entry,
-        source_dir=source_dir,
-        target_rime_dir=target_rime_dir,
+    result = sync_rime_config_to_target(
+        target_name=args.target_name,
+        target_entry_id=args.target_entry_id or None,
+        target_rime_dir=args.target_rime_dir or None,
+        source_dir=args.source_dir or None,
         dry_run=args.dry_run,
+        no_deploy=args.no_deploy,
+        refresh_local=not args.no_refresh_local,
+        pull_history=not args.no_pull_history,
+        history_limit=args.history_limit,
     )
-
-    deploy_result = "skipped"
-    if sync_result["deploy_required"] and not args.no_deploy:
-        deploy_remote_weasel(session, entry, dry_run=args.dry_run)
-        deploy_result = "deployed" if not args.dry_run else "dry_run"
-
-    result = {
-        "ok": True,
-        "source_dir": str(source_dir),
-        "target": entry.name,
-        "target_rime_dir": target_rime_dir,
-        "history": history_result,
-        "refresh": {
-            key: refresh_result.get(key)
-            for key in ["available", "status", "message"]
-            if isinstance(refresh_result, dict) and key in refresh_result
-        } if refresh_result else None,
-        "sync": sync_result,
-        "deploy": deploy_result,
-    }
     if args.print_json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
+        if result.get("skipped"):
+            print(f"跳过：{result.get('message')}")
+            return 0
+        sync_result = result["sync"]
         changed = ", ".join(sync_result["changed"]) or "无"
-        print(f"目标设备：{entry.name}")
-        print(f"目标目录：{target_rime_dir}")
-        if history_result:
-            print(f"历史拉取：{history_result}")
+        print(f"目标设备：{result['target']}")
+        print(f"目标目录：{result['target_rime_dir']}")
+        if result.get("history"):
+            print(f"历史拉取：{result['history']}")
         print(f"变更文件：{changed}")
         print(f"未变化文件数：{sync_result['unchanged']}")
         if sync_result["skipped_missing"]:
             print(f"本地缺失：{', '.join(sync_result['skipped_missing'])}")
-        print(f"重新部署：{deploy_result}")
+        print(f"重新部署：{result['deploy']}")
     return 0
 
 

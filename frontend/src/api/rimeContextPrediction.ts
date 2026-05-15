@@ -110,6 +110,46 @@ export interface RimeContextHistoryArticleResponse {
   content: string;
 }
 
+export interface RimeContextLintSummary {
+  source_count: number;
+  issue_count: number;
+  high_count: number;
+  medium_count: number;
+  low_count: number;
+  rule_count: number;
+  ai_count: number;
+}
+
+export interface RimeContextLintIssue {
+  id: string;
+  source_type: string;
+  source_id: string;
+  source_title: string;
+  source_enabled: boolean;
+  rule: string;
+  type: string;
+  severity: 'high' | 'medium' | 'low' | string;
+  line: number;
+  column: number;
+  span_start: number;
+  span_end: number;
+  text: string;
+  message: string;
+  suggestion: string;
+  confidence: number;
+  excerpt: string;
+}
+
+export interface RimeContextLintResponse {
+  available: boolean;
+  status: string;
+  message: string;
+  rime_dir: string | null;
+  files: RimeContextPredictionFileInfo[];
+  summary: RimeContextLintSummary;
+  issues: RimeContextLintIssue[];
+}
+
 export interface RimeContextArticleImportPayload {
   title?: string;
   content: string;
@@ -135,6 +175,13 @@ export interface RimeContextHistoryArticleQuery {
   limit?: number;
   page?: number;
   page_size?: number;
+}
+
+export interface RimeContextLintQuery {
+  source?: 'all' | 'history' | 'articles' | string;
+  mode?: 'rules' | 'ai' | string;
+  limit?: number;
+  history_limit?: number;
 }
 
 export interface RimeContextCandidateDeletePayload {
@@ -184,7 +231,7 @@ export async function fetchRimeContextArticles(
 
 export async function fetchRimeContextHistoryArticle(
   entryId: string,
-  query: RimeContextHistoryArticleQuery = { page: 1, page_size: 100 },
+  query: RimeContextHistoryArticleQuery = { page: 1, page_size: 2000 },
 ): Promise<RimeContextHistoryArticleResponse> {
   const response = await api.get<RimeContextHistoryArticleResponse>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/history-article'),
@@ -200,6 +247,17 @@ export async function saveRimeContextHistoryArticle(
   const response = await api.put<RimeContextHistoryArticleResponse>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/history-article'),
     payload,
+  );
+  return response.data;
+}
+
+export async function fetchRimeContextLint(
+  entryId: string,
+  query: RimeContextLintQuery = { source: 'all', mode: 'rules', limit: 200 },
+): Promise<RimeContextLintResponse> {
+  const response = await api.get<RimeContextLintResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/lint'),
+    { params: query },
   );
   return response.data;
 }

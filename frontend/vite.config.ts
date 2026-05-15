@@ -34,6 +34,26 @@ export default defineConfig({
             return undefined
           }
 
+          if (normalizedId.includes('/node_modules/pdfjs-dist/')) {
+            return 'pdfjs-vendor'
+          }
+
+          if (normalizedId.includes('/node_modules/@handsontable/vue3/') || normalizedId.includes('/node_modules/handsontable/')) {
+            return 'handsontable-vendor'
+          }
+
+          if (normalizedId.includes('/node_modules/echarts/') || normalizedId.includes('/node_modules/zrender/')) {
+            return 'echarts-vendor'
+          }
+
+          if (normalizedId.includes('/node_modules/marked/') || normalizedId.includes('/node_modules/dompurify/')) {
+            return 'markdown-vendor'
+          }
+
+          if (normalizedId.includes('/node_modules/javascript-lp-solver/')) {
+            return 'solver-vendor'
+          }
+
           if (
             normalizedId.includes('/node_modules/hyperformula/')
             || normalizedId.includes('/node_modules/chevrotain/')

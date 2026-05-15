@@ -324,6 +324,22 @@ export interface DeviceDuplicateListing {
   groups: DeviceDuplicateGroup[];
 }
 
+export interface DeviceDuplicateAnalysis extends DeviceDuplicateListing {
+  task_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed' | string;
+  stage: string;
+  message: string;
+  running: boolean;
+  error: string | null;
+  scan_limit: number;
+  hit_scan_limit: boolean;
+  created_at: number | null;
+  started_at: number | null;
+  updated_at: number | null;
+  finished_at: number | null;
+  elapsed_ms: number;
+}
+
 const normalizeNullableNumber = (value: unknown): number | null => {
   if (value == null || value === '') {
     return null;
@@ -349,6 +365,45 @@ const normalizeDeleteTask = (raw: any): DeviceDeleteTask => ({
   metadata: raw?.metadata ?? {},
   target_path: raw?.target_path ?? '',
   entry_name: raw?.entry_name ?? '',
+});
+
+const normalizeDuplicateListing = (raw: any): DeviceDuplicateListing => ({
+  ok: Boolean(raw?.ok),
+  root: raw?.root ?? null,
+  path: raw?.path ?? '',
+  absolute_path: raw?.absolute_path ?? '',
+  snapshot_id: raw?.snapshot_id ?? '',
+  page: Number(raw?.page ?? 1),
+  page_size: Number(raw?.page_size ?? 10),
+  has_previous: Boolean(raw?.has_previous),
+  has_next: Boolean(raw?.has_next),
+  total_groups: Number(raw?.total_groups ?? 0),
+  total_reclaimable_bytes: Number(raw?.total_reclaimable_bytes ?? 0),
+  duplicate_file_count: Number(raw?.duplicate_file_count ?? 0),
+  scanned_file_count: Number(raw?.scanned_file_count ?? 0),
+  candidate_file_count: Number(raw?.candidate_file_count ?? 0),
+  hash_computed_count: Number(raw?.hash_computed_count ?? 0),
+  source: raw?.source ?? '',
+  source_detail: raw?.source_detail ?? '',
+  complete: Boolean(raw?.complete),
+  groups: Array.isArray(raw?.groups) ? raw.groups : [],
+});
+
+const normalizeDuplicateAnalysis = (raw: any): DeviceDuplicateAnalysis => ({
+  ...normalizeDuplicateListing(raw),
+  task_id: raw?.task_id ?? '',
+  status: raw?.status ?? '',
+  stage: raw?.stage ?? '',
+  message: raw?.message ?? '',
+  running: Boolean(raw?.running),
+  error: raw?.error ?? null,
+  scan_limit: Number(raw?.scan_limit ?? 0),
+  hit_scan_limit: Boolean(raw?.hit_scan_limit),
+  created_at: normalizeNullableNumber(raw?.created_at),
+  started_at: normalizeNullableNumber(raw?.started_at),
+  updated_at: normalizeNullableNumber(raw?.updated_at),
+  finished_at: normalizeNullableNumber(raw?.finished_at),
+  elapsed_ms: Number(raw?.elapsed_ms ?? 0),
 });
 
 export const fetchDeviceRoots = async (entryId: string): Promise<DeviceFilesystemRoot[]> => {
@@ -412,27 +467,29 @@ export const fetchDeviceDuplicateFiles = async (
   const response = await api.post(getDeviceEntryPath(entryId, '/files/duplicates'), payload, {
     timeout: payload.rules?.includes('sha256') ? 180000 : 120000,
   });
-  return {
-    ok: Boolean(response.data.ok),
-    root: response.data.root ?? null,
-    path: response.data.path ?? '',
-    absolute_path: response.data.absolute_path ?? '',
-    snapshot_id: response.data.snapshot_id ?? '',
-    page: Number(response.data.page ?? 1),
-    page_size: Number(response.data.page_size ?? 10),
-    has_previous: Boolean(response.data.has_previous),
-    has_next: Boolean(response.data.has_next),
-    total_groups: Number(response.data.total_groups ?? 0),
-    total_reclaimable_bytes: Number(response.data.total_reclaimable_bytes ?? 0),
-    duplicate_file_count: Number(response.data.duplicate_file_count ?? 0),
-    scanned_file_count: Number(response.data.scanned_file_count ?? 0),
-    candidate_file_count: Number(response.data.candidate_file_count ?? 0),
-    hash_computed_count: Number(response.data.hash_computed_count ?? 0),
-    source: response.data.source ?? '',
-    source_detail: response.data.source_detail ?? '',
-    complete: Boolean(response.data.complete),
-    groups: Array.isArray(response.data.groups) ? response.data.groups : [],
-  };
+  return normalizeDuplicateListing(response.data);
+};
+
+export const startDeviceDuplicateAnalysis = async (
+  entryId: string,
+  payload: DeviceDuplicateListRequest
+): Promise<DeviceDuplicateAnalysis> => {
+  const response = await api.post(getDeviceEntryPath(entryId, '/files/duplicates/tasks'), payload, {
+    timeout: 30000,
+  });
+  return normalizeDuplicateAnalysis(response.data);
+};
+
+export const fetchDeviceDuplicateAnalysis = async (
+  entryId: string,
+  taskId: string,
+  params: { page?: number; page_size?: number } = {}
+): Promise<DeviceDuplicateAnalysis> => {
+  const response = await api.get(getDeviceEntryPath(entryId, `/files/duplicates/tasks/${encodeURIComponent(taskId)}`), {
+    params,
+    timeout: 30000,
+  });
+  return normalizeDuplicateAnalysis(response.data);
 };
 
 export const fetchDeviceFileBlob = async (

@@ -1,8 +1,14 @@
 import api from '@/api'
 
-export type FreebillImportSource = 'alipay' | 'wechat'
+export type FreebillImportSource = 'alipay' | 'wechat' | 'ccb'
 export type FreebillTrendGranularity = 'day' | 'week' | 'month' | 'year'
+export type FreebillStandardNature = '常规' | '借贷' | '理财' | '转账' | '流水'
+export type FreebillStandardDirection = '支出' | '收支' | '收入'
+export type FreebillCategoryBranchSortBy = 'amount' | 'create_time' | 'source' | 'product_name' | 'remark'
+export type FreebillSortOrder = 'asc' | 'desc'
+export type FreebillCategoryDimension = 'standard_direction' | 'standard_nature' | 'type' | 'counterparty'
 export type FreebillProgramMatcherKind = 'all' | 'none' | 'field' | 'full_text_contains'
+export type FreebillInterpretRuleMatcherKind = 'all' | 'none' | 'field' | 'full_text_contains'
 export type FreebillProgramRuleAction = 'include' | 'exclude' | 'filter'
 export type FreebillProgramOperator =
   | 'eq'
@@ -15,6 +21,17 @@ export type FreebillProgramOperator =
   | 'lte'
   | 'between'
   | 'year'
+export type FreebillInterpretRuleOperator =
+  | 'eq'
+  | 'neq'
+  | 'in'
+  | 'not_in'
+  | 'contains'
+  | 'not_contains'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte'
 
 export interface FreebillStatus {
   exists: boolean
@@ -47,13 +64,21 @@ export interface FreebillCategoryStat {
   name: string
   value: number
   count: number
+  dimension?: FreebillCategoryDimension | null
+  path?: FreebillCategoryPathItem[]
   children?: FreebillCategoryStat[]
+}
+
+export interface FreebillCategoryPathItem {
+  dimension: FreebillCategoryDimension
+  value: string
 }
 
 export interface FreebillMonthlyTrendItem {
   month: string
   income: number
   expense: number
+  other?: number
   income_count: number
   expense_count: number
   ignore_count?: number
@@ -67,6 +92,7 @@ export interface FreebillDashboard {
   expense_categories: FreebillCategoryStat[]
   income_categories: FreebillCategoryStat[]
   category_tree?: FreebillCategoryStat[]
+  category_dimensions?: FreebillCategoryDimension[]
   monthly_trend: FreebillMonthlyTrendItem[]
   trend_granularity?: FreebillTrendGranularity
 }
@@ -90,7 +116,19 @@ export interface FreebillRecord {
   refund_amount: number | null
   remark: string | null
   fund_status: string | null
+  account_no: string | null
+  currency: string | null
+  cash_type: string | null
+  account_balance: number | null
+  raw_sequence: string | null
+  standard_nature?: string | null
+  standard_direction?: string | null
+  raw_direction?: string | null
+  raw_type?: string | null
+  raw_values?: Record<string, unknown>
+  manual_overrides?: Record<string, unknown>
   imported_at: number | null
+  has_record_override?: boolean | number | null
 }
 
 export interface FreebillRecordPage {
@@ -101,7 +139,72 @@ export interface FreebillRecordPage {
 export interface FreebillFilterOptions {
   sources: string[]
   directions: string[]
+  types: string[]
   categories: string[]
+}
+
+export interface FreebillInterpretRuleField {
+  value: string
+  label: string
+  mode: 'text' | 'number'
+}
+
+export interface FreebillInterpretRuleOperatorOption {
+  value: FreebillInterpretRuleOperator
+  label: string
+}
+
+export interface FreebillBuiltInInterpretRule {
+  key: string
+  name: string
+  enabled: boolean
+  target_nature?: FreebillStandardNature | null
+  matcher_text: string
+  result_text: string
+  note?: string | null
+}
+
+export interface FreebillInterpretRuleMatcher {
+  kind: FreebillInterpretRuleMatcherKind
+  field?: string | null
+  op?: FreebillInterpretRuleOperator | null
+  value?: unknown
+  values?: unknown[]
+  ignore_case?: boolean
+}
+
+export interface FreebillInterpretRule {
+  id?: number | null
+  name: string
+  enabled: boolean
+  order_index: number
+  matcher: FreebillInterpretRuleMatcher
+  set_direction?: FreebillStandardDirection | null
+  set_nature?: FreebillStandardNature | null
+  note?: string | null
+  match_count?: number
+}
+
+export interface FreebillInterpretRuleSettings {
+  signed_category_values: boolean
+  built_in_rules: Record<string, boolean>
+}
+
+export interface FreebillInterpretRulesPayload {
+  settings: FreebillInterpretRuleSettings
+  fields: FreebillInterpretRuleField[]
+  operators: FreebillInterpretRuleOperatorOption[]
+  directions: FreebillStandardDirection[]
+  natures: FreebillStandardNature[]
+  built_in_rules: FreebillBuiltInInterpretRule[]
+  rules: FreebillInterpretRule[]
+}
+
+export interface FreebillInterpretRecomputeResult {
+  total: number
+  updated: number
+  rules: FreebillInterpretRule[]
+  recomputed_at: number
 }
 
 export interface FreebillQueryParams {
@@ -139,36 +242,21 @@ export interface FreebillDashboardProgramRequest {
   program: FreebillProgramChannel
   programs?: FreebillProgramChannel[]
   trend_granularity?: FreebillTrendGranularity
+  trend_standard_nature?: FreebillStandardNature | null
+  category_dimensions?: FreebillCategoryDimension[]
 }
 
 export interface FreebillCategoryBranchRecordsRequest {
   program: FreebillProgramChannel
   programs?: FreebillProgramChannel[]
-  direction: string
+  path?: FreebillCategoryPathItem[]
+  direction?: string | null
   category?: string | null
   counterparty?: string | null
   limit?: number
-}
-
-export interface FreebillRecordOverrideRequest {
-  trade_nos: string[]
-  direction: string
-  category: string
-  note?: string | null
-}
-
-export interface FreebillRecordOverrideClearRequest {
-  trade_nos: string[]
-}
-
-export interface FreebillRecordOverrideResult {
-  requested: number
-  matched?: number
-  updated?: number
-  cleared?: number
-  missing_trade_nos: string[]
-  direction?: string
-  category?: string
+  offset?: number
+  sort_by?: FreebillCategoryBranchSortBy
+  sort_order?: FreebillSortOrder
 }
 
 export interface FreebillImportResultItem {
@@ -232,19 +320,55 @@ export async function fetchFreebillCategoryBranchRecords(payload: FreebillCatego
   return response.data
 }
 
-export async function applyFreebillRecordOverrides(payload: FreebillRecordOverrideRequest) {
-  const response = await api.post<FreebillRecordOverrideResult>('/freebill/record-overrides', payload)
-  return response.data
-}
-
-export async function clearFreebillRecordOverrides(payload: FreebillRecordOverrideClearRequest) {
-  const response = await api.post<FreebillRecordOverrideResult>('/freebill/record-overrides/clear', payload)
-  return response.data
-}
-
 export async function fetchFreebillFilterOptions() {
   const response = await api.get<FreebillFilterOptions>('/freebill/filter-options')
   return response.data
+}
+
+export async function fetchFreebillInterpretRules() {
+  const response = await api.get<FreebillInterpretRulesPayload>('/freebill/interpret-rules')
+  return response.data
+}
+
+export async function saveFreebillInterpretRules(rules: FreebillInterpretRule[], settings?: FreebillInterpretRuleSettings) {
+  const response = await api.put<FreebillInterpretRulesPayload>('/freebill/interpret-rules', { rules, settings })
+  return response.data
+}
+
+export async function recomputeFreebillInterpretRules() {
+  const response = await api.post<FreebillInterpretRecomputeResult>('/freebill/interpret-rules/recompute', {}, {
+    timeout: 120000,
+  })
+  return response.data
+}
+
+export async function saveFreebillRecordManualOverrides(
+  tradeNo: string,
+  overrides: Record<string, unknown>,
+  note?: string,
+) {
+  const response = await api.put('/freebill/record-manual-overrides', {
+    trade_no: tradeNo,
+    overrides,
+    note,
+  })
+  return response.data as { trade_no: string; updated: number; overrides: Record<string, unknown> }
+}
+
+export async function saveFreebillCategoryBranchManualOverrides(payload: {
+  program: FreebillProgramChannel
+  programs?: FreebillProgramChannel[]
+  path: FreebillCategoryPathItem[]
+  overrides: Record<string, unknown>
+  note?: string
+}) {
+  const response = await api.put('/freebill/category-branch-manual-overrides', payload)
+  return response.data as { matched: number; updated: number; overrides: Record<string, unknown> }
+}
+
+export async function clearFreebillRecordOverrides(tradeNos: string[]) {
+  const response = await api.post('/freebill/record-overrides/clear', { trade_nos: tradeNos })
+  return response.data as { requested: number; cleared: number; missing_trade_nos: string[] }
 }
 
 export async function importFreebillFiles(source: FreebillImportSource, files: File[]) {
