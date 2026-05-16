@@ -64,7 +64,7 @@ LEGACY_STORAGE_CONFIG_FILE = os.path.join(
 STORAGE_SCHEDULE_SETTING_KEY = "storage.schedule"
 DEFAULT_STORAGE_SCHEDULE = {
     "schedule_enabled": False,
-    "cron_expression": "0 3 * * *",
+    "cron_expression": "35 0 * * *",
 }
 
 # --- Scheduler Setup ---
@@ -152,7 +152,7 @@ def init_storage_scheduler():
     config = load_config()
     if config.get("schedule_enabled"):
         try:
-            cron = config.get("cron_expression", "0 3 * * *")
+            cron = config.get("cron_expression", DEFAULT_STORAGE_SCHEDULE["cron_expression"])
             if not storage_scheduler.running:
                 storage_scheduler.start()
             storage_scheduler.add_job(
@@ -888,7 +888,7 @@ def get_schedule_config():
     config = load_config()
     return ScheduleConfig(
         enabled=config.get("schedule_enabled", False),
-        cron_expression=config.get("cron_expression", "0 3 * * *")
+        cron_expression=config.get("cron_expression", DEFAULT_STORAGE_SCHEDULE["cron_expression"])
     )
 
 @images_router.post("/storage/schedule", response_model=ScheduleConfig)

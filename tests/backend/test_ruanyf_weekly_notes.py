@@ -210,6 +210,68 @@ def test_maybe_create_weekly_note_skips_publication_outside_current_friday(
     assert len(notes) == 1
 
 
+def test_maybe_create_weekly_note_skips_after_current_window_success(
+    session,
+    auth_user,
+    monkeypatch,
+):
+    source_url = "https://github.com/ruanyf/weekly/blob/master/docs/issue-395.md"
+    note = make_weekly_note(
+        auth_user,
+        "issue-395",
+        395,
+        "科技周刊第第第395期：下一期标题",
+        custom_fields=[
+            [weekly.RUANYF_WEEKLY_ISSUE_FIELD, "number", 395],
+            [weekly.RUANYF_WEEKLY_SOURCE_URL_FIELD, "string", source_url],
+            [weekly.RUANYF_WEEKLY_PUBLISHED_AT_FIELD, "string", "2026-05-15T03:30:00Z"],
+        ],
+    )
+    note.content = source_url
+    note.start_at = datetime(2026, 5, 15, 3, 30, tzinfo=timezone.utc).timestamp()
+    session.add(note)
+    session.commit()
+
+    def fail_fetch():
+        raise AssertionError("current window success should skip remote fetch")
+
+    monkeypatch.setattr(weekly, "fetch_latest_ruanyf_weekly_issue", fail_fetch)
+
+    result = weekly.maybe_create_ruanyf_weekly_note(
+        session,
+        now=datetime(2026, 5, 15, 22, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE),
+    )
+
+    assert result.status == "already_completed_window"
+
+
+def test_enqueue_weekly_note_job_skips_completed_current_window(monkeypatch):
+    class DummySession:
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr(weekly, "Session", lambda _engine: DummySession())
+    monkeypatch.setattr(
+        weekly,
+        "ruanyf_weekly_note_completed_for_current_window",
+        lambda session, *, now=None: True,
+    )
+
+    def fail_enqueue(*args, **kwargs):
+        raise AssertionError("completed weekly window should not enqueue a task")
+
+    monkeypatch.setattr(weekly.background_task_queue, "enqueue", fail_enqueue)
+
+    queue_task_id = weekly.enqueue_ruanyf_weekly_note_job(
+        now=datetime(2026, 5, 15, 22, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE),
+    )
+
+    assert queue_task_id is None
+
+
 def test_maybe_create_weekly_note_skips_without_existing_target_user(
     session,
     monkeypatch,

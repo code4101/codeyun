@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import requests
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from backend.core.background_task_queue import background_task_queue
@@ -195,9 +195,12 @@ def maybe_create_ruanyf_weekly_note(
     *,
     now: datetime | None = None,
 ) -> RuanyfWeeklyJobResult:
-    window = _resolve_current_friday_window(now or datetime.now(RUANYF_WEEKLY_TIMEZONE))
+    current_time = now or datetime.now(RUANYF_WEEKLY_TIMEZONE)
+    window = _resolve_current_friday_window(current_time)
     if window is None:
         return RuanyfWeeklyJobResult(status="outside_schedule_window")
+    if ruanyf_weekly_note_completed_for_current_window(session, now=current_time):
+        return RuanyfWeeklyJobResult(status="already_completed_window")
 
     try:
         latest_issue = fetch_latest_ruanyf_weekly_issue()
@@ -396,7 +399,23 @@ def run_ruanyf_weekly_note_job() -> RuanyfWeeklyJobResult:
         return result
 
 
-def enqueue_ruanyf_weekly_note_job() -> str:
+def ruanyf_weekly_note_completed_for_current_window(
+    session: Session,
+    *,
+    now: datetime | None = None,
+) -> bool:
+    window = _resolve_current_friday_window(now or datetime.now(RUANYF_WEEKLY_TIMEZONE))
+    if window is None:
+        return False
+    return _ruanyf_weekly_note_exists_in_window(session, window)
+
+
+def enqueue_ruanyf_weekly_note_job(*, now: datetime | None = None) -> str | None:
+    from backend.db import engine
+
+    with Session(engine) as session:
+        if ruanyf_weekly_note_completed_for_current_window(session, now=now):
+            return None
     return background_task_queue.enqueue(
         RUANYF_WEEKLY_TASK_NAME,
         run_ruanyf_weekly_note_job,
@@ -484,6 +503,63 @@ def _datetime_in_window(value: datetime, window: tuple[datetime, datetime]) -> b
     candidate = _ensure_aware_datetime(value).astimezone(RUANYF_WEEKLY_TIMEZONE)
     start, end = window
     return start <= candidate < end
+
+
+def _ruanyf_weekly_note_exists_in_window(
+    session: Session,
+    window: tuple[datetime, datetime],
+) -> bool:
+    start, end = window
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    candidates = session.exec(
+        select(NoteNode).where(
+            or_(
+                NoteNode.title.contains("周刊"),
+                NoteNode.content.contains("ruanyf/weekly"),
+                NoteNode.content.contains("github.com/ruanyf/weekly"),
+                and_(NoteNode.start_at >= start_ts, NoteNode.start_at < end_ts),
+            )
+        )
+    ).all()
+    for note in candidates:
+        if extract_ruanyf_weekly_issue_number(note) is None:
+            continue
+        if not _note_has_ruanyf_weekly_source_marker(note):
+            continue
+        if _note_datetime_in_window(note, window):
+            return True
+    return False
+
+
+def _note_has_ruanyf_weekly_source_marker(note: NoteNode) -> bool:
+    source_url = str(_get_custom_field_value(note.custom_fields, RUANYF_WEEKLY_SOURCE_URL_FIELD) or "")
+    content = str(note.content or "")
+    return bool(source_url) or "ruanyf/weekly" in content or "github.com/ruanyf/weekly" in content
+
+
+def _note_datetime_in_window(note: NoteNode, window: tuple[datetime, datetime]) -> bool:
+    published_value = _get_custom_field_value(note.custom_fields, RUANYF_WEEKLY_PUBLISHED_AT_FIELD)
+    published_at = _parse_iso_datetime(str(published_value or ""))
+    if published_at is not None and _datetime_in_window(published_at, window):
+        return True
+    started_at = _parse_timestamp_datetime(getattr(note, "start_at", None))
+    return started_at is not None and _datetime_in_window(started_at, window)
+
+
+def _parse_timestamp_datetime(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 def _ensure_aware_datetime(value: datetime) -> datetime:

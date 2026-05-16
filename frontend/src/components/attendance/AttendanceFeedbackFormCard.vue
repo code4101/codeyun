@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
 import {
@@ -31,6 +32,8 @@ const props = withDefaults(
     mode: 'public',
   },
 )
+
+const route = useRoute()
 
 const form = reactive<FeedbackDraft>({
   course: '',
@@ -72,11 +75,42 @@ function normalizeStoredCourse(value: unknown) {
   return normalizeStoredText(value)
 }
 
+function normalizeCourseMatchText(value: unknown) {
+  return normalizeStoredText(value)
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/[\/／\\|-]?考勤表$/u, '')
+}
+
 function normalizeCourseOption(value: AttendanceFeedbackCourseOption) {
   return {
     name: normalizeStoredText(value.name).trim(),
     attendance_sheet_url: normalizeStoredText(value.attendance_sheet_url).trim(),
   }
+}
+
+function resolveCoursePrefill(value: unknown) {
+  const course = normalizeStoredCourse(value).trim()
+  if (!course) {
+    return ''
+  }
+
+  const exactMatch = displayCourseOptions.value.find((option) => option.name === course)
+  if (exactMatch) {
+    return exactMatch.name
+  }
+
+  const courseKey = normalizeCourseMatchText(course)
+  if (!courseKey) {
+    return course
+  }
+
+  const fuzzyMatch = displayCourseOptions.value.find((option) => normalizeCourseMatchText(option.name) === courseKey)
+    ?? displayCourseOptions.value.find((option) => {
+      const optionKey = normalizeCourseMatchText(option.name)
+      return optionKey.includes(courseKey) || courseKey.includes(optionKey)
+    })
+  return fuzzyMatch?.name ?? course
 }
 
 function hasCourseOption(value: string) {
@@ -97,6 +131,9 @@ async function loadFeedbackFormMeta(showError = true) {
   loadingFormMeta.value = true
   try {
     formMeta.value = await fetchAttendanceFeedbackFormMeta()
+    if (form.course) {
+      form.course = resolveCoursePrefill(form.course)
+    }
     if (form.course && !hasCourseOption(form.course)) {
       form.course = ''
     }
@@ -145,6 +182,37 @@ function hydrateFormFromLocalStorage() {
     form.studentName = normalizeStoredText(parsed.studentName)
   } catch {
     window.localStorage.removeItem(FEEDBACK_FORM_STORAGE_KEY)
+  }
+}
+
+function getRouteQueryText(...keys: string[]) {
+  for (const key of keys) {
+    if (!(key in route.query)) {
+      continue
+    }
+
+    const value = route.query[key]
+    if (Array.isArray(value)) {
+      return normalizeStoredText(value[0])
+    }
+    return normalizeStoredText(value)
+  }
+  return undefined
+}
+
+function hydrateFormFromRouteQuery() {
+  const course = getRouteQueryText('course', 'courseName', 'course_name')
+  const studentId = getRouteQueryText('studentId', 'student_id', 'student_id_text')
+  const studentName = getRouteQueryText('studentName', 'student_name', 'name')
+
+  if (course !== undefined) {
+    form.course = normalizeStoredCourse(course).trim()
+  }
+  if (studentId !== undefined) {
+    form.studentId = normalizeStoredText(studentId).trim()
+  }
+  if (studentName !== undefined) {
+    form.studentName = normalizeStoredText(studentName).trim()
   }
 }
 
@@ -207,6 +275,7 @@ async function submitForm() {
 
 onMounted(async () => {
   hydrateFormFromLocalStorage()
+  hydrateFormFromRouteQuery()
   await loadFeedbackFormMeta()
 
   readyToPersist.value = true
@@ -214,6 +283,9 @@ onMounted(async () => {
 })
 
 watch(courseOptions, () => {
+  if (form.course) {
+    form.course = resolveCoursePrefill(form.course)
+  }
   if (form.course && !hasCourseOption(form.course)) {
     form.course = ''
   }

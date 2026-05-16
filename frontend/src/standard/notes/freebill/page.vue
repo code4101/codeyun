@@ -81,6 +81,11 @@ type BuiltInInterpretRuleGroup = {
   nature: FreebillStandardNature
   rules: FreebillBuiltInInterpretRule[]
 }
+type ConceptDocSection = {
+  title: string
+  paragraphs?: readonly string[]
+  items?: readonly string[]
+}
 
 const FREEBILL_SHEET_TABS = [
   { key: 'records', label: '账单明细', emptyText: '暂无账单明细' },
@@ -222,6 +227,73 @@ const FREEBILL_DATA_LAYER_DOC = [
     note: '例如不计收支重算成收入/支出或中立收支，余额宝内部流转归流水，信用借还归借贷，这类规则应可调整并可按版本重算。',
   },
 ] as const
+const FREEBILL_CONCEPT_DOC: readonly ConceptDocSection[] = [
+  {
+    title: '定位',
+    paragraphs: [
+      'Freebill 不是手动记账工具，而是把支付宝、微信、银行卡等平台导出的真实流水导入系统，自动做分类、统计和查询。',
+      '它不追求绝对精确，但要足够还原主要资金流向，让人能看清消费、借贷、理财和账户流转的真实规模。',
+    ],
+  },
+  {
+    title: '特色优势',
+    items: [
+      '解放双手：机器已经记录了绝大多数交易，用户不应该再逐笔手动记账。',
+      '数据自由：把分散在微信、支付宝、银行卡等平台的数据导回本地，打破支付平台的数据孤岛。',
+      '本地优先：数据存储在本机 SQLite 中，不需要上传到云端。',
+      '统一视角：微信、支付宝、银行卡等资金流可以在同一个视图里分析。',
+      '可编程性：底层是结构化数据库，后续可以用 SQL、脚本或规则继续深挖。',
+    ],
+  },
+  {
+    title: '处理流水线',
+    paragraphs: [
+      'Freebill 更像一条本地账单 ETL 流水线：原始账单 -> 字段标准化 -> SQLite 存储 -> 解释规则 -> 可视化分析。',
+      '它关注的不是重复记录，而是把已经存在的交易事实整理成能复盘、能调整、能继续加工的数据资产。',
+    ],
+  },
+  {
+    title: '导入与去重',
+    items: [
+      '导出是最大的现实门槛：不同平台流程差异大，有的只能手机操作，有的要等邮件、验证码和解压密码。',
+      '系统按交易号、来源、时间、金额、原始序号等信息做去重，同一批数据重复导入也不会重复统计。',
+      '京东等缺少稳定批量导出的来源，后续更适合单独通过爬虫或自动化补充。',
+    ],
+  },
+  {
+    title: '五大类型',
+    items: [
+      '常规：日常消费支出、工资收入、普通经营性收支。',
+      '借贷：信用卡、借呗、花呗、京东白条、借款和还款；人情往来确认后也可归入。',
+      '理财：股票、基金、黄金、余额宝收益、余利宝等投资行为；买入是支出，赎回和收益是收入。',
+      '转账：自己不同 App、银行卡、支付平台之间的资金移动，理论上成对出现并整体对冲。',
+      '流水：App 内部更细粒度的账户流转，例如支付宝余额和余额宝之间的内部转移。',
+    ],
+  },
+  {
+    title: '分类层级',
+    paragraphs: [
+      '主要分析层级是：类型 -> 收支 -> 分类 -> 交易对方。',
+      '支付宝账单本身提供了较好的分类和交易对方信息，叠加五大类型后，能更清楚地看到资金结构。',
+    ],
+  },
+  {
+    title: '人工修改',
+    items: [
+      '任意条目和分组都可以人工修改，适合把装修、借贷、人情往来等场景整理成自己的口径。',
+      '人工修改不覆盖原始数据，也不影响判重；系统只在独立 JSON 字典里记录被改过的字段。',
+      '查询和统计时，解释规则层会用人工字段覆盖原始字段，从而兼顾原始可追溯和分类可调整。',
+    ],
+  },
+  {
+    title: '当前边界',
+    items: [
+      '自动分类很难完全精确，尤其是平台内部转账、借贷、理财和退款混在一起时。',
+      '数据时效性受导出流程限制，现阶段更适合年度或阶段性复盘。',
+      '通用化还需要继续打磨导入流程、解释规则、手动批量调整和更多平台采集能力。',
+    ],
+  },
+] as const
 const DEFAULT_INTERPRET_RULE_FIELDS: FreebillInterpretRuleField[] = [
   { value: 'product_name', label: '商品', mode: 'text' },
   { value: 'remark', label: '备注', mode: 'text' },
@@ -319,6 +391,7 @@ const sheetTabContextMenu = ref({
 const selectedCategoryBranch = ref<CategoryBranchRef | null>(null)
 const categoryDetailSort = ref<CategoryDetailSortState>({ ...CATEGORY_DETAIL_DEFAULT_SORT })
 const categoryOrderEditorVisible = ref(false)
+const conceptDocDialogVisible = ref(false)
 const dataLayerDialogVisible = ref(false)
 const interpretRulesDialogVisible = ref(false)
 const interpretRulesLoading = ref(false)
@@ -2288,6 +2361,14 @@ onUnmounted(() => {
           :icon="QuestionFilled"
           size="small"
           text
+          @click="conceptDocDialogVisible = true"
+        >
+          核心概念
+        </el-button>
+        <el-button
+          class="data-layer-help-button"
+          size="small"
+          text
           @click="dataLayerDialogVisible = true"
         >
           数据层级
@@ -2375,6 +2456,37 @@ onUnmounted(() => {
         </el-button>
       </div>
     </header>
+
+    <el-dialog
+      v-model="conceptDocDialogVisible"
+      title="Freebill 核心概念"
+      width="860px"
+      class="freebill-concept-dialog"
+    >
+      <div class="concept-doc">
+        <section
+          v-for="section in FREEBILL_CONCEPT_DOC"
+          :key="section.title"
+          class="concept-doc-section"
+        >
+          <h3>{{ section.title }}</h3>
+          <p
+            v-for="paragraph in section.paragraphs ?? []"
+            :key="paragraph"
+          >
+            {{ paragraph }}
+          </p>
+          <ul v-if="section.items?.length">
+            <li
+              v-for="item in section.items"
+              :key="item"
+            >
+              {{ item }}
+            </li>
+          </ul>
+        </section>
+      </div>
+    </el-dialog>
 
     <el-dialog
       v-model="dataLayerDialogVisible"
@@ -3201,6 +3313,52 @@ h2 {
 .data-layer-help-button {
   height: 24px;
   padding: 0 4px;
+}
+
+.concept-doc {
+  display: grid;
+  gap: 14px;
+  max-height: 64vh;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.concept-doc-section {
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.concept-doc-section:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.concept-doc-section h3 {
+  margin: 0 0 6px;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+  letter-spacing: 0;
+}
+
+.concept-doc-section p,
+.concept-doc-section li {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.concept-doc-section p {
+  margin: 5px 0 0;
+}
+
+.concept-doc-section ul {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
 }
 
 .data-layer-list {

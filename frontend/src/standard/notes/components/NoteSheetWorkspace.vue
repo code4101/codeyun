@@ -6,6 +6,9 @@ import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 
 import {
+  submitAttendanceFeedback,
+} from '@/api/attendance'
+import {
   fetchNoteSheet,
   fetchNoteSheetActiveRegistrationMatchRun,
   fetchNoteSheetColumnOptions,
@@ -101,6 +104,14 @@ const MULTI_TEXT_ITEM_SEPARATOR_RE = /[,\uFF0C\u3001;\uFF1B\r\n]+/g
 const ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
 const ATTENDANCE_SUMMARY_SHEET_ID = 4
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
+const STUDENT_LOOKUP_SEQUENCE_HEADER = '序号'
+const STUDENT_LOOKUP_GROUP_HEADER = '分组'
+const STUDENT_LOOKUP_NUMBER_HEADER = '学号'
+const STUDENT_LOOKUP_REAL_NAME_HEADER = '姓名'
+const STUDENT_LOOKUP_NICKNAME_HEADER = '昵称'
+const STUDENT_LOOKUP_QUESTIONNAIRE_SIGNAL_HEADERS = ['提交时间', '修正需求', '补充说明', '处理状态']
+const STUDENT_LOOKUP_COLLATOR = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
+const DEFERRED_CELL_SELECTION_DRAG_THRESHOLD_PX = 8
 const PAGED_ROW_EXPANSION_MESSAGE = '分页模式下不能跨页粘贴并自动新增行。请切到最后一页追加，或关闭分页后再粘贴。'
 const PAGED_AUTO_ROW_INSERT_MESSAGE = '分页模式只允许在最后一页自动新增行。请切到最后一页追加，或关闭分页后再操作。'
 const SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = 'excel_import_reset'
@@ -313,6 +324,14 @@ type SheetCellStyle = {
   font_family?: CellFontFamily
 }
 
+type SheetResolvedCellValueStyle = {
+  backgroundColor?: string
+  color?: string
+  fontFamily?: string
+  fontSize?: string
+  lineHeight?: string
+}
+
 type HashColorStyle = {
   backgroundColor?: string
   color?: string
@@ -354,6 +373,19 @@ type SelectedSheetCell = {
   row: number
   column: number
   documentRow: number
+}
+
+type SheetSelectionRange = [number, number, number, number]
+
+type DeferredCellSelectionState = {
+  startRow: number
+  startHotColumn: number
+  startX: number
+  startY: number
+  dragged: boolean
+  previousSelection: SheetSelectionRange | null
+  previousFormulaBarCell: FormulaBarCell | null
+  previousSheetHeaderCell: SelectedSheetHeaderCell | null
 }
 
 type FormulaBarInputExpose = {
@@ -589,12 +621,66 @@ type SheetRowDetailItem = {
   label: string
   value: string
   empty: boolean
+  valueStyle?: SheetResolvedCellValueStyle | null
   link?: SheetCellLink | null
 }
 
 type SheetRowDetail = {
   rowIndex: number
   rowLabel: string
+  items: SheetRowDetailItem[]
+}
+
+type StudentLookupColumnIndexes = {
+  mode: StudentLookupMode
+  sequence: number
+  group: number
+  number: number
+  realName: number
+  nickname: number
+  identityColumns: StudentLookupIdentityColumn[]
+}
+
+type StudentLookupMode = 'student' | 'questionnaire'
+
+type SheetWorkspaceView = 'lookup' | 'sheet'
+
+type StudentLookupIdentityField = 'studentNumber' | 'studentName' | 'nickname'
+
+type StudentLookupIdentityColumn = {
+  field: StudentLookupIdentityField
+  index: number
+  header: string
+}
+
+type StudentLookupOption = {
+  key: string
+  mode: StudentLookupMode
+  rowIndex: number
+  sequence: string
+  group: string
+  studentNumber: string
+  studentName: string
+  nickname: string
+  label: string
+  secondaryLabel: string
+}
+
+type StudentLookupPersistedSelection = {
+  version: 1
+  mode: StudentLookupMode
+  sequence: string
+  group: string
+  studentKey: string
+  studentGroup: string
+  studentNumber: string
+  studentName: string
+  nickname: string
+  updatedAt: number
+}
+
+type StudentLookupDetailSection = {
+  title: string
   items: SheetRowDetailItem[]
 }
 
@@ -763,6 +849,7 @@ const editingColumnTitle = ref('')
 const rows = ref<SheetRow[]>([createEmptyRow(DEFAULT_SHEET_COLUMNS.length)])
 const sheetTitle = ref('未命名表格')
 const sheetVersion = ref<number>(0)
+const sheetWorkbookItems = ref<WorkbookRefItem[]>([])
 const sheetViewportHeight = ref<number | 'auto'>('auto')
 const sheetSettingsDialogVisible = ref(false)
 const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
@@ -780,6 +867,12 @@ const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(nul
 const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
 const rowDetailDialogVisible = ref(false)
 const rowDetail = ref<SheetRowDetail | null>(null)
+const studentLookupFeedbackDialogVisible = ref(false)
+const studentLookupFeedbackCorrectionRequest = ref('')
+const studentLookupFeedbackExtraNote = ref('')
+const studentLookupFeedbackSubmitting = ref(false)
+const studentLookupFeedbackLastSubmittedKey = ref('')
+const studentLookupFeedbackSubmittedAt = ref('')
 function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunResponse | null) {
   return run?.status === 'pending' || run?.status === 'running'
 }
@@ -931,6 +1024,8 @@ const expandedColumnFilterOptionGroups = ref<Set<string>>(new Set())
 const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
 let columnFilterOptionRequestSeq = 0
+let readOnlyActionWarningSuppressTimer: number | null = null
+let readOnlyActionWarningsSuppressedForRender = false
 let formulaReferencePointerDown = false
 let formulaReferencePointerDownResetTimer: number | null = null
 let formulaReferenceRangeState: FormulaReferenceRangeState | null = null
@@ -939,6 +1034,8 @@ let inlineEditorFormulaBarSyncTimer: number | null = null
 let formulaBarDraftSyncFrame: number | null = null
 let formulaReferenceReplacementSpan: FormulaReferenceReplacementSpan | null = null
 let rowMarkerSelectionTimer: number | null = null
+let restoringStudentLookupSelection = false
+let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
 let sheetInternalClipboard: SheetInternalClipboard | null = null
 const columnSettingsSelectedCount = computed(() => {
@@ -960,9 +1057,271 @@ const effectivePaginationEnabled = computed(() => (
 const shouldRenderSheetContent = computed(() => (
   (props.sheetId != null || hasInlineDocument.value) && sheetContentReady.value
 ))
+const sheetWorkspaceView = ref<SheetWorkspaceView>('sheet')
+const studentLookupGroup = ref('')
+const studentLookupStudentKey = ref('')
+const sheetWorkspaceViewStorageKey = computed(() => (
+  `notes.sheet.${props.sheetId ?? 'inline'}.workbook.${props.workbookId ?? 'none'}.workspaceView.v1`
+))
+const studentLookupStorageKey = computed(() => (
+  `notes.sheet.${props.sheetId ?? 'inline'}.workbook.${props.workbookId ?? 'none'}.studentLookup.v1`
+))
+function isStudentLookupColumnHidden(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex] ?? ''
+  return !!header && columnConfigs.value[header]?.hidden === true
+}
+
+const studentLookupColumnIndexes = computed<StudentLookupColumnIndexes | null>(() => {
+  const sequence = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_SEQUENCE_HEADER)
+  const group = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_GROUP_HEADER)
+  const number = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_NUMBER_HEADER)
+  const realName = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_REAL_NAME_HEADER)
+  const nickname = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_NICKNAME_HEADER)
+  const hasQuestionnaireSignal = STUDENT_LOOKUP_QUESTIONNAIRE_SIGNAL_HEADERS
+    .some((header) => findHeaderIndex(columnHeaders.value, header) >= 0)
+  const identityColumns = [
+    { field: 'studentNumber', index: number, header: STUDENT_LOOKUP_NUMBER_HEADER },
+    { field: 'studentName', index: realName, header: STUDENT_LOOKUP_REAL_NAME_HEADER },
+    { field: 'nickname', index: nickname, header: STUDENT_LOOKUP_NICKNAME_HEADER },
+  ].filter((column): column is StudentLookupIdentityColumn => column.index >= 0)
+  const mode: StudentLookupMode = sequence >= 0 && hasQuestionnaireSignal ? 'questionnaire' : 'student'
+  if (mode === 'student' && identityColumns.length === 0) {
+    return null
+  }
+  return { mode, sequence, group, number, realName, nickname, identityColumns }
+})
+const studentLookupOptions = computed<StudentLookupOption[]>(() => {
+  const columns = studentLookupColumnIndexes.value
+  if (!columns) {
+    return []
+  }
+
+  return rows.value
+    .map((row, rowIndex): StudentLookupOption | null => {
+      const normalizedRow = normalizeRow(row, columnHeaders.value)
+      const sequence = columns.sequence >= 0 ? normalizeCellValue(normalizedRow[columns.sequence]).trim() : ''
+      const group = columns.group >= 0 && !isStudentLookupColumnHidden(columns.group)
+        ? normalizeCellValue(normalizedRow[columns.group]).trim()
+        : ''
+      const studentNumber = columns.number >= 0 ? normalizeCellValue(normalizedRow[columns.number]).trim() : ''
+      const studentName = columns.realName >= 0 ? normalizeCellValue(normalizedRow[columns.realName]).trim() : ''
+      const nickname = columns.nickname >= 0 ? normalizeCellValue(normalizedRow[columns.nickname]).trim() : ''
+      if (columns.mode === 'questionnaire' && !sequence) {
+        return null
+      }
+      if (columns.mode === 'student' && !studentNumber && !studentName && !nickname) {
+        return null
+      }
+
+      const identityValues = {
+        studentNumber,
+        studentName,
+        nickname,
+      } satisfies Record<StudentLookupIdentityField, string>
+      const identity = columns.identityColumns
+        .filter((column) => !isStudentLookupColumnHidden(column.index))
+        .map((column) => identityValues[column.field])
+        .filter(Boolean)
+        .join(' ')
+      const fallbackLabel = `第 ${getSheetRowHeaderLabel(getGridRowIndex(rowIndex))} 行`
+      const label = columns.mode === 'questionnaire'
+        ? sequence
+        : identity || fallbackLabel
+      const secondaryLabel = columns.mode === 'questionnaire'
+        ? [studentNumber, studentName || nickname].filter(Boolean).join(' ')
+        : group
+      return {
+        key: columns.mode === 'questionnaire'
+          ? sequence
+          : `${rowIndex}:${group}:${studentNumber}:${studentName}:${nickname}`,
+        mode: columns.mode,
+        rowIndex,
+        sequence,
+        group,
+        studentNumber,
+        studentName,
+        nickname,
+        label,
+        secondaryLabel,
+      }
+    })
+    .filter((option): option is StudentLookupOption => !!option)
+})
+const shouldShowStudentLookup = computed(() => (
+  shouldRenderSheetContent.value
+  && studentLookupColumnIndexes.value != null
+  && studentLookupOptions.value.length > 0
+))
+const shouldShowSheetViewTabs = computed(() => shouldShowStudentLookup.value)
+const isStudentLookupViewActive = computed(() => (
+  shouldShowStudentLookup.value && sheetWorkspaceView.value === 'lookup'
+))
+const isOriginalSheetViewActive = computed(() => (
+  !shouldShowStudentLookup.value || sheetWorkspaceView.value === 'sheet'
+))
+const shouldShowOriginalSheetArea = computed(() => (
+  props.sheetId == null || !shouldRenderSheetContent.value || isOriginalSheetViewActive.value
+))
+const studentLookupMode = computed<StudentLookupMode>(() => studentLookupColumnIndexes.value?.mode ?? 'student')
+const isStudentLookupQuestionnaireMode = computed(() => studentLookupMode.value === 'questionnaire')
+const studentLookupGroupOptions = computed(() => {
+  if (isStudentLookupQuestionnaireMode.value) {
+    return []
+  }
+
+  const groups = Array.from(new Set(
+    studentLookupOptions.value
+      .map((option) => option.group)
+      .filter((group) => group.trim() !== ''),
+  ))
+  groups.sort((left, right) => STUDENT_LOOKUP_COLLATOR.compare(left, right))
+  return groups
+})
+const shouldShowStudentLookupGroupSelect = computed(() => studentLookupGroupOptions.value.length > 0)
+const studentLookupPanelTitle = computed(() => '速查')
+const studentLookupPrimaryLabel = computed(() => (isStudentLookupQuestionnaireMode.value ? '序号' : '学员'))
+const studentLookupEmptyText = computed(() => (
+  isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : '选择学员后显示完整信息'
+))
+const studentLookupStudentPlaceholder = computed(() => {
+  const columns = studentLookupColumnIndexes.value
+  if (!columns) {
+    return '选择学员'
+  }
+  if (columns.mode === 'questionnaire') {
+    return '输入或选择序号'
+  }
+
+  const visibleIdentityHeaders = columns.identityColumns
+    .filter((column) => !isStudentLookupColumnHidden(column.index))
+    .map((column) => column.header)
+  return visibleIdentityHeaders.length ? visibleIdentityHeaders.join(' ') : '选择学员'
+})
+const filteredStudentLookupOptions = computed(() => {
+  if (isStudentLookupQuestionnaireMode.value || !studentLookupGroup.value) {
+    return studentLookupOptions.value
+  }
+  return studentLookupOptions.value.filter((option) => option.group === studentLookupGroup.value)
+})
+const selectedStudentLookupOption = computed(() => (
+  studentLookupOptions.value.find((option) => option.key === studentLookupStudentKey.value)
+    ?? (
+      isStudentLookupQuestionnaireMode.value
+        ? studentLookupOptions.value.find((option) => option.sequence === studentLookupStudentKey.value.trim())
+        : null
+    )
+    ?? null
+))
+const selectedStudentLookupDetail = computed(() => {
+  const option = selectedStudentLookupOption.value
+  return option ? buildRowDetail(option.rowIndex) : null
+})
+const studentLookupFeedbackCourseName = computed(() => {
+  const matchedWorkbook = sheetWorkbookItems.value.find((item) => item.id === props.workbookId)
+  return normalizeCellValue(matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || sheetTitle.value || '').trim()
+})
+const studentLookupFeedbackStudentName = computed(() => {
+  const option = selectedStudentLookupOption.value
+  return normalizeCellValue(option?.studentName || option?.nickname || '').trim()
+})
+const studentLookupFeedbackCurrentDraftKey = computed(() => JSON.stringify({
+  course: studentLookupFeedbackCourseName.value,
+  studentId: selectedStudentLookupOption.value?.studentNumber ?? '',
+  studentName: studentLookupFeedbackStudentName.value,
+  correctionRequest: studentLookupFeedbackCorrectionRequest.value.trim(),
+  extraNote: studentLookupFeedbackExtraNote.value.trim(),
+}))
+const hasSubmittedStudentLookupFeedbackDraft = computed(() => (
+  studentLookupFeedbackLastSubmittedKey.value !== ''
+  && studentLookupFeedbackLastSubmittedKey.value === studentLookupFeedbackCurrentDraftKey.value
+))
+const selectedStudentLookupDetailSections = computed<StudentLookupDetailSection[]>(() => {
+  const detail = selectedStudentLookupDetail.value
+  if (!detail) {
+    return []
+  }
+
+  return detail.items.reduce<StudentLookupDetailSection[]>((sections, item) => {
+    const title = getStudentLookupSectionTitle(item.columnIndex)
+    const current = sections[sections.length - 1]
+    if (current && current.title === title) {
+      current.items.push(item)
+    } else {
+      sections.push({ title, items: [item] })
+    }
+    return sections
+  }, [])
+})
+function getStudentLookupItemsStyle(items: SheetRowDetailItem[]) {
+  const maxKeyTextWidth = items.reduce((width, item) => {
+    const keyText = `${item.marker} ${item.label}`.trim()
+    return Math.max(width, Math.ceil(measureTextWidth(keyText, '700 12px Arial, sans-serif')))
+  }, 0)
+  const keyWidth = Math.min(Math.max(maxKeyTextWidth + 48, 92), 240)
+  return {
+    '--sheet-student-lookup-column-rows': String(Math.max(1, Math.ceil(items.length / 2))),
+    '--sheet-student-lookup-key-width': `${keyWidth}px`,
+  }
+}
+
+function normalizeSheetWorkspaceView(value: unknown): SheetWorkspaceView | null {
+  const text = normalizeCellValue(value).trim()
+  return text === 'lookup' || text === 'sheet' ? text : null
+}
+
+function readPersistedSheetWorkspaceView() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return normalizeSheetWorkspaceView(window.localStorage.getItem(sheetWorkspaceViewStorageKey.value))
+  } catch {
+    window.localStorage.removeItem(sheetWorkspaceViewStorageKey.value)
+    return null
+  }
+}
+
+function persistSheetWorkspaceViewToLocalStorage(view: SheetWorkspaceView = sheetWorkspaceView.value) {
+  if (typeof window === 'undefined' || !shouldShowStudentLookup.value) {
+    return
+  }
+  window.localStorage.setItem(sheetWorkspaceViewStorageKey.value, view)
+}
+
+function getDefaultSheetWorkspaceView(): SheetWorkspaceView {
+  return shouldDefaultToStudentLookupView() ? 'lookup' : 'sheet'
+}
+
+function restoreSheetWorkspaceViewFromLocalStorage() {
+  const nextView = shouldShowStudentLookup.value
+    ? readPersistedSheetWorkspaceView() ?? getDefaultSheetWorkspaceView()
+    : 'sheet'
+  sheetWorkspaceView.value = nextView
+  if (nextView === 'sheet') {
+    void nextTick(() => {
+      void updateSheetViewportHeight()
+      getHotInstance()?.render()
+    })
+  }
+}
+
+function setSheetWorkspaceView(view: SheetWorkspaceView) {
+  if (sheetWorkspaceView.value === view) {
+    return
+  }
+  sheetWorkspaceView.value = view
+  persistSheetWorkspaceViewToLocalStorage(view)
+  if (view === 'sheet') {
+    void updateSheetViewportHeight().then(() => {
+      getHotInstance()?.render()
+    })
+  }
+}
 const showContextMenuFallbackButton = computed(() => (
   touchContextMenuFallbackEnabled.value
   && shouldRenderSheetContent.value
+  && isOriginalSheetViewActive.value
   && (
     hasContextMenuFallbackSelection.value
     || !!formulaBarCell.value
@@ -2051,7 +2410,30 @@ const contextMenu = {
 }
 
 function warnReadOnlyAction() {
+  if (shouldSuppressReadOnlyActionWarning()) {
+    return
+  }
   ElMessage.warning('只读权限不能执行此操作')
+}
+
+function shouldSuppressReadOnlyActionWarning() {
+  return (
+    suppressPersistence
+    || workspaceLoading.value
+    || !sheetContentReady.value
+    || readOnlyActionWarningsSuppressedForRender
+  )
+}
+
+function suppressReadOnlyActionWarningsForSheetRender() {
+  readOnlyActionWarningsSuppressedForRender = true
+  if (readOnlyActionWarningSuppressTimer != null) {
+    window.clearTimeout(readOnlyActionWarningSuppressTimer)
+  }
+  readOnlyActionWarningSuppressTimer = window.setTimeout(() => {
+    readOnlyActionWarningSuppressTimer = null
+    readOnlyActionWarningsSuppressedForRender = false
+  }, 800)
 }
 
 function canEditDataColumn(columnIndex: number) {
@@ -2079,6 +2461,9 @@ function isColumnRangeEditable(startColumn: number, endColumn: number) {
 }
 
 function warnReadOnlyColumnAction() {
+  if (shouldSuppressReadOnlyActionWarning()) {
+    return
+  }
   ElMessage.warning('当前列只读，不能修改')
 }
 
@@ -2886,6 +3271,9 @@ function resetWorkspaceState() {
   rows.value = [createEmptyRow(DEFAULT_SHEET_COLUMNS.length)]
   sheetTitle.value = '未命名表格'
   sheetVersion.value = 0
+  sheetWorkbookItems.value = []
+  studentLookupGroup.value = ''
+  studentLookupStudentKey.value = ''
   unfilteredTotalRowCount.value = 0
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
@@ -6937,6 +7325,20 @@ function shouldEnableTouchContextMenuFallback() {
   return coarsePointer || isAppleTouchDevice || isSafari
 }
 
+function shouldDefaultToStudentLookupView() {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+    return false
+  }
+
+  const maxTouchPoints = Number(navigator.maxTouchPoints || 0)
+  const coarsePointer = window.matchMedia?.('(pointer: coarse)').matches ?? false
+  const userAgent = navigator.userAgent || ''
+  const platform = navigator.platform || ''
+  const mobileOrTabletUserAgent = /Android|iPad|iPhone|iPod|Mobile|Tablet/i.test(userAgent)
+  const appleTabletDesktopUserAgent = platform === 'MacIntel' && maxTouchPoints > 1
+  return coarsePointer || mobileOrTabletUserAgent || appleTabletDesktopUserAgent
+}
+
 function refreshContextMenuFallbackSelectionState() {
   hasContextMenuFallbackSelection.value = !!getHotInstance()?.getSelectedLast()
 }
@@ -8395,6 +8797,150 @@ function isSheetCellActionButtonMouseTarget(event: MouseEvent) {
   return target instanceof Element && !!target.closest('.sheet-cell-action-button-inner')
 }
 
+function normalizeHotSelectionRange(value: unknown): SheetSelectionRange | null {
+  if (!Array.isArray(value) || value.length < 4) {
+    return null
+  }
+  const range = value.slice(0, 4).map((item) => Number(item))
+  return range.every((item) => Number.isInteger(item))
+    ? range as SheetSelectionRange
+    : null
+}
+
+function shouldDeferCellSelectionForDrag(event: MouseEvent) {
+  return (
+    touchContextMenuFallbackEnabled.value
+    && event.button === 0
+    && !event.ctrlKey
+    && !event.metaKey
+    && !isFormulaReferencePickMode()
+    && !formulaReferenceRangeState
+  )
+}
+
+function stopNativeCellSelectionForDeferredDrag(
+  event: MouseEvent,
+  controller?: CellMouseSelectionController,
+) {
+  if (controller) {
+    controller.row = false
+    controller.column = false
+    controller.cell = false
+  }
+  event.stopImmediatePropagation()
+}
+
+function clearDeferredCellSelectionState() {
+  window.removeEventListener('mousemove', handleDeferredCellSelectionPointerMove, true)
+  window.removeEventListener('mouseup', handleDeferredCellSelectionWindowMouseUp)
+  deferredCellSelectionState = null
+}
+
+function markDeferredCellSelectionDragFromPoint(clientX: number, clientY: number) {
+  const state = deferredCellSelectionState
+  if (!state || state.dragged) {
+    return
+  }
+  const distance = Math.hypot(clientX - state.startX, clientY - state.startY)
+  if (distance >= DEFERRED_CELL_SELECTION_DRAG_THRESHOLD_PX) {
+    state.dragged = true
+  }
+}
+
+function handleDeferredCellSelectionPointerMove(event: MouseEvent) {
+  markDeferredCellSelectionDragFromPoint(event.clientX, event.clientY)
+}
+
+function restoreSelectionBeforeDeferredCellDrag(state: DeferredCellSelectionState) {
+  const hot = getHotInstance()
+  if (hot && state.previousSelection) {
+    hot.selectCell(
+      state.previousSelection[0],
+      state.previousSelection[1],
+      state.previousSelection[2],
+      state.previousSelection[3],
+      true,
+      false,
+    )
+  } else {
+    hot?.deselectCell?.()
+  }
+  formulaBarCell.value = state.previousFormulaBarCell
+    ? { ...state.previousFormulaBarCell }
+    : null
+  selectedSheetHeaderCell.value = state.previousSheetHeaderCell
+    ? { ...state.previousSheetHeaderCell }
+    : null
+  syncFormulaBarDraftFromSelectedCell(true)
+  refreshContextMenuFallbackSelectionState()
+}
+
+function selectDeferredCell(row: number, hotColumn: number) {
+  const column = toSheetColumnIndex(hotColumn)
+  if (row < 0 || column < 0) {
+    return
+  }
+
+  const anchor = getMergeAnchorForGridCell(row, column)
+  const hot = getHotInstance()
+  if (hot) {
+    hot.selectCell(anchor.row, toHotColumnIndex(anchor.column), anchor.row, toHotColumnIndex(anchor.column), true, false)
+    hot.listen()
+  } else {
+    setFormulaBarGridCell(anchor.row, anchor.column)
+  }
+}
+
+function finishDeferredCellSelectionFromCell(event: MouseEvent, coords: { row: number; col: number }) {
+  const state = deferredCellSelectionState
+  if (!state) {
+    return false
+  }
+
+  markDeferredCellSelectionDragFromPoint(event.clientX, event.clientY)
+  const isSameCell = coords.row === state.startRow && coords.col === state.startHotColumn
+  clearDeferredCellSelectionState()
+
+  if (!state.dragged && isSameCell) {
+    selectDeferredCell(state.startRow, state.startHotColumn)
+  } else {
+    restoreSelectionBeforeDeferredCellDrag(state)
+  }
+
+  event.stopImmediatePropagation()
+  return true
+}
+
+function handleDeferredCellSelectionWindowMouseUp() {
+  const state = deferredCellSelectionState
+  if (!state) {
+    return
+  }
+  clearDeferredCellSelectionState()
+  if (state.dragged) {
+    restoreSelectionBeforeDeferredCellDrag(state)
+  } else {
+    selectDeferredCell(state.startRow, state.startHotColumn)
+  }
+}
+
+function beginDeferredCellSelectionForDrag(event: MouseEvent, coords: { row: number; col: number }) {
+  const previousFormulaBarCell = formulaBarCell.value ? { ...formulaBarCell.value } : null
+  const previousSheetHeaderCell = selectedSheetHeaderCell.value ? { ...selectedSheetHeaderCell.value } : null
+  deferredCellSelectionState = {
+    startRow: coords.row,
+    startHotColumn: coords.col,
+    startX: event.clientX,
+    startY: event.clientY,
+    dragged: false,
+    previousSelection: normalizeHotSelectionRange(getHotInstance()?.getSelectedLast()),
+    previousFormulaBarCell,
+    previousSheetHeaderCell,
+  }
+  window.addEventListener('mousemove', handleDeferredCellSelectionPointerMove, true)
+  window.addEventListener('mouseup', handleDeferredCellSelectionWindowMouseUp)
+}
+
 function handleBeforeCellMouseDown(
   event: MouseEvent,
   coords: { row: number; col: number },
@@ -8467,6 +9013,11 @@ function handleBeforeCellMouseDown(
         return
       }
     }
+    if (shouldDeferCellSelectionForDrag(event)) {
+      beginDeferredCellSelectionForDrag(event, coords)
+      stopNativeCellSelectionForDeferredDrag(event, controller)
+      return
+    }
     selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
     return
   }
@@ -8480,6 +9031,11 @@ function handleBeforeCellMouseDown(
   if (dataRow < 0) {
     return
   }
+  if (shouldDeferCellSelectionForDrag(event)) {
+    beginDeferredCellSelectionForDrag(event, coords)
+    stopNativeCellSelectionForDeferredDrag(event, controller)
+    return
+  }
   if (beginFormulaReferenceRange(dataRow, anchor.column)) {
     stopFormulaReferenceCellSelection(event, controller)
   }
@@ -8491,6 +9047,18 @@ function handleBeforeCellMouseOver(
   _td: HTMLTableCellElement,
   controller: CellMouseSelectionController,
 ) {
+  if (deferredCellSelectionState) {
+    if (
+      coords.row !== deferredCellSelectionState.startRow
+      || coords.col !== deferredCellSelectionState.startHotColumn
+    ) {
+      deferredCellSelectionState.dragged = true
+    }
+    markDeferredCellSelectionDragFromPoint(event.clientX, event.clientY)
+    stopNativeCellSelectionForDeferredDrag(event, controller)
+    return
+  }
+
   if (!formulaReferenceRangeState || coords.row < 0 || coords.col < 0) {
     return
   }
@@ -8513,6 +9081,10 @@ function handleBeforeCellMouseOver(
 }
 
 function handleBeforeCellMouseUp(event: MouseEvent, coords: { row: number; col: number }) {
+  if (finishDeferredCellSelectionFromCell(event, coords)) {
+    return
+  }
+
   if (!formulaReferenceRangeState) {
     return
   }
@@ -9192,12 +9764,14 @@ async function saveDocumentSnapshot(document: SheetDocument) {
 }
 
 function emitSheetSync(detail: NoteSheetDetail) {
+  const workbookItems = detail.workbook_items ?? []
+  sheetWorkbookItems.value = workbookItems
   emit('sheetSync', {
     id: detail.id,
     title: detail.title || '未命名表格',
     version: Number(detail.version || 1),
     updatedAt: Number(detail.updated_at || 0),
-    workbookItems: detail.workbook_items ?? [],
+    workbookItems,
   })
 }
 
@@ -9211,6 +9785,9 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     emitSheetSync(detail)
     loadSheetDocument(normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode()))
     sheetContentReady.value = true
+    suppressReadOnlyActionWarningsForSheetRender()
+    restoreStudentLookupSelectionFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage()
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -9239,6 +9816,9 @@ function applyInlineSheetDocument() {
     loadSheetDocument(normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()))
     applyPaginationState(null)
     sheetContentReady.value = true
+    suppressReadOnlyActionWarningsForSheetRender()
+    restoreStudentLookupSelectionFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage()
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -10088,6 +10668,9 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
 
     loadSheetDocument(activeDocument)
     sheetContentReady.value = true
+    suppressReadOnlyActionWarningsForSheetRender()
+    restoreStudentLookupSelectionFromLocalStorage()
+    restoreSheetWorkspaceViewFromLocalStorage()
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
@@ -10744,7 +11327,9 @@ function handleBeforeAutofill(
 
 function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
   if (!canEditData.value) {
-    warnReadOnlyAction()
+    if (source !== 'auto') {
+      warnReadOnlyAction()
+    }
     return false
   }
   if (source !== 'auto') {
@@ -12197,6 +12782,9 @@ function resetFormulaBarDraftAndExit() {
 
 function handleAfterSelection(row: number, hotColumn: number) {
   refreshContextMenuFallbackSelectionState()
+  if (deferredCellSelectionState) {
+    return
+  }
   const column = hotColumn >= 0 ? toSheetColumnIndex(hotColumn) : hotColumn
   if (hotColumn >= 0 && column < 0) {
     clearSheetHeaderSelection()
@@ -13722,6 +14310,194 @@ function canOpenSelectedRowDetailDialog() {
   return getSingleSelectedRowDetailIndex() != null
 }
 
+function normalizeStudentLookupPersistedSelection(value: unknown): StudentLookupPersistedSelection | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const record = value as Record<string, unknown>
+  const mode = normalizeCellValue(record.mode).trim() === 'questionnaire' ? 'questionnaire' : 'student'
+  return {
+    version: 1,
+    mode,
+    sequence: normalizeCellValue(record.sequence).trim(),
+    group: normalizeCellValue(record.group).trim(),
+    studentKey: normalizeCellValue(record.studentKey).trim(),
+    studentGroup: normalizeCellValue(record.studentGroup).trim(),
+    studentNumber: normalizeCellValue(record.studentNumber).trim(),
+    studentName: normalizeCellValue(record.studentName).trim(),
+    nickname: normalizeCellValue(record.nickname).trim(),
+    updatedAt: Number(record.updatedAt) || 0,
+  }
+}
+
+function readStudentLookupPersistedSelection() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    const raw = window.localStorage.getItem(studentLookupStorageKey.value)
+    if (!raw) {
+      return null
+    }
+    return normalizeStudentLookupPersistedSelection(JSON.parse(raw))
+  } catch {
+    window.localStorage.removeItem(studentLookupStorageKey.value)
+    return null
+  }
+}
+
+function isSameStudentLookupPersistedIdentity(
+  option: StudentLookupOption,
+  selection: StudentLookupPersistedSelection,
+  requireGroup: boolean,
+) {
+  if (selection.mode === 'questionnaire' || option.mode === 'questionnaire') {
+    return !!selection.sequence && option.sequence === selection.sequence
+  }
+  if (requireGroup && selection.studentGroup && option.group !== selection.studentGroup) {
+    return false
+  }
+  if (selection.studentNumber && option.studentNumber !== selection.studentNumber) {
+    return false
+  }
+  if (selection.studentName && option.studentName !== selection.studentName) {
+    return false
+  }
+  if (selection.nickname && option.nickname !== selection.nickname) {
+    return false
+  }
+  return !!selection.studentNumber || !!selection.studentName || !!selection.nickname
+}
+
+function findStudentLookupOptionFromPersistedSelection(
+  selection: StudentLookupPersistedSelection | null,
+  candidates: StudentLookupOption[] = studentLookupOptions.value,
+) {
+  if (!selection) {
+    return null
+  }
+
+  if (selection.studentKey) {
+    const keyMatch = candidates.find((option) => option.key === selection.studentKey)
+    if (keyMatch) {
+      return keyMatch
+    }
+  }
+
+  return candidates.find((option) => isSameStudentLookupPersistedIdentity(option, selection, true))
+    ?? candidates.find((option) => isSameStudentLookupPersistedIdentity(option, selection, false))
+    ?? null
+}
+
+function persistStudentLookupSelectionToLocalStorage() {
+  if (typeof window === 'undefined' || restoringStudentLookupSelection || !shouldShowStudentLookup.value) {
+    return
+  }
+
+  const option = selectedStudentLookupOption.value
+  const payload: StudentLookupPersistedSelection = {
+    version: 1,
+    mode: studentLookupMode.value,
+    sequence: option?.sequence ?? (isStudentLookupQuestionnaireMode.value ? studentLookupStudentKey.value.trim() : ''),
+    group: studentLookupGroup.value.trim(),
+    studentKey: option?.key ?? '',
+    studentGroup: option?.group ?? '',
+    studentNumber: option?.studentNumber ?? '',
+    studentName: option?.studentName ?? '',
+    nickname: option?.nickname ?? '',
+    updatedAt: Date.now(),
+  }
+  window.localStorage.setItem(studentLookupStorageKey.value, JSON.stringify(payload))
+}
+
+function restoreStudentLookupSelectionFromLocalStorage() {
+  const selection = readStudentLookupPersistedSelection()
+  const matchedOption = findStudentLookupOptionFromPersistedSelection(selection)
+  const savedGroup = selection?.group ?? ''
+  const nextGroup = !isStudentLookupQuestionnaireMode.value && savedGroup && studentLookupGroupOptions.value.includes(savedGroup)
+    ? savedGroup
+    : ''
+  const nextStudentKey = matchedOption && (!nextGroup || matchedOption.group === nextGroup)
+    ? matchedOption.key
+    : ''
+
+  restoringStudentLookupSelection = true
+  studentLookupGroup.value = nextGroup
+  studentLookupStudentKey.value = nextStudentKey
+  void nextTick(() => {
+    restoringStudentLookupSelection = false
+  })
+}
+
+function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, renderedText: string) {
+  const gridRow = getGridRowIndex(rowIndex)
+  const anchor = getMergeAnchorForGridCell(gridRow, columnIndex)
+  const renderColumn = anchor.column
+  if (renderColumn < 0) {
+    return null
+  }
+
+  const dataRow = anchor.row >= 0 ? getDataRowIndex(anchor.row) : rowIndex
+  const documentRow = anchor.documentRow >= 0 ? anchor.documentRow : getDocumentGridRowIndex(gridRow)
+  const header = columnHeaders.value[renderColumn] ?? ''
+  const columnConfig = header ? columnConfigs.value[header] : undefined
+  const cellStyle = documentRow >= 0 ? getCellStyleAt(documentRow, renderColumn) : null
+  const fontSize = getColumnFontSizeFromConfig(columnConfig)
+  let backgroundColor = getPluginRowBackgroundColor(dataRow)
+  let textColor = ''
+  let fontFamilyStyle = getColumnFontFamilyStyle(columnConfig)
+  let fontSizeStyle = ''
+  let lineHeightStyle = ''
+
+  if (fontSize !== DEFAULT_COLUMN_FONT_SIZE) {
+    fontSizeStyle = `${fontSize}px`
+    lineHeightStyle = `${getColumnLineHeightFromFontSize(fontSize)}px`
+  }
+
+  const hashColorStyle = getCellHashColorStyle(renderColumn, columnConfig, renderedText)
+  if (hashColorStyle?.backgroundColor) {
+    backgroundColor = hashColorStyle.backgroundColor
+  }
+  if (hashColorStyle?.color) {
+    textColor = hashColorStyle.color
+  }
+
+  const accentStyle = getCellAccentStyle(dataRow, renderColumn)
+  if (accentStyle) {
+    backgroundColor = accentStyle.backgroundColor
+  }
+
+  if (cellStyle?.background_color) {
+    backgroundColor = cellStyle.background_color
+  }
+  if (cellStyle?.text_color) {
+    textColor = cellStyle.text_color
+  }
+  if (cellStyle?.font_family) {
+    fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
+  }
+
+  const style: SheetResolvedCellValueStyle = {}
+  if (backgroundColor) {
+    style.backgroundColor = backgroundColor
+  }
+  if (textColor) {
+    style.color = textColor
+  }
+  if (fontFamilyStyle) {
+    style.fontFamily = fontFamilyStyle
+  }
+  if (fontSizeStyle) {
+    style.fontSize = fontSizeStyle
+  }
+  if (lineHeightStyle) {
+    style.lineHeight = lineHeightStyle
+  }
+  return style
+}
+
 function buildRowDetail(rowIndex: number): SheetRowDetail | null {
   if (rowIndex < 0 || rowIndex >= rows.value.length) {
     return null
@@ -13751,12 +14527,31 @@ function buildRowDetail(rowIndex: number): SheetRowDetail | null {
         label: header || createFallbackHeader(columnIndex),
         value,
         empty: !value.trim(),
+        valueStyle: getResolvedCellValueStyle(rowIndex, columnIndex, value),
         link,
       }
     })
     .filter((item): item is SheetRowDetailItem => !!item)
 
   return { rowIndex, rowLabel, items }
+}
+
+function getStudentLookupSectionTitle(columnIndex: number) {
+  const topGroupRow = normalizedHeaderGroups.value[0]
+  if (!topGroupRow?.length) {
+    return ''
+  }
+
+  let startColumn = 0
+  for (const cell of topGroupRow) {
+    const colspan = Math.max(1, cell.colspan ?? 1)
+    const endColumn = startColumn + colspan - 1
+    if (columnIndex >= startColumn && columnIndex <= endColumn) {
+      return normalizeCellValue(cell.label).trim()
+    }
+    startColumn += colspan
+  }
+  return ''
 }
 
 function openSelectedRowDetailDialog() {
@@ -13770,6 +14565,70 @@ function openSelectedRowDetailDialog() {
   }
   rowDetail.value = detail
   rowDetailDialogVisible.value = true
+}
+
+function openStudentLookupFeedbackDialog() {
+  const option = selectedStudentLookupOption.value
+  if (!option) {
+    return
+  }
+
+  studentLookupFeedbackCorrectionRequest.value = ''
+  studentLookupFeedbackExtraNote.value = ''
+  studentLookupFeedbackLastSubmittedKey.value = ''
+  studentLookupFeedbackSubmittedAt.value = ''
+  studentLookupFeedbackDialogVisible.value = true
+}
+
+async function submitStudentLookupFeedback() {
+  const option = selectedStudentLookupOption.value
+  const courseName = studentLookupFeedbackCourseName.value.trim()
+  const studentId = normalizeCellValue(option?.studentNumber).trim()
+  const studentName = studentLookupFeedbackStudentName.value.trim()
+  const correctionRequest = studentLookupFeedbackCorrectionRequest.value.trim()
+  const extraNote = studentLookupFeedbackExtraNote.value.trim()
+
+  if (!option) {
+    ElMessage.warning('请先选择学员')
+    return
+  }
+  if (!courseName) {
+    ElMessage.warning('未识别所属课程')
+    return
+  }
+  if (!studentId) {
+    ElMessage.warning('当前学员缺少学号')
+    return
+  }
+  if (!studentName) {
+    ElMessage.warning('当前学员缺少姓名或昵称')
+    return
+  }
+  if (!correctionRequest) {
+    ElMessage.warning('请填写问题')
+    return
+  }
+
+  studentLookupFeedbackSubmitting.value = true
+  try {
+    const saved = await submitAttendanceFeedback({
+      course_name: courseName,
+      student_id_text: studentId,
+      student_name: studentName,
+      correction_request: correctionRequest,
+      extra_note: extraNote,
+    })
+    studentLookupFeedbackCorrectionRequest.value = correctionRequest
+    studentLookupFeedbackExtraNote.value = extraNote
+    studentLookupFeedbackLastSubmittedKey.value = studentLookupFeedbackCurrentDraftKey.value
+    studentLookupFeedbackSubmittedAt.value = saved.submitted_at_text || new Date().toLocaleString('zh-CN', { hour12: false })
+    ElMessage.success('已提交反馈')
+    studentLookupFeedbackDialogVisible.value = false
+  } catch (error) {
+    ElMessage.error(getSheetActionErrorMessage(error, '提交反馈失败'))
+  } finally {
+    studentLookupFeedbackSubmitting.value = false
+  }
 }
 
 function getNextCustomColumnNumber(headers: string[]) {
@@ -14528,6 +15387,7 @@ watch(
 watch(
   () => props.sheetId,
   (nextSheetId, previousSheetId) => {
+    sheetWorkspaceView.value = getDefaultSheetWorkspaceView()
     clearUserMatchRunPollTimer()
     userMatchRunStatus.value = null
     userMatchStartPending.value = false
@@ -14587,6 +15447,7 @@ watch(
     if (nextWorkbookId === previousWorkbookId || props.sheetId == null) {
       return
     }
+    sheetWorkspaceView.value = getDefaultSheetWorkspaceView()
     clearUserMatchRunPollTimer()
     userMatchRunStatus.value = null
     userMatchStartPending.value = false
@@ -14602,6 +15463,67 @@ watch(
   [() => rows.value.length, () => columnHeaders.value.length, () => props.sheetId],
   () => {
     void updateSheetViewportHeight()
+  },
+)
+
+watch(
+  [studentLookupGroup, filteredStudentLookupOptions],
+  () => {
+    if (
+      studentLookupGroup.value
+      && !studentLookupGroupOptions.value.includes(studentLookupGroup.value)
+    ) {
+      studentLookupGroup.value = ''
+      return
+    }
+
+    if (
+      studentLookupStudentKey.value
+      && !filteredStudentLookupOptions.value.some((option) => option.key === studentLookupStudentKey.value)
+    ) {
+      if (isStudentLookupQuestionnaireMode.value) {
+        const matchedSequenceOption = filteredStudentLookupOptions.value.find(
+          (option) => option.sequence === studentLookupStudentKey.value.trim(),
+        )
+        if (matchedSequenceOption) {
+          studentLookupStudentKey.value = matchedSequenceOption.key
+        }
+        return
+      }
+
+      const persistedOption = findStudentLookupOptionFromPersistedSelection(
+        readStudentLookupPersistedSelection(),
+        filteredStudentLookupOptions.value,
+      )
+      if (persistedOption) {
+        studentLookupStudentKey.value = persistedOption.key
+        return
+      }
+      studentLookupStudentKey.value = ''
+    }
+  },
+)
+
+watch(
+  [studentLookupGroup, studentLookupStudentKey],
+  () => {
+    persistStudentLookupSelectionToLocalStorage()
+  },
+)
+
+watch(
+  [studentLookupStudentKey, shouldShowStudentLookup],
+  () => {
+    void updateSheetViewportHeight()
+  },
+)
+
+watch(
+  isOriginalSheetViewActive,
+  (active) => {
+    if (active) {
+      void updateSheetViewportHeight()
+    }
   },
 )
 
@@ -14686,6 +15608,11 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   clearSaveTimer()
+  if (readOnlyActionWarningSuppressTimer != null) {
+    window.clearTimeout(readOnlyActionWarningSuppressTimer)
+    readOnlyActionWarningSuppressTimer = null
+  }
+  clearDeferredCellSelectionState()
   resetSheetFilterReloadState()
   clearUserMatchRunPollTimer()
   finishFormulaReferenceRange()
@@ -14708,7 +15635,10 @@ defineExpose({
 <template>
   <div
     class="note-sheet-workspace"
-    :class="{ 'is-content-height': isContentHeightMode }"
+    :class="{
+      'is-content-height': isContentHeightMode,
+      'is-lookup-view': isStudentLookupViewActive,
+    }"
     :style="sheetWorkspaceStyle"
   >
     <div v-if="shouldRenderSheetContent && (showTitleInput || showBackButton)" class="sheet-topbar">
@@ -14722,7 +15652,187 @@ defineExpose({
       <el-button v-if="showBackButton" @click="router.push(backTo)">{{ backLabel }}</el-button>
     </div>
 
-    <div v-if="shouldRenderSheetContent" class="sheet-formula-bar">
+    <div v-if="shouldShowSheetViewTabs" class="sheet-view-tabs" role="tablist" aria-label="表格视图">
+      <button
+        type="button"
+        class="sheet-view-tab"
+        :class="{ 'is-active': isOriginalSheetViewActive }"
+        role="tab"
+        :aria-selected="isOriginalSheetViewActive"
+        @click="setSheetWorkspaceView('sheet')"
+      >
+        表格
+      </button>
+      <button
+        type="button"
+        class="sheet-view-tab"
+        :class="{ 'is-active': isStudentLookupViewActive }"
+        role="tab"
+        :aria-selected="isStudentLookupViewActive"
+        @click="setSheetWorkspaceView('lookup')"
+      >
+        速查
+      </button>
+    </div>
+
+    <section v-if="isStudentLookupViewActive" class="sheet-student-lookup">
+      <div class="sheet-student-lookup-title">{{ studentLookupPanelTitle }}</div>
+      <div class="sheet-student-lookup-controls">
+        <label v-if="shouldShowStudentLookupGroupSelect" class="sheet-student-lookup-field">
+          <span class="sheet-student-lookup-label">分组</span>
+          <el-select
+            v-model="studentLookupGroup"
+            class="sheet-student-lookup-group-select"
+            size="small"
+          >
+            <el-option label="全部分组" value="" />
+            <el-option
+              v-for="group in studentLookupGroupOptions"
+              :key="group"
+              :label="group"
+              :value="group"
+            />
+          </el-select>
+        </label>
+
+        <label class="sheet-student-lookup-field sheet-student-lookup-field-main">
+          <span class="sheet-student-lookup-label">{{ studentLookupPrimaryLabel }}</span>
+          <el-select
+            v-model="studentLookupStudentKey"
+            class="sheet-student-lookup-student-select"
+            size="small"
+            clearable
+            :filterable="isStudentLookupQuestionnaireMode"
+            :allow-create="isStudentLookupQuestionnaireMode"
+            :default-first-option="isStudentLookupQuestionnaireMode"
+            :placeholder="studentLookupStudentPlaceholder"
+            :disabled="filteredStudentLookupOptions.length === 0"
+          >
+            <el-option
+              v-for="option in filteredStudentLookupOptions"
+              :key="option.key"
+              :label="option.label"
+              :value="option.key"
+            >
+              <div class="sheet-student-lookup-option">
+                <span>{{ option.label }}</span>
+                <span v-if="option.secondaryLabel" class="sheet-student-lookup-option-group">{{ option.secondaryLabel }}</span>
+              </div>
+            </el-option>
+          </el-select>
+        </label>
+
+        <el-button
+          v-if="studentLookupMode === 'student'"
+          size="small"
+          :disabled="!selectedStudentLookupOption"
+          @click="openStudentLookupFeedbackDialog"
+        >我要反馈问题</el-button>
+      </div>
+
+      <div v-if="selectedStudentLookupDetail" class="sheet-student-lookup-detail">
+        <section
+          v-for="(section, sectionIndex) in selectedStudentLookupDetailSections"
+          :key="`${section.title || 'default'}-${sectionIndex}`"
+          class="sheet-student-lookup-section"
+        >
+          <div v-if="section.title" class="sheet-student-lookup-section-title">{{ section.title }}</div>
+          <div
+            class="sheet-student-lookup-items"
+            :style="getStudentLookupItemsStyle(section.items)"
+          >
+            <div
+              v-for="item in section.items"
+              :key="item.columnIndex"
+              class="sheet-student-lookup-item"
+              :class="{ 'is-empty': item.empty }"
+            >
+              <div class="sheet-student-lookup-key">
+                <span class="sheet-student-lookup-marker">{{ item.marker }}</span>
+                <span class="sheet-student-lookup-item-label">{{ item.label }}</span>
+              </div>
+              <div class="sheet-student-lookup-value" :style="item.valueStyle">
+                <a
+                  v-if="item.link"
+                  :href="item.link.url"
+                  target="_blank"
+                  rel="noreferrer"
+                >{{ item.value || item.link.url }}</a>
+                <span v-else>{{ item.value || '--' }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+      <div v-else class="sheet-student-lookup-empty">{{ studentLookupEmptyText }}</div>
+    </section>
+
+    <el-dialog
+      v-model="studentLookupFeedbackDialogVisible"
+      title="反馈问题"
+      width="520px"
+      class="sheet-student-feedback-dialog"
+      destroy-on-close
+      append-to-body
+      :close-on-click-modal="!studentLookupFeedbackSubmitting"
+      :close-on-press-escape="!studentLookupFeedbackSubmitting"
+    >
+      <div class="sheet-student-feedback-form">
+        <div class="sheet-student-feedback-context">
+          <div class="sheet-student-feedback-context-item">
+            <span>课程</span>
+            <strong>{{ studentLookupFeedbackCourseName || '--' }}</strong>
+          </div>
+          <div class="sheet-student-feedback-context-item">
+            <span>学员</span>
+            <strong>{{ selectedStudentLookupOption?.studentNumber || '--' }} {{ studentLookupFeedbackStudentName || '--' }}</strong>
+          </div>
+        </div>
+
+        <label class="sheet-student-feedback-field">
+          <span class="sheet-student-feedback-label">问题</span>
+          <el-input
+            v-model="studentLookupFeedbackCorrectionRequest"
+            type="textarea"
+            :rows="4"
+            resize="vertical"
+            placeholder="请直接写需要修正或核对的内容"
+            maxlength="400"
+            show-word-limit
+          />
+        </label>
+
+        <label class="sheet-student-feedback-field">
+          <span class="sheet-student-feedback-label">备注</span>
+          <el-input
+            v-model="studentLookupFeedbackExtraNote"
+            type="textarea"
+            :rows="3"
+            resize="vertical"
+            placeholder="可选"
+            maxlength="600"
+            show-word-limit
+          />
+        </label>
+      </div>
+      <template #footer>
+        <div class="sheet-settings-footer">
+          <el-button :disabled="studentLookupFeedbackSubmitting" @click="studentLookupFeedbackDialogVisible = false">
+            取消
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="studentLookupFeedbackSubmitting"
+            :disabled="hasSubmittedStudentLookupFeedbackDraft"
+            @click="submitStudentLookupFeedback"
+          >
+            提交反馈
+          </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent" class="sheet-formula-bar">
       <div class="sheet-formula-address">{{ formulaBarAddress || '--' }}</div>
       <button
         v-if="showContextMenuFallbackButton"
@@ -14756,7 +15866,7 @@ defineExpose({
     </div>
 
     <div
-      v-if="sheetId == null || shouldRenderSheetContent"
+      v-if="shouldShowOriginalSheetArea"
       ref="sheetFrameRef"
       class="sheet-frame"
       :class="{
@@ -14767,7 +15877,7 @@ defineExpose({
       @contextmenu.capture="openSheetContextMenuAt"
     >
       <HotTable
-        v-if="shouldRenderSheetContent"
+        v-if="isOriginalSheetViewActive && shouldRenderSheetContent"
         ref="hotTableRef"
         :data="sheetHotGridRows"
         :language="'zh-CN'"
@@ -14831,7 +15941,7 @@ defineExpose({
       <div v-else class="sheet-empty-state">{{ emptyText }}</div>
     </div>
 
-    <div v-if="shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
+    <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
       <div class="sheet-pagination-status">{{ pageStatusText }}</div>
       <el-pagination
         v-if="effectivePaginationEnabled"
@@ -14864,7 +15974,7 @@ defineExpose({
             <span class="sheet-row-detail-marker">{{ item.marker }}</span>
             <span class="sheet-row-detail-label">{{ item.label }}</span>
           </div>
-          <div class="sheet-row-detail-value">
+          <div class="sheet-row-detail-value" :style="item.valueStyle">
             <a
               v-if="item.link"
               :href="item.link.url"
@@ -15702,6 +16812,11 @@ defineExpose({
   gap: 10px;
 }
 
+.note-sheet-workspace.is-lookup-view {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .note-sheet-workspace.is-content-height {
   align-items: flex-start;
   height: auto;
@@ -15710,6 +16825,8 @@ defineExpose({
 }
 
 .note-sheet-workspace.is-content-height .sheet-formula-bar,
+.note-sheet-workspace.is-content-height .sheet-view-tabs,
+.note-sheet-workspace.is-content-height .sheet-student-lookup,
 .note-sheet-workspace.is-content-height .sheet-frame,
 .note-sheet-workspace.is-content-height .sheet-pagination-bar {
   width: min(100%, var(--sheet-content-width, 100%));
@@ -15725,6 +16842,282 @@ defineExpose({
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.sheet-view-tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  min-height: 34px;
+  border-bottom: 1px solid #e7dcc9;
+}
+
+.sheet-view-tab {
+  flex: 0 0 auto;
+  min-width: 86px;
+  height: 34px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 33px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheet-view-tab.is-active {
+  border-color: #e7dcc9;
+  background: #fff;
+  color: #111827;
+}
+
+.sheet-student-lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.sheet-student-lookup-title {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sheet-student-lookup-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 10px;
+  min-width: 0;
+}
+
+.sheet-student-lookup-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sheet-student-lookup-field-main {
+  flex: 1 1 260px;
+}
+
+.sheet-student-lookup-label {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.sheet-student-lookup-group-select {
+  width: 124px;
+}
+
+.sheet-student-lookup-student-select {
+  width: min(100%, 360px);
+}
+
+.sheet-student-lookup-field-main .sheet-student-lookup-student-select {
+  flex: 1;
+}
+
+.sheet-student-lookup-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sheet-student-lookup-option span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-student-lookup-option-group {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-student-lookup-detail {
+  border-top: 1px solid #e2e8f0;
+}
+
+.sheet-student-lookup-section + .sheet-student-lookup-section {
+  margin-top: 6px;
+}
+
+.sheet-student-lookup-section-title {
+  padding: 8px 2px 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.sheet-student-lookup-items {
+  display: grid;
+  grid-template-columns: 1fr;
+  border-top: 1px solid #e2e8f0;
+}
+
+.sheet-student-lookup-item {
+  display: grid;
+  grid-template-columns: minmax(88px, 34%) minmax(0, 1fr);
+  min-height: 34px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #fff;
+}
+
+.sheet-student-lookup-key {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 9px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.sheet-student-lookup-marker {
+  flex: 0 0 auto;
+  color: #94a3b8;
+  font-weight: 700;
+}
+
+.sheet-student-lookup-item-label {
+  min-width: 0;
+  line-break: strict;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+.sheet-student-lookup-value {
+  min-width: 0;
+  padding: 8px 10px;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.sheet-student-lookup-value a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.sheet-student-lookup-item.is-empty .sheet-student-lookup-value {
+  color: #9ca3af;
+}
+
+.sheet-student-lookup-empty {
+  padding-top: 2px;
+  color: #94a3b8;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sheet-student-feedback-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sheet-student-feedback-context {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.sheet-student-feedback-context-item {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.sheet-student-feedback-context-item span {
+  color: #64748b;
+  font-weight: 600;
+}
+
+.sheet-student-feedback-context-item strong {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sheet-student-feedback-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sheet-student-feedback-label {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+@media (min-width: 900px) {
+  .sheet-student-lookup-items {
+    position: relative;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: repeat(var(--sheet-student-lookup-column-rows, 1), auto);
+    grid-auto-flow: column;
+  }
+
+  .sheet-student-lookup-items::before {
+    content: "";
+    position: absolute;
+    z-index: 1;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: #e2e8f0;
+    pointer-events: none;
+  }
+}
+
+@media (min-width: 900px) and (hover: hover) and (pointer: fine) {
+  .sheet-student-lookup-item {
+    grid-template-columns: minmax(0, var(--sheet-student-lookup-key-width, 120px)) minmax(0, 1fr);
+  }
 }
 
 .sheet-pagination-bar {
@@ -15931,7 +17324,9 @@ defineExpose({
 
 .sheet-row-detail-label {
   min-width: 0;
-  word-break: break-word;
+  line-break: strict;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 .sheet-row-detail-value {
@@ -15940,12 +17335,13 @@ defineExpose({
   color: #1f2937;
   font-size: 13px;
   line-height: 1.45;
+  text-align: left;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .sheet-row-detail-value a {
-  color: #1d4ed8;
+  color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -16768,6 +18164,43 @@ defineExpose({
 
   .sheet-title-input {
     width: 100%;
+  }
+
+  .sheet-view-tab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 10px;
+  }
+
+  .sheet-student-lookup {
+    padding: 9px;
+  }
+
+  .sheet-student-lookup-controls {
+    align-items: stretch;
+  }
+
+  .sheet-student-lookup-field,
+  .sheet-student-lookup-controls > .el-button {
+    width: 100%;
+  }
+
+  .sheet-student-lookup-field {
+    align-items: center;
+  }
+
+  .sheet-student-lookup-label {
+    width: 36px;
+  }
+
+  .sheet-student-lookup-group-select,
+  .sheet-student-lookup-student-select {
+    flex: 1;
+    width: auto;
+  }
+
+  :deep(.sheet-student-feedback-dialog) {
+    width: calc(100vw - 24px) !important;
   }
 }
 </style>

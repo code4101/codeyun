@@ -106,21 +106,21 @@ def test_auto_git_commit_candidates_use_first_three_allowed_saved_repos(session,
 
 
 def test_auto_git_commit_due_scheduler_waits_until_persisted_next_run(session):
-    _save_auto_git_schedule(session, "2026-05-06T03:20:00+08:00")
+    _save_auto_git_schedule(session, "2026-05-06T00:15:00+08:00")
 
     run = maybe_create_due_auto_git_commit_run(
         session,
         trigger_reason="scheduled",
-        now=_dt("2026-05-06T03:19:00+08:00"),
+        now=_dt("2026-05-06T00:14:00+08:00"),
         enqueue=False,
     )
 
     assert run is None
-    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-06T03:20:00+08:00"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-06T00:15:00+08:00"
 
 
 def test_auto_git_commit_due_scheduler_backfills_expired_persisted_next_run(session):
-    _save_auto_git_schedule(session, "2026-05-06T03:20:00+08:00")
+    _save_auto_git_schedule(session, "2026-05-06T00:15:00+08:00")
 
     run = maybe_create_due_auto_git_commit_run(
         session,
@@ -131,7 +131,7 @@ def test_auto_git_commit_due_scheduler_backfills_expired_persisted_next_run(sess
 
     assert run is not None
     assert run.trigger_reason == "scheduled_catchup"
-    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T00:15:00+08:00"
 
 
 def test_auto_git_commit_due_scheduler_initializes_from_existing_run_history(session):
@@ -140,9 +140,9 @@ def test_auto_git_commit_due_scheduler_initializes_from_existing_run_history(ses
             status="completed",
             trigger_reason="scheduled",
             run_date="2026-05-04",
-            created_at=_dt("2026-05-04T03:21:00+08:00").timestamp(),
-            updated_at=_dt("2026-05-04T03:22:00+08:00").timestamp(),
-            finished_at=_dt("2026-05-04T03:22:00+08:00").timestamp(),
+            created_at=_dt("2026-05-04T00:16:00+08:00").timestamp(),
+            updated_at=_dt("2026-05-04T00:17:00+08:00").timestamp(),
+            finished_at=_dt("2026-05-04T00:17:00+08:00").timestamp(),
         )
     )
     session.commit()
@@ -156,7 +156,7 @@ def test_auto_git_commit_due_scheduler_initializes_from_existing_run_history(ses
 
     assert run is not None
     assert run.trigger_reason == "scheduled_catchup"
-    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T00:15:00+08:00"
 
 
 def test_auto_git_commit_due_scheduler_does_not_duplicate_existing_due_day_run(session):
@@ -180,7 +180,7 @@ def test_auto_git_commit_due_scheduler_does_not_duplicate_existing_due_day_run(s
     )
 
     assert run is None
-    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T00:15:00+08:00"
 
 
 def test_auto_git_commit_marks_stale_running_run_failed(session):
@@ -219,7 +219,7 @@ def test_auto_git_commit_marks_stale_running_run_failed(session):
 def test_auto_git_commit_due_scheduler_ignores_stale_active_run(session):
     now = _dt("2026-05-06T10:00:00+08:00")
     stale_ts = now.timestamp() - AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS - 1
-    _save_auto_git_schedule(session, "2026-05-06T03:20:00+08:00")
+    _save_auto_git_schedule(session, "2026-05-06T00:15:00+08:00")
     session.add(
         AutoGitCommitRun(
             status="running",
@@ -246,7 +246,7 @@ def test_auto_git_commit_due_scheduler_ignores_stale_active_run(session):
     assert run.trigger_reason == "scheduled_catchup"
     runs = session.exec(select(AutoGitCommitRun).order_by(AutoGitCommitRun.created_at.asc())).all()
     assert [item.status for item in runs] == ["failed", "pending"]
-    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T03:20:00+08:00"
+    assert _load_auto_git_schedule(session)["next_run_at"] == "2026-05-07T00:15:00+08:00"
 
 
 def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session, auth_user, tmp_path, monkeypatch):

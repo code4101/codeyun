@@ -18,7 +18,8 @@ def _set_enabled(monkeypatch, enabled_by_key):
     )
 
 
-def _write_schedule_state(path, values):
+def _write_schedule_state(path, values, *, schedule_version=2):
+    blackboard = {} if schedule_version is None else {"schedule_version": schedule_version}
     path.write_text(
         json.dumps(
             {
@@ -26,7 +27,7 @@ def _write_schedule_state(path, values):
                     f"Root/MemorySelector/{task_key}": {"next_run_at": next_run_at}
                     for task_key, next_run_at in values.items()
                 },
-                "blackboard": {},
+                "blackboard": blackboard,
             },
             ensure_ascii=False,
         ),
@@ -84,3 +85,27 @@ def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypa
     runner.refresh_enabled_states()
 
     assert tree_runner.next_wake().isoformat() == "2099-05-10T00:05:00"
+
+
+def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkeypatch):
+    task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
+    _set_enabled(monkeypatch, {key: False for key in task_keys})
+
+    runner = _runner_for_test(tmp_path)
+    _write_schedule_state(
+        runner.state_path,
+        {
+            "auto_git_commit": "2099-05-10 03:20:00",
+            "storage_analysis": "2099-05-10 03:00:00",
+            "rime_config_sync": "2099-05-10 01:00:00",
+        },
+        schedule_version=None,
+    )
+
+    tree_runner = runner.build_runner()
+    nodes = tree_runner.state["nodes"]
+
+    assert nodes["Root/MemorySelector/auto_git_commit"].get("next_run_at") is None
+    assert nodes["Root/MemorySelector/storage_analysis"].get("next_run_at") is None
+    assert nodes["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2099-05-10 01:00:00"
+    assert tree_runner.state["blackboard"]["schedule_version"] == 2
