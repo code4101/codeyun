@@ -113,10 +113,10 @@
                   <el-switch v-model="scheduleConfig.enabled" />
                 </el-form-item>
                 <el-form-item label="执行计划 (Cron)">
-                  <el-input v-model="scheduleConfig.cron_expression" placeholder="0 3 * * *" style="width: 150px" />
+                  <el-input v-model="scheduleConfig.cron_expression" placeholder="35 0 * * *" style="width: 150px" />
                 </el-form-item>
                 <el-form-item>
-                   <el-tooltip content="Cron 格式: 分 时 日 月 周 (例如: 0 3 * * * 表示每天凌晨3点)" placement="top">
+                   <el-tooltip content="Cron 格式: 分 时 日 月 周 (例如: 35 0 * * * 表示每天 00:35)" placement="top">
                     <el-icon><QuestionFilled /></el-icon>
                    </el-tooltip>
                 </el-form-item>
@@ -225,7 +225,7 @@ const deleting = ref(false);
 const fixing = ref(false);
 
 // Schedule Config
-const scheduleConfig = ref<ScheduleConfig>({ enabled: false, cron_expression: '0 3 * * *' });
+const scheduleConfig = ref<ScheduleConfig>({ enabled: false, cron_expression: '35 0 * * *' });
 const savingSchedule = ref(false);
 
 // Formatters

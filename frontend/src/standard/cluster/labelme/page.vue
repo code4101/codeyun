@@ -906,6 +906,22 @@ const getQueryString = (value: unknown) => {
   return typeof value === 'string' ? value : '';
 };
 
+const getFirstQueryString = (keys: string[]) => {
+  for (const key of keys) {
+    const value = getQueryString(route.query[key]);
+    if (value) {
+      return value;
+    }
+  }
+  return '';
+};
+
+// External launch protocol:
+// /cluster/labelme?device=codepc_mi15&path=C:\...\dir&image=target.jpg
+// /fanxiu/labelme?image=C:\home\chenkunze\data\...\shot.jpg
+const getRouteDeviceSelector = () => getFirstQueryString(['entry_id', 'device_id', 'device']);
+const getRouteTargetImage = () => getFirstQueryString(['image', 'image_path', 'file', 'absolute_path']);
+
 const loadPersistedEntryId = () => {
   if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') {
     return '';
@@ -983,10 +999,15 @@ const selectedShapeLabelFieldsListRef = ref<HTMLElement | null>(null);
 const activeDrag = ref<DragState | null>(null);
 const activePan = ref<PanState | null>(null);
 const isSpacePressed = ref(false);
-const matchesFixedDevice = (device: { device_id?: string; name?: string }, target: string) => {
-  const normalizedDeviceId = (device.device_id || '').trim().toLowerCase();
-  const normalizedDeviceName = (device.name || '').trim().toLowerCase();
-  return normalizedDeviceId === target || normalizedDeviceName === target;
+const normalizeDeviceMatchKey = (value: string) =>
+  (value || '').trim().toLowerCase().replace(/[-_\s]+/g, '');
+
+const matchesFixedDevice = (device: { id?: string; device_id?: string; name?: string }, target: string) => {
+  const normalizedTarget = normalizeDeviceMatchKey(target);
+  const normalizedId = normalizeDeviceMatchKey(device.id || '');
+  const normalizedDeviceId = normalizeDeviceMatchKey(device.device_id || '');
+  const normalizedDeviceName = normalizeDeviceMatchKey(device.name || '');
+  return normalizedId === normalizedTarget || normalizedDeviceId === normalizedTarget || normalizedDeviceName === normalizedTarget;
 };
 const lockedDevice = computed(() => {
   const targetDeviceId = normalizedFixedDeviceId.value;
@@ -1162,7 +1183,40 @@ const persistRecursiveDisplay = (nextStorageKey: string, value: boolean) => {
   }
 };
 
+const getAbsoluteParentPath = (value: string) => {
+  let current = (value || '').trim();
+  if (!current) {
+    return '';
+  }
+  if (/^[a-zA-Z]:[\\/]?$/.test(current)) {
+    return '';
+  }
+  if (/^\\\\[^\\/]+[\\/][^\\/]+[\\/]?$/.test(current)) {
+    return '';
+  }
+  current = current.replace(/[\\/]+$/, '');
+  const parent = current.replace(/[\\/][^\\/]+$/, '');
+  if (!parent || parent === current) {
+    return '';
+  }
+  if (/^[a-zA-Z]:$/.test(parent)) {
+    return `${parent}\\`;
+  }
+  if (/^\\\\[^\\/]+[\\/][^\\/]+$/.test(parent)) {
+    return `${parent}\\`;
+  }
+  return parent;
+};
+
 const resolveInitialPath = (entryId: string) => {
+  const targetImage = getRouteTargetImage();
+  if (targetImage && isAbsolutePath(targetImage)) {
+    const targetDirectory = applyPathConstraints(getAbsoluteParentPath(targetImage), { fallbackToRoot: false });
+    if (targetDirectory) {
+      return targetDirectory;
+    }
+  }
+
   const routePath = applyPathConstraints(getQueryString(route.query.path), { fallbackToRoot: true });
   if (routePath) {
     return routePath;
@@ -1604,7 +1658,11 @@ const syncPathInputFromSelection = () => {
   pathInputValue.value = formatPathInput(selectedPath.value);
 };
 
-const buildRouteQuery = (entryId = selectedEntryId.value, pathValue = normalizedPathInput.value) => {
+const buildRouteQuery = (
+  entryId = selectedEntryId.value,
+  pathValue = normalizedPathInput.value,
+  targetImage = ''
+) => {
   const nextQuery: Record<string, string> = {};
   if (entryId) {
     nextQuery.entry_id = entryId;
@@ -1612,15 +1670,27 @@ const buildRouteQuery = (entryId = selectedEntryId.value, pathValue = normalized
   if (!isDeviceRootPath(pathValue)) {
     nextQuery.path = pathValue;
   }
+  if (targetImage) {
+    nextQuery.image = targetImage;
+  }
   return nextQuery;
 };
 
-const syncRouteQuery = async (mode: 'replace' | 'push' = 'replace') => {
+const syncRouteQuery = async (
+  mode: 'replace' | 'push' = 'replace',
+  options: { targetImage?: string | null } = {}
+) => {
   const currentRoutePath = normalizePathInput(getQueryString(route.query.path)) || DEVICE_ROOT_SENTINEL;
-  const currentQuery = buildRouteQuery(getQueryString(route.query.entry_id), currentRoutePath);
-  const nextQuery = buildRouteQuery();
+  const currentRouteTargetImage = getRouteTargetImage();
+  const nextRouteTargetImage = options.targetImage === undefined ? currentRouteTargetImage : (options.targetImage || '');
+  const currentQuery = buildRouteQuery(getQueryString(route.query.entry_id), currentRoutePath, currentRouteTargetImage);
+  const nextQuery = buildRouteQuery(selectedEntryId.value, normalizedPathInput.value, nextRouteTargetImage);
 
-  if (currentQuery.entry_id === nextQuery.entry_id && currentQuery.path === nextQuery.path) {
+  if (
+    currentQuery.entry_id === nextQuery.entry_id
+    && currentQuery.path === nextQuery.path
+    && currentQuery.image === nextQuery.image
+  ) {
     return false;
   }
 
@@ -1629,31 +1699,6 @@ const syncRouteQuery = async (mode: 'replace' | 'push' = 'replace') => {
     query: nextQuery,
   });
   return true;
-};
-
-const getAbsoluteParentPath = (value: string) => {
-  let current = (value || '').trim();
-  if (!current) {
-    return '';
-  }
-  if (/^[a-zA-Z]:[\\/]?$/.test(current)) {
-    return '';
-  }
-  if (/^\\\\[^\\/]+[\\/][^\\/]+[\\/]?$/.test(current)) {
-    return '';
-  }
-  current = current.replace(/[\\/]+$/, '');
-  const parent = current.replace(/[\\/][^\\/]+$/, '');
-  if (!parent || parent === current) {
-    return '';
-  }
-  if (/^[a-zA-Z]:$/.test(parent)) {
-    return `${parent}\\`;
-  }
-  if (/^\\\\[^\\/]+[\\/][^\\/]+$/.test(parent)) {
-    return `${parent}\\`;
-  }
-  return parent;
 };
 
 const getParentPathWithinConstraints = (value: string) => {
@@ -1665,6 +1710,54 @@ const getParentPathWithinConstraints = (value: string) => {
     return parent;
   }
   return isPathWithinFixedRoot(parent) ? parent : normalizedFixedRootPath.value;
+};
+
+const resolveRouteDeviceEntryId = () => {
+  const selector = getRouteDeviceSelector();
+  if (!selector) {
+    return '';
+  }
+  return devices.value.find((device) => matchesFixedDevice(device, selector))?.id ?? '';
+};
+
+const resolveRoutePathFromQuery = () => {
+  const targetImage = getRouteTargetImage();
+  if (targetImage && isAbsolutePath(targetImage)) {
+    const targetDirectory = getAbsoluteParentPath(targetImage);
+    const constrainedTargetDirectory = applyPathConstraints(targetDirectory, { fallbackToRoot: false });
+    if (constrainedTargetDirectory) {
+      return constrainedTargetDirectory;
+    }
+  }
+
+  const routePath = applyPathConstraints(getQueryString(route.query.path), { fallbackToRoot: true });
+  if (routePath) {
+    return routePath;
+  }
+  return '';
+};
+
+const applyRouteSelectionFromQuery = () => {
+  let changed = false;
+
+  if (!isDeviceLocked.value) {
+    const routeEntryId = resolveRouteDeviceEntryId();
+    if (routeEntryId && routeEntryId !== selectedEntryId.value) {
+      selectedEntryId.value = routeEntryId;
+      changed = true;
+    }
+  } else if (lockedEntryId.value && selectedEntryId.value !== lockedEntryId.value) {
+    selectedEntryId.value = lockedEntryId.value;
+    changed = true;
+  }
+
+  const routePath = resolveRoutePathFromQuery();
+  if (routePath && routePath !== selectedPath.value) {
+    selectedPath.value = routePath;
+    changed = true;
+  }
+
+  return changed;
 };
 
 const canGoUp = computed(() => {
@@ -1695,6 +1788,31 @@ const replaceExtension = (filePath: string, nextExtension: string) => {
     return `${trimmed.slice(0, lastDotIndex)}${nextExtension}`;
   }
   return `${trimmed}${nextExtension}`;
+};
+
+const getFileNameFromPath = (value: string) => {
+  const trimmed = (value || '').trim().replace(/[\\/]+$/, '');
+  const lastSeparatorIndex = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  return lastSeparatorIndex >= 0 ? trimmed.slice(lastSeparatorIndex + 1) : trimmed;
+};
+
+const normalizeComparableRelativePath = (value: string) =>
+  (value || '').trim().replace(/\//g, '\\').replace(/^\\+/, '').replace(/\\+/g, '\\').toLowerCase();
+
+const getRelativePathWithinBase = (absolutePath: string, basePath: string) => {
+  if (!absolutePath || !basePath || isDeviceRootPath(basePath)) {
+    return '';
+  }
+
+  const normalizedAbsolutePath = normalizeComparablePath(absolutePath);
+  const normalizedBasePath = normalizeComparablePath(basePath);
+  if (normalizedAbsolutePath === normalizedBasePath) {
+    return getFileNameFromPath(absolutePath);
+  }
+  if (!normalizedAbsolutePath.startsWith(`${normalizedBasePath}\\`)) {
+    return '';
+  }
+  return absolutePath.slice(basePath.replace(/[\\/]+$/, '').length + 1);
 };
 
 const roundCoordinate = (value: number) => Math.round(value);
@@ -2296,6 +2414,75 @@ const mapAnnotationItem = (record: DeviceImageRecord): DeviceAnnotationItem | nu
   };
 };
 
+const buildAnnotationItemFromAbsolutePath = (absolutePath: string): DeviceAnnotationItem | null => {
+  const normalizedAbsolutePath = normalizePathInput(absolutePath);
+  if (!normalizedAbsolutePath || isDeviceRootPath(normalizedAbsolutePath)) {
+    return null;
+  }
+  if (hasFixedRootBoundary.value && !isPathWithinFixedRoot(normalizedAbsolutePath)) {
+    return null;
+  }
+
+  const name = getFileNameFromPath(normalizedAbsolutePath);
+  const folderPath = getAbsoluteParentPath(normalizedAbsolutePath);
+  if (!name || !folderPath) {
+    return null;
+  }
+
+  const relativePath = getRelativePathWithinBase(normalizedAbsolutePath, normalizedPathInput.value) || name;
+  return {
+    id: `absolute:${normalizedAbsolutePath}`,
+    name,
+    relativePath,
+    folderPath,
+    absolutePath: normalizedAbsolutePath,
+    jsonAbsolutePath: replaceExtension(normalizedAbsolutePath, '.json'),
+    jsonFilename: `${stripExtension(name)}.json`,
+    size: 0,
+    modifiedAt: 0,
+    width: null,
+    height: null,
+    cachedShapeCount: null,
+    annotationSearchContent: '',
+    annotationSearchContentLoaded: false,
+  };
+};
+
+const findAnnotationItemByTargetImage = (targetImage: string) => {
+  const target = (targetImage || '').trim();
+  if (!target) {
+    return null;
+  }
+
+  if (isAbsolutePath(target)) {
+    const comparableTarget = normalizeComparablePath(target);
+    return annotationItems.value.find((item) => normalizeComparablePath(item.absolutePath) === comparableTarget) ?? null;
+  }
+
+  const comparableTarget = normalizeComparableRelativePath(target);
+  return annotationItems.value.find((item) =>
+    normalizeComparableRelativePath(item.relativePath) === comparableTarget
+    || normalizeComparableRelativePath(item.name) === comparableTarget
+  ) ?? null;
+};
+
+const ensureAnnotationItemForTargetImage = (targetImage: string) => {
+  const existingItem = findAnnotationItemByTargetImage(targetImage);
+  if (existingItem) {
+    return existingItem;
+  }
+  if (!isAbsolutePath(targetImage)) {
+    return null;
+  }
+
+  const directItem = buildAnnotationItemFromAbsolutePath(targetImage);
+  if (!directItem) {
+    return null;
+  }
+  annotationItems.value = [directItem, ...annotationItems.value];
+  return directItem;
+};
+
 const updateItemCache = (item: DeviceAnnotationItem, doc: LabelmeDocument) => {
   item.cachedShapeCount = doc.editableShapes.length;
   if (item.annotationSearchContentLoaded) {
@@ -2494,7 +2681,7 @@ const handleAnnotationSourceModeChange = async (nextMode: AnnotationSourceMode |
 
 const openItemById = async (
   itemId: string,
-  options: { skipConfirm?: boolean } = {}
+  options: { skipConfirm?: boolean; routeMode?: 'replace' | 'push' | false } = {}
 ) => {
   const item = annotationItems.value.find((candidate) => candidate.id === itemId);
   if (!item) return;
@@ -2556,6 +2743,9 @@ const openItemById = async (
       if (annotationSourceMode.value === 'ocr') {
         void ensureOcrDocument({ showErrorMessage: false });
       }
+      if (options.routeMode !== false) {
+        await syncRouteQuery(options.routeMode ?? 'replace', { targetImage: item.absolutePath });
+      }
     } catch (error) {
       URL.revokeObjectURL(imageResource.url);
       throw error;
@@ -2568,6 +2758,22 @@ const openItemById = async (
       isLoadingItem.value = false;
     }
   }
+};
+
+const openRouteTargetImageIfNeeded = async () => {
+  const targetImage = getRouteTargetImage();
+  if (!targetImage || !selectedEntryId.value) {
+    return false;
+  }
+
+  const item = ensureAnnotationItemForTargetImage(targetImage);
+  if (!item) {
+    ElMessage.warning(`未找到可标注图片：${targetImage}`);
+    return false;
+  }
+
+  await openItemById(item.id, { skipConfirm: true, routeMode: 'replace' });
+  return true;
 };
 
 const saveCurrentDocument = async () => {
@@ -2757,6 +2963,10 @@ const loadDirectory = async () => {
 
     await syncRouteQuery();
 
+    if (await openRouteTargetImageIfNeeded()) {
+      return;
+    }
+
     if (previousItemId && nextItems.some((item) => item.id === previousItemId)) {
       currentItemId.value = previousItemId;
       return;
@@ -2821,7 +3031,7 @@ const commitPathInput = async (options?: { load?: boolean; mode?: 'push' | 'repl
   selectedPath.value = normalizedPath;
   syncPathInputFromSelection();
   if (options?.load) {
-    await syncRouteQuery(options.mode ?? 'push');
+    await syncRouteQuery(options.mode ?? 'push', { targetImage: null });
     await loadDirectory();
   }
   return true;
@@ -2841,7 +3051,7 @@ const openDirectory = async (path: string) => {
   }
   selectedPath.value = path;
   syncPathInputFromSelection();
-  await syncRouteQuery('push');
+  await syncRouteQuery('push', { targetImage: null });
   await loadDirectory();
 };
 
@@ -2854,7 +3064,7 @@ const goToParentDirectory = async () => {
   }
   selectedPath.value = getParentPathWithinConstraints(normalizedPathInput.value);
   syncPathInputFromSelection();
-  await syncRouteQuery('push');
+  await syncRouteQuery('push', { targetImage: null });
   await loadDirectory();
 };
 
@@ -3432,21 +3642,28 @@ watch(
 );
 
 watch(
-  () => [route.query.entry_id, route.query.path],
-  ([nextEntryId, nextPath]) => {
-    const normalizedEntryId = getQueryString(nextEntryId);
-    const rawPath = getQueryString(nextPath);
-    const explicitPath = rawPath
-      ? applyPathConstraints(rawPath, { fallbackToRoot: true })
-      : (hasFixedRootBoundary.value ? normalizedFixedRootPath.value : '');
-    if (!isDeviceLocked.value && normalizedEntryId && normalizedEntryId !== selectedEntryId.value) {
-      selectedEntryId.value = normalizedEntryId;
+  () => [
+    route.query.entry_id,
+    route.query.device_id,
+    route.query.device,
+    route.query.path,
+    route.query.image,
+    route.query.image_path,
+    route.query.file,
+    route.query.absolute_path,
+  ],
+  async () => {
+    const previousEntryId = selectedEntryId.value;
+    const previousPath = selectedPath.value;
+    const changed = applyRouteSelectionFromQuery();
+    if (changed && (previousEntryId !== selectedEntryId.value || previousPath !== selectedPath.value)) {
+      if (previousEntryId === selectedEntryId.value && canBrowse.value) {
+        await loadDirectory();
+      }
+      return;
     }
-    if (isDeviceLocked.value && lockedEntryId.value && selectedEntryId.value !== lockedEntryId.value) {
-      selectedEntryId.value = lockedEntryId.value;
-    }
-    if (explicitPath && explicitPath !== selectedPath.value) {
-      selectedPath.value = explicitPath;
+    if (canBrowse.value) {
+      await openRouteTargetImageIfNeeded();
     }
   }
 );
@@ -3529,6 +3746,7 @@ onMounted(async () => {
     return;
   }
 
+  applyRouteSelectionFromQuery();
   await syncRouteQuery();
   if (canBrowse.value) {
     await loadDirectory();

@@ -17,7 +17,7 @@ import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
-const SHEET_TAB_CONTEXT_MENU_HEIGHT = 246
+const SHEET_TAB_CONTEXT_MENU_HEIGHT = 280
 
 const route = useRoute()
 const router = useRouter()
@@ -217,6 +217,15 @@ async function configureSheetFromTabContextMenu() {
   }
   const workspace = await waitForSheetWorkspaceRef()
   workspace?.openSheetSettings?.()
+}
+
+function openSheetShareLinkFromTabContextMenu() {
+  const sheet = sheetTabContextMenuSheet.value
+  closeSheetTabContextMenu()
+  if (!sheet) {
+    return
+  }
+  void router.push(`/sheet/${sheet.id}`)
 }
 
 async function createSheetFromTabContextMenu() {
@@ -503,6 +512,14 @@ onBeforeUnmount(() => {
           @click="configureSheetFromTabContextMenu"
         >
           配置
+        </button>
+        <button
+          type="button"
+          class="sheet-tab-context-menu-item"
+          :disabled="!sheetTabContextMenuSheet"
+          @click="openSheetShareLinkFromTabContextMenu"
+        >
+          分享链接
         </button>
         <div class="sheet-tab-context-menu-separator"></div>
         <button

@@ -28,7 +28,7 @@ from backend.models import AppSetting, AutoGitCommitRun, User
 
 AUTO_GIT_COMMIT_TASK_KEY = "auto_git_commit"
 AUTO_GIT_COMMIT_REPO_KEYS = ("pyxllib", "xlproject", "codeyun")
-AUTO_GIT_COMMIT_CRON = "20 3 * * *"
+AUTO_GIT_COMMIT_CRON = "15 0 * * *"
 AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY = f"background_task.{AUTO_GIT_COMMIT_TASK_KEY}.schedule"
 AUTO_GIT_COMMIT_BRANCH_FACTOR = 10
 AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80

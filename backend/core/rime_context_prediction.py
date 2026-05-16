@@ -1816,8 +1816,7 @@ def _ensure_english_schema(rime_dir: Path) -> None:
         "  enable_completion: true\n"
         "  enable_sentence: false\n"
         "  enable_encoder: false\n"
-        "  enable_user_dict: true\n"
-        "  user_dict: codeyun_english_user\n"
+        "  enable_user_dict: false\n"
     )
     _write_text_atomic(path, text)
 

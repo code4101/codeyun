@@ -26,6 +26,22 @@ from backend.models import AppSetting
 
 
 TaskAction = Callable[[], str | None]
+AUTO_GIT_COMMIT_RUN_TIME = "00:15"
+CODEX_DIARY_RUN_TIME = "00:10"
+ATTENDANCE_SUMMARY_RUN_TIME = "00:05"
+MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
+MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
+MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
+METADATA_FEEDBACK_INTERVAL_MINUTES = 10
+STORAGE_ANALYSIS_RUN_TIME = "00:35"
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 2
+SCHEDULE_VERSIONED_TASK_KEYS = {
+    "auto_git_commit",
+    "note_metadata_feedback_optimization",
+    "codex_diary_yesterday_import",
+    MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
+    "storage_analysis",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +54,11 @@ class BackgroundTaskSpec:
     retry_label: str
     action: TaskAction
     manual_warning: str = ""
+
+
+DEFAULT_ENABLED_TASK_KEYS = {
+    MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
+}
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -96,6 +117,8 @@ def _is_task_enabled(task_key: str) -> bool:
         row = session.get(AppSetting, _setting_key(task_key))
         if row and isinstance(row.value, dict):
             return bool(row.value.get("enabled", False))
+        if task_key in DEFAULT_ENABLED_TASK_KEYS:
+            return True
         if task_key == "storage_analysis":
             storage_row = session.get(AppSetting, "storage.schedule")
             if storage_row and isinstance(storage_row.value, dict):
@@ -189,6 +212,26 @@ def _enqueue_auto_git() -> str | None:
         return run.queue_task_id
 
 
+def _run_media_sync_home_discovery_job() -> None:
+    try:
+        from backend.plugins.modules.media_sync.runtime import run_scheduled_home_discovery
+    except Exception as exc:
+        print(f"Media sync home discovery skipped: plugin unavailable ({exc})")
+        return
+
+    result = run_scheduled_home_discovery(download_limit=MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT)
+    print(
+        "Media sync home discovery completed: "
+        f"profiles={result.get('profile_count', 0)} "
+        f"success={result.get('success_count', 0)} "
+        f"failed={len(result.get('failures') or {})}"
+    )
+
+
+def _enqueue_media_sync_home_discovery() -> str | None:
+    return background_task_queue.enqueue(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _run_media_sync_home_discovery_job)
+
+
 def _run_rime_config_sync_job() -> None:
     from scripts.sync_rime_config import sync_rime_config_to_target
 
@@ -211,7 +254,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="自动 Git 提交",
         category="Git",
         description="凌晨检查 pyxllib、xlproject、codeyun；pyxllib/xlproject 先调用 Codex CLI review 和优化，codeyun 只生成提交信息并提交。",
-        schedule_label="每天 03:20",
+        schedule_label=f"每天 {AUTO_GIT_COMMIT_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_auto_git,
         manual_warning="会调用 Codex CLI 处理 pyxllib/xlproject，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 不做提交前自动优化。",
@@ -221,7 +264,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="元数据反馈优化",
         category="AI",
         description="凌晨窗口消费节点元数据修正样本，调用 Codex CLI 优化标题和元标签生成规则。",
-        schedule_label="00:00-05:59 每 30 分钟尝试",
+        schedule_label=f"00:00-05:59 每 {METADATA_FEEDBACK_INTERVAL_MINUTES} 分钟尝试",
         retry_label="无额外重试",
         action=_enqueue_note_metadata_feedback,
         manual_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
@@ -230,8 +273,8 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key="codex_diary_yesterday_import",
         title="Codex 星图日记",
         category="AI",
-        description="每天 1 点读取昨日 Codex 会话，复用现有日记导入流程写入星图笔记。",
-        schedule_label="每天 01:00",
+        description="每天凌晨读取昨日 Codex 会话，复用现有日记导入流程写入星图笔记。",
+        schedule_label=f"每天 {CODEX_DIARY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_codex_diary,
         manual_warning="会调用 AI 配置里的 Codex 星图日记模型生成昨日总结；已导入过的日期会自动跳过。",
@@ -241,9 +284,19 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="考勤汇总模板",
         category="表格",
         description="每月 27 日凌晨为考勤汇总表补下月模板。",
-        schedule_label="每天 00:05 检查，27 日执行",
+        schedule_label=f"每天 {ATTENDANCE_SUMMARY_RUN_TIME} 检查，27 日执行",
         retry_label="无额外重试",
         action=_enqueue_attendance_summary_if_due,
+    ),
+    BackgroundTaskSpec(
+        key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
+        title="媒体首页发现",
+        category="图片",
+        description="每天在自动 Git 提交之后，按当前媒体同步配置分别从 Pixiv 和 Pinterest 首页增量下载新图。",
+        schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}，Pixiv/Pinterest 各 {MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT} 张",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_media_sync_home_discovery,
+        manual_warning="会使用媒体同步插件和浏览器登录态访问 Pixiv、Pinterest 首页推荐流，并写入当前媒体同步根目录。",
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
@@ -280,7 +333,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="存储分析",
         category="存储",
         description="按配置定期执行附件与死链维护分析。",
-        schedule_label="每天 03:00",
+        schedule_label=f"每天 {STORAGE_ANALYSIS_RUN_TIME}",
         retry_label="无额外重试",
         action=_enqueue_storage_analysis,
     ),
@@ -349,7 +402,7 @@ class BackgroundTaskRunner:
                 self._runner = None
 
     def build_runner(self) -> _StoppableBehaviorTreeRunner:
-        return _StoppableBehaviorTreeRunner(
+        runner = _StoppableBehaviorTreeRunner(
             self.build_tree(),
             self.state_path,
             trace=1,
@@ -357,33 +410,61 @@ class BackgroundTaskRunner:
             stop_event=self._stop_event,
             wake_event=self._wake_event,
         )
+        self._ensure_schedule_state_version(runner)
+        return runner
+
+    def _ensure_schedule_state_version(self, runner: BehaviorTreeRunner) -> None:
+        blackboard = runner.state.setdefault("blackboard", {})
+        if blackboard.get("schedule_version") == BACKGROUND_TASK_SCHEDULE_STATE_VERSION:
+            return
+        nodes = runner.state.setdefault("nodes", {})
+        for path, state in list(nodes.items()):
+            if not isinstance(state, dict) or "next_run_at" not in state:
+                continue
+            if any(_path_matches_task(path, task_key) for task_key in SCHEDULE_VERSIONED_TASK_KEYS):
+                state.pop("next_run_at", None)
+        blackboard["schedule_version"] = BACKGROUND_TASK_SCHEDULE_STATE_VERSION
+        runner.save_state()
 
     def build_tree(self) -> Root:
         return Root(
             MemorySelector(
                 Action(self._run_task_if_enabled, "auto_git_commit")
-                .daily("03:20", label="auto_git_commit", start="next", enabled=_is_task_enabled("auto_git_commit"))
+                .daily(
+                    AUTO_GIT_COMMIT_RUN_TIME,
+                    label="auto_git_commit",
+                    start="next",
+                    enabled=_is_task_enabled("auto_git_commit"),
+                )
                 .retry(minutes=10),
                 Action(self._run_task_if_enabled, "note_metadata_feedback_optimization").every(
-                    minutes=30,
+                    minutes=METADATA_FEEDBACK_INTERVAL_MINUTES,
                     label="note_metadata_feedback_optimization",
                     persist=True,
                     enabled=_is_task_enabled("note_metadata_feedback_optimization"),
                 ),
                 Action(self._run_task_if_enabled, "codex_diary_yesterday_import")
                 .daily(
-                    "01:00",
+                    CODEX_DIARY_RUN_TIME,
                     label="codex_diary_yesterday_import",
                     start="next",
                     enabled=_is_task_enabled("codex_diary_yesterday_import"),
                 )
                 .retry(minutes=10),
                 Action(self._run_task_if_enabled, "attendance_summary_monthly_templates").daily(
-                    "00:05",
+                    ATTENDANCE_SUMMARY_RUN_TIME,
                     label="attendance_summary_monthly_templates",
                     start="next",
                     enabled=_is_task_enabled("attendance_summary_monthly_templates"),
                 ),
+                Action(self._run_task_if_enabled, MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY)
+                .daily(
+                    MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME,
+                    label=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
+                    start="next",
+                    enabled=_is_task_enabled(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY),
+                )
+                .retry(minutes=10),
                 Action(self._run_task_if_enabled, FANBEI_ATTENDANCE_EVENING_TASK_KEY).daily(
                     FANBEI_ATTENDANCE_EVENING_RUN_TIME,
                     label=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
@@ -405,7 +486,7 @@ class BackgroundTaskRunner:
                 )
                 .retry(minutes=10),
                 Action(self._run_task_if_enabled, "storage_analysis").daily(
-                    "03:00",
+                    STORAGE_ANALYSIS_RUN_TIME,
                     label="storage_analysis",
                     start="next",
                     enabled=_is_task_enabled("storage_analysis"),

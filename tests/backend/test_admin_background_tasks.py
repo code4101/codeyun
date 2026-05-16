@@ -32,6 +32,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "note_metadata_feedback_optimization",
         "codex_diary_yesterday_import",
         "attendance_summary_monthly_templates",
+        "media_sync_home_discovery",
         "attendance_fanbei_evening_steps",
         "attendance_fanbei_morning_steps",
         "rime_config_sync",
