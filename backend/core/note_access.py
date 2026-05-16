@@ -13,6 +13,7 @@ from backend.core.note_progress import (
     evaluate_completion_progress_expr,
     get_completion_progress_expr,
 )
+from backend.core.yuque_html import normalize_legacy_yuque_lake_html
 
 
 def can_edit_note(note: NoteNode, current_user: Optional[User]) -> bool:
@@ -81,6 +82,8 @@ def note_to_response_dict(
     payload.update(normalized)
     payload["can_edit"] = can_edit_note(note, current_user)
     payload.update(extra_fields)
+    if isinstance(payload.get("content"), str):
+        payload["content"] = normalize_legacy_yuque_lake_html(payload["content"])
     payload["custom_fields"] = _normalize_custom_fields_for_response(payload.get("custom_fields"))
     if not isinstance(payload.get("history"), list):
         payload["history"] = []

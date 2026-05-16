@@ -146,6 +146,13 @@ def score_candidates(
     return ordered[:MAX_CANDIDATES]
 
 
+def score_hot_candidates(
+    index: dict[str, dict[str, list[dict[str, Any]]]],
+    prefix: str,
+) -> list[dict[str, Any]]:
+    return index.get("__global", {}).get(prefix, [])[:3]
+
+
 def append_commit_current(pending_path: Path, history_path: Path, history: list[str], prefix: str, token: str) -> None:
     for key, _weight in context_keys(history):
         with pending_path.open("a", encoding="utf-8", newline="\n") as fh:
@@ -180,13 +187,17 @@ def choose_prefixes(rows: list[tuple[str, str, str, float, str]], count: int) ->
 
 def benchmark(rime_dir: Path, *, lookup_iterations: int, load_iterations: int, write_iterations: int) -> None:
     snapshot_path = rime_dir / "context_prediction_snapshot.tsv"
+    hot_path = rime_dir / "context_prediction_hot.tsv"
     seed_path = rime_dir / "context_prediction.tsv"
     history_path = rime_dir / "context_prediction_history.log"
     pending_path = rime_dir / "context_prediction_pending.tsv"
 
     rows = read_prediction_rows(snapshot_path if snapshot_path.exists() else seed_path)
+    hot_rows = read_prediction_rows(hot_path)
     print(f"Rime dir: {rime_dir}")
     print(f"snapshot rows: {len(rows):,}")
+    print(f"hot rows: {len(hot_rows):,}")
+    print(f"hot size: {(hot_path.stat().st_size if hot_path.exists() else 0):,} bytes")
     print(f"snapshot size: {(snapshot_path.stat().st_size if snapshot_path.exists() else 0):,} bytes")
     print(f"history size: {(history_path.stat().st_size if history_path.exists() else 0):,} bytes")
     print(f"pending size: {(pending_path.stat().st_size if pending_path.exists() else 0):,} bytes")
@@ -194,6 +205,8 @@ def benchmark(rime_dir: Path, *, lookup_iterations: int, load_iterations: int, w
 
     index, load_timings = timed(lambda: load_index(snapshot_path, seed_path), load_iterations)
     print(f"load_index x{load_iterations}: {format_ms(summarize_ms(load_timings))}")
+    hot_index, hot_load_timings = timed(lambda: load_index(hot_path, seed_path), load_iterations)
+    print(f"load_hot_index x{load_iterations}: {format_ms(summarize_ms(hot_load_timings))}")
 
     history, history_timings = timed(lambda: load_recent_history(history_path), max(5, min(50, load_iterations * 5)))
     print(f"load_recent_history: {format_ms(summarize_ms(history_timings))}")
@@ -210,6 +223,21 @@ def benchmark(rime_dir: Path, *, lookup_iterations: int, load_iterations: int, w
         if candidates:
             non_empty += 1
     print(f"lookup x{lookup_iterations}: {format_ms(summarize_ms(lookup_timings))}  non_empty={non_empty:,}")
+
+    hot_prefixes = choose_prefixes(hot_rows, 200)
+    hot_lookup_timings: list[float] = []
+    hot_non_empty = 0
+    for _ in range(lookup_iterations):
+        prefix = random.choice(hot_prefixes)
+        start = perf_ms()
+        candidates = score_hot_candidates(hot_index, prefix)
+        hot_lookup_timings.append(perf_ms() - start)
+        if candidates:
+            hot_non_empty += 1
+    print(
+        f"hot_lookup x{lookup_iterations}: {format_ms(summarize_ms(hot_lookup_timings))}  "
+        f"non_empty={hot_non_empty:,}"
+    )
 
     temp_dir = Path(tempfile.mkdtemp(prefix="rime-context-bench-"))
     try:

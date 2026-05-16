@@ -1,3 +1,4 @@
+import copy
 import os
 import re
 import json
@@ -31,12 +32,14 @@ from backend.core.note_metadata_feedback import (
     get_note_metadata_feedback_status,
 )
 from backend.models import AppSetting, User, NoteNode
-from backend.core.settings import get_settings
+from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.storage import (
     ATTACHMENT_URL_PATTERN,
     build_attachment_url,
     get_attachments_dir,
 )
+from backend.core.storage_usage import collect_directory_usage
+from backend.core.storage_health import build_storage_health_report
 from backend.schemas import AdminAccountRead
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -252,6 +255,64 @@ class StorageDashboardStats(BaseModel):
     orphan_count: int      # Estimated or last known
     dead_link_count: int   # Estimated or last known
     health_score: int      # 0-100
+    attachments_path: str = ""
+    data_workspace_path: str = ""
+
+class WorkspaceUsageEntry(BaseModel):
+    name: str
+    path: str
+    is_dir: bool
+    logical_size_bytes: int
+    allocated_size_bytes: int
+    file_count: int
+    directory_count: int
+    symlink_count: int
+    inaccessible_count: int
+    modified_at: Optional[float] = None
+
+class StorageHealthIssueRead(BaseModel):
+    id: str
+    severity: str
+    title: str
+    detail: str
+    path: str = ""
+    size_bytes: int = 0
+    action_label: str = ""
+    action_kind: str = "inspect"
+
+class StorageSlimmingCandidateRead(BaseModel):
+    id: str
+    category: str
+    title: str
+    path: str
+    logical_size_bytes: int
+    allocated_size_bytes: int
+    file_count: int = 0
+    directory_count: int = 0
+    risk: str = "review"
+    cleanup_kind: str = "inspect"
+    action_label: str = "查看"
+    detail: str = ""
+
+class WorkspaceUsageResponse(BaseModel):
+    scope: str
+    label: str
+    expected_role: str
+    health_score: int
+    health_status: str
+    health_issues: List[StorageHealthIssueRead]
+    slimming_candidates: List[StorageSlimmingCandidateRead]
+    root_path: str
+    logical_size_bytes: int
+    allocated_size_bytes: int
+    file_count: int
+    directory_count: int
+    symlink_count: int
+    inaccessible_count: int
+    top_entries: List[WorkspaceUsageEntry]
+    scan_started_at: float
+    elapsed_ms: int
+    source: str
 
 class TopFile(BaseModel):
     filename: str
@@ -324,6 +385,81 @@ class DeviceControlIdentityResponse(BaseModel):
     device_id: str
     device_token_enabled: bool
     data_dir: str
+
+
+WORKSPACE_USAGE_CACHE_TTL_SECONDS = 60
+_workspace_usage_cache_by_scope: Dict[str, Dict[str, Any]] = {}
+_workspace_usage_cache_at_by_scope: Dict[str, float] = {}
+_workspace_usage_cache_top_limit_by_scope: Dict[str, int] = {}
+
+
+def _clamp_workspace_usage_top_limit(value: int) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return 20
+    return max(0, min(100, limit))
+
+
+def _get_data_workspace_dir():
+    return settings.data_workspace_dir
+
+
+def _resolve_storage_usage_scope(scope: str) -> tuple[str, str, Any]:
+    normalized_scope = (scope or "").strip().lower().replace("-", "_") or "data_workspace"
+    if normalized_scope in {"data", "workspace", "data_workspace"}:
+        return "data_workspace", "数据工作区", _get_data_workspace_dir()
+    if normalized_scope in {"data_dir", "instance_data", "instance_data_dir"}:
+        return "data_dir", "实例数据目录", settings.data_dir
+    if normalized_scope in {"source", "source_dir", "repo", "repo_dir"}:
+        return "source_dir", "源码目录", ROOT_DIR
+    return "data_workspace", "数据工作区", _get_data_workspace_dir()
+
+
+def _load_workspace_usage_payload(
+    *,
+    scope: str,
+    refresh: bool,
+    top_limit: int,
+    session: Session | None = None,
+) -> Dict[str, Any]:
+    normalized_scope, label, root_path = _resolve_storage_usage_scope(scope)
+
+    normalized_top_limit = _clamp_workspace_usage_top_limit(top_limit)
+    now = time.time()
+    cache_valid = (
+        normalized_scope in _workspace_usage_cache_by_scope
+        and not refresh
+        and _workspace_usage_cache_top_limit_by_scope.get(normalized_scope, 0) >= normalized_top_limit
+        and now - _workspace_usage_cache_at_by_scope.get(normalized_scope, 0) <= WORKSPACE_USAGE_CACHE_TTL_SECONDS
+    )
+    if cache_valid:
+        payload = copy.deepcopy(_workspace_usage_cache_by_scope[normalized_scope])
+        payload["top_entries"] = payload.get("top_entries", [])[:normalized_top_limit]
+        return payload
+
+    scan_top_limit = max(20, normalized_top_limit)
+    payload = collect_directory_usage(root_path, top_limit=scan_top_limit, session=session).to_dict()
+    payload["scope"] = normalized_scope
+    payload["label"] = label
+    health_report = build_storage_health_report(
+        scope=normalized_scope,
+        label=label,
+        root_path=root_path,
+        usage=payload,
+        data_workspace_path=_get_data_workspace_dir(),
+        attachments_dir=ATTACHMENTS_ABS_PATH,
+    ).to_dict()
+    payload["expected_role"] = health_report["expected_role"]
+    payload["health_score"] = health_report["health_score"]
+    payload["health_status"] = health_report["health_status"]
+    payload["health_issues"] = health_report["issues"]
+    payload["slimming_candidates"] = health_report["slimming_candidates"]
+    _workspace_usage_cache_by_scope[normalized_scope] = copy.deepcopy(payload)
+    _workspace_usage_cache_at_by_scope[normalized_scope] = time.time()
+    _workspace_usage_cache_top_limit_by_scope[normalized_scope] = scan_top_limit
+    payload["top_entries"] = payload.get("top_entries", [])[:normalized_top_limit]
+    return payload
 
 
 class ResetAccountPasswordRequest(BaseModel):
@@ -672,6 +808,19 @@ def reset_background_task_schedule_api(task_key: str):
     changed = reset_background_task_schedule(normalized_key)
     return {"success": True, "changed": changed}
 
+@images_router.get("/storage/workspace-usage", response_model=WorkspaceUsageResponse)
+def get_storage_workspace_usage(
+    scope: str = "data_workspace",
+    refresh: bool = False,
+    top_limit: int = 20,
+    session: Session = Depends(get_session),
+):
+    """
+    Recursively scan a storage-related directory.
+    data_workspace is the actual file-data workspace; source_dir is the source repository.
+    """
+    return _load_workspace_usage_payload(scope=scope, refresh=refresh, top_limit=top_limit, session=session)
+
 @images_router.get("/storage/dashboard", response_model=StorageDashboardStats)
 def get_storage_dashboard(session: Session = Depends(get_session)):
     """
@@ -702,7 +851,9 @@ def get_storage_dashboard(session: Session = Depends(get_session)):
         orphan_size_bytes=0, # Placeholder
         orphan_count=0,      # Placeholder
         dead_link_count=0,   # Placeholder
-        health_score=98      # Mock
+        health_score=98,     # Mock
+        attachments_path=ATTACHMENTS_ABS_PATH,
+        data_workspace_path=os.fspath(_get_data_workspace_dir()),
     )
 
 @images_router.get("/storage/analysis", response_model=StorageAnalysisResponse)

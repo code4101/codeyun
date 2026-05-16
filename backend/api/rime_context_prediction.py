@@ -61,18 +61,21 @@ def _raise_rime_error(exc: RimeContextPredictionError) -> None:
 
 @router.get("/context-prediction/tree")
 def get_rime_context_prediction_tree(
-    limit: int = Query(5000, ge=1, le=50000),
+    source: str = Query("snapshot"),
+    limit: int = Query(50000, ge=1, le=50000),
     _: BaseDevice = Depends(verify_api_token),
 ):
-    return collect_rime_context_prediction_tree(limit=limit)
+    return collect_rime_context_prediction_tree(limit=limit, source=source)
 
 
 @router.post("/context-prediction/tree/refresh")
 def post_rime_context_prediction_tree_refresh(
+    source: str = Query("snapshot"),
+    limit: int = Query(50000, ge=1, le=50000),
     _: BaseDevice = Depends(verify_api_token),
 ):
     try:
-        return refresh_rime_context_prediction_tree()
+        return refresh_rime_context_prediction_tree(limit=limit, source=source)
     except RimeContextPredictionError as exc:
         _raise_rime_error(exc)
 

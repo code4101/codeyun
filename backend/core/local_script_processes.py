@@ -129,6 +129,18 @@ def _infer_from_module(args: list[str], exe_name: str) -> tuple[str, str, str | 
     return None
 
 
+def _infer_from_python_stdin(args: list[str], exe_name: str) -> tuple[str, str, str | None] | None:
+    if exe_name in {"uv", "uv.exe"}:
+        lowered = [arg.lower() for arg in args]
+        if len(lowered) >= 4 and lowered[1] == "run" and lowered[2].startswith("python") and lowered[3] == "-":
+            return "python-stdin", "uv run python -", None
+        return None
+
+    if exe_name in _PYTHON_NAMES and "-" in args[1:]:
+        return "python-stdin", "python -", None
+    return None
+
+
 def _infer_from_runner(args: list[str], exe_name: str) -> tuple[str, str, str | None] | None:
     if not args:
         return None
@@ -156,6 +168,10 @@ def _infer_script(args: list[str], cwd: str | None) -> tuple[str, str, str | Non
         return None
 
     exe_name = Path(args[0]).name.lower()
+    stdin_match = _infer_from_python_stdin(args, exe_name)
+    if stdin_match is not None:
+        return stdin_match
+
     runner_match = _infer_from_runner(args, exe_name)
     if runner_match is not None:
         return runner_match

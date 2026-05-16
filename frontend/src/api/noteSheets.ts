@@ -112,6 +112,10 @@ export interface WorkbookDetail extends WorkbookSummary {
   sheets: NoteSheetSummary[]
 }
 
+export interface WorkbookReorderSheetsRequest {
+  sheet_ids: number[]
+}
+
 export interface NoteSheetCreateRequest {
   title?: string
   workbook_id?: number | null
@@ -696,6 +700,11 @@ export async function attachSheetToWorkbook(workbookId: number, sheetId: number)
   const response = await api.post<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}/sheets`, {
     sheet_id: sheetId,
   })
+  return response.data
+}
+
+export async function reorderWorkbookSheets(workbookId: number, payload: WorkbookReorderSheetsRequest) {
+  const response = await api.post<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}/sheets/reorder`, payload)
   return response.data
 }
 

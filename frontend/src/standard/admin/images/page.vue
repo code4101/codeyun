@@ -20,14 +20,31 @@
           <!-- Key Metrics Cards -->
           <div class="metrics-row">
             <el-card shadow="hover" class="metric-card">
-              <template #header><div class="card-header"><span>存储总占用</span></div></template>
-              <div class="metric-value">{{ formatSize(dashboardStats?.total_size_bytes || 0) }}</div>
-              <div class="metric-desc">包含所有附件文件</div>
+              <template #header><div class="card-header"><span>数据工作区</span></div></template>
+              <div class="metric-value">{{ dataWorkspaceUsage ? formatSize(dataWorkspaceUsage.allocated_size_bytes) : '-' }}</div>
+              <div class="metric-desc metric-desc-lines">
+                <el-tag v-if="dataWorkspaceUsage" size="small" :type="healthTagType(dataWorkspaceUsage.health_status)">
+                  健康 {{ dataWorkspaceUsage.health_score }}
+                </el-tag>
+                <span v-else>m2603codeyun</span>
+                <span
+                  v-if="dashboardStats"
+                  class="metric-subset"
+                  :title="dashboardStats.attachments_path || ''"
+                >
+                  含附件 {{ formatSize(dashboardStats.total_size_bytes) }} / {{ dashboardStats.total_file_count }} 个
+                </span>
+              </div>
             </el-card>
             <el-card shadow="hover" class="metric-card">
-              <template #header><div class="card-header"><span>文件总数</span></div></template>
-              <div class="metric-value">{{ dashboardStats?.total_file_count || 0 }}</div>
-              <div class="metric-desc">个文件</div>
+              <template #header><div class="card-header"><span>源码目录</span></div></template>
+              <div class="metric-value">{{ sourceDirUsage ? formatSize(sourceDirUsage.allocated_size_bytes) : '-' }}</div>
+              <div class="metric-desc">
+                <el-tag v-if="sourceDirUsage" size="small" :type="healthTagType(sourceDirUsage.health_status)">
+                  健康 {{ sourceDirUsage.health_score }}
+                </el-tag>
+                <span v-else>仅应存源码和依赖</span>
+              </div>
             </el-card>
             <el-card shadow="hover" class="metric-card">
               <template #header><div class="card-header"><span>笔记总数</span></div></template>
@@ -35,11 +52,11 @@
               <div class="metric-desc">篇笔记</div>
             </el-card>
             <el-card shadow="hover" class="metric-card health-card">
-              <template #header><div class="card-header"><span>系统健康度</span></div></template>
-              <div class="metric-value health-score">{{ dashboardStats?.health_score || '-' }}</div>
+              <template #header><div class="card-header"><span>目录健康度</span></div></template>
+              <div class="metric-value health-score">{{ directoryHealthScore || '-' }}</div>
               <el-progress 
-                :percentage="dashboardStats?.health_score || 0" 
-                :status="getHealthStatus(dashboardStats?.health_score)"
+                :percentage="directoryHealthScore || 0" 
+                :status="getHealthStatus(directoryHealthScore)"
                 :show-text="false"
               />
             </el-card>
@@ -47,20 +64,133 @@
 
           <!-- Quick Actions / Insights Placeholder -->
           <div class="dashboard-content">
-            <el-alert
-              title="系统运行正常"
-              type="success"
-              description="定期检查存储健康状况有助于保持系统高性能运行。"
-              show-icon
-              :closable="false"
-              class="mb-4"
-            />
+            <section class="workspace-usage" v-loading="usageLoading">
+              <div class="section-header">
+                <div>
+                  <div class="usage-title-row">
+                    <h3>{{ activeUsage?.label || '目录' }} Top 占用</h3>
+                    <el-radio-group v-model="activeUsageScope" size="small">
+                      <el-radio-button value="data_workspace">数据工作区</el-radio-button>
+                      <el-radio-button value="source_dir">源码目录</el-radio-button>
+                    </el-radio-group>
+                  </div>
+                  <p v-if="activeUsage" class="workspace-path" :title="activeUsage.root_path">
+                    {{ activeUsage.root_path }}
+                  </p>
+                  <p v-if="activeUsage" class="workspace-role">
+                    {{ activeUsage.expected_role }}
+                    <template v-if="activeUsage.scope === 'data_workspace' && dashboardStats">
+                      ，当前附件 {{ formatSize(dashboardStats.total_size_bytes) }} 已纳入本工作区治理
+                    </template>
+                  </p>
+                </div>
+                <el-button size="small" @click="loadActiveUsage(true)" :loading="usageLoading">
+                  重新统计
+                </el-button>
+              </div>
+              <div v-if="activeUsage" class="workspace-summary">
+                <span>
+                  <strong>健康</strong>
+                  <el-tag size="small" :type="healthTagType(activeUsage.health_status)">
+                    {{ healthStatusLabel(activeUsage.health_status) }} {{ activeUsage.health_score }}
+                  </el-tag>
+                </span>
+                <span><strong>磁盘占用</strong>{{ formatSize(activeUsage.allocated_size_bytes) }}</span>
+                <span><strong>逻辑大小</strong>{{ formatSize(activeUsage.logical_size_bytes) }}</span>
+                <span><strong>文件</strong>{{ activeUsage.file_count }}</span>
+                <span><strong>目录</strong>{{ activeUsage.directory_count }}</span>
+                <span v-if="activeUsage.inaccessible_count" class="summary-warning">
+                  <strong>跳过</strong>{{ activeUsage.inaccessible_count }}
+                </span>
+                <span><strong>耗时</strong>{{ formatElapsed(activeUsage.elapsed_ms) }}</span>
+                <span><strong>来源</strong>{{ usageSourceLabel(activeUsage.source) }}</span>
+              </div>
+              <div v-if="activeUsage" class="governance-stack">
+                <div v-if="activeUsage.health_issues.length" class="governance-section">
+                  <div class="mini-section-title">健康问题</div>
+                  <el-table
+                    :data="activeUsage.health_issues"
+                    table-layout="auto"
+                    :fit="false"
+                    size="small"
+                    class="health-table"
+                  >
+                    <el-table-column label="级别" width="84">
+                      <template #default="scope">
+                        <el-tag size="small" :type="severityTagType(scope.row.severity)">
+                          {{ severityLabel(scope.row.severity) }}
+                        </el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="title" label="问题" min-width="180" show-overflow-tooltip />
+                    <el-table-column label="影响" width="110">
+                      <template #default="scope">{{ scope.row.size_bytes ? formatSize(scope.row.size_bytes) : '-' }}</template>
+                    </el-table-column>
+                    <el-table-column prop="detail" label="判断依据" min-width="280" show-overflow-tooltip />
+                  </el-table>
+                </div>
+                <div v-if="activeSlimmingCandidates.length" class="governance-section">
+                  <div class="mini-section-title">瘦身候选</div>
+                  <el-table
+                    :data="activeSlimmingCandidates"
+                    table-layout="auto"
+                    :fit="false"
+                    size="small"
+                    class="health-table"
+                  >
+                    <el-table-column prop="title" label="对象" min-width="180" show-overflow-tooltip />
+                    <el-table-column label="磁盘占用" width="110">
+                      <template #default="scope">{{ formatSize(scope.row.allocated_size_bytes) }}</template>
+                    </el-table-column>
+                    <el-table-column label="风险" width="82">
+                      <template #default="scope">
+                        <el-tag size="small" :type="scope.row.risk === 'low' ? 'success' : 'warning'">
+                          {{ scope.row.risk === 'low' ? '低' : '需确认' }}
+                        </el-tag>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="detail" label="处理逻辑" min-width="260" show-overflow-tooltip />
+                    <el-table-column label="操作" width="112" align="center">
+                      <template #default="scope">
+                        <el-button size="small" link type="primary" @click="handleSlimmingAction(scope.row)">
+                          {{ scope.row.action_label || '查看' }}
+                        </el-button>
+                      </template>
+                    </el-table-column>
+                  </el-table>
+                </div>
+                <div v-if="!activeUsage.health_issues.length && !activeSlimmingCandidates.length" class="empty-inline">
+                  暂无明显治理项
+                </div>
+              </div>
+              <el-table
+                v-if="activeUsage"
+                :data="activeUsage.top_entries"
+                table-layout="auto"
+                :fit="false"
+                size="small"
+                class="workspace-table"
+              >
+                <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
+                <el-table-column label="磁盘占用" width="120">
+                  <template #default="scope">{{ formatSize(scope.row.allocated_size_bytes) }}</template>
+                </el-table-column>
+                <el-table-column label="逻辑大小" width="120">
+                  <template #default="scope">{{ formatSize(scope.row.logical_size_bytes) }}</template>
+                </el-table-column>
+                <el-table-column prop="file_count" label="文件" width="80" />
+                <el-table-column prop="directory_count" label="目录" width="80" />
+                <el-table-column prop="path" label="路径" min-width="260" show-overflow-tooltip />
+              </el-table>
+              <el-empty v-else-if="!usageLoading" description="暂无目录统计" />
+            </section>
             
             <div class="quick-links">
               <h3>快捷操作</h3>
               <div class="links-row">
                 <el-button @click="activeTab = 'analysis'">查看大文件</el-button>
-                <el-button @click="activeTab = 'maintenance'">清理孤儿文件</el-button>
+                <el-button @click="activeTab = 'maintenance'">附件孤儿清理</el-button>
+                <el-button @click="openTreeSize">TreeSize 详查</el-button>
               </div>
             </div>
           </div>
@@ -73,7 +203,7 @@
           <div class="analysis-row">
             <!-- Top 50 Files -->
             <div class="analysis-section">
-              <div class="section-title">Top 50 大文件 (Attachments)</div>
+              <div class="section-title">附件 Top 50 大文件</div>
               <div class="analysis-table">
                 <AnalysisTable 
                   :data="analysis?.top_files || []" 
@@ -86,7 +216,7 @@
 
             <!-- Top 50 Nodes -->
             <div class="analysis-section">
-              <div class="section-title">Top 50 大节点 (Content Size)</div>
+              <div class="section-title">笔记正文 Top 50 大节点</div>
               <div class="analysis-table">
                 <AnalysisTable :data="analysis?.top_nodes || []" type="node" />
               </div>
@@ -187,11 +317,13 @@
 
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue';
+import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { QuestionFilled } from '@element-plus/icons-vue';
 import AnalysisTable from './components/AnalysisTable.vue';
 import { 
   fetchStorageDashboard,
+  fetchWorkspaceUsage,
   fetchStorageAnalysis,
   fetchMaintenanceStatus,
   fetchOrphanImages,
@@ -200,18 +332,41 @@ import {
   updateScheduleConfig,
   fixBrokenLinks,
   StorageDashboardStats,
+  StorageUsageScope,
+  WorkspaceUsageResponse,
   StorageAnalysisResponse,
   MaintenanceStatusResponse,
   ScheduleConfig,
-  OrphanImage
+  OrphanImage,
+  StorageSlimmingCandidate
 } from '@/api/admin';
 
+const router = useRouter();
 const activeTab = ref('dashboard');
 const loading = ref(false);
 
 // Dashboard Data
 const dashboardStats = ref<StorageDashboardStats | null>(null);
 const dashboardLoading = ref(false);
+const activeUsageScope = ref<StorageUsageScope>('data_workspace');
+const dataWorkspaceUsage = ref<WorkspaceUsageResponse | null>(null);
+const sourceDirUsage = ref<WorkspaceUsageResponse | null>(null);
+const usageLoadingByScope = ref<Record<StorageUsageScope, boolean>>({
+  data_workspace: false,
+  data_dir: false,
+  source_dir: false,
+});
+const activeUsage = computed(() => (
+  activeUsageScope.value === 'source_dir' ? sourceDirUsage.value : dataWorkspaceUsage.value
+));
+const usageLoading = computed(() => Boolean(usageLoadingByScope.value[activeUsageScope.value]));
+const activeSlimmingCandidates = computed(() => activeUsage.value?.slimming_candidates.slice(0, 12) || []);
+const directoryHealthScore = computed(() => {
+  const scores = [dataWorkspaceUsage.value?.health_score, sourceDirUsage.value?.health_score]
+    .filter((score): score is number => typeof score === 'number');
+  if (!scores.length) return dashboardStats.value?.health_score || 0;
+  return Math.min(...scores);
+});
 
 // Analysis Data
 const analysis = ref<StorageAnalysisResponse | null>(null);
@@ -232,13 +387,19 @@ const savingSchedule = ref(false);
 const formatSize = (bytes: number) => {
   if (bytes === 0) return '0 B';
   const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 };
 
 const formatTime = (timestamp: number) => {
   return new Date(timestamp * 1000).toLocaleString();
+};
+
+const formatElapsed = (milliseconds: number) => {
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return '0ms';
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
+  return `${(milliseconds / 1000).toFixed(1)}s`;
 };
 
 const getHealthStatus = (score: number = 100) => {
@@ -247,16 +408,75 @@ const getHealthStatus = (score: number = 100) => {
   return 'exception';
 };
 
+const healthTagType = (status: string) => {
+  if (status === 'healthy') return 'success';
+  if (status === 'attention') return 'warning';
+  return 'danger';
+};
+
+const healthStatusLabel = (status: string) => {
+  if (status === 'healthy') return '正常';
+  if (status === 'attention') return '关注';
+  return '异常';
+};
+
+const severityTagType = (severity: string) => {
+  if (severity === 'critical') return 'danger';
+  if (severity === 'warning') return 'warning';
+  return 'info';
+};
+
+const severityLabel = (severity: string) => {
+  if (severity === 'critical') return '严重';
+  if (severity === 'warning') return '注意';
+  return '提示';
+};
+
+const usageSourceLabel = (source: string) => {
+  if (source === 'treesize') return 'TreeSize';
+  if (source === 'filesystem_scan') return '遍历';
+  return source || '-';
+};
+
 // Loaders
-const loadDashboard = async () => {
+const loadDashboard = async (includeWorkspace = true) => {
   dashboardLoading.value = true;
   try {
     dashboardStats.value = await fetchStorageDashboard();
+    if (includeWorkspace) {
+      await Promise.all([
+        loadStorageUsage('data_workspace', false),
+        loadStorageUsage('source_dir', false),
+      ]);
+    }
   } catch (error) {
     ElMessage.error('加载仪表盘失败');
   } finally {
     dashboardLoading.value = false;
   }
+};
+
+const assignUsage = (scope: StorageUsageScope, usage: WorkspaceUsageResponse) => {
+  if (scope === 'source_dir') {
+    sourceDirUsage.value = usage;
+  } else {
+    dataWorkspaceUsage.value = usage;
+  }
+};
+
+const loadStorageUsage = async (scope: StorageUsageScope, refresh = false) => {
+  usageLoadingByScope.value[scope] = true;
+  try {
+    assignUsage(scope, await fetchWorkspaceUsage(scope, refresh, 20));
+  } catch (error) {
+    ElMessage.error(`加载${scope === 'source_dir' ? '源码目录' : '数据工作区'}占用失败`);
+  } finally {
+    usageLoadingByScope.value[scope] = false;
+  }
+};
+
+const loadActiveUsage = async (refresh = false) => {
+  await loadStorageUsage(activeUsageScope.value, refresh);
 };
 
 const loadAnalysis = async () => {
@@ -288,10 +508,21 @@ const loadMaintenance = async () => {
   }
 };
 
-const refreshData = () => {
-  if (activeTab.value === 'dashboard') loadDashboard();
-  else if (activeTab.value === 'analysis') loadAnalysis();
-  else if (activeTab.value === 'maintenance') loadMaintenance();
+const refreshData = async () => {
+  loading.value = true;
+  try {
+    if (activeTab.value === 'dashboard') {
+      await Promise.all([
+        loadDashboard(false),
+        loadStorageUsage('data_workspace', true),
+        loadStorageUsage('source_dir', true),
+      ]);
+    }
+    else if (activeTab.value === 'analysis') await loadAnalysis();
+    else if (activeTab.value === 'maintenance') await loadMaintenance();
+  } finally {
+    loading.value = false;
+  }
 };
 
 const handleTabChange = (tabName: string | number) => {
@@ -357,6 +588,19 @@ const confirmDelete = () => {
   }).catch(() => {});
 };
 
+const openTreeSize = () => {
+  router.push('/cluster/treesize');
+};
+
+const handleSlimmingAction = (candidate: StorageSlimmingCandidate) => {
+  if (candidate.cleanup_kind === 'optimize_orphans' || candidate.category === 'attachments') {
+    activeTab.value = 'maintenance';
+    if (!maintenanceStatus.value) loadMaintenance();
+    return;
+  }
+  openTreeSize();
+};
+
 onMounted(() => {
   loadDashboard();
 });
@@ -415,7 +659,7 @@ onMounted(() => {
 }
 
 .metric-card {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 200px;
   text-align: center;
 }
@@ -437,8 +681,129 @@ onMounted(() => {
   color: #909399;
 }
 
+.metric-desc-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.metric-subset {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .health-score {
   color: #67C23A;
+}
+
+.dashboard-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.workspace-usage {
+  border: 1px solid #EBEEF5;
+  border-radius: 4px;
+  padding: 14px 16px;
+  background: #fff;
+}
+
+.section-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.section-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: #303133;
+}
+
+.usage-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.workspace-path {
+  margin: 4px 0 0;
+  max-width: 720px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #909399;
+  font-size: 12px;
+}
+
+.workspace-role {
+  margin: 3px 0 0;
+  color: #606266;
+  font-size: 12px;
+}
+
+.workspace-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin-bottom: 12px;
+  color: #606266;
+  font-size: 13px;
+}
+
+.workspace-summary span {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.workspace-summary strong {
+  color: #303133;
+}
+
+.summary-warning {
+  color: #E6A23C;
+}
+
+.governance-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.governance-section {
+  min-width: 0;
+}
+
+.mini-section-title {
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.health-table {
+  width: max-content;
+  max-width: 100%;
+}
+
+.empty-inline {
+  padding: 10px 0;
+  color: #909399;
+  font-size: 13px;
+}
+
+.workspace-table {
+  width: max-content;
+  max-width: 100%;
 }
 
 /* Analysis Styles */

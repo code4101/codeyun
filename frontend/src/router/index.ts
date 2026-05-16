@@ -73,6 +73,19 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
+    path: '/doc/:noteId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'NoteDocResource',
+        component: () => import('@/standard/notes/doc-view/page.vue'),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
     path: '/pdf/:pdfId',
     component: StandaloneLayout,
     meta: { requiresAuth: false, skipFeatureAccess: true },

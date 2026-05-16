@@ -15,27 +15,16 @@ import {
 import {
   createWorkbook,
   deleteWorkbook,
-  fetchWorkbookAccess,
   fetchWorkbooks,
   saveAsWorkbook,
   updateWorkbook,
-  updateWorkbookAccess,
-  type NoteSheetResourceAccessGrantUpdate,
   type NoteSheetResourceRole,
   type WorkbookSummary,
 } from '@/api/noteSheets'
 import { useUserStore } from '@/store/userStore'
+import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
 
 type WorkbookFilter = 'all' | 'mine' | 'other'
-type AccessAnonymousRole = 'none' | 'viewer'
-
-type AccessUserGrantDraft = {
-  key: string
-  username: string
-  nickname: string
-  subjectUserId?: number | null
-  role: Exclude<NoteSheetResourceRole, 'none'>
-}
 
 const route = useRoute()
 const router = useRouter()
@@ -47,11 +36,7 @@ const searchText = ref('')
 const workbookFilter = ref<WorkbookFilter>('all')
 
 const accessDialogVisible = ref(false)
-const accessDialogLoading = ref(false)
-const accessDialogSaving = ref(false)
 const accessDialogWorkbook = ref<WorkbookSummary | null>(null)
-const accessAnonymousRole = ref<AccessAnonymousRole>('none')
-const accessUserGrants = ref<AccessUserGrantDraft[]>([])
 
 const currentUserId = computed(() => userStore.user?.id ?? null)
 const normalizedSearchText = computed(() => searchText.value.trim().toLowerCase())
@@ -84,18 +69,6 @@ const filterOptions: Array<{ value: WorkbookFilter; label: string }> = [
   { value: 'mine', label: '我创建的' },
   { value: 'other', label: '其他可访问' },
 ]
-
-const accessDialogTitle = computed(() => {
-  const title = accessDialogWorkbook.value?.title || '工作簿'
-  return `共享权限：${title}`
-})
-
-const userAccessRoleOptions = [
-  { value: 'deny', label: '无权限' },
-  { value: 'viewer', label: '只读' },
-  { value: 'editor', label: '可编辑' },
-  { value: 'manager', label: '可管理' },
-] as const
 
 function canManageWorkbook(workbook: WorkbookSummary) {
   return workbook.access?.capabilities.can_manage_access ?? true
@@ -147,16 +120,6 @@ function redirectLegacyWorkbookQuery() {
     query: sheetId != null ? { sheet: String(sheetId) } : undefined,
   })
   return true
-}
-
-function createAccessUserGrantDraft(): AccessUserGrantDraft {
-  return {
-    key: `${Date.now()}:${Math.random().toString(36).slice(2)}`,
-    username: '',
-    nickname: '',
-    subjectUserId: null,
-    role: 'viewer',
-  }
 }
 
 async function reloadWorkbooks() {
@@ -278,30 +241,7 @@ async function handleDeleteWorkbook(workbook: WorkbookSummary) {
   }
 }
 
-function normalizeAccessDialogFromGrants(
-  grants: Array<{
-    subject_type: 'anonymous' | 'user'
-    subject_key: string
-    subject_user_id?: number | null
-    username: string
-    nickname: string
-    role: Exclude<NoteSheetResourceRole, 'none'>
-  }>,
-) {
-  const anonymousGrant = grants.find((grant) => grant.subject_type === 'anonymous')
-  accessAnonymousRole.value = anonymousGrant?.role === 'viewer' ? 'viewer' : 'none'
-  accessUserGrants.value = grants
-    .filter((grant) => grant.subject_type === 'user')
-    .map((grant) => ({
-      key: grant.subject_key,
-      username: grant.username,
-      nickname: grant.nickname,
-      subjectUserId: grant.subject_user_id ?? null,
-      role: grant.role,
-    }))
-}
-
-async function openAccessDialog(workbook: WorkbookSummary) {
+function openAccessDialog(workbook: WorkbookSummary) {
   if (!canManageWorkbook(workbook)) {
     ElMessage.warning('没有权限管理该工作簿')
     return
@@ -309,75 +249,6 @@ async function openAccessDialog(workbook: WorkbookSummary) {
 
   accessDialogWorkbook.value = workbook
   accessDialogVisible.value = true
-  accessDialogLoading.value = true
-  accessUserGrants.value = []
-  accessAnonymousRole.value = 'none'
-
-  try {
-    const detail = await fetchWorkbookAccess(workbook.id)
-    normalizeAccessDialogFromGrants(detail.grants)
-  } catch (error) {
-    console.warn('Failed to load workbook access grants:', error)
-    accessDialogVisible.value = false
-    ElMessage.error('读取共享权限失败')
-  } finally {
-    accessDialogLoading.value = false
-  }
-}
-
-function addAccessUserGrant() {
-  accessUserGrants.value = [...accessUserGrants.value, createAccessUserGrantDraft()]
-}
-
-function removeAccessUserGrant(key: string) {
-  accessUserGrants.value = accessUserGrants.value.filter((grant) => grant.key !== key)
-}
-
-function buildAccessGrantUpdates(): NoteSheetResourceAccessGrantUpdate[] {
-  const grants: NoteSheetResourceAccessGrantUpdate[] = []
-  if (accessAnonymousRole.value === 'viewer') {
-    grants.push({
-      subject_type: 'anonymous',
-      role: 'viewer',
-    })
-  }
-
-  const seenUsernames = new Set<string>()
-  for (const grant of accessUserGrants.value) {
-    const username = grant.username.trim()
-    if (!username || seenUsernames.has(username)) {
-      continue
-    }
-    seenUsernames.add(username)
-    grants.push({
-      subject_type: 'user',
-      username,
-      subject_user_id: grant.subjectUserId ?? undefined,
-      role: grant.role,
-    })
-  }
-  return grants
-}
-
-async function saveAccessDialog() {
-  const workbook = accessDialogWorkbook.value
-  if (!workbook) {
-    return
-  }
-
-  accessDialogSaving.value = true
-  try {
-    const detail = await updateWorkbookAccess(workbook.id, buildAccessGrantUpdates())
-    normalizeAccessDialogFromGrants(detail.grants)
-    ElMessage.success('共享权限已保存')
-    accessDialogVisible.value = false
-    await reloadWorkbooks()
-  } catch (error) {
-    console.warn('Failed to save workbook access grants:', error)
-    ElMessage.error('保存共享权限失败，请检查用户名')
-  } finally {
-    accessDialogSaving.value = false
-  }
 }
 
 function handleWorkbookCommand(command: string | number | object, workbook: WorkbookSummary) {
@@ -480,10 +351,10 @@ onMounted(() => {
                     <el-button size="small" :icon="MoreFilled" title="更多操作" />
                     <template #dropdown>
                       <el-dropdown-menu>
-                        <el-dropdown-item command="rename" :icon="Edit" :disabled="!canManageWorkbook(workbook)">
+                        <el-dropdown-item v-if="canManageWorkbook(workbook)" command="rename" :icon="Edit">
                           重命名
                         </el-dropdown-item>
-                        <el-dropdown-item command="access" :icon="Share" :disabled="!canManageWorkbook(workbook)">
+                        <el-dropdown-item v-if="canManageWorkbook(workbook)" command="access" :icon="Share">
                           共享权限
                         </el-dropdown-item>
                         <el-dropdown-item command="template">
@@ -492,7 +363,7 @@ onMounted(() => {
                         <el-dropdown-item command="duplicate">
                           另存为副本
                         </el-dropdown-item>
-                        <el-dropdown-item divided command="delete" :icon="Delete" :disabled="!canManageWorkbook(workbook)">
+                        <el-dropdown-item v-if="canManageWorkbook(workbook)" divided command="delete" :icon="Delete">
                           删除工作簿
                         </el-dropdown-item>
                       </el-dropdown-menu>
@@ -513,61 +384,13 @@ onMounted(() => {
       />
     </section>
 
-    <el-dialog
+    <NoteSheetAccessDialog
       v-model="accessDialogVisible"
-      :title="accessDialogTitle"
-      width="520px"
-      class="resource-access-dialog"
-    >
-      <div v-loading="accessDialogLoading" class="resource-access-body">
-        <div class="resource-access-row">
-          <label class="resource-access-label">游客</label>
-          <el-select v-model="accessAnonymousRole" class="resource-access-control">
-            <el-option value="none" label="无权限" />
-            <el-option value="viewer" label="只读" />
-          </el-select>
-        </div>
-
-        <div class="resource-access-users-header">
-          <span>指定用户</span>
-          <el-button size="small" @click="addAccessUserGrant">添加</el-button>
-        </div>
-
-        <div v-if="accessUserGrants.length" class="resource-access-users">
-          <div v-for="grant in accessUserGrants" :key="grant.key" class="resource-access-user-row">
-            <el-input
-              v-model="grant.username"
-              class="resource-access-username"
-              placeholder="username"
-              :title="grant.nickname || grant.username"
-            />
-            <el-select v-model="grant.role" class="resource-access-role">
-              <el-option
-                v-for="option in userAccessRoleOptions"
-                :key="option.value"
-                :value="option.value"
-                :label="option.label"
-              />
-            </el-select>
-            <button
-              type="button"
-              class="resource-access-remove"
-              title="移除"
-              aria-label="移除"
-              @click="removeAccessUserGrant(grant.key)"
-            >
-              -
-            </button>
-          </div>
-        </div>
-        <div v-else class="resource-access-empty">未指定用户</div>
-      </div>
-
-      <template #footer>
-        <el-button @click="accessDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="accessDialogSaving" @click="saveAccessDialog">保存</el-button>
-      </template>
-    </el-dialog>
+      resource-type="workbook"
+      :resource-id="accessDialogWorkbook?.id ?? null"
+      :title="accessDialogWorkbook?.title ?? ''"
+      @saved="() => reloadWorkbooks()"
+    />
   </div>
 </template>
 
@@ -777,80 +600,6 @@ onMounted(() => {
 .workbook-empty {
   flex: 1 1 auto;
   min-height: 220px;
-}
-
-.resource-access-body {
-  min-height: 180px;
-}
-
-.resource-access-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.resource-access-label {
-  flex: 0 0 72px;
-  color: #5f6b7a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.resource-access-control {
-  flex: 1;
-}
-
-.resource-access-users-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid #edf1f5;
-  color: #2f3a4a;
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.resource-access-users {
-  display: grid;
-  gap: 10px;
-  margin-top: 12px;
-}
-
-.resource-access-user-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 128px 28px;
-  align-items: center;
-  gap: 8px;
-}
-
-.resource-access-username,
-.resource-access-role {
-  width: 100%;
-}
-
-.resource-access-remove {
-  width: 28px;
-  height: 28px;
-  border: 1px solid #f0c4c4;
-  border-radius: 6px;
-  background: #fff;
-  color: #c45656;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.resource-access-remove:hover {
-  background: #fef2f2;
-}
-
-.resource-access-empty {
-  margin-top: 12px;
-  color: #8a95a5;
-  font-size: 13px;
 }
 
 @media (max-width: 1100px) {

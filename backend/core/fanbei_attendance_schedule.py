@@ -10,6 +10,12 @@ from typing import Any, Literal
 import requests
 from sqlmodel import Session, select
 
+from backend.core.attendance_progress_style import (
+    highlight_text_refund_progress,
+    parse_compact_refund_rules,
+    set_cell_background as _set_cell_background,
+    sheet_text as _shared_sheet_text,
+)
 from backend.core.attendance_service import get_current_execution_device, get_or_create_attendance_service_config
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
@@ -152,16 +158,7 @@ def run_fanbei_attendance_step1() -> str:
 
 
 def _sheet_text(value: Any) -> str:
-    if value is None:
-        return ""
-    text = str(value).strip()
-    try:
-        repaired = text.encode("latin1").decode("gbk")
-    except UnicodeError:
-        return text
-    if any("\u4e00" <= char <= "\u9fff" for char in repaired):
-        return repaired.strip()
-    return text
+    return _shared_sheet_text(value)
 
 
 def _normalize_step2_cell(value: Any) -> Any:
@@ -342,94 +339,14 @@ def _format_numeric_cell(value: float) -> int | float:
 
 
 def _parse_fanbei_video_refund_rules(text: Any) -> dict[str, int]:
-    normalized = _sheet_text(text)
-    match = re.search(r'["“](\d+(?:[\/／]\d+)*)["”]', normalized)
-    if not match:
-        return {"当堂": 40, "第1天": 32, "第2天": 24, "第3天": 16, "第4天": 8, "回放": 0}
-
-    refund_rules: dict[str, int] = {}
-    for index, raw_value in enumerate(re.split(r"[\/／]", match.group(1))):
-        try:
-            refund_amount = int(raw_value)
-        except ValueError:
-            continue
-        if refund_amount == 0:
-            continue
-        key = "当堂" if index == 0 else f"第{index}天"
-        refund_rules[key] = refund_amount
-    refund_rules["回放"] = 0
-    return refund_rules
+    return parse_compact_refund_rules(
+        text,
+        default={"当堂": 40, "第1天": 32, "第2天": 24, "第3天": 16, "第4天": 8, "回放": 0},
+    )
 
 
-def _progress_weight(text: str) -> float:
-    match = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
-    if not match:
-        return 100.0
-    try:
-        return float(match.group(1))
-    except ValueError:
-        return 100.0
-
-
-def _rgb_to_hex(color: Iterable[float]) -> str:
-    values = [max(0, min(255, int(round(component)))) for component in color]
-    return "#" + "".join(f"{value:02X}" for value in values)
-
-
-def _highlight_course_progress(refund_rules: dict[str, int], text: Any) -> tuple[int, str | None]:
-    normalized = _sheet_text(text)
-    sorted_rules = sorted(refund_rules.items(), key=lambda item: item[1], reverse=True)
-    max_refund = sorted_rules[0][1] if sorted_rules else 0
-    second_refund = sorted_rules[1][1] if len(sorted_rules) > 1 else max_refund
-    refund_amount: int | None = None
-    for key, amount in sorted_rules:
-        if key and key in normalized:
-            refund_amount = amount
-            break
-
-    if refund_amount is None:
-        return 0, None
-    if refund_amount == max_refund:
-        base_color = [0.0, 255.0, 0.0]
-    elif refund_amount > 0:
-        blue = (1 - refund_amount / second_refund) * 128 if second_refund > 0 else 0
-        base_color = [255.0, 255.0, blue]
-    else:
-        base_color = [128.0, 128.0, 128.0]
-
-    weight = _progress_weight(normalized)
-    blended = [(component * weight + 255 * 100) / (weight + 100) for component in base_color]
-    return refund_amount, _rgb_to_hex(blended)
-
-
-def _set_cell_background(
-    cell_meta: dict[str, Any],
-    *,
-    document_row: int,
-    column_index: int,
-    color: str | None,
-) -> bool:
-    key = f"{document_row}:{column_index}"
-    previous_meta = cell_meta.get(key)
-    next_meta = dict(previous_meta) if isinstance(previous_meta, dict) else {}
-    style = dict(next_meta.get("style")) if isinstance(next_meta.get("style"), dict) else {}
-    previous_color = style.get("background_color")
-
-    if color:
-        style["background_color"] = color
-    else:
-        style.pop("background_color", None)
-
-    if style:
-        next_meta["style"] = style
-    else:
-        next_meta.pop("style", None)
-
-    if next_meta:
-        cell_meta[key] = next_meta
-    else:
-        cell_meta.pop(key, None)
-    return previous_color != color
+def _highlight_course_progress(refund_rules: dict[str, int], text: Any) -> tuple[float, str | None]:
+    return highlight_text_refund_progress(refund_rules, text)
 
 
 def _apply_fanbei_attendance_step3_to_sheet(

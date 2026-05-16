@@ -260,6 +260,11 @@ export interface AttendanceWjxDataPage {
   }
 }
 
+export interface AttendanceFeedbackHistoryResponse {
+  items: AttendanceWjxDataItem[]
+  total: number
+}
+
 export interface AttendanceWjxDataSheetLocation {
   workbook_id: number
   sheet_id: number
@@ -471,6 +476,16 @@ export async function fetchAttendanceOrderRefundHistory(params?: { page?: number
 
 export async function submitAttendanceFeedback(payload: AttendanceFeedbackSubmitRequest) {
   const response = await api.post<AttendanceWjxDataItem>('/attendance/wjx-feedback/submissions', payload)
+  return response.data
+}
+
+export async function fetchAttendanceFeedbackHistory(params: {
+  course_name: string
+  student_id_text?: string
+  student_name?: string
+  limit?: number
+}) {
+  const response = await api.get<AttendanceFeedbackHistoryResponse>('/attendance/wjx-feedback/history', { params })
   return response.data
 }
 

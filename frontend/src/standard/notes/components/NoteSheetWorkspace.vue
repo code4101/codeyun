@@ -5,8 +5,11 @@ import { ElMessage } from 'element-plus'
 import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 
+import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
 import {
+  fetchAttendanceFeedbackHistory,
   submitAttendanceFeedback,
+  type AttendanceWjxDataItem,
 } from '@/api/attendance'
 import {
   fetchNoteSheet,
@@ -63,6 +66,17 @@ const TABLE_CELL_VERTICAL_PADDING = 4
 const TABLE_CELL_HORIZONTAL_PADDING = 8
 const TABLE_CELL_BORDER_WIDTH = 1
 const DEFAULT_COLUMN_FONT_SIZE = 13
+const DETAIL_VALUE_MIN_FONT_SIZE = DEFAULT_COLUMN_FONT_SIZE
+const STUDENT_LOOKUP_KEY_FONT = `600 12px ${TABLE_FONT_FAMILY}`
+const STUDENT_LOOKUP_MARKER_FONT = `700 12px ${TABLE_FONT_FAMILY}`
+const STUDENT_LOOKUP_VALUE_FALLBACK_FONT = `400 ${DEFAULT_COLUMN_FONT_SIZE}px ${TABLE_FONT_FAMILY}`
+const STUDENT_LOOKUP_KEY_MIN_WIDTH = 118
+const STUDENT_LOOKUP_VALUE_MIN_WIDTH = 180
+const STUDENT_LOOKUP_KEY_HORIZONTAL_PADDING = 18
+const STUDENT_LOOKUP_VALUE_HORIZONTAL_PADDING = 20
+const STUDENT_LOOKUP_KEY_MARKER_GAP = 6
+const STUDENT_LOOKUP_PANEL_HORIZONTAL_PADDING = 24
+const STUDENT_LOOKUP_PANEL_BORDER_WIDTH = 2
 const MAX_COLUMN_FONT_SIZE = 32
 const DEFAULT_COLUMN_DISPLAY_MODE: ColumnDisplayMode = 'single_line'
 const DEFAULT_COLUMN_TEXT_ALIGN: ColumnTextAlign = 'auto'
@@ -106,10 +120,24 @@ const ATTENDANCE_SUMMARY_SHEET_ID = 4
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
 const STUDENT_LOOKUP_SEQUENCE_HEADER = '序号'
 const STUDENT_LOOKUP_GROUP_HEADER = '分组'
+const STUDENT_LOOKUP_COURSE_HEADER = '课程'
+const STUDENT_LOOKUP_SUBMITTED_AT_HEADER = '提交时间'
 const STUDENT_LOOKUP_NUMBER_HEADER = '学号'
 const STUDENT_LOOKUP_REAL_NAME_HEADER = '姓名'
 const STUDENT_LOOKUP_NICKNAME_HEADER = '昵称'
+const REGISTRATION_TRACKING_GROUP_HEADER = '追踪分组'
+const REGISTRATION_TRACKING_STATUS_HEADER = '追踪状态'
+const REGISTRATION_TRACKING_DEADLINE_HEADER = '追踪截止日'
+const REGISTRATION_TRACKING_FROZEN_AT_HEADER = '冻结时间'
+const REGISTRATION_ACTIVE_GROUP = 'B组'
+const REGISTRATION_FROZEN_GROUP = 'A组'
+const REGISTRATION_ACTIVE_STATUS = '追踪中'
+const REGISTRATION_FROZEN_STATUS = '已冻结'
+const REGISTRATION_AUTO_SUBMITTED_AT_TEXT_COLOR = '#9CA3AF'
 const STUDENT_LOOKUP_QUESTIONNAIRE_SIGNAL_HEADERS = ['提交时间', '修正需求', '补充说明', '处理状态']
+const STUDENT_LOOKUP_QUESTIONNAIRE_TITLE_HEADERS = new Set(['序号', '提交时间'])
+const STUDENT_LOOKUP_QUESTIONNAIRE_CONTEXT_HEADERS = new Set(['课程', '考勤负责人'])
+const STUDENT_LOOKUP_QUESTIONNAIRE_IDENTITY_HEADERS = new Set(['学号', '姓名', '昵称'])
 const STUDENT_LOOKUP_COLLATOR = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
 const DEFERRED_CELL_SELECTION_DRAG_THRESHOLD_PX = 8
 const PAGED_ROW_EXPANSION_MESSAGE = '分页模式下不能跨页粘贴并自动新增行。请切到最后一页追加，或关闭分页后再粘贴。'
@@ -567,6 +595,8 @@ const CELL_FONT_FAMILY_OPTIONS = [
   ...COLUMN_FONT_FAMILY_OPTIONS,
 ] as const
 
+type SheetMobileDefaultView = 'sheet' | 'lookup'
+
 type SheetViewSettings = {
   show_row_numbers?: boolean
   row_marker_numbering?: RowMarkerNumbering
@@ -575,6 +605,7 @@ type SheetViewSettings = {
   column_marker_style?: ColumnMarkerStyle
   column_note_display?: ColumnNoteDisplayMode
   height_mode?: SheetHeightMode
+  mobile_default_view?: SheetMobileDefaultView
   frozen_column_count?: number
   pagination?: {
     enabled?: boolean
@@ -635,6 +666,10 @@ type StudentLookupColumnIndexes = {
   mode: StudentLookupMode
   sequence: number
   group: number
+  trackingGroup: number
+  trackingStatus: number
+  course: number
+  submittedAt: number
   number: number
   realName: number
   nickname: number
@@ -644,6 +679,11 @@ type StudentLookupColumnIndexes = {
 type StudentLookupMode = 'student' | 'questionnaire'
 
 type SheetWorkspaceView = 'lookup' | 'sheet'
+
+type SheetWorkspaceViewOption = {
+  value: SheetWorkspaceView
+  label: string
+}
 
 type StudentLookupIdentityField = 'studentNumber' | 'studentName' | 'nickname'
 
@@ -659,6 +699,10 @@ type StudentLookupOption = {
   rowIndex: number
   sequence: string
   group: string
+  trackingGroup: string
+  trackingStatus: string
+  course: string
+  submittedAt: string
   studentNumber: string
   studentName: string
   nickname: string
@@ -682,6 +726,13 @@ type StudentLookupPersistedSelection = {
 type StudentLookupDetailSection = {
   title: string
   items: SheetRowDetailItem[]
+}
+
+type StudentLookupDetailRecord = {
+  key: string
+  title: string
+  current: boolean
+  sections: StudentLookupDetailSection[]
 }
 
 type SheetPagePatchState = {
@@ -753,6 +804,7 @@ interface Props {
   workbookId?: number | null
   inlineDocument?: Record<string, unknown> | null
   inlineTitle?: string
+  initialWorkspaceView?: SheetWorkspaceView | null
   accessCapabilities?: NoteSheetAccessCapabilities | null
   showBackButton?: boolean
   showTitleInput?: boolean
@@ -769,6 +821,7 @@ const props = withDefaults(defineProps<Props>(), {
   workbookId: null,
   inlineDocument: null,
   inlineTitle: '未命名表格',
+  initialWorkspaceView: null,
   accessCapabilities: null,
   showBackButton: false,
   showTitleInput: true,
@@ -839,6 +892,7 @@ const columnHeaders = ref<string[]>([...DEFAULT_SHEET_COLUMNS])
 const headerGroups = ref<SheetHeaderGroupCell[][]>([])
 const mergedCells = ref<SheetMergedCell[]>([])
 const columnConfigs = ref<Record<string, SheetColumnConfig>>({})
+const sheetHeaderPrefixRows = ref<SheetRow[]>([])
 const cellMeta = ref<SheetCellMetaMap>({})
 const attendanceCourseScriptStatuses = ref<Record<number, AttendanceCourseScriptStatusItem>>({})
 const formulaEngineClass = shallowRef<FormulaEngineClass | null>(null)
@@ -869,10 +923,13 @@ const rowDetailDialogVisible = ref(false)
 const rowDetail = ref<SheetRowDetail | null>(null)
 const studentLookupFeedbackDialogVisible = ref(false)
 const studentLookupFeedbackCorrectionRequest = ref('')
-const studentLookupFeedbackExtraNote = ref('')
 const studentLookupFeedbackSubmitting = ref(false)
 const studentLookupFeedbackLastSubmittedKey = ref('')
 const studentLookupFeedbackSubmittedAt = ref('')
+const studentLookupFeedbackHistoryItems = ref<AttendanceWjxDataItem[]>([])
+const studentLookupFeedbackHistoryTotal = ref(0)
+const studentLookupFeedbackHistoryLoading = ref(false)
+let studentLookupFeedbackHistoryRequestId = 0
 function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunResponse | null) {
   return run?.status === 'pending' || run?.status === 'running'
 }
@@ -969,6 +1026,11 @@ const touchContextMenuFallbackEnabled = ref(false)
 const hasContextMenuFallbackSelection = ref(false)
 const selectedColumnMarkerBounds = ref<{ start: number; end: number } | null>(null)
 const selectedSheetHeaderCell = ref<SelectedSheetHeaderCell | null>(null)
+const sheetWorkspaceViewLinkMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+})
 const columnNotePopover = ref<{
   visible: boolean
   x: number
@@ -1023,6 +1085,7 @@ const columnFilters = ref<Record<string, ColumnFilterState>>({})
 const expandedColumnFilterOptionGroups = ref<Set<string>>(new Set())
 const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
+const sheetLoadSettled = ref(props.sheetId == null)
 let columnFilterOptionRequestSeq = 0
 let readOnlyActionWarningSuppressTimer: number | null = null
 let readOnlyActionWarningsSuppressedForRender = false
@@ -1057,6 +1120,11 @@ const effectivePaginationEnabled = computed(() => (
 const shouldRenderSheetContent = computed(() => (
   (props.sheetId != null || hasInlineDocument.value) && sheetContentReady.value
 ))
+const sheetEmptyStateText = computed(() => (
+  props.sheetId != null && !sheetContentReady.value && !sheetLoadSettled.value
+    ? '正在连接工作表...'
+    : props.emptyText
+))
 const sheetWorkspaceView = ref<SheetWorkspaceView>('sheet')
 const studentLookupGroup = ref('')
 const studentLookupStudentKey = ref('')
@@ -1074,6 +1142,10 @@ function isStudentLookupColumnHidden(columnIndex: number) {
 const studentLookupColumnIndexes = computed<StudentLookupColumnIndexes | null>(() => {
   const sequence = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_SEQUENCE_HEADER)
   const group = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_GROUP_HEADER)
+  const trackingGroup = findHeaderIndex(columnHeaders.value, REGISTRATION_TRACKING_GROUP_HEADER)
+  const trackingStatus = findHeaderIndex(columnHeaders.value, REGISTRATION_TRACKING_STATUS_HEADER)
+  const course = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_COURSE_HEADER)
+  const submittedAt = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
   const number = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_NUMBER_HEADER)
   const realName = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_REAL_NAME_HEADER)
   const nickname = findHeaderIndex(columnHeaders.value, STUDENT_LOOKUP_NICKNAME_HEADER)
@@ -1088,7 +1160,19 @@ const studentLookupColumnIndexes = computed<StudentLookupColumnIndexes | null>((
   if (mode === 'student' && identityColumns.length === 0) {
     return null
   }
-  return { mode, sequence, group, number, realName, nickname, identityColumns }
+  return {
+    mode,
+    sequence,
+    group,
+    trackingGroup,
+    trackingStatus,
+    course,
+    submittedAt,
+    number,
+    realName,
+    nickname,
+    identityColumns,
+  }
 })
 const studentLookupOptions = computed<StudentLookupOption[]>(() => {
   const columns = studentLookupColumnIndexes.value
@@ -1103,6 +1187,14 @@ const studentLookupOptions = computed<StudentLookupOption[]>(() => {
       const group = columns.group >= 0 && !isStudentLookupColumnHidden(columns.group)
         ? normalizeCellValue(normalizedRow[columns.group]).trim()
         : ''
+      const trackingGroup = columns.trackingGroup >= 0
+        ? normalizeCellValue(normalizedRow[columns.trackingGroup]).trim()
+        : ''
+      const trackingStatus = columns.trackingStatus >= 0
+        ? normalizeCellValue(normalizedRow[columns.trackingStatus]).trim()
+        : ''
+      const course = columns.course >= 0 ? normalizeCellValue(normalizedRow[columns.course]).trim() : ''
+      const submittedAt = columns.submittedAt >= 0 ? normalizeCellValue(normalizedRow[columns.submittedAt]).trim() : ''
       const studentNumber = columns.number >= 0 ? normalizeCellValue(normalizedRow[columns.number]).trim() : ''
       const studentName = columns.realName >= 0 ? normalizeCellValue(normalizedRow[columns.realName]).trim() : ''
       const nickname = columns.nickname >= 0 ? normalizeCellValue(normalizedRow[columns.nickname]).trim() : ''
@@ -1138,6 +1230,10 @@ const studentLookupOptions = computed<StudentLookupOption[]>(() => {
         rowIndex,
         sequence,
         group,
+        trackingGroup,
+        trackingStatus,
+        course,
+        submittedAt,
         studentNumber,
         studentName,
         nickname,
@@ -1152,7 +1248,12 @@ const shouldShowStudentLookup = computed(() => (
   && studentLookupColumnIndexes.value != null
   && studentLookupOptions.value.length > 0
 ))
-const shouldShowSheetViewTabs = computed(() => shouldShowStudentLookup.value)
+function isStudentLookupArchivedOption(option: StudentLookupOption) {
+  return (
+    option.trackingGroup === REGISTRATION_FROZEN_GROUP
+    || option.trackingStatus === REGISTRATION_FROZEN_STATUS
+  )
+}
 const isStudentLookupViewActive = computed(() => (
   shouldShowStudentLookup.value && sheetWorkspaceView.value === 'lookup'
 ))
@@ -1179,6 +1280,14 @@ const studentLookupGroupOptions = computed(() => {
 })
 const shouldShowStudentLookupGroupSelect = computed(() => studentLookupGroupOptions.value.length > 0)
 const studentLookupPanelTitle = computed(() => '速查')
+const sheetWorkspaceViewOptions = computed<SheetWorkspaceViewOption[]>(() => {
+  const options: SheetWorkspaceViewOption[] = [{ value: 'sheet', label: '表格' }]
+  if (shouldShowStudentLookup.value) {
+    options.push({ value: 'lookup', label: studentLookupPanelTitle.value })
+  }
+  return options
+})
+const shouldShowSheetWorkspaceViewSelect = computed(() => sheetWorkspaceViewOptions.value.length > 1)
 const studentLookupPrimaryLabel = computed(() => (isStudentLookupQuestionnaireMode.value ? '序号' : '学员'))
 const studentLookupEmptyText = computed(() => (
   isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : '选择学员后显示完整信息'
@@ -1220,28 +1329,42 @@ const studentLookupFeedbackCourseName = computed(() => {
   const matchedWorkbook = sheetWorkbookItems.value.find((item) => item.id === props.workbookId)
   return normalizeCellValue(matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || sheetTitle.value || '').trim()
 })
+const studentLookupFeedbackStudentId = computed(() => (
+  normalizeCellValue(selectedStudentLookupOption.value?.studentNumber).trim()
+))
 const studentLookupFeedbackStudentName = computed(() => {
   const option = selectedStudentLookupOption.value
-  return normalizeCellValue(option?.studentName || option?.nickname || '').trim()
+  return normalizeCellValue(option?.studentName).trim()
 })
+const studentLookupFeedbackNickname = computed(() => {
+  const option = selectedStudentLookupOption.value
+  return normalizeCellValue(option?.nickname).trim()
+})
+const canLoadStudentLookupFeedbackHistory = computed(() => Boolean(
+  studentLookupFeedbackCourseName.value
+  && studentLookupFeedbackStudentName.value,
+))
 const studentLookupFeedbackCurrentDraftKey = computed(() => JSON.stringify({
   course: studentLookupFeedbackCourseName.value,
-  studentId: selectedStudentLookupOption.value?.studentNumber ?? '',
+  studentId: studentLookupFeedbackStudentId.value,
   studentName: studentLookupFeedbackStudentName.value,
   correctionRequest: studentLookupFeedbackCorrectionRequest.value.trim(),
-  extraNote: studentLookupFeedbackExtraNote.value.trim(),
 }))
 const hasSubmittedStudentLookupFeedbackDraft = computed(() => (
   studentLookupFeedbackLastSubmittedKey.value !== ''
   && studentLookupFeedbackLastSubmittedKey.value === studentLookupFeedbackCurrentDraftKey.value
 ))
-const selectedStudentLookupDetailSections = computed<StudentLookupDetailSection[]>(() => {
-  const detail = selectedStudentLookupDetail.value
+
+function buildStudentLookupDetailSections(detail: SheetRowDetail | null) {
   if (!detail) {
     return []
   }
 
-  return detail.items.reduce<StudentLookupDetailSection[]>((sections, item) => {
+  return buildStudentLookupDetailSectionsFromItems(detail.items)
+}
+
+function buildStudentLookupDetailSectionsFromItems(items: SheetRowDetailItem[]) {
+  return items.reduce<StudentLookupDetailSection[]>((sections, item) => {
     const title = getStudentLookupSectionTitle(item.columnIndex)
     const current = sections[sections.length - 1]
     if (current && current.title === title) {
@@ -1251,16 +1374,180 @@ const selectedStudentLookupDetailSections = computed<StudentLookupDetailSection[
     }
     return sections
   }, [])
+}
+
+function compareStudentLookupOptionsBySequenceDesc(left: StudentLookupOption, right: StudentLookupOption) {
+  const result = STUDENT_LOOKUP_COLLATOR.compare(right.sequence, left.sequence)
+  return result !== 0 ? result : right.rowIndex - left.rowIndex
+}
+
+function getQuestionnaireLookupIdentityName(option: StudentLookupOption) {
+  return normalizeCellValue(option.studentName || option.nickname).trim()
+}
+
+function getQuestionnaireRelatedOptions(option: StudentLookupOption) {
+  if (option.mode !== 'questionnaire') {
+    return [option]
+  }
+
+  const course = normalizeCellValue(option.course).trim()
+  const identityName = getQuestionnaireLookupIdentityName(option)
+  if (!course || !identityName) {
+    return [option]
+  }
+
+  return studentLookupOptions.value
+    .filter((candidate) => (
+      candidate.mode === 'questionnaire'
+      && normalizeCellValue(candidate.course).trim() === course
+      && getQuestionnaireLookupIdentityName(candidate) === identityName
+    ))
+    .sort(compareStudentLookupOptionsBySequenceDesc)
+}
+
+function getQuestionnaireRecordTitle(option: StudentLookupOption) {
+  const parts = [`序号 ${option.sequence || getSheetRowHeaderLabel(getGridRowIndex(option.rowIndex))}`]
+  if (option.submittedAt) {
+    parts.push(option.submittedAt)
+  }
+  return parts.join(' · ')
+}
+
+function getStudentLookupItemHeader(item: SheetRowDetailItem) {
+  return normalizeCellValue(item.label).trim()
+}
+
+function getStudentLookupDetailItemValueMap(detail: SheetRowDetail) {
+  const values = new Map<string, string>()
+  detail.items.forEach((item) => {
+    values.set(getStudentLookupItemHeader(item), normalizeCellValue(item.value).trim())
+  })
+  return values
+}
+
+function shouldShowQuestionnaireDetailItem(
+  item: SheetRowDetailItem,
+  selectedValues: Map<string, string>,
+  current: boolean,
+) {
+  const header = getStudentLookupItemHeader(item)
+  if (STUDENT_LOOKUP_QUESTIONNAIRE_TITLE_HEADERS.has(header)) {
+    return false
+  }
+  if (item.empty) {
+    return false
+  }
+  if (current) {
+    return true
+  }
+
+  const value = normalizeCellValue(item.value).trim()
+  const selectedValue = selectedValues.get(header) ?? ''
+  if (
+    (
+      STUDENT_LOOKUP_QUESTIONNAIRE_CONTEXT_HEADERS.has(header)
+      || STUDENT_LOOKUP_QUESTIONNAIRE_IDENTITY_HEADERS.has(header)
+    )
+    && value === selectedValue
+  ) {
+    return false
+  }
+  return true
+}
+
+const selectedStudentLookupDetailRecords = computed<StudentLookupDetailRecord[]>(() => {
+  const option = selectedStudentLookupOption.value
+  if (!option) {
+    return []
+  }
+
+  const selectedDetail = buildRowDetail(option.rowIndex)
+  const selectedValues = selectedDetail ? getStudentLookupDetailItemValueMap(selectedDetail) : new Map<string, string>()
+
+  return getQuestionnaireRelatedOptions(option)
+    .map((candidate): StudentLookupDetailRecord | null => {
+      const detail = buildRowDetail(candidate.rowIndex)
+      if (!detail) {
+        return null
+      }
+      const current = candidate.key === option.key
+      const items = candidate.mode === 'questionnaire'
+        ? detail.items.filter((item) => shouldShowQuestionnaireDetailItem(item, selectedValues, current))
+        : detail.items
+      return {
+        key: candidate.key || `${candidate.rowIndex}`,
+        title: candidate.mode === 'questionnaire' ? getQuestionnaireRecordTitle(candidate) : '',
+        current,
+        sections: buildStudentLookupDetailSectionsFromItems(items),
+      }
+    })
+    .filter((record): record is StudentLookupDetailRecord => !!record)
 })
-function getStudentLookupItemsStyle(items: SheetRowDetailItem[]) {
-  const maxKeyTextWidth = items.reduce((width, item) => {
-    const keyText = `${item.marker} ${item.label}`.trim()
-    return Math.max(width, Math.ceil(measureTextWidth(keyText, '700 12px Arial, sans-serif')))
-  }, 0)
-  const keyWidth = Math.min(Math.max(maxKeyTextWidth + 48, 92), 240)
+
+function getPercentileWidth(widths: number[], percentile: number) {
+  if (!widths.length) {
+    return 0
+  }
+  const sorted = [...widths].sort((a, b) => a - b)
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * percentile) - 1))
+  return sorted[index]
+}
+
+function getOutlierAwareContentWidth(widths: number[], minimumWidth: number) {
+  if (!widths.length) {
+    return minimumWidth
+  }
+  const p75 = getPercentileWidth(widths, 0.75)
+  const p95 = getPercentileWidth(widths, 0.95)
+  const readableWidth = Math.max(p75, Math.min(p95, p75 * 1.8))
+  return Math.max(minimumWidth, Math.ceil(readableWidth))
+}
+
+function getStudentLookupValueFont(style: SheetResolvedCellValueStyle | null | undefined) {
+  if (!style?.fontSize && !style?.fontFamily) {
+    return STUDENT_LOOKUP_VALUE_FALLBACK_FONT
+  }
+  const fontSize = Number.parseFloat(style?.fontSize ?? '')
+  const normalizedFontSize = Number.isFinite(fontSize) ? fontSize : DEFAULT_COLUMN_FONT_SIZE
+  const fontFamily = style?.fontFamily || TABLE_FONT_FAMILY
+  return `400 ${normalizedFontSize}px ${fontFamily}`
+}
+
+function getLongestStudentLookupValueLineWidth(item: SheetRowDetailItem) {
+  const value = normalizeCellValue(item.value).trim()
+  if (!value) {
+    return 0
+  }
+  const font = getStudentLookupValueFont(item.valueStyle)
+  return value
+    .split(/\r?\n/)
+    .reduce((width, line) => Math.max(width, measureTextWidth(line.trim(), font)), 0)
+}
+
+function getStudentLookupKeyContentWidth(item: SheetRowDetailItem) {
+  const markerWidth = measureTextWidth(item.marker, STUDENT_LOOKUP_MARKER_FONT)
+  const labelWidth = measureTextWidth(item.label, STUDENT_LOOKUP_KEY_FONT)
+  return markerWidth
+    + STUDENT_LOOKUP_KEY_MARKER_GAP
+    + labelWidth
+    + STUDENT_LOOKUP_KEY_HORIZONTAL_PADDING
+}
+
+function getStudentLookupLayoutStyle(records: StudentLookupDetailRecord[]) {
+  const items = records.flatMap((record) => record.sections.flatMap((section) => section.items))
+  const keyWidths = items.map(getStudentLookupKeyContentWidth)
+  const valueWidths = items.map((item) => (
+    getLongestStudentLookupValueLineWidth(item) + STUDENT_LOOKUP_VALUE_HORIZONTAL_PADDING
+  ))
+  const keyWidth = getOutlierAwareContentWidth(keyWidths, STUDENT_LOOKUP_KEY_MIN_WIDTH)
+  const valueWidth = getOutlierAwareContentWidth(valueWidths, STUDENT_LOOKUP_VALUE_MIN_WIDTH)
+  const panelWidth = keyWidth
+    + valueWidth
+    + STUDENT_LOOKUP_PANEL_HORIZONTAL_PADDING
+    + STUDENT_LOOKUP_PANEL_BORDER_WIDTH
   return {
-    '--sheet-student-lookup-column-rows': String(Math.max(1, Math.ceil(items.length / 2))),
     '--sheet-student-lookup-key-width': `${keyWidth}px`,
+    '--sheet-student-lookup-panel-width': `${Math.ceil(panelWidth)}px`,
   }
 }
 
@@ -1290,12 +1577,17 @@ function persistSheetWorkspaceViewToLocalStorage(view: SheetWorkspaceView = shee
 }
 
 function getDefaultSheetWorkspaceView(): SheetWorkspaceView {
+  const requestedView = normalizeSheetWorkspaceView(props.initialWorkspaceView)
+  if (requestedView) {
+    return requestedView
+  }
   return shouldDefaultToStudentLookupView() ? 'lookup' : 'sheet'
 }
 
 function restoreSheetWorkspaceViewFromLocalStorage() {
+  const requestedView = normalizeSheetWorkspaceView(props.initialWorkspaceView)
   const nextView = shouldShowStudentLookup.value
-    ? readPersistedSheetWorkspaceView() ?? getDefaultSheetWorkspaceView()
+    ? requestedView ?? readPersistedSheetWorkspaceView() ?? getDefaultSheetWorkspaceView()
     : 'sheet'
   sheetWorkspaceView.value = nextView
   if (nextView === 'sheet') {
@@ -1307,6 +1599,9 @@ function restoreSheetWorkspaceViewFromLocalStorage() {
 }
 
 function setSheetWorkspaceView(view: SheetWorkspaceView) {
+  if (view === 'lookup' && !shouldShowStudentLookup.value) {
+    return
+  }
   if (sheetWorkspaceView.value === view) {
     return
   }
@@ -1316,6 +1611,84 @@ function setSheetWorkspaceView(view: SheetWorkspaceView) {
     void updateSheetViewportHeight().then(() => {
       getHotInstance()?.render()
     })
+  }
+}
+
+function handleSheetWorkspaceViewChange(value: unknown) {
+  const view = normalizeSheetWorkspaceView(value)
+  if (view) {
+    setSheetWorkspaceView(view)
+  }
+}
+
+function getSheetWorkspaceViewLabel(view: SheetWorkspaceView) {
+  return sheetWorkspaceViewOptions.value.find((option) => option.value === view)?.label ?? (
+    view === 'lookup' ? studentLookupPanelTitle.value : '表格'
+  )
+}
+
+function closeSheetWorkspaceViewLinkMenu() {
+  sheetWorkspaceViewLinkMenu.value.visible = false
+}
+
+function openSheetWorkspaceViewLinkMenu(event: MouseEvent) {
+  if (!shouldShowSheetWorkspaceViewSelect.value || typeof window === 'undefined') {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  closeColumnNotePopover()
+  closeColumnFilterPopover()
+
+  const margin = 8
+  const menuWidth = 148
+  const menuHeight = 44
+  const maxX = Math.max(margin, window.innerWidth - menuWidth - margin)
+  const maxY = Math.max(margin, window.innerHeight - menuHeight - margin)
+  sheetWorkspaceViewLinkMenu.value.x = Math.min(Math.max(event.clientX, margin), maxX)
+  sheetWorkspaceViewLinkMenu.value.y = Math.min(Math.max(event.clientY, margin), maxY)
+  sheetWorkspaceViewLinkMenu.value.visible = true
+}
+
+function buildSheetWorkspaceViewLink(view: SheetWorkspaceView) {
+  if (typeof window === 'undefined') {
+    return ''
+  }
+
+  const url = new URL(window.location.href)
+  url.searchParams.delete('mode')
+  url.searchParams.delete('sheetView')
+  url.searchParams.set('view', view)
+  return url.toString()
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const input = document.createElement('textarea')
+  input.value = text
+  input.setAttribute('readonly', 'readonly')
+  input.style.position = 'fixed'
+  input.style.left = '-9999px'
+  document.body.appendChild(input)
+  input.select()
+  document.execCommand('copy')
+  document.body.removeChild(input)
+}
+
+async function copySheetWorkspaceViewLink(view: SheetWorkspaceView) {
+  try {
+    await copyTextToClipboard(buildSheetWorkspaceViewLink(view))
+    ElMessage.success(`已复制${getSheetWorkspaceViewLabel(view)}链接`)
+  } catch (error) {
+    console.warn('Failed to copy sheet workspace view link:', error)
+    ElMessage.error('复制链接失败')
+  } finally {
+    closeSheetWorkspaceViewLinkMenu()
   }
 }
 const showContextMenuFallbackButton = computed(() => (
@@ -1549,6 +1922,11 @@ const columnHashColorStyleMap = computed(() => {
 const columnNotePopoverStyle = computed(() => ({
   left: `${columnNotePopover.value.x}px`,
   top: `${columnNotePopover.value.y}px`,
+}))
+
+const sheetWorkspaceViewLinkMenuStyle = computed(() => ({
+  left: `${sheetWorkspaceViewLinkMenu.value.x}px`,
+  top: `${sheetWorkspaceViewLinkMenu.value.y}px`,
 }))
 
 const columnFilterPopoverStyle = computed(() => ({
@@ -1796,12 +2174,39 @@ function expandHeaderGroupLabels(row: SheetHeaderGroupCell[], columnCount: numbe
   return labels
 }
 
+function getColumnNoteFromHeaderPrefixRow(columnIndex: number, headers = columnHeaders.value) {
+  const noteRowIndex = normalizedHeaderGroups.value.length + 1
+  if (noteRowIndex < 0 || noteRowIndex >= sheetHeaderPrefixRows.value.length) {
+    return ''
+  }
+  return normalizeColumnNote(normalizeRow(sheetHeaderPrefixRows.value[noteRowIndex], headers)[columnIndex])
+}
+
+function syncColumnNotesFromHeaderPrefixRows() {
+  if (!sheetHeaderPrefixRows.value.length || !columnHeaders.value.length) {
+    return false
+  }
+
+  const mergedConfigs = mergeGridNoteRowIntoColumnConfigs(
+    columnConfigs.value,
+    sheetHeaderPrefixRows.value,
+    columnHeaders.value,
+    normalizedHeaderGroups.value.length,
+    sheetHeaderPrefixRows.value.length,
+  )
+  if (mergedConfigs === columnConfigs.value) {
+    return false
+  }
+  columnConfigs.value = mergedConfigs
+  return true
+}
+
 const sheetGridRows = computed<SheetRow[]>(() => {
   const headers = columnHeaders.value
   const headerRows = normalizedHeaderGroups.value.map((row) => expandHeaderGroupLabels(row, headers.length))
   headerRows.push([...headers])
   if (shouldShowColumnNoteRow.value) {
-    headerRows.push(headers.map((_, index) => getColumnNote(index)))
+    headerRows.push(headers.map((_, index) => getColumnNote(index) || getColumnNoteFromHeaderPrefixRow(index, headers)))
   }
   return [
     ...headerRows,
@@ -3234,6 +3639,10 @@ function handleGlobalMouseDown(event: MouseEvent) {
     clearFormulaReferenceReplacementSpan()
   }
 
+  if (sheetWorkspaceViewLinkMenu.value.visible) {
+    closeSheetWorkspaceViewLinkMenu()
+  }
+
   if (columnFilterPopover.value.visible) {
     if (target && columnFilterPopoverRef.value?.contains(target)) {
       return
@@ -3263,6 +3672,7 @@ function resetWorkspaceState() {
   headerGroups.value = []
   mergedCells.value = []
   columnConfigs.value = {}
+  sheetHeaderPrefixRows.value = []
   cellMeta.value = {}
   attendanceCourseScriptStatuses.value = {}
   remoteAccessCapabilities.value = null
@@ -3287,6 +3697,7 @@ function resetWorkspaceState() {
   userMatchStartPending.value = false
   userMatchRunStatus.value = null
   sheetCellActionRunning.value = null
+  closeSheetWorkspaceViewLinkMenu()
   columnSettingsDialogVisible.value = false
   columnSettingsColumnIndex.value = null
   columnSettingsSelectionBounds.value = null
@@ -3654,6 +4065,42 @@ function repairCoveredMergedCellValuesInDataRows(
     return sourceRows
   }
   return trimTrailingBlankRows(repairedGridRows.slice(dataStartRow).map((row) => normalizeRow(row, headers)))
+}
+
+function mergeGridNoteRowIntoColumnConfigs(
+  sourceConfigs: Record<string, SheetColumnConfig>,
+  gridRows: SheetRow[],
+  headers: string[],
+  fieldRowIndex: number,
+  dataStartRow: number,
+  options: { overwrite?: boolean } = {},
+) {
+  const noteRowIndex = fieldRowIndex + 1
+  if (noteRowIndex < 0 || noteRowIndex >= dataStartRow || noteRowIndex >= gridRows.length) {
+    return sourceConfigs
+  }
+
+  const noteRow = normalizeRow(gridRows[noteRowIndex], headers)
+  let changed = false
+  const nextConfigs: Record<string, SheetColumnConfig> = { ...sourceConfigs }
+  noteRow.forEach((value, columnIndex) => {
+    const note = normalizeColumnNote(value)
+    const header = headers[columnIndex]
+    if (!note || !header) {
+      return
+    }
+
+    const currentConfig = nextConfigs[header]
+    const currentNote = normalizeColumnNote(currentConfig?.note)
+    if ((!options.overwrite && currentNote) || currentNote === note) {
+      return
+    }
+
+    nextConfigs[header] = { ...(currentConfig ?? {}), note }
+    changed = true
+  })
+
+  return changed ? nextConfigs : sourceConfigs
 }
 
 function normalizeMergedCells(source: unknown, rowCount: number, columnCount: number) {
@@ -4251,6 +4698,7 @@ function createDefaultSheetViewSettings(heightMode: SheetHeightMode = DEFAULT_SH
     column_marker_style: 'letters',
     column_note_display: 'hover',
     height_mode: heightMode,
+    mobile_default_view: 'sheet',
     frozen_column_count: 0,
     pagination: {
       enabled: false,
@@ -4283,6 +4731,10 @@ function normalizeSheetHeightMode(value: unknown, fallback: SheetHeightMode = DE
     return value
   }
   return fallback
+}
+
+function normalizeSheetMobileDefaultView(value: unknown): SheetMobileDefaultView {
+  return value === 'lookup' ? 'lookup' : 'sheet'
 }
 
 function getDefaultSheetHeightMode() {
@@ -4334,6 +4786,7 @@ function normalizeSheetViewSettings(
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
     column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
     height_mode: normalizeSheetHeightMode(record.height_mode, defaultHeightMode),
+    mobile_default_view: normalizeSheetMobileDefaultView(record.mobile_default_view),
     frozen_column_count: normalizeFrozenColumnCount(record.frozen_column_count, columnCount),
     pagination: (() => {
       const pagination = record.pagination
@@ -4728,7 +5181,7 @@ function normalizeSheetDocument(
   const headers = normalizeHeaders(record.columns)
   const sourceRows = Array.isArray(record.rows) ? record.rows : []
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
-  const normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
+  let normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
   const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
   const normalizedSettings = normalizeSheetViewSettings(record.view_settings, headers.length, defaultHeightMode)
   const formulaHeaderRows = getFormulaHeaderRowsForDocument(
@@ -4778,6 +5231,14 @@ function normalizeSheetDocument(
     normalizedMergedCells,
     headers,
   )
+  normalizedColumnConfigs = mergeGridNoteRowIntoColumnConfigs(
+    normalizedColumnConfigs,
+    normalizedGridRows,
+    headers,
+    fieldRowIndex,
+    dataStartRow,
+    { overwrite: true },
+  )
   normalizedRows = trimTrailingBlankRows(
     normalizedGridRows.slice(dataStartRow).map((row) => normalizeRow(row, headers)),
   )
@@ -4825,6 +5286,137 @@ function normalizeSheetDocument(
     column_widths: normalizedWidths,
     view_settings: normalizedSettings,
   }
+}
+
+function mergeRemoteHeaderPrefixIntoLocalDraft(localDocument: SheetDocument, remoteDocument: SheetDocument): SheetDocument {
+  const headers = normalizeHeaders(remoteDocument.columns)
+  const localHeaders = normalizeHeaders(localDocument.columns)
+  if (
+    headers.length !== localHeaders.length
+    || headers.some((header, index) => header !== localHeaders[index])
+  ) {
+    return localDocument
+  }
+
+  const dataStartRow = normalizeNonNegativeInt(remoteDocument.data_start_row, 0)
+  if (dataStartRow <= 0 || !Array.isArray(remoteDocument.grid_rows)) {
+    return localDocument
+  }
+
+  const remoteFieldRowIndex = normalizeNonNegativeInt(remoteDocument.field_row_index, Math.max(0, dataStartRow - 1))
+  const localDataStartRow = normalizeNonNegativeInt(localDocument.data_start_row, dataStartRow)
+  const localFieldRowIndex = normalizeNonNegativeInt(localDocument.field_row_index, Math.max(0, localDataStartRow - 1))
+  const remoteHeaderGroups = normalizeHeaderGroups(remoteDocument.header_groups, headers.length)
+  const localHeaderGroups = normalizeHeaderGroups(localDocument.header_groups, headers.length)
+  const remoteMergedCells = normalizeMergedCells(remoteDocument.merged_cells, remoteDocument.grid_rows.length, headers.length)
+  const localMergedCells = normalizeMergedCells(localDocument.merged_cells, Math.max(localDocument.grid_rows?.length ?? 0, dataStartRow), headers.length)
+  let changed = (
+    localDataStartRow !== dataStartRow
+    || localFieldRowIndex !== remoteFieldRowIndex
+    || JSON.stringify(localHeaderGroups) !== JSON.stringify(remoteHeaderGroups)
+    || JSON.stringify(localMergedCells) !== JSON.stringify(remoteMergedCells)
+  )
+  const nextDocument: SheetDocument = {
+    ...localDocument,
+    data_start_row: dataStartRow,
+    field_row_index: remoteFieldRowIndex,
+    header_groups: remoteHeaderGroups,
+    merged_cells: remoteMergedCells,
+  }
+  if (localDataStartRow !== dataStartRow) {
+    const prefixDelta = dataStartRow - localDataStartRow
+    if (prefixDelta > 0) {
+      nextDocument.rows = localDocument.rows.slice(prefixDelta)
+    }
+  }
+
+  const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings, headers.length)
+  const localSettings = normalizeSheetViewSettings(localDocument.view_settings, headers.length)
+  if (remoteSettings.column_note_display === 'row' && localSettings.column_note_display !== 'row') {
+    nextDocument.view_settings = {
+      ...(localDocument.view_settings ?? {}),
+      column_note_display: 'row',
+    }
+    changed = true
+  }
+
+  const localGridRows = Array.isArray(localDocument.grid_rows)
+    ? localDocument.grid_rows.map((row) => normalizeRow(row, headers))
+    : []
+  const remoteGridRows = remoteDocument.grid_rows.map((row) => normalizeRow(row, headers))
+  const remotePrefixRows = remoteGridRows
+    .slice(0, dataStartRow)
+    .map((row) => normalizeRow(row, headers))
+  while (remotePrefixRows.length < dataStartRow) {
+    remotePrefixRows.push(createEmptyRow(headers.length))
+  }
+  const localPrefixRows = localGridRows
+    .slice(0, dataStartRow)
+    .map((row) => normalizeRow(row, headers))
+  const prefixChanged = (
+    localPrefixRows.length !== remotePrefixRows.length
+    || remotePrefixRows.some((row, rowIndex) => row.some((value, columnIndex) => (
+      normalizeCellValue(value) !== normalizeCellValue(localPrefixRows[rowIndex]?.[columnIndex] ?? '')
+    )))
+  )
+  if (prefixChanged) {
+    changed = true
+  }
+
+  nextDocument.grid_rows = [
+    ...remotePrefixRows,
+    ...nextDocument.rows.map((row) => normalizeRow(row, headers)),
+  ]
+
+  const normalizedLocalConfigs = normalizeColumnConfigs(localDocument.column_configs, headers)
+  const mergedConfigs = mergeGridNoteRowIntoColumnConfigs(
+    normalizedLocalConfigs,
+    remoteGridRows,
+    headers,
+    normalizeNonNegativeInt(remoteDocument.field_row_index, Math.max(0, dataStartRow - 1)),
+    dataStartRow,
+    { overwrite: true },
+  )
+  const configsChanged = mergedConfigs !== normalizedLocalConfigs
+  if (configsChanged) {
+    nextDocument.column_configs = mergedConfigs
+  }
+
+  return changed || configsChanged ? nextDocument : localDocument
+}
+
+function isRemoteHeaderPrefixCompatibleWithLocalDraft(localDocument: SheetDocument, remoteDocument: SheetDocument) {
+  const headers = normalizeHeaders(remoteDocument.columns)
+  const localHeaders = normalizeHeaders(localDocument.columns)
+  if (
+    headers.length !== localHeaders.length
+    || headers.some((header, index) => header !== localHeaders[index])
+  ) {
+    return false
+  }
+
+  const dataStartRow = normalizeNonNegativeInt(remoteDocument.data_start_row, 0)
+  if (dataStartRow <= 0 || !Array.isArray(remoteDocument.grid_rows)) {
+    return true
+  }
+
+  const localGridRows = Array.isArray(localDocument.grid_rows)
+    ? localDocument.grid_rows.map((row) => normalizeRow(row, headers))
+    : []
+  const remoteGridRows = remoteDocument.grid_rows.map((row) => normalizeRow(row, headers))
+  for (let rowIndex = 0; rowIndex < dataStartRow && rowIndex < remoteGridRows.length; rowIndex += 1) {
+    for (let columnIndex = 0; columnIndex < headers.length; columnIndex += 1) {
+      const remoteValue = normalizeCellValue(remoteGridRows[rowIndex]?.[columnIndex] ?? '')
+      if (!remoteValue) {
+        continue
+      }
+      const localValue = normalizeCellValue(localGridRows[rowIndex]?.[columnIndex] ?? '')
+      if (localValue !== remoteValue) {
+        return false
+      }
+    }
+  }
+  return true
 }
 
 function buildCurrentDocument(): SheetDocument {
@@ -7325,7 +7917,7 @@ function shouldEnableTouchContextMenuFallback() {
   return coarsePointer || isAppleTouchDevice || isSafari
 }
 
-function shouldDefaultToStudentLookupView() {
+function isMobileOrTabletDevice() {
   if (typeof window === 'undefined' || typeof navigator === 'undefined') {
     return false
   }
@@ -7337,6 +7929,10 @@ function shouldDefaultToStudentLookupView() {
   const mobileOrTabletUserAgent = /Android|iPad|iPhone|iPod|Mobile|Tablet/i.test(userAgent)
   const appleTabletDesktopUserAgent = platform === 'MacIntel' && maxTouchPoints > 1
   return coarsePointer || mobileOrTabletUserAgent || appleTabletDesktopUserAgent
+}
+
+function shouldDefaultToStudentLookupView() {
+  return sheetViewSettings.value.mobile_default_view === 'lookup' && isMobileOrTabletDevice()
 }
 
 function refreshContextMenuFallbackSelectionState() {
@@ -8730,6 +9326,13 @@ function setColumnNoteAtIndex(columnIndex: number, nextNoteSource: string) {
   if (nextRows !== rows.value) {
     rows.value = nextRows
   }
+  const notePrefixRowIndex = normalizedHeaderGroups.value.length + 1
+  const nextPrefixRows = sheetHeaderPrefixRows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  while (nextPrefixRows.length <= notePrefixRowIndex) {
+    nextPrefixRows.push(createEmptyRow(columnHeaders.value.length))
+  }
+  nextPrefixRows[notePrefixRowIndex][columnIndex] = nextNote
+  sheetHeaderPrefixRows.value = nextPrefixRows
   return true
 }
 
@@ -9376,7 +9979,7 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   }
 
   TD.classList.add('sheet-grid-note-header-cell')
-  const note = value
+  const note = value || getColumnNote(column)
   const renderedNote = formulaText ?? note
   applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
   const link = getCellLinkAt(documentRow, column)
@@ -9444,6 +10047,7 @@ function areSheetViewSettingsEqual(left: SheetViewSettings, right: SheetViewSett
     && normalizedLeft.column_marker_style === normalizedRight.column_marker_style
     && normalizedLeft.column_note_display === normalizedRight.column_note_display
     && normalizedLeft.height_mode === normalizedRight.height_mode
+    && normalizedLeft.mobile_default_view === normalizedRight.mobile_default_view
     && normalizedLeft.frozen_column_count === normalizedRight.frozen_column_count
     && normalizedLeft.pagination.enabled === normalizedRight.pagination.enabled
     && normalizedLeft.pagination.page_size === normalizedRight.pagination.page_size
@@ -9613,13 +10217,28 @@ function loadSheetDocument(document: SheetDocument) {
   columnHeaders.value = normalizedHeaders
   headerGroups.value = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length)
   columnConfigs.value = normalizeColumnConfigs(document.column_configs, normalizedHeaders)
+  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, sheetHeaderRowCount.value)
+  const fieldRowIndex = normalizeNonNegativeInt(document.field_row_index, Math.max(0, dataStartRow - 1))
+  sheetHeaderPrefixRows.value = Array.isArray(document.grid_rows)
+    ? document.grid_rows
+      .slice(0, dataStartRow)
+      .map((row) => normalizeRow(row, normalizedHeaders))
+    : []
+  columnConfigs.value = mergeGridNoteRowIntoColumnConfigs(
+    columnConfigs.value,
+    Array.isArray(document.grid_rows) ? document.grid_rows.map((row) => normalizeRow(row, normalizedHeaders)) : [],
+    normalizedHeaders,
+    fieldRowIndex,
+    dataStartRow,
+    { overwrite: true },
+  )
+  syncColumnNotesFromHeaderPrefixRows()
   const normalizedMergedCells = normalizeMergedCells(
     document.merged_cells,
     Math.max(document.grid_rows?.length ?? 0, sheetHeaderRowCount.value + initialRows.length, getMergedCellsSourceRowCount(document.merged_cells)),
     normalizedHeaders.length,
   )
   mergedCells.value = normalizedMergedCells
-  const dataStartRow = normalizeNonNegativeInt(document.data_start_row, sheetHeaderRowCount.value)
   const repairedRows = repairCoveredMergedCellValuesInDataRows(
     initialRows,
     normalizedMergedCells,
@@ -9800,6 +10419,7 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
 }
 
 function applyInlineSheetDocument() {
+  sheetLoadSettled.value = true
   if (!props.inlineDocument) {
     suppressPersistence = true
     resetWorkspaceState()
@@ -10562,6 +11182,7 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
   workspaceLoading.value = true
   if (!shouldPreserveContent) {
     sheetContentReady.value = false
+    sheetLoadSettled.value = false
   }
   suppressPersistence = true
   try {
@@ -10646,14 +11267,28 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
 
     let activeDocument = remoteDocument
     let shouldSyncLocalDraft = false
-
     if (localDraft?.document && isSamePagePatchState(localDraft.pageState)) {
       const remoteUpdatedAt = normalizeTimestampMs(remote.updated_at)
+      const remoteSheetVersion = Number(remote.version || 1)
+      const localDraftSheetVersion = Number(localDraft.sheetVersion)
+      const localDraftVersionStillCurrent = (
+        Number.isFinite(localDraftSheetVersion)
+        && localDraftSheetVersion === remoteSheetVersion
+      )
       const localDraftIsNewer = localDraft.updatedAt > remoteUpdatedAt
       const localDraftIsMeaningful = hasMeaningfulSheetDocumentContent(localDraft.document)
       const remoteDocumentIsMeaningful = hasMeaningfulSheetDocumentContent(remoteDocument)
-      if (localDraftIsNewer && (localDraftIsMeaningful || !remoteDocumentIsMeaningful)) {
-        activeDocument = localDraft.document
+      const localDraftHeaderPrefixCompatible = isRemoteHeaderPrefixCompatibleWithLocalDraft(
+        localDraft.document,
+        remoteDocument,
+      )
+      if (
+        localDraftVersionStillCurrent
+        && localDraftIsNewer
+        && localDraftHeaderPrefixCompatible
+        && (localDraftIsMeaningful || !remoteDocumentIsMeaningful)
+      ) {
+        activeDocument = mergeRemoteHeaderPrefixIntoLocalDraft(localDraft.document, remoteDocument)
         sheetTitle.value = localDraft.title || sheetTitle.value
         if (localDraft.pageState) {
           pageRowOffset.value = localDraft.pageState.rowOffset
@@ -10684,6 +11319,9 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
     void refreshAttendanceCourseScriptStatuses()
   } finally {
     suppressPersistence = false
+    if (!shouldPreserveContent) {
+      sheetLoadSettled.value = true
+    }
     workspaceLoading.value = false
   }
 }
@@ -10809,16 +11447,17 @@ function syncCoveredMergedCellChangesToAnchors(changes: unknown) {
 }
 
 function handleAfterChange(_changes: unknown, source?: string) {
-  if (source === 'loadData' || source === 'external-update') {
+  if (source === 'loadData' || source === 'external-update' || source === 'MergeCells') {
     return
   }
   finishFormulaReferenceRange()
   clearFormulaReferencePreviewRange()
   syncRowsFromGrid()
   const mergedAnchorSynced = syncCoveredMergedCellChangesToAnchors(_changes)
+  const registrationDefaultsUpdated = handleRegistrationSubmittedAtUserChanges(_changes, source)
   refreshFormulaDisplayState()
   syncFormulaBarDraftFromSelectedCell()
-  if (mergedAnchorSynced) {
+  if (mergedAnchorSynced || registrationDefaultsUpdated) {
     refreshGridStructure()
   } else {
     getHotInstance()?.render()
@@ -11181,11 +11820,249 @@ function normalizeCellInputValueForColumn(value: string, columnIndex: number) {
   return trimmedValue
 }
 
+function getHeaderColumnIndex(header: string) {
+  return columnHeaders.value.findIndex((column) => normalizeCellValue(column).trim() === header)
+}
+
+function isRegistrationSubmittedAtDefaultEnabled() {
+  const headers = new Set(columnHeaders.value.map((column) => normalizeCellValue(column).trim()))
+  return (
+    headers.has(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+    && headers.has(STUDENT_LOOKUP_REAL_NAME_HEADER)
+    && (headers.has('微信昵称') || headers.has(STUDENT_LOOKUP_NICKNAME_HEADER))
+    && (headers.has('手机号') || headers.has('微信支付订单号'))
+  )
+}
+
+function padDateTimePart(value: number) {
+  return String(value).padStart(2, '0')
+}
+
+function formatLocalDateTimeForRegistrationInput(value: Date) {
+  return `${value.getFullYear()}/${padDateTimePart(value.getMonth() + 1)}/${padDateTimePart(value.getDate())} ${padDateTimePart(value.getHours())}:${padDateTimePart(value.getMinutes())}`
+}
+
+function formatLocalDateForRegistrationMeta(value: Date) {
+  return `${value.getFullYear()}-${padDateTimePart(value.getMonth() + 1)}-${padDateTimePart(value.getDate())}`
+}
+
+function formatLocalDateTimeForRegistrationMeta(value: Date) {
+  return `${formatLocalDateForRegistrationMeta(value)} ${padDateTimePart(value.getHours())}:${padDateTimePart(value.getMinutes())}:${padDateTimePart(value.getSeconds())}`
+}
+
+function createLocalDateFromFormulaParts(parts: FormulaDateParts) {
+  return new Date(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour ?? 0,
+    parts.minute ?? 0,
+    parts.second ?? 0,
+  )
+}
+
+function addLocalMonths(value: Date, months: number) {
+  const next = new Date(value)
+  const targetMonth = next.getMonth() + months
+  const originalDate = next.getDate()
+  next.setDate(1)
+  next.setMonth(targetMonth)
+  const maxDate = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate()
+  next.setDate(Math.min(originalDate, maxDate))
+  return next
+}
+
+function getRegistrationCutoffDate(now = new Date()) {
+  const cutoff = addLocalMonths(new Date(now.getFullYear(), now.getMonth(), now.getDate()), -2)
+  cutoff.setHours(0, 0, 0, 0)
+  return cutoff
+}
+
+function getRegistrationSubmittedAtDate(value: unknown) {
+  const parts = parseDateDisplayValue(value)
+  return parts ? createLocalDateFromFormulaParts(parts) : null
+}
+
+function createDefaultRegistrationSubmittedAtValue(now = new Date()) {
+  return normalizeDateInputValue(formatLocalDateTimeForRegistrationInput(now))
+}
+
+function applyRegistrationTrackingValuesToRow(row: SheetRow, submittedAtValue: unknown, now = new Date()) {
+  const groupColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_GROUP_HEADER)
+  const statusColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_STATUS_HEADER)
+  const deadlineColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_DEADLINE_HEADER)
+  const frozenAtColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_FROZEN_AT_HEADER)
+  if (groupColumn < 0 && statusColumn < 0 && deadlineColumn < 0 && frozenAtColumn < 0) {
+    return false
+  }
+
+  let changed = false
+  const setCell = (column: number, value: string) => {
+    if (column < 0 || column >= row.length || normalizeCellValue(row[column]) === value) {
+      return
+    }
+    row[column] = value
+    changed = true
+  }
+
+  const submittedAt = getRegistrationSubmittedAtDate(submittedAtValue)
+  if (!submittedAt) {
+    setCell(groupColumn, '')
+    setCell(statusColumn, '')
+    setCell(deadlineColumn, '')
+    setCell(frozenAtColumn, '')
+    return changed
+  }
+
+  const submittedDate = new Date(submittedAt.getFullYear(), submittedAt.getMonth(), submittedAt.getDate())
+  const active = submittedDate >= getRegistrationCutoffDate(now)
+  setCell(groupColumn, active ? REGISTRATION_ACTIVE_GROUP : REGISTRATION_FROZEN_GROUP)
+  setCell(statusColumn, active ? REGISTRATION_ACTIVE_STATUS : REGISTRATION_FROZEN_STATUS)
+  setCell(deadlineColumn, formatLocalDateForRegistrationMeta(addLocalMonths(submittedDate, 2)))
+  if (frozenAtColumn >= 0) {
+    if (active) {
+      setCell(frozenAtColumn, '')
+    } else if (!normalizeCellValue(row[frozenAtColumn]).trim()) {
+      setCell(frozenAtColumn, formatLocalDateTimeForRegistrationMeta(now))
+    }
+  }
+  return changed
+}
+
+function isAutoRegistrationSubmittedAtStyle(style: SheetCellStyle | null | undefined) {
+  return (
+    normalizeCssColor(style?.text_color) === REGISTRATION_AUTO_SUBMITTED_AT_TEXT_COLOR
+    && !normalizeCssColor(style?.background_color)
+    && !style?.font_family
+  )
+}
+
+function markRegistrationSubmittedAtAsAuto(nextMeta: SheetCellMetaMap, documentRow: number, columnIndex: number) {
+  const key = createCellMetaKey(documentRow, columnIndex)
+  const entry = { ...(nextMeta[key] ?? {}) }
+  entry.style = {
+    ...(entry.style ?? {}),
+    text_color: REGISTRATION_AUTO_SUBMITTED_AT_TEXT_COLOR,
+  }
+  const normalized = normalizeCellMetaEntry(entry)
+  if (normalized) {
+    nextMeta[key] = normalized
+  }
+}
+
+function clearAutoRegistrationSubmittedAtStyle(nextMeta: SheetCellMetaMap, documentRow: number, columnIndex: number) {
+  const key = createCellMetaKey(documentRow, columnIndex)
+  const entry = nextMeta[key]
+  if (!entry || !isAutoRegistrationSubmittedAtStyle(entry.style)) {
+    return false
+  }
+
+  const nextEntry: SheetCellMeta = { ...entry }
+  delete nextEntry.style
+  const normalized = normalizeCellMetaEntry(nextEntry)
+  if (normalized) {
+    nextMeta[key] = normalized
+  } else {
+    delete nextMeta[key]
+  }
+  return true
+}
+
+function applyDefaultRegistrationSubmittedAtRows(startDataIndex: number, amount: number, startDocumentDataIndex: number) {
+  if (!isRegistrationSubmittedAtDefaultEnabled()) {
+    return false
+  }
+  const submittedAtColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+  if (submittedAtColumn < 0) {
+    return false
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  const nextMeta = { ...cellMeta.value }
+  const now = new Date()
+  const defaultValue = createDefaultRegistrationSubmittedAtValue(now)
+  let changed = false
+
+  for (let offset = 0; offset < amount; offset += 1) {
+    const rowIndex = startDataIndex + offset
+    if (rowIndex < 0 || rowIndex >= nextRows.length) {
+      continue
+    }
+    const row = nextRows[rowIndex]
+    if (normalizeCellValue(row[submittedAtColumn]).trim()) {
+      continue
+    }
+    row[submittedAtColumn] = defaultValue
+    applyRegistrationTrackingValuesToRow(row, defaultValue, now)
+    markRegistrationSubmittedAtAsAuto(
+      nextMeta,
+      sheetHeaderRowCount.value + startDocumentDataIndex + offset,
+      submittedAtColumn,
+    )
+    changed = true
+  }
+
+  if (!changed) {
+    return false
+  }
+
+  rows.value = nextRows
+  cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
+  return true
+}
+
+function handleRegistrationSubmittedAtUserChanges(changes: unknown, source?: string) {
+  if (!isRegistrationSubmittedAtDefaultEnabled()) {
+    return false
+  }
+  const submittedAtColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+  if (submittedAtColumn < 0) {
+    return false
+  }
+  const records = normalizeSheetGridChanges(changes).filter((record) => (
+    record.columnIndex === submittedAtColumn
+    && getDataRowIndex(record.rowIndex) >= 0
+  ))
+  if (!records.length) {
+    return false
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  const nextMeta = { ...cellMeta.value }
+  const now = new Date()
+  let changed = false
+
+  records.forEach((record) => {
+    const dataRow = getDataRowIndex(record.rowIndex)
+    if (dataRow < 0 || dataRow >= nextRows.length) {
+      return
+    }
+    const documentRow = sheetHeaderRowCount.value + getDocumentRowIndex(dataRow)
+    if (source !== 'loadData' && source !== 'external-update') {
+      changed = clearAutoRegistrationSubmittedAtStyle(nextMeta, documentRow, submittedAtColumn) || changed
+    }
+    changed = applyRegistrationTrackingValuesToRow(
+      nextRows[dataRow],
+      nextRows[dataRow][submittedAtColumn],
+      now,
+    ) || changed
+  })
+
+  if (!changed) {
+    return false
+  }
+
+  rows.value = nextRows
+  cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
+  return true
+}
+
 function handleBeforeChange(changes: unknown, source?: string) {
   if (
     !Array.isArray(changes)
     || source === 'loadData'
     || source === 'external-update'
+    || source === 'MergeCells'
   ) {
     return
   }
@@ -11354,6 +12231,10 @@ function handleAfterCreateRow(index = 0, amount = 1) {
   insertMergedCellRows(documentGridRow, amount)
   syncRowsFromGrid()
   remapFormulaReferencesInRows((rowIndex) => (rowIndex >= documentDataIndex ? rowIndex + amount : rowIndex))
+  if (applyDefaultRegistrationSubmittedAtRows(dataIndex, amount, documentDataIndex)) {
+    getHotInstance()?.updateSettings({ data: sheetHotGridRows.value })
+    getHotInstance()?.render()
+  }
 }
 
 function handleAfterRemoveRow(index = 0, amount = 1) {
@@ -14444,16 +15325,17 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
   const header = columnHeaders.value[renderColumn] ?? ''
   const columnConfig = header ? columnConfigs.value[header] : undefined
   const cellStyle = documentRow >= 0 ? getCellStyleAt(documentRow, renderColumn) : null
-  const fontSize = getColumnFontSizeFromConfig(columnConfig)
+  const columnFontSize = getColumnFontSizeFromConfig(columnConfig)
+  const detailFontSize = Math.max(columnFontSize, DETAIL_VALUE_MIN_FONT_SIZE)
   let backgroundColor = getPluginRowBackgroundColor(dataRow)
   let textColor = ''
   let fontFamilyStyle = getColumnFontFamilyStyle(columnConfig)
   let fontSizeStyle = ''
   let lineHeightStyle = ''
 
-  if (fontSize !== DEFAULT_COLUMN_FONT_SIZE) {
-    fontSizeStyle = `${fontSize}px`
-    lineHeightStyle = `${getColumnLineHeightFromFontSize(fontSize)}px`
+  if (detailFontSize !== DEFAULT_COLUMN_FONT_SIZE) {
+    fontSizeStyle = `${detailFontSize}px`
+    lineHeightStyle = `${getColumnLineHeightFromFontSize(detailFontSize)}px`
   }
 
   const hashColorStyle = getCellHashColorStyle(renderColumn, columnConfig, renderedText)
@@ -14574,19 +15456,59 @@ function openStudentLookupFeedbackDialog() {
   }
 
   studentLookupFeedbackCorrectionRequest.value = ''
-  studentLookupFeedbackExtraNote.value = ''
   studentLookupFeedbackLastSubmittedKey.value = ''
   studentLookupFeedbackSubmittedAt.value = ''
   studentLookupFeedbackDialogVisible.value = true
 }
 
+function resetStudentLookupFeedbackHistory() {
+  studentLookupFeedbackHistoryRequestId += 1
+  studentLookupFeedbackHistoryItems.value = []
+  studentLookupFeedbackHistoryTotal.value = 0
+  studentLookupFeedbackHistoryLoading.value = false
+}
+
+async function loadStudentLookupFeedbackHistory() {
+  const courseName = studentLookupFeedbackCourseName.value.trim()
+  const studentName = studentLookupFeedbackStudentName.value.trim()
+  if (!courseName || !studentName) {
+    resetStudentLookupFeedbackHistory()
+    return
+  }
+
+  const requestId = studentLookupFeedbackHistoryRequestId + 1
+  studentLookupFeedbackHistoryRequestId = requestId
+  studentLookupFeedbackHistoryLoading.value = true
+  try {
+    const result = await fetchAttendanceFeedbackHistory({
+      course_name: courseName,
+      student_name: studentName,
+      limit: 8,
+    })
+    if (requestId !== studentLookupFeedbackHistoryRequestId) {
+      return
+    }
+    studentLookupFeedbackHistoryItems.value = result.items || []
+    studentLookupFeedbackHistoryTotal.value = result.total || 0
+  } catch {
+    if (requestId !== studentLookupFeedbackHistoryRequestId) {
+      return
+    }
+    studentLookupFeedbackHistoryItems.value = []
+    studentLookupFeedbackHistoryTotal.value = 0
+  } finally {
+    if (requestId === studentLookupFeedbackHistoryRequestId) {
+      studentLookupFeedbackHistoryLoading.value = false
+    }
+  }
+}
+
 async function submitStudentLookupFeedback() {
   const option = selectedStudentLookupOption.value
   const courseName = studentLookupFeedbackCourseName.value.trim()
-  const studentId = normalizeCellValue(option?.studentNumber).trim()
+  const studentId = studentLookupFeedbackStudentId.value
   const studentName = studentLookupFeedbackStudentName.value.trim()
   const correctionRequest = studentLookupFeedbackCorrectionRequest.value.trim()
-  const extraNote = studentLookupFeedbackExtraNote.value.trim()
 
   if (!option) {
     ElMessage.warning('请先选择学员')
@@ -14601,11 +15523,11 @@ async function submitStudentLookupFeedback() {
     return
   }
   if (!studentName) {
-    ElMessage.warning('当前学员缺少姓名或昵称')
+    ElMessage.warning('当前学员缺少姓名')
     return
   }
   if (!correctionRequest) {
-    ElMessage.warning('请填写问题')
+    ElMessage.warning('请填写修正需求')
     return
   }
 
@@ -14616,14 +15538,13 @@ async function submitStudentLookupFeedback() {
       student_id_text: studentId,
       student_name: studentName,
       correction_request: correctionRequest,
-      extra_note: extraNote,
+      extra_note: '',
     })
     studentLookupFeedbackCorrectionRequest.value = correctionRequest
-    studentLookupFeedbackExtraNote.value = extraNote
     studentLookupFeedbackLastSubmittedKey.value = studentLookupFeedbackCurrentDraftKey.value
     studentLookupFeedbackSubmittedAt.value = saved.submitted_at_text || new Date().toLocaleString('zh-CN', { hour12: false })
     ElMessage.success('已提交反馈')
-    studentLookupFeedbackDialogVisible.value = false
+    void loadStudentLookupFeedbackHistory()
   } catch (error) {
     ElMessage.error(getSheetActionErrorMessage(error, '提交反馈失败'))
   } finally {
@@ -15338,7 +16259,11 @@ watch(
 watch(
   [rows, columnHeaders, headerGroups, columnConfigs, sheetViewSettings],
   () => {
+    const columnNotesRestored = syncColumnNotesFromHeaderPrefixRows()
     refreshFormulaDisplayState()
+    if (columnNotesRestored) {
+      refreshGridStructure()
+    }
   },
   { deep: true, flush: 'post' },
 )
@@ -15394,6 +16319,7 @@ watch(
     clearSaveTimer()
     resetSheetFilterReloadState()
     if (!nextSheetId) {
+      sheetLoadSettled.value = true
       if (hasInlineDocument.value) {
         applyInlineSheetDocument()
       } else {
@@ -15416,6 +16342,7 @@ watch(
     }
     columnFilters.value = {}
     closeColumnFilterPopover()
+    sheetLoadSettled.value = false
     currentPage.value = 1
     pageCount.value = 1
     totalRowCount.value = 0
@@ -15453,9 +16380,20 @@ watch(
     userMatchStartPending.value = false
     clearSaveTimer()
     resetSheetFilterReloadState()
+    sheetLoadSettled.value = false
     void restoreInitialDocument().finally(() => {
       void updateSheetViewportHeight()
     })
+  },
+)
+
+watch(
+  () => props.initialWorkspaceView,
+  (nextView, previousView) => {
+    if (nextView === previousView || !sheetContentReady.value) {
+      return
+    }
+    restoreSheetWorkspaceViewFromLocalStorage()
   },
 )
 
@@ -15515,6 +16453,22 @@ watch(
   [studentLookupStudentKey, shouldShowStudentLookup],
   () => {
     void updateSheetViewportHeight()
+  },
+)
+
+watch(
+  [
+    studentLookupFeedbackDialogVisible,
+    studentLookupFeedbackCourseName,
+    studentLookupFeedbackStudentId,
+    studentLookupFeedbackStudentName,
+  ],
+  () => {
+    if (!studentLookupFeedbackDialogVisible.value) {
+      resetStudentLookupFeedbackHistory()
+      return
+    }
+    void loadStudentLookupFeedbackHistory()
   },
 )
 
@@ -15620,6 +16574,7 @@ onBeforeUnmount(() => {
   clearScheduledInlineEditorFormulaBarSync()
   clearScheduledRowMarkerSelection()
   clearFormulaReferencePointerDownReset()
+  studentLookupFeedbackHistoryRequestId += 1
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('input', handleInlineEditorInput, true)
@@ -15652,31 +16607,64 @@ defineExpose({
       <el-button v-if="showBackButton" @click="router.push(backTo)">{{ backLabel }}</el-button>
     </div>
 
-    <div v-if="shouldShowSheetViewTabs" class="sheet-view-tabs" role="tablist" aria-label="表格视图">
-      <button
-        type="button"
-        class="sheet-view-tab"
-        :class="{ 'is-active': isOriginalSheetViewActive }"
-        role="tab"
-        :aria-selected="isOriginalSheetViewActive"
-        @click="setSheetWorkspaceView('sheet')"
+    <div v-if="shouldRenderSheetContent" class="sheet-formula-bar">
+      <el-select
+        v-if="shouldShowSheetWorkspaceViewSelect"
+        :model-value="sheetWorkspaceView"
+        class="sheet-workspace-view-select"
+        size="small"
+        aria-label="切换视图"
+        title="右键复制视图链接"
+        @change="handleSheetWorkspaceViewChange"
+        @contextmenu="openSheetWorkspaceViewLinkMenu"
       >
-        表格
-      </button>
-      <button
-        type="button"
-        class="sheet-view-tab"
-        :class="{ 'is-active': isStudentLookupViewActive }"
-        role="tab"
-        :aria-selected="isStudentLookupViewActive"
-        @click="setSheetWorkspaceView('lookup')"
-      >
-        速查
-      </button>
+        <el-option
+          v-for="option in sheetWorkspaceViewOptions"
+          :key="option.value"
+          :label="option.label"
+          :value="option.value"
+        />
+      </el-select>
+      <div v-if="shouldShowSheetWorkspaceViewSelect && isOriginalSheetViewActive" class="sheet-formula-separator" />
+      <template v-if="isOriginalSheetViewActive">
+        <div class="sheet-formula-address">{{ formulaBarAddress || '--' }}</div>
+        <button
+          v-if="showContextMenuFallbackButton"
+          ref="contextMenuFallbackButtonRef"
+          type="button"
+          class="sheet-context-menu-fallback"
+          aria-label="打开右键菜单"
+          title="打开右键菜单"
+          @click="openTouchContextMenuFallback"
+          @mousedown.stop
+          @touchstart.stop
+        >
+          右键菜单
+        </button>
+        <div class="sheet-formula-separator" />
+        <div class="sheet-formula-prefix">fx</div>
+        <el-input
+          ref="formulaBarInputRef"
+          :model-value="formulaBarDraft"
+          class="sheet-formula-input"
+          :disabled="!formulaBarCell"
+          :readonly="!canEditFormulaBarCell()"
+          clearable
+          @update:model-value="value => updateFormulaBarDraft(String(value))"
+          @focus="handleFormulaBarFocus"
+          @blur="handleFormulaBarBlur"
+          @keydown="handleFormulaBarKeyDown"
+          @keydown.enter.exact.prevent="commitFormulaBarDraftAndExit"
+          @keydown.esc.prevent="resetFormulaBarDraftAndExit"
+        />
+      </template>
     </div>
 
-    <section v-if="isStudentLookupViewActive" class="sheet-student-lookup">
-      <div class="sheet-student-lookup-title">{{ studentLookupPanelTitle }}</div>
+    <section
+      v-if="isStudentLookupViewActive"
+      class="sheet-student-lookup"
+      :style="getStudentLookupLayoutStyle(selectedStudentLookupDetailRecords)"
+    >
       <div class="sheet-student-lookup-controls">
         <label v-if="shouldShowStudentLookupGroupSelect" class="sheet-student-lookup-field">
           <span class="sheet-student-lookup-label">分组</span>
@@ -15714,7 +16702,10 @@ defineExpose({
               :label="option.label"
               :value="option.key"
             >
-              <div class="sheet-student-lookup-option">
+              <div
+                class="sheet-student-lookup-option"
+                :class="{ 'is-archived': isStudentLookupArchivedOption(option) }"
+              >
                 <span>{{ option.label }}</span>
                 <span v-if="option.secondaryLabel" class="sheet-student-lookup-option-group">{{ option.secondaryLabel }}</span>
               </div>
@@ -15724,45 +16715,58 @@ defineExpose({
 
         <el-button
           v-if="studentLookupMode === 'student'"
+          class="sheet-student-lookup-feedback-button"
           size="small"
           :disabled="!selectedStudentLookupOption"
           @click="openStudentLookupFeedbackDialog"
         >我要反馈问题</el-button>
       </div>
 
-      <div v-if="selectedStudentLookupDetail" class="sheet-student-lookup-detail">
-        <section
-          v-for="(section, sectionIndex) in selectedStudentLookupDetailSections"
-          :key="`${section.title || 'default'}-${sectionIndex}`"
-          class="sheet-student-lookup-section"
+      <div
+        v-if="selectedStudentLookupDetailRecords.length"
+        class="sheet-student-lookup-detail"
+        :class="{ 'is-questionnaire': isStudentLookupQuestionnaireMode }"
+      >
+        <article
+          v-for="record in selectedStudentLookupDetailRecords"
+          :key="record.key"
+          class="sheet-student-lookup-record"
+          :class="{ 'is-current': record.current }"
         >
-          <div v-if="section.title" class="sheet-student-lookup-section-title">{{ section.title }}</div>
-          <div
-            class="sheet-student-lookup-items"
-            :style="getStudentLookupItemsStyle(section.items)"
+          <div v-if="record.title" class="sheet-student-lookup-record-title">
+            <span>{{ record.title }}</span>
+            <span v-if="record.current" class="sheet-student-lookup-record-current">当前</span>
+          </div>
+          <section
+            v-for="(section, sectionIndex) in record.sections"
+            :key="`${record.key}-${section.title || 'default'}-${sectionIndex}`"
+            class="sheet-student-lookup-section"
           >
-            <div
-              v-for="item in section.items"
-              :key="item.columnIndex"
-              class="sheet-student-lookup-item"
-              :class="{ 'is-empty': item.empty }"
-            >
-              <div class="sheet-student-lookup-key">
-                <span class="sheet-student-lookup-marker">{{ item.marker }}</span>
-                <span class="sheet-student-lookup-item-label">{{ item.label }}</span>
-              </div>
-              <div class="sheet-student-lookup-value" :style="item.valueStyle">
-                <a
-                  v-if="item.link"
-                  :href="item.link.url"
-                  target="_blank"
-                  rel="noreferrer"
-                >{{ item.value || item.link.url }}</a>
-                <span v-else>{{ item.value || '--' }}</span>
+            <div v-if="section.title" class="sheet-student-lookup-section-title">{{ section.title }}</div>
+            <div class="sheet-student-lookup-items">
+              <div
+                v-for="item in section.items"
+                :key="`${record.key}-${item.columnIndex}`"
+                class="sheet-student-lookup-item"
+                :class="{ 'is-empty': item.empty }"
+              >
+                <div class="sheet-student-lookup-key">
+                  <span class="sheet-student-lookup-marker">{{ item.marker }}</span>
+                  <span class="sheet-student-lookup-item-label">{{ item.label }}</span>
+                </div>
+                <div class="sheet-student-lookup-value" :style="item.valueStyle">
+                  <a
+                    v-if="item.link"
+                    :href="item.link.url"
+                    target="_blank"
+                    rel="noreferrer"
+                  >{{ item.value || item.link.url }}</a>
+                  <span v-else>{{ item.value || '--' }}</span>
+                </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </article>
       </div>
       <div v-else class="sheet-student-lookup-empty">{{ studentLookupEmptyText }}</div>
     </section>
@@ -15770,7 +16774,7 @@ defineExpose({
     <el-dialog
       v-model="studentLookupFeedbackDialogVisible"
       title="反馈问题"
-      width="520px"
+      width="640px"
       class="sheet-student-feedback-dialog"
       destroy-on-close
       append-to-body
@@ -15785,12 +16789,28 @@ defineExpose({
           </div>
           <div class="sheet-student-feedback-context-item">
             <span>学员</span>
-            <strong>{{ selectedStudentLookupOption?.studentNumber || '--' }} {{ studentLookupFeedbackStudentName || '--' }}</strong>
+            <strong class="sheet-student-feedback-student">
+              <span class="sheet-student-feedback-student-field">
+                <span class="sheet-student-feedback-student-label">学号</span>
+                <span>{{ studentLookupFeedbackStudentId || '--' }}</span>
+              </span>
+              <span class="sheet-student-feedback-student-field">
+                <span class="sheet-student-feedback-student-label">姓名</span>
+                <span>{{ studentLookupFeedbackStudentName || '--' }}</span>
+              </span>
+              <span class="sheet-student-feedback-student-field">
+                <span class="sheet-student-feedback-student-label">昵称</span>
+                <span>{{ studentLookupFeedbackNickname || '--' }}</span>
+              </span>
+            </strong>
           </div>
         </div>
 
         <label class="sheet-student-feedback-field">
-          <span class="sheet-student-feedback-label">问题</span>
+          <span class="sheet-student-feedback-label">
+            <span>修正需求</span>
+            <span class="sheet-student-feedback-help">例如“共学打卡已满 21 次”或“第 18 课有完成当堂学习”</span>
+          </span>
           <el-input
             v-model="studentLookupFeedbackCorrectionRequest"
             type="textarea"
@@ -15802,21 +16822,7 @@ defineExpose({
           />
         </label>
 
-        <label class="sheet-student-feedback-field">
-          <span class="sheet-student-feedback-label">备注</span>
-          <el-input
-            v-model="studentLookupFeedbackExtraNote"
-            type="textarea"
-            :rows="3"
-            resize="vertical"
-            placeholder="可选"
-            maxlength="600"
-            show-word-limit
-          />
-        </label>
-      </div>
-      <template #footer>
-        <div class="sheet-settings-footer">
+        <div class="sheet-student-feedback-actions">
           <el-button :disabled="studentLookupFeedbackSubmitting" @click="studentLookupFeedbackDialogVisible = false">
             取消
           </el-button>
@@ -15829,41 +16835,26 @@ defineExpose({
             提交反馈
           </el-button>
         </div>
-      </template>
-    </el-dialog>
 
-    <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent" class="sheet-formula-bar">
-      <div class="sheet-formula-address">{{ formulaBarAddress || '--' }}</div>
-      <button
-        v-if="showContextMenuFallbackButton"
-        ref="contextMenuFallbackButtonRef"
-        type="button"
-        class="sheet-context-menu-fallback"
-        aria-label="打开右键菜单"
-        title="打开右键菜单"
-        @click="openTouchContextMenuFallback"
-        @mousedown.stop
-        @touchstart.stop
-      >
-        右键菜单
-      </button>
-      <div class="sheet-formula-separator" />
-      <div class="sheet-formula-prefix">fx</div>
-      <el-input
-        ref="formulaBarInputRef"
-        :model-value="formulaBarDraft"
-        class="sheet-formula-input"
-        :disabled="!formulaBarCell"
-        :readonly="!canEditFormulaBarCell()"
-        clearable
-        @update:model-value="value => updateFormulaBarDraft(String(value))"
-        @focus="handleFormulaBarFocus"
-        @blur="handleFormulaBarBlur"
-        @keydown="handleFormulaBarKeyDown"
-        @keydown.enter.exact.prevent="commitFormulaBarDraftAndExit"
-        @keydown.esc.prevent="resetFormulaBarDraftAndExit"
-      />
-    </div>
+        <div v-if="studentLookupFeedbackSubmittedAt" class="sheet-student-feedback-submit-status">
+          {{ studentLookupFeedbackSubmittedAt }} 已提交{{ hasSubmittedStudentLookupFeedbackDraft ? '，修改内容后可再次提交' : '，当前内容已变更，可重新提交' }}
+        </div>
+
+        <AttendanceFeedbackHistoryList
+          v-if="studentLookupFeedbackHistoryItems.length"
+          class="sheet-student-feedback-history"
+          title="历史问卷"
+          loading-text="正在查询历史问卷..."
+          empty-text="暂未查到这个学员的历史问卷。"
+          :ready="canLoadStudentLookupFeedbackHistory"
+          :loading="studentLookupFeedbackHistoryLoading"
+          :items="studentLookupFeedbackHistoryItems"
+          :total="studentLookupFeedbackHistoryTotal"
+          :student-id="studentLookupFeedbackStudentId"
+          :student-name="studentLookupFeedbackStudentName"
+        />
+      </div>
+    </el-dialog>
 
     <div
       v-if="shouldShowOriginalSheetArea"
@@ -15938,7 +16929,7 @@ defineExpose({
         :after-renderer="handleAfterRenderer"
       />
 
-      <div v-else class="sheet-empty-state">{{ emptyText }}</div>
+      <div v-else class="sheet-empty-state">{{ sheetEmptyStateText }}</div>
     </div>
 
     <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
@@ -16132,6 +17123,13 @@ defineExpose({
           <el-select v-model="sheetSettingsDraft.height_mode" class="sheet-settings-inline-select">
             <el-option label="填满区域" value="fill" />
             <el-option label="贴合内容" value="content" />
+          </el-select>
+        </div>
+        <div v-if="shouldShowStudentLookup" class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">手机首次视图</div>
+          <el-select v-model="sheetSettingsDraft.mobile_default_view" class="sheet-settings-inline-select">
+            <el-option label="表格" value="sheet" />
+            <el-option label="速查" value="lookup" />
           </el-select>
         </div>
         <div class="sheet-settings-inline-field">
@@ -16625,6 +17623,17 @@ defineExpose({
 
     <Teleport to="body">
       <div
+        v-if="sheetWorkspaceViewLinkMenu.visible"
+        class="sheet-workspace-view-link-menu"
+        :style="sheetWorkspaceViewLinkMenuStyle"
+        @mousedown.stop
+        @contextmenu.prevent
+      >
+        <button type="button" @click="copySheetWorkspaceViewLink(sheetWorkspaceView)">
+          复制{{ getSheetWorkspaceViewLabel(sheetWorkspaceView) }}链接
+        </button>
+      </div>
+      <div
         v-if="columnFilterPopover.visible"
         ref="columnFilterPopoverRef"
         class="sheet-column-filter-popover"
@@ -16817,6 +17826,11 @@ defineExpose({
   overflow-y: auto;
 }
 
+.note-sheet-workspace.is-lookup-view .sheet-formula-bar {
+  align-self: flex-start;
+  width: auto;
+}
+
 .note-sheet-workspace.is-content-height {
   align-items: flex-start;
   height: auto;
@@ -16825,7 +17839,6 @@ defineExpose({
 }
 
 .note-sheet-workspace.is-content-height .sheet-formula-bar,
-.note-sheet-workspace.is-content-height .sheet-view-tabs,
 .note-sheet-workspace.is-content-height .sheet-student-lookup,
 .note-sheet-workspace.is-content-height .sheet-frame,
 .note-sheet-workspace.is-content-height .sheet-pagination-bar {
@@ -16844,37 +17857,6 @@ defineExpose({
   flex-wrap: wrap;
 }
 
-.sheet-view-tabs {
-  display: flex;
-  align-items: flex-end;
-  gap: 0;
-  min-height: 34px;
-  border-bottom: 1px solid #e7dcc9;
-}
-
-.sheet-view-tab {
-  flex: 0 0 auto;
-  min-width: 86px;
-  height: 34px;
-  padding: 0 16px;
-  border: 1px solid transparent;
-  border-bottom: 0;
-  border-radius: 7px 7px 0 0;
-  background: transparent;
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 33px;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.sheet-view-tab.is-active {
-  border-color: #e7dcc9;
-  background: #fff;
-  color: #111827;
-}
-
 .sheet-student-lookup {
   display: flex;
   flex-direction: column;
@@ -16887,30 +17869,29 @@ defineExpose({
   background: #fbfdff;
 }
 
-.sheet-student-lookup-title {
-  color: #334155;
-  font-size: 13px;
-  font-weight: 700;
-  line-height: 1.2;
+.note-sheet-workspace.is-lookup-view .sheet-student-lookup {
+  width: var(--sheet-student-lookup-panel-width, auto);
+  max-width: 100%;
 }
 
 .sheet-student-lookup-controls {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
   min-width: 0;
 }
 
 .sheet-student-lookup-field {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 6px;
+  width: 100%;
   min-width: 0;
 }
 
 .sheet-student-lookup-field-main {
-  flex: 1 1 260px;
+  flex: 0 0 auto;
 }
 
 .sheet-student-lookup-label {
@@ -16926,11 +17907,17 @@ defineExpose({
 }
 
 .sheet-student-lookup-student-select {
-  width: min(100%, 360px);
+  width: 100%;
 }
 
 .sheet-student-lookup-field-main .sheet-student-lookup-student-select {
   flex: 1;
+  min-width: 0;
+}
+
+.sheet-student-lookup-feedback-button {
+  width: 100%;
+  margin-left: 0;
 }
 
 .sheet-student-lookup-option {
@@ -16939,6 +17926,10 @@ defineExpose({
   justify-content: flex-start;
   gap: 12px;
   min-width: 0;
+}
+
+.sheet-student-lookup-option.is-archived {
+  color: #94a3b8;
 }
 
 .sheet-student-lookup-option span:first-child {
@@ -16958,8 +17949,38 @@ defineExpose({
   white-space: nowrap;
 }
 
+.sheet-student-lookup-option.is-archived .sheet-student-lookup-option-group {
+  color: #cbd5e1;
+}
+
 .sheet-student-lookup-detail {
   border-top: 1px solid #e2e8f0;
+}
+
+.sheet-student-lookup-record + .sheet-student-lookup-record {
+  margin-top: 10px;
+}
+
+.sheet-student-lookup-record-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 8px 2px 6px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.sheet-student-lookup-record-current {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .sheet-student-lookup-section + .sheet-student-lookup-section {
@@ -16982,7 +18003,7 @@ defineExpose({
 
 .sheet-student-lookup-item {
   display: grid;
-  grid-template-columns: minmax(88px, 34%) minmax(0, 1fr);
+  grid-template-columns: minmax(0, min(var(--sheet-student-lookup-key-width, 144px), 42%)) minmax(0, 1fr);
   min-height: 34px;
   border-bottom: 1px solid #e2e8f0;
   background: #fff;
@@ -17002,9 +18023,10 @@ defineExpose({
 }
 
 .sheet-student-lookup-marker {
-  flex: 0 0 auto;
+  flex: 0 0 28px;
   color: #94a3b8;
   font-weight: 700;
+  text-align: right;
 }
 
 .sheet-student-lookup-item-label {
@@ -17069,7 +18091,7 @@ defineExpose({
   line-height: 1.45;
 }
 
-.sheet-student-feedback-context-item span {
+.sheet-student-feedback-context-item > span {
   color: #64748b;
   font-weight: 600;
 }
@@ -17080,6 +18102,25 @@ defineExpose({
   overflow-wrap: anywhere;
 }
 
+.sheet-student-feedback-student {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: baseline;
+}
+
+.sheet-student-feedback-student-field {
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sheet-student-feedback-student-label {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-weight: 600;
+}
+
 .sheet-student-feedback-field {
   display: flex;
   flex-direction: column;
@@ -17087,37 +18128,42 @@ defineExpose({
 }
 
 .sheet-student-feedback-label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
   color: #334155;
   font-size: 13px;
   font-weight: 700;
   line-height: 1.2;
 }
 
-@media (min-width: 900px) {
-  .sheet-student-lookup-items {
-    position: relative;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: repeat(var(--sheet-student-lookup-column-rows, 1), auto);
-    grid-auto-flow: column;
-  }
-
-  .sheet-student-lookup-items::before {
-    content: "";
-    position: absolute;
-    z-index: 1;
-    top: 0;
-    bottom: 0;
-    left: 50%;
-    width: 1px;
-    background: #e2e8f0;
-    pointer-events: none;
-  }
+.sheet-student-feedback-help {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
 }
 
-@media (min-width: 900px) and (hover: hover) and (pointer: fine) {
-  .sheet-student-lookup-item {
-    grid-template-columns: minmax(0, var(--sheet-student-lookup-key-width, 120px)) minmax(0, 1fr);
-  }
+.sheet-student-feedback-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding-top: 2px;
+}
+
+.sheet-student-feedback-submit-status {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: right;
+}
+
+.sheet-student-feedback-history {
+  --feedback-text: #334155;
+  --feedback-muted: #64748b;
+  padding-top: 10px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .sheet-pagination-bar {
@@ -17147,6 +18193,62 @@ defineExpose({
   border-radius: 8px;
   background: #fffdfa;
   overflow: hidden;
+}
+
+.sheet-workspace-view-select {
+  flex: 0 0 92px;
+  width: 92px;
+}
+
+.sheet-workspace-view-select :deep(.el-select__wrapper) {
+  min-height: 32px;
+  padding: 0 10px;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.sheet-workspace-view-select :deep(.el-select__wrapper.is-focused) {
+  box-shadow: inset 0 -1px 0 #409eff;
+}
+
+.sheet-workspace-view-select :deep(.el-select__selected-item),
+.sheet-workspace-view-select :deep(.el-select__placeholder) {
+  color: #1f2d3d;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.sheet-workspace-view-link-menu {
+  position: fixed;
+  z-index: 2600;
+  min-width: 140px;
+  padding: 4px;
+  border: 1px solid #d8e1ec;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 14%);
+}
+
+.sheet-workspace-view-link-menu button {
+  display: block;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #1f2d3d;
+  font-size: 13px;
+  line-height: 32px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sheet-workspace-view-link-menu button:hover,
+.sheet-workspace-view-link-menu button:focus-visible {
+  background: #eef5ff;
+  outline: none;
 }
 
 .sheet-formula-address {
@@ -18166,12 +19268,6 @@ defineExpose({
     width: 100%;
   }
 
-  .sheet-view-tab {
-    flex: 1 1 0;
-    min-width: 0;
-    padding: 0 10px;
-  }
-
   .sheet-student-lookup {
     padding: 9px;
   }
@@ -18197,6 +19293,19 @@ defineExpose({
   .sheet-student-lookup-student-select {
     flex: 1;
     width: auto;
+  }
+
+  .sheet-student-feedback-actions {
+    flex-direction: column-reverse;
+  }
+
+  .sheet-student-feedback-actions :deep(.el-button) {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .sheet-student-feedback-submit-status {
+    text-align: left;
   }
 
   :deep(.sheet-student-feedback-dialog) {

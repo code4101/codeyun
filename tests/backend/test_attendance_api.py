@@ -447,6 +447,17 @@ def test_attendance_feedback_public_endpoints_bypass_feature_access_policy(clien
     assert submit_response.status_code == 200
     assert submit_response.json()["student_name"] == "游客测试"
 
+    history_response = client.get(
+        "/api/attendance/wjx-feedback/history",
+        params={
+            "course_name": "20260401第45届觉观",
+            "student_id_text": "1",
+            "student_name": "游客测试",
+        },
+    )
+    assert history_response.status_code == 200
+    assert history_response.json()["items"][0]["student_name"] == "游客测试"
+
 
 def test_order_refund_history_strips_timestamps_but_keeps_result_text(client: TestClient, session):
     admin_user = _create_admin_user(session)
@@ -688,6 +699,82 @@ def test_attendance_wjx_data_readonly_listing_is_public(client: TestClient, sess
     assert payload["items"][0]["seq"] == 800
     assert payload["items"][0]["student_name"] == "吴菲"
     assert payload["items"][0]["correction_request"] == "补第2课"
+
+
+def test_attendance_feedback_history_matches_course_and_identity(client: TestClient, session):
+    session.add_all(
+        [
+            AttendanceWjxDataEntry(
+                activity_id="264266843",
+                seq=810,
+                submitted_at_text="2026/5/12 12:55:00",
+                course_name="20260509梵呗初阶",
+                student_id_text="6组-33号",
+                student_name="范鹏",
+                correction_request="日志打卡已经3次了",
+                process_status="已处理",
+                synced_at=1715490000.0,
+                created_at=1715490000.0,
+                updated_at=1715490000.0,
+            ),
+            AttendanceWjxDataEntry(
+                activity_id="264266843",
+                seq=808,
+                submitted_at_text="2026/5/11 09:28:00",
+                course_name="20260509梵呗初阶",
+                student_id_text="6组-33号",
+                student_name="范鹏",
+                correction_request="日志打卡每次都按时完成了",
+                process_status="已处理",
+                synced_at=1715400000.0,
+                created_at=1715400000.0,
+                updated_at=1715400000.0,
+            ),
+            AttendanceWjxDataEntry(
+                activity_id="264266843",
+                seq=807,
+                submitted_at_text="2026/5/10 08:00:00",
+                course_name="20260509梵呗初阶",
+                student_id_text="6组-34号",
+                student_name="范鹏",
+                correction_request="姓名相同但学号不同也应该能作为疑似历史显示",
+                process_status="",
+                synced_at=1715310000.0,
+                created_at=1715310000.0,
+                updated_at=1715310000.0,
+            ),
+            AttendanceWjxDataEntry(
+                activity_id="264266843",
+                seq=806,
+                submitted_at_text="2026/5/09 08:00:00",
+                course_name="20260510其他课程",
+                student_id_text="6组-33号",
+                student_name="范鹏",
+                correction_request="不同课程不显示",
+                process_status="",
+                synced_at=1715220000.0,
+                created_at=1715220000.0,
+                updated_at=1715220000.0,
+            ),
+        ]
+    )
+    session.commit()
+
+    response = client.get(
+        "/api/attendance/wjx-feedback/history",
+        params={
+            "course_name": "20260509梵呗初阶",
+            "student_id_text": "6 组 - 33 号",
+            "student_name": "范鹏",
+            "limit": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 3
+    assert [item["seq"] for item in payload["items"]] == [810, 808]
+    assert payload["items"][0]["correction_request"] == "日志打卡已经3次了"
 
 
 def test_attendance_wjx_data_public_listing_returns_full_rows(client: TestClient, session):

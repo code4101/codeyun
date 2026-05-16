@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from backend.core import fanxiu_processes
+from backend.core import local_script_processes
 
 
 def test_match_fanxiu_process_fields_recognizes_codex_continue_loader():
@@ -59,6 +60,35 @@ def test_match_fanxiu_process_fields_does_not_match_codeyun_dev_server():
     )
 
     assert reason is None
+
+
+def test_match_fanxiu_process_fields_recognizes_xlproject_stdin_python():
+    reason = fanxiu_processes.match_fanxiu_process_fields(
+        name="python.exe",
+        command_line=r"C:\home\chenkunze\slns\xlproject\.venv\Scripts\python.exe -",
+        cwd=r"C:\home\chenkunze\slns\xlproject",
+    )
+
+    assert reason == "cmd+cwd:xlproject-python-stdin"
+
+
+def test_match_fanxiu_process_fields_does_not_match_codeyun_stdin_python():
+    reason = fanxiu_processes.match_fanxiu_process_fields(
+        name="python.exe",
+        command_line=r"C:\home\chenkunze\slns\codeyun\.venv\Scripts\python.exe -",
+        cwd=r"C:\home\chenkunze\slns\codeyun",
+    )
+
+    assert reason is None
+
+
+def test_local_script_processes_infers_python_stdin():
+    inferred = local_script_processes._infer_script(
+        [r"C:\home\chenkunze\slns\xlproject\.venv\Scripts\python.exe", "-"],
+        r"C:\home\chenkunze\slns\xlproject",
+    )
+
+    assert inferred == ("python-stdin", "python -", None)
 
 
 class FakeProcess:

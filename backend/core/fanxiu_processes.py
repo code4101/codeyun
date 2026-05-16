@@ -38,6 +38,13 @@ _FANXIU_ENV_VALUE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("env:fanxiu-data-dir", re.compile(r"m2508凡修", re.IGNORECASE)),
 )
 
+_XLPROJECT_ROOT_PATTERN = re.compile(r"(?:^|/)xlproject/?$", re.IGNORECASE)
+_PYTHON_STDIN_COMMAND_PATTERN = re.compile(
+    r"(?:^|\s)(?:\"[^\"]*pythonw?\.exe\"|[^\s]*pythonw?(?:\.exe)?)\s+-$"
+    r"|(?:^|\s)(?:\"[^\"]*uv(?:\.exe)?\"|[^\s]*uv(?:\.exe)?)\s+run\s+python\s+-$",
+    re.IGNORECASE,
+)
+
 _SHELL_NAMES = {
     "cmd",
     "cmd.exe",
@@ -133,6 +140,15 @@ def _can_match_by_cwd_only(name: str) -> bool:
     return not normalized_name or normalized_name in _CWD_ONLY_RUNNER_NAMES
 
 
+def _looks_like_xlproject_stdin_python(name: str, command_line: str, cwd: str | None) -> bool:
+    normalized_name = Path(name or "").name.lower()
+    if normalized_name not in _CWD_ONLY_RUNNER_NAMES:
+        return False
+    if not _XLPROJECT_ROOT_PATTERN.search(_normalize_search_text(cwd)):
+        return False
+    return bool(_PYTHON_STDIN_COMMAND_PATTERN.search(_normalize_search_text(command_line).strip()))
+
+
 def match_fanxiu_process_fields(
     *,
     name: str = "",
@@ -147,6 +163,8 @@ def match_fanxiu_process_fields(
     if _looks_like_diagnostic_shell(name, command_line) and not (cwd_reason or env_reason):
         return None
 
+    if _looks_like_xlproject_stdin_python(name, command_line, cwd):
+        return "cmd+cwd:xlproject-python-stdin"
     if env_reason:
         return env_reason
     if command_reason:

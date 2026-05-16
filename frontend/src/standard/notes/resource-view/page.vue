@@ -9,15 +9,38 @@ import {
   fetchNoteSheet,
   fetchWorkbook,
   removeSheetFromWorkbook,
+  reorderWorkbookSheets,
   updateNoteSheet,
+  type NoteSheetResourceAccess,
   type WorkbookDetail,
   type WorkbookRefItem,
 } from '@/api/noteSheets'
+import { useSortableList } from '@/utils/useSortableList'
+import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
 import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
-const SHEET_TAB_CONTEXT_MENU_HEIGHT = 280
+const SHEET_TAB_CONTEXT_MENU_HEIGHT = 320
+
+type SheetTabContextMenuCommand =
+  | 'create'
+  | 'rename'
+  | 'duplicate'
+  | 'configure'
+  | 'access'
+  | 'share'
+  | 'remove'
+  | 'delete'
+
+type SheetTabContextMenuItem = {
+  command: SheetTabContextMenuCommand
+  label: string
+  danger?: boolean
+  divided?: boolean
+}
+
+type SheetWorkspaceRouteView = 'lookup' | 'sheet'
 
 const route = useRoute()
 const router = useRouter()
@@ -25,21 +48,27 @@ const router = useRouter()
 const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
 const activeSheetId = ref<number | null>(null)
+const sheetTabsRef = ref<HTMLElement | null>(null)
 const sheetWorkspaceRef = ref<InstanceType<typeof NoteSheetWorkspace> | null>(null)
 const standaloneSheetTitle = ref('')
 const standaloneWorkbookTitle = ref('')
 const errorText = ref('')
+const sheetTabReorderSaving = ref(false)
+let sheetTabClickSuppressedUntil = 0
 const sheetTabContextMenu = ref({
   visible: false,
   sheetId: null as number | null,
   left: 0,
   top: 0,
 })
+const sheetAccessDialogVisible = ref(false)
+const sheetAccessDialogSheet = ref<WorkbookDetail['sheets'][number] | null>(null)
 
 const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
 const workbookId = computed(() => normalizePositiveInt(route.params.workbookId))
 const sheetId = computed(() => normalizePositiveInt(route.params.sheetId))
 const querySheetId = computed(() => normalizePositiveInt(route.query.sheet))
+const routeWorkspaceView = computed(() => normalizeWorkspaceViewQuery(route.query.view ?? route.query.mode ?? route.query.sheetView))
 const activeSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? null
 ))
@@ -52,12 +81,51 @@ const canEditWorkbookSheets = computed(() => (
 const canManageWorkbookSheets = computed(() => (
   workbook.value?.access?.capabilities.can_manage_access !== false
 ))
+const canReorderWorkbookSheets = computed(() => (
+  canEditWorkbookSheets.value && (workbook.value?.sheets.length ?? 0) > 1
+))
 const canEditSheetTabContextMenuSheet = computed(() => (
   sheetTabContextMenuSheet.value?.access?.capabilities.can_edit_config !== false
 ))
 const canManageSheetTabContextMenuSheet = computed(() => (
   sheetTabContextMenuSheet.value?.access?.capabilities.can_manage_access !== false
 ))
+const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
+  const sheet = sheetTabContextMenuSheet.value
+  const sheetCount = workbook.value?.sheets.length ?? 0
+  const items: Array<SheetTabContextMenuItem & { enabled: boolean }> = [
+    { command: 'create', label: '新建工作表', enabled: canEditWorkbookSheets.value },
+    { command: 'rename', label: '重命名', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
+    {
+      command: 'duplicate',
+      label: '复制工作表',
+      enabled: !!sheet && canEditWorkbookSheets.value && canEditSheetTabContextMenuSheet.value,
+    },
+    { command: 'configure', label: '配置', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
+    { command: 'access', label: '共享权限', enabled: !!sheet && canManageSheetTabContextMenuSheet.value },
+    { command: 'share', label: '分享链接', enabled: !!sheet },
+    {
+      command: 'remove',
+      label: '移出工作簿',
+      divided: true,
+      enabled: !!sheet && canManageWorkbookSheets.value && canManageSheetTabContextMenuSheet.value && sheetCount > 1,
+    },
+    {
+      command: 'delete',
+      label: '删除工作表',
+      danger: true,
+      enabled: !!sheet && canManageSheetTabContextMenuSheet.value,
+    },
+  ]
+  return items
+    .filter((item) => item.enabled)
+    .map((item) => ({
+      command: item.command,
+      label: item.label,
+      danger: item.danger,
+      divided: item.divided,
+    }))
+})
 const pageDocumentTitle = computed(() => {
   if (isWorkbookMode.value) {
     const workbookTitle = String(workbook.value?.title || '').trim()
@@ -78,6 +146,18 @@ function normalizePositiveInt(value: unknown): number | null {
   const raw = Array.isArray(value) ? value[0] : value
   const numeric = Number(raw)
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null
+}
+
+function normalizeWorkspaceViewQuery(value: unknown): SheetWorkspaceRouteView | null {
+  const raw = Array.isArray(value) ? value[0] : value
+  const text = String(raw ?? '').trim().toLowerCase()
+  if (['lookup', 'quick', 'search', '速查'].includes(text)) {
+    return 'lookup'
+  }
+  if (['sheet', 'table', 'grid', '表格'].includes(text)) {
+    return 'sheet'
+  }
+  return null
 }
 
 function resolveSheetId() {
@@ -137,6 +217,70 @@ function selectSheet(nextSheetId: number) {
     query: { ...route.query, sheet: String(nextSheetId) },
   })
 }
+
+function handleSheetTabClick(nextSheetId: number) {
+  if (Date.now() < sheetTabClickSuppressedUntil) {
+    return
+  }
+  selectSheet(nextSheetId)
+}
+
+async function handleSheetTabReorder(oldIndex: number, newIndex: number) {
+  const currentWorkbook = workbook.value
+  if (!currentWorkbook || !canReorderWorkbookSheets.value || sheetTabReorderSaving.value) {
+    return
+  }
+  if (
+    oldIndex < 0
+    || newIndex < 0
+    || oldIndex >= currentWorkbook.sheets.length
+    || newIndex >= currentWorkbook.sheets.length
+  ) {
+    return
+  }
+
+  sheetTabClickSuppressedUntil = Date.now() + 250
+  closeSheetTabContextMenu()
+  const previousSheets = [...currentWorkbook.sheets]
+  const nextSheets = [...currentWorkbook.sheets]
+  const [movedSheet] = nextSheets.splice(oldIndex, 1)
+  if (!movedSheet) {
+    return
+  }
+  nextSheets.splice(newIndex, 0, movedSheet)
+  workbook.value = { ...currentWorkbook, sheets: nextSheets }
+
+  sheetTabReorderSaving.value = true
+  try {
+    const detail = await reorderWorkbookSheets(currentWorkbook.id, {
+      sheet_ids: nextSheets.map((sheet) => sheet.id),
+    })
+    workbook.value = detail
+    const validIds = new Set(detail.sheets.map((sheet) => sheet.id))
+    if (activeSheetId.value != null && !validIds.has(activeSheetId.value)) {
+      activeSheetId.value = resolveSheetId()
+    }
+  } catch (error) {
+    console.warn('Failed to reorder workbook sheets:', error)
+    workbook.value = { ...currentWorkbook, sheets: previousSheets }
+    ElMessage.error('保存工作表顺序失败')
+  } finally {
+    sheetTabReorderSaving.value = false
+  }
+}
+
+useSortableList({
+  listRef: sheetTabsRef,
+  getDeps: () => [
+    workbook.value?.id ?? null,
+    canReorderWorkbookSheets.value,
+    ...((workbook.value?.sheets ?? []).map((sheet) => sheet.id)),
+  ],
+  isEnabled: () => canReorderWorkbookSheets.value,
+  handle: '.resource-sheet-tab',
+  ghostClass: 'resource-sheet-tab-sortable-ghost',
+  onReorder: handleSheetTabReorder,
+})
 
 async function refreshWorkbookAfterSheetMutation(preferredSheetId?: number | null) {
   if (!workbookId.value) {
@@ -226,6 +370,62 @@ function openSheetShareLinkFromTabContextMenu() {
     return
   }
   void router.push(`/sheet/${sheet.id}`)
+}
+
+function openSheetAccessFromTabContextMenu() {
+  const sheet = sheetTabContextMenuSheet.value
+  closeSheetTabContextMenu()
+  if (!sheet || !canManageSheetTabContextMenuSheet.value) {
+    ElMessage.warning('没有权限管理该工作表')
+    return
+  }
+  sheetAccessDialogSheet.value = sheet
+  sheetAccessDialogVisible.value = true
+}
+
+function handleSheetAccessSaved(access: NoteSheetResourceAccess) {
+  const currentWorkbook = workbook.value
+  const sheet = sheetAccessDialogSheet.value
+  if (!currentWorkbook || !sheet) {
+    return
+  }
+  workbook.value = {
+    ...currentWorkbook,
+    sheets: currentWorkbook.sheets.map((item) => (
+      item.id === sheet.id
+        ? { ...item, access }
+        : item
+    )),
+  }
+}
+
+function handleSheetTabContextMenuCommand(command: SheetTabContextMenuCommand) {
+  switch (command) {
+    case 'create':
+      void createSheetFromTabContextMenu()
+      break
+    case 'rename':
+      void renameSheetFromTabContextMenu()
+      break
+    case 'duplicate':
+      void duplicateSheetFromTabContextMenu()
+      break
+    case 'configure':
+      void configureSheetFromTabContextMenu()
+      break
+    case 'access':
+      openSheetAccessFromTabContextMenu()
+      break
+    case 'share':
+      openSheetShareLinkFromTabContextMenu()
+      break
+    case 'remove':
+      void removeSheetFromTabContextMenu()
+      break
+    case 'delete':
+      void deleteSheetFromTabContextMenu()
+      break
+  }
 }
 
 async function createSheetFromTabContextMenu() {
@@ -462,17 +662,24 @@ onBeforeUnmount(() => {
     <template v-if="isWorkbookMode">
       <div v-if="workbook" class="resource-tabs-bar">
         <div class="resource-workbook-title" :title="workbook.title">{{ workbook.title }}</div>
-        <button
-          v-for="sheet in workbook.sheets"
-          :key="sheet.id"
-          type="button"
-          class="resource-sheet-tab"
-          :class="{ active: sheet.id === activeSheetId }"
-          @click="selectSheet(sheet.id)"
-          @contextmenu.capture="(event) => openSheetTabContextMenu(event, sheet)"
+        <div
+          ref="sheetTabsRef"
+          class="resource-sheet-tabs"
+          :class="{ 'is-sortable': canReorderWorkbookSheets }"
         >
-          {{ sheet.title }}
-        </button>
+          <button
+            v-for="sheet in workbook.sheets"
+            :key="sheet.id"
+            type="button"
+            class="resource-sheet-tab"
+            :class="{ active: sheet.id === activeSheetId }"
+            :title="canReorderWorkbookSheets ? `${sheet.title}（拖拽调整顺序）` : sheet.title"
+            @click="handleSheetTabClick(sheet.id)"
+            @contextmenu.capture="(event) => openSheetTabContextMenu(event, sheet)"
+          >
+            {{ sheet.title }}
+          </button>
+        </div>
       </div>
       <div
         v-if="sheetTabContextMenu.visible"
@@ -481,64 +688,26 @@ onBeforeUnmount(() => {
         @contextmenu.prevent.stop
         @mousedown.stop
       >
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!canEditWorkbookSheets"
-          @click="createSheetFromTabContextMenu"
-        >
-          新建工作表
-        </button>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!canEditSheetTabContextMenuSheet"
-          @click="renameSheetFromTabContextMenu"
-        >
-          重命名
-        </button>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!canEditWorkbookSheets || !canEditSheetTabContextMenuSheet"
-          @click="duplicateSheetFromTabContextMenu"
-        >
-          复制工作表
-        </button>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!canEditSheetTabContextMenuSheet"
-          @click="configureSheetFromTabContextMenu"
-        >
-          配置
-        </button>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!sheetTabContextMenuSheet"
-          @click="openSheetShareLinkFromTabContextMenu"
-        >
-          分享链接
-        </button>
-        <div class="sheet-tab-context-menu-separator"></div>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item"
-          :disabled="!canManageWorkbookSheets || !canManageSheetTabContextMenuSheet || (workbook?.sheets.length ?? 0) <= 1"
-          @click="removeSheetFromTabContextMenu"
-        >
-          移出工作簿
-        </button>
-        <button
-          type="button"
-          class="sheet-tab-context-menu-item danger"
-          :disabled="!canManageSheetTabContextMenuSheet"
-          @click="deleteSheetFromTabContextMenu"
-        >
-          删除工作表
-        </button>
+        <template v-for="item in sheetTabContextMenuItems" :key="item.command">
+          <div v-if="item.divided" class="sheet-tab-context-menu-separator"></div>
+          <button
+            type="button"
+            class="sheet-tab-context-menu-item"
+            :class="{ danger: item.danger }"
+            @click="handleSheetTabContextMenuCommand(item.command)"
+          >
+            {{ item.label }}
+          </button>
+        </template>
       </div>
+
+      <NoteSheetAccessDialog
+        v-model="sheetAccessDialogVisible"
+        resource-type="sheet"
+        :resource-id="sheetAccessDialogSheet?.id ?? null"
+        :title="sheetAccessDialogSheet?.title ?? ''"
+        @saved="handleSheetAccessSaved"
+      />
 
       <NoteSheetWorkspace
         v-if="activeSheetId"
@@ -547,6 +716,7 @@ onBeforeUnmount(() => {
         :key="`${workbookId}:${activeSheetId}`"
         :workbook-id="workbookId"
         :sheet-id="activeSheetId"
+        :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
         :show-title-input="false"
@@ -563,6 +733,7 @@ onBeforeUnmount(() => {
         class="resource-sheet-workspace"
         :key="`sheet:${sheetId}`"
         :sheet-id="sheetId"
+        :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         :show-title-input="false"
         empty-text="工作表不存在或不可访问"
@@ -612,6 +783,13 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
+.resource-sheet-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+}
+
 .resource-sheet-tab {
   flex: 0 0 auto;
   border: 1px solid #ebe2d4;
@@ -626,6 +804,14 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
+.resource-sheet-tabs.is-sortable .resource-sheet-tab {
+  cursor: grab;
+}
+
+.resource-sheet-tabs.is-sortable .resource-sheet-tab:active {
+  cursor: grabbing;
+}
+
 .resource-sheet-tab:hover {
   background: #f1e7d9;
   color: #5c4932;
@@ -635,6 +821,11 @@ onBeforeUnmount(() => {
   background: #fff;
   color: #2f2414;
   box-shadow: inset 0 3px 0 #5b8def;
+}
+
+.resource-sheet-tab-sortable-ghost {
+  opacity: 0.64;
+  background: #eff6ff;
 }
 
 .sheet-tab-context-menu {

@@ -142,6 +142,7 @@ def test_run_paddle_ocr_preview_accepts_json_string_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    ocr_preview.ocr_service_manager.reset()
     image_path = tmp_path / "ocr-source.png"
     Image.new("RGB", (40, 20), color=(255, 255, 255)).save(image_path)
 
@@ -176,6 +177,7 @@ def test_run_paddle_ocr_preview_accepts_json_string_payload(
         "text": "OCR",
         "score": 0.8,
     }
+    ocr_preview.ocr_service_manager.reset()
 
 
 def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows_cpu(

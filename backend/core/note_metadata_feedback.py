@@ -711,12 +711,12 @@ def init_note_metadata_feedback_scheduler() -> None:
         metadata_feedback_scheduler.start()
     metadata_feedback_scheduler.add_job(
         maybe_enqueue_note_metadata_feedback_optimization,
-        CronTrigger.from_crontab("*/30 0-5 * * *"),
+        CronTrigger.from_crontab("5 0 * * *"),
         id="note_metadata_feedback_optimization",
         replace_existing=True,
         max_instances=1,
     )
-    print("Note metadata feedback optimization scheduled: */30 0-5 * * *")
+    print("Note metadata feedback optimization scheduled: 5 0 * * *")
 
 
 def shutdown_note_metadata_feedback_scheduler() -> None:

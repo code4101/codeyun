@@ -1,5 +1,8 @@
 <template>
-  <div class="shared-note-editor" :class="`is-${effectiveEditorLayout}`">
+  <div
+    class="shared-note-editor"
+    :class="[`is-${effectiveEditorLayout}`, { 'is-readonly-presentation': readonlyPresentationActive }]"
+  >
     <div v-if="props.loading" class="state-line">
       <el-icon class="is-loading"><Loading /></el-icon> 加载内容中...
     </div>
@@ -10,16 +13,18 @@
       <div class="editor-header">
         <div class="header-row primary-row">
           <el-input
+            v-if="!readonlyPresentationActive"
             v-model="currentNote.title"
             placeholder="节点标题"
             class="title-input"
             :readonly="titleReadonly"
             @input="queueMetaAutoSave()"
           />
+          <h1 v-else class="readonly-title">{{ currentNote.title || '未命名文档' }}</h1>
           <slot name="actions" :note="currentNote" :readonly="effectiveReadonly" />
         </div>
 
-        <div class="header-row secondary-row">
+        <div v-if="!readonlyPresentationActive" class="header-row secondary-row">
           <div class="meta-group">
             <span class="time-tag">
               <el-icon><Calendar /></el-icon> 起始:
@@ -56,7 +61,7 @@
           </div>
         </div>
 
-        <div class="header-row tertiary-row">
+        <div v-if="!readonlyPresentationActive" class="header-row tertiary-row">
           <div class="inline-control weight-control">
             <span class="label">权重:</span>
             <el-input-number
@@ -141,22 +146,38 @@
             />
           </div>
 
-          <div class="history-toggle">
-            <el-button size="small" :type="historyButtonType" :icon="List" @click="showHistory = !showHistory">
-              操作日志
-            </el-button>
-          </div>
         </div>
 
-        <div class="custom-fields-row">
+        <div v-if="!readonlyPresentationActive" class="custom-fields-row" :class="{ 'is-collapsed': customFieldsCollapsed }">
           <div class="custom-fields-label">
-            <span class="label">自定义属性:</span>
-            <el-button link type="primary" size="small" :disabled="effectiveReadonly" @click="addCustomField">
-              <el-icon><Plus /></el-icon>
-            </el-button>
+            <div class="custom-fields-main">
+              <button
+                type="button"
+                class="custom-fields-toggle"
+                :aria-expanded="String(!customFieldsCollapsed)"
+                @click="toggleCustomFieldsCollapsed"
+              >
+                <el-icon class="custom-fields-toggle-icon">
+                  <ArrowRight v-if="customFieldsCollapsed" />
+                  <ArrowDown v-else />
+                </el-icon>
+                <span class="label">自定义属性</span>
+                <span class="custom-fields-count" :class="{ 'is-empty': customFieldsTotalCount === 0 }">
+                  {{ customFieldsSummary }}
+                </span>
+              </button>
+              <el-button link type="primary" size="small" :disabled="effectiveReadonly" @click="addCustomField">
+                <el-icon><Plus /></el-icon>
+              </el-button>
+            </div>
+            <div class="history-toggle">
+              <el-button size="small" :type="historyButtonType" :icon="List" @click="showHistory = !showHistory">
+                操作日志
+              </el-button>
+            </div>
           </div>
 
-          <div class="custom-fields-container" :style="customFieldColumnStyle">
+          <div v-show="!customFieldsCollapsed" class="custom-fields-container" :style="customFieldColumnStyle">
             <div ref="ownCustomFieldsListRef" class="custom-fields-list">
               <div
                 v-for="(item, index) in customFieldsList"
@@ -319,7 +340,7 @@
           </div>
         </div>
 
-        <div v-if="showHistory" class="history-panel">
+        <div v-if="!readonlyPresentationActive && showHistory" class="history-panel">
           <div v-if="!currentNote.history || currentNote.history.length === 0" class="state-line">暂无操作记录</div>
           <div v-else class="history-list">
             <div v-for="(entry, index) in sortedHistory" :key="index" class="history-item">
@@ -333,12 +354,25 @@
         </div>
       </div>
 
+      <div
+        v-if="showSourceHtmlEditor"
+        ref="sourceHtmlEditorRef"
+        class="source-html-preview"
+        :class="`is-${effectiveEditorLayout}`"
+        :contenteditable="!effectiveReadonly"
+        :aria-readonly="String(effectiveReadonly)"
+        @click="handleSourceHtmlClick"
+        @input="handleSourceHtmlInput"
+        @blur="handleSourceHtmlBlur"
+      ></div>
       <NoteEditor
+        v-else
         :key="currentNote.id || 'new'"
         v-model="currentNote.content"
         :layout="effectiveEditorLayout"
         :readOnly="effectiveReadonly"
-        show-wrap-toggle
+        :show-toolbar="!readonlyPresentationActive"
+        :show-wrap-toggle="!readonlyPresentationActive"
         @change="handleContentChange"
       />
     </div>
@@ -348,8 +382,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onUnmounted, ref, watch } from 'vue';
-import { Calendar, Check, Clock, Close, List, Loading, Plus } from '@element-plus/icons-vue';
+import { computed, defineAsyncComponent, onMounted, onUnmounted, ref, watch } from 'vue';
+import { ArrowDown, ArrowRight, Calendar, Check, Clock, Close, List, Loading, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import type { NoteNode } from '@/api/notes';
 import NodeHelpDialog from './NodeHelpDialog.vue';
@@ -407,6 +441,7 @@ const props = defineProps<{
   lockTitle?: boolean;
   lockNodeType?: boolean;
   lockNoteForm?: boolean;
+  readonlyPresentation?: boolean;
   editorLayout?: 'fill' | 'flow';
   onSave?: (note: NoteNode, patch?: EditableNotePatch) => Promise<NoteNode | void>;
   onSaveKeepalive?: (note: NoteNode, patch?: EditableNotePatch) => void;
@@ -430,6 +465,8 @@ const EMPTY_RICH_TEXT_HTML_VALUES = new Set(['', '<p><br></p>', '<p></p>']);
 const CUSTOM_FIELD_KEY_WIDTH_MIN = 96;
 const CUSTOM_FIELD_KEY_WIDTH_MAX = 360;
 const CUSTOM_FIELD_KEY_WIDTH_PADDING = 32;
+const CUSTOM_FIELDS_COLLAPSED_KEY = 'codeyun.note-editor.custom-fields-collapsed.v1';
+const CUSTOM_FIELDS_COLLAPSED_EVENT = 'codeyun:note-editor-custom-fields-collapsed';
 const smartTimeInputStyle = { width: '100px', marginLeft: '5px' } as const;
 
 const currentNote = ref<NoteNode | undefined>();
@@ -442,14 +479,27 @@ const titleReadonly = computed(() => effectiveReadonly.value || Boolean(props.lo
 const nodeTypeReadonly = computed(() => effectiveReadonly.value || Boolean(props.lockNodeType));
 const formReadonly = computed(() => effectiveReadonly.value || Boolean(props.lockNoteForm));
 const resolvedShowPrivateToggle = computed(() => Boolean(props.showPrivateToggle));
+const readonlyPresentationActive = computed(() => Boolean(props.readonlyPresentation) && effectiveReadonly.value);
 const isReady = computed(() => !!currentNote.value && currentNote.value.content !== undefined);
 const currentPrimaryType = computed(() => derivePrimaryNodeType(currentNote.value?.note_categories, currentNote.value?.primary_category ?? NOTE_CATEGORY_DEFAULT));
 const showCompletionProgressControl = computed(() => getNodeStatusConfig(currentNote.value?.lifecycle_stage ?? NOTE_LIFECYCLE_STAGE_DEFAULT).id === 'done');
+const isOneNoteImportedNote = computed(() => {
+  const source = String(getStoredCustomFieldValue(currentNote.value?.custom_fields, 'source') ?? '');
+  const sourceKind = String(getStoredCustomFieldValue(currentNote.value?.custom_fields, 'source_kind') ?? '');
+  return source.startsWith('onenote') || sourceKind === 'onenote_page';
+});
+const showSourceHtmlEditor = computed(() => (
+  isOneNoteImportedNote.value
+  && !readonlyPresentationActive.value
+  && Boolean(currentNote.value?.content)
+));
 
 const customFieldsList = ref<NoteCustomFieldItem[]>([]);
 const ownCustomFieldsListRef = ref<HTMLElement | null>(null);
+const sourceHtmlEditorRef = ref<HTMLElement | null>(null);
 const customFieldKeyWidthMode = ref<'auto' | 'manual'>('auto');
 const customFieldKeyWidth = ref(120);
+const customFieldsCollapsed = ref(readCustomFieldsCollapsed());
 const inheritedDirectFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedAncestorFields = ref<Record<string, InheritedFieldItem>>({});
 const inheritedFieldSource = ref<NoteNode['inherited_fields'] | null>(null);
@@ -467,6 +517,36 @@ const removeLocalDraftByKey = (draftKey: string | null) => {
     window.localStorage.removeItem(draftKey);
   } catch {
     // Ignore storage access errors. The in-memory autosave state is still reset below when active.
+  }
+};
+
+function readCustomFieldsCollapsed() {
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return false;
+  return window.localStorage.getItem(CUSTOM_FIELDS_COLLAPSED_KEY) === '1';
+}
+
+const setCustomFieldsCollapsed = (collapsed: boolean, options: { broadcast?: boolean } = {}) => {
+  customFieldsCollapsed.value = collapsed;
+  if (typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
+  window.localStorage.setItem(CUSTOM_FIELDS_COLLAPSED_KEY, collapsed ? '1' : '0');
+  if (options.broadcast !== false) {
+    window.dispatchEvent(new CustomEvent(CUSTOM_FIELDS_COLLAPSED_EVENT, { detail: { collapsed } }));
+  }
+};
+
+const toggleCustomFieldsCollapsed = () => {
+  setCustomFieldsCollapsed(!customFieldsCollapsed.value);
+};
+
+const handleCustomFieldsCollapsedStorage = (event: StorageEvent) => {
+  if (event.key !== CUSTOM_FIELDS_COLLAPSED_KEY || event.newValue == null) return;
+  customFieldsCollapsed.value = event.newValue === '1';
+};
+
+const handleCustomFieldsCollapsedEvent = (event: Event) => {
+  const collapsed = (event as CustomEvent<{ collapsed?: unknown }>).detail?.collapsed;
+  if (typeof collapsed === 'boolean') {
+    customFieldsCollapsed.value = collapsed;
   }
 };
 
@@ -500,6 +580,17 @@ const resolvedCustomFieldKeyWidth = computed(() => (
 const customFieldColumnStyle = computed(() => ({
   '--custom-field-key-width': `${resolvedCustomFieldKeyWidth.value}px`
 }));
+const inheritedCustomFieldCount = computed(() => (
+  Object.keys(inheritedDirectFields.value).length + Object.keys(inheritedAncestorFields.value).length
+));
+const customFieldsTotalCount = computed(() => customFieldsList.value.length + inheritedCustomFieldCount.value);
+const customFieldsSummary = computed(() => {
+  if (customFieldsTotalCount.value === 0) return '暂无';
+  if (inheritedCustomFieldCount.value > 0) {
+    return `${customFieldsTotalCount.value} 项，含继承 ${inheritedCustomFieldCount.value}`;
+  }
+  return `${customFieldsTotalCount.value} 项`;
+});
 
 const clampCustomFieldKeyWidth = (value: number) => Math.max(
   CUSTOM_FIELD_KEY_WIDTH_MIN,
@@ -521,6 +612,92 @@ const measureCustomFieldKeyTextWidth = (text: string) => {
   if (!context) return text.length * 9;
   context.font = getCustomFieldKeyMeasureFont();
   return context.measureText(text).width;
+};
+
+const getStoredCustomFieldValue = (fields: unknown, key: string): unknown => {
+  if (!Array.isArray(fields)) return undefined;
+  for (const item of fields) {
+    if (Array.isArray(item) && item[0] === key) return item[2];
+    if (item && typeof item === 'object') {
+      const record = item as Record<string, unknown>;
+      if ((record.key === key || record.name === key) && 'value' in record) return record.value;
+    }
+  }
+  return undefined;
+};
+
+const sanitizeSourcePreviewHtml = (html: string) => {
+  const source = String(html || '');
+  if (!source || typeof DOMParser === 'undefined') return source;
+
+  try {
+    const doc = new DOMParser().parseFromString(source, 'text/html');
+    doc.body.querySelectorAll('script, iframe, object, embed, link, meta, title').forEach(element => element.remove());
+    doc.body.querySelectorAll<HTMLElement>('*').forEach(element => {
+      Array.from(element.attributes).forEach(attribute => {
+        const name = attribute.name.toLowerCase();
+        const value = attribute.value.trim().toLowerCase();
+        if (name.startsWith('on')) {
+          element.removeAttribute(attribute.name);
+          return;
+        }
+        if ((name === 'href' || name === 'src') && value.startsWith('javascript:')) {
+          element.removeAttribute(attribute.name);
+        }
+      });
+    });
+    return doc.body.innerHTML;
+  } catch {
+    return source;
+  }
+};
+
+const syncSourceHtmlEditor = () => {
+  const element = sourceHtmlEditorRef.value;
+  if (!element || !showSourceHtmlEditor.value) return;
+  if (typeof document !== 'undefined' && document.activeElement === element) return;
+  const nextHtml = sanitizeSourcePreviewHtml(currentNote.value?.content || '');
+  if (element.innerHTML !== nextHtml) element.innerHTML = nextHtml;
+};
+
+const handleSourceHtmlInput = () => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  const element = sourceHtmlEditorRef.value;
+  if (!element) return;
+  currentNote.value.content = element.innerHTML;
+  queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+};
+
+const handleSourceHtmlClick = (event: MouseEvent) => {
+  const targetNode = event.target instanceof Node ? event.target : null;
+  const target = targetNode instanceof Element ? targetNode : targetNode?.parentElement ?? null;
+  const link = target?.closest('a[href]') as HTMLAnchorElement | null;
+  const root = sourceHtmlEditorRef.value;
+  if (!link || !root?.contains(link)) return;
+
+  const rawHref = link.getAttribute('href')?.trim() || '';
+  if (!rawHref || rawHref.toLowerCase().startsWith('javascript:')) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  const opened = window.open(link.href, '_blank');
+  if (opened) {
+    opened.opener = null;
+  } else {
+    window.location.assign(link.href);
+  }
+};
+
+const handleSourceHtmlBlur = () => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  const element = sourceHtmlEditorRef.value;
+  if (!element) return;
+  const sanitizedHtml = sanitizeSourcePreviewHtml(element.innerHTML);
+  if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
+  if (currentNote.value.content !== sanitizedHtml) {
+    currentNote.value.content = sanitizedHtml;
+    queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
+  }
 };
 
 const startDateProxy = computed<Date | undefined>({
@@ -809,6 +986,14 @@ watch(() => props.modelValue, async newVal => {
   showHistory.value = false;
 }, { immediate: true });
 
+watch(
+  () => [showSourceHtmlEditor.value, currentNote.value?.id, currentNote.value?.content] as const,
+  () => {
+    window.setTimeout(syncSourceHtmlEditor, 0);
+  },
+  { immediate: true }
+);
+
 watch(() => currentNote.value?.start_at, value => {
   if (!value) {
     timeInputString.value = '';
@@ -818,8 +1003,16 @@ watch(() => currentNote.value?.start_at, value => {
   timeInputString.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
 }, { immediate: true });
 
+onMounted(() => {
+  customFieldsCollapsed.value = readCustomFieldsCollapsed();
+  window.addEventListener('storage', handleCustomFieldsCollapsedStorage);
+  window.addEventListener(CUSTOM_FIELDS_COLLAPSED_EVENT, handleCustomFieldsCollapsedEvent);
+});
+
 onUnmounted(() => {
   stopCustomFieldKeyResize();
+  window.removeEventListener('storage', handleCustomFieldsCollapsedStorage);
+  window.removeEventListener(CUSTOM_FIELDS_COLLAPSED_EVENT, handleCustomFieldsCollapsedEvent);
 });
 
 const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) => {
@@ -949,6 +1142,7 @@ const handleCompletionProgressExprBlur = () => {
 
 const addCustomField = () => {
   if (effectiveReadonly.value) return;
+  setCustomFieldsCollapsed(false);
   customFieldsList.value.push(createNoteCustomFieldItem());
 };
 
@@ -1051,12 +1245,16 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .editor-header{display:flex;flex-direction:column;gap:12px;margin-bottom:20px;padding-bottom:15px;border-bottom:1px solid #f0f0f0}
 .header-row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .primary-row{gap:10px}.secondary-row{justify-content:space-between;font-size:12px;color:#909399}
-.title-input{flex:1;font-size:18px}
+.title-input{flex:1;font-size:18px}.readonly-title{flex:1;min-width:0;margin:0;color:#1f2933;font-size:22px;font-weight:700;line-height:1.4;word-break:break-word}
 .meta-group,.meta-actions-slot,.inline-control,.save-status,.time-tag{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .weight-control,.private-control{flex-wrap:nowrap}
 .weight-value-input{width:68px}.private-level-control{width:58px}.progress-control{flex-wrap:nowrap}.progress-expr-input{width:136px}.label,.custom-fields-label .label{font-size:12px;color:#606266;white-space:nowrap}
 .history-toggle{margin-left:auto}.start-date-picker{width:130px;margin-left:5px}
-.custom-fields-row{display:flex;flex-direction:column;gap:4px;margin-top:5px}.custom-fields-label{display:flex;align-items:center;gap:5px}
+.custom-fields-row{display:flex;flex-direction:column;gap:4px;margin-top:5px}.custom-fields-row.is-collapsed{gap:0}.custom-fields-label{display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:24px}
+.custom-fields-main{display:flex;align-items:center;gap:5px;min-width:0}
+.custom-fields-toggle{display:inline-flex;align-items:center;gap:4px;padding:0;border:0;background:transparent;color:#606266;cursor:pointer}
+.custom-fields-toggle:hover .label,.custom-fields-toggle:focus-visible .label{color:#409eff}.custom-fields-toggle:focus-visible{outline:1px solid #a0cfff;outline-offset:2px;border-radius:3px}
+.custom-fields-toggle-icon{font-size:12px;color:#909399}.custom-fields-count{color:#909399;font-size:12px;white-space:nowrap}.custom-fields-count.is-empty{color:#c0c4cc}
 .custom-fields-container{width:100%;display:flex;flex-direction:column;border:1px solid #f2f2f2;border-radius:4px;overflow:hidden}
 .custom-fields-list{display:flex;flex-direction:column}
 .custom-field-item{display:flex;align-items:center;gap:6px;padding:4px 8px;border-bottom:1px solid #f2f2f2}
@@ -1093,4 +1291,18 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .history-time{color:#909399;white-space:nowrap;font-family:monospace}.history-content{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.field-tag{min-width:40px;text-align:center}.history-value{color:#303133;word-break:break-all}
 .status-saved{color:#67c23a}.status-saving{color:#e6a23c}.status-unsaved,.status-readonly{color:#909399}
 .state-line,.state-block{display:flex;justify-content:center;align-items:center;color:#909399}.state-line{gap:8px;font-size:14px}.state-block{flex:1;min-height:0}
+.source-html-preview{box-sizing:border-box;width:100%;padding:12px;color:#1f2933;background:#fff;border:1px solid #dcdfe6;overflow:auto}
+.source-html-preview[contenteditable='true']{cursor:text}
+.source-html-preview[contenteditable='true']:focus{outline:1px solid #409eff;outline-offset:-1px}
+.source-html-preview.is-fill{flex:1;min-height:320px}
+.source-html-preview.is-flow{min-height:260px}
+.source-html-preview :deep(table){max-width:100%;border-collapse:collapse}
+.source-html-preview :deep(td),
+.source-html-preview :deep(th){border:1px solid #c8cdd3}
+.source-html-preview :deep(img){max-width:100%;height:auto}
+.source-html-preview :deep(a){color:#2f7edb;cursor:pointer}
+.shared-note-editor.is-readonly-presentation .editor-header{margin-bottom:8px;padding-bottom:0;border-bottom:none}
+.shared-note-editor.is-readonly-presentation :deep(.editor-container){border:0;cursor:default}
+.shared-note-editor.is-readonly-presentation :deep(.w-e-text-container){background:transparent !important}
+.shared-note-editor.is-readonly-presentation :deep(.w-e-text-container [data-slate-editor]){padding-top:8px}
 </style>

@@ -10,6 +10,8 @@ from backend.api.admin_feature_access import router as admin_feature_access_rout
 from backend.api.access import router as access_router
 from backend.api.auth import router as auth_router
 from backend.api.filesystem import router as filesystem_router
+from backend.api.services import control_router as service_control_router
+from backend.api.services import router as services_router
 from backend.api.task_manager import (
     start_task_manager_services,
     stop_task_manager_services,
@@ -19,6 +21,8 @@ from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
 from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
 from backend.core.codex_saver.mcp_server import codex_saver_mcp_lifespan
+from backend.core.ocr_preview import ocr_service_manager
+from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.weekly_note_scheduler import (
     init_ruanyf_weekly_note_scheduler,
     shutdown_ruanyf_weekly_note_scheduler,
@@ -30,10 +34,13 @@ from backend.core.storage import (
     LEGACY_UPLOADS_URL_PREFIX,
     get_attachments_dir,
     migrate_legacy_attachments,
+    migrate_legacy_source_data_dir,
 )
 from backend.core.wechat_ilink import shutdown_codex_bridges, start_enabled_codex_bridges
 from backend.db import init_db
+from backend.db import engine
 from backend.standard import register_standard_modules
+from sqlmodel import Session
 
 settings = get_settings()
 
@@ -41,6 +48,9 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     init_db()
     ensure_bootstrap_admin()
+    with Session(engine) as session:
+        ensure_legacy_service_tokens(session)
+    ocr_service_manager.start_idle_cleanup_thread()
     await start_task_manager_services()
     init_background_task_runner()
     init_ruanyf_weekly_note_scheduler()
@@ -48,6 +58,7 @@ async def lifespan(app: FastAPI):
         start_enabled_codex_bridges()
     async with codex_saver_mcp_lifespan():
         yield
+    ocr_service_manager.stop_idle_cleanup_thread()
     shutdown_codex_bridges()
     shutdown_ruanyf_weekly_note_scheduler()
     shutdown_background_task_runner()
@@ -81,6 +92,8 @@ app.add_middleware(CORSMiddleware, **cors_kwargs)
 # Include routers with global authentication
 app.include_router(auth_router, prefix="/api/auth", tags=["auth"]) # Public auth
 app.include_router(access_router, prefix="/api/access", tags=["access"])
+app.include_router(services_router, prefix="/api/services", tags=["services"])
+app.include_router(service_control_router, prefix="/api/service-control", tags=["service-control"])
 app.include_router(filesystem_router, prefix="/api/fs", tags=["filesystem"], dependencies=[Depends(verify_api_token)])
 app.include_router(upload_router, prefix="/api/upload", tags=["upload"])
 app.include_router(
@@ -92,6 +105,8 @@ register_standard_modules(app)
 register_plugin_modules(app)
 
 # Mount static files
+if not settings.is_test:
+    migrate_legacy_source_data_dir()
 migrate_legacy_attachments()
 attachments_dir = os.fspath(get_attachments_dir())
 app.mount(ATTACHMENTS_URL_PREFIX, StaticFiles(directory=attachments_dir), name="attachments")

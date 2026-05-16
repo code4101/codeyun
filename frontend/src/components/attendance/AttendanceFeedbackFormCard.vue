@@ -1,13 +1,16 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 
+import AttendanceFeedbackHistoryList from './AttendanceFeedbackHistoryList.vue'
 import {
+  fetchAttendanceFeedbackHistory,
   fetchAttendanceFeedbackFormMeta,
   submitAttendanceFeedback,
   type AttendanceFeedbackCourseOption,
   type AttendanceFeedbackFormMeta,
+  type AttendanceWjxDataItem,
 } from '@/api/attendance'
 
 type FeedbackFormMode = 'public'
@@ -49,6 +52,11 @@ const formMeta = ref<AttendanceFeedbackFormMeta | null>(null)
 const loadingFormMeta = ref(false)
 const readyToPersist = ref(false)
 const submitting = ref(false)
+const feedbackHistoryItems = ref<AttendanceWjxDataItem[]>([])
+const feedbackHistoryTotal = ref(0)
+const feedbackHistoryLoading = ref(false)
+let feedbackHistoryTimer: ReturnType<typeof window.setTimeout> | null = null
+let feedbackHistoryRequestId = 0
 const courseOptions = computed(() => {
   const structuredOptions = formMeta.value?.course_options
   if (structuredOptions?.length) {
@@ -66,6 +74,7 @@ const hasSubmittedCurrentDraft = computed(() => (
 const publicSheetLinks = computed(() => [
   { label: '问卷数据', url: formMeta.value?.data_sheet_url || '' },
 ].filter((item) => item.url))
+const feedbackHistoryReady = computed(() => canLoadFeedbackHistory())
 
 function normalizeStoredText(value: unknown) {
   return typeof value === 'string' ? value : ''
@@ -125,6 +134,84 @@ function buildFeedbackDraftKey() {
     correctionRequest: form.correctionRequest.trim(),
     extraNote: form.extraNote.trim(),
   } satisfies FeedbackDraft)
+}
+
+function resolveFeedbackHistoryCourse() {
+  return hasCourseOption(form.course) ? form.course : ''
+}
+
+function canLoadFeedbackHistory() {
+  return Boolean(
+    resolveFeedbackHistoryCourse()
+    && (form.studentId.trim() || form.studentName.trim()),
+  )
+}
+
+function clearFeedbackHistoryTimer() {
+  if (feedbackHistoryTimer === null) {
+    return
+  }
+  window.clearTimeout(feedbackHistoryTimer)
+  feedbackHistoryTimer = null
+}
+
+function resetFeedbackHistory() {
+  feedbackHistoryRequestId += 1
+  clearFeedbackHistoryTimer()
+  feedbackHistoryItems.value = []
+  feedbackHistoryTotal.value = 0
+  feedbackHistoryLoading.value = false
+}
+
+async function loadFeedbackHistory() {
+  clearFeedbackHistoryTimer()
+  const course = resolveFeedbackHistoryCourse()
+  const studentId = form.studentId.trim()
+  const studentName = form.studentName.trim()
+  if (!course || (!studentId && !studentName)) {
+    resetFeedbackHistory()
+    return
+  }
+
+  const requestId = feedbackHistoryRequestId + 1
+  feedbackHistoryRequestId = requestId
+  feedbackHistoryLoading.value = true
+  try {
+    const result = await fetchAttendanceFeedbackHistory({
+      course_name: course,
+      student_id_text: studentId,
+      student_name: studentName,
+      limit: 8,
+    })
+    if (requestId !== feedbackHistoryRequestId) {
+      return
+    }
+    feedbackHistoryItems.value = result.items || []
+    feedbackHistoryTotal.value = result.total || 0
+  } catch {
+    if (requestId !== feedbackHistoryRequestId) {
+      return
+    }
+    feedbackHistoryItems.value = []
+    feedbackHistoryTotal.value = 0
+  } finally {
+    if (requestId === feedbackHistoryRequestId) {
+      feedbackHistoryLoading.value = false
+    }
+  }
+}
+
+function scheduleFeedbackHistoryLoad() {
+  if (!canLoadFeedbackHistory()) {
+    resetFeedbackHistory()
+    return
+  }
+
+  clearFeedbackHistoryTimer()
+  feedbackHistoryLoading.value = true
+  feedbackHistoryTimer = window.setTimeout(() => {
+    void loadFeedbackHistory()
+  }, 300)
 }
 
 async function loadFeedbackFormMeta(showError = true) {
@@ -266,6 +353,7 @@ async function submitForm() {
     form.correctionRequest = normalizedCorrectionRequest
     form.extraNote = normalizedExtraNote
     persistFormToLocalStorage()
+    void loadFeedbackHistory()
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '提交失败')
   } finally {
@@ -280,6 +368,11 @@ onMounted(async () => {
 
   readyToPersist.value = true
   persistFormToLocalStorage()
+})
+
+onBeforeUnmount(() => {
+  clearFeedbackHistoryTimer()
+  feedbackHistoryRequestId += 1
 })
 
 watch(courseOptions, () => {
@@ -303,6 +396,19 @@ watch(
     persistFormToLocalStorage()
   },
   { deep: true },
+)
+
+watch(
+  [
+    () => form.course,
+    () => form.studentId,
+    () => form.studentName,
+    () => displayCourseOptions.value.map((course) => course.name).join('\n'),
+  ],
+  () => {
+    scheduleFeedbackHistoryLoad()
+  },
+  { immediate: true },
 )
 </script>
 
@@ -390,6 +496,15 @@ watch(
         />
       </section>
 
+      <AttendanceFeedbackHistoryList
+        :ready="feedbackHistoryReady"
+        :loading="feedbackHistoryLoading"
+        :items="feedbackHistoryItems"
+        :total="feedbackHistoryTotal"
+        :student-id="form.studentId"
+        :student-name="form.studentName"
+      />
+
         <section class="question-block">
         <div class="question-title">
           <span class="required-star">*</span>
@@ -409,7 +524,7 @@ watch(
 
         <section class="question-block">
         <div class="question-title">
-          <span>5. 其他补充说明</span>
+          <span>5. 补充说明</span>
         </div>
         <el-input
           v-model="form.extraNote"

@@ -22,6 +22,7 @@ import {
   type RimeContextLintIssue,
   type RimeContextLintResponse,
   type RimeContextPredictionRow,
+  type RimeContextPredictionSource,
   type RimeContextPredictionTree,
 } from '@/api/rimeContextPrediction';
 import { taskStore, type Device } from '@/store/taskStore';
@@ -52,6 +53,13 @@ type IndexScope = 'summary' | 'detail';
 type PrefixScope = 'summary' | 'detail';
 
 const HISTORY_PAGE_SIZE = 2000;
+const PREDICTION_TREE_LIMIT = 50000;
+
+const indexSourceOptions: { value: RimeContextPredictionSource; label: string; title: string }[] = [
+  { value: 'snapshot', label: '完整索引', title: '用于分析，包含前文片段、当前拼音和候选分布。' },
+  { value: 'hot', label: '实时索引', title: '小狼毫输入时加载的快速候选表。' },
+  { value: 'seed', label: '手动规则', title: '人工固定的纠偏和置顶规则。' },
+];
 
 const route = useRoute();
 const router = useRouter();
@@ -82,6 +90,7 @@ const selectedContextKey = ref('');
 const selectedPrefixKey = ref('');
 const selectedIndexScope = ref<IndexScope>('summary');
 const selectedPrefixScope = ref<PrefixScope>('detail');
+const selectedIndexSource = ref<RimeContextPredictionSource>('snapshot');
 const tree = ref<RimeContextPredictionTree | null>(null);
 const articlesState = ref<RimeContextArticlesResponse | null>(null);
 const historyState = ref<RimeContextHistoryArticleResponse | null>(null);
@@ -140,6 +149,9 @@ const canImportDeviceHistory = computed(() => Boolean(
   && historySourceDevices.value.length,
 ));
 const historyHasDraftChanges = computed(() => historyDraft.value !== (historyState.value?.content || ''));
+const currentIndexSource = computed(() => (
+  indexSourceOptions.find((item) => item.value === selectedIndexSource.value) || indexSourceOptions[0]
+));
 
 function isGlobalContext(value: string) {
   return value === '__global';
@@ -184,6 +196,7 @@ const unavailableTree = (message: string, status = 'request_failed'): RimeContex
   status,
   message,
   rime_dir: null,
+  source_kind: 'snapshot',
   source: null,
   source_path: null,
   updated_at: null,
@@ -647,7 +660,10 @@ const loadTree = async () => {
   }
   loadingTree.value = true;
   try {
-    tree.value = await fetchRimeContextPredictionTree(selectedEntryId.value);
+    tree.value = await fetchRimeContextPredictionTree(selectedEntryId.value, {
+      source: selectedIndexSource.value,
+      limit: PREDICTION_TREE_LIMIT,
+    });
   } catch (err: any) {
     tree.value = unavailableTree(err.response?.data?.detail || err.message || '读取小狼毫输入法索引失败。');
   } finally {
@@ -748,6 +764,13 @@ const handleDeviceChange = async () => {
   await loadActiveView();
 };
 
+const handleIndexSourceChange = async () => {
+  selectedTailKey.value = '';
+  selectedContextKey.value = '';
+  selectedPrefixKey.value = '';
+  await loadTree();
+};
+
 const handleRefresh = async () => {
   if (activeView.value === 'lint') {
     await loadLint();
@@ -764,7 +787,10 @@ const handleRefresh = async () => {
   if (!selectedEntryId.value) return;
   loadingTree.value = true;
   try {
-    tree.value = await refreshRimeContextPredictionTree(selectedEntryId.value);
+    tree.value = await refreshRimeContextPredictionTree(selectedEntryId.value, {
+      source: selectedIndexSource.value,
+      limit: PREDICTION_TREE_LIMIT,
+    });
     ElMessage.success(tree.value.message || '预测索引已更新');
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || err.message || '更新预测索引失败');
@@ -823,7 +849,10 @@ const handleUpdateIndex = async () => {
   }
   loadingTree.value = true;
   try {
-    tree.value = await refreshRimeContextPredictionTree(selectedEntryId.value);
+    tree.value = await refreshRimeContextPredictionTree(selectedEntryId.value, {
+      source: selectedIndexSource.value,
+      limit: PREDICTION_TREE_LIMIT,
+    });
     ElMessage.success(tree.value.message || '预测索引已更新');
     if (activeView.value === 'history') {
       await loadHistoryArticle();
@@ -970,11 +999,12 @@ const handleDeleteCandidate = async (row: RimeContextPredictionRow) => {
 
   deletingCandidateKey.value = candidateRowKey(row);
   try {
-    tree.value = await deleteRimeContextCandidate(selectedEntryId.value, {
+    await deleteRimeContextCandidate(selectedEntryId.value, {
       context: row.context,
       prefix: row.prefix,
       candidate: row.candidate,
     });
+    await loadTree();
     ElMessage.success('候选词已删除');
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || err.message || '删除候选词失败');
@@ -998,7 +1028,7 @@ const submitCandidateEdit = async () => {
 
   submittingCandidate.value = true;
   try {
-    tree.value = await updateRimeContextCandidate(selectedEntryId.value, {
+    await updateRimeContextCandidate(selectedEntryId.value, {
       original_context: candidateForm.value.originalContext,
       original_prefix: candidateForm.value.originalPrefix,
       original_candidate: candidateForm.value.originalCandidate,
@@ -1007,6 +1037,7 @@ const submitCandidateEdit = async () => {
       candidate,
       weight,
     });
+    await loadTree();
     candidateDialogVisible.value = false;
     ElMessage.success('候选词已修改');
   } catch (err: any) {
@@ -1073,6 +1104,24 @@ onMounted(async () => {
             :key="device.id"
             :label="device.name || device.device_id"
             :value="device.id"
+          />
+        </el-select>
+      </label>
+
+      <label v-if="activeView === 'index'" class="rime-field rime-field-index">
+        <span>索引</span>
+        <el-select
+          v-model="selectedIndexSource"
+          class="rime-select"
+          :disabled="loadingTree"
+          @change="handleIndexSourceChange"
+        >
+          <el-option
+            v-for="item in indexSourceOptions"
+            :key="item.value"
+            :label="item.label"
+            :value="item.value"
+            :title="item.title"
           />
         </el-select>
       </label>
@@ -1168,7 +1217,7 @@ onMounted(async () => {
         <el-tooltip effect="light" placement="bottom-end">
           <template #content>
             <div class="rime-help">
-              这里读取每台设备自己的 Rime 用户目录；预测索引来自候选统计，输入历史来自上屏日志，不是系统级键盘监听。
+              这里读取每台设备自己的 Rime 用户目录；完整索引用于分析，实时索引用于小狼毫快速候选，手动规则用于固定纠偏。
             </div>
           </template>
           <button type="button" class="rime-help-button" aria-label="小狼毫输入法说明">
@@ -1187,6 +1236,7 @@ onMounted(async () => {
         <el-tag size="small" :type="currentStatusType">{{ currentStatusText }}</el-tag>
         <span v-if="currentDevice">{{ currentDevice.name || currentDevice.device_id }}</span>
         <span v-if="currentDevice" class="muted">{{ deviceMeta(currentDevice) }}</span>
+        <span v-if="activeView === 'index'" class="muted">索引 {{ currentIndexSource.label }}</span>
         <span v-if="activeView === 'index' && tree?.source" class="muted">来源 {{ tree.source }}</span>
         <span v-if="activeView === 'index' && tree?.updated_at" class="muted">更新 {{ formatDateTime(tree.updated_at) }}</span>
         <span v-if="activeView === 'history' && historyState?.source" class="muted">来源 {{ historyState.source }}</span>
@@ -1740,6 +1790,10 @@ onMounted(async () => {
 
 .rime-field-device {
   width: 220px;
+}
+
+.rime-field-index {
+  width: 130px;
 }
 
 .rime-field-search {
@@ -2317,6 +2371,7 @@ onMounted(async () => {
   }
 
   .rime-field-device,
+  .rime-field-index,
   .rime-field-search {
     width: 100%;
   }

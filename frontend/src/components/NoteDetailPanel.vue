@@ -12,27 +12,17 @@
       @change="handleEditorChange"
     >
       <template #actions="{ note, readonly }">
-        <el-button
+        <NoteTitleActions
           v-if="note"
-          type="primary"
-          plain
-          text
-          circle
-          :icon="CopyDocument"
-          title="复制节点"
-          :disabled="readonly"
-          @click="showCopyDialog = true"
-        />
-        <el-button
-          v-if="note"
-          type="danger"
-          plain
-          text
-          circle
-          :icon="Delete"
-          title="删除节点"
-          :disabled="readonly"
-          @click="deleteCurrentNote"
+          :readonly="readonly"
+          :doc-href="resolveDocHref(note)"
+          :show-share="true"
+          :can-share="true"
+          :can-copy="!readonly"
+          :can-delete="!readonly"
+          @share="openShareDialog"
+          @copy="showCopyDialog = true"
+          @delete="deleteCurrentNote"
         />
         <slot name="actions" />
       </template>
@@ -77,16 +67,27 @@
       :source-note="currentNote"
       @success="handleCopySuccess"
     />
+
+    <NoteDocAccessDialog
+      v-if="currentNote"
+      v-model="showAccessDialog"
+      :note-ref="getDocRouteRef(currentNote)"
+      :title="currentNote.title"
+      @update:access="handleAccessUpdate"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
-import { CopyDocument, Delete, MagicStick } from '@element-plus/icons-vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRouter } from 'vue-router';
+import { MagicStick } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import SharedNoteEditor from './SharedNoteEditor.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
-import { useNoteStore, type NoteNode } from '@/api/notes';
+import NoteDocAccessDialog from './NoteDocAccessDialog.vue';
+import NoteTitleActions from './NoteTitleActions.vue';
+import { useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import type { EditableNotePatch } from '@/utils/noteAutoSave';
 
@@ -103,21 +104,41 @@ const emit = defineEmits<{
   (e: 'create', note: NoteNode): void;
 }>();
 
+const router = useRouter();
 const noteStore = useNoteStore();
 const currentNote = ref<NoteNode | undefined>();
 const isFetchingContent = ref(false);
 const showCopyDialog = ref(false);
+const showAccessDialog = ref(false);
 const aiCategorizing = ref(false);
 let loadRequestToken = 0;
 
 const hasConnections = computed(() => (currentNote.value?.edge_count ?? 0) > 0);
 const hasOutConnections = computed(() => (currentNote.value?.out_degree ?? 0) > 0);
+const canManageDocAccess = computed(() => (
+  currentNote.value
+    ? (currentNote.value.access?.capabilities.can_manage_access ?? currentNote.value.can_edit !== false)
+    : false
+));
+
+const getDocRouteRef = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
+  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : note.id
+);
+const resolveDocHref = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
+  router.resolve(`/doc/${encodeURIComponent(getDocRouteRef(note))}`).href
+);
 
 const toApiPatch = (patch: EditableNotePatch | Partial<NoteNode>) => {
   const outgoing = { ...patch } as Record<string, any>;
   if (typeof outgoing.start_at === 'number' && outgoing.start_at > 10000000000) outgoing.start_at /= 1000;
   return outgoing;
 };
+
+const cloneNoteForDetail = (note: NoteNode): NoteNode => JSON.parse(JSON.stringify({
+  ...note,
+  content: note.content || '',
+  private_level: note.private_level ?? 0
+}));
 
 const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
   if (!currentNote.value) return;
@@ -146,11 +167,11 @@ const loadNote = async (id: string, requestToken: number) => {
   }
 
   const note = noteStore.getNoteById(id) || detailed;
-  currentNote.value = JSON.parse(JSON.stringify({
+  currentNote.value = cloneNoteForDetail({
     ...note,
     content: detailed.content || '',
     private_level: detailed.private_level ?? note.private_level ?? 0
-  }));
+  });
 };
 
 watch(() => props.noteId, async newId => {
@@ -166,6 +187,70 @@ watch(() => props.noteId, async newId => {
   await loadNote(newId, requestToken);
 }, { immediate: true });
 
+watch(
+  () => {
+    if (!props.noteId || !currentNote.value || currentNote.value.id !== props.noteId) return null;
+    const note = noteStore.getNoteById(props.noteId);
+    if (!note || note.content === undefined) return null;
+    return [
+      note.id,
+      note.updated_at,
+      note.title,
+      note.content,
+      JSON.stringify(note.custom_fields ?? []),
+      note.weight,
+      note.private_level,
+      note.primary_category,
+      note.note_form,
+      note.lifecycle_stage,
+      note.completion_progress_expr
+    ].join('\u0001');
+  },
+  () => {
+    if (!props.noteId || !currentNote.value || currentNote.value.id !== props.noteId) return;
+    const note = noteStore.getNoteById(props.noteId);
+    if (!note || note.content === undefined) return;
+
+    currentNote.value = cloneNoteForDetail({
+      ...currentNote.value,
+      ...note,
+      content: note.content || '',
+      private_level: note.private_level ?? currentNote.value.private_level ?? 0
+    });
+  }
+);
+
+const refreshCurrentNoteFromServer = async () => {
+  if (!props.noteId || isFetchingContent.value) return;
+  const requestToken = loadRequestToken;
+  const detailed = await noteStore.fetchNoteDetail(props.noteId, { force: true });
+  if (!detailed || requestToken !== loadRequestToken || props.noteId !== detailed.id || !currentNote.value) return;
+
+  const note = noteStore.getNoteById(props.noteId) || detailed;
+  currentNote.value = cloneNoteForDetail({
+    ...currentNote.value,
+    ...note,
+    content: detailed.content || '',
+    private_level: detailed.private_level ?? note.private_level ?? currentNote.value.private_level ?? 0
+  });
+};
+
+const handleVisibilityChange = () => {
+  if (document.visibilityState === 'visible') {
+    void refreshCurrentNoteFromServer();
+  }
+};
+
+onMounted(() => {
+  window.addEventListener('focus', refreshCurrentNoteFromServer);
+  document.addEventListener('visibilitychange', handleVisibilityChange);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', refreshCurrentNoteFromServer);
+  document.removeEventListener('visibilitychange', handleVisibilityChange);
+});
+
 const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
   const payload = Object.keys(patch).length ? patch : note;
   const updatedNote = await noteStore.updateNote(note.id, payload);
@@ -180,7 +265,7 @@ const handleSaveKeepalive = (note: NoteNode, patch: EditableNotePatch = {}) => {
 };
 
 const handleEditorChange = (note: NoteNode) => {
-  currentNote.value = JSON.parse(JSON.stringify(note));
+  currentNote.value = cloneNoteForDetail(note);
   emit('update', note);
 };
 
@@ -196,12 +281,21 @@ const categorizeCurrentNote = async () => {
       return;
     }
 
-    currentNote.value = JSON.parse(JSON.stringify(result.note));
+    currentNote.value = cloneNoteForDetail(result.note);
     emit('update', result.note);
     ElMessage.success(result.summary || '已完成 AI 分类');
   } finally {
     aiCategorizing.value = false;
   }
+};
+
+const openShareDialog = () => {
+  if (!currentNote.value) return;
+  if (!canManageDocAccess.value) {
+    ElMessage.warning('没有权限管理该文档');
+    return;
+  }
+  showAccessDialog.value = true;
 };
 
 const deleteCurrentNote = async () => {
@@ -219,6 +313,7 @@ const deleteCurrentNote = async () => {
     if (!deleted) return;
     currentNote.value = undefined;
     showCopyDialog.value = false;
+    showAccessDialog.value = false;
     emit('delete', noteId);
   } catch {
     // Ignore cancel
@@ -227,6 +322,16 @@ const deleteCurrentNote = async () => {
 
 const handleCopySuccess = (newNote: NoteNode) => {
   emit('create', newNote);
+};
+
+const handleAccessUpdate = (access: NoteDocResourceAccess) => {
+  if (!currentNote.value) return;
+  currentNote.value = cloneNoteForDetail({
+    ...currentNote.value,
+    access,
+    can_edit: access.capabilities.can_edit_content
+  });
+  emit('update', currentNote.value);
 };
 </script>
 

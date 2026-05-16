@@ -248,6 +248,7 @@ class LabelmeRenameRequest(RootScopedRequest):
 
 class OcrPreviewRequest(RootScopedRequest):
     shape_type: OcrShapeType = "polygon"
+    options: dict[str, Any] = PydanticField(default_factory=dict)
 
 
 MediaSortMode = Literal["path", "modified-desc", "size-desc", "weight-desc"]
@@ -4864,6 +4865,7 @@ def build_ocr_preview_response(
     *,
     absolute_path: str = "",
     shape_type: OcrShapeType = "polygon",
+    options: dict[str, Any] | None = None,
 ) -> dict:
     target_path, resolved = resolve_request_path(root_key, rel_path, absolute_path=absolute_path)
     if not target_path.exists():
@@ -4872,7 +4874,10 @@ def build_ocr_preview_response(
         raise HTTPException(status_code=400, detail="Path is not a file")
 
     try:
-        preview = run_paddle_ocr_preview(target_path, shape_type=shape_type)
+        if options:
+            preview = run_paddle_ocr_preview(target_path, shape_type=shape_type, options=options)
+        else:
+            preview = run_paddle_ocr_preview(target_path, shape_type=shape_type)
     except OcrPreviewError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
@@ -5500,6 +5505,7 @@ def preview_ocr(req: OcrPreviewRequest):
         req.path,
         absolute_path=req.absolute_path,
         shape_type=req.shape_type,
+        options=req.options,
     )
 
 

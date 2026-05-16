@@ -161,3 +161,63 @@ def test_note_sheet_table_api_defaults_to_text_values_and_can_read_raw(client, s
     assert raw_table["value_mode"] == "raw"
     assert raw_table["grid_rows"][2][1] == '=DATEDIF("2026-05-09",TODAY(),"d")'
     assert raw_table["rows"][0]["返款配置"].startswith("=IF(")
+
+
+def test_note_sheet_table_api_evaluates_legacy_attendance_formulas(client, session, test_device):
+    workbook = WorkbookDocument(
+        numeric_id=6,
+        title="20250106念住闯关",
+    )
+    sheet = SheetDocument(
+        numeric_id=8,
+        scope="notes",
+        owner_type="user",
+        owner_key="1",
+        sheet_key="8",
+        title="考勤表",
+        document_json={
+            "columns": ["第01课", "第02课", "完成视频数", "视频应返款", "总应返款", "返款配置"],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "grid_rows": [
+                ["第01课", "第02课", "完成视频数", "视频应返款", "总应返款", "返款配置"],
+                [
+                    "3遍/120%",
+                    "学习中/80%",
+                    '=COUNTIF(A2:B2,"*遍*")',
+                    "=SWITCH(TRUE(),C2>=1,20,TRUE,0)",
+                    "=MIN(D2+10,25)",
+                    '=IF(E2>0,TEXTJOIN(",",TRUE,"x",E2),"")',
+                ],
+            ],
+            "rows": [
+                [
+                    "3遍/120%",
+                    "学习中/80%",
+                    '=COUNTIF(A2:B2,"*遍*")',
+                    "=SWITCH(TRUE(),C2>=1,20,TRUE,0)",
+                    "=MIN(D2+10,25)",
+                    '=IF(E2>0,TEXTJOIN(",",TRUE,"x",E2),"")',
+                ],
+            ],
+        },
+        version=1,
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=10))
+    session.commit()
+
+    response = client.get(
+        "/api/note-sheets/sheets/8/table",
+        params={"workbook_id": 6},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    row = response.json()["rows"][0]
+    assert row["完成视频数"] == 1
+    assert row["视频应返款"] == 20
+    assert row["总应返款"] == 25
+    assert row["返款配置"] == "x,25"

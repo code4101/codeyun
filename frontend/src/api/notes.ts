@@ -20,8 +20,47 @@ import {
   getCompletionProgressExprFromCustomFields,
 } from '@/utils/noteProgress';
 
+export type NoteDocResourceRole = 'none' | 'deny' | 'viewer' | 'editor' | 'manager';
+export type NoteDocAccessSubjectType = 'anonymous' | 'user';
+
+export interface NoteDocAccessCapabilities {
+  can_read: boolean;
+  can_edit_content: boolean;
+  can_manage_access: boolean;
+}
+
+export interface NoteDocResourceAccess {
+  role: NoteDocResourceRole;
+  capabilities: NoteDocAccessCapabilities;
+}
+
+export interface NoteDocResourceAccessGrantItem {
+  subject_type: NoteDocAccessSubjectType;
+  subject_key: string;
+  subject_user_id?: number | null;
+  username: string;
+  nickname: string;
+  role: Exclude<NoteDocResourceRole, 'none'>;
+}
+
+export interface NoteDocResourceAccessGrantUpdate {
+  subject_type: NoteDocAccessSubjectType;
+  username?: string;
+  subject_user_id?: number | null;
+  role: NoteDocResourceRole;
+}
+
+export interface NoteDocResourceAccessResponse {
+  resource_type: 'note_doc';
+  resource_id: string;
+  public_id: string;
+  access: NoteDocResourceAccess;
+  grants: NoteDocResourceAccessGrantItem[];
+}
+
 export interface NoteNode {
   id: string;
+  numeric_id?: number | null;
   user_id?: number;
   title: string;
   content?: string;
@@ -52,6 +91,7 @@ export interface NoteNode {
   edge_count?: number;
   out_degree?: number;
   can_edit?: boolean;
+  access?: NoteDocResourceAccess | null;
 }
 
 export interface NoteEdge {
@@ -274,6 +314,16 @@ const NOTE_TAB_VIEW_STATE_LEGACY_KEYS = [
   'codeyun.notes.tab-view-state.v1',
   'codeyun.notes.tab-view-state.v2'
 ];
+const NOTE_SYNC_CHANNEL_NAME = 'codeyun.notes.sync.v1';
+const NOTE_SYNC_STORAGE_KEY = 'codeyun.notes.sync-message.v1';
+const NOTE_SYNC_SOURCE_ID = `${Date.now()}:${Math.random().toString(36).slice(2)}`;
+
+interface NoteSyncMessage {
+  kind: 'note-updated';
+  source: string;
+  note: NoteNode;
+  timestamp: number;
+}
 
 const dedupeIds = (ids: string[]) => Array.from(new Set(ids));
 
@@ -287,7 +337,7 @@ const normalizeInteger = (value: unknown, fallback: number = 0) => {
   return fallback;
 };
 
-const normalizeNote = (raw: any): NoteNode => ({
+export const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
   ...(() => {
     const taxonomy = Array.isArray(raw.note_categories) || raw.primary_category || raw.note_form || raw.note_scene || raw.lifecycle_stage
@@ -313,6 +363,7 @@ const normalizeNote = (raw: any): NoteNode => ({
 
     return {
       id: String(raw.id),
+      numeric_id: raw.numeric_id == null ? null : normalizeInteger(raw.numeric_id, 0) || null,
       created_at: raw.created_at * 1000,
       updated_at: raw.updated_at * 1000,
       start_at: raw.start_at * 1000,
@@ -339,10 +390,69 @@ const normalizeNote = (raw: any): NoteNode => ({
             ? raw.completion_progress_expr
             : getCompletionProgressExprFromCustomFields(raw.custom_fields)
         ),
-      can_edit: Boolean(raw.can_edit)
+      can_edit: Boolean(raw.can_edit),
+      access: raw.access ?? null
     };
   })()
 });
+
+export async function fetchNoteDoc(noteRef: string): Promise<NoteNode | null> {
+  try {
+    const response = await api.get(`/note-docs/${encodeURIComponent(noteRef)}`);
+    return normalizeNote(response.data);
+  } catch (error: any) {
+    const status = error?.response?.status;
+    if (status === 403 || status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+export type NoteDocUpdatePayload = Partial<Pick<
+  NoteNode,
+  | 'title'
+  | 'content'
+  | 'weight'
+  | 'start_at'
+  | 'note_categories'
+  | 'primary_category'
+  | 'note_form'
+  | 'note_scene'
+  | 'lifecycle_stage'
+  | 'color'
+  | 'private_level'
+  | 'custom_fields'
+>> & {
+  completion_progress_expr?: string | null;
+}
+
+export async function updateNoteDoc(
+  noteRef: string,
+  data: NoteDocUpdatePayload
+): Promise<NoteNode> {
+  const updateData: any = { ...data };
+  if (typeof updateData.start_at === 'number' && updateData.start_at > 10000000000) {
+    updateData.start_at /= 1000;
+  }
+  const response = await api.put(`/note-docs/${encodeURIComponent(noteRef)}`, updateData);
+  return normalizeNote(response.data);
+}
+
+export async function fetchNoteDocAccess(noteRef: string): Promise<NoteDocResourceAccessResponse> {
+  const response = await api.get<NoteDocResourceAccessResponse>(`/note-docs/${encodeURIComponent(noteRef)}/access`);
+  return response.data;
+}
+
+export async function updateNoteDocAccess(
+  noteRef: string,
+  grants: NoteDocResourceAccessGrantUpdate[]
+): Promise<NoteDocResourceAccessResponse> {
+  const response = await api.put<NoteDocResourceAccessResponse>(`/note-docs/${encodeURIComponent(noteRef)}/access`, {
+    grants
+  });
+  return response.data;
+}
 
 const normalizeEdge = (raw: any): NoteEdge => ({
   ...raw,
@@ -380,6 +490,54 @@ export const fetchCodexDiaryImportRun = async (
   return normalizeCodexDiaryImportRun(response.data);
 };
 
+export interface CalendarYearMonthMemosResponse {
+  memos: Record<string, string>;
+  year_titles: Record<string, string>;
+  updated_at?: number | null;
+}
+
+const normalizeCalendarYearMonthMemos = (value: unknown): Record<string, string> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key, text]) => /^\d{4}-\d{2}$/.test(key) && typeof text === 'string')
+      .map(([key, text]) => [key, text.trim()])
+      .filter(([, text]) => text)
+  );
+};
+
+const normalizeCalendarYearTitles = (value: unknown): Record<string, string> => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([key, text]) => /^\d{4}$/.test(key) && typeof text === 'string')
+      .map(([key, text]) => [key, text.trim()])
+      .filter(([, text]) => text)
+  );
+};
+
+const normalizeCalendarYearMonthMemosResponse = (raw: any): CalendarYearMonthMemosResponse => ({
+  memos: normalizeCalendarYearMonthMemos(raw?.memos),
+  year_titles: normalizeCalendarYearTitles(raw?.year_titles),
+  updated_at: typeof raw?.updated_at === 'number' ? raw.updated_at * 1000 : null
+});
+
+export const fetchCalendarYearMonthMemos = async (): Promise<CalendarYearMonthMemosResponse> => {
+  const response = await api.get('/notes/calendar/year-month-memos');
+  return normalizeCalendarYearMonthMemosResponse(response.data);
+};
+
+export const saveCalendarYearMonthMemos = async (
+  memos: Record<string, string>,
+  yearTitles?: Record<string, string>
+): Promise<CalendarYearMonthMemosResponse> => {
+  const response = await api.put('/notes/calendar/year-month-memos', {
+    memos: normalizeCalendarYearMonthMemos(memos),
+    ...(yearTitles ? { year_titles: normalizeCalendarYearTitles(yearTitles) } : {})
+  });
+  return normalizeCalendarYearMonthMemosResponse(response.data);
+};
+
 const patchNoteDetails = (detailMap: Record<string, NoteNode>, incomingNotes: NoteNode[]) => {
   incomingNotes.forEach(note => {
     if (!detailMap[note.id]) return;
@@ -397,8 +555,53 @@ const stripNoteDetail = (note: NoteNode): NoteNode => {
   return summary;
 };
 
+const areNoteSummaryValuesEqual = (left: unknown, right: unknown): boolean => {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right) || (left && typeof left === 'object') || (right && typeof right === 'object')) {
+    return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  }
+  return false;
+};
+
+const areNoteSummariesEqual = (left: NoteNode | undefined, right: NoteNode): boolean => {
+  if (!left) return false;
+  return Object.entries(right).every(([key, value]) => (
+    areNoteSummaryValuesEqual((left as Record<string, unknown>)[key], value)
+  ));
+};
+
 const cloneViewState = (value: Record<string, any>) => JSON.parse(JSON.stringify(value));
+const cloneNoteForSync = (note: NoteNode): NoteNode => JSON.parse(JSON.stringify(note));
 const canUseLocalStorage = () => typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+
+const postNoteSyncMessage = (note: NoteNode) => {
+  if (typeof window === 'undefined') return;
+  const message: NoteSyncMessage = {
+    kind: 'note-updated',
+    source: NOTE_SYNC_SOURCE_ID,
+    note: cloneNoteForSync(note),
+    timestamp: Date.now()
+  };
+
+  if (typeof BroadcastChannel !== 'undefined') {
+    try {
+      const channel = new BroadcastChannel(NOTE_SYNC_CHANNEL_NAME);
+      channel.postMessage(message);
+      channel.close();
+    } catch (error) {
+      console.warn('Failed to broadcast note sync message:', error);
+    }
+  }
+
+  if (canUseLocalStorage()) {
+    try {
+      window.localStorage.setItem(NOTE_SYNC_STORAGE_KEY, JSON.stringify(message));
+      window.localStorage.removeItem(NOTE_SYNC_STORAGE_KEY);
+    } catch {
+      // Ignore storage sync failures; BroadcastChannel or manual refresh can still work.
+    }
+  }
+};
 
 const toApiTimestamp = (value: number) => value / 1000;
 
@@ -1071,6 +1274,7 @@ export const useNoteStore = defineStore('notes', () => {
 
   const pendingRequests = ref(0);
   const loading = computed(() => pendingRequests.value > 0);
+  let noteSyncChannel: BroadcastChannel | null = null;
 
   const tabs = ref<TabState[]>([
     { id: 'calendar', label: '日历', type: 'calendar', closable: false },
@@ -1323,6 +1527,58 @@ export const useNoteStore = defineStore('notes', () => {
     return ids;
   };
 
+  const mergeNoteDetailAndPrune = (note: NoteNode) => {
+    const summary = stripNoteDetail(note);
+    if (areNoteSummariesEqual(noteMap.value[note.id], summary)) {
+      touchNotes([note.id]);
+    } else {
+      mergeNoteSummaries([note]);
+    }
+    mergeNoteDetails([note]);
+    pruneCaches();
+    return getNoteById(note.id) || note;
+  };
+
+  const applySyncedNoteUpdate = (note: NoteNode) => {
+    const existing = getNoteById(note.id);
+    if (existing?.updated_at && note.updated_at && note.updated_at < existing.updated_at) {
+      return;
+    }
+    mergeNoteDetailAndPrune(note);
+  };
+
+  const handleNoteSyncMessage = (rawMessage: unknown) => {
+    const message = rawMessage as Partial<NoteSyncMessage> | null;
+    if (!message || message.kind !== 'note-updated' || message.source === NOTE_SYNC_SOURCE_ID || !message.note?.id) {
+      return;
+    }
+    applySyncedNoteUpdate(message.note);
+  };
+
+  const setupNoteSyncListener = () => {
+    if (typeof window === 'undefined') return;
+
+    if (typeof BroadcastChannel !== 'undefined' && !noteSyncChannel) {
+      try {
+        noteSyncChannel = new BroadcastChannel(NOTE_SYNC_CHANNEL_NAME);
+        noteSyncChannel.onmessage = event => handleNoteSyncMessage(event.data);
+      } catch (error) {
+        console.warn('Failed to listen for note sync messages:', error);
+      }
+    }
+
+    window.addEventListener('storage', event => {
+      if (event.key !== NOTE_SYNC_STORAGE_KEY || !event.newValue) return;
+      try {
+        handleNoteSyncMessage(JSON.parse(event.newValue));
+      } catch {
+        // Ignore malformed sync payloads from older tabs.
+      }
+    });
+  };
+
+  setupNoteSyncListener();
+
   const getTabById = (tabId: string) => tabs.value.find(tab => tab.id === tabId);
 
   const ensureTabSession = (tabId: string) => {
@@ -1567,9 +1823,9 @@ export const useNoteStore = defineStore('notes', () => {
     });
   };
 
-  const fetchNoteDetail = async (id: string) => {
+  const fetchNoteDetail = async (id: string, options: { force?: boolean } = {}) => {
     const cached = noteDetailMap.value[id];
-    if (cached?.content !== undefined) {
+    if (!options.force && cached?.content !== undefined) {
       touchNoteDetails([id]);
       return getNoteById(id) || cached;
     }
@@ -1578,13 +1834,25 @@ export const useNoteStore = defineStore('notes', () => {
     try {
       const response = await api.get(`/notes/${id}`);
       const detailedNote = normalizeNote(response.data);
-      mergeNoteSummaries([detailedNote]);
-      mergeNoteDetails([detailedNote]);
-      pruneCaches();
-      return getNoteById(id) || detailedNote;
+      return mergeNoteDetailAndPrune(detailedNote);
     } catch (error) {
       console.error('Failed to fetch note detail:', error);
       ElMessage.error('获取节点内容失败');
+      return null;
+    } finally {
+      bumpPending(-1);
+    }
+  };
+
+  const fetchNoteDocDetail = async (noteRef: string) => {
+    bumpPending(1);
+    try {
+      const detail = await fetchNoteDoc(noteRef);
+      if (!detail) return null;
+      return mergeNoteDetailAndPrune(detail);
+    } catch (error) {
+      console.error('Failed to fetch note doc detail:', error);
+      ElMessage.error('获取文档失败');
       return null;
     } finally {
       bumpPending(-1);
@@ -1683,10 +1951,7 @@ export const useNoteStore = defineStore('notes', () => {
 
       const response = await api.post('/notes/', data);
       const newNote = normalizeNote(response.data);
-      mergeNoteSummaries([newNote]);
-      mergeNoteDetails([newNote]);
-      pruneCaches();
-      return getNoteById(newNote.id) || newNote;
+      return mergeNoteDetailAndPrune(newNote);
     } catch (error) {
       console.error('Failed to create note:', error);
       ElMessage.error('创建任务失败');
@@ -1727,13 +1992,31 @@ export const useNoteStore = defineStore('notes', () => {
 
       const response = await api.put(`/notes/${id}`, updateData);
       const updatedNote = normalizeNote(response.data);
-      mergeNoteSummaries([updatedNote]);
-      mergeNoteDetails([updatedNote]);
-      pruneCaches();
-      return getNoteById(id) || updatedNote;
+      const mergedNote = mergeNoteDetailAndPrune(updatedNote);
+      postNoteSyncMessage(mergedNote);
+      return mergedNote;
     } catch (error) {
       console.error('Failed to update note:', error);
       ElMessage.error('保存任务失败');
+      return null;
+    } finally {
+      bumpPending(-1);
+    }
+  };
+
+  const updateNoteDocDetail = async (
+    noteRef: string,
+    data: NoteDocUpdatePayload
+  ) => {
+    bumpPending(1);
+    try {
+      const updatedNote = await updateNoteDoc(noteRef, data);
+      const mergedNote = mergeNoteDetailAndPrune(updatedNote);
+      postNoteSyncMessage(mergedNote);
+      return mergedNote;
+    } catch (error) {
+      console.error('Failed to update note doc:', error);
+      ElMessage.error('保存文档失败');
       return null;
     } finally {
       bumpPending(-1);
@@ -1927,15 +2210,14 @@ export const useNoteStore = defineStore('notes', () => {
         note: unknown;
       };
       const updatedNote = normalizeNote(payload.note);
-      mergeNoteSummaries([updatedNote]);
-      mergeNoteDetails([updatedNote]);
-      pruneCaches();
+      const mergedNote = mergeNoteDetailAndPrune(updatedNote);
+      postNoteSyncMessage(mergedNote);
       return {
         app: String(payload.app || 'note-taxonomy'),
         provider: String(payload.provider || providerId),
         model: String(payload.model || modelName),
         summary: typeof payload.summary === 'string' ? payload.summary : '',
-        note: getNoteById(updatedNote.id) || updatedNote,
+        note: mergedNote,
       } satisfies AiNoteCategorizeResponse;
     } catch (error) {
       console.error('Failed to categorize note with AI:', error);
@@ -1977,9 +2259,11 @@ export const useNoteStore = defineStore('notes', () => {
     queryNoteProgramForTab,
     fetchNotesForTab,
     fetchNoteDetail,
+    fetchNoteDocDetail,
     fetchConnectedComponentForTab,
     createNote,
     updateNote,
+    updateNoteDocDetail,
     aiCategorizeNote,
     batchUpdateNotes,
     deleteNote,
