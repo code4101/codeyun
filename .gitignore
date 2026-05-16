@@ -47,6 +47,7 @@ backend/data/
 *.log
 .DS_Store
 /.codex/
+/.codex-run/
 /.codex-logs/
 /凡修/
 /.trae

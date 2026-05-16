@@ -10,7 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from sqlmodel import Session, select, func, or_
+from sqlmodel import Session, delete, select, func, or_
 from sqlalchemy.orm.attributes import flag_modified
 from backend.db import get_session
 from backend.models import (
@@ -19,6 +19,7 @@ from backend.models import (
     NoteMetadataFeedbackOptimizationRun,
     NoteNode,
     NoteEdge,
+    ResourceAccessGrant,
     User,
     UserDevice,
 )
@@ -141,6 +142,9 @@ NOTE_AI_HTML_BREAK_RE = re.compile(r"</?(?:p|div|li|tr|h[1-6]|blockquote)\b[^>]*
 NOTE_AI_HTML_TAG_RE = re.compile(r"<[^>]+>")
 NOTE_AI_TITLE_TOKEN_RE = re.compile(r"[a-z0-9]+|[\u4e00-\u9fff]+", re.IGNORECASE)
 NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
+CALENDAR_YEAR_MONTH_MEMOS_SETTING_VERSION = 1
+CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
+CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 900.0
 CODEX_DIARY_PROMPT_VERSION = "2026-05-04.codex-cli-diary-draft-v2"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
@@ -236,6 +240,20 @@ CODEX_DIARY_TITLE_KEYWORDS = (
     "CodeYun",
     "星云",
 )
+
+
+class CalendarYearMonthMemosRead(BaseModel):
+    memos: dict[str, str] = Field(default_factory=dict)
+    year_titles: dict[str, str] = Field(default_factory=dict)
+    updated_at: Optional[float] = None
+
+
+class CalendarYearMonthMemosUpdate(BaseModel):
+    memos: Optional[dict[str, str]] = None
+    year_titles: Optional[dict[str, str]] = None
+
+
+NOTE_DOC_RESOURCE_TYPE = "note_doc"
 CODEX_DIARY_ITEM_NUMBER_PREFIX_RE = re.compile(
     r"^\s*(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*"
 )
@@ -3319,8 +3337,22 @@ def _record_created_note_metadata_feedback_safely(
         print(f"Failed to record created note metadata feedback: {exc}")
 
 
+def _is_numeric_note_ref(value: str) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and text.isdecimal()
+
+
+def _next_note_numeric_id(session: Session) -> int:
+    row = session.exec(select(func.coalesce(func.max(NoteNode.numeric_id), 0))).first()
+    return int(row or 0) + 1
+
+
 def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
-    query = select(NoteNode).where(NoteNode.id == note_id)
+    normalized_id = str(note_id or "").strip()
+    if _is_numeric_note_ref(normalized_id):
+        query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_id))
+    else:
+        query = select(NoteNode).where(NoteNode.id == normalized_id)
     if not current_user.is_superuser:
         query = query.where(NoteNode.user_id == current_user.id)
     return session.exec(query).first()
@@ -3344,21 +3376,28 @@ def _get_component_note_ids(
     user_id: int,
     session: Session
 ) -> Tuple[set[str], List[NoteEdge]]:
-    start_note = session.exec(
-        select(NoteNode).where(NoteNode.id == seed_note_id, NoteNode.user_id == user_id)
-    ).first()
+    normalized_seed_id = str(seed_note_id or "").strip()
+    if _is_numeric_note_ref(normalized_seed_id):
+        start_note = session.exec(
+            select(NoteNode).where(NoteNode.numeric_id == int(normalized_seed_id), NoteNode.user_id == user_id)
+        ).first()
+    else:
+        start_note = session.exec(
+            select(NoteNode).where(NoteNode.id == normalized_seed_id, NoteNode.user_id == user_id)
+        ).first()
     if not start_note:
         raise HTTPException(status_code=404, detail="Note not found")
 
-    edges = _get_filtered_edge_pool(seed_note_id, mode, user_id, session)
+    seed_node_id = str(start_note.id)
+    edges = _get_filtered_edge_pool(seed_node_id, mode, user_id, session)
     adj: dict[str, list[str]] = {}
     for edge in edges:
         u, v = edge.source_id, edge.target_id
         adj.setdefault(u, []).append(v)
         adj.setdefault(v, []).append(u)
 
-    visited = {seed_note_id}
-    queue = [seed_note_id]
+    visited = {seed_node_id}
+    queue = [seed_node_id]
     while queue:
         curr = queue.pop(0)
         for neighbor in adj.get(curr, []):
@@ -3635,6 +3674,55 @@ def _execute_note_program(
         "total_edges": len(visible_edges),
     }
 
+
+def _calendar_year_month_memos_setting_key(user_id: int) -> str:
+    return f"note.calendar.year_month_memos.user.{int(user_id)}"
+
+
+def _normalize_calendar_year_month_memos(value: Any) -> dict[str, str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {}
+    raw = value.get("memos") if isinstance(value, dict) and isinstance(value.get("memos"), dict) else value
+    if not isinstance(raw, dict):
+        return {}
+
+    memos: dict[str, str] = {}
+    for key, text in raw.items():
+        memo_key = str(key or "").strip()
+        if not CALENDAR_YEAR_MONTH_MEMO_KEY_RE.fullmatch(memo_key):
+            continue
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            continue
+        memos[memo_key] = normalized_text[:200]
+    return dict(sorted(memos.items()))
+
+
+def _normalize_calendar_year_titles(value: Any) -> dict[str, str]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = {}
+    raw = value.get("year_titles") if isinstance(value, dict) and isinstance(value.get("year_titles"), dict) else value
+    if not isinstance(raw, dict):
+        return {}
+
+    titles: dict[str, str] = {}
+    for key, text in raw.items():
+        year_key = str(key or "").strip()
+        if not CALENDAR_YEAR_TITLE_KEY_RE.fullmatch(year_key):
+            continue
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            continue
+        titles[year_key] = normalized_text[:80]
+    return dict(sorted(titles.items()))
+
+
 # --- Notes ---
 
 @router.get("/", response_model=List[NoteListRead])
@@ -3822,6 +3910,53 @@ def batch_update_notes(
         "updated_count": len(updated_notes),
         "notes": [_serialize_note_list(note, current_user) for note in updated_notes],
     }
+
+
+@router.get("/calendar/year-month-memos", response_model=CalendarYearMonthMemosRead)
+def get_calendar_year_month_memos(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session)
+):
+    setting_key = _calendar_year_month_memos_setting_key(current_user.id)
+    row = session.get(AppSetting, setting_key)
+    return {
+        "memos": _normalize_calendar_year_month_memos(row.value if row else None),
+        "year_titles": _normalize_calendar_year_titles(row.value if row else None),
+        "updated_at": row.updated_at if row else None,
+    }
+
+
+@router.put("/calendar/year-month-memos", response_model=CalendarYearMonthMemosRead)
+def update_calendar_year_month_memos(
+    request: CalendarYearMonthMemosUpdate,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session)
+):
+    setting_key = _calendar_year_month_memos_setting_key(current_user.id)
+    now = time.time()
+    row = session.get(AppSetting, setting_key)
+    if row is None:
+        row = AppSetting(key=setting_key)
+    existing_value = row.value if row else None
+    memos = (
+        _normalize_calendar_year_month_memos(request.memos)
+        if request.memos is not None
+        else _normalize_calendar_year_month_memos(existing_value)
+    )
+    year_titles = (
+        _normalize_calendar_year_titles(request.year_titles)
+        if request.year_titles is not None
+        else _normalize_calendar_year_titles(existing_value)
+    )
+    row.value = {
+        "version": CALENDAR_YEAR_MONTH_MEMOS_SETTING_VERSION,
+        "memos": memos,
+        "year_titles": year_titles,
+    }
+    row.updated_at = now
+    session.add(row)
+    session.commit()
+    return {"memos": memos, "year_titles": year_titles, "updated_at": now}
 
 
 @router.post("/{note_id}/ai-categorize", response_model=AiNoteCategorizeResponse)
@@ -4433,6 +4568,7 @@ def create_note(
     current_time = time.time()
     db_note = NoteNode(
         id=str(uuid.uuid4()), # Generate UUID
+        numeric_id=_next_note_numeric_id(session),
         user_id=current_user.id,
         title=note.title,
         content=note.content,
@@ -4474,12 +4610,13 @@ def read_note(
     note = _get_accessible_note(note_id, current_user, session)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
+    resolved_note_id = str(note.id)
     
     # Calculate edge count
     edge_count = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            or_(NoteEdge.source_id == note_id, NoteEdge.target_id == note_id)
+            or_(NoteEdge.source_id == resolved_note_id, NoteEdge.target_id == resolved_note_id)
         )
     ).one()
     
@@ -4487,7 +4624,7 @@ def read_note(
     out_degree = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.source_id == note_id
+            NoteEdge.source_id == resolved_note_id
         )
     ).one()
 
@@ -4496,7 +4633,7 @@ def read_note(
     direct_parent_edges = session.exec(
         select(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.target_id == note_id
+            NoteEdge.target_id == resolved_note_id
         )
     ).all()
     
@@ -4561,7 +4698,7 @@ def read_note(
             
             new_ancestor_ids = []
             for edge in upstream_edges:
-                if edge.source_id not in visited_ancestors and edge.source_id != note_id:
+                if edge.source_id not in visited_ancestors and edge.source_id != resolved_note_id:
                     visited_ancestors.add(edge.source_id)
                     new_ancestor_ids.append(edge.source_id)
             
@@ -4696,17 +4833,23 @@ def delete_note(
     db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
+    resolved_note_id = str(db_note.id)
 
     edges = session.exec(
         select(NoteEdge).where(
             or_(
-                NoteEdge.source_id == note_id,
-                NoteEdge.target_id == note_id,
+                NoteEdge.source_id == resolved_note_id,
+                NoteEdge.target_id == resolved_note_id,
             )
         )
     ).all()
     for edge in edges:
         session.delete(edge)
+    session.exec(
+        delete(ResourceAccessGrant)
+        .where(ResourceAccessGrant.resource_type == NOTE_DOC_RESOURCE_TYPE)
+        .where(ResourceAccessGrant.resource_id == resolved_note_id)
+    )
     session.delete(db_note)
     session.commit()
     return {"ok": True}

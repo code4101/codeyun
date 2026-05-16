@@ -30,7 +30,7 @@
 
 ### 2.2 数据流 (Data Flow)
 1.  **任务状态**: `psutil` 实时监控 -> `DeviceManager` 聚合 -> API 轮询/WebSocket (规划中) -> 前端 Store。
-2.  **配置存储**: **SQLite 数据库** (`backend/data/codeyun.db`)。
+2.  **配置存储**: **SQLite 数据库**（默认位于仓库外的数据目录，例如 `D:\home\chenkunze\data\m2603codeyun\codepc_mf\codeyun.db`）。
     *   `Device`: 存储设备信息及 API Token。
     *   `Task`: 存储任务配置。
     *   `User`: 用户信息。
@@ -76,7 +76,7 @@
 *   **LocalDevice**: 直接调用 `psutil` 和 `subprocess`。
 *   **RemoteDevice**: 实现了与 `LocalDevice` 相同的接口，但通过 `requests` 调用远程 API。
 *   **同步机制**: 前端轮询 `/api/task/list`，后端会触发 `device_manager` 同步所有注册设备的状态。
-*   **身份标识**: 本机通过 `backend/data/config.json` 持久化唯一 ID (UUID)。若文件丢失，重启后会生成新 ID，可能导致旧数据失效或重复注册（Phantom Devices）。
+*   **身份标识**: 本机通过机器级 identity 文件持久化唯一 ID (UUID)，业务运行数据位于仓库外的数据目录。若身份文件丢失，重启后会生成新 ID，可能导致旧数据失效或重复注册（Phantom Devices）。
 
 ## 5. 开发规约 (Conventions)
 

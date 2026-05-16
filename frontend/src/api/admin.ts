@@ -64,7 +64,71 @@ export interface StorageDashboardStats {
   orphan_count: number;
   dead_link_count: number;
   health_score: number;
+  attachments_path: string;
+  data_workspace_path: string;
 }
+
+export interface WorkspaceUsageEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+  logical_size_bytes: number;
+  allocated_size_bytes: number;
+  file_count: number;
+  directory_count: number;
+  symlink_count: number;
+  inaccessible_count: number;
+  modified_at: number | null;
+}
+
+export interface StorageHealthIssue {
+  id: string;
+  severity: 'critical' | 'warning' | 'info' | string;
+  title: string;
+  detail: string;
+  path: string;
+  size_bytes: number;
+  action_label: string;
+  action_kind: string;
+}
+
+export interface StorageSlimmingCandidate {
+  id: string;
+  category: string;
+  title: string;
+  path: string;
+  logical_size_bytes: number;
+  allocated_size_bytes: number;
+  file_count: number;
+  directory_count: number;
+  risk: 'low' | 'review' | string;
+  cleanup_kind: string;
+  action_label: string;
+  detail: string;
+}
+
+export interface WorkspaceUsageResponse {
+  scope: string;
+  label: string;
+  expected_role: string;
+  health_score: number;
+  health_status: 'healthy' | 'attention' | 'problem' | string;
+  health_issues: StorageHealthIssue[];
+  slimming_candidates: StorageSlimmingCandidate[];
+  root_path: string;
+  logical_size_bytes: number;
+  allocated_size_bytes: number;
+  file_count: number;
+  directory_count: number;
+  symlink_count: number;
+  inaccessible_count: number;
+  top_entries: WorkspaceUsageEntry[];
+  scan_started_at: number;
+  elapsed_ms: number;
+  source: string;
+}
+
+export type StorageUsageScope = 'data_workspace' | 'data_dir' | 'source_dir';
 
 export interface StorageAnalysisResponse {
   top_files: TopFile[];
@@ -224,6 +288,22 @@ export const deleteAdminAccount = async (userId: number): Promise<{ success: boo
 
 export const fetchStorageDashboard = async (): Promise<StorageDashboardStats> => {
   const response = await api.get('/admin/storage/dashboard');
+  return response.data;
+};
+
+export const fetchWorkspaceUsage = async (
+  scope: StorageUsageScope = 'data_workspace',
+  refresh = false,
+  topLimit = 20,
+): Promise<WorkspaceUsageResponse> => {
+  const response = await api.get('/admin/storage/workspace-usage', {
+    params: {
+      scope,
+      refresh,
+      top_limit: topLimit,
+    },
+    timeout: 120000,
+  });
   return response.data;
 };
 

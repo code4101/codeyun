@@ -2287,6 +2287,60 @@ def v42_add_eastmoney_pdf_statement_tables(session: Session):
     print("  Added Eastmoney PDF statement tables.")
 
 
+def v43_add_service_access_token_table(session: Session):
+    """
+    Migration V43: Add service API token table.
+    """
+    print("Running System Upgrade V43: Add service access token table...")
+    bind = session.get_bind()
+    from backend.models import ServiceAccessToken
+
+    ServiceAccessToken.__table__.create(bind, checkfirst=True)
+    session.commit()
+    print("  Added service access token table.")
+
+
+def v44_add_note_numeric_ids(session: Session):
+    """
+    Migration V44: Add sequential numeric ids for note document URLs.
+    """
+    print("Running System Upgrade V44: Add note numeric ids...")
+    if not _table_exists(session, "notenode"):
+        print("  notenode table not found, skipping.")
+        return
+
+    columns = _get_table_columns(session, "notenode")
+    if "numeric_id" not in columns:
+        session.exec(text("ALTER TABLE notenode ADD COLUMN numeric_id INTEGER"))
+
+    rows = session.exec(
+        text(
+            """
+            SELECT rowid, created_at
+            FROM notenode
+            WHERE numeric_id IS NULL
+            ORDER BY created_at ASC, rowid ASC
+            """
+        )
+    ).all()
+
+    current_max_row = session.exec(text("SELECT COALESCE(MAX(numeric_id), 0) FROM notenode")).first()
+    next_numeric_id = max(int(_first_scalar(current_max_row) or 0), 0)
+    for record in rows:
+        next_numeric_id += 1
+        session.execute(
+            text("UPDATE notenode SET numeric_id = :numeric_id WHERE rowid = :rowid"),
+            {
+                "numeric_id": next_numeric_id,
+                "rowid": int(record[0]),
+            },
+        )
+
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_notenode_numeric_id ON notenode (numeric_id)"))
+    session.commit()
+    print("  Added note numeric ids.")
+
+
 # --- Migration Registry ---
 # List of (version, description, function)
 MIGRATIONS = [
@@ -2332,6 +2386,8 @@ MIGRATIONS = [
     (40, "Add Eastmoney trade sync tables", v40_add_eastmoney_trade_sync_tables),
     (41, "Add Eastmoney trade detail fields", v41_add_eastmoney_trade_detail_fields),
     (42, "Add Eastmoney PDF statement tables", v42_add_eastmoney_pdf_statement_tables),
+    (43, "Add service access token table", v43_add_service_access_token_table),
+    (44, "Add note numeric ids", v44_add_note_numeric_ids),
 ]
 
 def get_current_version(session: Session) -> int:

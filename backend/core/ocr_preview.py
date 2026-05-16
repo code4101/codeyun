@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 import os
 import sys
+import gc
+import time
 from pathlib import Path
-from threading import RLock
+from dataclasses import dataclass
+from threading import Condition, Event, RLock, Thread
 from typing import Any, Literal
 
 from PIL import Image, UnidentifiedImageError
@@ -13,12 +16,38 @@ from backend.core.settings import get_settings
 
 OcrShapeType = Literal["polygon", "rectangle"]
 
-_ocr_instance_lock = RLock()
-_ocr_instance_cache: dict[tuple[str, str, bool, bool, bool], Any] = {}
-
 
 class OcrPreviewError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class PaddleOcrRuntimeConfig:
+    device: str
+    lang: str
+    use_doc_orientation_classify: bool
+    use_doc_unwarping: bool
+    use_textline_orientation: bool
+
+    @property
+    def key(self) -> tuple[str, str, bool, bool, bool]:
+        return (
+            self.device,
+            self.lang,
+            self.use_doc_orientation_classify,
+            self.use_doc_unwarping,
+            self.use_textline_orientation,
+        )
+
+
+@dataclass(slots=True)
+class _OcrInstanceRecord:
+    id: int
+    config: PaddleOcrRuntimeConfig
+    instance: Any
+    generation: int
+    created_at: float
+    last_used_at: float
 
 
 def _round_float(value: float, digits: int = 4) -> float:
@@ -191,69 +220,343 @@ def _apply_ocr_runtime_environment(*, device: str) -> None:
         os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
 
 
-def _get_ocr_instance() -> Any:
+def _coerce_bool_option(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
+def _build_runtime_config(options: dict[str, Any] | None = None) -> PaddleOcrRuntimeConfig:
     settings = get_settings()
-    cache_key = (
-        settings.ocr_device,
-        settings.ocr_lang,
-        settings.ocr_use_doc_orientation_classify,
-        settings.ocr_use_doc_unwarping,
-        settings.ocr_use_textline_orientation,
+    options = options or {}
+    device = str(options.get("device") or options.get("ocr_device") or settings.ocr_device).strip().lower() or settings.ocr_device
+    lang = str(options.get("lang") or options.get("ocr_lang") or settings.ocr_lang).strip() or settings.ocr_lang
+    return PaddleOcrRuntimeConfig(
+        device=device,
+        lang=lang,
+        use_doc_orientation_classify=_coerce_bool_option(
+            options.get("use_doc_orientation_classify", options.get("ocr_use_doc_orientation_classify")),
+            settings.ocr_use_doc_orientation_classify,
+        ),
+        use_doc_unwarping=_coerce_bool_option(
+            options.get("use_doc_unwarping", options.get("ocr_use_doc_unwarping")),
+            settings.ocr_use_doc_unwarping,
+        ),
+        use_textline_orientation=_coerce_bool_option(
+            options.get("use_textline_orientation", options.get("ocr_use_textline_orientation")),
+            settings.ocr_use_textline_orientation,
+        ),
     )
 
-    with _ocr_instance_lock:
-        cached = _ocr_instance_cache.get(cache_key)
-        if cached is not None:
-            return cached
 
-        _apply_ocr_runtime_environment(device=settings.ocr_device)
-        try:
-            from paddleocr import PaddleOCR
-        except Exception as exc:  # pragma: no cover - depends on runtime env
-            raise OcrPreviewError("PaddleOCR 不可用，请先完成 codeyun backend 的 OCR 依赖安装") from exc
-
-        instance = PaddleOCR(
-            lang=settings.ocr_lang,
-            device=settings.ocr_device,
-            use_doc_orientation_classify=settings.ocr_use_doc_orientation_classify,
-            use_doc_unwarping=settings.ocr_use_doc_unwarping,
-            use_textline_orientation=settings.ocr_use_textline_orientation,
-        )
-        _ocr_instance_cache[cache_key] = instance
-        return instance
-
-
-def run_paddle_ocr_preview(image_path: Path, *, shape_type: OcrShapeType = "polygon") -> dict[str, Any]:
+def _create_ocr_instance(config: PaddleOcrRuntimeConfig) -> Any:
+    _apply_ocr_runtime_environment(device=config.device)
     try:
-        with Image.open(image_path) as image:
-            image_width, image_height = image.size
-    except FileNotFoundError as exc:
-        raise OcrPreviewError("图片文件不存在") from exc
-    except UnidentifiedImageError as exc:
-        raise OcrPreviewError("目标文件不是可识别图片") from exc
-    except OSError as exc:
-        raise OcrPreviewError(f"读取图片失败：{exc}") from exc
-
-    try:
-        ocr_instance = _get_ocr_instance()
-        results = ocr_instance.predict(str(image_path))
-    except OcrPreviewError:
-        raise
+        from paddleocr import PaddleOCR
     except Exception as exc:  # pragma: no cover - depends on runtime env
-        raise OcrPreviewError(f"OCR 识别失败：{exc}") from exc
+        raise OcrPreviewError("PaddleOCR 不可用，请先完成 codeyun backend 的 OCR 依赖安装") from exc
 
-    result = results[0] if isinstance(results, list) and results else {}
-    payload = _extract_predict_payload(result) if result else {}
-    document = build_ocr_labelme_document_from_payload(
-        payload,
-        image_path=str(image_path),
-        image_width=image_width,
-        image_height=image_height,
-        shape_type=shape_type,
+    return PaddleOCR(
+        lang=config.lang,
+        device=config.device,
+        use_doc_orientation_classify=config.use_doc_orientation_classify,
+        use_doc_unwarping=config.use_doc_unwarping,
+        use_textline_orientation=config.use_textline_orientation,
     )
-    return {
-        "engine": "paddleocr",
-        "shape_type": shape_type,
-        "shape_count": len(document["shapes"]),
-        "document": document,
-    }
+
+
+def _get_ocr_instance(config: PaddleOcrRuntimeConfig | None = None) -> Any:
+    return _create_ocr_instance(config or _build_runtime_config())
+
+
+class PaddleOcrServiceManager:
+    def __init__(self) -> None:
+        self._condition = Condition(RLock())
+        self._idle_instances: list[_OcrInstanceRecord] = []
+        self._total_instances = 0
+        self._active_instances = 0
+        self._next_instance_id = 0
+        self._generation = 0
+        self._call_count = 0
+        self._error_count = 0
+        self._last_loaded_at: float | None = None
+        self._last_used_at: float | None = None
+        self._last_error: str | None = None
+        self._cleanup_stop_event: Event | None = None
+        self._cleanup_thread: Thread | None = None
+
+    def _settings_limits(self) -> tuple[int, int, float]:
+        settings = get_settings()
+        return (
+            max(1, settings.ocr_max_instances),
+            max(30, settings.ocr_idle_timeout_seconds),
+            max(0.0, settings.ocr_acquire_timeout_seconds),
+        )
+
+    def start_idle_cleanup_thread(self) -> None:
+        with self._condition:
+            if self._cleanup_thread and self._cleanup_thread.is_alive():
+                return
+            stop_event = Event()
+            self._cleanup_stop_event = stop_event
+            self._cleanup_thread = Thread(
+                target=self._cleanup_loop,
+                name="codeyun-ocr-idle-cleanup",
+                daemon=True,
+            )
+            self._cleanup_thread.start()
+
+    def stop_idle_cleanup_thread(self) -> None:
+        thread: Thread | None = None
+        with self._condition:
+            if self._cleanup_stop_event:
+                self._cleanup_stop_event.set()
+            thread = self._cleanup_thread
+            self._cleanup_stop_event = None
+            self._cleanup_thread = None
+        if thread and thread.is_alive():
+            thread.join(timeout=2)
+
+    def _cleanup_loop(self) -> None:
+        while True:
+            with self._condition:
+                stop_event = self._cleanup_stop_event
+            if stop_event is None:
+                return
+            _, idle_timeout_seconds, _ = self._settings_limits()
+            wait_seconds = max(15.0, min(60.0, idle_timeout_seconds / 2))
+            if stop_event.wait(wait_seconds):
+                return
+            self.cleanup_idle()
+
+    def _drop_idle_records_locked(self, records: list[_OcrInstanceRecord]) -> None:
+        if not records:
+            return
+        drop_ids = {record.id for record in records}
+        self._idle_instances = [record for record in self._idle_instances if record.id not in drop_ids]
+        self._total_instances = max(0, self._total_instances - len(records))
+        self._condition.notify_all()
+
+    def _cleanup_idle_locked(self, now: float | None = None) -> int:
+        now = now or time.time()
+        _, idle_timeout_seconds, _ = self._settings_limits()
+        expired = [
+            record
+            for record in self._idle_instances
+            if now - record.last_used_at >= idle_timeout_seconds
+        ]
+        self._drop_idle_records_locked(expired)
+        return len(expired)
+
+    def cleanup_idle(self) -> int:
+        with self._condition:
+            released = self._cleanup_idle_locked()
+        if released:
+            gc.collect()
+        return released
+
+    def reset(self) -> dict[str, Any]:
+        with self._condition:
+            self._generation += 1
+            idle_count = len(self._idle_instances)
+            self._idle_instances = []
+            self._total_instances = max(0, self._total_instances - idle_count)
+            self._condition.notify_all()
+        if idle_count:
+            gc.collect()
+        return self.get_status()
+
+    def _reserve_or_wait(self, config: PaddleOcrRuntimeConfig) -> tuple[int, int, bool, _OcrInstanceRecord | None]:
+        deadline = time.time() + self._settings_limits()[2]
+        with self._condition:
+            while True:
+                max_instances, _, acquire_timeout_seconds = self._settings_limits()
+                now = time.time()
+                self._cleanup_idle_locked(now)
+
+                for index, record in enumerate(self._idle_instances):
+                    if record.config.key == config.key:
+                        self._idle_instances.pop(index)
+                        self._active_instances += 1
+                        return record.id, record.generation, False, record
+
+                if self._total_instances < max_instances:
+                    self._next_instance_id += 1
+                    instance_id = self._next_instance_id
+                    generation = self._generation
+                    self._total_instances += 1
+                    self._active_instances += 1
+                    return instance_id, generation, True, None
+
+                if self._idle_instances:
+                    oldest = min(self._idle_instances, key=lambda item: item.last_used_at)
+                    self._drop_idle_records_locked([oldest])
+                    continue
+
+                remaining = deadline - now
+                if acquire_timeout_seconds <= 0 or remaining <= 0:
+                    raise OcrPreviewError("OCR 服务繁忙，请稍后重试")
+                self._condition.wait(timeout=remaining)
+
+    def _create_record(self, instance_id: int, generation: int, config: PaddleOcrRuntimeConfig) -> _OcrInstanceRecord:
+        try:
+            try:
+                instance = _get_ocr_instance(config)
+            except TypeError:
+                instance = _get_ocr_instance()
+        except OcrPreviewError:
+            raise
+        except Exception as exc:  # pragma: no cover - depends on runtime env
+            raise OcrPreviewError(f"PaddleOCR 初始化失败：{exc}") from exc
+
+        now = time.time()
+        with self._condition:
+            self._last_loaded_at = now
+        return _OcrInstanceRecord(
+            id=instance_id,
+            config=config,
+            instance=instance,
+            generation=generation,
+            created_at=now,
+            last_used_at=now,
+        )
+
+    def _acquire(self, config: PaddleOcrRuntimeConfig) -> _OcrInstanceRecord:
+        instance_id, generation, should_create, record = self._reserve_or_wait(config)
+        if not should_create and record is not None:
+            return record
+
+        try:
+            return self._create_record(instance_id, generation, config)
+        except Exception:
+            with self._condition:
+                self._active_instances = max(0, self._active_instances - 1)
+                self._total_instances = max(0, self._total_instances - 1)
+                self._condition.notify_all()
+            raise
+
+    def _release(self, record: _OcrInstanceRecord, *, reusable: bool = True) -> None:
+        now = time.time()
+        record.last_used_at = now
+        with self._condition:
+            self._active_instances = max(0, self._active_instances - 1)
+            if reusable and record.generation == self._generation:
+                self._idle_instances.append(record)
+            else:
+                self._total_instances = max(0, self._total_instances - 1)
+            self._condition.notify_all()
+
+    def predict_file(
+        self,
+        image_path: Path,
+        *,
+        shape_type: OcrShapeType = "polygon",
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            with Image.open(image_path) as image:
+                image_width, image_height = image.size
+        except FileNotFoundError as exc:
+            raise OcrPreviewError("图片文件不存在") from exc
+        except UnidentifiedImageError as exc:
+            raise OcrPreviewError("目标文件不是可识别图片") from exc
+        except OSError as exc:
+            raise OcrPreviewError(f"读取图片失败：{exc}") from exc
+
+        config = _build_runtime_config(options)
+        record = self._acquire(config)
+        try:
+            results = record.instance.predict(str(image_path))
+        except Exception as exc:  # pragma: no cover - depends on runtime env
+            message = f"OCR 识别失败：{exc}"
+            with self._condition:
+                self._error_count += 1
+                self._last_error = message
+            raise OcrPreviewError(message) from exc
+        finally:
+            self._release(record)
+
+        result = results[0] if isinstance(results, list) and results else {}
+        payload = _extract_predict_payload(result) if result else {}
+        document = build_ocr_labelme_document_from_payload(
+            payload,
+            image_path=str(image_path),
+            image_width=image_width,
+            image_height=image_height,
+            shape_type=shape_type,
+        )
+        with self._condition:
+            self._call_count += 1
+            self._last_used_at = time.time()
+        return {
+            "engine": "paddleocr",
+            "shape_type": shape_type,
+            "shape_count": len(document["shapes"]),
+            "document": document,
+        }
+
+    def get_status(self) -> dict[str, Any]:
+        now = time.time()
+        with self._condition:
+            self._cleanup_idle_locked(now)
+            settings = get_settings()
+            _, idle_timeout_seconds, acquire_timeout_seconds = self._settings_limits()
+            latest_idle_used_at = max((record.last_used_at for record in self._idle_instances), default=None)
+            idle_expires_at = (
+                latest_idle_used_at + idle_timeout_seconds
+                if latest_idle_used_at is not None and self._active_instances == 0
+                else None
+            )
+            return {
+                "key": "ocr",
+                "title": "OCR",
+                "engine": "paddleocr",
+                "device": settings.ocr_device,
+                "lang": settings.ocr_lang,
+                "loaded": self._total_instances > 0,
+                "state": "running" if self._active_instances else ("idle" if self._total_instances else "cold"),
+                "instance_count": self._total_instances,
+                "idle_instance_count": len(self._idle_instances),
+                "active_instance_count": self._active_instances,
+                "max_instances": settings.ocr_max_instances,
+                "idle_timeout_seconds": idle_timeout_seconds,
+                "idle_expires_at": idle_expires_at,
+                "idle_remaining_seconds": (
+                    max(0.0, idle_expires_at - now)
+                    if idle_expires_at is not None
+                    else None
+                ),
+                "acquire_timeout_seconds": acquire_timeout_seconds,
+                "call_count": self._call_count,
+                "error_count": self._error_count,
+                "last_loaded_at": self._last_loaded_at,
+                "last_used_at": self._last_used_at,
+                "last_error": self._last_error,
+                "options": {
+                    "use_doc_orientation_classify": settings.ocr_use_doc_orientation_classify,
+                    "use_doc_unwarping": settings.ocr_use_doc_unwarping,
+                    "use_textline_orientation": settings.ocr_use_textline_orientation,
+                },
+            }
+
+
+ocr_service_manager = PaddleOcrServiceManager()
+
+
+def run_paddle_ocr_preview(
+    image_path: Path,
+    *,
+    shape_type: OcrShapeType = "polygon",
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return ocr_service_manager.predict_file(Path(image_path), shape_type=shape_type, options=options)

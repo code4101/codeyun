@@ -1,6 +1,6 @@
 <template>
   <div ref="editorContainerRef" class="editor-container" :class="`is-${layout}`" :style="editorStyle" @click="handleContainerClick">
-    <div v-if="(showToolbar && !readOnly) || showWrapToggle" class="editor-toolbar-row">
+    <div v-if="isEditorReady && ((showToolbar && !readOnly) || showWrapToggle)" class="editor-toolbar-row">
       <Toolbar
         v-if="showToolbar && !readOnly"
         class="editor-toolbar"
@@ -155,9 +155,116 @@ const emit = defineEmits(['update:modelValue', 'change'])
 const editorRef = shallowRef()
 const editorContainerRef = ref<HTMLElement | null>(null)
 const detachIndentHotkeysRef = ref<(() => void) | null>(null)
+const isEditorReady = computed(() => Boolean(editorRef.value))
+const suppressModelDrivenChange = ref(true)
+let releaseModelDrivenChangeTimer: number | null = null
 
-// 内容 HTML，直接使用 props 初始化
-const valueHtml = ref(props.modelValue)
+const isLegacyLakeHtml = (html: string) => (
+    /<!DOCTYPE\s+lake/i.test(html)
+    || /data-lake-id\s*=/i.test(html)
+    || /class=["'][^"']*lake-/i.test(html)
+    || /name=["']doc-version["']/i.test(html)
+)
+
+const sanitizeLegacyLakeHtml = (html: string) => {
+    const source = String(html || '')
+    if (!source || !isLegacyLakeHtml(source)) return source
+
+    const stripped = source
+        .replace(/<!DOCTYPE[^>]*>/gi, '')
+        .replace(/<meta\b[^>]*>/gi, '')
+        .trim()
+
+    if (typeof DOMParser === 'undefined') return stripped || '<p><br></p>'
+
+    try {
+        const doc = new DOMParser().parseFromString(stripped, 'text/html')
+        doc.body.querySelectorAll('script, style, link, meta, title').forEach(el => el.remove())
+        doc.body.querySelectorAll<HTMLElement>('*').forEach(el => {
+            Array.from(el.attributes).forEach(attr => {
+                const name = attr.name.toLowerCase()
+                if (
+                    name === 'id'
+                    || name === 'fid'
+                    || name === 'list'
+                    || name === 'spellcheck'
+                    || name === 'data-lake-id'
+                    || name.startsWith('data-lake-')
+                ) {
+                    el.removeAttribute(attr.name)
+                }
+            })
+
+            const classAttr = el.getAttribute('class')
+            if (classAttr) {
+                const classes = classAttr.split(/\s+/).filter(name => name && !name.startsWith('lake-'))
+                if (classes.length) el.setAttribute('class', classes.join(' '))
+                else el.removeAttribute('class')
+            }
+        })
+        return doc.body.innerHTML.trim() || '<p><br></p>'
+    } catch {
+        return stripped || '<p><br></p>'
+    }
+}
+
+const normalizeAdjacentInlineSpans = (html: string) => {
+    const source = String(html || '')
+    if (!source || !source.includes('<span')) return source
+    if (typeof DOMParser === 'undefined') return source
+
+    const sameAttributes = (left: Element, right: Element) => {
+        const leftAttrs = Array.from(left.attributes)
+            .map(attr => [attr.name, attr.value] as const)
+            .sort(([a], [b]) => a.localeCompare(b))
+        const rightAttrs = Array.from(right.attributes)
+            .map(attr => [attr.name, attr.value] as const)
+            .sort(([a], [b]) => a.localeCompare(b))
+        if (leftAttrs.length !== rightAttrs.length) return false
+        return leftAttrs.every(([name, value], index) => {
+            const [rightName, rightValue] = rightAttrs[index]
+            return name === rightName && value === rightValue
+        })
+    }
+
+    const mergeIntoLeft = (left: Element, right: Element) => {
+        while (right.firstChild) left.appendChild(right.firstChild)
+        right.remove()
+    }
+
+    const visit = (element: Element) => {
+        Array.from(element.children).forEach(visit)
+        let node: ChildNode | null = element.firstChild
+        while (node) {
+            const next = node.nextSibling
+            if (
+                next
+                && node.nodeType === Node.ELEMENT_NODE
+                && next.nodeType === Node.ELEMENT_NODE
+                && (node as Element).tagName.toLowerCase() === 'span'
+                && (next as Element).tagName.toLowerCase() === 'span'
+                && sameAttributes(node as Element, next as Element)
+            ) {
+                mergeIntoLeft(node as Element, next as Element)
+                continue
+            }
+            node = next
+        }
+    }
+
+    try {
+        const doc = new DOMParser().parseFromString(source, 'text/html')
+        Array.from(doc.body.children).forEach(visit)
+        return doc.body.innerHTML || source
+    } catch {
+        return source
+    }
+}
+
+const normalizeEditorInputHtml = (html: string) => normalizeAdjacentInlineSpans(sanitizeLegacyLakeHtml(html))
+
+// 内容 HTML，先把旧语雀 Lake 文档片段清理成编辑器可解析的普通 HTML
+const valueHtml = ref(normalizeEditorInputHtml(props.modelValue))
 
 const readOnly = toRef(props, 'readOnly')
 const showToolbar = toRef(props, 'showToolbar')
@@ -200,17 +307,31 @@ const editorStyle = computed(() => {
     }
 })
 
+const suppressInitialEditorChange = () => {
+    suppressModelDrivenChange.value = true
+    if (releaseModelDrivenChangeTimer != null) {
+        window.clearTimeout(releaseModelDrivenChangeTimer)
+    }
+    releaseModelDrivenChangeTimer = window.setTimeout(() => {
+        suppressModelDrivenChange.value = false
+        releaseModelDrivenChangeTimer = null
+    }, 250)
+}
+
 // 模拟 ajax 异步获取内容
 onMounted(() => {
-    valueHtml.value = props.modelValue
+    suppressInitialEditorChange()
+    valueHtml.value = normalizeEditorInputHtml(props.modelValue)
 })
 
 // 监听 props 变化
 watch(() => props.modelValue, (newVal) => {
+    const normalizedVal = normalizeEditorInputHtml(newVal)
     // 只有当传入的新值与当前编辑器内容确实不同，且新值不为空时才更新
     // 或者当新值为空字符串，且编辑器不为空时更新（处理清空操作）
-    if (newVal !== valueHtml.value) {
-        valueHtml.value = newVal
+    if (normalizedVal !== valueHtml.value) {
+        suppressInitialEditorChange()
+        valueHtml.value = normalizedVal
     }
 })
 
@@ -391,6 +512,7 @@ const handleAttachmentInputChange = async (event: Event) => {
 const editorConfig: any = {
     placeholder: '',
     readOnly: props.readOnly,
+    autoFocus: false,
     MENU_CONF: {
         uploadImage: {
             maxFileSize: 10 * 1024 * 1024, // 10M
@@ -423,6 +545,10 @@ const editorConfig: any = {
 
 // 组件销毁时，也及时销毁编辑器
 onBeforeUnmount(() => {
+    if (releaseModelDrivenChangeTimer != null) {
+        window.clearTimeout(releaseModelDrivenChangeTimer)
+        releaseModelDrivenChangeTimer = null
+    }
     detachIndentHotkeysRef.value?.()
     detachIndentHotkeysRef.value = null
     const editor = editorRef.value
@@ -461,6 +587,7 @@ const bindIndentHotkeys = (editor: IDomEditor) => {
 const handleCreated = (editor: any) => {
     editorRef.value = editor // 记录 editor 实例，重要！
     bindIndentHotkeys(editor)
+    suppressInitialEditorChange()
 
     // 监听自定义菜单事件
     editor.on('image-merge-click', () => {
@@ -498,8 +625,10 @@ const handleContainerClick = (e: MouseEvent) => {
 }
 
 const handleChange = (editor: any) => {
-    emit('update:modelValue', editor.getHtml())
-    emit('change', editor.getHtml())
+    if (suppressModelDrivenChange.value) return
+    const nextHtml = editor.getHtml()
+    emit('update:modelValue', nextHtml)
+    emit('change', nextHtml)
 }
 
 const syncValueFromEditor = () => {
@@ -689,6 +818,16 @@ const confirmInsertMergedImage = () => {
     min-width: 0;
 }
 
+:deep(.w-e-text-container [data-slate-editor]) {
+    color: #1f2933;
+    font-size: 15px;
+    line-height: 1.7;
+}
+
+.editor-container.is-flow :deep(.w-e-text-container [data-slate-editor]) {
+    max-width: 920px;
+}
+
 .editor-container.is-fill :deep([data-w-e-textarea='true']) {
     display: flex;
     flex-direction: column;
@@ -745,14 +884,66 @@ const confirmInsertMergedImage = () => {
 
 :deep(.w-e-text-container blockquote),
 :deep(.w-e-text-container li),
-:deep(.w-e-text-container p),
+:deep(.w-e-text-container p) {
+    line-height: 1.7 !important;
+}
+
 :deep(.w-e-text-container td),
 :deep(.w-e-text-container th) {
-    line-height: 1 !important;
+    line-height: 1.45 !important;
 }
 
 :deep(.w-e-text-container [data-slate-editor] p) {
-    margin: 6px 0 !important;
+    margin: 0 0 0.72em !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] h1) {
+    margin: 0.95em 0 0.55em !important;
+    font-size: 2em !important;
+    line-height: 1.25 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] h2) {
+    margin: 1.25em 0 0.55em !important;
+    font-size: 1.55em !important;
+    line-height: 1.3 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] h3) {
+    margin: 1.1em 0 0.5em !important;
+    font-size: 1.25em !important;
+    line-height: 1.35 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] h1:first-child),
+:deep(.w-e-text-container [data-slate-editor] h2:first-child),
+:deep(.w-e-text-container [data-slate-editor] h3:first-child) {
+    margin-top: 0 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] ol),
+:deep(.w-e-text-container [data-slate-editor] ul) {
+    margin: 0.35em 0 0.85em !important;
+    padding-left: 1.55em !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] li) {
+    margin: 0.22em 0 !important;
+}
+
+:deep(.w-e-text-container [data-slate-editor] blockquote) {
+    margin: 0.85em 0 !important;
+    padding: 0.05em 0 0.05em 0.9em !important;
+    border-left: 3px solid #dcdfe6 !important;
+    color: #4b5563;
+}
+
+:deep(.w-e-text-container [data-slate-editor] pre) {
+    margin: 0.9em 0 !important;
+    padding: 10px 12px !important;
+    border-radius: 4px;
+    background: #f5f7fa !important;
+    line-height: 1.55 !important;
 }
 
 .editor-content-area.is-no-wrap :deep(.w-e-text-container [data-slate-editor]) {

@@ -28,6 +28,7 @@ export interface RimeContextPredictionTree {
   status: string;
   message: string;
   rime_dir: string | null;
+  source_kind?: string;
   source: string | null;
   source_path: string | null;
   updated_at: number | null;
@@ -35,6 +36,8 @@ export interface RimeContextPredictionTree {
   summary: RimeContextPredictionSummary;
   rows: RimeContextPredictionRow[];
 }
+
+export type RimeContextPredictionSource = 'snapshot' | 'hot' | 'seed';
 
 export interface RimeContextArticle {
   id: string;
@@ -184,6 +187,11 @@ export interface RimeContextLintQuery {
   history_limit?: number;
 }
 
+export interface RimeContextPredictionTreeQuery {
+  source?: RimeContextPredictionSource | string;
+  limit?: number;
+}
+
 export interface RimeContextCandidateDeletePayload {
   context: string;
   prefix: string;
@@ -202,20 +210,23 @@ export interface RimeContextCandidateUpdatePayload {
 
 export async function fetchRimeContextPredictionTree(
   entryId: string,
-  limit = 5000,
+  query: RimeContextPredictionTreeQuery = {},
 ): Promise<RimeContextPredictionTree> {
   const response = await api.get<RimeContextPredictionTree>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/tree'),
-    { params: { limit } },
+    { params: { source: query.source || 'snapshot', limit: query.limit || 50000 } },
   );
   return response.data;
 }
 
 export async function refreshRimeContextPredictionTree(
   entryId: string,
+  query: RimeContextPredictionTreeQuery = {},
 ): Promise<RimeContextPredictionTree> {
   const response = await api.post<RimeContextPredictionTree>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/tree/refresh'),
+    undefined,
+    { params: { source: query.source || 'snapshot', limit: query.limit || 50000 } },
   );
   return response.data;
 }

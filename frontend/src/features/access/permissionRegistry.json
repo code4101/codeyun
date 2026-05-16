@@ -611,6 +611,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "cluster.services",
+      "title": "服务管理",
+      "node_type": "feature",
+      "parent_key": "cluster-tools",
+      "sort_order": 18,
+      "route_paths": ["/cluster/services"],
+      "menu_paths": ["/cluster/services"],
+      "api_scopes": ["cluster-tools.services"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "cluster.files",
       "title": "浏览文件",
       "node_type": "feature",

@@ -28,6 +28,11 @@ from backend.core.fanbei_attendance_schedule import (
     FANBEI_ATTENDANCE_COURSE_NAME,
     run_fanbei_attendance_step3_for_sheet,
 )
+from backend.core.nianzhu_attendance_schedule import (
+    NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID,
+    NIANZHU_CHUANGGUAN_COURSE_NAME,
+    run_nianzhu_attendance_step3_for_sheet,
+)
 from kq5034.attendance_api import (
     build_fanbei_attendance_step2_data,
     inspect_fanbei_lesson_export_page,
@@ -272,6 +277,11 @@ class AttendanceFanbeiStep3Request(BaseModel):
     course_name: str = FANBEI_ATTENDANCE_COURSE_NAME
 
 
+class AttendanceNianzhuStep3Request(BaseModel):
+    sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
+
+
 class AttendanceFanbeiStep2InspectRequest(BaseModel):
     course_name: str
     user_ids: List[str] = Field(default_factory=list)
@@ -335,6 +345,18 @@ def run_attendance_fanbei_step3(req: AttendanceFanbeiStep3Request | None = None)
     req = req or AttendanceFanbeiStep3Request()
     try:
         return run_fanbei_attendance_step3_for_sheet(
+            sheet_id=req.sheet_id,
+            course_name=req.course_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/nianzhu/step3")
+def run_attendance_nianzhu_step3(req: AttendanceNianzhuStep3Request | None = None):
+    req = req or AttendanceNianzhuStep3Request()
+    try:
+        return run_nianzhu_attendance_step3_for_sheet(
             sheet_id=req.sheet_id,
             course_name=req.course_name,
         )

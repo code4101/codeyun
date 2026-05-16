@@ -10,9 +10,22 @@ function normalizePositiveInt(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null
 }
 
+function normalizeWorkspaceViewQuery(value: unknown): 'lookup' | 'sheet' | null {
+  const raw = Array.isArray(value) ? value[0] : value
+  const text = String(raw ?? '').trim().toLowerCase()
+  if (['lookup', 'quick', 'search', '速查'].includes(text)) {
+    return 'lookup'
+  }
+  if (['sheet', 'table', 'grid', '表格'].includes(text)) {
+    return 'sheet'
+  }
+  return null
+}
+
 function redirectToWorkbookWindow() {
   const workbookId = normalizePositiveInt(route.params.workbookId)
   const sheetId = normalizePositiveInt(route.query.sheet)
+  const workspaceView = normalizeWorkspaceViewQuery(route.query.view ?? route.query.mode ?? route.query.sheetView)
 
   if (workbookId == null) {
     void router.replace('/notes/sheets')
@@ -23,6 +36,9 @@ function redirectToWorkbookWindow() {
   if (sheetId != null) {
     nextQuery.sheet = String(sheetId)
   }
+  if (workspaceView) {
+    nextQuery.view = workspaceView
+  }
 
   void router.replace({
     path: `/workbook/${workbookId}`,
@@ -31,7 +47,7 @@ function redirectToWorkbookWindow() {
 }
 
 watch(
-  [() => route.params.workbookId, () => route.query.sheet],
+  [() => route.params.workbookId, () => route.query.sheet, () => route.query.view, () => route.query.mode, () => route.query.sheetView],
   () => {
     redirectToWorkbookWindow()
   },

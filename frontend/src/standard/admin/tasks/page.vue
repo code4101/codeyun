@@ -112,18 +112,45 @@
       </el-table-column>
     </el-table>
 
-    <section v-if="queueItems.length" class="recent-section">
+    <section class="recent-section">
       <div class="section-title">队列记录</div>
-      <div class="recent-list">
-        <div
-          v-for="item in queueItems"
-          :key="item.id"
-          :class="['recent-row', { deleting: deletingQueueItemId === item.id }]"
-          @contextmenu.prevent.stop="handleQueueItemContextMenu(item, $event)"
-        >
-          <span>{{ item.name }}</span>
-          <el-tag size="small" :type="statusType(item.status)" effect="plain">{{ statusLabel(item.status) }}</el-tag>
-          <span class="muted">{{ formatTimestamp(item.finished_at || item.started_at || item.queued_at) }}</span>
+      <div class="queue-record-groups">
+        <div class="queue-record-group">
+          <div class="queue-record-title">将要运行</div>
+          <div v-if="upcomingQueueItems.length" class="recent-list">
+            <div
+              v-for="item in upcomingQueueItems"
+              :key="queueItemKey(item)"
+              :class="['recent-row', { deleting: item.queueItem?.id === deletingQueueItemId, actionable: item.queueItem }]"
+              @contextmenu.prevent.stop="handleQueueRecordContextMenu(item, $event)"
+            >
+              <span>{{ item.name }}</span>
+              <el-tag v-if="shouldShowQueueRecordTag(item)" size="small" :type="statusType(item.status)" effect="plain">
+                {{ statusLabel(item.status) }}
+              </el-tag>
+              <span class="muted">{{ item.timeText }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-queue-text">暂无可计算的下次运行</div>
+        </div>
+
+        <div class="queue-record-group">
+          <div class="queue-record-title">最近完成</div>
+          <div v-if="recentQueueItems.length" class="recent-list">
+            <div
+              v-for="item in recentQueueItems"
+              :key="queueItemKey(item)"
+              :class="['recent-row', { deleting: item.queueItem?.id === deletingQueueItemId, actionable: item.queueItem }]"
+              @contextmenu.prevent.stop="handleQueueRecordContextMenu(item, $event)"
+            >
+              <span>{{ item.name }}</span>
+              <el-tag v-if="shouldShowQueueRecordTag(item)" size="small" :type="statusType(item.status)" effect="plain">
+                {{ statusLabel(item.status) }}
+              </el-tag>
+              <span class="muted">{{ item.timeText }}</span>
+            </div>
+          </div>
+          <div v-else class="empty-queue-text">暂无完成记录</div>
         </div>
       </div>
     </section>
@@ -162,6 +189,14 @@ type TagType = 'success' | 'warning' | 'info' | 'danger' | 'primary';
 type ContextMenuTarget =
   | { kind: 'task'; item: BackgroundTaskItem }
   | { kind: 'queue'; item: BackgroundTaskRunSummary };
+interface QueueRecordItem {
+  id: string
+  name: string
+  status: string
+  timestamp: number
+  timeText: string
+  queueItem?: BackgroundTaskRunSummary
+}
 
 const status = ref<BackgroundTaskStatusResponse | null>(null);
 const initialLoading = ref(false);
@@ -188,10 +223,63 @@ let latestStatusRequestId = 0;
 const tableLoading = computed(() => initialLoading.value && !status.value);
 const tasks = computed(() => status.value?.tasks || []);
 const pendingCount = computed(() => status.value?.queue.pending?.length || 0);
-const queueItems = computed(() => [
-  ...(status.value?.queue.pending || []),
-  ...(status.value?.queue.recent || []),
-].slice(0, 8));
+const sortQueueRecords = (items: QueueRecordItem[], direction: 'asc' | 'desc') => [...items].sort((left, right) => {
+  const diff = left.timestamp - right.timestamp;
+  return direction === 'asc' ? diff : -diff;
+});
+const timestampFromDateTime = (value?: string | null) => {
+  if (!value) return 0;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000);
+};
+const queueRunTimestamp = (item: BackgroundTaskRunSummary) => (
+  item.finished_at || item.started_at || item.queued_at || item.created_at || item.updated_at || 0
+);
+const toQueueRunRecord = (item: BackgroundTaskRunSummary): QueueRecordItem => {
+  const timestamp = queueRunTimestamp(item);
+  return {
+    id: item.id || `${item.name || 'queue'}-${timestamp}`,
+    name: item.name || '-',
+    status: item.status || '',
+    timestamp,
+    timeText: formatTimestamp(timestamp),
+    queueItem: item,
+  };
+};
+const shouldShowQueueRecordTag = (item: QueueRecordItem) => item.status !== 'scheduled';
+const upcomingQueueItems = computed(() => {
+  const running = status.value?.queue.running;
+  const runningRecords = running ? [toQueueRunRecord(running)] : [];
+  const pendingRecords = (status.value?.queue.pending || []).map((item) => {
+    const timestamp = item.queued_at || item.created_at || 0;
+    return {
+      id: item.id || `${item.name || 'pending'}-${timestamp}`,
+      name: item.name || '-',
+      status: item.status || 'pending',
+      timestamp,
+      timeText: formatTimestamp(timestamp),
+      queueItem: item,
+    };
+  });
+  const scheduledRecords = tasks.value
+    .filter((item) => item.enabled && item.next_run_at && !item.active)
+    .map((item) => {
+      const timestamp = timestampFromDateTime(item.next_run_at);
+      return {
+        id: `scheduled-${item.key}`,
+        name: item.title,
+        status: 'scheduled',
+        timestamp,
+        timeText: formatDateTime(item.next_run_at),
+      };
+    });
+  return sortQueueRecords([...runningRecords, ...pendingRecords, ...scheduledRecords], 'asc').slice(0, 10);
+});
+const recentQueueItems = computed(() => sortQueueRecords(
+  (status.value?.queue.recent || []).map(toQueueRunRecord),
+  'desc',
+).slice(0, 10));
+const queueItemKey = (item: QueueRecordItem) => item.id;
 
 const loadStatus = async (options: { silent?: boolean } = {}) => {
   const silent = options.silent === true;
@@ -234,6 +322,7 @@ const statusLabel = (value?: string) => {
   if (key === 'completed') return '完成';
   if (key === 'running') return '运行中';
   if (key === 'pending') return '等待';
+  if (key === 'scheduled') return '计划';
   if (key === 'failed') return '失败';
   if (key === 'skipped') return '跳过';
   if (key === 'clean') return '无变更';
@@ -243,6 +332,7 @@ const statusLabel = (value?: string) => {
 const statusType = (value?: string): TagType => {
   if (value === 'completed' || value === 'clean') return 'success';
   if (value === 'running' || value === 'pending') return 'primary';
+  if (value === 'scheduled') return 'info';
   if (value === 'failed') return 'danger';
   if (value === 'skipped') return 'info';
   return 'info';
@@ -328,6 +418,11 @@ const handleTaskRowContextMenu = (row: BackgroundTaskItem, _column: unknown, eve
 
 const handleQueueItemContextMenu = (item: BackgroundTaskRunSummary, event: MouseEvent) => {
   openContextMenu({ kind: 'queue', item }, event);
+};
+
+const handleQueueRecordContextMenu = (item: QueueRecordItem, event: MouseEvent) => {
+  if (!item.queueItem) return;
+  handleQueueItemContextMenu(item.queueItem, event);
 };
 
 const handleContextDelete = () => {
@@ -545,6 +640,26 @@ onBeforeUnmount(() => {
   font-weight: 600;
 }
 
+.queue-record-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, max-content));
+  gap: 24px;
+  align-items: start;
+}
+
+.queue-record-title {
+  margin-bottom: 6px;
+  color: #606266;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.empty-queue-text {
+  color: #a8abb2;
+  font-size: 13px;
+  line-height: 28px;
+}
+
 .recent-list {
   display: grid;
   gap: 6px;
@@ -560,11 +675,14 @@ onBeforeUnmount(() => {
   border-radius: 4px;
   color: #303133;
   font-size: 13px;
-  cursor: context-menu;
 }
 
 .recent-row:hover {
   background: #f5f7fa;
+}
+
+.recent-row.actionable {
+  cursor: context-menu;
 }
 
 .recent-row.deleting {

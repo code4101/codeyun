@@ -558,6 +558,10 @@ class WorkbookAttachSheetRequest(BaseModel):
     sheet_id: int
 
 
+class WorkbookReorderSheetsRequest(BaseModel):
+    sheet_ids: list[int] = Field(default_factory=list)
+
+
 class WorkbookSaveAsRequest(BaseModel):
     mode: Literal["template", "duplicate"] = "duplicate"
     title: str = ""
@@ -5995,9 +5999,9 @@ def _evaluate_table_formula_expr(
         return literal
 
     upper = text.upper()
-    if upper == "TRUE":
+    if upper in {"TRUE", "TRUE()"}:
         return True
-    if upper == "FALSE":
+    if upper in {"FALSE", "FALSE()"}:
         return False
     if upper == "TODAY()":
         return date.today()
@@ -6069,6 +6073,22 @@ def _evaluate_table_formula_expr(
             if pattern.startswith("*") and pattern.endswith("*"):
                 return sum(1 for value in values if needle in str(value or ""))
             return sum(1 for value in values if str(value or "") == pattern)
+        if name in {"MIN", "MAX", "SUM"} and args:
+            numbers: list[float] = []
+            for arg in args:
+                value = _evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    number = _coerce_formula_number(item)
+                    if number is not None:
+                        numbers.append(number)
+            if not numbers:
+                return 0
+            if name == "MIN":
+                return _format_formula_number(min(numbers))
+            if name == "MAX":
+                return _format_formula_number(max(numbers))
+            return _format_formula_number(sum(numbers))
         if name == "SWITCH" and len(args) >= 3:
             target = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
             pairs = args[1:]
@@ -7952,6 +7972,82 @@ def attach_sheet_to_workbook(
         session.add(workbook)
         session.commit()
         session.refresh(workbook)
+
+    return WorkbookDetailResponse.model_validate(
+        _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),
+    )
+
+
+@router.post("/workbooks/{workbook_id}/sheets/reorder", response_model=WorkbookDetailResponse)
+def reorder_workbook_sheets(
+    workbook_id: int,
+    payload: WorkbookReorderSheetsRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    _require_note_sheets_feature(session, current_user)
+    workbook, access = _get_workbook_or_404(session, current_user, workbook_id, required_role="editor")
+    requested_numeric_ids = [int(sheet_id) for sheet_id in payload.sheet_ids]
+    if not requested_numeric_ids:
+        raise HTTPException(status_code=400, detail="工作表顺序不能为空")
+    if any(sheet_id <= 0 for sheet_id in requested_numeric_ids):
+        raise HTTPException(status_code=400, detail="工作表编号无效")
+    if len(set(requested_numeric_ids)) != len(requested_numeric_ids):
+        raise HTTPException(status_code=400, detail="工作表顺序包含重复项")
+
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    if not links:
+        return WorkbookDetailResponse.model_validate(
+            _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),
+        )
+
+    linked_sheet_ids = [link.sheet_id for link in links]
+    sheets = session.exec(
+        select(SheetDocument)
+        .where(SheetDocument.id.in_(linked_sheet_ids))
+    ).all()
+    sheet_by_numeric_id = {
+        int(sheet.numeric_id): sheet
+        for sheet in sheets
+        if sheet.numeric_id is not None
+    }
+    link_by_sheet_id = {link.sheet_id: link for link in links}
+
+    requested_sheet_ids: list[str] = []
+    for numeric_id in requested_numeric_ids:
+        sheet = sheet_by_numeric_id.get(numeric_id)
+        if sheet is None or sheet.id not in link_by_sheet_id:
+            raise HTTPException(status_code=400, detail="工作表不在当前工作簿中")
+        sheet_access = _resolve_sheet_resource_access(session, sheet, current_user, workbook=workbook)
+        if not sheet_access.capabilities.can_read:
+            raise HTTPException(status_code=403, detail="没有该工作表权限")
+        requested_sheet_ids.append(sheet.id)
+
+    requested_sheet_id_set = set(requested_sheet_ids)
+    requested_links = [link_by_sheet_id[sheet_id] for sheet_id in requested_sheet_ids]
+    requested_link_iter = iter(requested_links)
+    next_links: list[WorkbookSheetLink] = []
+    for link in links:
+        if link.sheet_id in requested_sheet_id_set:
+            next_links.append(next(requested_link_iter))
+        else:
+            next_links.append(link)
+
+    now = time.time()
+    for index, link in enumerate(next_links, start=1):
+        next_order_index = index * 10
+        if link.order_index != next_order_index:
+            link.order_index = next_order_index
+            session.add(link)
+    workbook.updated_by_user_id = current_user.id
+    workbook.updated_at = now
+    session.add(workbook)
+    session.commit()
+    session.refresh(workbook)
 
     return WorkbookDetailResponse.model_validate(
         _serialize_workbook_detail(session, workbook, current_user=current_user, access=access),

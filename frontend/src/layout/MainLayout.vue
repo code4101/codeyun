@@ -108,6 +108,7 @@ const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
 const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
+const CLUSTER_SERVICES_PATH = requirePageMenuPath('ClusterServices');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
 const CLUSTER_TREESIZE_PATH = requirePageMenuPath('ClusterTreeSize');
 const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
@@ -174,6 +175,7 @@ const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFIN
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_RIME_CONTEXT_TITLE = requirePermissionTitleByMenuPath(CLUSTER_RIME_CONTEXT_PATH);
+const CLUSTER_SERVICES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_SERVICES_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
 const CLUSTER_TREESIZE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TREESIZE_PATH);
 const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
@@ -478,6 +480,7 @@ const clusterMenuVisible = computed(() =>
     [
       CLUSTER_TASKS_PATH,
       CLUSTER_RIME_CONTEXT_PATH,
+      CLUSTER_SERVICES_PATH,
       CLUSTER_TREESIZE_PATH,
       CLUSTER_LABELME_PATH,
     ].some((path) => canAccessMenuPath(path))
@@ -890,6 +893,7 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_RIME_CONTEXT_PATH)" :index="CLUSTER_RIME_CONTEXT_PATH">{{ CLUSTER_RIME_CONTEXT_TITLE }}</el-menu-item>
+            <el-menu-item v-if="canAccessMenuPath(CLUSTER_SERVICES_PATH)" :index="CLUSTER_SERVICES_PATH">{{ CLUSTER_SERVICES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TREESIZE_PATH)" :index="CLUSTER_TREESIZE_PATH">{{ CLUSTER_TREESIZE_TITLE }}</el-menu-item>
             <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
               <template #title>

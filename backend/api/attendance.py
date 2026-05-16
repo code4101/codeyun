@@ -306,6 +306,11 @@ class AttendanceWjxDataPage(BaseModel):
     template: dict[str, str]
 
 
+class AttendanceFeedbackHistoryResponse(BaseModel):
+    items: list[AttendanceWjxDataItem] = Field(default_factory=list)
+    total: int
+
+
 class AttendanceWjxDataSheetLocation(BaseModel):
     workbook_id: int
     sheet_id: int
@@ -2484,6 +2489,86 @@ def _build_attendance_wjx_data_page(
     )
 
 
+def _normalize_feedback_history_match_text(value: Any) -> str:
+    return re.sub(r"\s+", "", _normalize_wjx_data_text(value))
+
+
+def _collect_attendance_feedback_history_source_items(session: Session) -> list[dict[str, Any]]:
+    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=False)
+    if sheet_document is not None:
+        document_json = _normalize_attendance_wjx_sheet_document(dict(sheet_document.document_json or {}))
+        columns = list(document_json["columns"])
+        return [
+            item
+            for row in document_json["rows"]
+            if (
+                item := _serialize_attendance_wjx_sheet_row(
+                    row,
+                    columns,
+                    updated_at=float(sheet_document.updated_at or 0.0),
+                )
+            )
+            is not None
+        ]
+
+    template = _get_fixed_wjx_template_payload()
+    activity_ids = _list_attendance_wjx_data_activity_ids(template)
+    statement = (
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id.in_(activity_ids))
+        .order_by(
+            AttendanceWjxDataEntry.seq.desc(),
+            AttendanceWjxDataEntry.synced_at.desc(),
+            AttendanceWjxDataEntry.id.desc(),
+        )
+    )
+    return [serialize_attendance_wjx_data_entry(row) for row in session.exec(statement).all()]
+
+
+def _build_attendance_feedback_history(
+    session: Session,
+    *,
+    course_name: str,
+    student_id_text: str = "",
+    student_name: str = "",
+    limit: int = 8,
+) -> AttendanceFeedbackHistoryResponse:
+    course_key = _normalize_feedback_history_match_text(course_name)
+    student_id_key = _normalize_feedback_history_match_text(student_id_text)
+    student_name_key = _normalize_feedback_history_match_text(student_name)
+    if not course_key or (not student_id_key and not student_name_key):
+        return AttendanceFeedbackHistoryResponse(items=[], total=0)
+
+    matched_items: list[dict[str, Any]] = []
+    for item in _collect_attendance_feedback_history_source_items(session):
+        item_course_key = _normalize_feedback_history_match_text(item.get("course_name"))
+        if item_course_key != course_key:
+            continue
+
+        item_student_id_key = _normalize_feedback_history_match_text(item.get("student_id_text"))
+        item_student_name_key = _normalize_feedback_history_match_text(item.get("student_name"))
+        student_id_matches = bool(student_id_key and item_student_id_key == student_id_key)
+        student_name_matches = bool(student_name_key and item_student_name_key == student_name_key)
+        if not student_id_matches and not student_name_matches:
+            continue
+        matched_items.append(item)
+
+    matched_items.sort(
+        key=lambda item: (
+            int(item.get("seq") or 0),
+            float(item.get("synced_at") or 0.0),
+            int(item.get("id") or 0),
+        ),
+        reverse=True,
+    )
+    total = len(matched_items)
+    normalized_limit = min(max(1, int(limit or 8)), 30)
+    return AttendanceFeedbackHistoryResponse(
+        items=[AttendanceWjxDataItem.model_validate(item) for item in matched_items[:normalized_limit]],
+        total=total,
+    )
+
+
 def _resolve_account_login_username(payload_login_username: Optional[str], payload_name: Optional[str]) -> str:
     login_username = (payload_login_username or "").strip()
     if login_username:
@@ -2990,6 +3075,23 @@ def submit_attendance_feedback(
         request=request,
     )
     return AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry))
+
+
+@public_router.get("/wjx-feedback/history", response_model=AttendanceFeedbackHistoryResponse)
+def list_attendance_feedback_history(
+    course_name: str = Query(default=""),
+    student_id_text: str = Query(default=""),
+    student_name: str = Query(default=""),
+    limit: int = Query(default=8, ge=1, le=30),
+    session: Session = Depends(get_session),
+):
+    return _build_attendance_feedback_history(
+        session,
+        course_name=course_name,
+        student_id_text=student_id_text,
+        student_name=student_name,
+        limit=limit,
+    )
 
 
 @router.get("/wjx-data/sheet", response_model=AttendanceWjxDataSheetLocation)

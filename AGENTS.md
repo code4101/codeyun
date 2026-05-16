@@ -39,7 +39,8 @@
 - 如需恢复旧方案，唯一参考文档是：`docs/自动部署恢复档案.md`。
 - 当前服务器历史口径仍是系统级 `systemd` 服务 `codeyun-backend`，不是 `systemctl --user`；但相关模板文件已从仓库移除。
 - 服务器运行时 `.env` 只负责应用配置，不负责存 SSH 登录信息。
-- `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认回落到 `backend/data/`。
+- `CODEYUN_DATA_DIR` 是可选项；如果不配置，后端默认使用仓库外的数据工作区
+  `D:\home\chenkunze\data\m2603codeyun\codepc_<本机名>`，不要再回落到 `backend/data/`。
 
 ## DSP 静态同步约定
 

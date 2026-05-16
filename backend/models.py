@@ -131,6 +131,26 @@ class AppSetting(SQLModel, table=True):
     updated_at: float = Field(default_factory=time.time)
 
 
+class ServiceAccessToken(SQLModel, table=True):
+    __tablename__ = "serviceaccesstoken"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    label: str = Field(default="未命名服务 Token", index=True)
+    secret_hash: str = Field(index=True, unique=True)
+    secret_encrypted: str = Field(default="", sa_column=Column(Text))
+    masked_value: str = Field(default="")
+    scopes: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    enabled: bool = Field(default=True, index=True)
+    is_legacy: bool = Field(default=False, index=True)
+    notes: str = Field(default="", sa_column=Column(Text))
+    call_count: int = Field(default=0)
+    last_used_at: Optional[float] = Field(default=None, index=True)
+    created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class FanxiuRegionArea(SQLModel, table=True):
     __tablename__ = "fanxiuregionarea"
     __table_args__ = (
@@ -980,6 +1000,7 @@ class EastmoneyFundFlowRecord(SQLModel, table=True):
 class NoteNode(SQLModel, table=True):
     __table_args__ = {'extend_existing': True}
     id: Optional[str] = Field(default=None, primary_key=True) # Using UUID string usually, or int? Frontend used string timestamp. Let's use string for flexibility.
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     title: Optional[str] = Field(default="Untitled")
     content: str = Field(default="") # HTML content

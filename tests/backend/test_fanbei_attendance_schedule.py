@@ -1,6 +1,13 @@
 from datetime import date
 
 from backend.core import fanbei_attendance_schedule as schedule
+from backend.core.attendance_progress_style import (
+    PercentageRefundRule,
+    highlight_percentage_refund_progress,
+    highlight_presence_progress,
+    highlight_threshold_refund_progress,
+    parse_threshold_refund_rules,
+)
 from backend.models import SheetDocument
 
 
@@ -140,6 +147,86 @@ def test_parse_fanbei_video_refund_rules_keeps_old_js_semantics():
     assert rules == {"当堂": 40, "第1天": 32, "第2天": 24, "第3天": 16, "第4天": 8, "回放": 0}
 
 
+def test_attendance_refund_progress_style_uses_white_for_no_refund():
+    refund_amount, color = schedule._highlight_course_progress(
+        {"当堂": 40, "第1天": 32, "回放": 0},
+        "第5天回放/100%",
+    )
+
+    assert refund_amount == 0
+    assert color is None
+
+
+def test_attendance_threshold_refund_style_parses_clockin_rule():
+    rules = parse_threshold_refund_rules('打卡达到"5/10/15/20"次，累计返回"100/150/180/200"元')
+
+    assert [(rule.threshold, rule.refund_amount) for rule in rules] == [
+        (5, 100),
+        (10, 150),
+        (15, 180),
+        (20, 200),
+    ]
+    no_refund, no_color = highlight_threshold_refund_progress(rules, 4)
+    partial_refund, partial_color = highlight_threshold_refund_progress(rules, 10)
+    full_refund, full_color = highlight_threshold_refund_progress(rules, 20)
+    extra_refund, extra_color = highlight_threshold_refund_progress(rules, 30)
+
+    assert no_refund == 0
+    assert no_color is None
+    assert partial_refund == 150
+    assert partial_color is not None
+    assert full_refund == 200
+    assert full_color is not None
+    assert extra_refund == 200
+    assert extra_color is not None
+    assert extra_color != full_color
+
+
+def test_attendance_percentage_refund_style_supports_nianzhu_rule_versions():
+    blank_refund, blank_color = highlight_percentage_refund_progress(
+        [PercentageRefundRule(90, 20)],
+        "--",
+    )
+    current_refund, current_color = highlight_percentage_refund_progress(
+        [PercentageRefundRule(90, 20)],
+        "1遍/98%",
+    )
+    old_partial_refund, old_partial_color = highlight_percentage_refund_progress(
+        [
+            PercentageRefundRule(90, 10),
+            PercentageRefundRule(150, 15),
+            PercentageRefundRule(200, 20),
+        ],
+        "1遍/98%",
+    )
+    old_full_refund, old_full_color = highlight_percentage_refund_progress(
+        [
+            PercentageRefundRule(90, 10),
+            PercentageRefundRule(150, 15),
+            PercentageRefundRule(200, 20),
+        ],
+        "3遍/242%",
+    )
+
+    assert blank_refund == 0
+    assert blank_color is None
+    assert current_refund == 20
+    assert current_color is not None
+    assert old_partial_refund == 10
+    assert old_partial_color is not None
+    assert old_partial_color != current_color
+    assert old_full_refund == 20
+    assert old_full_color is not None
+
+
+def test_attendance_presence_progress_style_colors_non_refund_progress():
+    assert highlight_presence_progress("") is None
+    assert highlight_presence_progress("学习中/0%") is None
+    assert highlight_presence_progress("学习中/63%") is not None
+    assert highlight_presence_progress("3遍/228%") is not None
+    assert highlight_presence_progress("3遍/228%") != highlight_presence_progress("学习中/63%")
+
+
 def test_apply_fanbei_step3_calculates_refunds_and_styles(session):
     columns = [
         "分组",
@@ -273,4 +360,4 @@ def test_apply_fanbei_step3_calculates_refunds_and_styles(session):
     cell_meta = document.document_json["cell_meta"]
     assert cell_meta["3:15"]["style"]["background_color"] != "#FFFFFF"
     assert "3:17" not in cell_meta
-    assert cell_meta["4:15"]["style"]["background_color"].startswith("#")
+    assert "4:15" not in cell_meta

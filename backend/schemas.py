@@ -154,6 +154,7 @@ class NoteUpdate(BaseModel):
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    numeric_id: Optional[int] = None
     user_id: int
     title: str
     content: str
@@ -186,6 +187,7 @@ class NoteRead(BaseModel):
 class NoteListRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
+    numeric_id: Optional[int] = None
     user_id: int
     title: str
     weight: int = 0

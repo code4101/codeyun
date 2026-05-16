@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 
 def migrate():
-    # Database is in backend/data/codeyun.db
+    # Database is in the configured data directory.
     backend_dir = Path(__file__).resolve().parents[2]
     db_path = os.fspath(backend_dir / "data" / "codeyun.db")
     if not os.path.exists(db_path):

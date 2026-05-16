@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import re
+import socket
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -13,7 +15,8 @@ except ImportError:  # pragma: no cover - optional in production
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 BACKEND_DIR = ROOT_DIR / "backend"
-DEFAULT_DATA_DIR = BACKEND_DIR / "data"
+LEGACY_SOURCE_DATA_DIR = BACKEND_DIR / "data"
+DEFAULT_DATA_WORKSPACE_NAME = "m2603codeyun"
 DEFAULT_DEV_CORS_ORIGINS = (
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -47,14 +50,57 @@ def _split_csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _sanitize_path_segment(value: str, fallback: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", value.strip())
+    normalized = normalized.strip("._-")
+    return normalized or fallback
+
+
+def _default_data_workspace_dir() -> Path:
+    explicit = os.getenv("CODEYUN_DATA_WORKSPACE_DIR")
+    if explicit and explicit.strip():
+        path = Path(explicit.strip()).expanduser()
+        if path.is_absolute():
+            return path.resolve(strict=False)
+        return (ROOT_DIR / path).resolve(strict=False)
+
+    if ROOT_DIR.parent.name.lower() == "slns":
+        base_dir = ROOT_DIR.parent.parent
+    else:
+        base_dir = ROOT_DIR.parent
+    return (base_dir / "data" / DEFAULT_DATA_WORKSPACE_NAME).resolve(strict=False)
+
+
+def _default_data_instance_name() -> str:
+    explicit = os.getenv("CODEYUN_DATA_INSTANCE_NAME")
+    if explicit and explicit.strip():
+        raw_name = explicit.strip()
+        if raw_name.lower().startswith("codepc_"):
+            return _sanitize_path_segment(raw_name, "codepc_local")
+        return f"codepc_{_sanitize_path_segment(raw_name, 'local')}"
+
+    hostname = socket.gethostname() or "local"
+    hostname_name = _sanitize_path_segment(hostname.lower(), "local")
+    if hostname_name.lower().startswith("codepc_"):
+        return hostname_name
+    return f"codepc_{hostname_name}"
+
+
+def default_data_dir() -> Path:
+    return (_default_data_workspace_dir() / _default_data_instance_name()).resolve(strict=False)
+
+
+DEFAULT_DATA_DIR = default_data_dir()
+
+
 def _resolve_path(value: str | None, default: Path) -> Path:
     raw = (value or "").strip()
     if not raw:
-        return default
+        return default.resolve(strict=False)
 
     path = Path(raw).expanduser()
     if path.is_absolute():
-        return path
+        return path.resolve(strict=False)
     return (ROOT_DIR / path).resolve()
 
 
@@ -101,6 +147,11 @@ class Settings:
     ocr_use_doc_orientation_classify: bool
     ocr_use_doc_unwarping: bool
     ocr_use_textline_orientation: bool
+    ocr_idle_timeout_seconds: int
+    ocr_max_instances: int
+    ocr_acquire_timeout_seconds: float
+    service_request_max_image_bytes: int
+    public_base_url: str
 
     @property
     def is_development(self) -> bool:
@@ -109,6 +160,12 @@ class Settings:
     @property
     def attachments_dir(self) -> Path:
         return self.data_dir / "attachments"
+
+    @property
+    def data_workspace_dir(self) -> Path:
+        if self.data_dir.name.lower().startswith("codepc_"):
+            return self.data_dir.parent
+        return self.data_dir
 
     @property
     def is_production(self) -> bool:
@@ -122,7 +179,7 @@ class Settings:
 def load_settings() -> Settings:
     _load_project_dotenv()
     environment = _normalize_environment(os.getenv("CODEYUN_ENV") or os.getenv("ENVIRONMENT"))
-    data_dir = _resolve_path(os.getenv("CODEYUN_DATA_DIR"), DEFAULT_DATA_DIR)
+    data_dir = _resolve_path(os.getenv("CODEYUN_DATA_DIR"), default_data_dir())
     ai_notebook_workdir = _resolve_path(
         os.getenv("CODEYUN_AI_NOTEBOOK_WORKDIR"),
         data_dir / "ai-notebooks",
@@ -194,6 +251,22 @@ def load_settings() -> Settings:
     ocr_use_doc_orientation_classify = _env_flag("CODEYUN_OCR_USE_DOC_ORIENTATION_CLASSIFY", False)
     ocr_use_doc_unwarping = _env_flag("CODEYUN_OCR_USE_DOC_UNWARPING", False)
     ocr_use_textline_orientation = _env_flag("CODEYUN_OCR_USE_TEXTLINE_ORIENTATION", False)
+    try:
+        ocr_idle_timeout_seconds = int(os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS") or 600)
+    except ValueError:
+        ocr_idle_timeout_seconds = 600
+    try:
+        ocr_max_instances = int(os.getenv("CODEYUN_OCR_MAX_INSTANCES") or 1)
+    except ValueError:
+        ocr_max_instances = 1
+    try:
+        ocr_acquire_timeout_seconds = float(os.getenv("CODEYUN_OCR_ACQUIRE_TIMEOUT_SECONDS") or 30)
+    except ValueError:
+        ocr_acquire_timeout_seconds = 30.0
+    try:
+        service_request_max_image_bytes = int(os.getenv("CODEYUN_SERVICE_REQUEST_MAX_IMAGE_BYTES") or (20 * 1024 * 1024))
+    except ValueError:
+        service_request_max_image_bytes = 20 * 1024 * 1024
 
     return Settings(
         data_dir=data_dir,
@@ -231,6 +304,11 @@ def load_settings() -> Settings:
         ocr_use_doc_orientation_classify=ocr_use_doc_orientation_classify,
         ocr_use_doc_unwarping=ocr_use_doc_unwarping,
         ocr_use_textline_orientation=ocr_use_textline_orientation,
+        ocr_idle_timeout_seconds=max(30, ocr_idle_timeout_seconds),
+        ocr_max_instances=max(1, ocr_max_instances),
+        ocr_acquire_timeout_seconds=max(0.0, ocr_acquire_timeout_seconds),
+        service_request_max_image_bytes=max(1024 * 1024, service_request_max_image_bytes),
+        public_base_url=(os.getenv("CODEYUN_PUBLIC_BASE_URL") or "").strip().rstrip("/"),
     )
 
 

@@ -28,13 +28,13 @@ from backend.models import AppSetting
 TaskAction = Callable[[], str | None]
 AUTO_GIT_COMMIT_RUN_TIME = "00:15"
 CODEX_DIARY_RUN_TIME = "00:10"
-ATTENDANCE_SUMMARY_RUN_TIME = "00:05"
+ATTENDANCE_SUMMARY_RUN_TIME = "00:00"
 MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
 MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
 MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
-METADATA_FEEDBACK_INTERVAL_MINUTES = 10
+METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "00:35"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 2
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 3
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
     "note_metadata_feedback_optimization",
@@ -264,8 +264,8 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="元数据反馈优化",
         category="AI",
         description="凌晨窗口消费节点元数据修正样本，调用 Codex CLI 优化标题和元标签生成规则。",
-        schedule_label=f"00:00-05:59 每 {METADATA_FEEDBACK_INTERVAL_MINUTES} 分钟尝试",
-        retry_label="无额外重试",
+        schedule_label=f"每天 {METADATA_FEEDBACK_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
         action=_enqueue_note_metadata_feedback,
         manual_warning="会调用 Codex CLI；失败会跳过，不影响普通功能。",
     ),
@@ -437,12 +437,14 @@ class BackgroundTaskRunner:
                     enabled=_is_task_enabled("auto_git_commit"),
                 )
                 .retry(minutes=10),
-                Action(self._run_task_if_enabled, "note_metadata_feedback_optimization").every(
-                    minutes=METADATA_FEEDBACK_INTERVAL_MINUTES,
+                Action(self._run_task_if_enabled, "note_metadata_feedback_optimization")
+                .daily(
+                    METADATA_FEEDBACK_RUN_TIME,
                     label="note_metadata_feedback_optimization",
-                    persist=True,
+                    start="next",
                     enabled=_is_task_enabled("note_metadata_feedback_optimization"),
-                ),
+                )
+                .retry(minutes=10),
                 Action(self._run_task_if_enabled, "codex_diary_yesterday_import")
                 .daily(
                     CODEX_DIARY_RUN_TIME,

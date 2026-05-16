@@ -18,6 +18,7 @@ from pypinyin import Style, lazy_pinyin
 
 SNAPSHOT_FILE = "context_prediction_snapshot.tsv"
 RUNTIME_FILE = "context_prediction_runtime.tsv"
+HOT_FILE = "context_prediction_hot.tsv"
 COUNTS_FILE = "context_prediction_model_counts.tsv"
 SEED_FILE = "context_prediction.tsv"
 PENDING_FILE = "context_prediction_pending.tsv"
@@ -30,20 +31,26 @@ ARTICLE_CONTENT_DIR = "context_prediction_articles"
 ARTICLE_CONTRIBUTIONS_FILE = "context_prediction_article_counts.tsv"
 DELETED_CANDIDATES_FILE = "context_prediction_deleted_candidates.tsv"
 ARCHIVE_DIR = "context_prediction_archives"
+REFRESH_META_FILE = "context_prediction_refresh_meta.json"
 ENGLISH_DICT_FILE = "codeyun_english.dict.yaml"
 ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
 ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 
-ARTICLE_EXTRACTOR_VERSION = 1
+ARTICLE_EXTRACTOR_VERSION = 2
 MAX_CONTEXT_TOKENS = 4
 MAX_ARTICLE_CHARS = 1_000_000
 DEFAULT_TOPK_PER_KEY = 20
 DEFAULT_RUNTIME_ROW_LIMIT = 5000
+DEFAULT_HOT_MIN_WEIGHT = 1.0
 DEFAULT_ENGLISH_LEARNED_ROW_LIMIT = 5000
 DEFAULT_HISTORY_ARTICLE_LIMIT = 20000
 DEFAULT_HISTORY_ARTICLE_PAGE_SIZE = 2000
 HISTORY_PARAGRAPH_GAP_SECONDS = 5 * 60
+HISTORY_PHRASE_GAP_SECONDS = 3
+HISTORY_PHRASE_MAX_EVENTS = 4
+HISTORY_PHRASE_MAX_CHARS = 8
+HISTORY_PHRASE_WEIGHT = 0.65
 DEFAULT_LINT_ISSUE_LIMIT = 200
 MAX_LINT_AI_CHARS = 8000
 
@@ -241,12 +248,86 @@ def _file_info(rime_dir: Path | None, relative_path: str) -> dict[str, Any]:
     }
 
 
+def _source_file_signature(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"exists": False, "size": 0, "mtime_ns": 0}
+    stat = path.stat()
+    return {"exists": True, "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _prediction_source_fingerprint(rime_dir: Path) -> str:
+    source_files = [
+        SEED_FILE,
+        PENDING_FILE,
+        HISTORY_FILE,
+        HISTORY_ARTICLE_FILE,
+        HISTORY_ARTICLE_META_FILE,
+        ARTICLE_MANIFEST_FILE,
+        ARTICLE_CONTRIBUTIONS_FILE,
+        DELETED_CANDIDATES_FILE,
+    ]
+    payload: dict[str, Any] = {
+        "version": ARTICLE_EXTRACTOR_VERSION,
+        "topk": DEFAULT_TOPK_PER_KEY,
+        "runtime_limit": DEFAULT_RUNTIME_ROW_LIMIT,
+        "hot_min_weight": DEFAULT_HOT_MIN_WEIGHT,
+        "hot_file": HOT_FILE,
+        "files": {
+            relative_path: _source_file_signature(rime_dir / relative_path)
+            for relative_path in source_files
+        },
+        "articles": {},
+    }
+
+    article_dir = rime_dir / ARTICLE_CONTENT_DIR
+    if article_dir.exists():
+        payload["articles"] = {
+            f"{ARTICLE_CONTENT_DIR}/{path.name}": _source_file_signature(path)
+            for path in sorted(article_dir.glob("*.txt"), key=lambda item: item.name)
+        }
+
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _read_refresh_meta(rime_dir: Path) -> dict[str, Any]:
+    path = rime_dir / REFRESH_META_FILE
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_refresh_meta(rime_dir: Path, fingerprint: str | None = None) -> None:
+    path = rime_dir / REFRESH_META_FILE
+    payload = {
+        "version": 1,
+        "source_fingerprint": fingerprint or _prediction_source_fingerprint(rime_dir),
+        "updated_at": time.time(),
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _prediction_outputs_exist(rime_dir: Path) -> bool:
+    return (
+        (rime_dir / SNAPSHOT_FILE).exists()
+        and (rime_dir / RUNTIME_FILE).exists()
+        and (rime_dir / HOT_FILE).exists()
+    )
+
+
 def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
     return [
         _file_info(rime_dir, item)
         for item in [
             SNAPSHOT_FILE,
             RUNTIME_FILE,
+            HOT_FILE,
             COUNTS_FILE,
             SEED_FILE,
             PENDING_FILE,
@@ -256,6 +337,7 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
             ARTICLE_MANIFEST_FILE,
             ARTICLE_CONTRIBUTIONS_FILE,
             DELETED_CANDIDATES_FILE,
+            REFRESH_META_FILE,
             ENGLISH_DICT_FILE,
             ENGLISH_BASE_DICT_FILE,
             ENGLISH_LEARNED_DICT_FILE,
@@ -747,6 +829,87 @@ def _history_events_to_article(events: list[dict[str, Any]]) -> str:
     return "\n\n".join(paragraph for paragraph in paragraphs if paragraph)
 
 
+def _history_event_phrase_token(event: dict[str, Any]) -> str:
+    text = str(event.get("text") or "").strip()
+    if not text or text.startswith("<"):
+        return ""
+    parts = _CJK_RE.findall(text)
+    if not parts:
+        return ""
+    token = "".join(parts)
+    if token != text or len(token) > 16:
+        return ""
+    return token
+
+
+def _extract_history_phrase_contributions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """从连续输入事件中提取最终文本合成词条。
+
+    :param list events: 输入历史事件，元素至少包含 text/time/timestamp。
+    :return list: 可合并进预测索引的贡献行。
+
+    >>> _extract_history_phrase_contributions([
+    ...     {"text": "设", "time": 1.0},
+    ...     {"text": "计", "time": 2.0},
+    ... ])[0]["candidate"]
+    '设计'
+    """
+
+    counts: dict[tuple[str, str, str], float] = defaultdict(float)
+    segment: list[str] = []
+    last_time: float | None = None
+
+    def flush_segment() -> None:
+        nonlocal segment
+        for start in range(len(segment)):
+            if start > 0 and len(segment[start]) == 1 and len(segment[start - 1]) == 1:
+                continue
+            phrase = ""
+            for end in range(start, min(len(segment), start + HISTORY_PHRASE_MAX_EVENTS)):
+                phrase += segment[end]
+                if end == start:
+                    continue
+                if len(phrase) < 2:
+                    continue
+                if len(phrase) > HISTORY_PHRASE_MAX_CHARS:
+                    break
+                prefix = _token_to_pinyin(phrase)
+                if prefix:
+                    counts[("__global", prefix, phrase)] += HISTORY_PHRASE_WEIGHT
+        segment = []
+
+    for event in events:
+        token = _history_event_phrase_token(event)
+        current_time = event.get("time") if isinstance(event.get("time"), (int, float)) else None
+        if (
+            not token
+            or (
+                last_time is not None
+                and current_time is not None
+                and float(current_time) - last_time > HISTORY_PHRASE_GAP_SECONDS
+            )
+        ):
+            flush_segment()
+        if token:
+            segment.append(token)
+            if current_time is not None:
+                last_time = float(current_time)
+        else:
+            last_time = None
+
+    flush_segment()
+    return [
+        {
+            "source_id": "input_history_phrase",
+            "context": context,
+            "prefix": prefix,
+            "candidate": candidate,
+            "weight": weight,
+        }
+        for (context, prefix, candidate), weight in counts.items()
+    ]
+
+
 def _history_article_path(rime_dir: Path) -> Path:
     return rime_dir / HISTORY_ARTICLE_FILE
 
@@ -863,22 +1026,33 @@ def _rebuild_count_entries_from_history(rime_dir: Path) -> dict[str, Any]:
         }
 
     last_seen = str(events[-1].get("timestamp") or "") or time.strftime("%Y-%m-%d %H:%M:%S")
-    for row in _extract_article_contributions("input_history", content):
+
+    def add_history_row(row: dict[str, Any], comment: str) -> None:
         context, prefix, candidate = _candidate_key(row["context"], row["prefix"], row["candidate"])
         if not context or not prefix or not candidate:
-            continue
+            return
         entry = entries.setdefault(
             (context, prefix, candidate),
-            {"count": 0.0, "last_seen": last_seen, "comment": "输入历史"},
+            {"count": 0.0, "last_seen": last_seen, "comment": comment},
         )
         entry["count"] = float(entry.get("count") or 0) + float(row.get("weight") or 0)
         entry["last_seen"] = last_seen
+        if comment and str(entry.get("comment") or "") != "输入历史":
+            entry["comment"] = comment
+
+    for row in _extract_article_contributions("input_history", content):
+        add_history_row(row, "输入历史")
+
+    synthetic_rows = _extract_history_phrase_contributions(events)
+    for row in synthetic_rows:
+        add_history_row(row, "输入历史合成")
 
     _write_count_entries(rime_dir, entries)
     return {
         "history_events": len(events),
         "history_chars": len(content),
         "history_contributions": sum(float(item.get("count") or 0) for item in entries.values()),
+        "history_phrase_contributions": sum(float(row.get("weight") or 0) for row in synthetic_rows),
         "count_entries": len(entries),
         "history_article_edited": bool(history_article["edited"]),
     }
@@ -2087,6 +2261,30 @@ def _write_prediction_runtime(rime_dir: Path, rows: list[tuple[str, str, str, fl
     return len(runtime_rows)
 
 
+def _write_prediction_hot(rime_dir: Path, rows: list[tuple[str, str, str, float, str]]) -> int:
+    hot_rows = [row for row in rows if row[0] == "__global" and float(row[3] or 0) >= DEFAULT_HOT_MIN_WEIGHT]
+    hot_rows.sort(key=lambda row: (row[1], -row[3], row[2]))
+    path = rime_dir / HOT_FILE
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8", newline="\n") as fh:
+        fh.write("# context_key\tpinyin_prefix\tcandidate\tweight\tcomment\n")
+        for context, prefix, candidate, weight, comment in hot_rows:
+            fh.write(
+                "\t".join(
+                    [
+                        _clean_tsv_field(context),
+                        _clean_tsv_field(prefix),
+                        _clean_tsv_field(candidate),
+                        _format_weight(weight),
+                        _clean_tsv_field(comment),
+                    ]
+                )
+                + "\n"
+            )
+    os.replace(tmp, path)
+    return len(hot_rows)
+
+
 def rebuild_rime_context_prediction_snapshot(
     rime_dir: Path | None = None,
     *,
@@ -2161,10 +2359,13 @@ def rebuild_rime_context_prediction_snapshot(
     output.sort(key=lambda row: (row[0], row[1], -row[3], row[2]))
     _write_prediction_snapshot(target_dir, output)
     runtime_rows = _write_prediction_runtime(target_dir, output)
+    hot_rows = _write_prediction_hot(target_dir, output)
     english_result = refresh_rime_english_dictionary(target_dir)
+    _write_refresh_meta(target_dir)
     return {
         "snapshot_rows": len(output),
         "runtime_rows": runtime_rows,
+        "hot_rows": hot_rows,
         "enabled_article_count": len(enabled_ids),
         **english_result,
     }
@@ -2256,14 +2457,30 @@ def update_rime_context_prediction_candidate(
     return payload
 
 
-def refresh_rime_context_prediction_tree() -> dict[str, Any]:
+def refresh_rime_context_prediction_tree(
+    *,
+    force: bool = False,
+    limit: int | None = 50000,
+    source: str | None = "snapshot",
+) -> dict[str, Any]:
     rime_dir = _ensure_writable_rime_dir()
+    source_fingerprint = _prediction_source_fingerprint(rime_dir)
+    refresh_meta = _read_refresh_meta(rime_dir)
+    if (
+        not force
+        and _prediction_outputs_exist(rime_dir)
+        and refresh_meta.get("source_fingerprint") == source_fingerprint
+    ):
+        payload = collect_rime_context_prediction_tree(limit=limit, source=source)
+        payload["message"] = "预测索引已是最新，源数据没有变化，已跳过重建。"
+        return payload
+
     if _can_rebuild_from_history(rime_dir):
         refresh_result = rebuild_rime_context_prediction_from_history(rime_dir)
     else:
         refresh_result = _fold_pending_events(rime_dir)
         refresh_result.update(rebuild_rime_context_prediction_snapshot(rime_dir))
-    payload = collect_rime_context_prediction_tree()
+    payload = collect_rime_context_prediction_tree(limit=limit, source=source)
     if refresh_result.get("source") == HISTORY_FILE:
         source_label = "输入历史修订稿" if refresh_result.get("history_article_edited") else "输入历史"
         payload["message"] = (
@@ -2380,7 +2597,23 @@ def import_rime_context_prediction_article(
         _upsert_article_contributions(rime_dir, target_article, text)
     else:
         old_digest = str(target_article.get("content_hash") or "")
-        target_article["title"] = _normalize_article_title(title, text)
+        next_title = _normalize_article_title(title, text)
+        next_enabled = bool(enabled)
+        content_path = _article_content_path(rime_dir, target_article)
+        if (
+            old_digest == digest
+            and str(target_article.get("title") or "") == next_title
+            and bool(target_article.get("enabled", True)) == next_enabled
+            and str(target_article.get("source_type") or "imported_article") == normalized_source_type
+            and str(target_article.get("source_key") or "") == normalized_source_key
+            and str(target_article.get("source_label") or "") == normalized_source_label
+            and int(target_article.get("extractor_version") or 0) == ARTICLE_EXTRACTOR_VERSION
+            and str(target_article.get("status") or "") == "ready"
+            and content_path.exists()
+        ):
+            return _article_sources_response(rime_dir, manifest, _tracked_files(rime_dir))
+
+        target_article["title"] = next_title
         target_article["enabled"] = bool(enabled)
         target_article["source_type"] = normalized_source_type
         target_article["source_key"] = normalized_source_key
@@ -2388,7 +2621,6 @@ def import_rime_context_prediction_article(
         target_article["content_hash"] = digest
         target_article["updated_at"] = now
         target_article["char_count"] = len(text)
-        content_path = _article_content_path(rime_dir, target_article)
         content_path.parent.mkdir(parents=True, exist_ok=True)
         content_path.write_text(text, encoding="utf-8")
         if (
@@ -2483,12 +2715,14 @@ def make_rime_context_prediction_unavailable(
     message: str,
     rime_dir: str | None = None,
     files: list[dict[str, Any]] | None = None,
+    source_kind: str = "snapshot",
 ) -> dict[str, Any]:
     return {
         "available": False,
         "status": status,
         "message": message,
         "rime_dir": rime_dir,
+        "source_kind": source_kind,
         "source": None,
         "source_path": None,
         "updated_at": None,
@@ -2503,15 +2737,40 @@ def make_rime_context_prediction_unavailable(
     }
 
 
-def collect_rime_context_prediction_tree(limit: int | None = 5000) -> dict[str, Any]:
+def _normalize_prediction_tree_source(source: str | None) -> str:
+    value = str(source or "").strip().lower()
+    if value in {"snapshot", "hot", "seed"}:
+        return value
+    return "snapshot"
+
+
+def _prediction_tree_source_candidates(rime_dir: Path, source_kind: str) -> list[tuple[str, Path]]:
+    if source_kind == "hot":
+        return [(HOT_FILE, rime_dir / HOT_FILE)]
+    if source_kind == "seed":
+        return [(SEED_FILE, rime_dir / SEED_FILE)]
+    return [
+        (SNAPSHOT_FILE, rime_dir / SNAPSHOT_FILE),
+        (COUNTS_FILE, rime_dir / COUNTS_FILE),
+        (SEED_FILE, rime_dir / SEED_FILE),
+    ]
+
+
+def collect_rime_context_prediction_tree(
+    limit: int | None = 50000,
+    *,
+    source: str | None = "snapshot",
+) -> dict[str, Any]:
     rime_dir = _resolve_rime_dir()
     files = _tracked_files(rime_dir)
+    source_kind = _normalize_prediction_tree_source(source)
 
     if not rime_dir:
         return make_rime_context_prediction_unavailable(
             status="unsupported_platform",
             message="当前系统没有可识别的 Rime 用户目录位置。",
             files=files,
+            source_kind=source_kind,
         )
 
     if not rime_dir.exists():
@@ -2520,13 +2779,10 @@ def collect_rime_context_prediction_tree(limit: int | None = 5000) -> dict[str, 
             message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
             rime_dir=str(rime_dir),
             files=files,
+            source_kind=source_kind,
         )
 
-    source_candidates = [
-        (SNAPSHOT_FILE, rime_dir / SNAPSHOT_FILE),
-        (COUNTS_FILE, rime_dir / COUNTS_FILE),
-        (SEED_FILE, rime_dir / SEED_FILE),
-    ]
+    source_candidates = _prediction_tree_source_candidates(rime_dir, source_kind)
     source_name = None
     source_path = None
     rows: list[dict[str, Any]] = []
@@ -2550,6 +2806,7 @@ def collect_rime_context_prediction_tree(limit: int | None = 5000) -> dict[str, 
             message="该设备已发现 Rime 用户目录，但没有上下文预测扩展的数据文件。",
             rime_dir=str(rime_dir),
             files=files,
+            source_kind=source_kind,
         )
 
     if read_error:
@@ -2558,6 +2815,7 @@ def collect_rime_context_prediction_tree(limit: int | None = 5000) -> dict[str, 
             message=f"读取上下文预测索引失败：{read_error}",
             rime_dir=str(rime_dir),
             files=files,
+            source_kind=source_kind,
         )
 
     summary = _summarize_rows(rows)
@@ -2569,6 +2827,7 @@ def collect_rime_context_prediction_tree(limit: int | None = 5000) -> dict[str, 
         "status": status,
         "message": message,
         "rime_dir": str(rime_dir),
+        "source_kind": source_kind,
         "source": source_name,
         "source_path": str(source_path),
         "updated_at": stat.st_mtime,

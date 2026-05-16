@@ -174,6 +174,66 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         _clear_user_override()
 
 
+def test_note_sheet_workbook_reorders_sheets(client, session):
+    user = _create_user(session, username="note-sheet-reorder-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "可排序工作簿"})
+        assert workbook_response.status_code == 200
+        workbook_id = workbook_response.json()["id"]
+
+        created_sheets = []
+        for title in ["报名表", "考勤表", "速查表"]:
+            response = client.post(
+                "/api/note-sheets/sheets",
+                json={
+                    "title": title,
+                    "workbook_id": workbook_id,
+                    "document_json": {"columns": ["列1"], "rows": []},
+                },
+            )
+            assert response.status_code == 200
+            created_sheets.append(response.json())
+
+        target_order = [
+            created_sheets[2]["id"],
+            created_sheets[0]["id"],
+            created_sheets[1]["id"],
+        ]
+        reorder_response = client.post(
+            f"/api/note-sheets/workbooks/{workbook_id}/sheets/reorder",
+            json={"sheet_ids": target_order},
+        )
+
+        assert reorder_response.status_code == 200
+        assert [sheet["id"] for sheet in reorder_response.json()["sheets"]] == target_order
+
+        workbook_record = session.exec(
+            select(WorkbookDocument).where(WorkbookDocument.numeric_id == workbook_id)
+        ).one()
+        links = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.workbook_id == workbook_record.id)
+            .order_by(WorkbookSheetLink.order_index)
+        ).all()
+        sheets = session.exec(
+            select(SheetDocument).where(SheetDocument.id.in_([link.sheet_id for link in links]))
+        ).all()
+        numeric_id_by_sheet_id = {sheet.id: sheet.numeric_id for sheet in sheets}
+        assert [numeric_id_by_sheet_id[link.sheet_id] for link in links] == target_order
+        assert [link.order_index for link in links] == [10, 20, 30]
+
+        duplicate_response = client.post(
+            f"/api/note-sheets/workbooks/{workbook_id}/sheets/reorder",
+            json={"sheet_ids": [created_sheets[0]["id"], created_sheets[0]["id"]]},
+        )
+        assert duplicate_response.status_code == 400
+    finally:
+        _clear_user_override()
+
+
 def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
     user = _create_user(session, username="note-sheet-unpack-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")

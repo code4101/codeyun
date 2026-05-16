@@ -2493,20 +2493,21 @@ def _collect_rime_history_article_for_entry(
 @router.get("/{entry_id}/rime/context-prediction/tree")
 def get_rime_context_prediction_tree_for_entry(
     entry_id: str,
-    limit: int = Query(5000, ge=1, le=50000),
+    source: str = Query("snapshot"),
+    limit: int = Query(50000, ge=1, le=50000),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
-        return collect_rime_context_prediction_tree(limit=limit)
+        return collect_rime_context_prediction_tree(limit=limit, source=source)
 
     try:
         payload, error_response = _fetch_remote_json(
             entry,
             "GET",
             "/rime/context-prediction/tree",
-            params={"limit": limit},
+            params={"source": source, "limit": limit},
             timeout=20,
         )
     except HTTPException as exc:
@@ -2536,13 +2537,15 @@ def get_rime_context_prediction_tree_for_entry(
 @router.post("/{entry_id}/rime/context-prediction/tree/refresh")
 def post_rime_context_prediction_tree_refresh_for_entry(
     entry_id: str,
+    source: str = Query("snapshot"),
+    limit: int = Query(50000, ge=1, le=50000),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         try:
-            return refresh_rime_context_prediction_tree()
+            return refresh_rime_context_prediction_tree(limit=limit, source=source)
         except RimeContextPredictionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2551,6 +2554,7 @@ def post_rime_context_prediction_tree_refresh_for_entry(
             entry,
             "POST",
             "/rime/context-prediction/tree/refresh",
+            params={"source": source, "limit": limit},
             timeout=60,
         )
     except HTTPException as exc:
@@ -3410,6 +3414,7 @@ def preview_file_ocr_for_entry(
             req.path,
             absolute_path=req.absolute_path,
             shape_type=req.shape_type,
+            options=req.options,
         )
 
     payload, error_response = _fetch_remote_json(

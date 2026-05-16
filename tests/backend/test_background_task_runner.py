@@ -18,7 +18,7 @@ def _set_enabled(monkeypatch, enabled_by_key):
     )
 
 
-def _write_schedule_state(path, values, *, schedule_version=2):
+def _write_schedule_state(path, values, *, schedule_version=3):
     blackboard = {} if schedule_version is None else {"schedule_version": schedule_version}
     path.write_text(
         json.dumps(
@@ -108,4 +108,4 @@ def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkey
     assert nodes["Root/MemorySelector/auto_git_commit"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/storage_analysis"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2099-05-10 01:00:00"
-    assert tree_runner.state["blackboard"]["schedule_version"] == 2
+    assert tree_runner.state["blackboard"]["schedule_version"] == 3
