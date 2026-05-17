@@ -15,6 +15,7 @@
     *   **进程接管**: 基于 PID 追踪进程状态，支持“关联”已运行的外部进程。
     *   **Agent 模式**: 每个运行后端实例的设备既是 Server 也是 Agent，支持组成对等网络（Mesh-like）。
     *   **远程文件系统**: 浏览和操作远程设备的文件目录。
+    *   **远端 Sub-Agent（设计中）**: 通过设备能力探测和受控运行接口调用远端 Codex CLI 等 agent runtime。设计见 `docs/远端SubAgent能力设计.md`，实现前不要继续把它当成默认可用能力。
 
 *   **技术栈**:
     *   **Backend**: Python 3.10+, FastAPI, Uvicorn, APScheduler (定时任务), psutil (进程管理)。

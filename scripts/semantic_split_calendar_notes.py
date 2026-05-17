@@ -32,6 +32,12 @@ DATE_HEADING_RE = re.compile(r"^\s*\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?\s*周[�
 W_TITLE_PREFIX_RE = re.compile(r"^\s*w\d{6}\s*[:：]\s*", re.IGNORECASE)
 ITEM_NUMBER_PREFIX_RE = re.compile(r"^\s*(?:\d+[、.．]|[一二三四五六七八九十]+[、.．])\s*")
 IMPORT_MARKUP_DEBRIS_RE = re.compile(r"\b(?:style|lang)\s*=", re.IGNORECASE)
+RESOURCE_KEYWORD_RE = re.compile(
+    r"(?:密码|注册码|用户码|账号|账户|密钥|license|serial|绑定邮箱|Google账户|Google账号)",
+    re.IGNORECASE,
+)
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+SECRET_TOKEN_RE = re.compile(r"(?=[A-Za-z0-9+/=_@#$%^&*|~`?.-]{12,})(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9+/=_@#$%^&*|~`?.-]+")
 CATEGORY_PALETTE_SETTING_KEY = f"note.category_palette.user.{USER_ID}"
 MIGRATION_CATEGORY_ITEMS: tuple[dict[str, Any], ...] = (
     {
@@ -402,9 +408,20 @@ def strip_import_markup_debris(text: str) -> str:
     return value
 
 
+def normalize_calendar_source_noise(text: str) -> str:
+    value = str(text or "")
+    value = re.sub(
+        r"^((?:\d{1,2}:\d{2}/){1,}\d{1,2}:\d{2})\s*[，,]?\s*(?:凌晨|早上|上午|中午|下午|傍晚|晚上|晚)?\s*[-—]+\s*(?=\d+[、.．])",
+        r"\1\n",
+        value,
+    )
+    return value
+
+
 def plain_text_from_html(content: str) -> str:
     text = BeautifulSoup(content or "", "html.parser").get_text("\n")
     text = strip_import_markup_debris(text)
+    text = normalize_calendar_source_noise(text)
     text = text.replace("\\n", "\n")
     text = text.replace("\xa0", " ")
     text = re.sub(r"[ \t\r\f\v]+", " ", text)
@@ -440,6 +457,7 @@ def semantic_text_for_row(row: sqlite3.Row, fields: dict[str, Any]) -> str:
 
 def normalize_display_text(text: str) -> str:
     value = strip_import_markup_debris(text)
+    value = normalize_calendar_source_noise(value)
     value = (value or "").replace("\\n", "\n").replace("\xa0", " ")
     value = re.sub(r"(\d+)\s*\n\s*([、.．])", r"\1\2", value)
     value = re.sub(r"([\u4e00-\u9fff])\s*\n\s*([A-Za-z0-9]{1,12})\s*\n\s*([\u4e00-\u9fff])", r"\1\2\3", value)
@@ -508,6 +526,44 @@ def infer_category_key(text: str, *, fallback: str = DEFAULT_CATEGORY_KEY) -> st
         if any(keyword.lower() in value for keyword in keywords):
             return key
     return fallback or DEFAULT_CATEGORY_KEY
+
+
+def has_sensitive_resource_token(text: str) -> bool:
+    value = normalize_display_text(text)
+    if EMAIL_RE.search(value):
+        return True
+    if RESOURCE_KEYWORD_RE.search(value) and SECRET_TOKEN_RE.search(value):
+        return True
+    return False
+
+
+def resource_title(text: str) -> str:
+    value = normalize_display_text(text)
+    if re.search(r"Google\s*(?:账户|账号)|(?:账户|账号).*Google", value, re.IGNORECASE):
+        return "Google账号关联"
+    if "注册码" in value or re.search(r"\blicense\b|\bserial\b", value, re.IGNORECASE):
+        return "软件注册码"
+    if "用户码" in value:
+        return "软件用户码"
+    if "密码" in value:
+        return "账号密码资料"
+    if "账号" in value or "账户" in value:
+        return "账号资料"
+    if EMAIL_RE.search(value):
+        return "邮箱账号"
+    return "资料记录"
+
+
+def resource_single_item(group: SourceGroup) -> SemanticItem:
+    category = "import_archive"
+    if group.metadata_row.primary_category and group.metadata_row.primary_category != DEFAULT_CATEGORY_KEY:
+        category = group.metadata_row.primary_category
+    return SemanticItem(
+        title=resource_title(group.text),
+        content=group.text,
+        primary_category=category,
+        weight=max(group.weight, 1 if RESOURCE_KEYWORD_RE.search(group.text) else group.weight),
+    )
 
 
 def normalize_category_key(value: Any, allowed_keys: set[str], *, text: str, fallback: str = DEFAULT_CATEGORY_KEY) -> str:
@@ -690,12 +746,15 @@ def build_codex_prompt(groups: list[SourceGroup], category_items: list[dict[str,
             "判断规则：",
             "1. 只有当文本里确实包含多个相对独立的事件、想法、任务、成果、作品/活动记录时，才拆成多项。",
             "2. 不要拆开一个完整标题、书名、游戏名、时间表达、排名表达、人物名、短语内部枚举。",
-            "3. 保留原始意思和措辞，尽量少改写；可以去掉导入残留的字面量 \\n 和多余空格。",
-            "4. 每个拆出的 item 都要能作为日历上的一个独立卡片标题和正文；正文保留原始信息，标题做关键词化提炼。",
-            "5. title 必须短而具体，优先 4~16 个汉字或等长短语；不要带日期、不要带 wYYMMDD 前缀、不要照搬整句正文、不要写“事项1/拆分项/综合”。",
-            "6. primary_category 必须从输入 categories 的 key 中选择；除非完全没有更具体类别，否则不要用 general。",
-            "7. weight 为 0~3 的整数。source_rich_weight 是源富文本强调的下限：普通 0，加粗/链接/轻微强调 1，红色/显著强调 2，红色加粗/极强权重 3。",
-            "8. 如果无法确定可拆，就返回一项，但仍要给出精炼标题和合适分类。",
+            "3. 资源类记录要少拆或不拆：账号、密码、邮箱、注册码、license、用户码、链接清单、工具清单、资料索引等通常作为一个资料节点保留。",
+            "4. 不要把账号、邮箱、注册码、密钥本身放进 title；title 只写资源对象，例如“Google账号关联”“软件注册码”“资料链接”。",
+            "5. 保留原始意思和措辞，尽量少改写；可以去掉导入残留的字面量 \\n 和多余空格。",
+            "6. 每个拆出的 item 都要能作为日历上的一个独立卡片标题和正文；正文保留原始信息，标题做关键词化提炼。",
+            "7. title 必须短而具体，优先 4~16 个汉字或等长短语；不要带日期、不要带 wYYMMDD 前缀、不要照搬整句正文、不要写“事项1/拆分项/综合”。",
+            "8. title 不要保留流水叙事和啰嗦词：想、准备、一些、相关、问题、工作、做了、整理一下、沟通工作等只在正文保留；标题提炼成对象+动作。",
+            "9. primary_category 必须从输入 categories 的 key 中选择；除非完全没有更具体类别，否则不要用 general。",
+            "10. weight 为 0~3 的整数。source_rich_weight 是源富文本强调的下限：普通 0，加粗/链接/轻微强调 1，红色/显著强调 2，红色加粗/极强权重 3。",
+            "11. 如果无法确定可拆，就返回一项，但仍要给出精炼标题和合适分类。",
             "",
             "只输出 JSON 对象，不要 Markdown。格式：",
             '{"groups":[{"group_id":"...","items":[{"title":"...","content":"...","primary_category":"分类key","weight":0}]}]}',
@@ -1106,11 +1165,16 @@ def run(args: argparse.Namespace) -> None:
         groups = groups[: args.limit]
 
     semantic_by_group: dict[str, list[SemanticItem]] = {}
+    resource_groups = {group.group_id for group in groups if has_sensitive_resource_token(group.text)}
+    for group in groups:
+        if group.group_id in resource_groups:
+            semantic_by_group[group.group_id] = [resource_single_item(group)]
     if not args.skip_codex and groups:
-        for start in range(0, len(groups), args.batch_size):
-            batch = groups[start : start + args.batch_size]
+        codex_groups = [group for group in groups if group.group_id not in resource_groups]
+        for start in range(0, len(codex_groups), args.batch_size):
+            batch = codex_groups[start : start + args.batch_size]
             print(
-                f"Calling Codex for groups {start + 1}-{start + len(batch)} / {len(groups)}...",
+                f"Calling Codex for groups {start + 1}-{start + len(batch)} / {len(codex_groups)}...",
                 file=sys.stderr,
                 flush=True,
             )
@@ -1137,8 +1201,19 @@ def run(args: argparse.Namespace) -> None:
     for group in groups:
         items = semantic_by_group[group.group_id]
         original_titles = [row.title for row in group.rows]
-        codex_generated = not args.skip_codex and group.group_id in semantic_by_group and group.group_id not in fallback_group_ids
-        should_materialize = args.materialize_all or (codex_generated and args.materialize_codex_singletons) or len(items) != 1 or len(group.rows) > 1
+        codex_generated = (
+            not args.skip_codex
+            and group.group_id in semantic_by_group
+            and group.group_id not in fallback_group_ids
+            and group.group_id not in resource_groups
+        )
+        should_materialize = (
+            args.materialize_all
+            or group.group_id in resource_groups
+            or (codex_generated and args.materialize_codex_singletons)
+            or len(items) != 1
+            or len(group.rows) > 1
+        )
         if should_materialize:
             materialized_groups.append(group)
         preview_groups.append(
@@ -1172,6 +1247,7 @@ def run(args: argparse.Namespace) -> None:
         "source_rows": sum(len(group.rows) for group in groups),
         "groups": len(groups),
         "groups_to_materialize": len(materialized_groups),
+        "resource_groups": len(resource_groups),
         "fallback_groups": fallback_groups,
         "source_action": args.source_action,
         "model": args.model if not args.skip_codex else None,

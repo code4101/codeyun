@@ -375,6 +375,22 @@
         :show-wrap-toggle="!readonlyPresentationActive"
         @change="handleContentChange"
       />
+      <div
+        v-if="sourceImageMenu.visible"
+        class="source-image-menu"
+        :style="sourceImageMenuStyle"
+        @mousedown.prevent
+        @click.stop
+      >
+        <el-button-group>
+          <el-button size="small" @click="setSourceImageWidth('30%')">30%</el-button>
+          <el-button size="small" @click="setSourceImageWidth('50%')">50%</el-button>
+          <el-button size="small" @click="setSourceImageWidth('100%')">100%</el-button>
+          <el-button size="small" @click="openSourceImage">原图</el-button>
+          <el-button size="small" @click="copySourceImageUrl">复制链接</el-button>
+          <el-button v-if="!effectiveReadonly" size="small" type="danger" @click="deleteSourceImage">删除</el-button>
+        </el-button-group>
+      </div>
     </div>
 
     <NodeHelpDialog v-model="showHelpDialog" />
@@ -497,6 +513,17 @@ const showSourceHtmlEditor = computed(() => (
 const customFieldsList = ref<NoteCustomFieldItem[]>([]);
 const ownCustomFieldsListRef = ref<HTMLElement | null>(null);
 const sourceHtmlEditorRef = ref<HTMLElement | null>(null);
+const sourceImageMenu = ref({
+  visible: false,
+  left: 0,
+  top: 0,
+  src: '',
+  alt: '',
+});
+const sourceImageMenuStyle = computed(() => ({
+  left: `${sourceImageMenu.value.left}px`,
+  top: `${sourceImageMenu.value.top}px`,
+}));
 const customFieldKeyWidthMode = ref<'auto' | 'manual'>('auto');
 const customFieldKeyWidth = ref(120);
 const customFieldsCollapsed = ref(readCustomFieldsCollapsed());
@@ -510,6 +537,7 @@ let customFieldKeyResizePointerId: number | null = null;
 let customFieldKeyResizeStartX = 0;
 let customFieldKeyResizeStartWidth = customFieldKeyWidth.value;
 let customFieldKeyMeasureCanvas: HTMLCanvasElement | null = null;
+let selectedSourceImageElement: HTMLImageElement | null = null;
 
 const removeLocalDraftByKey = (draftKey: string | null) => {
   if (!draftKey || typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
@@ -660,10 +688,99 @@ const syncSourceHtmlEditor = () => {
   if (element.innerHTML !== nextHtml) element.innerHTML = nextHtml;
 };
 
+const hideSourceImageMenu = () => {
+  sourceImageMenu.value.visible = false;
+  sourceImageMenu.value.src = '';
+  sourceImageMenu.value.alt = '';
+  selectedSourceImageElement = null;
+};
+
+const getSourceImageAbsoluteUrl = () => {
+  const src = sourceImageMenu.value.src;
+  if (!src || typeof window === 'undefined') return src;
+  try {
+    return new URL(src, window.location.href).href;
+  } catch {
+    return src;
+  }
+};
+
+const persistSourceHtmlEditorContent = (options: { immediate?: boolean } = {}) => {
+  if (!currentNote.value || effectiveReadonly.value) return;
+  const element = sourceHtmlEditorRef.value;
+  if (!element) return;
+  const sanitizedHtml = sanitizeSourcePreviewHtml(element.innerHTML);
+  if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
+  if (currentNote.value.content !== sanitizedHtml) currentNote.value.content = sanitizedHtml;
+  queueAutoSave({ immediate: options.immediate, delayMs: options.immediate ? 0 : CONTENT_SAVE_DELAY_MS });
+};
+
+const showSourceImageMenu = (image: HTMLImageElement, event: MouseEvent) => {
+  selectedSourceImageElement = image;
+  const menuWidth = 390;
+  const menuHeight = 38;
+  const margin = 8;
+  const viewportWidth = typeof window === 'undefined' ? menuWidth : window.innerWidth;
+  const viewportHeight = typeof window === 'undefined' ? menuHeight : window.innerHeight;
+  sourceImageMenu.value = {
+    visible: true,
+    left: Math.max(margin, Math.min(event.clientX + margin, viewportWidth - menuWidth - margin)),
+    top: Math.max(margin, Math.min(event.clientY + margin, viewportHeight - menuHeight - margin)),
+    src: image.getAttribute('src') || image.currentSrc || '',
+    alt: image.getAttribute('alt') || '',
+  };
+};
+
+const setSourceImageWidth = (width: string) => {
+  if (!selectedSourceImageElement || effectiveReadonly.value) return;
+  selectedSourceImageElement.style.width = width;
+  selectedSourceImageElement.style.maxWidth = '100%';
+  selectedSourceImageElement.style.height = 'auto';
+  persistSourceHtmlEditorContent({ immediate: true });
+};
+
+const openSourceImage = () => {
+  const url = getSourceImageAbsoluteUrl();
+  if (!url || typeof window === 'undefined') return;
+  const opened = window.open(url, '_blank');
+  if (opened) opened.opener = null;
+  hideSourceImageMenu();
+};
+
+const copySourceImageUrl = async () => {
+  const url = getSourceImageAbsoluteUrl();
+  if (!url) return;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+    } else {
+      const textarea = document.createElement('textarea');
+      textarea.value = url;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    ElMessage.success('已复制图片链接');
+  } catch {
+    ElMessage.error('复制失败');
+  }
+};
+
+const deleteSourceImage = () => {
+  if (!selectedSourceImageElement || effectiveReadonly.value) return;
+  selectedSourceImageElement.remove();
+  hideSourceImageMenu();
+  persistSourceHtmlEditorContent({ immediate: true });
+};
+
 const handleSourceHtmlInput = () => {
   if (!currentNote.value || effectiveReadonly.value) return;
   const element = sourceHtmlEditorRef.value;
   if (!element) return;
+  hideSourceImageMenu();
   currentNote.value.content = element.innerHTML;
   queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
 };
@@ -671,8 +788,19 @@ const handleSourceHtmlInput = () => {
 const handleSourceHtmlClick = (event: MouseEvent) => {
   const targetNode = event.target instanceof Node ? event.target : null;
   const target = targetNode instanceof Element ? targetNode : targetNode?.parentElement ?? null;
-  const link = target?.closest('a[href]') as HTMLAnchorElement | null;
   const root = sourceHtmlEditorRef.value;
+
+  const image = target?.closest('img[src]') as HTMLImageElement | null;
+  if (image && root?.contains(image)) {
+    event.preventDefault();
+    event.stopPropagation();
+    showSourceImageMenu(image, event);
+    return;
+  }
+
+  hideSourceImageMenu();
+
+  const link = target?.closest('a[href]') as HTMLAnchorElement | null;
   if (!link || !root?.contains(link)) return;
 
   const rawHref = link.getAttribute('href')?.trim() || '';
@@ -692,6 +820,7 @@ const handleSourceHtmlBlur = () => {
   if (!currentNote.value || effectiveReadonly.value) return;
   const element = sourceHtmlEditorRef.value;
   if (!element) return;
+  hideSourceImageMenu();
   const sanitizedHtml = sanitizeSourcePreviewHtml(element.innerHTML);
   if (element.innerHTML !== sanitizedHtml) element.innerHTML = sanitizedHtml;
   if (currentNote.value.content !== sanitizedHtml) {
@@ -1007,12 +1136,14 @@ onMounted(() => {
   customFieldsCollapsed.value = readCustomFieldsCollapsed();
   window.addEventListener('storage', handleCustomFieldsCollapsedStorage);
   window.addEventListener(CUSTOM_FIELDS_COLLAPSED_EVENT, handleCustomFieldsCollapsedEvent);
+  window.addEventListener('click', hideSourceImageMenu);
 });
 
 onUnmounted(() => {
   stopCustomFieldKeyResize();
   window.removeEventListener('storage', handleCustomFieldsCollapsedStorage);
   window.removeEventListener(CUSTOM_FIELDS_COLLAPSED_EVENT, handleCustomFieldsCollapsedEvent);
+  window.removeEventListener('click', hideSourceImageMenu);
 });
 
 const queueAutoSave = (options: { immediate?: boolean; delayMs?: number } = {}) => {
@@ -1301,6 +1432,7 @@ const getFieldTypeLabel = (type: unknown, value?: any) => {
 .source-html-preview :deep(th){border:1px solid #c8cdd3}
 .source-html-preview :deep(img){max-width:100%;height:auto}
 .source-html-preview :deep(a){color:#2f7edb;cursor:pointer}
+.source-image-menu{position:fixed;z-index:2600;padding:4px;background:#fff;border:1px solid #dcdfe6;border-radius:4px;box-shadow:0 6px 18px rgba(31,41,51,.16)}
 .shared-note-editor.is-readonly-presentation .editor-header{margin-bottom:8px;padding-bottom:0;border-bottom:none}
 .shared-note-editor.is-readonly-presentation :deep(.editor-container){border:0;cursor:default}
 .shared-note-editor.is-readonly-presentation :deep(.w-e-text-container){background:transparent !important}

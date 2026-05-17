@@ -29,6 +29,7 @@ import {
   Monitor,
   User,
   SwitchButton,
+  Message,
   // Cellphone,
   MagicStick,
   Box,
@@ -64,6 +65,7 @@ const lastMenuPointerIntent = ref<{
   time: number;
 } | null>(null);
 const HOME_PATH = requirePageMenuPath('Home');
+const AUTHOR_CONTACT_PATH = requirePageMenuPath('AuthorContact');
 const PASSWORD_GENERATOR_PATH = requirePageMenuPath('PasswordGenerator');
 const IMAGE_BROWSER_PATH = requirePageMenuPath('ImageBrowser');
 const COLOR_TOOLS_PATH = requirePageMenuPath('ColorTools');
@@ -91,6 +93,7 @@ const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH = requirePageMenuPath('FanxiuKunlu
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH = requirePageMenuPath('FanxiuModaoInvasion');
 const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH = requirePageMenuPath('FanxiuShouyuanExploration');
 const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH = requirePageMenuPath('FanxiuDivineResource');
+const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH = requirePageMenuPath('FanxiuQijiZhumo');
 const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH = requirePageMenuPath('FanxiuXianzhouMarathon');
 const FANXIU_REGION_DATA_PATH = requirePageMenuPath('FanxiuRegionData');
 const FANXIU_WARDROBE_HALL_PATH = requirePageMenuPath('FanxiuWardrobeHall');
@@ -122,6 +125,7 @@ const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
 const ADMIN_BACKGROUND_TASKS_PATH = requirePageMenuPath('BackgroundTasks');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
 const HOME_TITLE = requirePermissionTitle('home');
+const AUTHOR_CONTACT_TITLE = requirePermissionTitleByMenuPath(AUTHOR_CONTACT_PATH);
 const TOOLS_TITLE = requirePermissionTitle('tools');
 const PASSWORD_GENERATOR_TITLE = requirePermissionTitleByMenuPath(PASSWORD_GENERATOR_PATH);
 const IMAGE_BROWSER_TITLE = requirePermissionTitleByMenuPath(IMAGE_BROWSER_PATH);
@@ -155,6 +159,7 @@ const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE = requirePermissionTitleByMenuPat
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH);
 const FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH);
 const FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH);
+const FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH);
 const FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH);
 const FANXIU_REGION_DATA_TITLE = requirePermissionTitleByMenuPath(FANXIU_REGION_DATA_PATH);
 const FANXIU_INVENTORY_TITLE = requirePermissionTitle('fanxiu.inventory');
@@ -402,6 +407,7 @@ const fanxiuActivityListMenuVisible = computed(() =>
     FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
     FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH,
     FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH,
+    FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH,
     FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
@@ -465,7 +471,9 @@ const fanxiuActivityListMenuEntryPath = computed(() =>
           ? FANXIU_ACTIVITY_LIST_SHOUYUAN_EXPLORATION_PATH
           : canAccessMenuPath(FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH)
             ? FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH
-            : FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
+            : canAccessMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH)
+              ? FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH
+              : FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH,
 );
 
 const fanxiuMagicTreasureMenuEntryPath = computed(() =>
@@ -719,7 +727,7 @@ watch(
           :key="menuRenderKey"
           :default-active="activeMenu"
           :default-openeds="defaultOpeneds"
-          class="el-menu-vertical-demo"
+          class="main-menu el-menu-vertical-demo"
           :collapse="isCollapse"
           @click.capture="recordMenuPointerIntent"
           @select="handleMenuSelect"
@@ -816,6 +824,12 @@ watch(
                   :index="FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_PATH"
                 >
                   {{ FANXIU_ACTIVITY_LIST_DIVINE_RESOURCE_TITLE }}
+                </el-menu-item>
+                <el-menu-item
+                  v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH)"
+                  :index="FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_PATH"
+                >
+                  {{ FANXIU_ACTIVITY_LIST_QIJI_ZHUMO_TITLE }}
                 </el-menu-item>
                 <el-menu-item
                   v-if="canAccessMenuPath(FANXIU_ACTIVITY_LIST_XIANZHOU_MARATHON_PATH)"
@@ -928,6 +942,20 @@ watch(
               <span>{{ ADMIN_BACKGROUND_TASKS_TITLE }}</span>
             </el-menu-item>
           </el-sub-menu>
+        </el-menu>
+
+        <el-menu
+          :key="`bottom-${menuRenderKey}`"
+          :default-active="activeMenu"
+          class="aside-bottom-menu el-menu-vertical-demo"
+          :collapse="isCollapse"
+          @click.capture="recordMenuPointerIntent"
+          @select="handleMenuSelect"
+        >
+          <el-menu-item v-if="canAccessMenuPath(AUTHOR_CONTACT_PATH)" :index="AUTHOR_CONTACT_PATH">
+            <el-icon><Message /></el-icon>
+            <template #title>{{ AUTHOR_CONTACT_TITLE }}</template>
+          </el-menu-item>
         </el-menu>
         
         <div class="aside-disclaimer" :class="{ 'collapsed': isCollapse }">
@@ -1082,11 +1110,18 @@ watch(
   min-height: 0;
   overflow: auto;
 }
-.el-menu {
+.main-menu {
   border-right: none;
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
+}
+
+.aside-bottom-menu {
+  border-right: none;
+  border-top: 1px solid #e6e6e6;
+  flex: 0 0 auto;
+  overflow: hidden;
 }
 
 :deep(.el-menu-vertical-demo:not(.el-menu--collapse) .el-menu-item),

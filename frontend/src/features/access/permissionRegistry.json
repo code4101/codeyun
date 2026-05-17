@@ -12,6 +12,16 @@
       "default_anonymous_allow": true
     },
     {
+      "key": "author-contact",
+      "title": "联系作者",
+      "node_type": "feature",
+      "sort_order": 15,
+      "route_paths": ["/contact-author"],
+      "menu_paths": ["/contact-author"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "tools",
       "title": "综合工具",
       "node_type": "group",
@@ -356,6 +366,17 @@
       "sort_order": 30,
       "route_paths": ["/fanxiu/activity-list/divine-resource"],
       "menu_paths": ["/fanxiu/activity-list/divine-resource"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.activity-list.qiji-zhumo",
+      "title": "奇技诛魔",
+      "node_type": "feature",
+      "parent_key": "fanxiu.activity-list",
+      "sort_order": 35,
+      "route_paths": ["/fanxiu/activity-list/qiji-zhumo"],
+      "menu_paths": ["/fanxiu/activity-list/qiji-zhumo"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },

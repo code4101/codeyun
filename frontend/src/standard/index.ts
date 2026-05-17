@@ -1,6 +1,7 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 import adminPages from './admin'
+import authorContactPage from './author-contact'
 import attendancePages from './attendance'
 import clusterPages from './cluster'
 import dspPages from './dsp'
@@ -12,6 +13,7 @@ import toolsPages from './tools'
 
 export const standardPageRegistry: AppPageDefinition[] = [
   ...homePages,
+  authorContactPage,
   ...fanxiuPages,
   ...dspPages,
   ...magicCraftPages,

@@ -521,6 +521,9 @@ const ERA_YEAR_VISIBLE_LIMIT_DEFAULT = 4;
 const MONTH_VISIBLE_LIMIT_MIN = 1;
 const MONTH_VISIBLE_LIMIT_MAX = 24;
 const YEAR_MONTH_SPARSE_TOTAL_LIMIT = 4;
+const CALENDAR_QUERY_LIMIT_DEFAULT = 5000;
+const CALENDAR_VOLUME_QUERY_LIMIT = 10000;
+const CALENDAR_ERA_QUERY_LIMIT = 30000;
 
 const CALENDAR_VOLUME_DEFINITIONS: CalendarVolumeDefinition[] = [
   { id: 'v1', label: '卷一 开辟鸿蒙~2008.7', start: [1992, 1, 1], endExclusive: [2008, 8, 1] },
@@ -711,7 +714,7 @@ const frontFilterHelp = computed(() => {
   return '基于当前月份已加载的节点实时筛选并渲染日历，修改后立即生效并保存。';
 });
 
-const checkAuth = () => {
+const requireLoginForCodexDiary = () => {
   if (!userStore.isAuthenticated) {
     ElMessageBox.confirm('该功能需要登录账号后才可用。是否前往登录？', '提示', {
       confirmButtonText: '前往登录',
@@ -726,7 +729,6 @@ const checkAuth = () => {
 };
 
 const createNoteForDay = async (date: Date) => {
-  if (!checkAuth()) return;
   const now = new Date();
   const isTargetToday = isToday(date);
   
@@ -842,7 +844,7 @@ const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Prom
 };
 
 const importCodexDiaryForDay = async (date: Date) => {
-  if (!checkAuth() || codexDiaryImporting.value) return;
+  if (!requireLoginForCodexDiary() || codexDiaryImporting.value) return;
   codexDiaryImporting.value = true;
   const targetDate = new Date(date);
   try {
@@ -1845,13 +1847,20 @@ const getNoteSplitLayerStyle = (note: NoteNode, mode: 'fill' | 'empty') => {
 };
 
 const buildCalendarProgram = () => createFixedRangeProgram(periodStartTs.value, periodEndTs.value - 1, 'start_at');
+const getCalendarQueryLimit = () => {
+  if (calendarScale.value === 'era') return CALENDAR_ERA_QUERY_LIMIT;
+  if (calendarScale.value === 'volume') return CALENDAR_VOLUME_QUERY_LIMIT;
+  return CALENDAR_QUERY_LIMIT_DEFAULT;
+};
 
 const refreshData = async (options: { silent?: boolean } = {}) => {
   loading.value = true;
   try {
     await noteStore.queryNoteProgramForTab(props.tabId, buildScanNoteProgramRequest(buildCalendarProgram(), {
-      limit: 5000,
-      include_edges: false
+      limit: getCalendarQueryLimit(),
+      include_edges: false,
+      order_by: 'start_at',
+      order_desc: false
     }));
     if (!options.silent) {
       ElMessage.success('已刷新');

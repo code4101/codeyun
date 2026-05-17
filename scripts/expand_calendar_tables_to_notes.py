@@ -49,6 +49,16 @@ WEEKDAY_LABELS = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 WEEK_CODE_RE = re.compile(r"\bw?(\d{6})\b", re.IGNORECASE)
 DAY_LABEL_RE = re.compile(r"\bw?(\d{6})\s*(?:周[一二三四五六日天])?", re.IGNORECASE)
 INLINE_STYLE_RE = re.compile(r"([a-zA-Z-]+)\s*:\s*([^;]+)")
+RESOURCE_SOURCE_TITLE_RE = re.compile(
+    r"(?:密码仓库|密码表|软件注册码|注册码|用户码|账号|账户|密钥|license|serial)",
+    re.IGNORECASE,
+)
+RESOURCE_KEYWORD_RE = re.compile(
+    r"(?:密码|注册码|用户码|账号|账户|密钥|license|serial|绑定邮箱|Google账户)",
+    re.IGNORECASE,
+)
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+SECRET_TOKEN_RE = re.compile(r"(?=[A-Za-z0-9+/=_@#$%^&*|~`?.-]{12,})(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9+/=_@#$%^&*|~`?.-]+")
 RED_COLOR_RE = re.compile(
     r"^(?:red|#f00|#ff0000|rgb\(\s*255\s*,\s*0\s*,\s*0\s*\)|rgba\(\s*255\s*,\s*0\s*,\s*0\s*,\s*(?:1|1\.0)\s*\))$",
     re.IGNORECASE,
@@ -339,6 +349,18 @@ def find_weekday_header(grid: list[list[GridCell | None]]) -> tuple[int, dict[in
     return best
 
 
+def is_resource_like_table(source_title: str, table: Tag) -> bool:
+    title = str(source_title or "")
+    if RESOURCE_SOURCE_TITLE_RE.search(title):
+        return True
+    text = text_of(table)
+    if not RESOURCE_KEYWORD_RE.search(text):
+        return False
+    token_count = len(EMAIL_RE.findall(text)) + len(SECRET_TOKEN_RE.findall(text))
+    keyword_count = len(RESOURCE_KEYWORD_RE.findall(text))
+    return token_count >= 2 and keyword_count >= 2
+
+
 def week_code_from_row(row: list[GridCell | None], max_col: int | None = None) -> str | None:
     limit = len(row) if max_col is None else min(len(row), max_col)
     for item in row[:limit]:
@@ -610,6 +632,8 @@ def extract_items_from_row(row: sqlite3.Row, yuque_html: dict[str, str]) -> tupl
     soup = BeautifulSoup(html_text or "", "html.parser")
     items: list[CalendarItem] = []
     for table_index, table in enumerate(soup.find_all("table")):
+        if is_resource_like_table(str(row["title"] or ""), table):
+            continue
         matrix_items = extract_weekday_matrix_items(row, fields, doc_key, key_prefix, table, table_index)
         if matrix_items:
             items.extend(matrix_items)

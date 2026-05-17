@@ -46,6 +46,7 @@ export interface RimeContextArticle {
   source_type: string;
   source_key?: string;
   source_label: string;
+  weight_multiplier?: number;
   status: string;
   row_count: number;
   char_count: number;
@@ -54,11 +55,13 @@ export interface RimeContextArticle {
   created_at: number;
   updated_at: number;
   processed_at: number;
+  readonly?: boolean;
 }
 
 export interface RimeContextArticleSummary {
   article_count: number;
   enabled_count: number;
+  lexicon_count?: number;
   contribution_count: number;
 }
 
@@ -113,6 +116,17 @@ export interface RimeContextHistoryArticleResponse {
   content: string;
 }
 
+export interface RimeContextArticleContentResponse {
+  available: boolean;
+  status: string;
+  message: string;
+  rime_dir: string | null;
+  files: RimeContextPredictionFileInfo[];
+  article: RimeContextArticle | null;
+  pagination: RimeContextHistoryPagination | null;
+  content: string;
+}
+
 export interface RimeContextLintSummary {
   source_count: number;
   issue_count: number;
@@ -157,6 +171,8 @@ export interface RimeContextArticleImportPayload {
   title?: string;
   content: string;
   enabled: boolean;
+  source_type?: 'imported_article' | 'lexicon' | string;
+  weight_multiplier?: number;
 }
 
 export interface RimeContextDeviceHistoryImportPayload {
@@ -170,12 +186,23 @@ export interface RimeContextArticleUpdatePayload {
   enabled?: boolean;
 }
 
+export interface RimeContextArticleContentSavePayload {
+  content: string;
+  page: number;
+  page_size: number;
+}
+
 export interface RimeContextHistoryArticleSavePayload {
   content: string;
 }
 
 export interface RimeContextHistoryArticleQuery {
   limit?: number;
+  page?: number;
+  page_size?: number;
+}
+
+export interface RimeContextArticleContentQuery {
   page?: number;
   page_size?: number;
 }
@@ -246,6 +273,18 @@ export async function fetchRimeContextHistoryArticle(
 ): Promise<RimeContextHistoryArticleResponse> {
   const response = await api.get<RimeContextHistoryArticleResponse>(
     getDeviceEntryPath(entryId, '/rime/context-prediction/history-article'),
+    { params: query },
+  );
+  return response.data;
+}
+
+export async function fetchRimeContextArticleContent(
+  entryId: string,
+  articleId: string,
+  query: RimeContextArticleContentQuery = { page: 1, page_size: 2000 },
+): Promise<RimeContextArticleContentResponse> {
+  const response = await api.get<RimeContextArticleContentResponse>(
+    getDeviceEntryPath(entryId, `/rime/context-prediction/articles/${articleId}/content`),
     { params: query },
   );
   return response.data;
@@ -324,6 +363,18 @@ export async function updateRimeContextArticle(
 ): Promise<RimeContextArticlesResponse> {
   const response = await api.patch<RimeContextArticlesResponse>(
     getDeviceEntryPath(entryId, `/rime/context-prediction/articles/${articleId}`),
+    payload,
+  );
+  return response.data;
+}
+
+export async function saveRimeContextArticleContent(
+  entryId: string,
+  articleId: string,
+  payload: RimeContextArticleContentSavePayload,
+): Promise<RimeContextArticleContentResponse> {
+  const response = await api.put<RimeContextArticleContentResponse>(
+    getDeviceEntryPath(entryId, `/rime/context-prediction/articles/${articleId}/content`),
     payload,
   );
   return response.data;

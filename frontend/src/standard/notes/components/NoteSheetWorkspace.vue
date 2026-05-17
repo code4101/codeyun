@@ -16774,7 +16774,7 @@ defineExpose({
     <el-dialog
       v-model="studentLookupFeedbackDialogVisible"
       title="反馈问题"
-      width="640px"
+      width="min(640px, calc(100vw - 24px))"
       class="sheet-student-feedback-dialog"
       destroy-on-close
       append-to-body
@@ -18068,12 +18068,14 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
 }
 
 .sheet-student-feedback-context {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
+  min-width: 0;
   padding: 10px 12px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
@@ -18125,6 +18127,7 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .sheet-student-feedback-label {
@@ -18186,6 +18189,7 @@ defineExpose({
 }
 
 .sheet-formula-bar {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   min-height: 34px;
@@ -19272,6 +19276,48 @@ defineExpose({
     padding: 9px;
   }
 
+  .note-sheet-workspace.is-lookup-view {
+    --sheet-lookup-sticky-formula-height: 34px;
+    --sheet-lookup-sticky-scroll-padding: 12px;
+    --sheet-lookup-sticky-side-bleed: 13px;
+  }
+
+  .note-sheet-workspace.is-lookup-view .sheet-formula-bar {
+    position: sticky;
+    top: calc(-1 * var(--sheet-lookup-sticky-scroll-padding));
+    z-index: 21;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .note-sheet-workspace.is-lookup-view .sheet-student-lookup-controls {
+    position: sticky;
+    top: calc(var(--sheet-lookup-sticky-formula-height) - var(--sheet-lookup-sticky-scroll-padding));
+    z-index: 20;
+    isolation: isolate;
+    margin: -9px -9px 0;
+    padding: 9px 9px 8px;
+    border-bottom: 0;
+    background: #fbfdff;
+  }
+
+  .note-sheet-workspace.is-lookup-view .sheet-student-lookup-controls::before {
+    content: "";
+    position: absolute;
+    z-index: -1;
+    top: calc(-1 * var(--sheet-lookup-sticky-formula-height));
+    right: calc(-1 * var(--sheet-lookup-sticky-side-bleed));
+    bottom: 0;
+    left: calc(-1 * var(--sheet-lookup-sticky-side-bleed));
+    border-bottom: 1px solid #e2e8f0;
+    background: #fbfdff;
+    pointer-events: none;
+  }
+
+  .note-sheet-workspace.is-lookup-view .sheet-student-lookup-detail {
+    border-top: 0;
+  }
+
   .sheet-student-lookup-controls {
     align-items: stretch;
   }
@@ -19308,8 +19354,54 @@ defineExpose({
     text-align: left;
   }
 
-  :deep(.sheet-student-feedback-dialog) {
-    width: calc(100vw - 24px) !important;
+  .sheet-student-feedback-context {
+    padding: 8px 10px;
+  }
+
+  .sheet-student-feedback-context-item {
+    grid-template-columns: 36px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .sheet-student-feedback-student {
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .sheet-student-feedback-student-field {
+    flex-wrap: wrap;
+  }
+
+  .sheet-student-feedback-help {
+    flex-basis: 100%;
+  }
+
+  :global(.sheet-student-feedback-dialog) {
+    box-sizing: border-box;
+    max-width: calc(100vw - 24px);
+    max-height: calc(100dvh - 24px);
+    margin-top: 12px !important;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  :global(.sheet-student-feedback-dialog .el-dialog__header) {
+    flex: 0 0 auto;
+    padding: 18px 16px 12px;
+  }
+
+  :global(.sheet-student-feedback-dialog .el-dialog__body) {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 0 16px 16px;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  :global(.sheet-student-feedback-dialog .sheet-student-feedback-actions .el-button) {
+    width: 100%;
+    margin-left: 0 !important;
   }
 }
 </style>

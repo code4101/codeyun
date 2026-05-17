@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Check, Close, Delete, Edit, Plus, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue';
+import { Delete, Plus, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue';
 import {
   deleteRimeContextCandidate,
   deleteRimeContextArticle,
+  fetchRimeContextArticleContent,
   fetchRimeContextArticles,
   fetchRimeContextHistoryArticle,
   fetchRimeContextLint,
@@ -13,10 +14,12 @@ import {
   importRimeContextArticle,
   importRimeContextDeviceHistory,
   refreshRimeContextPredictionTree,
+  saveRimeContextArticleContent,
   saveRimeContextHistoryArticle,
   updateRimeContextCandidate,
   updateRimeContextArticle,
   type RimeContextArticle,
+  type RimeContextArticleContentResponse,
   type RimeContextArticlesResponse,
   type RimeContextHistoryArticleResponse,
   type RimeContextLintIssue,
@@ -51,8 +54,19 @@ interface ContextTailGroup {
 type RimeView = 'index' | 'history' | 'articles' | 'lint';
 type IndexScope = 'summary' | 'detail';
 type PrefixScope = 'summary' | 'detail';
+type ArticleContentSaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
+
+interface PendingArticleContentSave {
+  articleId: string;
+  page: number;
+  pageSize: number;
+  content: string;
+  version: number;
+}
 
 const HISTORY_PAGE_SIZE = 2000;
+const ARTICLE_CONTENT_PAGE_SIZE = 2000;
+const ARTICLE_CONTENT_LAST_PAGE = 2_147_483_647;
 const PREDICTION_TREE_LIMIT = 50000;
 
 const indexSourceOptions: { value: RimeContextPredictionSource; label: string; title: string }[] = [
@@ -65,19 +79,19 @@ const route = useRoute();
 const router = useRouter();
 
 const routeView = (value: unknown): RimeView => {
-  if (value === 'lint') return 'lint';
-  if (value === 'articles') return 'articles';
-  if (value === 'history') return 'history';
-  return 'index';
+  if (value === 'index') return 'index';
+  return 'articles';
 };
 
 const devices = computed(() => taskStore.devices);
 const loadingDevices = ref(false);
 const loadingTree = ref(false);
 const loadingArticles = ref(false);
+const loadingArticleContent = ref(false);
 const loadingHistory = ref(false);
 const loadingLint = ref(false);
 const savingHistory = ref(false);
+const savingArticleContent = ref(false);
 const selectedEntryId = ref(
   Array.isArray(route.query.entry_id)
     ? (route.query.entry_id[0] || '')
@@ -93,6 +107,7 @@ const selectedPrefixScope = ref<PrefixScope>('detail');
 const selectedIndexSource = ref<RimeContextPredictionSource>('snapshot');
 const tree = ref<RimeContextPredictionTree | null>(null);
 const articlesState = ref<RimeContextArticlesResponse | null>(null);
+const articleContentState = ref<RimeContextArticleContentResponse | null>(null);
 const historyState = ref<RimeContextHistoryArticleResponse | null>(null);
 const lintState = ref<RimeContextLintResponse | null>(null);
 const lintSource = ref<'all' | 'history' | 'articles'>('all');
@@ -100,8 +115,13 @@ const lintMode = ref<'rules' | 'ai'>('rules');
 const lintLoadedSource = ref<'all' | 'history' | 'articles'>('all');
 const lintLoadedMode = ref<'rules' | 'ai'>('rules');
 const historyPage = ref(1);
+const articleContentPage = ref(1);
+const selectedArticleId = ref('');
 const historyEditing = ref(false);
 const historyDraft = ref('');
+const articleContentDraft = ref('');
+const articleContentSaveStatus = ref<ArticleContentSaveStatus>('idle');
+const articleContentSaveError = ref('');
 const articleDialogVisible = ref(false);
 const deviceHistoryDialogVisible = ref(false);
 const candidateDialogVisible = ref(false);
@@ -114,6 +134,8 @@ const articleForm = ref({
   title: '',
   content: '',
   enabled: true,
+  sourceType: 'imported_article' as 'imported_article' | 'lexicon',
+  weightMultiplier: 8,
 });
 const deviceHistoryForm = ref({
   sourceEntryId: '',
@@ -127,14 +149,37 @@ const candidateForm = ref({
   weight: 1,
 });
 
+let articleContentSaveTimer: ReturnType<typeof window.setTimeout> | null = null;
+let pendingArticleContentSave: PendingArticleContentSave | null = null;
+let articleContentDraftVersion = 0;
+
 const currentDevice = computed(() => devices.value.find((device) => device.id === selectedEntryId.value) || null);
 const hasDevices = computed(() => devices.value.length > 0);
 const normalizedSearch = computed(() => searchText.value.trim().toLowerCase());
 const articleSummary = computed(() => articlesState.value?.summary || unavailableArticles('').summary);
+const articleDialogTitle = computed(() => (articleForm.value.sourceType === 'lexicon' ? '导入自定义短语' : '导入语料'));
+const articleContentLabel = computed(() => (articleForm.value.sourceType === 'lexicon' ? '短语' : '正文'));
+const articleContentPlaceholder = computed(() => (
+  articleForm.value.sourceType === 'lexicon'
+    ? '每行一个短语；可写 冠豸(zhai)山；需要指定编码或权重时用 Tab 分隔：候选短语\t编码\t权重'
+    : '粘贴要提炼的语料正文'
+));
 const historySummary = computed(() => historyState.value?.summary || unavailableHistoryArticle('').summary);
 const lintSummary = computed(() => lintState.value?.summary || unavailableLint('').summary);
 const historyPagination = computed(() => historyState.value?.pagination || null);
 const articles = computed(() => articlesState.value?.articles || []);
+const selectedArticle = computed(() => (
+  articles.value.find((article) => article.id === selectedArticleId.value) || null
+));
+const articleContentPagination = computed(() => articleContentState.value?.pagination || null);
+const articleContentSaveLabel = computed(() => {
+  if (!selectedArticle.value || isReadonlyArticle(selectedArticle.value)) return '';
+  if (articleContentSaveStatus.value === 'dirty') return '待保存';
+  if (articleContentSaveStatus.value === 'saving') return '保存中';
+  if (articleContentSaveStatus.value === 'saved') return '已保存';
+  if (articleContentSaveStatus.value === 'error') return articleContentSaveError.value || '保存失败';
+  return '';
+});
 const lintIssues = computed(() => lintState.value?.issues || []);
 const lintIsStale = computed(() => Boolean(
   lintState.value
@@ -219,6 +264,7 @@ const unavailableArticles = (message: string, status = 'request_failed'): RimeCo
   summary: {
     article_count: 0,
     enabled_count: 0,
+    lexicon_count: 0,
     contribution_count: 0,
   },
   articles: [],
@@ -248,6 +294,17 @@ const unavailableHistoryArticle = (message: string, status = 'request_failed'): 
     base_event_count: 0,
     appended_event_count: 0,
   },
+  pagination: null,
+  content: '',
+});
+
+const unavailableArticleContent = (message: string, status = 'request_failed'): RimeContextArticleContentResponse => ({
+  available: false,
+  status,
+  message,
+  rime_dir: null,
+  files: [],
+  article: null,
   pagination: null,
   content: '',
 });
@@ -560,19 +617,6 @@ const currentStatusText = computed(() => {
   return statusText.value;
 });
 
-const refreshButtonLoading = computed(() => {
-  if (activeView.value === 'lint') return loadingLint.value;
-  if (activeView.value === 'articles') return loadingArticles.value;
-  if (activeView.value === 'history') return loadingHistory.value;
-  return loadingTree.value;
-});
-
-const refreshButtonText = computed(() => {
-  if (activeView.value === 'index') return '更新索引';
-  if (activeView.value === 'lint') return '检查';
-  return '刷新';
-});
-
 const deviceMeta = (device: Device | null) => {
   if (!device) return '';
   if (device.mode === 'local') return '本地设备';
@@ -612,6 +656,12 @@ const formatHistoryRange = (firstSeen: string, lastSeen: string) => {
 
 const candidateRowKey = (row: RimeContextPredictionRow) => `${row.context}\t${row.prefix}\t${row.candidate}`;
 const articleHashShort = (value: string) => (value ? value.slice(0, 10) : '');
+const articleKindLabel = (article: RimeContextArticle) => {
+  if (article.source_type === 'lexicon' || article.source_type === 'manual_english_terms') return '自定义短语';
+  if (article.source_type === 'device_history' || article.source_type === 'input_history') return '输入历史';
+  return '文章';
+};
+const isReadonlyArticle = (article: RimeContextArticle) => Boolean(article.readonly || article.source_type === 'input_history');
 const lintSourceLabel = (value: string) => {
   if (value === 'history') return '输入历史';
   if (value === 'article') return '导入文章';
@@ -648,7 +698,7 @@ const syncRouteQuery = () => {
     query: {
       ...route.query,
       ...(selectedEntryId.value ? { entry_id: selectedEntryId.value } : {}),
-      ...(activeView.value === 'index' ? { view: undefined } : { view: activeView.value }),
+      ...(activeView.value === 'articles' ? { view: undefined } : { view: activeView.value }),
     },
   });
 };
@@ -671,16 +721,144 @@ const loadTree = async () => {
   }
 };
 
+const resetArticleContent = () => {
+  clearArticleContentSaveTimer();
+  pendingArticleContentSave = null;
+  selectedArticleId.value = '';
+  articleContentPage.value = 1;
+  articleContentState.value = null;
+  articleContentDraft.value = '';
+  articleContentSaveStatus.value = 'idle';
+  articleContentSaveError.value = '';
+};
+
+function clearArticleContentSaveTimer() {
+  if (!articleContentSaveTimer) return;
+  window.clearTimeout(articleContentSaveTimer);
+  articleContentSaveTimer = null;
+}
+
+function syncArticleContentDraft(content: string) {
+  clearArticleContentSaveTimer();
+  pendingArticleContentSave = null;
+  articleContentDraftVersion += 1;
+  articleContentDraft.value = content;
+  articleContentSaveStatus.value = 'idle';
+  articleContentSaveError.value = '';
+}
+
+function replaceArticleInList(article: RimeContextArticle | null | undefined) {
+  if (!article || !articlesState.value) return;
+  articlesState.value = {
+    ...articlesState.value,
+    articles: articlesState.value.articles.map((item) => (item.id === article.id ? article : item)),
+  };
+}
+
+const saveArticleContentNow = async () => {
+  clearArticleContentSaveTimer();
+  const pending = pendingArticleContentSave;
+  if (!pending || !selectedEntryId.value) return;
+  pendingArticleContentSave = null;
+  savingArticleContent.value = true;
+  articleContentSaveStatus.value = 'saving';
+  articleContentSaveError.value = '';
+  try {
+    const payload = await saveRimeContextArticleContent(selectedEntryId.value, pending.articleId, {
+      content: pending.content,
+      page: pending.page,
+      page_size: pending.pageSize,
+    });
+    replaceArticleInList(payload.article);
+    if (
+      selectedArticleId.value === pending.articleId
+      && articleContentPage.value === pending.page
+      && articleContentDraftVersion === pending.version
+    ) {
+      articleContentState.value = payload;
+      articleContentPage.value = payload.pagination?.page || pending.page;
+      if (articleContentDraft.value !== (payload.content || '')) {
+        articleContentDraft.value = payload.content || '';
+      }
+      articleContentSaveStatus.value = 'saved';
+    }
+  } catch (err: any) {
+    if (articleContentDraftVersion === pending.version) {
+      articleContentSaveError.value = err.response?.data?.detail || err.message || '保存失败';
+      articleContentSaveStatus.value = 'error';
+    }
+  } finally {
+    savingArticleContent.value = false;
+  }
+};
+
+const scheduleArticleContentSave = () => {
+  const article = selectedArticle.value;
+  const pagination = articleContentPagination.value;
+  if (!selectedEntryId.value || !article || isReadonlyArticle(article) || !articleContentState.value?.available) return;
+  articleContentDraftVersion += 1;
+  pendingArticleContentSave = {
+    articleId: article.id,
+    page: pagination?.page || articleContentPage.value || 1,
+    pageSize: pagination?.page_size || ARTICLE_CONTENT_PAGE_SIZE,
+    content: articleContentDraft.value,
+    version: articleContentDraftVersion,
+  };
+  articleContentSaveStatus.value = 'dirty';
+  articleContentSaveError.value = '';
+  clearArticleContentSaveTimer();
+  articleContentSaveTimer = window.setTimeout(() => {
+    void saveArticleContentNow();
+  }, 900);
+};
+
+const loadArticleContent = async (page = articleContentPage.value) => {
+  if (!selectedEntryId.value || !selectedArticleId.value) {
+    articleContentState.value = null;
+    syncArticleContentDraft('');
+    return;
+  }
+  loadingArticleContent.value = true;
+  try {
+    articleContentState.value = await fetchRimeContextArticleContent(
+      selectedEntryId.value,
+      selectedArticleId.value,
+      {
+        page,
+        page_size: ARTICLE_CONTENT_PAGE_SIZE,
+      },
+    );
+    articleContentPage.value = articleContentState.value.pagination?.page || page;
+    syncArticleContentDraft(articleContentState.value.content || '');
+  } catch (err: any) {
+    articleContentState.value = unavailableArticleContent(
+      err.response?.data?.detail || err.message || '读取语料内容失败。',
+    );
+    syncArticleContentDraft('');
+  } finally {
+    loadingArticleContent.value = false;
+  }
+};
+
 const loadArticles = async () => {
   if (!selectedEntryId.value) {
     articlesState.value = null;
+    resetArticleContent();
     return;
   }
   loadingArticles.value = true;
   try {
     articlesState.value = await fetchRimeContextArticles(selectedEntryId.value);
+    if (selectedArticleId.value) {
+      if (articles.value.some((article) => article.id === selectedArticleId.value)) {
+        await loadArticleContent(articleContentPage.value);
+      } else {
+        resetArticleContent();
+      }
+    }
   } catch (err: any) {
-    articlesState.value = unavailableArticles(err.response?.data?.detail || err.message || '读取导入文章清单失败。');
+    articlesState.value = unavailableArticles(err.response?.data?.detail || err.message || '读取语料库失败。');
+    resetArticleContent();
   } finally {
     loadingArticles.value = false;
   }
@@ -737,6 +915,20 @@ const changeHistoryPage = async (page: number) => {
   await loadHistoryArticle(Math.max(1, page));
 };
 
+const selectArticle = async (article: RimeContextArticle) => {
+  if (selectedArticleId.value === article.id && articleContentState.value) return;
+  await saveArticleContentNow();
+  selectedArticleId.value = article.id;
+  articleContentPage.value = ARTICLE_CONTENT_LAST_PAGE;
+  await loadArticleContent(ARTICLE_CONTENT_LAST_PAGE);
+};
+
+const changeArticleContentPage = async (page: number) => {
+  if (loadingArticleContent.value) return;
+  await saveArticleContentNow();
+  await loadArticleContent(Math.max(1, page));
+};
+
 const loadActiveView = async () => {
   if (activeView.value === 'lint') {
     await loadLint();
@@ -757,6 +949,7 @@ const handleDeviceChange = async () => {
   historyEditing.value = false;
   historyPage.value = 1;
   historyDraft.value = '';
+  resetArticleContent();
   selectedTailKey.value = '';
   selectedContextKey.value = '';
   selectedPrefixKey.value = '';
@@ -870,11 +1063,13 @@ const switchView = async (view: RimeView) => {
   await loadActiveView();
 };
 
-const openArticleDialog = () => {
+const openArticleDialog = (sourceType: 'imported_article' | 'lexicon' = 'imported_article') => {
   articleForm.value = {
     title: '',
     content: '',
     enabled: true,
+    sourceType,
+    weightMultiplier: sourceType === 'lexicon' ? 8 : 1,
   };
   articleDialogVisible.value = true;
 };
@@ -902,21 +1097,27 @@ const openCandidateDialog = (row: RimeContextPredictionRow) => {
 const submitImportArticle = async () => {
   if (!selectedEntryId.value) return;
   if (!articleForm.value.content.trim()) {
-    ElMessage.warning('文章内容不能为空');
+    ElMessage.warning(articleForm.value.sourceType === 'lexicon' ? '自定义短语不能为空' : '语料内容不能为空');
     return;
   }
   submittingArticle.value = true;
   try {
+    const isLexicon = articleForm.value.sourceType === 'lexicon';
     articlesState.value = await importRimeContextArticle(selectedEntryId.value, {
-      title: articleForm.value.title.trim() || undefined,
+      title: articleForm.value.title.trim() || (isLexicon ? '自定义短语' : undefined),
       content: articleForm.value.content,
       enabled: articleForm.value.enabled,
+      source_type: articleForm.value.sourceType,
+      ...(isLexicon ? { weight_multiplier: articleForm.value.weightMultiplier } : {}),
     });
     articleDialogVisible.value = false;
-    ElMessage.success('文章已导入');
+    ElMessage.success(isLexicon ? '自定义短语已导入' : '语料已导入');
+    if (selectedArticleId.value && articlesState.value.articles.some((article) => article.id === selectedArticleId.value)) {
+      await loadArticleContent(articleContentPage.value);
+    }
     await loadTree();
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || err.message || '导入文章失败');
+    ElMessage.error(err.response?.data?.detail || err.message || `${articleDialogTitle.value}失败`);
   } finally {
     submittingArticle.value = false;
   }
@@ -936,6 +1137,9 @@ const submitImportDeviceHistory = async () => {
     });
     deviceHistoryDialogVisible.value = false;
     ElMessage.success(articlesState.value.message || '设备历史已同步');
+    if (selectedArticleId.value && articlesState.value.articles.some((article) => article.id === selectedArticleId.value)) {
+      await loadArticleContent(articleContentPage.value);
+    }
     await loadTree();
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || err.message || '同步设备历史失败');
@@ -945,7 +1149,7 @@ const submitImportDeviceHistory = async () => {
 };
 
 const handleArticleEnabledChange = async (article: RimeContextArticle, enabled: boolean) => {
-  if (!selectedEntryId.value || updatingArticleId.value) return;
+  if (!selectedEntryId.value || updatingArticleId.value || isReadonlyArticle(article)) return;
   updatingArticleId.value = article.id;
   try {
     articlesState.value = await updateRimeContextArticle(selectedEntryId.value, article.id, { enabled });
@@ -959,9 +1163,10 @@ const handleArticleEnabledChange = async (article: RimeContextArticle, enabled: 
 };
 
 const handleDeleteArticle = async (article: RimeContextArticle) => {
-  if (!selectedEntryId.value || updatingArticleId.value) return;
+  if (!selectedEntryId.value || updatingArticleId.value || isReadonlyArticle(article)) return;
+  const kind = articleKindLabel(article);
   try {
-    await ElMessageBox.confirm(`确定删除导入文章“${article.title}”吗？`, '删除导入文章', {
+    await ElMessageBox.confirm(`确定删除${kind}“${article.title}”吗？`, `删除${kind}`, {
       confirmButtonText: '删除',
       cancelButtonText: '取消',
       type: 'warning',
@@ -972,7 +1177,10 @@ const handleDeleteArticle = async (article: RimeContextArticle) => {
   updatingArticleId.value = article.id;
   try {
     articlesState.value = await deleteRimeContextArticle(selectedEntryId.value, article.id);
-    ElMessage.success('文章已删除');
+    if (selectedArticleId.value === article.id) {
+      resetArticleContent();
+    }
+    ElMessage.success(`${kind}已删除`);
     await loadTree();
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || err.message || '删除文章失败');
@@ -1085,29 +1293,15 @@ onMounted(async () => {
   syncRouteQuery();
   await loadActiveView();
 });
+
+onBeforeUnmount(() => {
+  void saveArticleContentNow();
+});
 </script>
 
 <template>
   <div class="rime-page">
-    <header class="rime-toolbar">
-      <label class="rime-field rime-field-device">
-        <span>设备</span>
-        <el-select
-          v-model="selectedEntryId"
-          class="rime-select"
-          placeholder="选择设备"
-          :disabled="loadingDevices"
-          @change="handleDeviceChange"
-        >
-          <el-option
-            v-for="device in devices"
-            :key="device.id"
-            :label="device.name || device.device_id"
-            :value="device.id"
-          />
-        </el-select>
-      </label>
-
+    <header v-if="activeView === 'index'" class="rime-toolbar">
       <label v-if="activeView === 'index'" class="rime-field rime-field-index">
         <span>索引</span>
         <el-select
@@ -1139,80 +1333,15 @@ onMounted(async () => {
 
       <div class="rime-actions">
         <el-button
-          v-if="activeView === 'articles'"
-          type="primary"
-          :icon="Plus"
-          :disabled="!canImportArticle"
-          @click="openArticleDialog"
-        >
-          导入文章
-        </el-button>
-        <el-button
-          v-if="activeView === 'articles'"
-          :icon="Refresh"
-          :loading="importingDeviceHistory"
-          :disabled="!canImportDeviceHistory"
-          title="把其他设备的输入历史同步为本机导入文章"
-          aria-label="把其他设备的输入历史同步为本机导入文章"
-          @click="openDeviceHistoryDialog"
-        >
-          拉取历史
-        </el-button>
-        <el-button
-          v-if="activeView === 'history'"
-          type="primary"
+          v-if="activeView === 'index'"
           :icon="Refresh"
           :loading="loadingTree"
-          :disabled="!selectedEntryId || (historyEditing && historyHasDraftChanges)"
-          title="从输入历史重建预测索引"
-          aria-label="从输入历史重建预测索引"
-          @click="handleUpdateIndex"
-        >
-          更新索引
-        </el-button>
-        <template v-if="activeView === 'history'">
-          <el-button
-            v-if="!historyEditing"
-            :icon="Edit"
-            :disabled="!historyState?.available"
-            title="编辑输入历史正文"
-            aria-label="编辑输入历史正文"
-            @click="startHistoryEdit"
-          >
-            编辑
-          </el-button>
-          <template v-else>
-            <el-button
-              type="primary"
-              :icon="Check"
-              :loading="savingHistory"
-              :disabled="!historyHasDraftChanges"
-              title="保存输入历史修订稿"
-              aria-label="保存输入历史修订稿"
-              @click="saveHistoryEdit"
-            >
-              保存
-            </el-button>
-            <el-button
-              :icon="Close"
-              :disabled="savingHistory"
-              title="取消编辑"
-              aria-label="取消编辑"
-              @click="cancelHistoryEdit"
-            >
-              取消
-            </el-button>
-          </template>
-        </template>
-        <el-button
-          :icon="Refresh"
-          :loading="refreshButtonLoading"
           :disabled="!selectedEntryId"
-          :title="refreshButtonText"
-          :aria-label="refreshButtonText"
+          title="更新预测索引"
+          aria-label="更新预测索引"
           @click="handleRefresh"
         >
-          {{ refreshButtonText }}
+          更新索引
         </el-button>
         <el-tooltip effect="light" placement="bottom-end">
           <template #content>
@@ -1232,47 +1361,20 @@ onMounted(async () => {
     </section>
 
     <template v-else>
-      <section class="rime-status">
-        <el-tag size="small" :type="currentStatusType">{{ currentStatusText }}</el-tag>
-        <span v-if="currentDevice">{{ currentDevice.name || currentDevice.device_id }}</span>
-        <span v-if="currentDevice" class="muted">{{ deviceMeta(currentDevice) }}</span>
-        <span v-if="activeView === 'index'" class="muted">索引 {{ currentIndexSource.label }}</span>
-        <span v-if="activeView === 'index' && tree?.source" class="muted">来源 {{ tree.source }}</span>
-        <span v-if="activeView === 'index' && tree?.updated_at" class="muted">更新 {{ formatDateTime(tree.updated_at) }}</span>
-        <span v-if="activeView === 'history' && historyState?.source" class="muted">来源 {{ historyState.source }}</span>
-        <span v-if="activeView === 'history' && historyState?.updated_at" class="muted">更新 {{ formatDateTime(historyState.updated_at) }}</span>
-        <span v-if="activeView === 'lint' && lintIsStale" class="muted">参数已变更，点击检查后生效</span>
-        <span v-else-if="activeView === 'lint' && lintState?.message" class="muted">{{ lintState.message }}</span>
-      </section>
-
       <nav class="rime-view-tabs" aria-label="小狼毫输入法视图">
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'articles' }"
+          @click="switchView('articles')"
+        >
+          语料管理
+        </button>
         <button
           type="button"
           :class="{ 'is-active': activeView === 'index' }"
           @click="switchView('index')"
         >
           预测索引
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': activeView === 'history' }"
-          @click="switchView('history')"
-        >
-          输入历史
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': activeView === 'articles' }"
-          @click="switchView('articles')"
-        >
-          导入文章
-        </button>
-        <button
-          type="button"
-          :class="{ 'is-active': activeView === 'lint' }"
-          @click="switchView('lint')"
-        >
-          语料检查
         </button>
       </nav>
 
@@ -1601,9 +1703,41 @@ onMounted(async () => {
       </section>
 
       <section v-else class="rime-articles" v-loading="loadingArticles">
+        <section class="rime-section-head">
+          <strong>语料文件清单</strong>
+          <div class="rime-section-actions">
+            <el-button
+              type="primary"
+              :icon="Plus"
+              :disabled="!canImportArticle"
+              @click="openArticleDialog('imported_article')"
+            >
+              导入语料
+            </el-button>
+            <el-button
+              :icon="Plus"
+              :disabled="!canImportArticle"
+              @click="openArticleDialog('lexicon')"
+            >
+              导入自定义短语
+            </el-button>
+            <el-button
+              :icon="Refresh"
+              :loading="importingDeviceHistory"
+              :disabled="!canImportDeviceHistory"
+              title="把其他设备的输入历史同步为本机语料"
+              aria-label="把其他设备的输入历史同步为本机语料"
+              @click="openDeviceHistoryDialog"
+            >
+              拉取历史
+            </el-button>
+          </div>
+        </section>
+
         <section class="rime-summary">
-          <span><strong>文章</strong>{{ formatNumber(articleSummary.article_count) }}</span>
+          <span><strong>来源</strong>{{ formatNumber(articleSummary.article_count) }}</span>
           <span><strong>启用</strong>{{ formatNumber(articleSummary.enabled_count) }}</span>
+          <span><strong>自定义短语</strong>{{ formatNumber(articleSummary.lexicon_count || 0) }}</span>
           <span><strong>贡献</strong>{{ formatNumber(articleSummary.contribution_count) }}</span>
           <span v-if="articlesState?.rime_dir" class="summary-path" :title="articlesState.rime_dir">
             <strong>目录</strong>{{ articlesState.rime_dir }}
@@ -1611,58 +1745,119 @@ onMounted(async () => {
         </section>
 
         <section v-if="!articlesState?.available" class="rime-unavailable">
-          <p>{{ articlesState?.message || '请选择设备查看导入文章清单。' }}</p>
+          <p>{{ articlesState?.message || '请选择设备查看语料库。' }}</p>
         </section>
 
-        <table v-else-if="articles.length" class="rime-article-table" aria-label="导入文章清单">
-          <thead>
-            <tr>
-              <th>启用</th>
-              <th>文章</th>
-              <th>来源</th>
-              <th>贡献</th>
-              <th>字符</th>
-              <th>状态</th>
-              <th>更新时间</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="article in articles" :key="article.id">
-              <td>
-                <el-switch
-                  :model-value="article.enabled"
-                  :loading="updatingArticleId === article.id"
-                  @change="(value: string | number | boolean) => handleArticleEnabledChange(article, Boolean(value))"
-                />
-              </td>
-              <td class="article-title" :title="`${article.title}\n${articleHashShort(article.content_hash)}`">
-                {{ article.title }}
-              </td>
-              <td class="article-source" :title="article.source_key || article.source_label">
-                {{ article.source_label }}
-              </td>
-              <td>{{ formatNumber(article.row_count) }}</td>
-              <td>{{ formatNumber(article.char_count) }}</td>
-              <td>{{ article.status === 'ready' ? '已提炼' : article.status }}</td>
-              <td>{{ formatDateTime(article.updated_at) }}</td>
-              <td>
-                <el-button
-                  link
-                  type="danger"
-                  :icon="Delete"
-                  :disabled="updatingArticleId === article.id"
-                  title="删除"
-                  aria-label="删除"
-                  @click="handleDeleteArticle(article)"
-                />
-              </td>
-            </tr>
-          </tbody>
-        </table>
+        <template v-else-if="articles.length">
+          <table class="rime-article-table" aria-label="语料文件清单">
+            <thead>
+              <tr>
+                <th>启用</th>
+                <th>类型</th>
+                <th>名称</th>
+                <th>来源</th>
+                <th>贡献</th>
+                <th>字符</th>
+                <th>状态</th>
+                <th>更新时间</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="article in articles"
+                :key="article.id"
+                class="article-row"
+                :class="{ 'is-selected': selectedArticleId === article.id }"
+                @click="selectArticle(article)"
+              >
+                <td @click.stop>
+                  <el-switch
+                    :model-value="article.enabled"
+                    :loading="updatingArticleId === article.id"
+                    :disabled="isReadonlyArticle(article)"
+                    @change="(value: string | number | boolean) => handleArticleEnabledChange(article, Boolean(value))"
+                  />
+                </td>
+                <td>{{ articleKindLabel(article) }}</td>
+                <td class="article-title" :title="`${article.title}\n${articleHashShort(article.content_hash)}`">
+                  {{ article.title }}
+                </td>
+                <td class="article-source" :title="article.source_key || article.source_label">
+                  {{ article.source_label }}
+                </td>
+                <td>{{ formatNumber(article.row_count) }}</td>
+                <td>{{ formatNumber(article.char_count) }}</td>
+                <td>{{ article.status === 'ready' ? '已提炼' : article.status }}</td>
+                <td>{{ formatDateTime(article.updated_at) }}</td>
+                <td @click.stop>
+                  <el-button
+                    v-if="!isReadonlyArticle(article)"
+                    link
+                    type="danger"
+                    :icon="Delete"
+                    :disabled="updatingArticleId === article.id"
+                    title="删除"
+                    aria-label="删除"
+                    @click="handleDeleteArticle(article)"
+                  />
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          <article
+            v-if="selectedArticle"
+            class="rime-history-article rime-article-content"
+            aria-label="语料内容"
+            v-loading="loadingArticleContent"
+          >
+            <header v-if="articleContentPagination" class="history-pager">
+              <el-button
+                size="small"
+                :disabled="!articleContentPagination.has_prev || loadingArticleContent"
+                @click="changeArticleContentPage(articleContentPagination.page - 1)"
+              >
+                上一页
+              </el-button>
+              <span>
+                第 {{ formatNumber(articleContentPagination.page) }} / {{ formatNumber(articleContentPagination.total_pages) }} 页
+              </span>
+              <span>
+                {{ formatNumber(articleContentPagination.start_index) }}-{{ formatNumber(articleContentPagination.end_index) }} / {{ formatNumber(articleContentPagination.total) }}
+              </span>
+              <span
+                v-if="articleContentSaveLabel"
+                class="history-save-state"
+                :class="`is-${articleContentSaveStatus}`"
+              >
+                {{ articleContentSaveLabel }}
+              </span>
+              <el-button
+                size="small"
+                :disabled="!articleContentPagination.has_next || loadingArticleContent"
+                @click="changeArticleContentPage(articleContentPagination.page + 1)"
+              >
+                下一页
+              </el-button>
+            </header>
+            <section v-if="articleContentState && !articleContentState.available" class="rime-unavailable">
+              <p>{{ articleContentState.message || '这份语料暂时没有可展示内容。' }}</p>
+            </section>
+            <el-input
+              v-else-if="selectedArticle && !isReadonlyArticle(selectedArticle)"
+              v-model="articleContentDraft"
+              class="article-content-editor"
+              type="textarea"
+              :autosize="{ minRows: 4, maxRows: 24 }"
+              @input="scheduleArticleContentSave"
+            />
+            <pre v-else>{{ articleContentState?.content || '' }}</pre>
+          </article>
+        </template>
 
         <div v-else class="rime-pane-empty article-empty">
-          还没有导入文章。
+          还没有导入语料。
         </div>
       </section>
     </template>
@@ -1697,7 +1892,7 @@ onMounted(async () => {
 
     <el-dialog
       v-model="articleDialogVisible"
-      title="导入文章"
+      :title="articleDialogTitle"
       width="680px"
       destroy-on-close
     >
@@ -1707,21 +1902,25 @@ onMounted(async () => {
           <el-input v-model="articleForm.title" placeholder="留空则使用正文第一行" />
         </label>
         <label class="article-dialog-field">
-          <span>正文</span>
+          <span>{{ articleContentLabel }}</span>
           <el-input
             v-model="articleForm.content"
             type="textarea"
             :rows="12"
             resize="vertical"
-            placeholder="粘贴要提炼的文章正文"
+            :placeholder="articleContentPlaceholder"
           />
+        </label>
+        <label v-if="articleForm.sourceType === 'lexicon'" class="article-dialog-field">
+          <span>权重</span>
+          <el-input-number v-model="articleForm.weightMultiplier" :min="1" :max="100" :step="1" />
         </label>
         <el-checkbox v-model="articleForm.enabled">导入后立即参与预测索引</el-checkbox>
       </div>
       <template #footer>
         <el-button @click="articleDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="submittingArticle" @click="submitImportArticle">
-          导入
+          {{ articleDialogTitle }}
         </el-button>
       </template>
     </el-dialog>
@@ -1788,10 +1987,6 @@ onMounted(async () => {
   color: #667085;
 }
 
-.rime-field-device {
-  width: 220px;
-}
-
 .rime-field-index {
   width: 130px;
 }
@@ -1833,7 +2028,6 @@ onMounted(async () => {
   line-height: 1.55;
 }
 
-.rime-status,
 .rime-summary {
   display: flex;
   align-items: center;
@@ -1879,6 +2073,28 @@ onMounted(async () => {
 .rime-summary strong {
   color: #667085;
   font-weight: 500;
+}
+
+.rime-section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #e3e7ed;
+  background: #fff;
+}
+
+.rime-section-head > strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.rime-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .summary-path {
@@ -2315,8 +2531,49 @@ onMounted(async () => {
   background: #f8fafc;
 }
 
+.history-save-state {
+  margin-left: auto;
+  color: #667085;
+}
+
+.history-save-state.is-saved {
+  color: #389e0d;
+}
+
+.history-save-state.is-error {
+  color: #d92d20;
+}
+
+.article-content-editor {
+  width: 100%;
+}
+
+.article-content-editor :deep(.el-textarea__inner) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px 16px;
+  line-height: 1.75;
+  font-family: inherit;
+  font-size: 15px;
+  color: #1f2933;
+  background: #fff;
+}
+
 .rime-article-table {
   margin: 12px 14px 24px;
+}
+
+.article-row {
+  cursor: pointer;
+}
+
+.article-row:hover {
+  background: #f5f8fc;
+}
+
+.article-row.is-selected {
+  background: #dfeaff;
 }
 
 .article-title {
@@ -2334,6 +2591,10 @@ onMounted(async () => {
 
 .article-empty {
   padding: 18px 14px;
+}
+
+.rime-article-content {
+  margin: 0 14px 24px;
 }
 
 .article-dialog-body {
@@ -2370,13 +2631,22 @@ onMounted(async () => {
     flex-direction: column;
   }
 
-  .rime-field-device,
   .rime-field-index,
   .rime-field-search {
     width: 100%;
   }
 
   .rime-actions {
+    margin-left: 0;
+  }
+
+  .rime-section-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .rime-section-actions {
+    flex-wrap: wrap;
     margin-left: 0;
   }
 

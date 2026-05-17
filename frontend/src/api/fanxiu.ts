@@ -102,6 +102,21 @@ export interface FanxiuProcessTerminateResponse {
   errors: Array<{ pid: number; error: string }>;
 }
 
+export interface FanxiuSunloginRotateStatus {
+  running: boolean;
+  pids: number[];
+  primary_pid: number | null;
+  started_at: string | null;
+  runtime_seconds: number | null;
+  command_line: string;
+  target_title: string;
+  preview_title: string;
+  stdout_log: string;
+  stderr_log: string;
+  last_error: string;
+  errors?: Array<{ pid: number; error: string }>;
+}
+
 export type FanxiuInventoryType = '' | '攻击' | '防御' | '灵力' | '辅助';
 export type FanxiuMagicTreasureCategory = '法宝' | '先天古宝' | '后天古宝';
 
@@ -427,6 +442,18 @@ export const getLocalScriptProcesses = () => {
 
 export const terminateFanxiuProcesses = () => {
   return api.post<FanxiuProcessTerminateResponse>('/fanxiu/processes/terminate').then(res => res.data);
+};
+
+export const getFanxiuSunloginRotateStatus = () => {
+  return api.get<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate').then(res => res.data);
+};
+
+export const startFanxiuSunloginRotate = () => {
+  return api.post<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate/start').then(res => res.data);
+};
+
+export const stopFanxiuSunloginRotate = () => {
+  return api.post<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate/stop').then(res => res.data);
 };
 
 export const getFanxiuWardrobeHall = () => {
