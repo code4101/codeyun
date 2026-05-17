@@ -86,13 +86,11 @@
 </template>
 
 <script setup lang="ts">
-import { useRouter } from 'vue-router';
-import { useUserStore } from '@/store/userStore';
 import { markRaw, ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { Plus, Refresh } from '@element-plus/icons-vue';
 import NoteDetailPanel from '@/components/NoteDetailPanel.vue';
 import NoteSplitView from '@/components/NoteSplitView.vue';
-import { ElMessageBox } from 'element-plus';
+import { ElMessage } from 'element-plus';
 import NoteProgramBar from '@/components/NoteProgramBar.vue';
 import {
   useNoteStore,
@@ -131,8 +129,6 @@ const props = defineProps<{
     graphMode?: 'global' | 'planetary' | 'satellite';
 }>();
 
-const router = useRouter();
-const userStore = useUserStore();
 const noteStore = useNoteStore();
 const session = computed(() => noteStore.getTabSession(props.tabId));
 
@@ -1076,12 +1072,6 @@ onUnmounted(() => {
 
 const refreshGraph = async (program = getAppliedDataProgram(), persist: boolean = false) => {
   if (isRefreshing.value) return;
-  if (!userStore.isAuthenticated) {
-    noteStore.clearTabData(props.tabId);
-    nodes.value = [];
-    edges.value = [];
-    return;
-  }
   isRefreshing.value = true;
   try {
     if (isGlobalGraph.value) {
@@ -1133,7 +1123,7 @@ onNodeDragStop(({ node, nodes: draggedNodes }) => {
 
 // Handle Connection
 const onConnect = async (params: Connection) => {
-    if (!checkAuth()) return;
+    if (!ensureNoteWritable()) return;
     const tempEdge = buildGraphEdge({
         id: `e-${params.source}-${params.target}-${Date.now()}`,
         source_id: params.source,
@@ -1178,7 +1168,7 @@ onPaneClick(() => {
 // Delete Selected Edge
 const deleteSelectedEdge = async () => {
     if (!selectedEdgeId.value) return;
-    if (!checkAuth()) return;
+    if (!ensureNoteWritable()) return;
     
     const edge = edges.value.find(e => e.id === selectedEdgeId.value);
     if (edge) {
@@ -1200,10 +1190,6 @@ const deleteSelectedEdge = async () => {
 
 // Handle Edge Delete (Backspace/Delete key)
 onEdgesChange((changes) => {
-    if (!userStore.isAuthenticated && changes.some(c => c.type === 'remove')) {
-        // Prevent deletion if not authenticated
-        return;
-    }
     changes.forEach((change) => {
         if (change.type === 'remove') {
             const edge = edges.value.find(e => e.id === change.id);
@@ -1246,17 +1232,7 @@ const generateDefaultTitle = () => {
     return `${yy}${mm}${dd}周${weekDay}_${hh}${min}`;
 };
 
-const checkAuth = () => {
-  if (!userStore.isAuthenticated) {
-    ElMessageBox.confirm('该功能需要登录账号后才可用。是否前往登录？', '提示', {
-      confirmButtonText: '前往登录',
-      cancelButtonText: '取消',
-      type: 'info'
-    }).then(() => {
-      router.push({ path: '/login', query: { redirect: router.currentRoute.value.fullPath } });
-    }).catch(() => {});
-    return false;
-  }
+const ensureNoteWritable = () => {
   return true;
 };
 
@@ -1277,7 +1253,7 @@ const onNativeDblClick = (event: MouseEvent) => {
 };
 
 const createNewNote = async (targetPosition?: { x: number, y: number }) => {
-  if (!checkAuth()) return;
+  if (!ensureNoteWritable()) return;
   
   // If called from button click, targetPosition is MouseEvent
   let pos = targetPosition;

@@ -6,7 +6,9 @@ from pydantic import BaseModel, Field
 from backend.core.auth import verify_api_token
 from backend.core.device import BaseDevice
 from backend.core.rime_context_prediction import (
+    DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
+    collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
     collect_rime_context_prediction_lint,
@@ -15,6 +17,7 @@ from backend.core.rime_context_prediction import (
     delete_rime_context_prediction_candidate,
     import_rime_context_prediction_article,
     refresh_rime_context_prediction_tree,
+    save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
     update_rime_context_prediction_candidate,
     update_rime_context_prediction_article,
@@ -28,11 +31,19 @@ class RimeArticleImportRequest(BaseModel):
     title: str | None = None
     content: str = Field(min_length=1)
     enabled: bool = True
+    source_type: str | None = None
+    weight_multiplier: float | None = Field(default=None, ge=1, le=100)
 
 
 class RimeArticleUpdateRequest(BaseModel):
     title: str | None = None
     enabled: bool | None = None
+
+
+class RimeArticleContentSaveRequest(BaseModel):
+    content: str
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=DEFAULT_HISTORY_ARTICLE_PAGE_SIZE, ge=1, le=20000)
 
 
 class RimeHistoryArticleSaveRequest(BaseModel):
@@ -108,6 +119,16 @@ def get_rime_context_prediction_articles(
     return collect_rime_context_prediction_articles()
 
 
+@router.get("/context-prediction/articles/{article_id}/content")
+def get_rime_context_prediction_article_content(
+    article_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_HISTORY_ARTICLE_PAGE_SIZE, ge=1, le=20000),
+    _: BaseDevice = Depends(verify_api_token),
+):
+    return collect_rime_context_prediction_article_content(article_id, page=page, page_size=page_size)
+
+
 @router.get("/context-prediction/lint")
 def get_rime_context_prediction_lint(
     source: str = Query("all"),
@@ -168,6 +189,8 @@ def post_rime_context_prediction_article(
             title=req.title,
             content=req.content,
             enabled=req.enabled,
+            source_type=req.source_type or "imported_article",
+            weight_multiplier=req.weight_multiplier,
         )
     except RimeContextPredictionError as exc:
         _raise_rime_error(exc)
@@ -184,6 +207,23 @@ def patch_rime_context_prediction_article(
             article_id,
             title=req.title,
             enabled=req.enabled,
+        )
+    except RimeContextPredictionError as exc:
+        _raise_rime_error(exc)
+
+
+@router.put("/context-prediction/articles/{article_id}/content")
+def put_rime_context_prediction_article_content(
+    article_id: str,
+    req: RimeArticleContentSaveRequest,
+    _: BaseDevice = Depends(verify_api_token),
+):
+    try:
+        return save_rime_context_prediction_article_content(
+            article_id,
+            req.content,
+            page=req.page,
+            page_size=req.page_size,
         )
     except RimeContextPredictionError as exc:
         _raise_rime_error(exc)

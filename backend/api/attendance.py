@@ -2672,6 +2672,45 @@ def _build_remote_headers(entry: UserDevice) -> dict[str, str]:
     }
 
 
+def _build_user_device_from_snapshot(entry_snapshot: dict[str, Any], *, server_url: str, token: str) -> UserDevice:
+    return UserDevice(
+        entry_id=str(entry_snapshot.get("entry_id") or ""),
+        user_id=int(entry_snapshot.get("user_id") or 0),
+        device_id=str(entry_snapshot.get("device_id") or ""),
+        name=str(entry_snapshot.get("name") or ""),
+        mode=str(entry_snapshot.get("mode") or "remote"),
+        server_url=server_url,
+        token=token,
+        is_active=bool(entry_snapshot.get("is_active", True)),
+        order_index=int(entry_snapshot.get("order_index") or 0),
+        created_at=float(entry_snapshot.get("created_at") or 0.0),
+        updated_at=float(entry_snapshot.get("updated_at") or 0.0),
+    )
+
+
+def _post_remote_attendance_json(
+    entry_snapshot: dict[str, Any],
+    *,
+    path: str,
+    payload: dict[str, Any],
+    timeout: int,
+) -> requests.Response:
+    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
+    token = str(entry_snapshot.get("token") or "")
+    if not server_url or not token:
+        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
+
+    entry = _build_user_device_from_snapshot(entry_snapshot, server_url=server_url, token=token)
+    with requests.Session() as http:
+        http.trust_env = False
+        return http.post(
+            f"{server_url}{path}",
+            json=payload,
+            headers=_build_remote_headers(entry),
+            timeout=timeout,
+        )
+
+
 def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: dict[str, Any]) -> dict[str, Any]:
     mode = str(entry_snapshot.get("mode") or "")
     operation_password = str(execution_payload.get("operation_password") or "")
@@ -2688,29 +2727,10 @@ def _execute_order_on_entry(entry_snapshot: dict[str, Any], execution_payload: d
             with apply_attendance_order_operation_password_env(operation_password):
                 return execute_order_action(**order_action_payload)
 
-    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
-    token = str(entry_snapshot.get("token") or "")
-    if not server_url or not token:
-        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
-
-    response = requests.post(
-        f"{server_url}/api/device-control/attendance/order/execute",
-        json=execution_payload,
-        headers=_build_remote_headers(
-            UserDevice(
-                entry_id=str(entry_snapshot.get("entry_id") or ""),
-                user_id=int(entry_snapshot.get("user_id") or 0),
-                device_id=str(entry_snapshot.get("device_id") or ""),
-                name=str(entry_snapshot.get("name") or ""),
-                mode=str(entry_snapshot.get("mode") or "remote"),
-                server_url=server_url,
-                token=token,
-                is_active=bool(entry_snapshot.get("is_active", True)),
-                order_index=int(entry_snapshot.get("order_index") or 0),
-                created_at=float(entry_snapshot.get("created_at") or 0.0),
-                updated_at=float(entry_snapshot.get("updated_at") or 0.0),
-            )
-        ),
+    response = _post_remote_attendance_json(
+        entry_snapshot,
+        path="/api/device-control/attendance/order/execute",
+        payload=execution_payload,
         timeout=600,
     )
     if response.status_code >= 400:
@@ -2735,29 +2755,10 @@ def _execute_order_refund_details_on_entry(entry_snapshot: dict[str, Any], execu
                 weipay_login_users=execution_payload.get("login_users"),
             )
 
-    server_url = (entry_snapshot.get("server_url") or "").rstrip("/")
-    token = str(entry_snapshot.get("token") or "")
-    if not server_url or not token:
-        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
-
-    response = requests.post(
-        f"{server_url}/api/device-control/attendance/order/refund-details",
-        json=execution_payload,
-        headers=_build_remote_headers(
-            UserDevice(
-                entry_id=str(entry_snapshot.get("entry_id") or ""),
-                user_id=int(entry_snapshot.get("user_id") or 0),
-                device_id=str(entry_snapshot.get("device_id") or ""),
-                name=str(entry_snapshot.get("name") or ""),
-                mode=str(entry_snapshot.get("mode") or "remote"),
-                server_url=server_url,
-                token=token,
-                is_active=bool(entry_snapshot.get("is_active", True)),
-                order_index=int(entry_snapshot.get("order_index") or 0),
-                created_at=float(entry_snapshot.get("created_at") or 0.0),
-                updated_at=float(entry_snapshot.get("updated_at") or 0.0),
-            )
-        ),
+    response = _post_remote_attendance_json(
+        entry_snapshot,
+        path="/api/device-control/attendance/order/refund-details",
+        payload=execution_payload,
         timeout=600,
     )
     if response.status_code >= 400:

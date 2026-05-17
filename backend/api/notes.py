@@ -65,6 +65,7 @@ from backend.core.codex_sessions import (
 )
 from backend.core.codex_device_summary import collect_multi_codex_daily_summary_source
 from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.guest_notes import get_current_active_or_guest_notes_user
 from backend.core.note_access import note_to_response_dict
 from backend.core.note_semantics import (
     NOTE_CATEGORY_BUILTIN_KEYS,
@@ -3733,7 +3734,7 @@ def read_notes(
     created_end: Optional[float] = Query(None, description="Filter by start_at <= end"),
     updated_start: Optional[float] = Query(None, description="Filter by updated_at >= start"),
     updated_end: Optional[float] = Query(None, description="Filter by updated_at <= end"),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -3766,7 +3767,7 @@ def read_notes(
 @router.post("/query", response_model=NoteQueryResponse)
 def query_notes(
     request: NoteQueryRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -3824,7 +3825,7 @@ def query_notes(
 @router.post("/query-program", response_model=NoteProgramResponse)
 def query_note_program(
     request: NoteProgramRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -3836,7 +3837,7 @@ def query_note_program(
 @router.post("/batch-update", response_model=NoteBatchUpdateResponse)
 def batch_update_notes(
     request: NoteBatchUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -3914,7 +3915,7 @@ def batch_update_notes(
 
 @router.get("/calendar/year-month-memos", response_model=CalendarYearMonthMemosRead)
 def get_calendar_year_month_memos(
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     setting_key = _calendar_year_month_memos_setting_key(current_user.id)
@@ -3929,7 +3930,7 @@ def get_calendar_year_month_memos(
 @router.put("/calendar/year-month-memos", response_model=CalendarYearMonthMemosRead)
 def update_calendar_year_month_memos(
     request: CalendarYearMonthMemosUpdate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     setting_key = _calendar_year_month_memos_setting_key(current_user.id)
@@ -4077,7 +4078,7 @@ def ai_categorize_note(
 @router.get("/category-palette", response_model=NoteCategoryPaletteResponse)
 @router.get("/type-palette", response_model=NoteCategoryPaletteResponse)
 def get_note_category_palette(
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     return _build_note_type_palette_response(current_user.id, session)
@@ -4087,7 +4088,7 @@ def get_note_category_palette(
 @router.get("/type-palette/{category_key}/can-delete")
 def can_delete_note_category_palette_item(
     category_key: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     return {"can_delete": not _is_note_type_in_use(current_user.id, category_key, session)}
@@ -4097,7 +4098,7 @@ def can_delete_note_category_palette_item(
 @router.put("/type-palette", response_model=NoteCategoryPaletteResponse)
 def update_note_category_palette(
     request: NoteCategoryPaletteUpdateRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     items = _normalize_note_type_palette_items([item.model_dump() for item in request.items])
@@ -4126,7 +4127,7 @@ def update_note_category_palette(
 @router.post("/type-palette/merge", response_model=NoteCategoryPaletteResponse)
 def merge_note_category_palette_item(
     request: NoteCategoryMergeRequest,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     source_key = str(request.source_key or "").strip()
@@ -4508,7 +4509,7 @@ def get_metadata_feedback_optimization_run(
 @router.post("/", response_model=NoteRead)
 def create_note(
     note: NoteCreate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4601,7 +4602,7 @@ def create_note(
 @router.get("/{note_id}", response_model=NoteRead)
 def read_note(
     note_id: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4772,7 +4773,7 @@ def read_note(
 def get_connected_component(
     note_id: str,
     mode: str = Query("planetary", description="Mode: 'planetary' (default) or 'satellite'"),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4793,7 +4794,7 @@ def get_connected_component(
 def update_note(
     note_id: str,
     note_in: NoteUpdate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4824,7 +4825,7 @@ def update_note(
 @router.delete("/{note_id}")
 def delete_note(
     note_id: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4858,7 +4859,7 @@ def delete_note(
 
 @router.get("/edges/", response_model=List[EdgeRead])
 def read_edges(
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4871,7 +4872,7 @@ def read_edges(
 @router.post("/edges/", response_model=EdgeRead)
 def create_edge(
     edge: EdgeCreate,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4924,7 +4925,7 @@ def create_edge(
 def delete_edge_by_nodes(
     source: str,
     target: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """
@@ -4951,7 +4952,7 @@ def delete_edge_by_nodes(
 @router.delete("/edges/{edge_id}")
 def delete_edge(
     edge_id: str,
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
     session: Session = Depends(get_session)
 ):
     """

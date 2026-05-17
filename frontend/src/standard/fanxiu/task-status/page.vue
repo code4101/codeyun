@@ -4,15 +4,19 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { FolderOpened, Refresh, WarningFilled } from '@element-plus/icons-vue';
 import {
   getFanxiuProcesses,
+  getFanxiuSunloginRotateStatus,
   getFanxiuStatus,
   getLocalScriptProcesses,
   parseFanxiuStatus,
   saveFanxiuStatus,
+  startFanxiuSunloginRotate,
+  stopFanxiuSunloginRotate,
   terminateFanxiuProcesses,
   updateFanxiuStatusConfig,
   type FanxiuAccountStatusItem,
   type FanxiuProcessItem,
   type FanxiuStatusSnapshot,
+  type FanxiuSunloginRotateStatus,
   type LocalScriptProcessItem,
 } from '@/api/fanxiu';
 import { fetchDeviceDirectoryItems, fetchDeviceFileText, saveDeviceFileText, type DeviceDirectoryItem } from '@/api/deviceFiles';
@@ -33,12 +37,15 @@ const savingStatusFile = ref(false);
 const isLoadingProcesses = ref(false);
 const isLoadingScriptProcesses = ref(false);
 const isTerminatingProcesses = ref(false);
+const isLoadingSunloginRotate = ref(false);
+const isTogglingSunloginRotate = ref(false);
 const isLoadingDevices = ref(false);
 const isLoadingDeviceDirectory = ref(false);
 const isLoadingDeviceFile = ref(false);
 const snapshot = ref<FanxiuStatusSnapshot | null>(null);
 const fanxiuProcesses = ref<FanxiuProcessItem[]>([]);
 const localScriptProcesses = ref<LocalScriptProcessItem[]>([]);
+const sunloginRotateStatus = ref<FanxiuSunloginRotateStatus | null>(null);
 const loadError = ref('');
 const statusPathInput = ref('');
 const localPathBaseline = ref('');
@@ -125,6 +132,8 @@ const jsonFileEntries = computed(() =>
 const accountCards = computed<FanxiuAccountStatusItem[]>(() => snapshot.value?.accounts ?? []);
 const fanxiuProcessCount = computed(() => fanxiuProcesses.value.length);
 const localScriptProcessCount = computed(() => localScriptProcesses.value.length);
+const sunloginRotateRunning = computed(() => Boolean(sunloginRotateStatus.value?.running));
+const sunloginRotateButtonText = computed(() => sunloginRotateRunning.value ? '关闭投屏旋转' : '开启投屏旋转');
 const pageStatusType = computed(() => {
   if (loadError.value || snapshot.value?.error) return 'danger';
   if (sourceMode.value === 'device' && !selectedDeviceFilePath.value) return 'warning';
@@ -335,6 +344,7 @@ const refreshNow = async () => {
   }
   void loadFanxiuProcesses();
   void loadLocalScriptProcesses();
+  void loadSunloginRotateStatus();
 };
 
 const loadLocalScriptProcesses = async () => {
@@ -360,6 +370,35 @@ const loadFanxiuProcesses = async () => {
     fanxiuProcesses.value = [];
   } finally {
     isLoadingProcesses.value = false;
+  }
+};
+
+const loadSunloginRotateStatus = async () => {
+  if (!canConfigure.value || isLoadingSunloginRotate.value) return;
+  isLoadingSunloginRotate.value = true;
+  try {
+    sunloginRotateStatus.value = await getFanxiuSunloginRotateStatus();
+  } catch {
+    sunloginRotateStatus.value = null;
+  } finally {
+    isLoadingSunloginRotate.value = false;
+  }
+};
+
+const toggleSunloginRotate = async () => {
+  if (!canConfigure.value || isTogglingSunloginRotate.value) return;
+  isTogglingSunloginRotate.value = true;
+  try {
+    const nextStatus = sunloginRotateRunning.value
+      ? await stopFanxiuSunloginRotate()
+      : await startFanxiuSunloginRotate();
+    sunloginRotateStatus.value = nextStatus;
+    ElMessage.success(nextStatus.running ? '已开启投屏旋转' : '已关闭投屏旋转');
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '切换投屏旋转失败');
+    await loadSunloginRotateStatus();
+  } finally {
+    isTogglingSunloginRotate.value = false;
   }
 };
 
@@ -579,6 +618,7 @@ onMounted(async () => {
   await loadLocalSnapshot(false);
   void loadFanxiuProcesses();
   void loadLocalScriptProcesses();
+  void loadSunloginRotateStatus();
   if (userStore.isAuthenticated) void ensureDevicesLoaded();
   refreshTimer = window.setInterval(() => {
     if (document.hidden) return;
@@ -590,6 +630,7 @@ onMounted(async () => {
     }
     void loadFanxiuProcesses();
     void loadLocalScriptProcesses();
+    void loadSunloginRotateStatus();
   }, 30000);
 });
 
@@ -658,6 +699,15 @@ onUnmounted(() => {
               <div v-else class="empty-inline">当前没有探测到脚本进程</div>
             </div>
           </el-popover>
+          <el-button
+            v-if="canConfigure"
+            :type="sunloginRotateRunning ? 'warning' : 'primary'"
+            plain
+            :loading="isTogglingSunloginRotate || isLoadingSunloginRotate"
+            @click="toggleSunloginRotate"
+          >
+            {{ sunloginRotateButtonText }}
+          </el-button>
           <el-button
             v-if="canConfigure"
             type="danger"

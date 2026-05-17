@@ -16,8 +16,9 @@
           v-if="note"
           :readonly="readonly"
           :doc-href="resolveDocHref(note)"
-          :show-share="true"
-          :can-share="true"
+          :show-doc-link="userStore.isAuthenticated"
+          :show-share="userStore.isAuthenticated"
+          :can-share="userStore.isAuthenticated && canManageDocAccess"
           :can-copy="!readonly"
           :can-delete="!readonly"
           @share="openShareDialog"
@@ -33,7 +34,7 @@
             size="small"
             :icon="MagicStick"
             :loading="aiCategorizing"
-            :disabled="readonly || !currentNote"
+            :disabled="readonly || !currentNote || !userStore.isAuthenticated"
             @click="categorizeCurrentNote"
           >
             AI分类
@@ -88,6 +89,7 @@ import NoteCopyDialog from './NoteCopyDialog.vue';
 import NoteDocAccessDialog from './NoteDocAccessDialog.vue';
 import NoteTitleActions from './NoteTitleActions.vue';
 import { useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
+import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import type { EditableNotePatch } from '@/utils/noteAutoSave';
 
@@ -106,6 +108,7 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const noteStore = useNoteStore();
+const userStore = useUserStore();
 const currentNote = ref<NoteNode | undefined>();
 const isFetchingContent = ref(false);
 const showCopyDialog = ref(false);

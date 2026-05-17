@@ -151,7 +151,9 @@ from backend.core.git_tools import (
     inspect_git_repository,
 )
 from backend.core.rime_context_prediction import (
+    DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
+    collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
     collect_rime_context_prediction_lint,
@@ -159,11 +161,13 @@ from backend.core.rime_context_prediction import (
     delete_rime_context_prediction_article,
     delete_rime_context_prediction_candidate,
     import_rime_context_prediction_article,
+    make_rime_context_prediction_article_content_unavailable,
     make_rime_context_prediction_articles_unavailable,
     make_rime_context_prediction_history_unavailable,
     make_rime_context_prediction_lint_unavailable,
     make_rime_context_prediction_unavailable,
     refresh_rime_context_prediction_tree,
+    save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
     update_rime_context_prediction_candidate,
     update_rime_context_prediction_article,
@@ -194,6 +198,8 @@ class RimeArticleImportRequest(BaseModel):
     title: Optional[str] = None
     content: str = Field(min_length=1)
     enabled: bool = True
+    source_type: Optional[str] = None
+    weight_multiplier: Optional[float] = Field(default=None, ge=1, le=100)
 
 
 class RimeDeviceHistoryImportRequest(BaseModel):
@@ -205,6 +211,12 @@ class RimeDeviceHistoryImportRequest(BaseModel):
 class RimeArticleUpdateRequest(BaseModel):
     title: Optional[str] = None
     enabled: Optional[bool] = None
+
+
+class RimeArticleContentSaveRequest(BaseModel):
+    content: str
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=DEFAULT_HISTORY_ARTICLE_PAGE_SIZE, ge=1, le=20000)
 
 
 class RimeHistoryArticleSaveRequest(BaseModel):
@@ -2633,7 +2645,7 @@ def get_rime_context_prediction_articles_for_entry(
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
-        return collect_rime_context_prediction_articles()
+        return collect_rime_context_prediction_articles(local_history_label=_rime_entry_label(entry))
 
     try:
         payload, error_response = _fetch_remote_json(
@@ -2661,6 +2673,56 @@ def get_rime_context_prediction_articles_for_entry(
         return make_rime_context_prediction_articles_unavailable(
             status="remote_error",
             message="远程设备返回了无效的小狼毫导入文章数据。",
+        )
+
+    return payload
+
+
+@router.get("/{entry_id}/rime/context-prediction/articles/{article_id}/content")
+def get_rime_context_prediction_article_content_for_entry(
+    entry_id: str,
+    article_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(DEFAULT_HISTORY_ARTICLE_PAGE_SIZE, ge=1, le=20000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return collect_rime_context_prediction_article_content(
+            article_id,
+            page=page,
+            page_size=page_size,
+            local_history_label=_rime_entry_label(entry),
+        )
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "GET",
+            f"/rime/context-prediction/articles/{article_id}/content",
+            params={"page": page, "page_size": page_size},
+            timeout=30,
+        )
+    except HTTPException as exc:
+        return make_rime_context_prediction_article_content_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫语料内容接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_context_prediction_article_content_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_context_prediction_article_content_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫语料内容数据。",
         )
 
     return payload
@@ -2858,6 +2920,8 @@ def post_rime_context_prediction_article_for_entry(
                 title=req.title,
                 content=req.content,
                 enabled=req.enabled,
+                source_type=req.source_type or "imported_article",
+                weight_multiplier=req.weight_multiplier,
             )
         except RimeContextPredictionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2910,6 +2974,44 @@ def patch_rime_context_prediction_article_for_entry(
             return make_rime_context_prediction_articles_unavailable(
                 status="remote_unsupported",
                 message="该设备尚未部署小狼毫导入文章接口，或没有这篇文章。",
+            )
+        _raise_remote_json_error(error_response)
+    return payload
+
+
+@router.put("/{entry_id}/rime/context-prediction/articles/{article_id}/content")
+def put_rime_context_prediction_article_content_for_entry(
+    entry_id: str,
+    article_id: str,
+    req: RimeArticleContentSaveRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return save_rime_context_prediction_article_content(
+                article_id,
+                req.content,
+                page=req.page,
+                page_size=req.page_size,
+                local_history_label=_rime_entry_label(entry),
+            )
+        except RimeContextPredictionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "PUT",
+        f"/rime/context-prediction/articles/{article_id}/content",
+        json_body=req.model_dump(),
+        timeout=60,
+    )
+    if error_response is not None:
+        if error_response.status_code == 404:
+            return make_rime_context_prediction_article_content_unavailable(
+                status="remote_unsupported",
+                message="该设备尚未部署小狼毫语料编辑接口，或没有这篇语料。",
             )
         _raise_remote_json_error(error_response)
     return payload

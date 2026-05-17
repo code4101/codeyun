@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import datetime as dt
+import tempfile
 import hashlib
 import html
 import json
@@ -15,6 +16,8 @@ import subprocess
 import sys
 import time
 import uuid
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
@@ -116,7 +119,7 @@ def run_windows_powershell(script: str, *, timeout: int = 180) -> str:
         raise FileNotFoundError(f"Windows PowerShell not found: {powershell}")
     encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
     result = subprocess.run(
-        [str(powershell), "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+        [str(powershell), "-STA", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -139,6 +142,56 @@ def direct_children(node: ElementTree.Element, name: str) -> list[ElementTree.El
 
 def iter_descendants(node: ElementTree.Element, name: str) -> list[ElementTree.Element]:
     return [child for child in node.iter() if local_name(child.tag) == name]
+
+
+def mhtml_image_parts(path: Path) -> list[dict[str, Any]]:
+    message = BytesParser(policy=policy.default).parsebytes(path.read_bytes())
+    images: list[dict[str, Any]] = []
+    for part in message.walk():
+        if part.is_multipart():
+            continue
+        content_type = part.get_content_type()
+        if not content_type.startswith("image/"):
+            continue
+        data = part.get_payload(decode=True) or b""
+        if not data:
+            continue
+        location = str(part.get("Content-Location") or "")
+        label = re.split(r"[\\/]", location)[-1].strip() or f"image{len(images) + 1:03d}"
+        extension = Path(label).suffix.lower() or mimetypes.guess_extension(content_type) or ".png"
+        images.append({
+            "data": data,
+            "label": label,
+            "extension": extension,
+            "content_type": content_type,
+        })
+    return images
+
+
+def load_com_published_page_images(page_id: str, title: str, *, timeout: int = 240) -> list[dict[str, Any]]:
+    if os.name != "nt" or not page_id:
+        return []
+    output_path = Path(tempfile.gettempdir()) / f"codeyun_onenote_publish_{uuid.uuid4().hex}.mht"
+    config_json = json.dumps({"page_id": page_id, "output_path": str(output_path)}, ensure_ascii=False)
+    script = f"""
+$ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$config = @'
+{config_json}
+'@ | ConvertFrom-Json
+$app = New-Object -ComObject OneNote.Application
+$app.Publish([string]$config.page_id, [string]$config.output_path, 2, "")
+"""
+    try:
+        run_windows_powershell(script, timeout=timeout)
+        if output_path.exists():
+            return mhtml_image_parts(output_path)
+    finally:
+        try:
+            output_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return []
 
 
 def has_xml_ancestor(node: ElementTree.Element, name: str, parents: dict[int, ElementTree.Element]) -> bool:
@@ -782,9 +835,14 @@ def render_missing_media(kind: str, label: str, details: str = "") -> str:
     )
 
 
-def render_image(node: Any, media: MediaStore) -> str:
+def render_image(node: Any, media: MediaStore, fallback_image: dict[str, Any] | None = None) -> str:
     data = bytes(getattr(node, "Bytes", b"") or b"")
     label = str(getattr(node, "FileName", "") or "image.png")
+    fallback_extension = ""
+    if not data and fallback_image:
+        data = bytes(fallback_image.get("data") or b"")
+        label = str(fallback_image.get("label") or label)
+        fallback_extension = str(fallback_image.get("extension") or "")
     if not data:
         media.stats["missing_image_data"] += 1
         details = []
@@ -792,7 +850,7 @@ def render_image(node: Any, media: MediaStore) -> str:
             details.append(f"{float(node.Width):g} x {float(node.Height):g}")
         details.append(label)
         return render_missing_media("image", "图片", ", ".join(details))
-    extension = Path(label).suffix.lower() or mimetypes.guess_extension(str(getattr(node, "Format", "") or "")) or ".png"
+    extension = Path(label).suffix.lower() or fallback_extension or mimetypes.guess_extension(str(getattr(node, "Format", "") or "")) or ".png"
     url, _ = media.save("image", label, data, extension)
     alt = html.escape(str(getattr(node, "AlternativeTextTitle", "") or label), quote=True)
     media.stats["images"] += 1
@@ -885,13 +943,19 @@ def render_node(node: Any, media: MediaStore, depth: int = 0, style_hints: dict[
     if isinstance(node, onenote.Table):
         return render_table(node, media, style_hints)
     if isinstance(node, onenote.Image):
+        fallback_image = None
         if style_hints is not None:
             seen_media_nodes = style_hints.setdefault("_seen_media_nodes", set())
             key = ("image", id(node))
             if key in seen_media_nodes:
                 return ""
             seen_media_nodes.add(key)
-        return render_image(node, media)
+            image_index = int(style_hints.get("_image_index", 0) or 0)
+            style_hints["_image_index"] = image_index + 1
+            published_images = style_hints.get("_published_images") or []
+            if image_index < len(published_images):
+                fallback_image = published_images[image_index]
+        return render_image(node, media, fallback_image)
     if isinstance(node, onenote.AttachedFile):
         if style_hints is not None:
             seen_media_nodes = style_hints.setdefault("_seen_media_nodes", set())
@@ -978,9 +1042,20 @@ def page_payload(
 ) -> dict[str, Any]:
     title = page_title(page, index)
     before_stats = dict(media.stats)
+    image_count = len(list(page.GetChildNodes(onenote.Image)))
+    published_images: list[dict[str, Any]] = []
+    published_image_error = ""
+    com_page_id = str((style_hints or {}).get("_com_page_id") or "")
+    if image_count > 0 and com_page_id:
+        try:
+            published_images = load_com_published_page_images(com_page_id, title)
+        except Exception as exc:
+            published_image_error = str(exc)
     style_context = dict(style_hints or {})
     style_context["_table_index"] = 0
     style_context["_rich_text_index"] = 0
+    style_context["_image_index"] = 0
+    style_context["_published_images"] = published_images
     content = (render_page_title(page) + render_children(page, media, style_hints=style_context)).strip() or "<p><br></p>"
     content = normalize_onenote_hyperlink_fields_in_html(content)
     table_cell_background_count = sum(
@@ -1005,9 +1080,11 @@ def page_payload(
         "last_modified": getattr(page, "LastModifiedTime", None),
         "rich_text_nodes": len(list(page.GetChildNodes(onenote.RichText))),
         "rich_text_length": rich_text_len,
-        "image_count": len(list(page.GetChildNodes(onenote.Image))),
+        "image_count": image_count,
         "rendered_image_count": rendered_image_count,
         "missing_image_data": missing_image_data,
+        "published_image_count": len(published_images),
+        "published_image_error": published_image_error,
         "table_count": len(list(page.GetChildNodes(onenote.Table))),
         "table_cell_background_count": table_cell_background_count,
         "attachment_count": len(list(page.GetChildNodes(onenote.AttachedFile))),
@@ -1222,6 +1299,8 @@ def import_section(args: argparse.Namespace) -> None:
                 "image_count": page["image_count"],
                 "rendered_image_count": page["rendered_image_count"],
                 "missing_image_data": page["missing_image_data"],
+                "published_image_count": page.get("published_image_count", 0),
+                "published_image_error": page.get("published_image_error", ""),
                 "table_count": page["table_count"],
                 "table_cell_background_count": page["table_cell_background_count"],
                 "attachment_count": page["attachment_count"],
@@ -1291,6 +1370,8 @@ def import_section(args: argparse.Namespace) -> None:
                     "image_count": page["image_count"],
                     "rendered_image_count": page["rendered_image_count"],
                     "missing_image_data": page["missing_image_data"],
+                    "published_image_count": page.get("published_image_count", 0),
+                    "published_image_error": page.get("published_image_error", ""),
                     "table_count": page["table_count"],
                     "table_cell_background_count": page["table_cell_background_count"],
                     "attachment_count": page["attachment_count"],

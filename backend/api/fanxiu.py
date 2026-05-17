@@ -24,6 +24,11 @@ from backend.core.fanxiu_status import (
     save_status_payload,
     save_status_config,
 )
+from backend.core.fanxiu_sunlogin_rotate import (
+    get_sunlogin_rotate_status,
+    start_sunlogin_rotate_preview,
+    stop_sunlogin_rotate_preview,
+)
 from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
 from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
 from backend.core.fanxiu_inventory import load_spirit_beast_hall, save_spirit_beast_hall
@@ -279,6 +284,26 @@ class FanxiuProcessTerminateResponse(BaseModel):
     terminated: List[FanxiuProcessItem] = Field(default_factory=list)
     remaining: List[FanxiuProcessItem] = Field(default_factory=list)
     errors: List[FanxiuProcessTerminateError] = Field(default_factory=list)
+
+
+class FanxiuSunloginRotateError(BaseModel):
+    pid: int
+    error: str
+
+
+class FanxiuSunloginRotateStatus(BaseModel):
+    running: bool = False
+    pids: List[int] = Field(default_factory=list)
+    primary_pid: Optional[int] = None
+    started_at: Optional[str] = None
+    runtime_seconds: Optional[int] = None
+    command_line: str = ""
+    target_title: str = ""
+    preview_title: str = ""
+    stdout_log: str = ""
+    stderr_log: str = ""
+    last_error: str = ""
+    errors: List[FanxiuSunloginRotateError] = Field(default_factory=list)
 
 
 class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
@@ -2421,6 +2446,32 @@ def terminate_fanxiu_scripts(
 ):
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuProcessTerminateResponse.model_validate(terminate_fanxiu_processes())
+
+
+@status_router.get("/sunlogin-rotate", response_model=FanxiuSunloginRotateStatus)
+def get_fanxiu_sunlogin_rotate_status():
+    return FanxiuSunloginRotateStatus.model_validate(get_sunlogin_rotate_status())
+
+
+@status_router.post("/sunlogin-rotate/start", response_model=FanxiuSunloginRotateStatus)
+def start_fanxiu_sunlogin_rotate(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return FanxiuSunloginRotateStatus.model_validate(start_sunlogin_rotate_preview())
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@status_router.post("/sunlogin-rotate/stop", response_model=FanxiuSunloginRotateStatus)
+def stop_fanxiu_sunlogin_rotate(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuSunloginRotateStatus.model_validate(stop_sunlogin_rotate_preview())
 
 
 @inventory_router.get("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)

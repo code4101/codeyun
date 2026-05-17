@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+import unicodedata
 import uuid
 
 import jieba
@@ -29,6 +30,9 @@ HTML_REPORT_FILE = "docs/context_prediction_tree.html"
 ARTICLE_MANIFEST_FILE = "context_prediction_articles.json"
 ARTICLE_CONTENT_DIR = "context_prediction_articles"
 ARTICLE_CONTRIBUTIONS_FILE = "context_prediction_article_counts.tsv"
+INPUT_HISTORY_ARTICLE_ID = "__input_history__"
+INPUT_HISTORY_SOURCE_TYPE = "input_history"
+INPUT_HISTORY_SOURCE_KEY = "input_history:local"
 DELETED_CANDIDATES_FILE = "context_prediction_deleted_candidates.tsv"
 ARCHIVE_DIR = "context_prediction_archives"
 REFRESH_META_FILE = "context_prediction_refresh_meta.json"
@@ -37,7 +41,7 @@ ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
 ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 
-ARTICLE_EXTRACTOR_VERSION = 2
+ARTICLE_EXTRACTOR_VERSION = 4
 MAX_CONTEXT_TOKENS = 4
 MAX_ARTICLE_CHARS = 1_000_000
 DEFAULT_TOPK_PER_KEY = 20
@@ -51,6 +55,10 @@ HISTORY_PHRASE_GAP_SECONDS = 3
 HISTORY_PHRASE_MAX_EVENTS = 4
 HISTORY_PHRASE_MAX_CHARS = 8
 HISTORY_PHRASE_WEIGHT = 0.65
+LEXICON_SOURCE_TYPE = "lexicon"
+LEXICON_SOURCE_TYPES = {LEXICON_SOURCE_TYPE, "manual_english_terms"}
+LEXICON_DEFAULT_WEIGHT = 8.0
+CUSTOM_PHRASE_LABEL = "自定义短语"
 DEFAULT_LINT_ISSUE_LIMIT = 200
 MAX_LINT_AI_CHARS = 8000
 
@@ -61,6 +69,7 @@ _REPEATED_PUNCT_RE = re.compile(r"([，。！？!?、；;：:])\1+")
 _LOWER_LATIN_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_/-])([a-z]{6,})(?![A-Za-z0-9_/-])")
 _ENGLISH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9+#._-]{1,31})(?![A-Za-z0-9_])")
 _REPEATED_CJK_CHUNK_RE = re.compile(r"([\u3400-\u9fff]{2,6})\1+")
+_LEXICON_PINYIN_ANNOTATION_RE = re.compile(r"([\u3400-\u9fff])\(([^()]*)\)")
 
 _COMMON_TEXT_CORRECTIONS: tuple[tuple[str, str, str], ...] = (
     ("才复合", "才符合", "这里表达“满足条件/一致”时通常应写“符合”。"),
@@ -513,6 +522,21 @@ def _write_article_manifest(rime_dir: Path, manifest: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def _is_lexicon_source_type(value: Any) -> bool:
+    return str(value or "") in LEXICON_SOURCE_TYPES
+
+
+def _is_lexicon_article(article: dict[str, Any]) -> bool:
+    return _is_lexicon_source_type(article.get("source_type"))
+
+
+def _normalize_lexicon_display_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text in {"专用词库", "快捷词库", "英文快捷词"}:
+        return CUSTOM_PHRASE_LABEL
+    return text
+
+
 def _article_content_path(rime_dir: Path, article: dict[str, Any]) -> Path:
     relative = str(article.get("content_path") or "")
     if relative:
@@ -565,6 +589,25 @@ def _write_article_contributions(rime_dir: Path, rows: list[dict[str, Any]]) -> 
                 + "\n"
             )
     os.replace(tmp, path)
+
+
+def _refresh_stale_article_contributions(rime_dir: Path, manifest: dict[str, Any]) -> int:
+    refreshed = 0
+    for article in manifest.get("articles", []):
+        if not isinstance(article, dict):
+            continue
+        if int(article.get("extractor_version") or 0) == ARTICLE_EXTRACTOR_VERSION:
+            continue
+        path = _article_content_path(rime_dir, article)
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _upsert_article_contributions(rime_dir, article, content)
+        refreshed += 1
+    if refreshed:
+        _write_article_manifest(rime_dir, manifest)
+    return refreshed
 
 
 def _candidate_key(context: Any, prefix: Any, candidate: Any) -> tuple[str, str, str]:
@@ -842,6 +885,32 @@ def _history_event_phrase_token(event: dict[str, Any]) -> str:
     return token
 
 
+_REDUNDANT_PHRASE_PARTICLES = {"的", "得", "地"}
+
+
+def _normalize_history_phrase_segment(segment: list[str]) -> list[str]:
+    """折叠连续输入事件里由纠错产生的重复结构助词。
+
+    >>> _normalize_history_phrase_segment(["我的", "的", "目的"])
+    ['我的', '目的']
+    """
+
+    normalized: list[str] = []
+    for token in segment:
+        if (
+            token in _REDUNDANT_PHRASE_PARTICLES
+            and normalized
+            and normalized[-1].endswith(token)
+        ):
+            continue
+        normalized.append(token)
+    return normalized
+
+
+def _is_bad_history_phrase(phrase: str) -> bool:
+    return any(f"{particle}{particle}" in phrase for particle in _REDUNDANT_PHRASE_PARTICLES)
+
+
 def _extract_history_phrase_contributions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """从连续输入事件中提取最终文本合成词条。
 
@@ -861,18 +930,21 @@ def _extract_history_phrase_contributions(events: list[dict[str, Any]]) -> list[
 
     def flush_segment() -> None:
         nonlocal segment
-        for start in range(len(segment)):
-            if start > 0 and len(segment[start]) == 1 and len(segment[start - 1]) == 1:
+        tokens = _normalize_history_phrase_segment(segment)
+        for start in range(len(tokens)):
+            if start > 0 and len(tokens[start]) == 1 and len(tokens[start - 1]) == 1:
                 continue
             phrase = ""
-            for end in range(start, min(len(segment), start + HISTORY_PHRASE_MAX_EVENTS)):
-                phrase += segment[end]
+            for end in range(start, min(len(tokens), start + HISTORY_PHRASE_MAX_EVENTS)):
+                phrase += tokens[end]
                 if end == start:
                     continue
                 if len(phrase) < 2:
                     continue
                 if len(phrase) > HISTORY_PHRASE_MAX_CHARS:
                     break
+                if _is_bad_history_phrase(phrase):
+                    continue
                 prefix = _token_to_pinyin(phrase)
                 if prefix:
                     counts[("__global", prefix, phrase)] += HISTORY_PHRASE_WEIGHT
@@ -1758,8 +1830,8 @@ def collect_rime_context_prediction_lint(
 
 
 def _normalize_article_text(content: str) -> str:
-    text = (content or "").replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
+    text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
         raise RimeContextPredictionError("文章内容不能为空。")
     if len(text) > MAX_ARTICLE_CHARS:
         raise RimeContextPredictionError(f"文章内容过长，当前上限是 {MAX_ARTICLE_CHARS} 个字符。")
@@ -1781,6 +1853,128 @@ def _content_hash(content: str) -> str:
 def _token_to_pinyin(token: str) -> str:
     parts = lazy_pinyin(token, style=Style.NORMAL, strict=False, errors="ignore")
     return "".join(parts).replace("ü", "v").replace("u:", "v").strip().lower()
+
+
+def _candidate_to_lexicon_code(candidate: str) -> str:
+    text = str(candidate or "").strip()
+    if not text:
+        return ""
+    if _CJK_RE.search(text):
+        return _token_to_pinyin(text)
+    return _normalize_english_code(text)
+
+
+def _normalize_pinyin_annotation(value: str) -> str:
+    text = unicodedata.normalize("NFD", str(value or "").strip().lower())
+    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    text = text.replace("ü", "v").replace("u:", "v")
+    text = re.sub(r"[^a-zv0-9]", "", text)
+    text = re.sub(r"[1-5]$", "", text)
+    return text if text and re.fullmatch(r"[a-zv]+", text) else ""
+
+
+def _parse_pinyin_annotation_options(value: str) -> list[str]:
+    options: list[str] = []
+    for raw in re.split(r"[,，]", str(value or "")):
+        code = _normalize_pinyin_annotation(raw)
+        if not code:
+            return []
+        if code not in options:
+            options.append(code)
+    return options
+
+
+def _strip_lexicon_pinyin_annotations(candidate: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        return match.group(1) if _parse_pinyin_annotation_options(match.group(2)) else match.group(0)
+
+    return _LEXICON_PINYIN_ANNOTATION_RE.sub(replace, str(candidate or ""))
+
+
+def _annotated_lexicon_candidate_and_codes(candidate: str) -> tuple[str, list[str]]:
+    text = str(candidate or "")
+    parts: list[list[str]] = []
+    clean_parts: list[str] = []
+    cursor = 0
+    has_annotation = False
+
+    def append_plain(value: str) -> None:
+        clean_parts.append(value)
+        code = _candidate_to_lexicon_code(value)
+        if code:
+            parts.append([code])
+
+    for match in _LEXICON_PINYIN_ANNOTATION_RE.finditer(text):
+        options = _parse_pinyin_annotation_options(match.group(2))
+        if not options:
+            continue
+        append_plain(text[cursor:match.start()])
+        clean_parts.append(match.group(1))
+        parts.append(options)
+        cursor = match.end()
+        has_annotation = True
+
+    if not has_annotation:
+        return text, []
+
+    append_plain(text[cursor:])
+    codes = [""]
+    for options in parts:
+        codes = [prefix + option for prefix in codes for option in options]
+    return "".join(clean_parts), [code for code in codes if code]
+
+
+def _annotated_cjk_char_code_options(raw_candidate: str, clean_candidate: str) -> list[list[str]]:
+    options = [[_token_to_pinyin(char)] for char in clean_candidate]
+    clean_index = 0
+    cursor = 0
+    for match in _LEXICON_PINYIN_ANNOTATION_RE.finditer(str(raw_candidate or "")):
+        annotation_options = _parse_pinyin_annotation_options(match.group(2))
+        if not annotation_options:
+            continue
+        plain = _strip_lexicon_pinyin_annotations(str(raw_candidate or "")[cursor:match.start()])
+        clean_index += len(plain)
+        if 0 <= clean_index < len(options):
+            options[clean_index] = annotation_options
+            clean_index += 1
+        cursor = match.end()
+    return options
+
+
+def _combine_code_options(parts: list[list[str]]) -> list[str]:
+    codes = [""]
+    for options in parts:
+        codes = [prefix + option for prefix in codes for option in options if option]
+    return [code for code in codes if code]
+
+
+def _lexicon_cjk_fragment_entries(raw_candidate: str, clean_candidate: str, weight: float) -> list[tuple[str, str, float]]:
+    if not re.fullmatch(r"[\u3400-\u9fff]+", clean_candidate):
+        return []
+    if len(clean_candidate) < 3:
+        return []
+
+    char_options = _annotated_cjk_char_code_options(raw_candidate, clean_candidate)
+    entries: list[tuple[str, str, float]] = []
+    for length in range(len(clean_candidate) - 1, 1, -1):
+        for start in range(0, len(clean_candidate) - length + 1):
+            end = start + length
+            fragment = clean_candidate[start:end]
+            for code in _combine_code_options(char_options[start:end]):
+                entries.append((fragment, code, weight))
+    return entries
+
+
+def _lexicon_annotated_char_entries(raw_candidate: str, weight: float) -> list[tuple[str, str, float]]:
+    entries: list[tuple[str, str, float]] = []
+    for match in _LEXICON_PINYIN_ANNOTATION_RE.finditer(str(raw_candidate or "")):
+        options = _parse_pinyin_annotation_options(match.group(2))
+        if not options:
+            continue
+        candidate = match.group(1)
+        for code in options:
+            entries.append((candidate, code, weight))
+    return entries
 
 
 def _normalize_english_code(token: str) -> str:
@@ -1867,13 +2061,19 @@ def _english_surface_rank(candidate: str) -> tuple[int, int, int, str]:
 
 
 def _collect_english_entries_from_texts(
-    texts: list[str],
+    texts: list[str | tuple[str, float]],
     *,
     limit: int = DEFAULT_ENGLISH_LEARNED_ROW_LIMIT,
 ) -> list[dict[str, Any]]:
-    surface_counts_by_code: dict[str, Counter[str]] = defaultdict(Counter)
-    total_counts: Counter[str] = Counter()
-    for text in texts:
+    surface_counts_by_code: dict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
+    total_counts: defaultdict[str, float] = defaultdict(float)
+    for item in texts:
+        if isinstance(item, tuple):
+            text, multiplier = item
+        else:
+            text = item
+            multiplier = 1.0
+        multiplier = max(1.0, float(multiplier or 1.0))
         if not text:
             continue
         for raw in _ENGLISH_TOKEN_RE.findall(text):
@@ -1881,28 +2081,38 @@ def _collect_english_entries_from_texts(
             code = _normalize_english_code(candidate)
             if _should_skip_english_token(candidate, code):
                 continue
-            surface_counts_by_code[code][candidate] += 1
-            total_counts[code] += 1
+            surface_counts_by_code[code][candidate] += multiplier
+            total_counts[code] += multiplier
 
     entries: list[dict[str, Any]] = []
     for code, count in total_counts.items():
         candidate_counts = surface_counts_by_code[code]
         candidate = max(candidate_counts, key=lambda item: (candidate_counts[item], _english_surface_rank(item)))
-        if _is_plain_lower_unknown_english(candidate, code) and int(count) < 2:
+        rounded_count = int(round(count))
+        if _is_plain_lower_unknown_english(candidate, code) and rounded_count < 2:
             continue
-        weight = min(9999, 100 + int(count) * 20)
-        entries.append({"candidate": candidate, "code": code, "count": int(count), "weight": weight})
+        weight = min(9999, 100 + rounded_count * 20)
+        entries.append({"candidate": candidate, "code": code, "count": rounded_count, "weight": weight})
 
     entries.sort(key=lambda item: (-int(item["count"]), str(item["code"]), str(item["candidate"])))
     return entries[: max(1, int(limit or DEFAULT_ENGLISH_LEARNED_ROW_LIMIT))]
 
 
-def _collect_english_source_texts(rime_dir: Path) -> list[str]:
-    texts: list[str] = []
+def _article_weight_multiplier(article: dict[str, Any]) -> float:
+    if _is_lexicon_article(article):
+        try:
+            return max(1.0, float(article.get("weight_multiplier") or LEXICON_DEFAULT_WEIGHT))
+        except (TypeError, ValueError):
+            return LEXICON_DEFAULT_WEIGHT
+    return 1.0
+
+
+def _collect_english_source_texts(rime_dir: Path) -> list[tuple[str, float]]:
+    texts: list[tuple[str, float]] = []
     history_article = _resolve_history_article_content(rime_dir)
     history_content = str(history_article.get("content") or "").strip()
     if history_content:
-        texts.append(history_content)
+        texts.append((history_content, 1.0))
 
     manifest = _read_article_manifest(rime_dir)
     for article in manifest.get("articles", []):
@@ -1914,7 +2124,9 @@ def _collect_english_source_texts(rime_dir: Path) -> list[str]:
         except OSError:
             continue
         if content.strip():
-            texts.append(content)
+            if _is_lexicon_article(article):
+                content = _lexicon_candidate_text(content)
+            texts.append((content, _article_weight_multiplier(article)))
     return texts
 
 
@@ -2071,18 +2283,113 @@ def _extract_article_contributions(article_id: str, text: str) -> list[dict[str,
     ]
 
 
+def _parse_lexicon_line(line: str, default_weight: float) -> list[tuple[str, str, float]]:
+    text = str(line or "").strip()
+    if not text or text.startswith("#"):
+        return []
+
+    fields = [field.strip() for field in text.split("\t")]
+    raw_candidate = fields[0] if fields else ""
+    code = fields[1] if len(fields) >= 2 else ""
+    weight = default_weight
+    if len(fields) >= 3 and fields[2]:
+        try:
+            weight = float(fields[2])
+        except ValueError:
+            weight = default_weight
+
+    candidate, annotated_codes = _annotated_lexicon_candidate_and_codes(raw_candidate)
+    candidate = _clean_tsv_field(_strip_lexicon_pinyin_annotations(candidate))
+    if not candidate:
+        return []
+
+    if code:
+        normalized_codes = [_clean_tsv_field(code)]
+    elif annotated_codes:
+        normalized_codes = [_clean_tsv_field(item) for item in annotated_codes]
+    else:
+        normalized_codes = [_clean_tsv_field(_candidate_to_lexicon_code(candidate))]
+
+    entries: list[tuple[str, str, float]] = []
+    seen_codes: set[str] = set()
+    for normalized_code in normalized_codes:
+        if not normalized_code or normalized_code in seen_codes:
+            continue
+        seen_codes.add(normalized_code)
+        entries.append((candidate, normalized_code, max(0.1, weight)))
+    if not code:
+        for fragment_candidate, fragment_code, fragment_weight in _lexicon_cjk_fragment_entries(
+            raw_candidate,
+            candidate,
+            max(0.1, weight),
+        ):
+            if not fragment_code or fragment_code in seen_codes:
+                continue
+            seen_codes.add(fragment_code)
+            entries.append((fragment_candidate, fragment_code, fragment_weight))
+        for char_candidate, char_code, char_weight in _lexicon_annotated_char_entries(
+            raw_candidate,
+            max(0.1, weight),
+        ):
+            if not char_code or char_code in seen_codes:
+                continue
+            seen_codes.add(char_code)
+            entries.append((char_candidate, char_code, char_weight))
+    return entries
+
+
+def _extract_lexicon_contributions(article_id: str, text: str, default_weight: float) -> list[dict[str, Any]]:
+    counts: dict[tuple[str, str, str], float] = defaultdict(float)
+    for line in text.splitlines():
+        for candidate, prefix, weight in _parse_lexicon_line(line, default_weight):
+            counts[("__global", prefix, candidate)] += weight
+
+    return [
+        {
+            "source_id": article_id,
+            "context": context,
+            "prefix": prefix,
+            "candidate": candidate,
+            "weight": weight,
+        }
+        for (context, prefix, candidate), weight in counts.items()
+    ]
+
+
+def _lexicon_candidate_text(content: str) -> str:
+    candidates: list[str] = []
+    for line in str(content or "").splitlines():
+        parsed = _parse_lexicon_line(line, LEXICON_DEFAULT_WEIGHT)
+        if parsed:
+            candidate = parsed[0][0]
+            if candidate not in candidates:
+                candidates.append(candidate)
+    return "\n".join(candidates)
+
+
 def _article_to_payload(article: dict[str, Any]) -> dict[str, Any]:
     source_type = str(article.get("source_type") or "imported_article")
     source_label = str(article.get("source_label") or "")
     if not source_label:
-        source_label = "输入历史" if source_type == "device_history" else "导入文章"
+        if source_type in {"device_history", INPUT_HISTORY_SOURCE_TYPE}:
+            source_label = "输入历史"
+        elif _is_lexicon_source_type(source_type):
+            source_label = CUSTOM_PHRASE_LABEL
+        else:
+            source_label = "导入文章"
+    if _is_lexicon_source_type(source_type):
+        source_label = _normalize_lexicon_display_name(source_label)
+    title = str(article.get("title") or "未命名文章")
+    if _is_lexicon_source_type(source_type):
+        title = _normalize_lexicon_display_name(title)
     return {
         "id": str(article.get("id") or ""),
-        "title": str(article.get("title") or "未命名文章"),
+        "title": title,
         "enabled": bool(article.get("enabled", True)),
         "source_type": source_type,
         "source_key": str(article.get("source_key") or ""),
         "source_label": source_label,
+        "weight_multiplier": _article_weight_multiplier(article),
         "status": str(article.get("status") or "ready"),
         "row_count": int(article.get("row_count") or 0),
         "char_count": int(article.get("char_count") or 0),
@@ -2091,6 +2398,7 @@ def _article_to_payload(article: dict[str, Any]) -> dict[str, Any]:
         "created_at": float(article.get("created_at") or 0),
         "updated_at": float(article.get("updated_at") or 0),
         "processed_at": float(article.get("processed_at") or 0),
+        "readonly": bool(article.get("readonly", False)),
     }
 
 
@@ -2110,24 +2418,118 @@ def make_rime_context_prediction_articles_unavailable(
         "summary": {
             "article_count": 0,
             "enabled_count": 0,
+            "lexicon_count": 0,
             "contribution_count": 0,
         },
         "articles": [],
     }
 
 
-def _article_sources_response(rime_dir: Path, manifest: dict[str, Any], files: list[dict[str, Any]]) -> dict[str, Any]:
+def make_rime_context_prediction_article_content_unavailable(
+    *,
+    status: str,
+    message: str,
+    rime_dir: str | None = None,
+    files: list[dict[str, Any]] | None = None,
+    article: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "status": status,
+        "message": message,
+        "rime_dir": rime_dir,
+        "files": files or [],
+        "article": article,
+        "pagination": None,
+        "content": "",
+    }
+
+
+def _local_input_history_article_payload(rime_dir: Path, *, local_history_label: str | None = None) -> dict[str, Any] | None:
+    history_path = rime_dir / HISTORY_FILE
+    article_path = _history_article_path(rime_dir)
+    if not history_path.exists() and not article_path.exists():
+        return None
+
+    event_count = 0
+    char_count = 0
+    first_seen = ""
+    last_seen = ""
+    if history_path.exists():
+        for event in _iter_history_events(history_path):
+            event_count += 1
+            char_count += len(str(event.get("text") or ""))
+            timestamp = str(event.get("timestamp") or "")
+            if timestamp and not first_seen:
+                first_seen = timestamp
+            if timestamp:
+                last_seen = timestamp
+
+    edited_char_count = 0
+    if article_path.exists():
+        try:
+            edited_char_count = len(article_path.read_text(encoding="utf-8"))
+        except OSError:
+            edited_char_count = 0
+    if edited_char_count:
+        char_count = max(char_count, edited_char_count)
+
+    updated_at = 0.0
+    for path in [history_path, article_path, _history_article_meta_path(rime_dir)]:
+        if path.exists():
+            try:
+                updated_at = max(updated_at, float(path.stat().st_mtime))
+            except OSError:
+                pass
+
+    source_label = f"输入历史 · {local_history_label or '本机'}"
+    count_rows = _read_count_rows(rime_dir / COUNTS_FILE)
+    row_count = sum(1 for row in count_rows if str(row.get("comment") or "").startswith("输入历史"))
+    digest_basis = f"{history_path}:{history_path.stat().st_size if history_path.exists() else 0}:{updated_at}:{event_count}:{last_seen}"
+    return _article_to_payload(
+        {
+            "id": INPUT_HISTORY_ARTICLE_ID,
+            "title": source_label,
+            "enabled": True,
+            "source_type": INPUT_HISTORY_SOURCE_TYPE,
+            "source_key": INPUT_HISTORY_SOURCE_KEY,
+            "source_label": source_label,
+            "weight_multiplier": 1.0,
+            "status": "ready" if event_count or article_path.exists() else "empty",
+            "row_count": row_count,
+            "char_count": char_count,
+            "content_hash": hashlib.sha256(digest_basis.encode("utf-8")).hexdigest(),
+            "extractor_version": ARTICLE_EXTRACTOR_VERSION,
+            "created_at": _parse_history_timestamp(first_seen) if first_seen else updated_at,
+            "updated_at": updated_at,
+            "processed_at": updated_at,
+            "readonly": True,
+        }
+    )
+
+
+def _article_sources_response(
+    rime_dir: Path,
+    manifest: dict[str, Any],
+    files: list[dict[str, Any]],
+    *,
+    local_history_label: str | None = None,
+) -> dict[str, Any]:
     articles = [_article_to_payload(article) for article in manifest.get("articles", []) if isinstance(article, dict)]
     articles.sort(key=lambda item: item["updated_at"], reverse=True)
+    local_history_article = _local_input_history_article_payload(rime_dir, local_history_label=local_history_label)
+    if local_history_article:
+        articles.insert(0, local_history_article)
     return {
         "available": True,
         "status": "ready",
-        "message": "已读取导入文章清单。",
+        "message": "已读取语料库清单。",
         "rime_dir": str(rime_dir),
         "files": files,
         "summary": {
             "article_count": len(articles),
             "enabled_count": sum(1 for article in articles if article["enabled"]),
+            "lexicon_count": sum(1 for article in articles if _is_lexicon_source_type(article["source_type"])),
             "contribution_count": sum(article["row_count"] for article in articles if article["enabled"]),
         },
         "articles": articles,
@@ -2261,8 +2663,19 @@ def _write_prediction_runtime(rime_dir: Path, rows: list[tuple[str, str, str, fl
     return len(runtime_rows)
 
 
+def _is_hot_prediction_row(row: tuple[str, str, str, float, str]) -> bool:
+    context, _prefix, candidate, weight, comment = row
+    if context != "__global" or float(weight or 0) < DEFAULT_HOT_MIN_WEIGHT:
+        return False
+    if _is_manual_rule_comment(comment):
+        return True
+    if _normalize_lexicon_display_name(comment) == CUSTOM_PHRASE_LABEL:
+        return True
+    return len(str(candidate or "")) > 1
+
+
 def _write_prediction_hot(rime_dir: Path, rows: list[tuple[str, str, str, float, str]]) -> int:
-    hot_rows = [row for row in rows if row[0] == "__global" and float(row[3] or 0) >= DEFAULT_HOT_MIN_WEIGHT]
+    hot_rows = [row for row in rows if _is_hot_prediction_row(row)]
     hot_rows.sort(key=lambda row: (row[1], -row[3], row[2]))
     path = rime_dir / HOT_FILE
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -2292,7 +2705,13 @@ def rebuild_rime_context_prediction_snapshot(
 ) -> dict[str, Any]:
     target_dir = rime_dir or _ensure_writable_rime_dir()
     manifest = _read_article_manifest(target_dir)
+    stale_article_count = _refresh_stale_article_contributions(target_dir, manifest)
     deleted_keys = _read_deleted_candidate_keys(target_dir)
+    article_by_id = {
+        str(article.get("id") or ""): article
+        for article in manifest.get("articles", [])
+        if isinstance(article, dict)
+    }
     enabled_ids = {
         str(article.get("id"))
         for article in manifest.get("articles", [])
@@ -2328,6 +2747,14 @@ def rebuild_rime_context_prediction_snapshot(
         )
     for row in article_rows:
         if row["source_id"] in enabled_ids:
+            source_article = article_by_id.get(str(row["source_id"]))
+            source_type = str((source_article or {}).get("source_type") or "imported_article")
+            if _is_lexicon_source_type(source_type):
+                comment = CUSTOM_PHRASE_LABEL
+            elif source_type == "device_history":
+                comment = "输入历史"
+            else:
+                comment = "导入文章"
             merged_source_rows += 1
             _merge_snapshot_row(
                 rows_by_key,
@@ -2335,7 +2762,7 @@ def rebuild_rime_context_prediction_snapshot(
                 row["prefix"],
                 row["candidate"],
                 row["weight"],
-                "导入文章",
+                comment,
                 deleted_keys,
             )
 
@@ -2367,6 +2794,7 @@ def rebuild_rime_context_prediction_snapshot(
         "runtime_rows": runtime_rows,
         "hot_rows": hot_rows,
         "enabled_article_count": len(enabled_ids),
+        "refreshed_article_count": stale_article_count,
         **english_result,
     }
 
@@ -2498,7 +2926,26 @@ def refresh_rime_context_prediction_tree(
     return payload
 
 
-def collect_rime_context_prediction_articles() -> dict[str, Any]:
+def _paginate_text_content(content: str, *, page: int | None, page_size: int | None) -> tuple[str, dict[str, Any]]:
+    normalized_page_size = max(1, min(int(page_size or DEFAULT_HISTORY_ARTICLE_PAGE_SIZE), 20000))
+    total = len(content)
+    total_pages = max(1, (total + normalized_page_size - 1) // normalized_page_size) if total else 0
+    normalized_page = max(1, min(int(page or 1), total_pages)) if total_pages else 1
+    start = (normalized_page - 1) * normalized_page_size if total else 0
+    end = min(total, start + normalized_page_size) if total else 0
+    return content[start:end], {
+        "page": normalized_page,
+        "page_size": normalized_page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "start_index": start + 1 if total else 0,
+        "end_index": end if total else 0,
+        "has_prev": normalized_page > 1 and total > 0,
+        "has_next": total_pages > 0 and normalized_page < total_pages,
+    }
+
+
+def collect_rime_context_prediction_articles(*, local_history_label: str | None = None) -> dict[str, Any]:
     rime_dir = _resolve_rime_dir()
     files = _tracked_files(rime_dir)
 
@@ -2518,12 +2965,104 @@ def collect_rime_context_prediction_articles() -> dict[str, Any]:
         )
 
     manifest = _read_article_manifest(rime_dir)
-    return _article_sources_response(rime_dir, manifest, files)
+    return _article_sources_response(rime_dir, manifest, files, local_history_label=local_history_label)
+
+
+def collect_rime_context_prediction_article_content(
+    article_id: str,
+    *,
+    page: int | None = 1,
+    page_size: int | None = DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
+    local_history_label: str | None = None,
+) -> dict[str, Any]:
+    rime_dir = _resolve_rime_dir()
+    files = _tracked_files(rime_dir)
+
+    if not rime_dir:
+        return make_rime_context_prediction_article_content_unavailable(
+            status="unsupported_platform",
+            message="当前系统没有可识别的 Rime 用户目录位置。",
+            files=files,
+        )
+
+    if not rime_dir.exists():
+        return make_rime_context_prediction_article_content_unavailable(
+            status="rime_missing",
+            message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+
+    normalized_article_id = str(article_id or "").strip()
+    if normalized_article_id == INPUT_HISTORY_ARTICLE_ID:
+        article = _local_input_history_article_payload(rime_dir, local_history_label=local_history_label)
+        history_payload = collect_rime_context_prediction_history_article(page=page, page_size=page_size)
+        if not history_payload.get("available"):
+            return make_rime_context_prediction_article_content_unavailable(
+                status=str(history_payload.get("status") or "history_missing"),
+                message=str(history_payload.get("message") or "没有可展示的输入历史。"),
+                rime_dir=str(rime_dir),
+                files=files,
+                article=article,
+            )
+        return {
+            "available": True,
+            "status": str(history_payload.get("status") or "ready"),
+            "message": str(history_payload.get("message") or "已读取输入历史。"),
+            "rime_dir": str(rime_dir),
+            "files": files,
+            "article": article,
+            "pagination": history_payload.get("pagination"),
+            "content": str(history_payload.get("content") or ""),
+        }
+
+    manifest = _read_article_manifest(rime_dir)
+    article = next(
+        (
+            item for item in manifest.get("articles", [])
+            if isinstance(item, dict) and str(item.get("id") or "") == normalized_article_id
+        ),
+        None,
+    )
+    if not article:
+        return make_rime_context_prediction_article_content_unavailable(
+            status="not_found",
+            message="没有找到这份语料。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+
+    content_path = _article_content_path(rime_dir, article)
+    try:
+        content = content_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return make_rime_context_prediction_article_content_unavailable(
+            status="read_error",
+            message=f"读取语料内容失败：{exc}",
+            rime_dir=str(rime_dir),
+            files=files,
+            article=_article_to_payload(article),
+        )
+
+    page_content, pagination = _paginate_text_content(content, page=page, page_size=page_size)
+    return {
+        "available": True,
+        "status": "ready",
+        "message": "已读取语料内容。",
+        "rime_dir": str(rime_dir),
+        "files": files,
+        "article": _article_to_payload(article),
+        "pagination": pagination,
+        "content": page_content,
+    }
 
 
 def _upsert_article_contributions(rime_dir: Path, article: dict[str, Any], content: str) -> None:
     existing = [row for row in _read_article_contributions(rime_dir) if row["source_id"] != article["id"]]
-    rows = _extract_article_contributions(str(article["id"]), content)
+    if _is_lexicon_article(article):
+        rows = _extract_lexicon_contributions(str(article["id"]), content, _article_weight_multiplier(article))
+    else:
+        rows = _extract_article_contributions(str(article["id"]), content)
     article["row_count"] = len(rows)
     article["status"] = "ready"
     article["processed_at"] = time.time()
@@ -2539,6 +3078,7 @@ def import_rime_context_prediction_article(
     source_type: str = "imported_article",
     source_key: str | None = None,
     source_label: str | None = None,
+    weight_multiplier: float | None = None,
 ) -> dict[str, Any]:
     rime_dir = _ensure_writable_rime_dir()
     text = _normalize_article_text(content)
@@ -2547,6 +3087,13 @@ def import_rime_context_prediction_article(
     normalized_source_type = _clean_tsv_field(source_type or "imported_article") or "imported_article"
     normalized_source_key = _clean_tsv_field(source_key or "")
     normalized_source_label = _clean_tsv_field(source_label or "")
+    if _is_lexicon_source_type(normalized_source_type):
+        try:
+            normalized_weight_multiplier = max(1.0, float(weight_multiplier or LEXICON_DEFAULT_WEIGHT))
+        except (TypeError, ValueError):
+            normalized_weight_multiplier = LEXICON_DEFAULT_WEIGHT
+    else:
+        normalized_weight_multiplier = 1.0
     manifest = _read_article_manifest(rime_dir)
     articles = manifest.setdefault("articles", [])
 
@@ -2564,7 +3111,7 @@ def import_rime_context_prediction_article(
         for article in articles:
             if (
                 isinstance(article, dict)
-                and str(article.get("source_type") or "imported_article") == "imported_article"
+                and str(article.get("source_type") or "imported_article") == normalized_source_type
                 and article.get("content_hash") == digest
             ):
                 target_article = article
@@ -2583,6 +3130,7 @@ def import_rime_context_prediction_article(
             "source_type": normalized_source_type,
             "source_key": normalized_source_key,
             "source_label": normalized_source_label,
+            "weight_multiplier": normalized_weight_multiplier,
             "content_hash": digest,
             "content_path": f"{ARTICLE_CONTENT_DIR}/{article_id}.txt",
             "char_count": len(text),
@@ -2597,6 +3145,7 @@ def import_rime_context_prediction_article(
         _upsert_article_contributions(rime_dir, target_article, text)
     else:
         old_digest = str(target_article.get("content_hash") or "")
+        old_weight_multiplier = _article_weight_multiplier(target_article)
         next_title = _normalize_article_title(title, text)
         next_enabled = bool(enabled)
         content_path = _article_content_path(rime_dir, target_article)
@@ -2607,6 +3156,7 @@ def import_rime_context_prediction_article(
             and str(target_article.get("source_type") or "imported_article") == normalized_source_type
             and str(target_article.get("source_key") or "") == normalized_source_key
             and str(target_article.get("source_label") or "") == normalized_source_label
+            and old_weight_multiplier == normalized_weight_multiplier
             and int(target_article.get("extractor_version") or 0) == ARTICLE_EXTRACTOR_VERSION
             and str(target_article.get("status") or "") == "ready"
             and content_path.exists()
@@ -2618,6 +3168,7 @@ def import_rime_context_prediction_article(
         target_article["source_type"] = normalized_source_type
         target_article["source_key"] = normalized_source_key
         target_article["source_label"] = normalized_source_label
+        target_article["weight_multiplier"] = normalized_weight_multiplier
         target_article["content_hash"] = digest
         target_article["updated_at"] = now
         target_article["char_count"] = len(text)
@@ -2626,6 +3177,7 @@ def import_rime_context_prediction_article(
         if (
             old_digest != digest
             or target_article.get("extractor_version") != ARTICLE_EXTRACTOR_VERSION
+            or old_weight_multiplier != normalized_weight_multiplier
             or not int(target_article.get("row_count") or 0)
         ):
             _upsert_article_contributions(rime_dir, target_article, text)
@@ -2662,6 +3214,66 @@ def update_rime_context_prediction_article(
     _write_article_manifest(rime_dir, manifest)
     rebuild_rime_context_prediction_snapshot(rime_dir)
     return _article_sources_response(rime_dir, manifest, _tracked_files(rime_dir))
+
+
+def save_rime_context_prediction_article_content(
+    article_id: str,
+    content: str,
+    *,
+    page: int | None = 1,
+    page_size: int | None = DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
+    local_history_label: str | None = None,
+) -> dict[str, Any]:
+    rime_dir = _ensure_writable_rime_dir()
+    normalized_article_id = str(article_id or "").strip()
+    if normalized_article_id == INPUT_HISTORY_ARTICLE_ID:
+        raise RimeContextPredictionError("输入历史由日志和修订稿生成，不能在语料清单里直接编辑。")
+
+    manifest = _read_article_manifest(rime_dir)
+    article = next(
+        (
+            item
+            for item in manifest.get("articles", [])
+            if isinstance(item, dict) and str(item.get("id") or "") == normalized_article_id
+        ),
+        None,
+    )
+    if not article:
+        raise RimeContextPredictionError("未找到这篇导入文章。")
+    if bool(article.get("readonly", False)):
+        raise RimeContextPredictionError("这份语料是只读来源，不能直接编辑。")
+
+    content_path = _article_content_path(rime_dir, article)
+    try:
+        old_text = content_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RimeContextPredictionError(f"读取语料内容失败：{exc}") from exc
+
+    page_text = str(content or "").replace("\r\n", "\n").replace("\r", "\n")
+    _, pagination = _paginate_text_content(old_text, page=page, page_size=page_size)
+    if int(pagination.get("total") or 0):
+        start = max(0, int(pagination.get("start_index") or 1) - 1)
+        end = max(start, int(pagination.get("end_index") or start))
+    else:
+        start = 0
+        end = 0
+    new_text = _normalize_article_text(f"{old_text[:start]}{page_text}{old_text[end:]}")
+
+    now = time.time()
+    digest = _content_hash(new_text)
+    _write_text_atomic(content_path, new_text)
+    article["content_hash"] = digest
+    article["char_count"] = len(new_text)
+    article["updated_at"] = now
+    _upsert_article_contributions(rime_dir, article, new_text)
+    _write_article_manifest(rime_dir, manifest)
+    rebuild_rime_context_prediction_snapshot(rime_dir)
+    return collect_rime_context_prediction_article_content(
+        normalized_article_id,
+        page=page,
+        page_size=page_size,
+        local_history_label=local_history_label,
+    )
 
 
 def delete_rime_context_prediction_article(article_id: str) -> dict[str, Any]:

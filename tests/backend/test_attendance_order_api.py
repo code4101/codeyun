@@ -408,6 +408,72 @@ def test_execute_order_on_entry_initializes_ui_automation_context_for_local_devi
     assert os.getenv("XL_KQ_PAY_PASSWORD") is None
 
 
+def test_remote_order_requests_bypass_system_proxy(monkeypatch):
+    captured = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakeSession:
+        def __init__(self):
+            self.trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, *, json, headers, timeout):
+            captured.append(
+                {
+                    "trust_env": self.trust_env,
+                    "url": url,
+                    "json": json,
+                    "headers": headers,
+                    "timeout": timeout,
+                }
+            )
+            if url.endswith("/refund-details"):
+                return FakeResponse({"summary": {"row_count": 0}, "rows": []})
+            return FakeResponse({"action": "inspect", "rows": [], "summary": {"processed_count": 0}})
+
+    monkeypatch.setattr(attendance.requests, "Session", FakeSession)
+    entry_snapshot = {
+        "entry_id": "remote-entry",
+        "user_id": 1,
+        "device_id": "remote-device",
+        "name": "codepc_mi15",
+        "mode": "remote",
+        "server_url": "http://192.168.31.15:8000",
+        "token": "device-token",
+        "is_active": True,
+        "order_index": 0,
+        "created_at": 1.0,
+        "updated_at": 2.0,
+    }
+
+    attendance._execute_order_on_entry(
+        entry_snapshot,
+        {"action": "inspect", "rows": [], "login_users": [], "lookup_mode": "browser_only"},
+    )
+    attendance._execute_order_refund_details_on_entry(
+        entry_snapshot,
+        {"order_id": "TBTF7N-0OZRE8O-IDY5", "query_type": "auto", "login_users": ["考勤后台"]},
+    )
+
+    assert [item["trust_env"] for item in captured] == [False, False]
+    assert captured[0]["url"] == "http://192.168.31.15:8000/api/device-control/attendance/order/execute"
+    assert captured[1]["url"] == "http://192.168.31.15:8000/api/device-control/attendance/order/refund-details"
+    assert captured[0]["headers"]["X-Device-Token"] == "device-token"
+
+
 def test_order_execute_endpoint_allows_orders_feature_without_service_grant(client, session, auth_user, monkeypatch):
     entry = UserDevice(
         user_id=auth_user.id,
