@@ -86,7 +86,7 @@
     </header>
 
     <section v-if="!devices.length && !loadingDevices" class="storage-empty">
-      当前没有可用设备，请先在设备任务里添加本机或远程设备。
+      当前没有可用设备，请先在运行管理里添加本机或远程设备。
     </section>
 
     <template v-else>

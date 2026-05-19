@@ -5,7 +5,6 @@ from datetime import datetime, time as datetime_time, timedelta, timezone
 import html
 import re
 import time
-import uuid
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -16,6 +15,8 @@ from sqlalchemy import and_, or_
 from sqlmodel import Session, select
 
 from backend.core.background_task_queue import background_task_queue
+from backend.core.note_identity import allocate_new_note_identity
+from backend.core.note_refs import note_public_id
 from backend.core.note_semantics import (
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DEFAULT,
@@ -262,7 +263,7 @@ def maybe_create_ruanyf_weekly_note(
     )
     return RuanyfWeeklyJobResult(
         status="created",
-        created_note_id=str(note.id),
+        created_note_id=note_public_id(note),
         issue_number=latest_issue.number,
     )
 
@@ -348,8 +349,11 @@ def create_ruanyf_weekly_note(
     now = time.time()
     source_url = issue.source_url
     published_at = _format_datetime_utc(publication.published_at)
+    note_identity = allocate_new_note_identity(session)
     note = NoteNode(
-        id=str(uuid.uuid4()),
+        id=note_identity.primary_id,
+        numeric_id=note_identity.numeric_id,
+        legacy_id=note_identity.legacy_id,
         user_id=int(user_id),
         title=build_ruanyf_weekly_note_title(
             issue.number,

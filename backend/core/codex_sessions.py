@@ -1360,7 +1360,13 @@ def build_codex_thread_message_images(
     raise KeyError(f"未找到会话消息：{thread_id}#{message_seq}")
 
 
-def build_codex_workload(root_dir: str | None = None, session: Session | None = None) -> dict[str, Any]:
+def build_codex_workload(
+    root_dir: str | None = None,
+    session: Session | None = None,
+    *,
+    start_at: float | None = None,
+    end_at: float | None = None,
+) -> dict[str, Any]:
     context = _ensure_codex_text_cache(root_dir, session=session)
     with _session_scope(session) as session:
         thread_rows = session.exec(
@@ -1370,10 +1376,15 @@ def build_codex_workload(root_dir: str | None = None, session: Session | None = 
             row.thread_id: _serialize_cached_thread_row(row)
             for row in thread_rows
         }
+        turn_filters = [CodexTextCacheTurn.root_key == context["root_key"]]
+        if start_at is not None:
+            turn_filters.append(CodexTextCacheTurn.end_at > float(start_at))
+        if end_at is not None:
+            turn_filters.append(CodexTextCacheTurn.start_at < float(end_at))
         turn_rows = session.exec(
-            select(CodexTextCacheTurn).where(
-                CodexTextCacheTurn.root_key == context["root_key"]
-            ).order_by(CodexTextCacheTurn.start_at, CodexTextCacheTurn.thread_id, CodexTextCacheTurn.turn_index)
+            select(CodexTextCacheTurn)
+            .where(*turn_filters)
+            .order_by(CodexTextCacheTurn.start_at, CodexTextCacheTurn.thread_id, CodexTextCacheTurn.turn_index)
         ).all()
 
     skipped_threads = 0
@@ -1414,9 +1425,12 @@ def build_codex_workload(root_dir: str | None = None, session: Session | None = 
     time_range_end = max((float(item["end_at"]) for item in turns), default=None)
     max_concurrency = max((int(item["concurrency"]) for item in segments), default=0)
 
+    is_filtered = start_at is not None or end_at is not None
+    total_threads = len({row.thread_id for row in turn_rows}) if is_filtered else len(thread_map)
+
     return {
         "root_dir": context["root_dir"],
-        "total_threads": len(thread_map),
+        "total_threads": total_threads,
         "total_turns": len(turns),
         "skipped_threads": skipped_threads,
         "max_concurrency": max_concurrency,

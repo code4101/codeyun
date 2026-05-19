@@ -1,8 +1,8 @@
 import type { AppPageDefinition } from '@/router/pageRegistryTypes'
 
 const page: AppPageDefinition = {
-  routeName: 'DeviceTasks',
-  canonicalPath: '/cluster/tasks',
+  routeName: 'RuntimeManagement',
+  canonicalPath: '/cluster/runtime',
   component: () => import('./page.vue'),
   requiresAuth: true,
 }

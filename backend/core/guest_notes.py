@@ -10,6 +10,7 @@ from fastapi import Depends, HTTPException
 from sqlmodel import Session, select
 
 from backend.core.auth import get_optional_current_user_from_token, get_password_hash, oauth2_scheme_optional
+from backend.core.note_refs import note_edge_ref, note_ref_aliases
 from backend.core.note_semantics import (
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DEFAULT,
@@ -17,6 +18,7 @@ from backend.core.note_semantics import (
     NOTE_LIFECYCLE_STAGE_DEFAULT,
     NOTE_SCENE_DEFAULT,
 )
+from backend.core.resource_identity import RESOURCE_TYPE_NOTE, allocate_resource_id
 from backend.db import get_session
 from backend.models import AppSetting, NoteEdge, NoteNode, User
 
@@ -24,7 +26,7 @@ from backend.models import AppSetting, NoteEdge, NoteNode, User
 GUEST_NOTES_USERNAME = "__guest_notes__"
 GUEST_NOTES_NICKNAME = "游客公共星图"
 GUEST_NOTES_SEED_SETTING_KEY = "note.guest_star_notes.seed"
-GUEST_NOTES_SEED_VERSION = 2
+GUEST_NOTES_SEED_VERSION = 3
 RUANYF_WEEKLY_ISSUE_FIELD = "__ruanyf_weekly_issue_number"
 RUANYF_WEEKLY_SOURCE_URL_FIELD = "__ruanyf_weekly_source_url"
 RUANYF_WEEKLY_PUBLISHED_AT_FIELD = "__ruanyf_weekly_published_at"
@@ -103,6 +105,7 @@ def _note(
     now = time.time()
     return NoteNode(
         id=note_id,
+        legacy_id=note_id,
         user_id=user_id,
         title=title,
         content=content,
@@ -177,11 +180,13 @@ def ensure_guest_star_notes_seed(session: Session, user: User) -> None:
         "weekly": "guest-star-notes-weekly-issue-300",
     }
 
-    existing_note_ids = {
-        str(note_id)
-        for note_id in session.exec(select(NoteNode.id).where(NoteNode.user_id == user_id)).all()
-        if note_id
+    existing_notes = session.exec(select(NoteNode).where(NoteNode.user_id == user_id)).all()
+    existing_note_map = {
+        ref: note
+        for note in existing_notes
+        for ref in note_ref_aliases(note)
     }
+    existing_note_ids = set(existing_note_map)
     notes = [
         _note(
             note_id=ids["root"],
@@ -285,11 +290,25 @@ def ensure_guest_star_notes_seed(session: Session, user: User) -> None:
         ),
     ]
     added_note_ids: set[str] = set()
+    seed_note_map = dict(existing_note_map)
     for note in notes:
-        if str(note.id) in existing_note_ids:
+        note_id = str(note.id)
+        if note_id in existing_note_ids:
+            existing_note = existing_note_map[note_id]
+            changed = False
+            if not existing_note.legacy_id:
+                existing_note.legacy_id = note_id
+                changed = True
+            if not existing_note.numeric_id:
+                existing_note.numeric_id = allocate_resource_id(session, RESOURCE_TYPE_NOTE, note_id)
+                changed = True
+            if changed:
+                session.add(existing_note)
             continue
+        note.numeric_id = allocate_resource_id(session, RESOURCE_TYPE_NOTE, note_id)
         session.add(note)
-        added_note_ids.add(str(note.id))
+        added_note_ids.add(note_id)
+        seed_note_map[note_id] = note
 
     available_seed_note_ids = existing_note_ids | added_note_ids
     existing_edges = {
@@ -310,9 +329,20 @@ def ensure_guest_star_notes_seed(session: Session, user: User) -> None:
         target_id = ids[target_key]
         if source_id not in available_seed_note_ids or target_id not in available_seed_note_ids:
             continue
-        if (source_id, target_id) in existing_edges:
+        source_note = seed_note_map.get(source_id)
+        target_note = seed_note_map.get(target_id)
+        if source_note is None or target_note is None:
             continue
-        session.add(_edge(user_id, ids[source_key], ids[target_key]))
+        source_ref = note_edge_ref(source_note)
+        target_ref = note_edge_ref(target_note)
+        source_aliases = note_ref_aliases(source_note)
+        target_aliases = note_ref_aliases(target_note)
+        if (
+            (source_ref, target_ref) in existing_edges
+            or any((source_alias, target_alias) in existing_edges for source_alias in source_aliases for target_alias in target_aliases)
+        ):
+            continue
+        session.add(_edge(user_id, source_ref, target_ref))
 
     _save_seed_version(session)
     session.commit()

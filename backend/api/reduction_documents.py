@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ from backend.core.document_reduction_storage import (
 )
 from backend.core.auth import get_current_user_from_token
 from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.resource_identity import RESOURCE_TYPE_DOCUMENT_ASSET, allocate_resource_id
 from backend.db import get_session
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun, User
 
@@ -61,7 +63,8 @@ ALLOWED_TEXT_FILE_EXTENSIONS = {
 
 
 class ReductionDocumentRead(BaseModel):
-    id: str
+    id: int
+    numeric_id: Optional[int] = None
     title: str
     original_filename: str
     media_type: str
@@ -80,7 +83,7 @@ class ReductionDocumentRead(BaseModel):
 
 class ReductionDocumentRunRead(BaseModel):
     id: str
-    document_id: str
+    document_id: int
     provider: str
     model: str
     task_type: str
@@ -138,7 +141,7 @@ class ReductionDocumentQueryRequest(BaseModel):
 
 class ReductionDocumentQueryResponse(BaseModel):
     query_id: str
-    document_id: str
+    document_id: int
     run_id: str
     model: str
     answer: str
@@ -152,7 +155,7 @@ class ReductionDocumentQueryResponse(BaseModel):
 
 class ReductionDocumentDeleteResponse(BaseModel):
     ok: bool = True
-    document_id: str
+    document_id: int
 
 
 @router.get("", response_model=ReductionDocumentListResponse)
@@ -191,7 +194,12 @@ async def upload_reduction_document(
 
     title = Path(file.filename or "untitled.txt").stem.strip() or "未命名文档"
     now = time.time()
+    legacy_id = uuid.uuid4().hex
+    numeric_id = allocate_resource_id(session, RESOURCE_TYPE_DOCUMENT_ASSET, legacy_id)
     document = DocumentAsset(
+        id=numeric_id,
+        numeric_id=numeric_id,
+        legacy_id=legacy_id,
         user_id=current_user.id,
         title=title,
         original_filename=file.filename or "untitled.txt",
@@ -210,7 +218,7 @@ async def upload_reduction_document(
 
     save_document_source_text(
         user_id=current_user.id,
-        document_id=document.id,
+        document_id=_document_storage_ref(document),
         original_filename=document.original_filename,
         media_type=document.media_type,
         raw_bytes=raw_bytes,
@@ -227,11 +235,11 @@ def get_reduction_document_detail(
 ):
     document = _get_user_document(session, current_user, document_id)
     active_run = _get_document_run(session, current_user, document.latest_run_id) if document.latest_run_id else None
-    latest_run = _get_latest_document_run(session, current_user, document.id)
+    latest_run = _get_latest_document_run(session, current_user, document)
     return ReductionDocumentDetailResponse(
         document=_serialize_document(document),
-        active_run=_serialize_run(active_run) if active_run else None,
-        latest_run=_serialize_run(latest_run) if latest_run else None,
+        active_run=_serialize_run(active_run, document=document) if active_run else None,
+        latest_run=_serialize_run(latest_run, document=document) if latest_run else None,
     )
 
 
@@ -249,7 +257,7 @@ def index_reduction_document(
     extra_providers = ()
 
     run = DocumentReductionRun(
-        document_id=document.id,
+        document_id=_public_document_ref(document),
         user_id=current_user.id,
         provider=(payload.provider or "").strip(),
         model=(payload.model or "").strip(),
@@ -267,7 +275,8 @@ def index_reduction_document(
         document.updated_at = time.time()
         session.add(document)
         session.commit()
-        source_text = load_document_source_text(user_id=current_user.id, document_id=document.id)
+        document_storage_ref = _document_storage_ref(document)
+        source_text = load_document_source_text(user_id=current_user.id, document_id=document_storage_ref)
         provider_id, base_url, api_key, extra_providers = resolve_ai_runtime_config(
             session=session,
             current_user=current_user,
@@ -298,7 +307,7 @@ def index_reduction_document(
             session.commit()
 
         reduction_payload = generate_document_index(
-            document_id=document.id,
+            document_id=document_storage_ref,
             document_title=document.title,
             text=source_text,
             provider_id=provider_id,
@@ -311,7 +320,7 @@ def index_reduction_document(
         )
         save_document_run_artifacts(
             user_id=current_user.id,
-            document_id=document.id,
+            document_id=document_storage_ref,
             run_id=run.id,
             source_units=list(reduction_payload["source_units"]),
             levels=list(reduction_payload["reduction"]["levels"]),
@@ -325,7 +334,7 @@ def index_reduction_document(
         ]
         replace_document_run_nodes(
             user_id=current_user.id,
-            document_id=document.id,
+            document_id=document_storage_ref,
             run_id=run.id,
             nodes=all_nodes,
         )
@@ -391,7 +400,7 @@ def index_reduction_document(
 
     return ReductionDocumentIndexResponse(
         document=_serialize_document(document),
-        run=_serialize_run(run),
+        run=_serialize_run(run, document=document),
         result=dict(reduction_payload["result"]),
         reduction=dict(reduction_payload["reduction"]),
     )
@@ -413,7 +422,7 @@ def query_reduction_document(
     extra_providers = ()
 
     query_row = DocumentQueryHistory(
-        document_id=document.id,
+        document_id=_public_document_ref(document),
         run_id=run.id,
         user_id=current_user.id,
         provider=(payload.provider or "").strip(),
@@ -436,10 +445,11 @@ def query_reduction_document(
             api_key=payload.api_key,
         )
         query_row.provider = provider_id
-        run_result = load_document_run_result(user_id=current_user.id, document_id=document.id, run_id=run.id)
+        document_storage_ref = _document_storage_ref(document)
+        run_result = load_document_run_result(user_id=current_user.id, document_id=document_storage_ref, run_id=run.id)
         matched_nodes = search_document_run_nodes(
             user_id=current_user.id,
-            document_id=document.id,
+            document_id=document_storage_ref,
             run_id=run.id,
             query_text=payload.query,
             limit=6,
@@ -447,13 +457,13 @@ def query_reduction_document(
         if not matched_nodes:
             matched_nodes = _fallback_match_nodes(
                 user_id=current_user.id,
-                document_id=document.id,
+                document_id=document_storage_ref,
                 run_id=run.id,
             )
 
         source_units = load_document_run_source_units(
             user_id=current_user.id,
-            document_id=document.id,
+            document_id=document_storage_ref,
             run_id=run.id,
         )
         answer_payload = answer_document_question(
@@ -508,7 +518,7 @@ def query_reduction_document(
 
     return ReductionDocumentQueryResponse(
         query_id=query_row.id,
-        document_id=document.id,
+        document_id=_public_document_id(document),
         run_id=run.id,
         model=str(answer_payload["model"]),
         answer=str(answer_payload["answer"]),
@@ -541,14 +551,14 @@ def delete_reduction_document(
         select(DocumentReductionRun)
         .where(
             DocumentReductionRun.user_id == current_user.id,
-            DocumentReductionRun.document_id == document.id,
+            DocumentReductionRun.document_id.in_(_document_ref_candidates(document)),
         )
     ).all()
     queries = session.exec(
         select(DocumentQueryHistory)
         .where(
             DocumentQueryHistory.user_id == current_user.id,
-            DocumentQueryHistory.document_id == document.id,
+            DocumentQueryHistory.document_id.in_(_document_ref_candidates(document)),
         )
     ).all()
 
@@ -556,16 +566,24 @@ def delete_reduction_document(
         session.delete(item)
     for item in runs:
         session.delete(item)
+    document_ref_candidates = _document_ref_candidates(document)
+    document_storage_refs = _document_storage_refs(document)
+    public_document_id = _public_document_id(document)
     session.delete(document)
     session.commit()
 
-    delete_document_nodes(user_id=current_user.id, document_id=document.id)
-    delete_document_asset_dir(user_id=current_user.id, document_id=document.id)
-    return ReductionDocumentDeleteResponse(document_id=document.id)
+    for ref in document_ref_candidates:
+        delete_document_nodes(user_id=current_user.id, document_id=ref)
+    for ref in document_storage_refs:
+        delete_document_asset_dir(user_id=current_user.id, document_id=ref)
+    return ReductionDocumentDeleteResponse(document_id=public_document_id)
 
 
 def _get_user_document(session: Session, current_user: User, document_id: str) -> DocumentAsset:
-    document = session.get(DocumentAsset, document_id)
+    normalized_id = str(document_id or "").strip()
+    if not normalized_id.isdecimal():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
+    document = session.exec(select(DocumentAsset).where(DocumentAsset.numeric_id == int(normalized_id))).first()
     if not document or document.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="文档不存在")
     return document
@@ -583,13 +601,13 @@ def _get_document_run(session: Session, current_user: User, run_id: Optional[str
 def _get_latest_document_run(
     session: Session,
     current_user: User,
-    document_id: str,
+    document: DocumentAsset,
 ) -> Optional[DocumentReductionRun]:
     return session.exec(
         select(DocumentReductionRun)
         .where(
             DocumentReductionRun.user_id == current_user.id,
-            DocumentReductionRun.document_id == document_id,
+            DocumentReductionRun.document_id.in_(_document_ref_candidates(document)),
         )
         .order_by(DocumentReductionRun.created_at.desc(), DocumentReductionRun.updated_at.desc())
     ).first()
@@ -602,7 +620,7 @@ def _resolve_query_run(
     requested_run_id: Optional[str],
 ) -> DocumentReductionRun:
     run = _get_document_run(session, current_user, requested_run_id or document.latest_run_id)
-    if run is None or run.document_id != document.id:
+    if run is None or run.document_id not in _document_ref_candidates(document):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前文档还没有可用的归纳结果")
     if run.status != "completed":
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前归纳任务未完成，暂时不能提问")
@@ -636,11 +654,42 @@ def _fallback_match_nodes(*, user_id: int, document_id: str, run_id: str) -> lis
 
 
 def _serialize_document(document: DocumentAsset) -> ReductionDocumentRead:
-    return ReductionDocumentRead.model_validate(document.model_dump())
+    payload = document.model_dump()
+    payload["id"] = _public_document_id(document)
+    return ReductionDocumentRead.model_validate(payload)
 
 
-def _serialize_run(run: DocumentReductionRun) -> ReductionDocumentRunRead:
-    return ReductionDocumentRunRead.model_validate(run.model_dump())
+def _serialize_run(run: DocumentReductionRun, *, document: DocumentAsset | None = None) -> ReductionDocumentRunRead:
+    payload = run.model_dump()
+    if document is not None:
+        payload["document_id"] = _public_document_id(document)
+    return ReductionDocumentRunRead.model_validate(payload)
+
+
+def _public_document_id(document: DocumentAsset) -> int:
+    if document.numeric_id is not None and int(document.numeric_id) > 0:
+        return int(document.numeric_id)
+    raise HTTPException(status_code=500, detail="文档资源编号缺失")
+
+
+def _public_document_ref(document: DocumentAsset) -> str:
+    return str(_public_document_id(document))
+
+
+def _document_ref_candidates(document: DocumentAsset) -> list[str]:
+    refs = [_public_document_ref(document)]
+    legacy_id = str(getattr(document, "legacy_id", None) or "").strip()
+    if legacy_id and legacy_id not in refs:
+        refs.append(legacy_id)
+    return refs
+
+
+def _document_storage_ref(document: DocumentAsset) -> str:
+    return _public_document_ref(document)
+
+
+def _document_storage_refs(document: DocumentAsset) -> list[str]:
+    return _document_ref_candidates(document)
 
 
 def _decode_text_upload(*, filename: str, content_type: str, raw_bytes: bytes) -> str:

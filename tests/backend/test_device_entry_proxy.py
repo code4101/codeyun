@@ -33,11 +33,13 @@ def test_local_entry_proxy_create_and_list_tasks(client, auth_user, test_device)
         json={
             "name": "Proxy Local Task",
             "command": "python -V",
+            "runtime_kind": "job",
         },
     )
     assert create_resp.status_code == 200
     created = create_resp.json()
     assert created["device_id"] == test_device["id"]
+    assert created["runtime_kind"] == "job"
 
     list_resp = client.get(f"/api/device-entries/{entry_id}/task/")
     assert list_resp.status_code == 200
@@ -45,6 +47,7 @@ def test_local_entry_proxy_create_and_list_tasks(client, auth_user, test_device)
     assert len(tasks) == 1
     assert tasks[0]["name"] == "Proxy Local Task"
     assert tasks[0]["device_id"] == test_device["id"]
+    assert tasks[0]["runtime_kind"] == "job"
     assert tasks[0]["status"]["running"] is False
 
 
@@ -1024,6 +1027,7 @@ def test_local_entry_proxy_syncs_device_file_records(client, auth_user, test_dev
     payload = resp.json()
     assert payload["ok"] is True
     assert payload["processed_count"] == 1
+    assert isinstance(payload["records"][0]["id"], int)
 
     indexed = session.exec(
         select(DeviceFile).where(
@@ -1034,6 +1038,7 @@ def test_local_entry_proxy_syncs_device_file_records(client, auth_user, test_dev
     assert indexed.content_hash == "hash-movie"
     assert indexed.media_kind == "video"
     assert indexed.mime_type == "video/mp4"
+    assert indexed.numeric_id == payload["records"][0]["id"]
 
 
 def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_user, test_device, session, tmp_path):
@@ -1061,6 +1066,7 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     first_payload = first_resp.json()
     assert first_payload["processed_count"] == 1
     assert first_payload["hashed_count"] == 1
+    assert isinstance(first_payload["items"][0]["id"], int)
     first_hash = first_payload["items"][0]["content_hash"]
     assert first_hash
 
@@ -1076,6 +1082,7 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     assert second_payload["processed_count"] == 1
     assert second_payload["hashed_count"] == 1
     assert second_payload["rebound_count"] == 1
+    assert isinstance(second_payload["items"][0]["id"], int)
     assert second_payload["items"][0]["content_hash"] == first_hash
 
     third_resp = client.post(
@@ -1086,6 +1093,7 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     third_payload = third_resp.json()
     assert third_payload["processed_count"] == 1
     assert third_payload["hashed_count"] == 0
+    assert isinstance(third_payload["items"][0]["id"], int)
     assert third_payload["items"][0]["content_hash"] == first_hash
 
     rows = session.exec(
@@ -1094,6 +1102,7 @@ def test_local_entry_proxy_scans_device_files_with_auto_hash_reuse(client, auth_
     assert len(rows) == 1
     assert rows[0].absolute_path == str(renamed_path)
     assert rows[0].content_hash == first_hash
+    assert rows[0].numeric_id == third_payload["items"][0]["id"]
 
 
 def test_local_entry_proxy_scan_merges_weight_when_directory_rename_left_zero_weight_duplicate(

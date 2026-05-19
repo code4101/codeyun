@@ -282,11 +282,13 @@ def get_codex_thread_message_images(
 @router.get("/workload", response_model=CodexWorkloadResponse)
 def get_codex_workload(
     root_dir: str | None = Query(default=None),
+    start_at: float | None = Query(default=None),
+    end_at: float | None = Query(default=None),
     session: Session = Depends(get_session),
     _: BaseDevice = Depends(verify_api_token),
 ):
     try:
-        return build_codex_workload(root_dir, session=session)
+        return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
     except Exception as exc:  # pragma: no cover - translated for HTTP callers
         raise _translate_codex_error(exc) from exc
 

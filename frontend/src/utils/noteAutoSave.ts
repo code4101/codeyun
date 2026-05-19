@@ -336,8 +336,9 @@ export const noteSnapshotToNode = (
   custom_fields: cloneEditableNoteSnapshot(snapshot).custom_fields
 });
 
-export const buildNoteDraftStorageKey = (noteId?: string | null, noteTitle?: string | null) => {
-  if (noteId && noteId.trim()) return `codeyun.note-draft.${noteId}`;
+export const buildNoteDraftStorageKey = (noteId?: string | number | null, noteTitle?: string | null) => {
+  const normalizedNoteId = String(noteId ?? '').trim();
+  if (normalizedNoteId) return `codeyun.note-draft.${normalizedNoteId}`;
   if (noteTitle && noteTitle.trim()) return `codeyun.note-draft.title.${noteTitle.trim()}`;
   return null;
 };

@@ -9,6 +9,7 @@ export interface Task {
   cwd?: string;
   device_id?: string;
   entry_id?: string;
+  runtime_kind?: 'service' | 'job';
   schedule?: string;
   timeout?: number;
   status: {

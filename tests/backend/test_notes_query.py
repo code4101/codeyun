@@ -3,6 +3,10 @@ import uuid
 from backend.models import NoteEdge, NoteNode
 
 
+def _numeric_note_id(note_id: str) -> int:
+    return sum((index + 1) * ord(char) for index, char in enumerate(note_id)) % 1000000 + 1000
+
+
 def make_note(
     auth_user,
     note_id: str,
@@ -18,6 +22,7 @@ def make_note(
 ):
     return NoteNode(
         id=note_id,
+        numeric_id=_numeric_note_id(note_id),
         user_id=auth_user.id,
         title=title,
         content="",
@@ -80,7 +85,7 @@ def test_query_notes_filters_and_sorts_all_scope(client, session, auth_user):
     payload = response.json()
     assert payload["total_nodes"] == 1
     assert payload["total_edges"] == 0
-    assert [node["id"] for node in payload["nodes"]] == ["note-target"]
+    assert [node["id"] for node in payload["nodes"]] == [target.numeric_id]
 
 
 def test_query_notes_supports_custom_field_rules(client, session, auth_user):
@@ -123,7 +128,7 @@ def test_query_notes_supports_custom_field_rules(client, session, auth_user):
     payload = response.json()
     assert payload["total_nodes"] == 1
     assert payload["total_edges"] == 0
-    assert [node["id"] for node in payload["nodes"]] == ["note-project"]
+    assert [node["id"] for node in payload["nodes"]] == [project_note.numeric_id]
 
 
 def test_query_notes_supports_private_level_rules(client, session, auth_user):
@@ -165,7 +170,7 @@ def test_query_notes_supports_private_level_rules(client, session, auth_user):
     assert response.status_code == 200
     payload = response.json()
     assert payload["total_nodes"] == 1
-    assert [node["id"] for node in payload["nodes"]] == ["note-private"]
+    assert [node["id"] for node in payload["nodes"]] == [private_note.numeric_id]
 
 
 def test_query_notes_supports_title_text_rules(client, session, auth_user):
@@ -191,7 +196,7 @@ def test_query_notes_supports_title_text_rules(client, session, auth_user):
     assert regex_response.status_code == 200
     regex_payload = regex_response.json()
     assert regex_payload["total_nodes"] == 1
-    assert [node["id"] for node in regex_payload["nodes"]] == ["note-dash"]
+    assert [node["id"] for node in regex_payload["nodes"]] == [_numeric_note_id("note-dash")]
 
     not_contains_response = client.post(
         "/api/notes/query",
@@ -210,7 +215,7 @@ def test_query_notes_supports_title_text_rules(client, session, auth_user):
     assert not_contains_response.status_code == 200
     not_contains_payload = not_contains_response.json()
     assert not_contains_payload["total_nodes"] == 1
-    assert [node["id"] for node in not_contains_payload["nodes"]] == ["note-clean"]
+    assert [node["id"] for node in not_contains_payload["nodes"]] == [_numeric_note_id("note-clean")]
 
 
 def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, session, auth_user):
@@ -230,7 +235,7 @@ def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, s
     planetary = client.post(
         "/api/notes/query",
         json={
-            "scope": {"mode": "planetary", "seed_note_id": "note-root"},
+            "scope": {"mode": "planetary", "seed_note_id": root.numeric_id},
             "rules": [],
             "order_by": "updated_at",
             "order_desc": True,
@@ -242,16 +247,16 @@ def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, s
     assert planetary.status_code == 200
     planetary_payload = planetary.json()
     assert {node["id"] for node in planetary_payload["nodes"]} == {
-        "note-root",
-        "note-parent",
-        "note-child",
+        root.numeric_id,
+        parent.numeric_id,
+        child.numeric_id,
     }
     assert len(planetary_payload["edges"]) == 2
 
     satellite = client.post(
         "/api/notes/query",
         json={
-            "scope": {"mode": "satellite", "seed_note_id": "note-root"},
+            "scope": {"mode": "satellite", "seed_note_id": root.numeric_id},
             "rules": [],
             "order_by": "updated_at",
             "order_desc": True,
@@ -263,13 +268,13 @@ def test_query_notes_graph_scopes_follow_planetary_and_satellite_rules(client, s
     assert satellite.status_code == 200
     satellite_payload = satellite.json()
     assert {node["id"] for node in satellite_payload["nodes"]} == {
-        "note-root",
-        "note-child",
+        root.numeric_id,
+        child.numeric_id,
     }
     assert len(satellite_payload["edges"]) == 1
     edge = satellite_payload["edges"][0]
-    assert edge["source_id"] == "note-root"
-    assert edge["target_id"] == "note-child"
+    assert edge["source_id"] == root.numeric_id
+    assert edge["target_id"] == child.numeric_id
 
 
 def test_batch_update_notes_sets_private_level(client, session, auth_user):
@@ -285,7 +290,7 @@ def test_batch_update_notes_sets_private_level(client, session, auth_user):
     response = client.post(
         "/api/notes/batch-update",
         json={
-            "ids": ["note-a", "note-b"],
+            "ids": [first.numeric_id, second.numeric_id],
             "patch": {"private_level": 1},
         },
     )
@@ -293,7 +298,7 @@ def test_batch_update_notes_sets_private_level(client, session, auth_user):
     assert response.status_code == 200
     payload = response.json()
     assert payload["updated_count"] == 2
-    assert [note["id"] for note in payload["notes"]] == ["note-a", "note-b"]
+    assert [note["id"] for note in payload["notes"]] == [first.numeric_id, second.numeric_id]
     assert [note["private_level"] for note in payload["notes"]] == [1, 1]
 
     session.refresh(first)
@@ -329,7 +334,7 @@ def test_batch_update_notes_supports_taxonomy_and_weight_delta(client, session, 
     response = client.post(
         "/api/notes/batch-update",
         json={
-            "ids": ["note-batch-a", "note-batch-b"],
+            "ids": [first.numeric_id, second.numeric_id],
             "patch": {
                 "note_categories": [{"key": "general", "weight": 100}],
                 "primary_category": "general",
@@ -344,7 +349,7 @@ def test_batch_update_notes_supports_taxonomy_and_weight_delta(client, session, 
     assert response.status_code == 200
     payload = response.json()
     assert payload["updated_count"] == 2
-    assert [note["id"] for note in payload["notes"]] == ["note-batch-a", "note-batch-b"]
+    assert [note["id"] for note in payload["notes"]] == [first.numeric_id, second.numeric_id]
     assert [note["weight"] for note in payload["notes"]] == [3, 7]
     for note in payload["notes"]:
         assert note["note_categories"] == [{"key": "general", "weight": 100}]

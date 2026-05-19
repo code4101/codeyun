@@ -2478,7 +2478,7 @@ async function commitChanges() {
 }
 
 function goToCluster() {
-  void router.push('/cluster/tasks')
+  void router.push('/cluster/runtime')
 }
 
 function getErrorMessage(error: any) {

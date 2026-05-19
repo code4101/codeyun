@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import or_
 from sqlmodel import Session, func, select
 
 from backend.core.ai_chat import (
@@ -29,6 +30,7 @@ from backend.models import (
     CodexDiaryImportRun,
     NoteMetadataFeedback,
     NoteMetadataFeedbackOptimizationRun,
+    NoteNode,
 )
 
 
@@ -147,6 +149,32 @@ def _field_signature(before: dict[str, Any], after: dict[str, Any], field_names:
     return "|".join(sorted(field_names))
 
 
+def _public_note_ref_from_note(note: Any) -> str:
+    numeric_id = _get_value(note, "numeric_id")
+    if numeric_id is not None:
+        try:
+            numeric_value = int(numeric_id)
+        except (TypeError, ValueError):
+            numeric_value = 0
+        if numeric_value > 0:
+            return str(numeric_value)
+    return str(_get_value(note, "id") or "")
+
+
+def _normalize_note_feedback_ref(session: Session, *, user_id: int, note_id: str) -> str:
+    normalized_id = str(note_id or "").strip()
+    if not normalized_id or normalized_id.isdecimal():
+        return normalized_id
+    note = session.exec(
+        select(NoteNode)
+        .where(NoteNode.user_id == user_id)
+        .where(or_(NoteNode.id == normalized_id, NoteNode.legacy_id == normalized_id))
+    ).first()
+    if note is not None and note.numeric_id is not None and int(note.numeric_id) > 0:
+        return str(int(note.numeric_id))
+    return normalized_id
+
+
 def record_note_metadata_feedback(
     session: Session,
     *,
@@ -161,6 +189,10 @@ def record_note_metadata_feedback(
 ) -> NoteMetadataFeedback | None:
     field_names = _changed_metadata_fields(before_snapshot, after_snapshot)
     if not field_names:
+        return None
+
+    note_id = _normalize_note_feedback_ref(session, user_id=user_id, note_id=note_id)
+    if not note_id:
         return None
 
     now_ts = float(now or time.time())
@@ -243,7 +275,7 @@ def record_note_metadata_feedback_for_update(
     after_snapshot = build_note_metadata_feedback_snapshot(note, updates)
     content_sample = build_note_metadata_feedback_content_sample(note, updates)
     user_id = int(_get_value(note, "user_id") or 0)
-    note_id = str(_get_value(note, "id") or "")
+    note_id = _public_note_ref_from_note(note)
     if not user_id or not note_id:
         return None
     return record_note_metadata_feedback(
@@ -273,7 +305,7 @@ def record_note_metadata_feedback_for_created_note(
     return record_note_metadata_feedback(
         session,
         user_id=int(_get_value(note, "user_id") or 0),
-        note_id=str(_get_value(note, "id") or ""),
+        note_id=_public_note_ref_from_note(note),
         before_snapshot=before_snapshot,
         after_snapshot=after_snapshot,
         content_sample=content_sample,

@@ -167,6 +167,7 @@ import {
   cloneNoteProgramChannel,
   createDefaultRecentMonthProgram,
   createIncludeAllProgram,
+  noteKey,
   normalizeNoteProgramChannel
 } from '@/api/notes';
 import { Plus, Refresh } from '@element-plus/icons-vue';
@@ -213,11 +214,11 @@ const filteredNotes = computed(() => {
   const result = applyNoteProgramChannelLocally(noteStore.getTabNotes(props.tabId), viewProgram.value);
   return [...result].sort((a, b) => b.updated_at - a.updated_at);
 });
-const visibleNoteIds = computed(() => new Set(filteredNotes.value.map(note => note.id)));
+const visibleNoteIds = computed(() => new Set(filteredNotes.value.map(note => noteKey(note.id))));
 const selectedCount = computed(() => selectedNoteIds.value.length);
 const allVisibleSelected = computed(() => (
   filteredNotes.value.length > 0
-  && filteredNotes.value.every(note => selectedNoteIds.value.includes(note.id))
+  && filteredNotes.value.every(note => selectedNoteIds.value.includes(noteKey(note.id)))
 ));
 
 // Actions
@@ -270,19 +271,19 @@ const createNewNote = async () => {
   const newNote = await noteStore.createNote(title, '');
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
-    currentNoteId.value = newNote.id;
+    currentNoteId.value = noteKey(newNote.id);
     ElMessage.success('创建成功');
   }
 };
 
 const handleCurrentChange = (val: NoteNode | undefined) => {
   if (val) {
-    currentNoteId.value = val.id;
+    currentNoteId.value = noteKey(val.id);
   }
 };
 
 const handleSelectionChange = (rows: NoteNode[]) => {
-  selectedNoteIds.value = rows.map(row => row.id);
+  selectedNoteIds.value = rows.map(row => noteKey(row.id));
 };
 
 const selectAllVisible = async () => {
@@ -318,7 +319,7 @@ const handleNoteDelete = (id: string) => {
 
 const handleNoteCreate = (note: NoteNode) => {
   noteStore.addNoteToTab(props.tabId, note.id);
-  currentNoteId.value = note.id;
+  currentNoteId.value = noteKey(note.id);
 };
 
 // Helpers

@@ -11,6 +11,19 @@ from backend.core.freebill import (
     list_freebill_raw_files,
     list_freebill_records,
 )
+from backend.core.resource_identity import (
+    RESOURCE_TYPE_WORKBOOK,
+    ensure_resource_identity,
+)
+from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.sheet_refs import (
+    load_sheets_by_refs,
+    load_workbooks_by_refs,
+    sheet_public_id,
+    sheet_ref_aliases,
+    workbook_public_id,
+    workbook_ref_aliases,
+)
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 
 
@@ -196,18 +209,17 @@ def _build_freebill_sheet_datasets() -> dict[str, list[dict[str, Any]]]:
 def _list_freebill_workbook_sheets(session: Session, *, workbook: WorkbookDocument) -> list[dict[str, Any]]:
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     if not links:
         return []
 
     sheet_ids = [link.sheet_id for link in links]
-    sheets = session.exec(select(SheetDocument).where(SheetDocument.id.in_(sheet_ids))).all()
-    sheet_map = {sheet.id: sheet for sheet in sheets}
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
     items: list[dict[str, Any]] = []
     for link in links:
-        sheet = sheet_map.get(link.sheet_id)
+        sheet = sheet_map.get(str(link.sheet_id))
         if sheet is None or sheet.owner_type != FREEBILL_SHEET_OWNER_TYPE:
             continue
         document_json = dict(sheet.document_json or {})
@@ -265,8 +277,11 @@ def _get_or_create_freebill_workbook(
     if existing_workbook is not None:
         return existing_workbook
 
+    workbook_identity = allocate_new_workbook_identity(session)
     workbook = WorkbookDocument(
-        numeric_id=_get_next_workbook_numeric_id(session),
+        id=workbook_identity.primary_id,
+        numeric_id=workbook_identity.numeric_id,
+        legacy_id=workbook_identity.legacy_id,
         title=FREEBILL_WORKBOOK_TITLE,
         owner_user_id=user_id,
         created_by_user_id=actor_user_id or user_id,
@@ -276,6 +291,7 @@ def _get_or_create_freebill_workbook(
     )
     session.add(workbook)
     session.flush()
+    ensure_resource_identity(session, RESOURCE_TYPE_WORKBOOK, str(workbook.legacy_id or workbook.id), None)
     return workbook
 
 
@@ -287,15 +303,15 @@ def _find_existing_freebill_workbook(session: Session, *, user_id: int) -> Workb
         .where(SheetDocument.owner_type == FREEBILL_SHEET_OWNER_TYPE)
         .where(SheetDocument.owner_key == owner_key)
     ).all()
-    sheet_ids = [sheet.id for sheet in sheets]
-    if sheet_ids:
+    sheet_refs = [ref for sheet in sheets for ref in sheet_ref_aliases(sheet)]
+    if sheet_refs:
         links = session.exec(
             select(WorkbookSheetLink)
-            .where(WorkbookSheetLink.sheet_id.in_(sheet_ids))
+            .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
             .order_by(WorkbookSheetLink.created_at)
         ).all()
         for link in links:
-            workbook = session.get(WorkbookDocument, link.workbook_id)
+            workbook = load_workbooks_by_refs(session, [link.workbook_id]).get(str(link.workbook_id))
             if workbook is not None and workbook.owner_user_id == user_id:
                 return workbook
 
@@ -320,8 +336,11 @@ def _upsert_freebill_sheet(
 ) -> SheetDocument:
     sheet = _get_freebill_sheet(session, owner_key=owner_key, sheet_key=sheet_key)
     if sheet is None:
+        sheet_identity = allocate_new_sheet_identity(session)
         sheet = SheetDocument(
-            numeric_id=_get_next_sheet_numeric_id(session),
+            id=sheet_identity.primary_id,
+            numeric_id=sheet_identity.numeric_id,
+            legacy_id=sheet_identity.legacy_id,
             scope="notes",
             owner_type=FREEBILL_SHEET_OWNER_TYPE,
             owner_key=owner_key,
@@ -371,14 +390,14 @@ def _ensure_workbook_link(
 ) -> None:
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == sheet.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(sheet)))
     ).first()
     if link is None:
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=sheet.id,
+                workbook_id=workbook_public_id(workbook),
+                sheet_id=sheet_public_id(sheet),
                 order_index=order_index,
                 created_at=now,
             ),
@@ -543,24 +562,6 @@ def _visual_text_width(value: Any) -> int:
     for char in str(value or ""):
         width += 2 if "\u3000" <= char <= "\uffef" or "\u4e00" <= char <= "\u9fff" else 1
     return width
-
-
-def _get_next_sheet_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(SheetDocument.numeric_id)
-        .where(SheetDocument.numeric_id.is_not(None))
-        .order_by(SheetDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
-
-
-def _get_next_workbook_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(WorkbookDocument.numeric_id)
-        .where(WorkbookDocument.numeric_id.is_not(None))
-        .order_by(WorkbookDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
 
 
 def _require_sheet_numeric_id(document: SheetDocument) -> int:

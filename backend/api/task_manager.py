@@ -14,6 +14,12 @@ from sqlmodel import Session, select
 from backend.api.websocket_manager import manager as ws_manager
 from backend.core.auth import verify_api_token
 from backend.core.device import BaseDevice, device_manager, TaskStatus
+from backend.core.background_task_queue import background_task_queue
+from backend.core.runtime_units import (
+    DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS,
+    command_runtime_queue_name,
+    resolve_command_runtime_policy,
+)
 from backend.db import engine
 from backend.models import Task as TaskModel
 
@@ -23,6 +29,7 @@ router = APIRouter()
 
 _status_broadcaster_task: Optional[asyncio.Task] = None
 DEFAULT_STALE_SCHEDULED_TASK_SECONDS = 12 * 60 * 60
+COMMAND_JOB_POLL_INTERVAL_SECONDS = 1.0
 
 async def start_task_manager_services():
     global _status_broadcaster_task
@@ -46,6 +53,7 @@ async def start_task_manager_services():
     except Exception:
         pass
 
+    task_manager.initialize_runtime_state(restore_timeouts=True)
     _status_broadcaster_task = asyncio.create_task(status_broadcaster())
 
 async def stop_task_manager_services():
@@ -75,6 +83,7 @@ class CreateTaskRequest(BaseModel):
     cwd: Optional[str] = None
     description: Optional[str] = None
     device_id: Optional[str] = Field(default_factory=socket.gethostname)
+    runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
     timeout: Optional[int] = None
 
@@ -84,6 +93,7 @@ class UpdateTaskRequest(BaseModel):
     cwd: Optional[str] = None
     description: Optional[str] = None
     device_id: Optional[str] = None
+    runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
     timeout: Optional[int] = None
 
@@ -93,9 +103,15 @@ class TaskManager:
     def __init__(self):
         self.scheduler = BackgroundScheduler()
         self.scheduler.start()
-        # Initial scan to sync state and restore timeouts
-        self.scan_running_tasks(restore_timeouts=True)
+        self._runtime_state_initialized = False
+
+    def initialize_runtime_state(self, *, restore_timeouts: bool = False):
+        if self._runtime_state_initialized:
+            return
+
+        self.scan_running_tasks(restore_timeouts=restore_timeouts)
         self.load_schedules()
+        self._runtime_state_initialized = True
 
     def _get_local_device_id(self) -> str:
         return device_manager.get_local_device_id()
@@ -156,7 +172,7 @@ class TaskManager:
         if cron_expression:
             try:
                 self.scheduler.add_job(
-                    self.start_task, 
+                    self.trigger_scheduled_task,
                     CronTrigger.from_crontab(cron_expression), 
                     id=task_id, 
                     args=[task_id],
@@ -165,6 +181,21 @@ class TaskManager:
                 print(f"Scheduled task {task_id} with cron: {cron_expression}")
             except Exception as e:
                 print(f"Failed to schedule task {task_id}: {e}")
+
+    def trigger_scheduled_task(self, task_id: str):
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="Task not found")
+            policy = resolve_command_runtime_policy(task)
+
+        if policy.kind == "job":
+            return self.enqueue_task_run(task_id, trigger_reason="scheduled")
+        return self.start_task(
+            task_id,
+            replace_running=policy.overlap_policy == "replace",
+            trigger_reason="scheduled",
+        )
 
     def scan_running_tasks(self, restore_timeouts: bool = False):
         # Scan local tasks
@@ -179,7 +210,7 @@ class TaskManager:
 
         device = device_manager.get_device(local_id)
         if device:
-            device.scan_running_tasks(local_tasks)
+            device.scan_running_tasks(local_tasks, deep_scan=False)
 
             if restore_timeouts:
                 self._reap_stale_scheduled_tasks(device, local_tasks, reason="startup scan")
@@ -244,7 +275,13 @@ class TaskManager:
             
         await ws_manager.broadcast("task_list", results)
 
-    def start_task(self, task_id: str):
+    def start_task(
+        self,
+        task_id: str,
+        *,
+        replace_running: bool = False,
+        trigger_reason: str = "manual",
+    ):
         with Session(engine) as session:
             task = session.get(TaskModel, task_id)
             if not task:
@@ -257,7 +294,12 @@ class TaskManager:
         if not device:
             raise HTTPException(status_code=500, detail=f"Device {target_device_id} unavailable")
 
-        self._stop_stale_scheduled_task(task, device, reason="task start")
+        if replace_running:
+            status = device.get_task_status(task.id)
+            if status.running:
+                device.stop_task(task.id)
+        else:
+            self._stop_stale_scheduled_task(task, device, reason=trigger_reason or "task start")
              
         try:
             # Pass command and env from DB
@@ -275,6 +317,91 @@ class TaskManager:
             return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
+    def enqueue_task_run(self, task_id: str, *, trigger_reason: str = "manual") -> dict[str, Any]:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="Task not found")
+            policy = resolve_command_runtime_policy(task)
+            if policy.kind != "job":
+                result = self.start_task(task_id, trigger_reason=trigger_reason)
+                return {
+                    "task_key": task_id,
+                    "queued": False,
+                    "queue_task_id": None,
+                    "run": result,
+                }
+            title = task.name
+            device_id = task.device_id
+
+        queue_task_id, queued = background_task_queue.enqueue_once(
+            command_runtime_queue_name(task_id),
+            self._run_command_job_blocking,
+            task_id,
+            trigger_reason,
+            metadata={
+                "source": "command",
+                "task_id": task_id,
+                "title": title,
+                "device_id": device_id,
+                "trigger_reason": trigger_reason,
+                "concurrency_key": policy.concurrency_key,
+                "overlap_policy": policy.overlap_policy,
+            },
+        )
+        return {
+            "task_key": task_id,
+            "queued": queued,
+            "queue_task_id": queue_task_id,
+        }
+
+    def _wait_until_task_stops(
+        self,
+        task: TaskModel,
+        device: BaseDevice,
+        *,
+        timeout_seconds: int,
+        reason: str,
+    ) -> None:
+        started_waiting_at = time.time()
+        while True:
+            status = device.get_task_status(task.id)
+            if not status.running:
+                return
+            if time.time() - started_waiting_at >= timeout_seconds:
+                device.stop_task(task.id)
+                raise TimeoutError(
+                    f"Task {task.id} ({task.name}) exceeded {timeout_seconds}s while waiting for {reason}"
+                )
+            time.sleep(COMMAND_JOB_POLL_INTERVAL_SECONDS)
+
+    def _run_command_job_blocking(self, task_id: str, trigger_reason: str) -> None:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task:
+                raise RuntimeError(f"Task {task_id} not found")
+            target_device_id = task.device_id
+            policy = resolve_command_runtime_policy(task)
+
+        device = device_manager.get_device(target_device_id)
+        if not device:
+            raise RuntimeError(f"Device {target_device_id} unavailable")
+
+        timeout_seconds = policy.timeout_seconds or DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS
+        self._wait_until_task_stops(
+            task,
+            device,
+            timeout_seconds=timeout_seconds,
+            reason="queued command job overlap",
+        )
+        self.start_task(task_id, trigger_reason=trigger_reason)
+        self._wait_until_task_stops(
+            task,
+            device,
+            timeout_seconds=timeout_seconds,
+            reason="queued command job run",
+        )
 
     def stop_task(self, task_id: str):
         with Session(engine) as session:
@@ -447,6 +574,7 @@ def create_task(
             cwd=req.cwd,
             description=req.description,
             device_id=target_device_id,
+            runtime_kind=req.runtime_kind,
             schedule=req.schedule,
             timeout=req.timeout,
             created_at=time.time(),
@@ -501,6 +629,7 @@ def update_task_route(task_id: str, req: UpdateTaskRequest, token_device: BaseDe
             if req.command is not None: task.command = req.command
             if req.cwd is not None: task.cwd = req.cwd
             if req.description is not None: task.description = req.description
+            if req.runtime_kind is not None: task.runtime_kind = req.runtime_kind
             if req.schedule is not None:
                 task.schedule = req.schedule
                 task_manager.update_schedule(task_id, req.schedule)

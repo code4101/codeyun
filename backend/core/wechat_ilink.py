@@ -38,6 +38,8 @@ from backend.core.note_semantics import (
     NOTE_SCENE_DEFAULT,
     derive_legacy_semantics_from_taxonomy,
 )
+from backend.core.note_identity import allocate_new_note_identity
+from backend.core.note_refs import note_public_id
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.models import NoteNode, User
 
@@ -1139,8 +1141,11 @@ def _create_codex_bridge_quick_dash_note(account_id: str) -> dict[str, Any]:
     now = _now()
     with Session(_get_database_engine()) as session:
         owner = _resolve_quick_note_owner(session, owner_user_id)
+        note_identity = allocate_new_note_identity(session)
         note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=int(owner.id),
             title=CODEX_BRIDGE_QUICK_NOTE_TEXT,
             content="",
@@ -1167,7 +1172,7 @@ def _create_codex_bridge_quick_dash_note(account_id: str) -> dict[str, Any]:
         session.commit()
         session.refresh(note)
         return {
-            "id": str(note.id),
+            "id": note_public_id(note),
             "user_id": int(note.user_id),
             "title": str(note.title or ""),
             "private_level": int(note.private_level),

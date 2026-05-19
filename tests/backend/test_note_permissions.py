@@ -7,9 +7,14 @@ from backend.core.auth import get_current_user_from_token, get_optional_current_
 from backend.models import NoteEdge, NoteNode, User
 
 
+def _numeric_note_id(note_id: str) -> int:
+    return sum((index + 1) * ord(char) for index, char in enumerate(note_id)) % 1000000 + 1000
+
+
 def make_note(owner: User, note_id: str, title: str) -> NoteNode:
     return NoteNode(
         id=note_id,
+        numeric_id=_numeric_note_id(note_id),
         user_id=owner.id,
         title=title,
         content="",
@@ -75,7 +80,7 @@ def test_superuser_can_update_another_users_note(client, session):
     app.dependency_overrides[get_optional_current_user_from_token] = lambda: admin
     try:
         response = client.put(
-            f"/api/notes/{note.id}",
+            f"/api/notes/{note.numeric_id}",
             json={"title": "Updated By Admin"},
         )
     finally:
@@ -98,7 +103,7 @@ def test_note_update_serializes_legacy_custom_fields_dict(client, session, auth_
     session.commit()
 
     response = client.put(
-        f"/api/notes/{note.id}",
+        f"/api/notes/{note.numeric_id}",
         json={"content": "updated"},
     )
 
@@ -126,7 +131,7 @@ def test_delete_note_removes_connected_edges(client, session, auth_user):
     session.add(edge)
     session.commit()
 
-    response = client.delete(f"/api/notes/{source.id}")
+    response = client.delete(f"/api/notes/{source.numeric_id}")
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}

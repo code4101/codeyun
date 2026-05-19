@@ -23,6 +23,11 @@ from typing import Any
 from xml.etree import ElementTree
 
 try:
+    from resource_identity_sqlite import allocate_note_numeric_id, ensure_device_file_resource, insert_note_edge
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import allocate_note_numeric_id, ensure_device_file_resource, insert_note_edge
+
+try:
     import aspose.note as onenote
 except ImportError as exc:  # pragma: no cover - exercised by manual script use.
     raise SystemExit(
@@ -792,9 +797,17 @@ def has_ancestor(node: Any, cls: type) -> bool:
 
 
 class MediaStore:
-    def __init__(self, attach_dir: Path, import_name: str, *, dry_run: bool = False):
+    def __init__(
+        self,
+        attach_dir: Path,
+        import_name: str,
+        *,
+        db_con: sqlite3.Connection | None = None,
+        dry_run: bool = False,
+    ):
         self.attach_dir = attach_dir
         self.import_name = import_name
+        self.db_con = db_con
         self.dry_run = dry_run
         if not self.dry_run:
             self.attach_dir.mkdir(parents=True, exist_ok=True)
@@ -806,6 +819,20 @@ class MediaStore:
             "reused": 0,
             "written": 0,
         }
+        self.resource_ids: dict[str, int] = {}
+
+    def _index_asset(self, path: Path, *, media_kind: str | None, mime_type: str | None = None) -> int | None:
+        if self.db_con is None or self.dry_run:
+            return None
+        resource_id = ensure_device_file_resource(
+            self.db_con,
+            path,
+            media_kind=media_kind,
+            mime_type=mime_type,
+        )
+        if resource_id:
+            self.resource_ids[path.name] = resource_id
+        return resource_id
 
     def save(self, prefix: str, label: str, data: bytes, fallback_suffix: str) -> tuple[str, str]:
         digest = hashlib.sha1(data).hexdigest()[:24]
@@ -824,6 +851,8 @@ class MediaStore:
             tmp.write_bytes(data)
             tmp.replace(target)
             self.stats["written"] += 1
+        mime_type = mimetypes.guess_type(filename)[0]
+        self._index_asset(target, media_kind="image" if prefix == "image" else None, mime_type=mime_type)
         return f"/static/attachments/{filename}", filename
 
 
@@ -851,10 +880,16 @@ def render_image(node: Any, media: MediaStore, fallback_image: dict[str, Any] | 
         details.append(label)
         return render_missing_media("image", "图片", ", ".join(details))
     extension = Path(label).suffix.lower() or fallback_extension or mimetypes.guess_extension(str(getattr(node, "Format", "") or "")) or ".png"
-    url, _ = media.save("image", label, data, extension)
+    url, filename = media.save("image", label, data, extension)
     alt = html.escape(str(getattr(node, "AlternativeTextTitle", "") or label), quote=True)
+    resource_id = media.resource_ids.get(filename)
+    resource_attrs = (
+        f' data-codeyun-resource-type="device_file" data-codeyun-resource-id="{resource_id}"'
+        if resource_id
+        else ""
+    )
     media.stats["images"] += 1
-    return f'<figure><img src="{url}" alt="{alt}"></figure>'
+    return f'<figure><img src="{url}" alt="{alt}"{resource_attrs}></figure>'
 
 
 def render_attachment(node: Any, media: MediaStore) -> str:
@@ -864,10 +899,16 @@ def render_attachment(node: Any, media: MediaStore) -> str:
         media.stats["missing_attachment_data"] += 1
         return render_missing_media("attachment", "附件", label)
     url, filename = media.save("file", label, data, Path(label).suffix.lower() or ".bin")
+    resource_id = media.resource_ids.get(filename)
+    resource_attrs = (
+        f' data-codeyun-resource-type="device_file" data-codeyun-resource-id="{resource_id}"'
+        if resource_id
+        else ""
+    )
     media.stats["attachments"] += 1
     return (
         f'<p><a href="{url}" target="_blank" rel="noopener noreferrer" '
-        f'download="{html.escape(filename, quote=True)}">{html.escape(label)}</a></p>'
+        f'download="{html.escape(filename, quote=True)}" data-codeyun-attachment="true"{resource_attrs}>{html.escape(label)}</a></p>'
     )
 
 
@@ -1147,11 +1188,6 @@ def existing_by_source_key(con: sqlite3.Connection, source_key: str, user_id: in
     ).fetchone()
 
 
-def next_note_numeric_id(con: sqlite3.Connection) -> int:
-    row = con.execute("select coalesce(max(numeric_id), 0) from notenode").fetchone()
-    return int(row[0] or 0) + 1
-
-
 def assign_missing_numeric_ids(con: sqlite3.Connection, user_id: int, import_name: str) -> int:
     rows = con.execute(
         """
@@ -1161,10 +1197,9 @@ def assign_missing_numeric_ids(con: sqlite3.Connection, user_id: int, import_nam
         """,
         (user_id, f"%{import_name}%"),
     ).fetchall()
-    next_id = next_note_numeric_id(con)
     for row in rows:
+        next_id = allocate_note_numeric_id(con, row["id"])
         con.execute("update notenode set numeric_id=? where id=?", (next_id, row["id"]))
-        next_id += 1
     return len(rows)
 
 
@@ -1181,7 +1216,7 @@ def insert_node(
     note_form: str,
 ) -> str:
     node_id = str(uuid.uuid4())
-    numeric_id = next_note_numeric_id(con)
+    numeric_id = allocate_note_numeric_id(con, node_id)
     now = time.time()
     cats = note_categories(category)
     con.execute(
@@ -1202,19 +1237,13 @@ def insert_node(
 
 
 def insert_edge(con: sqlite3.Connection, user_id: int, source_id: str, target_id: str) -> bool:
-    if source_id == target_id:
-        return False
-    exists = con.execute(
-        "select 1 from noteedge where user_id=? and source_id=? and target_id=? limit 1",
-        (user_id, source_id, target_id),
-    ).fetchone()
-    if exists:
-        return False
-    con.execute(
-        "insert into noteedge(id,user_id,source_id,target_id,label,created_at) values (?,?,?,?,?,?)",
-        (str(uuid.uuid4()), user_id, source_id, target_id, None, time.time()),
+    return insert_note_edge(
+        con,
+        user_id=user_id,
+        source_id=source_id,
+        target_id=target_id,
+        edge_id=str(uuid.uuid4()),
     )
-    return True
 
 
 def load_pages(
@@ -1243,7 +1272,16 @@ def import_section(args: argparse.Namespace) -> None:
     one_file = Path(args.one_file) if args.one_file else latest_section_file(Path(args.backup_root), args.notebook, args.section)
     import_name = args.import_name or f"codex-cli-onenote-{args.notebook}-{args.section}"
     category = args.category or DEFAULT_CATEGORY
-    media = MediaStore(attachments_dir(data_dir), slug_filename(import_name, "import"), dry_run=bool(args.dry_run))
+    db = db_path(data_dir)
+    backup: Path | None = None
+    con: sqlite3.Connection | None = None
+    if not args.dry_run:
+        if not getattr(args, "skip_backup", False):
+            backup = Path(os.environ.get("TEMP", str(data_dir))) / f"codeyun_onenote_backup_{dt.datetime.now(TZ).strftime('%Y%m%d_%H%M%S_%f')}.db"
+            shutil.copy2(db, backup)
+        con = sqlite3.connect(db, timeout=60)
+        con.row_factory = sqlite3.Row
+    media = MediaStore(attachments_dir(data_dir), slug_filename(import_name, "import"), db_con=con, dry_run=bool(args.dry_run))
     style_hints_by_index: dict[int, dict[str, Any]] = {}
     style_hints_by_title: dict[str, dict[str, Any]] = {}
     com_style_errors: list[str] = []
@@ -1277,6 +1315,13 @@ def import_section(args: argparse.Namespace) -> None:
     for page in pages:
         source_key = f"{section_source_key}:page:{page['index']}"
         page_items.append((source_key, page))
+    page_start_times = [
+        float(page["start_at"])
+        for page in pages
+        if isinstance(page.get("start_at"), (int, float)) and page["start_at"] > 0
+    ]
+    fallback_section_start_at = one_file.stat().st_mtime if one_file.exists() else time.time()
+    section_start_at = min(page_start_times) if page_start_times else fallback_section_start_at
 
     summary: dict[str, Any] = {
         "one_file": str(one_file),
@@ -1316,13 +1361,8 @@ def import_section(args: argparse.Namespace) -> None:
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return
 
-    db = db_path(data_dir)
-    backup: Path | None = None
-    if not getattr(args, "skip_backup", False):
-        backup = Path(os.environ.get("TEMP", str(data_dir))) / f"codeyun_onenote_backup_{dt.datetime.now(TZ).strftime('%Y%m%d_%H%M%S_%f')}.db"
-        shutil.copy2(db, backup)
-    con = sqlite3.connect(db, timeout=60)
-    con.row_factory = sqlite3.Row
+    if con is None:
+        raise RuntimeError("database connection is not initialized")
 
     inserted: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
@@ -1347,7 +1387,7 @@ def import_section(args: argparse.Namespace) -> None:
                 title=f"{args.notebook} / {args.section}",
                 content=f"<p>OneNote \u5206\u533a\u8fc1\u79fb\u5165\u53e3\uff0c\u5305\u542b {len(pages)} \u4e2a\u9875\u9762\u3002</p>",
                 weight=1,
-                start_at=time.time(),
+                start_at=section_start_at,
                 category=category,
                 fields=section_fields,
                 note_form="note",

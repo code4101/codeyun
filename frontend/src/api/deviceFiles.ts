@@ -32,7 +32,7 @@ export interface DeviceFilesystemRoot {
 }
 
 export interface DeviceImageRecord {
-  id: string;
+  id: number;
   name: string;
   path: string;
   absolute_path: string;

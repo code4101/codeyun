@@ -2,9 +2,12 @@ import os
 import re
 import uuid
 
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
+from sqlmodel import Session
 
+from backend.core.attachment_resources import index_attachment_file_resource
 from backend.core.storage import build_attachment_url, get_attachments_dir
+from backend.db import get_session
 
 router = APIRouter()
 
@@ -104,8 +107,23 @@ def _save_uploaded_file(
     }
 
 
+def _attach_uploaded_resource_id(uploaded: dict, session: Session) -> None:
+    file_path = get_attachments_dir() / str(uploaded["filename"])
+    record = index_attachment_file_resource(
+        session,
+        file_path,
+        mime_type=str(uploaded.get("content_type") or "application/octet-stream"),
+    )
+    session.commit()
+    session.refresh(record)
+    resource_id = int(record.numeric_id or 0)
+    if resource_id <= 0:
+        raise HTTPException(status_code=500, detail="附件资源编号缺失")
+    uploaded["id"] = resource_id
+
+
 @router.post("/image")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(file: UploadFile = File(...), session: Session = Depends(get_session)):
     """
     Upload an image file.
     Returns:
@@ -129,6 +147,7 @@ async def upload_image(file: UploadFile = File(...)):
             max_bytes=MAX_IMAGE_UPLOAD_BYTES,
             fallback_original_name="image.png",
         )
+        _attach_uploaded_resource_id(uploaded, session)
 
         # Construct URL (Relative path for frontend proxy to handle, or absolute if needed)
         # Frontend proxy: /api -> http://localhost:8000
@@ -142,6 +161,7 @@ async def upload_image(file: UploadFile = File(...)):
                 "alt": uploaded["original_filename"],
                 "href": url,
                 "filename": uploaded["filename"],
+                "id": uploaded["id"],
                 "size": uploaded["size"],
                 "content_type": uploaded["content_type"],
             }
@@ -155,13 +175,14 @@ async def upload_image(file: UploadFile = File(...)):
 
 
 @router.post("/file")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(file: UploadFile = File(...), session: Session = Depends(get_session)):
     uploaded = _save_uploaded_file(
         file,
         default_ext=".bin",
         max_bytes=MAX_ATTACHMENT_UPLOAD_BYTES,
         fallback_original_name="attachment",
     )
+    _attach_uploaded_resource_id(uploaded, session)
     return {
         "errno": 0,
         "data": uploaded,

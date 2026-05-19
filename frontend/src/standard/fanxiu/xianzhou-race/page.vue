@@ -136,7 +136,7 @@ import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, QuestionFilled } from '@element-plus/icons-vue';
 import UniversalNoteEditor from '@/components/UniversalNoteEditor.vue';
 import { getFanxiuChars, updateFanxiuChar } from '@/api/fanxiu';
-import { useNoteStore, type NoteNode } from '@/api/notes';
+import { noteKey, useNoteStore, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import {
@@ -643,7 +643,7 @@ const handleSaveKeepalive = (note: NoteNode, patch: Partial<NoteNode> = {}) => {
         if (typeof normalizedPayload.start_at === 'number' && normalizedPayload.start_at > 10000000000) {
             normalizedPayload.start_at /= 1000;
         }
-        putJsonKeepalive(`/api/notes/${encodeURIComponent(note.id)}`, normalizedPayload);
+        putJsonKeepalive(`/api/notes/${encodeURIComponent(noteKey(note.id))}`, normalizedPayload);
         return;
     }
 

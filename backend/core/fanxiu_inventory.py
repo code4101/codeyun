@@ -213,6 +213,50 @@ def save_shouyuan_exploration_exchange_list(payload: list[dict[str, Any]] | dict
     return normalized
 
 
+def migrate_inventory_note_ids(note_id_map: dict[str, str]) -> int:
+    normalized_map = {
+        str(old_ref).strip(): str(new_ref).strip()
+        for old_ref, new_ref in note_id_map.items()
+        if str(old_ref).strip() and str(new_ref).strip()
+    }
+    if not normalized_map:
+        return 0
+
+    storage_path = get_inventory_storage_path()
+    if not storage_path.exists():
+        return 0
+
+    storage = _read_inventory_storage()
+    updated_count = _replace_note_id_refs(storage, normalized_map)
+    if updated_count <= 0:
+        return 0
+
+    storage_path.write_text(
+        json.dumps(storage, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return updated_count
+
+
+def _replace_note_id_refs(value: Any, note_id_map: dict[str, str]) -> int:
+    if isinstance(value, list):
+        return sum(_replace_note_id_refs(item, note_id_map) for item in value)
+    if not isinstance(value, dict):
+        return 0
+
+    updated_count = 0
+    raw_note_id = str(value.get("note_id") or "").strip()
+    next_note_id = note_id_map.get(raw_note_id)
+    if next_note_id and next_note_id != raw_note_id:
+        value["note_id"] = next_note_id
+        updated_count += 1
+
+    for child in value.values():
+        if isinstance(child, (dict, list)):
+            updated_count += _replace_note_id_refs(child, note_id_map)
+    return updated_count
+
+
 def _default_inventory_hall(section_keys: tuple[str, ...]) -> dict[str, list[dict[str, Any]]]:
     return {key: [] for key in section_keys}
 

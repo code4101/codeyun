@@ -88,7 +88,7 @@ import SharedNoteEditor from './SharedNoteEditor.vue';
 import NoteCopyDialog from './NoteCopyDialog.vue';
 import NoteDocAccessDialog from './NoteDocAccessDialog.vue';
 import NoteTitleActions from './NoteTitleActions.vue';
-import { useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
+import { noteKey, useNoteStore, type NoteDocResourceAccess, type NoteNode } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
 import { putJsonKeepalive } from '@/utils/keepaliveRequest';
 import type { EditableNotePatch } from '@/utils/noteAutoSave';
@@ -125,7 +125,7 @@ const canManageDocAccess = computed(() => (
 ));
 
 const getDocRouteRef = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
-  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : note.id
+  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : noteKey(note.id)
 );
 const resolveDocHref = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
   router.resolve(`/doc/${encodeURIComponent(getDocRouteRef(note))}`).href
@@ -147,10 +147,10 @@ const openPlanetaryGraph = (mode: 'planetary' | 'satellite' = 'planetary') => {
   if (!currentNote.value) return;
   const suffix = mode === 'satellite' ? '卫星图' : '行星图';
   noteStore.addTab({
-    id: `planet-${currentNote.value.id}-${mode}`,
+    id: `planet-${noteKey(currentNote.value.id)}-${mode}`,
     label: `${currentNote.value.title ? currentNote.value.title.slice(0, 8) : 'Untitled'} - ${suffix}`,
     type: 'planet',
-    data: { noteId: currentNote.value.id, mode },
+    data: { noteId: noteKey(currentNote.value.id), mode },
     closable: true
   });
 };
@@ -192,7 +192,7 @@ watch(() => props.noteId, async newId => {
 
 watch(
   () => {
-    if (!props.noteId || !currentNote.value || currentNote.value.id !== props.noteId) return null;
+    if (!props.noteId || !currentNote.value || noteKey(currentNote.value.id) !== props.noteId) return null;
     const note = noteStore.getNoteById(props.noteId);
     if (!note || note.content === undefined) return null;
     return [
@@ -210,7 +210,7 @@ watch(
     ].join('\u0001');
   },
   () => {
-    if (!props.noteId || !currentNote.value || currentNote.value.id !== props.noteId) return;
+  if (!props.noteId || !currentNote.value || noteKey(currentNote.value.id) !== props.noteId) return;
     const note = noteStore.getNoteById(props.noteId);
     if (!note || note.content === undefined) return;
 
@@ -227,7 +227,7 @@ const refreshCurrentNoteFromServer = async () => {
   if (!props.noteId || isFetchingContent.value) return;
   const requestToken = loadRequestToken;
   const detailed = await noteStore.fetchNoteDetail(props.noteId, { force: true });
-  if (!detailed || requestToken !== loadRequestToken || props.noteId !== detailed.id || !currentNote.value) return;
+  if (!detailed || requestToken !== loadRequestToken || props.noteId !== noteKey(detailed.id) || !currentNote.value) return;
 
   const note = noteStore.getNoteById(props.noteId) || detailed;
   currentNote.value = cloneNoteForDetail({
@@ -264,7 +264,7 @@ const handleSave = async (note: NoteNode, patch: EditableNotePatch = {}) => {
 
 const handleSaveKeepalive = (note: NoteNode, patch: EditableNotePatch = {}) => {
   const payload = Object.keys(patch).length ? patch : note;
-  putJsonKeepalive(`/api/notes/${encodeURIComponent(note.id)}`, toApiPatch(payload));
+  putJsonKeepalive(`/api/notes/${encodeURIComponent(noteKey(note.id))}`, toApiPatch(payload));
 };
 
 const handleEditorChange = (note: NoteNode) => {
@@ -311,7 +311,7 @@ const deleteCurrentNote = async () => {
       type: 'warning'
     });
 
-    const noteId = currentNote.value.id;
+    const noteId = noteKey(currentNote.value.id);
     const deleted = await noteStore.deleteNote(noteId);
     if (!deleted) return;
     currentNote.value = undefined;

@@ -4,6 +4,10 @@ from datetime import datetime
 from backend.models import NoteEdge, NoteNode
 
 
+def _numeric_note_id(note_id: str) -> int:
+    return sum((index + 1) * ord(char) for index, char in enumerate(note_id)) % 1000000 + 1000
+
+
 def make_note(
     auth_user,
     note_id: str,
@@ -19,6 +23,7 @@ def make_note(
 ):
     return NoteNode(
         id=note_id,
+        numeric_id=_numeric_note_id(note_id),
         user_id=auth_user.id,
         title=title,
         content=content,
@@ -83,7 +88,7 @@ def test_query_program_scan_supports_ordered_reinclude(client, session, auth_use
                             "action": "exclude",
                             "matcher": {"kind": "field", "field": "node_status", "op": "eq", "value": "done"},
                         },
-                        {"action": "include", "matcher": {"kind": "id", "ids": ["note-rescue"]}},
+                        {"action": "include", "matcher": {"kind": "id", "ids": [_numeric_note_id("note-rescue")] }},
                     ],
                 },
                 "expand": {"default": False, "rules": []},
@@ -101,7 +106,10 @@ def test_query_program_scan_supports_ordered_reinclude(client, session, auth_use
     assert response.status_code == 200
     payload = response.json()
     assert payload["total_nodes"] == 2
-    assert [node["id"] for node in payload["nodes"]] == ["note-open", "note-rescue"]
+    assert [node["id"] for node in payload["nodes"]] == [
+        _numeric_note_id("note-open"),
+        _numeric_note_id("note-rescue"),
+    ]
 
 
 def test_query_program_component_executor_supports_satellite_mode(client, session, auth_user):
@@ -119,7 +127,7 @@ def test_query_program_component_executor_supports_satellite_mode(client, sessio
         json={
             "executor": {
                 "kind": "component",
-                "seed_ids": ["note-root"],
+                "seed_ids": [_numeric_note_id("note-root")],
                 "mode": "satellite",
             },
             "program": {
@@ -141,10 +149,14 @@ def test_query_program_component_executor_supports_satellite_mode(client, sessio
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-root", "note-child", "note-leaf"]
+    assert [node["id"] for node in payload["nodes"]] == [
+        _numeric_note_id("note-root"),
+        _numeric_note_id("note-child"),
+        _numeric_note_id("note-leaf"),
+    ]
     assert {(edge["source_id"], edge["target_id"]) for edge in payload["edges"]} == {
-        ("note-root", "note-child"),
-        ("note-child", "note-leaf"),
+        (_numeric_note_id("note-root"), _numeric_note_id("note-child")),
+        (_numeric_note_id("note-child"), _numeric_note_id("note-leaf")),
     }
 
 
@@ -161,7 +173,7 @@ def test_query_program_keeps_expand_and_select_as_independent_channels(client, s
         json={
             "executor": {
                 "kind": "component",
-                "seed_ids": ["note-root"],
+                "seed_ids": [_numeric_note_id("note-root")],
                 "mode": "planetary",
             },
             "program": {
@@ -189,9 +201,12 @@ def test_query_program_keeps_expand_and_select_as_independent_channels(client, s
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-root", "note-bridge"]
+    assert [node["id"] for node in payload["nodes"]] == [
+        _numeric_note_id("note-root"),
+        _numeric_note_id("note-bridge"),
+    ]
     assert {(edge["source_id"], edge["target_id"]) for edge in payload["edges"]} == {
-        ("note-root", "note-bridge"),
+        (_numeric_note_id("note-root"), _numeric_note_id("note-bridge")),
     }
 
 
@@ -248,7 +263,7 @@ def test_query_program_supports_native_relative_month_window_matcher(client, ses
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-inside"]
+    assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-inside")]
 
 
 def test_query_program_supports_field_between_with_relative_time_values(client, session, auth_user):
@@ -307,7 +322,7 @@ def test_query_program_supports_field_between_with_relative_time_values(client, 
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-relative-inside"]
+    assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-relative-inside")]
 
 
 def test_query_program_supports_relative_year_time_values(client, session, auth_user):
@@ -363,7 +378,7 @@ def test_query_program_supports_relative_year_time_values(client, session, auth_
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-this-year"]
+    assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-this-year")]
 
 
 def test_query_program_supports_private_level_field_matcher(client, session, auth_user):
@@ -404,7 +419,7 @@ def test_query_program_supports_private_level_field_matcher(client, session, aut
 
     assert response.status_code == 200
     payload = response.json()
-    assert [node["id"] for node in payload["nodes"]] == ["note-private"]
+    assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-private")]
 
 
 def test_query_program_supports_title_regex_and_not_contains_matchers(client, session, auth_user):
@@ -446,7 +461,7 @@ def test_query_program_supports_title_regex_and_not_contains_matchers(client, se
 
     assert regex_response.status_code == 200
     regex_payload = regex_response.json()
-    assert [node["id"] for node in regex_payload["nodes"]] == ["note-dash"]
+    assert [node["id"] for node in regex_payload["nodes"]] == [_numeric_note_id("note-dash")]
 
     not_contains_response = client.post(
         "/api/notes/query-program",
@@ -481,7 +496,7 @@ def test_query_program_supports_title_regex_and_not_contains_matchers(client, se
 
     assert not_contains_response.status_code == 200
     not_contains_payload = not_contains_response.json()
-    assert [node["id"] for node in not_contains_payload["nodes"]] == ["note-clean"]
+    assert [node["id"] for node in not_contains_payload["nodes"]] == [_numeric_note_id("note-clean")]
 
 
 def test_query_program_supports_full_text_matcher_ordered_by_updated_time(client, session, auth_user):
@@ -573,10 +588,10 @@ def test_query_program_supports_full_text_matcher_ordered_by_updated_time(client
     payload = response.json()
     assert payload["total_nodes"] == 4
     assert [node["id"] for node in payload["nodes"]] == [
-        "note-new-body",
-        "note-custom-field",
-        "note-title",
-        "note-old-body",
+        _numeric_note_id("note-new-body"),
+        _numeric_note_id("note-custom-field"),
+        _numeric_note_id("note-title"),
+        _numeric_note_id("note-old-body"),
     ]
 
 
@@ -648,4 +663,4 @@ def test_query_program_supports_filter_action_as_result_narrowing(client, sessio
     assert response.status_code == 200
     payload = response.json()
     assert payload["total_nodes"] == 1
-    assert [node["id"] for node in payload["nodes"]] == ["note-keyword"]
+    assert [node["id"] for node in payload["nodes"]] == [_numeric_note_id("note-keyword")]

@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download, FolderOpened, QuestionFilled, Refresh, Upload } from '@element-plus/icons-vue'
+import { Download, Link, QuestionFilled, Upload } from '@element-plus/icons-vue'
 
 import {
   fetchLatestEastmoneyAssetSnapshot,
   importEastmoneyTradeDetailFromOcr,
+  openEastmoneyTradeAccountPage,
   refreshEastmoneySheetWorkbook,
   syncEastmoneyTradeData,
   type EastmoneyAssetSnapshot,
@@ -15,18 +16,19 @@ import {
 import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
 const EASTMONEY_SHEET_TABS = [
-  { key: 'operation-history', label: '操作明细', emptyText: '暂无操作流水' },
   { key: 'local-history', label: '成交明细', emptyText: '暂无成交数据' },
+  { key: 'operation-history', label: '操作明细', emptyText: '暂无操作流水' },
   { key: 'positions', label: '持仓', emptyText: '暂无持仓数据' },
   { key: 'sync-runs', label: '同步记录', emptyText: '暂无同步记录' },
 ] as const
 
 const syncing = ref(false)
 const pageError = ref('')
-const activeTab = ref('operation-history')
+const activeTab = ref('local-history')
 const latestAssetSnapshot = ref<EastmoneyAssetSnapshot | null>(null)
 const pasteImportEnabled = ref(false)
 const ocrImporting = ref(false)
+const tradePageOpening = ref(false)
 const sheetWorkbookLoading = ref(false)
 const sheetWorkbook = ref<EastmoneySheetWorkbook | null>(null)
 const sheetReloadToken = ref(0)
@@ -136,18 +138,36 @@ function getSheetWorkspaceKey(key: string) {
   return `${workbookId.value ?? 'none'}:${sheet?.sheet_id ?? 'none'}:${sheet?.updated_at ?? 0}:${sheetReloadToken.value}`
 }
 
-function openWorkbookFile() {
-  if (!workbookId.value) return
-  const activeSheet = getSheetItem(activeTab.value)
-  const query = activeSheet ? `?sheet=${activeSheet.sheet_id}` : ''
-  window.open(`/workbook/${workbookId.value}${query}`, '_blank', 'noopener')
-}
-
 async function loadLatestAssetSnapshot() {
   try {
     latestAssetSnapshot.value = (await fetchLatestEastmoneyAssetSnapshot()).item
   } catch {
     latestAssetSnapshot.value = null
+  }
+}
+
+async function openTradeAccountPage() {
+  tradePageOpening.value = true
+  pageError.value = ''
+  try {
+    const state = await openEastmoneyTradeAccountPage()
+    if (state.login_required) {
+      const durationText = state.login_duration_preset ? '在线时间已选 3 小时，' : ''
+      if (state.captcha_ocr_filled && state.captcha_ocr_text) {
+        ElMessage.info(`${durationText}验证码已尝试填入 ${state.captcha_ocr_text}，请核对后手动登录。`)
+      } else {
+        ElMessage.info(`${durationText}已打开东方财富登录页，请手动输入验证码并登录。`)
+      }
+    } else if (state.account_label) {
+      ElMessage.success(`资金账户已登录：${state.account_label}`)
+    } else {
+      ElMessage.info('已打开东方财富登录页。')
+    }
+  } catch (error) {
+    pageError.value = getErrorMessage(error)
+    ElMessage.error(pageError.value)
+  } finally {
+    tradePageOpening.value = false
   }
 }
 
@@ -158,7 +178,7 @@ async function syncToDatabase() {
     const run = await syncEastmoneyTradeData(defaultSyncDateParams())
     applySheetWorkbook(run.sheet_workbook)
     if (run.status === 'login_required') {
-      ElMessage.warning('证券交易系统未登录，请先完成资金账号登录后再同步。')
+      ElMessage.warning('证券交易系统未登录，请先打开登录页并完成资金账号登录。')
     } else if (run.status === 'success') {
       ElMessage.success(`同步完成：新增 ${run.inserted_count} 条，更新 ${run.updated_count} 条`)
       activeTab.value = 'operation-history'
@@ -241,7 +261,7 @@ onBeforeUnmount(() => {
         <el-tooltip placement="bottom-start">
           <template #content>
             <div class="tooltip-content">
-              页面默认只读本地库并刷新一份真实星云表格文件；只有点击更新到库时才会打开东方财富交易页。遇到交易登录或验证码时需要人工处理。
+              交易同步依赖东方财富资金账户网页登录态；先打开登录页手动登录，再同步到本地库。截图导入是独立的手动入口。
             </div>
           </template>
           <el-icon class="help-icon"><QuestionFilled /></el-icon>
@@ -249,40 +269,37 @@ onBeforeUnmount(() => {
         <el-tag v-if="accountLabel" size="small" effect="plain">{{ accountLabel }}</el-tag>
       </div>
       <div class="toolbar-actions">
-        <el-button
-          :icon="FolderOpened"
-          :disabled="!workbookId"
-          size="small"
-          @click="openWorkbookFile"
-        >
-          打开星云表格
-        </el-button>
-        <el-button
-          :icon="Refresh"
-          :loading="sheetWorkbookLoading"
-          size="small"
-          @click="() => refreshSheetWorkbook()"
-        >
-          刷新表格文件
-        </el-button>
-        <el-button
-          :icon="Upload"
-          :loading="ocrImporting"
-          size="small"
-          :type="pasteImportEnabled ? 'primary' : 'default'"
-          @click="toggleTradeDetailPasteImport"
-        >
-          {{ ocrImporting ? '识别中...' : pasteImportEnabled ? '关闭截图导入' : '粘贴截图导入' }}
-        </el-button>
-        <el-button
-          :icon="Download"
-          :loading="syncing"
-          size="small"
-          type="primary"
-          @click="syncToDatabase"
-        >
-          更新到库
-        </el-button>
+        <div class="action-group">
+          <el-button
+            :icon="Link"
+            :loading="tradePageOpening"
+            size="small"
+            @click="openTradeAccountPage"
+          >
+            登录页
+          </el-button>
+          <el-button
+            :icon="Download"
+            :loading="syncing"
+            size="small"
+            type="primary"
+            @click="syncToDatabase"
+          >
+            同步到本地库
+          </el-button>
+        </div>
+        <div class="action-group">
+          <span class="action-group-label">手动导入</span>
+          <el-button
+            :icon="Upload"
+            :loading="ocrImporting"
+            size="small"
+            :type="pasteImportEnabled ? 'primary' : 'default'"
+            @click="toggleTradeDetailPasteImport"
+          >
+            {{ ocrImporting ? '识别中...' : pasteImportEnabled ? '关闭截图导入' : '粘贴截图导入' }}
+          </el-button>
+        </div>
       </div>
     </header>
 
@@ -309,7 +326,7 @@ onBeforeUnmount(() => {
       <el-tab-pane
         v-for="tab in sheetTabs"
         :key="tab.key"
-        :label="tab.sheet ? `${tab.label} ${tab.sheet.row_count}条` : tab.label"
+        :label="tab.label"
         :name="tab.key"
       >
         <NoteSheetWorkspace
@@ -381,7 +398,19 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px 14px;
+}
+
+.action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.action-group-label {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .page-alert {
@@ -452,6 +481,10 @@ onBeforeUnmount(() => {
   .toolbar-actions {
     justify-content: flex-start;
     width: 100%;
+  }
+
+  .action-group {
+    flex-wrap: wrap;
   }
 
 }

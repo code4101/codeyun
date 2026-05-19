@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from DrissionPage import Chromium
+
+from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
 
 from .eastmoney_browser import build_chromium_options, ensure_eastmoney_browser_paths
 
@@ -17,6 +21,7 @@ HK_POSITION_URL = "https://jywg.18.cn/HKTrade/QueryPosition"
 SGT_POSITION_URL = "https://jywg.18.cn/SGTTrade/QueryPosition"
 TRADE_HISTORY_DEAL_URL = "https://jywg.18.cn/Search/HisDeal"
 HK_HISTORY_DEAL_URL = "https://jywg.18.cn/HKTrade/QueryHistoryDeal"
+TRADE_LOGIN_DURATION_TEXT = "3小时"
 
 
 @dataclass(frozen=True)
@@ -64,6 +69,8 @@ def read_trade_snapshot(start_date: str | None = None, end_date: str | None = No
     status = _read_trade_status(position_tab)
 
     if status["login_required"]:
+        _select_login_duration(position_tab)
+        _try_fill_login_captcha(position_tab)
         empty = EastmoneyTable(title="", columns=[], rows=[])
         return EastmoneyTradeSnapshot(
             captured_at=time.time(),
@@ -114,6 +121,23 @@ def read_trade_snapshot(start_date: str | None = None, end_date: str | None = No
         history_deals=_table_from_rows("历史成交", _table_rows_by_index(history_tab, 0)),
         hk_history_deals=_table_from_rows("港股通历史成交", _table_rows_by_index(hk_history_tab, 0)),
     )
+
+
+def open_trade_account_page() -> dict[str, Any]:
+    browser = _get_browser()
+    tab = _open_tab(browser, TRADE_POSITION_URL)
+    _wait_for_table_settled(tab, timeout=6)
+    status = _read_trade_status(tab)
+    login_duration_preset = _select_login_duration(tab) if status["login_required"] else False
+    captcha_state = _try_fill_login_captcha(tab) if status["login_required"] else _empty_captcha_state()
+    return {
+        "title": str(getattr(tab, "title", "") or ""),
+        "url": str(getattr(tab, "url", "") or ""),
+        "account_label": status["account_label"],
+        "login_required": status["login_required"],
+        "login_duration_preset": login_duration_preset,
+        **captcha_state,
+    }
 
 
 def snapshot_to_dict(snapshot: EastmoneyTradeSnapshot) -> dict[str, Any]:
@@ -194,6 +218,315 @@ def _is_trade_login_page(tab: Any, body_text: str | None = None) -> bool:
     if "/Login" in url and ("交易登录" in text or "请输入资金账号" in text):
         return True
     return "交易登录" in text and "请输入资金账号" in text
+
+
+def _select_login_duration(tab: Any, target_text: str = TRADE_LOGIN_DURATION_TEXT) -> bool:
+    try:
+        target_literal = json.dumps(target_text, ensure_ascii=False)
+        payload = tab.run_js(
+            f"""
+const targetText = {target_literal};
+let targetInput = null;
+for (const label of Array.from(document.querySelectorAll('label'))) {{
+  const text = (label.innerText || label.textContent || '').trim();
+  if (!text.includes(targetText)) continue;
+  targetInput = label.querySelector('input[type="radio"]');
+  if (!targetInput && label.htmlFor) {{
+    targetInput = document.getElementById(label.htmlFor);
+  }}
+  if (targetInput) break;
+  label.click();
+  return JSON.stringify({{ok: true, method: 'label'}});
+}}
+
+if (!targetInput) {{
+  for (const input of Array.from(document.querySelectorAll('input[type="radio"]'))) {{
+    const text = [
+      input.value || '',
+      input.closest('label')?.innerText || '',
+      input.parentElement?.innerText || '',
+    ].join(' ');
+    if (text.includes(targetText) || /(^|[^0-9])180([^0-9]|$)/.test(text)) {{
+      targetInput = input;
+      break;
+    }}
+  }}
+}}
+
+if (!targetInput) {{
+  return JSON.stringify({{ok: false}});
+}}
+
+targetInput.checked = true;
+targetInput.click();
+targetInput.dispatchEvent(new Event('input', {{bubbles: true}}));
+targetInput.dispatchEvent(new Event('change', {{bubbles: true}}));
+return JSON.stringify({{ok: true, method: 'input', checked: targetInput.checked, value: targetInput.value || ''}});
+"""
+        )
+        return bool(json.loads(payload or "{}").get("ok"))
+    except Exception:
+        return False
+
+
+def _empty_captcha_state() -> dict[str, Any]:
+    return {
+        "captcha_ocr_text": "",
+        "captcha_ocr_filled": False,
+        "captcha_ocr_error": "",
+    }
+
+
+def _try_fill_login_captcha(tab: Any) -> dict[str, Any]:
+    state = _empty_captcha_state()
+    temp_path: Path | None = None
+    try:
+        temp_path = _capture_login_captcha_image(tab)
+        if temp_path is None:
+            state["captcha_ocr_error"] = "未找到验证码图片"
+            return state
+
+        _prepare_captcha_ocr_image(temp_path)
+        preview = run_paddle_ocr_preview(
+            temp_path,
+            shape_type="rectangle",
+            options={
+                "use_doc_orientation_classify": False,
+                "use_doc_unwarping": False,
+                "use_textline_orientation": False,
+            },
+        )
+        captcha_text = _extract_captcha_text_from_ocr_document(preview.get("document") or {})
+        if not captcha_text:
+            state["captcha_ocr_error"] = "OCR 未识别出验证码"
+            return state
+
+        state["captcha_ocr_text"] = captcha_text
+        state["captcha_ocr_filled"] = _fill_login_captcha_input(tab, captcha_text)
+        if not state["captcha_ocr_filled"]:
+            state["captcha_ocr_error"] = "未定位到验证码输入框"
+        return state
+    except OcrPreviewError as exc:
+        state["captcha_ocr_error"] = str(exc)
+        return state
+    except Exception as exc:
+        state["captcha_ocr_error"] = f"验证码自动识别失败：{exc}"
+        return state
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def _capture_login_captcha_image(tab: Any) -> Path | None:
+    selector = _mark_login_captcha_image(tab)
+    if not selector:
+        return None
+
+    captcha_element = tab.ele(f"css:{selector}", timeout=2)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+        temp_path = Path(temp_file.name)
+    screenshot_path = captcha_element.get_screenshot(path=str(temp_path))
+    return Path(screenshot_path) if screenshot_path else temp_path
+
+
+def _prepare_captcha_ocr_image(image_path: Path) -> None:
+    try:
+        from PIL import Image, ImageEnhance, ImageOps
+
+        with Image.open(image_path) as image:
+            prepared = image.convert("RGB")
+            prepared = ImageOps.expand(prepared, border=8, fill="white")
+            width, height = prepared.size
+            scale = 4 if max(width, height) < 240 else 2
+            prepared = prepared.resize((width * scale, height * scale), Image.Resampling.LANCZOS)
+            prepared = ImageEnhance.Contrast(prepared).enhance(1.6)
+            prepared.save(image_path)
+    except Exception:
+        return
+
+
+def _mark_login_captcha_image(tab: Any) -> str:
+    token = f"codeyun-captcha-{int(time.time() * 1000)}"
+    payload = tab.run_js(
+        f"""
+const token = {json.dumps(token)};
+for (const node of document.querySelectorAll('[data-codeyun-captcha-target]')) {{
+  node.removeAttribute('data-codeyun-captcha-target');
+}}
+
+function visible(node) {{
+  const rect = node.getBoundingClientRect();
+  const style = window.getComputedStyle(node);
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}}
+
+function distance(a, b) {{
+  const ax = a.left + a.width / 2;
+  const ay = a.top + a.height / 2;
+  const bx = b.left + b.width / 2;
+  const by = b.top + b.height / 2;
+  return Math.hypot(ax - bx, ay - by);
+}}
+
+const inputs = Array.from(document.querySelectorAll('input')).filter((input) => {{
+  if (!visible(input) || input.disabled || input.readOnly) return false;
+  const type = (input.getAttribute('type') || 'text').toLowerCase();
+  if (type === 'password' || type === 'hidden' || type === 'radio' || type === 'checkbox') return false;
+  const meta = [
+    input.id || '',
+    input.name || '',
+    input.className || '',
+    input.placeholder || '',
+    input.getAttribute('aria-label') || '',
+  ].join(' ').toLowerCase();
+  return (input.value || '').length <= 8 || /code|captcha|verify|valid|check|yzm|验证码/.test(meta);
+}}).map((input) => ({{node: input, rect: input.getBoundingClientRect()}}));
+
+const candidates = Array.from(document.querySelectorAll('img, canvas')).map((node) => {{
+  const rect = node.getBoundingClientRect();
+  const meta = [
+    node.id || '',
+    node.className || '',
+    node.getAttribute('alt') || '',
+    node.getAttribute('title') || '',
+    node.getAttribute('src') || '',
+  ].join(' ').toLowerCase();
+  if (!visible(node) || rect.width < 30 || rect.width > 180 || rect.height < 15 || rect.height > 80) {{
+    return null;
+  }}
+
+  let score = /code|captcha|verify|valid|check|yzm|rand|验证码/.test(meta) ? 12 : 0;
+  for (const input of inputs) {{
+    const dist = distance(rect, input.rect);
+    if (dist < 180) score += Math.max(0, 12 - dist / 18);
+    if (Math.abs((rect.top + rect.height / 2) - (input.rect.top + input.rect.height / 2)) < 24) score += 8;
+    if (rect.left > input.rect.left) score += 2;
+  }}
+  return {{node, rect, score}};
+}}).filter(Boolean).sort((a, b) => b.score - a.score);
+
+const best = candidates[0];
+if (!best || best.score < 4) {{
+  return JSON.stringify({{ok: false}});
+}}
+
+best.node.setAttribute('data-codeyun-captcha-target', token);
+return JSON.stringify({{
+  ok: true,
+  selector: `[data-codeyun-captcha-target="${{token}}"]`,
+  width: Math.round(best.rect.width),
+  height: Math.round(best.rect.height),
+  score: best.score,
+}});
+"""
+    )
+    try:
+        data = json.loads(payload or "{}")
+    except json.JSONDecodeError:
+        return ""
+    return str(data.get("selector") or "") if data.get("ok") else ""
+
+
+def _extract_captcha_text_from_ocr_document(document: dict[str, Any]) -> str:
+    shapes = document.get("shapes") if isinstance(document, dict) else None
+    if not isinstance(shapes, list):
+        return ""
+
+    items: list[tuple[float, float, str]] = []
+    for shape in shapes:
+        if not isinstance(shape, dict):
+            continue
+        text = _read_ocr_shape_text(shape.get("label"))
+        if not text:
+            continue
+        points = shape.get("points") or []
+        xs = [float(point[0]) for point in points if isinstance(point, list | tuple) and len(point) >= 2]
+        ys = [float(point[1]) for point in points if isinstance(point, list | tuple) and len(point) >= 2]
+        items.append((min(ys, default=0.0), min(xs, default=0.0), text))
+
+    raw_text = "".join(item[2] for item in sorted(items))
+    normalized = re.sub(r"[^0-9A-Za-z]", "", raw_text).upper()
+    return normalized[:8]
+
+
+def _read_ocr_shape_text(label: Any) -> str:
+    if isinstance(label, dict):
+        return str(label.get("text") or "")
+    if not isinstance(label, str):
+        return ""
+    try:
+        parsed = json.loads(label)
+    except json.JSONDecodeError:
+        return label
+    if isinstance(parsed, dict):
+        return str(parsed.get("text") or "")
+    return label
+
+
+def _fill_login_captcha_input(tab: Any, captcha_text: str) -> bool:
+    if not captcha_text:
+        return False
+    payload = tab.run_js(
+        f"""
+const captchaText = {json.dumps(captcha_text)};
+function visible(node) {{
+  const rect = node.getBoundingClientRect();
+  const style = window.getComputedStyle(node);
+  return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+}}
+
+function distance(a, b) {{
+  const ax = a.left + a.width / 2;
+  const ay = a.top + a.height / 2;
+  const bx = b.left + b.width / 2;
+  const by = b.top + b.height / 2;
+  return Math.hypot(ax - bx, ay - by);
+}}
+
+const captchaNode = document.querySelector('[data-codeyun-captcha-target]');
+const captchaRect = captchaNode ? captchaNode.getBoundingClientRect() : null;
+const candidates = Array.from(document.querySelectorAll('input')).map((input) => {{
+  if (!visible(input) || input.disabled || input.readOnly) return null;
+  const type = (input.getAttribute('type') || 'text').toLowerCase();
+  if (type === 'password' || type === 'hidden' || type === 'radio' || type === 'checkbox') return null;
+  const rect = input.getBoundingClientRect();
+  const meta = [
+    input.id || '',
+    input.name || '',
+    input.className || '',
+    input.placeholder || '',
+    input.getAttribute('aria-label') || '',
+  ].join(' ').toLowerCase();
+
+  let score = /code|captcha|verify|valid|check|yzm|验证码/.test(meta) ? 30 : 0;
+  if ((input.value || '').length <= 8) score += 8;
+  if (input.maxLength > 0 && input.maxLength <= 8) score += 8;
+  if (captchaRect) {{
+    const dist = distance(rect, captchaRect);
+    if (dist < 180) score += Math.max(0, 24 - dist / 8);
+    if (Math.abs((rect.top + rect.height / 2) - (captchaRect.top + captchaRect.height / 2)) < 24) score += 18;
+    if (rect.left < captchaRect.left) score += 4;
+  }}
+  return {{input, rect, score}};
+}}).filter(Boolean).sort((a, b) => b.score - a.score);
+
+const best = candidates[0];
+if (!best || best.score < 10) {{
+  return JSON.stringify({{ok: false}});
+}}
+
+best.input.focus();
+best.input.value = captchaText;
+best.input.dispatchEvent(new Event('input', {{bubbles: true}}));
+best.input.dispatchEvent(new Event('change', {{bubbles: true}}));
+best.input.dispatchEvent(new KeyboardEvent('keyup', {{bubbles: true}}));
+return JSON.stringify({{ok: true, value: best.input.value || ''}});
+"""
+    )
+    try:
+        return bool(json.loads(payload or "{}").get("ok"))
+    except json.JSONDecodeError:
+        return False
 
 
 def _body_text(tab: Any) -> str:

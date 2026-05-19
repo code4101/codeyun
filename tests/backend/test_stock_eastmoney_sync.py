@@ -426,7 +426,7 @@ def test_import_pdf_statement_stores_flows_positions_and_trades(session, monkeyp
 
     workbook = session.exec(select(WorkbookDocument).where(WorkbookDocument.title == "东方财富")).first()
     assert workbook is not None
-    links = session.exec(select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)).all()
+    links = session.exec(select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == str(workbook.numeric_id))).all()
     assert len(links) == 4
 
     operation_sheet = session.exec(

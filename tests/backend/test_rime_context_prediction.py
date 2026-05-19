@@ -88,7 +88,9 @@ def test_local_entry_hot_index_keeps_manual_single_char_only(client, auth_user, 
     )
     (rime_dir / "context_prediction_pending.tsv").write_text(
         "__global\tdan\t但\t10\t输入历史\n"
-        "__global\twode\t我的\t3\t输入历史\n",
+        "__global\tyue\t余额\t10\t输入历史\n"
+        "__global\twode\t我的\t3\t输入历史\n"
+        "__global\tliuchang\t流畅\t2\t输入历史\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
@@ -100,7 +102,9 @@ def test_local_entry_hot_index_keeps_manual_single_char_only(client, auth_user, 
     hot_text = (rime_dir / "context_prediction_hot.tsv").read_text(encoding="utf-8")
     assert "__global\tshan\t禅\t20\t手动规则" in hot_text
     assert "__global\twode\t我的\t3\t输入历史" in hot_text
+    assert "__global\tliuchang\t流畅\t2\t输入历史" in hot_text
     assert "__global\tdan\t但\t10\t输入历史" not in hot_text
+    assert "__global\tyue\t余额\t10\t输入历史" not in hot_text
 
 
 def test_local_entry_refreshes_rime_context_prediction_from_pending(client, auth_user, test_device, tmp_path, monkeypatch):
@@ -286,6 +290,30 @@ def test_local_entry_rebuilds_phrase_without_redundant_particle(client, auth_use
     assert "我的的" not in counts_text
     hot_text = (rime_dir / "context_prediction_hot.tsv").read_text(encoding="utf-8")
     assert "我的的" not in hot_text
+
+
+def test_local_entry_rebuild_filters_suspicious_jiu_typo_phrases(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction_history.log").write_text(
+        "2026-05-13 10:00:00\t久\t久\n"
+        "2026-05-13 10:00:01\t是\t是\n"
+        "2026-05-13 10:00:02\t不太\t不太\n"
+        "2026-05-13 10:00:03\t流畅\t流畅\n"
+        "2026-05-13 10:00:10\t好久\t好久\n"
+        "2026-05-13 10:00:11\t了\t了\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(f"/api/device-entries/{entry_id}/rime/context-prediction/tree/refresh")
+
+    assert response.status_code == 200
+    counts_text = (rime_dir / "context_prediction_model_counts.tsv").read_text(encoding="utf-8")
+    assert "久是" not in counts_text
+    assert "\tjiu\t久\t" not in counts_text
+    assert "好久" in counts_text
 
 
 def test_local_entry_saves_edited_history_article_for_prediction(client, auth_user, test_device, tmp_path, monkeypatch):

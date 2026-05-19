@@ -13,6 +13,7 @@ from .eastmoney_trade import (
     EastmoneyTradeError,
     EastmoneyTradeSnapshot,
     EastmoneyTable,
+    open_trade_account_page,
     read_trade_snapshot,
     snapshot_to_dict,
 )
@@ -52,6 +53,7 @@ __all__ = [
     "EastmoneyTable",
     "EastmoneyTradeError",
     "EastmoneyTradeSnapshot",
+    "open_trade_account_page",
     "read_trade_snapshot",
     "snapshot_to_dict",
     "TRADE_SOURCE_HK",

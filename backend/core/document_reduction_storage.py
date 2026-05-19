@@ -40,6 +40,44 @@ def get_document_asset_dir(*, user_id: int, document_id: str) -> Path:
     return path
 
 
+def migrate_document_asset_dir_id(*, user_id: int, old_document_id: str, new_document_id: str) -> bool:
+    old_id = str(old_document_id or "").strip()
+    new_id = str(new_document_id or "").strip()
+    if not old_id or not new_id or old_id == new_id:
+        return False
+
+    user_dir = get_document_assets_dir() / f"user-{user_id}"
+    old_path = user_dir / old_id
+    new_path = user_dir / new_id
+    if not old_path.exists():
+        return False
+
+    user_dir.mkdir(parents=True, exist_ok=True)
+    if not new_path.exists():
+        old_path.rename(new_path)
+    else:
+        for child in old_path.iterdir():
+            target = new_path / child.name
+            if target.exists():
+                continue
+            shutil.move(str(child), str(target))
+        try:
+            old_path.rmdir()
+        except OSError:
+            pass
+
+    manifest_path = new_path / DOCUMENT_MANIFEST_FILENAME
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            manifest = None
+        if isinstance(manifest, dict) and manifest.get("document_id") != new_id:
+            manifest["document_id"] = new_id
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
 def get_document_runs_dir(*, user_id: int, document_id: str) -> Path:
     path = get_document_asset_dir(user_id=user_id, document_id=document_id) / "runs"
     path.mkdir(parents=True, exist_ok=True)

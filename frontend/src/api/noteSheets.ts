@@ -1,6 +1,7 @@
 import axios from 'axios'
 
 import api from '@/api'
+import { useUserStore } from '@/store/userStore'
 
 export interface WorkbookRefItem {
   id: number
@@ -306,6 +307,26 @@ type NoteSheetRegistrationUserMatchOptions = NoteSheetResourceRequestOptions & {
   useBrowserFallback?: boolean
 }
 
+function hasStoredAccessToken() {
+  return typeof window !== 'undefined' && !!window.localStorage.getItem('token')
+}
+
+async function retryAfterOptionalAuthRepair<T>(
+  error: unknown,
+  request: () => Promise<T>,
+): Promise<T> {
+  if (!axios.isAxiosError(error) || error.response?.status !== 403 || !hasStoredAccessToken()) {
+    throw error
+  }
+
+  const userStore = useUserStore()
+  await userStore.fetchUserProfile()
+  if (!hasStoredAccessToken()) {
+    throw error
+  }
+  return request()
+}
+
 export async function fetchNoteSheets() {
   const response = await api.get<NoteSheetSummary[]>('/note-sheets/sheets')
   return response.data
@@ -320,7 +341,7 @@ export async function fetchNoteSheet(
   sheetId: number,
   options?: { page?: number; pageSize?: number; paginate?: boolean; workbookId?: number | null },
 ) {
-  try {
+  const request = async () => {
     const response = await api.get<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, {
       params: {
         page: options?.page,
@@ -330,11 +351,15 @@ export async function fetchNoteSheet(
       },
     })
     return response.data
+  }
+
+  try {
+    return await request()
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null
     }
-    throw error
+    return retryAfterOptionalAuthRepair(error, request)
   }
 }
 
@@ -655,14 +680,18 @@ export async function saveAsWorkbook(
 }
 
 export async function fetchWorkbook(workbookId: number) {
-  try {
+  const request = async () => {
     const response = await api.get<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}`)
     return response.data
+  }
+
+  try {
+    return await request()
   } catch (error) {
     if (axios.isAxiosError(error) && error.response?.status === 404) {
       return null
     }
-    throw error
+    return retryAfterOptionalAuthRepair(error, request)
   }
 }
 

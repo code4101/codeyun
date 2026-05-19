@@ -2512,7 +2512,7 @@ const handleProcessDetailsToggle = (event: Event) => {
 };
 
 const goToClusterTasks = () => {
-  void router.push('/cluster/tasks');
+  void router.push('/cluster/runtime');
 };
 
 const applyRouteSeed = () => {
@@ -2604,7 +2604,7 @@ watch(
       <div class="codex-empty-badge">Codex</div>
       <h2>先添加设备</h2>
       <p>这个页面按设备读取本机或远端节点上的 `.codex` 会话数据，所以要先在集群管理里准备可用设备。</p>
-      <el-button type="primary" @click="goToClusterTasks">去设备任务</el-button>
+      <el-button type="primary" @click="goToClusterTasks">去运行管理</el-button>
     </section>
 
     <section v-else class="codex-shell">

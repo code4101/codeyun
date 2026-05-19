@@ -24,8 +24,19 @@ from backend.core.auth import (
     get_current_active_user,
     get_optional_current_user_from_token,
 )
+from backend.core.device_files import ensure_device_file_resource_identity
 from backend.db import get_session
-from backend.models import DeviceFile, PdfDocument, PdfPageNote, PdfUserState, ResourceAccessGrant, User, UserDevice
+from backend.models import (
+    DeviceFile,
+    PdfDocument,
+    PdfPageNote,
+    PdfUserState,
+    ResourceAccessGrant,
+    User,
+    UserDevice,
+    generate_sheet_document_id,
+)
+from backend.core.resource_identity import RESOURCE_TYPE_PDF, allocate_resource_id
 
 
 router = APIRouter()
@@ -136,13 +147,8 @@ class PdfPageNoteUpdateRequest(BaseModel):
     content_html: str = ""
 
 
-def _get_next_pdf_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(PdfDocument.numeric_id)
-        .where(PdfDocument.numeric_id.is_not(None))
-        .order_by(PdfDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
+def _get_next_pdf_numeric_id(session: Session, legacy_pk: str) -> int:
+    return allocate_resource_id(session, RESOURCE_TYPE_PDF, legacy_pk)
 
 
 def _require_pdf_numeric_id(document: PdfDocument) -> int:
@@ -150,6 +156,18 @@ def _require_pdf_numeric_id(document: PdfDocument) -> int:
     if numeric_id <= 0:
         raise HTTPException(status_code=500, detail="PDF 编号缺失")
     return numeric_id
+
+
+def _pdf_resource_id(document: PdfDocument) -> str:
+    return str(_require_pdf_numeric_id(document))
+
+
+def _pdf_document_ref_candidates(document: PdfDocument) -> list[str]:
+    refs = [_pdf_resource_id(document)]
+    legacy_id = str(getattr(document, "legacy_id", None) or "").strip()
+    if legacy_id and legacy_id not in refs:
+        refs.append(legacy_id)
+    return refs
 
 
 def _normalize_resource_role(value: Any) -> Literal["deny", "viewer", "editor", "manager"] | None:
@@ -234,7 +252,7 @@ def _resolve_pdf_resource_access(
 ) -> PdfResourceAccess:
     if _is_superuser_or_owner(current_user, document.owner_user_id):
         return _build_resource_access("manager", current_user)
-    role = _resolve_subject_grant_role(_fetch_resource_grants(session, document.id), current_user)
+    role = _resolve_subject_grant_role(_fetch_resource_grants(session, _pdf_resource_id(document)), current_user)
     return _build_resource_access(role, current_user)
 
 
@@ -283,11 +301,18 @@ def _serialize_user_state(state: PdfUserState | None) -> PdfUserStatePayload | N
 def _get_user_state(session: Session, document: PdfDocument, current_user: User | None) -> PdfUserState | None:
     if current_user is None:
         return None
-    return session.exec(
+    state = session.exec(
         select(PdfUserState)
-        .where(PdfUserState.pdf_document_id == document.id)
+        .where(PdfUserState.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
         .where(PdfUserState.user_id == current_user.id)
     ).first()
+    public_ref = _pdf_resource_id(document)
+    if state is not None and state.pdf_document_id != public_ref:
+        state.pdf_document_id = public_ref
+        session.add(state)
+        session.commit()
+        session.refresh(state)
+    return state
 
 
 def _serialize_pdf_detail(
@@ -316,12 +341,19 @@ def _get_page_note(
     current_user: User,
     page_number: int,
 ) -> PdfPageNote | None:
-    return session.exec(
+    note = session.exec(
         select(PdfPageNote)
-        .where(PdfPageNote.pdf_document_id == document.id)
+        .where(PdfPageNote.pdf_document_id.in_(_pdf_document_ref_candidates(document)))
         .where(PdfPageNote.user_id == current_user.id)
         .where(PdfPageNote.page_number == page_number)
     ).first()
+    public_ref = _pdf_resource_id(document)
+    if note is not None and note.pdf_document_id != public_ref:
+        note.pdf_document_id = public_ref
+        session.add(note)
+        session.commit()
+        session.refresh(note)
+    return note
 
 
 def _page_note_has_meaningful_content(content_html: str) -> bool:
@@ -401,6 +433,7 @@ def _upsert_device_file_from_local_path(
     record.last_seen_at = now
     session.add(record)
     session.flush()
+    ensure_device_file_resource_identity(session, record)
     return record
 
 
@@ -434,6 +467,7 @@ def _upsert_device_file_from_remote_path(
         record.last_seen_at = now
     session.add(record)
     session.flush()
+    ensure_device_file_resource_identity(session, record)
     return record
 
 
@@ -576,7 +610,7 @@ def _build_access_response(session: Session, document: PdfDocument, access: PdfR
     return PdfAccessResponse(
         resource_id=_require_pdf_numeric_id(document),
         access=access,
-        grants=_serialize_access_grants(session, document.id),
+        grants=_serialize_access_grants(session, _pdf_resource_id(document)),
     )
 
 
@@ -677,8 +711,12 @@ def create_pdf_document_from_device_file(
 
     title = _basename(absolute_path)
     if document is None:
+        legacy_id = generate_sheet_document_id()
+        numeric_id = _get_next_pdf_numeric_id(session, legacy_id)
         document = PdfDocument(
-            numeric_id=_get_next_pdf_numeric_id(session),
+            id=numeric_id,
+            numeric_id=numeric_id,
+            legacy_id=legacy_id,
             title=title,
             source_device_file_id=device_file.id,
             source_entry_id=entry.entry_id,
@@ -776,7 +814,7 @@ def update_pdf_user_state(
     now = time.time()
     if state is None:
         state = PdfUserState(
-            pdf_document_id=document.id,
+            pdf_document_id=_pdf_resource_id(document),
             user_id=current_user.id,
             created_at=now,
         )
@@ -836,7 +874,7 @@ def update_pdf_page_note(
     now = time.time()
     if note is None:
         note = PdfPageNote(
-            pdf_document_id=document.id,
+            pdf_document_id=_pdf_resource_id(document),
             user_id=current_user.id,
             page_number=normalized_page,
             created_at=now,
@@ -874,7 +912,7 @@ def update_pdf_access(
     document, _access = _get_pdf_document_or_404(session, current_user, pdf_id, required_role="manager")
     _save_resource_access_grants(
         session,
-        resource_id=document.id,
+        resource_id=_pdf_resource_id(document),
         payload=payload,
         current_user=current_user,
     )

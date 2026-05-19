@@ -1,6 +1,16 @@
 import json
+import datetime
 
 from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner
+from pyxllib.prog.behavior_tree import BehaviorTreeRunner
+
+
+class FakeClock:
+    def __init__(self, value: str):
+        self.value = datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S")
+
+    def __call__(self):
+        return self.value
 
 
 def _runner_for_test(tmp_path):
@@ -18,7 +28,7 @@ def _set_enabled(monkeypatch, enabled_by_key):
     )
 
 
-def _write_schedule_state(path, values, *, schedule_version=3):
+def _write_schedule_state(path, values, *, schedule_version=4):
     blackboard = {} if schedule_version is None else {"schedule_version": schedule_version}
     path.write_text(
         json.dumps(
@@ -87,6 +97,23 @@ def test_background_task_runner_refresh_updates_existing_tree(tmp_path, monkeypa
     assert tree_runner.next_wake().isoformat() == "2099-05-10T00:05:00"
 
 
+def test_background_task_runner_attendance_summary_uses_monthly_schedule(tmp_path, monkeypatch):
+    task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
+    enabled_by_key = {key: False for key in task_keys}
+    enabled_by_key["attendance_summary_monthly_templates"] = True
+    _set_enabled(monkeypatch, enabled_by_key)
+
+    runner = _runner_for_test(tmp_path)
+    tree_runner = BehaviorTreeRunner(
+        runner.build_tree(),
+        runner.state_path,
+        now_func=FakeClock("2026-05-19 12:00:00"),
+    )
+    runner._ensure_schedule_state_version(tree_runner)
+
+    assert tree_runner.next_wake().isoformat() == "2026-05-27T00:00:00"
+
+
 def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkeypatch):
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     _set_enabled(monkeypatch, {key: False for key in task_keys})
@@ -108,4 +135,4 @@ def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkey
     assert nodes["Root/MemorySelector/auto_git_commit"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/storage_analysis"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2099-05-10 01:00:00"
-    assert tree_runner.state["blackboard"]["schedule_version"] == 3
+    assert tree_runner.state["blackboard"]["schedule_version"] == 4

@@ -374,7 +374,8 @@ const normalizeFanxiuNote = (raw: any): NoteNode => {
 
   return {
     ...raw,
-    id: String(raw.id),
+    id: Number.isFinite(Number(raw.id)) ? Math.trunc(Number(raw.id)) : 0,
+    numeric_id: raw.numeric_id == null ? null : Number(raw.numeric_id),
     created_at: normalizeTimestamp(raw.created_at),
     updated_at: normalizeTimestamp(raw.updated_at),
     start_at: normalizeTimestamp(raw.start_at),

@@ -23,6 +23,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.models import generate_sheet_document_id
 from scripts.import_yuque_journal import TZ, USER_ID, db_path, default_data_dir
+try:
+    from resource_identity_sqlite import allocate_note_numeric_id, allocate_resource_id, insert_note_edge
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import allocate_note_numeric_id, allocate_resource_id, insert_note_edge
 
 
 IMPORT_SOURCE = "yuque-table-import"
@@ -352,30 +356,38 @@ def next_workbook_order(con: sqlite3.Connection, workbook_id: str) -> int:
 
 def get_or_create_workbook(con: sqlite3.Connection, apply: bool) -> dict[str, Any]:
     existing = con.execute(
-        "select id,numeric_id,title from workbookdocument where owner_user_id=? and title=? order by created_at limit 1",
+        "select id,numeric_id,legacy_id,title from workbookdocument where owner_user_id=? and title=? order by created_at limit 1",
         (USER_ID, WORKBOOK_TITLE),
     ).fetchone()
     if existing:
-        return {"id": existing["id"], "numeric_id": int(existing["numeric_id"]), "created": False}
+        numeric_id = int(existing["numeric_id"] or 0)
+        if numeric_id <= 0:
+            numeric_id = next_numeric_id(con, "workbookdocument")
+            if apply:
+                con.execute("update workbookdocument set numeric_id=? where id=?", (numeric_id, existing["id"]))
+        legacy_id = str(existing["legacy_id"] or existing["id"])
+        allocate_resource_id(con, "workbook", legacy_id)
+        return {"id": str(numeric_id), "numeric_id": numeric_id, "legacy_id": legacy_id, "created": False}
     if not apply:
         return {"id": "", "numeric_id": next_numeric_id(con, "workbookdocument"), "created": True}
     now = time.time()
-    workbook_id = generate_sheet_document_id()
+    workbook_legacy_id = generate_sheet_document_id()
     numeric_id = next_numeric_id(con, "workbookdocument")
+    allocate_resource_id(con, "workbook", workbook_legacy_id)
     con.execute(
         """
         insert into workbookdocument(
-            id,title,owner_user_id,created_by_user_id,updated_by_user_id,created_at,updated_at,numeric_id
-        ) values (?,?,?,?,?,?,?,?)
+            id,numeric_id,legacy_id,title,owner_user_id,created_by_user_id,updated_by_user_id,created_at,updated_at
+        ) values (?,?,?,?,?,?,?,?,?)
         """,
-        (workbook_id, WORKBOOK_TITLE, USER_ID, USER_ID, USER_ID, now, now, numeric_id),
+        (numeric_id, numeric_id, workbook_legacy_id, WORKBOOK_TITLE, USER_ID, USER_ID, USER_ID, now, now),
     )
-    return {"id": workbook_id, "numeric_id": numeric_id, "created": True}
+    return {"id": str(numeric_id), "numeric_id": numeric_id, "legacy_id": workbook_legacy_id, "created": True}
 
 
 def find_sheet(con: sqlite3.Connection, sheet_key: str) -> sqlite3.Row | None:
     return con.execute(
-        "select id,numeric_id,title from sheetdocument where scope='notes' and owner_type=? and owner_key=? and sheet_key=? limit 1",
+        "select id,numeric_id,legacy_id,title from sheetdocument where scope='notes' and owner_type=? and owner_key=? and sheet_key=? limit 1",
         (IMPORT_SOURCE, str(USER_ID), sheet_key),
     ).fetchone()
 
@@ -389,9 +401,17 @@ def upsert_sheet(
 ) -> dict[str, Any]:
     existing = find_sheet(con, table_item["sheet_key"])
     if existing:
-        sheet = {"id": existing["id"], "numeric_id": int(existing["numeric_id"]), "created": False}
+        existing_numeric_id = int(existing["numeric_id"] or 0)
+        legacy_id = str(existing["legacy_id"] or existing["id"])
+        if existing_numeric_id <= 0:
+            numeric_id = allocate_resource_id(con, "sheet", legacy_id)
+        else:
+            numeric_id = allocate_resource_id(con, "sheet", legacy_id, preferred_id=existing_numeric_id)
+        sheet = {"id": str(numeric_id), "numeric_id": numeric_id, "legacy_id": legacy_id, "created": False}
         if apply:
             now = time.time()
+            if numeric_id != existing_numeric_id:
+                con.execute("update sheetdocument set numeric_id=? where id=?", (numeric_id, existing["id"]))
             con.execute(
                 """
                 update sheetdocument
@@ -401,20 +421,22 @@ def upsert_sheet(
                 (table_item["title"], json.dumps(document_json, ensure_ascii=False), USER_ID, now, existing["id"]),
             )
     else:
-        numeric_id = next_numeric_id(con, "sheetdocument")
-        sheet_id = generate_sheet_document_id()
-        sheet = {"id": sheet_id, "numeric_id": numeric_id, "created": True}
+        sheet_legacy_id = generate_sheet_document_id()
+        numeric_id = allocate_resource_id(con, "sheet", sheet_legacy_id)
+        sheet = {"id": str(numeric_id), "numeric_id": numeric_id, "legacy_id": sheet_legacy_id, "created": True}
         if apply:
             now = time.time()
             con.execute(
                 """
                 insert into sheetdocument(
-                    id,scope,owner_type,owner_key,sheet_key,title,engine,document_json,version,
-                    created_by_user_id,updated_by_user_id,created_at,updated_at,owner_user_id,numeric_id
-                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    id,numeric_id,legacy_id,scope,owner_type,owner_key,sheet_key,title,engine,document_json,version,
+                    created_by_user_id,updated_by_user_id,created_at,updated_at,owner_user_id
+                ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    sheet_id,
+                    numeric_id,
+                    numeric_id,
+                    sheet_legacy_id,
                     "notes",
                     IMPORT_SOURCE,
                     str(USER_ID),
@@ -428,18 +450,23 @@ def upsert_sheet(
                     now,
                     now,
                     USER_ID,
-                    numeric_id,
                 ),
             )
     if apply and workbook["id"]:
         linked = con.execute(
             "select 1 from workbooksheetlink where workbook_id=? and sheet_id=? limit 1",
-            (workbook["id"], sheet["id"]),
+            (str(workbook["numeric_id"]), str(sheet["numeric_id"])),
         ).fetchone()
         if linked is None:
             con.execute(
                 "insert into workbooksheetlink(id,workbook_id,sheet_id,order_index,created_at) values (?,?,?,?,?)",
-                (uuid.uuid4().hex, workbook["id"], sheet["id"], next_workbook_order(con, workbook["id"]), time.time()),
+                (
+                    uuid.uuid4().hex,
+                    str(workbook["numeric_id"]),
+                    str(sheet["numeric_id"]),
+                    next_workbook_order(con, str(workbook["numeric_id"])),
+                    time.time(),
+                ),
             )
     return sheet
 
@@ -510,19 +537,21 @@ def upsert_link_node(
         return {"id": existing["id"], "created": False}
     node_id = str(uuid.uuid4())
     if apply:
+        numeric_id = allocate_note_numeric_id(con, node_id)
         now = time.time()
         category = str(source_row["primary_category"] or "general").strip() or "general"
         categories = note_categories_json(source_row)
         con.execute(
             """
             insert into notenode(
-                id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
+                id,numeric_id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
                 node_type,node_status,custom_fields,private_level,color,note_kind,weight_mode,
                 note_types,note_categories,primary_category,note_form,lifecycle_stage,note_scene
-            ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 node_id,
+                numeric_id,
                 USER_ID,
                 title,
                 content,
@@ -551,18 +580,15 @@ def upsert_link_node(
 
 
 def ensure_edge(con: sqlite3.Connection, source_id: str, target_id: str, apply: bool) -> bool:
-    existing = con.execute(
-        "select 1 from noteedge where user_id=? and source_id=? and target_id=? limit 1",
-        (USER_ID, source_id, target_id),
-    ).fetchone()
-    if existing:
+    if not apply:
         return False
-    if apply:
-        con.execute(
-            "insert into noteedge(id,user_id,source_id,target_id,label,created_at) values (?,?,?,?,?,?)",
-            (str(uuid.uuid4()), USER_ID, source_id, target_id, None, time.time()),
-        )
-    return True
+    return insert_note_edge(
+        con,
+        user_id=USER_ID,
+        source_id=source_id,
+        target_id=target_id,
+        edge_id=str(uuid.uuid4()),
+    )
 
 
 def upsert_index_node(
@@ -606,18 +632,20 @@ def upsert_index_node(
         return {"id": existing["id"], "created": False}
     node_id = str(uuid.uuid4())
     if apply:
+        numeric_id = allocate_note_numeric_id(con, node_id)
         now = time.time()
         cats = json.dumps([{"key": "general", "weight": 100}], ensure_ascii=False)
         con.execute(
             """
             insert into notenode(
-                id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
+                id,numeric_id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
                 node_type,node_status,custom_fields,private_level,color,note_kind,weight_mode,
                 note_types,note_categories,primary_category,note_form,lifecycle_stage,note_scene
-            ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 node_id,
+                numeric_id,
                 USER_ID,
                 INDEX_NODE_TITLE,
                 content,

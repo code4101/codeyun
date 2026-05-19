@@ -19,7 +19,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
-from sqlmodel import Session, delete, select
+from sqlmodel import Session, delete, func, select
 
 from backend.core.ai_chat import (
     CODEX_CLI_DEFAULT_COMMAND,
@@ -46,6 +46,20 @@ from backend.models import (
     UserDevice,
     WorkbookDocument,
     WorkbookSheetLink,
+)
+from backend.core.resource_identity import (
+    RESOURCE_TYPE_SHEET,
+    RESOURCE_TYPE_WORKBOOK,
+    ensure_resource_identity,
+)
+from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.sheet_refs import (
+    load_sheets_by_refs,
+    load_workbooks_by_refs,
+    sheet_public_id,
+    sheet_ref_aliases,
+    workbook_public_id,
+    workbook_ref_aliases,
 )
 
 
@@ -653,7 +667,18 @@ def _row_has_meaningful_cell(row: Any) -> bool:
 
 
 def _document_has_structural_customization(document_json: dict[str, Any]) -> bool:
-    for key in ("header_groups", "cell_meta", "column_configs", "grid_rows", "merged_cells", "data_start_row", "field_row_index"):
+    for key in (
+        "header_groups",
+        "cell_meta",
+        "entity_columns",
+        "entity_rows",
+        "entity_cells",
+        "column_configs",
+        "grid_rows",
+        "merged_cells",
+        "data_start_row",
+        "field_row_index",
+    ):
         value = document_json.get(key)
         if key == "grid_rows":
             columns = _normalize_document_columns(document_json)
@@ -1254,6 +1279,134 @@ def _build_workspace_pagination(
     )
 
 
+def _extract_document_entity_rows(document_json: dict[str, Any]) -> list[Any]:
+    entity_rows = document_json.get("entity_rows")
+    return list(entity_rows) if isinstance(entity_rows, list) else []
+
+
+def _extract_document_entity_columns(document_json: dict[str, Any]) -> list[Any]:
+    entity_columns = document_json.get("entity_columns")
+    return list(entity_columns) if isinstance(entity_columns, list) else []
+
+
+def _extract_document_entity_cells(document_json: dict[str, Any]) -> dict[str, Any]:
+    entity_cells = document_json.get("entity_cells")
+    return dict(entity_cells) if isinstance(entity_cells, dict) else {}
+
+
+def _get_document_entity_row_id(row: Any) -> str:
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("id") or "").strip()
+
+
+def _get_document_entity_column_id(column: Any) -> str:
+    if not isinstance(column, dict):
+        return ""
+    return str(column.get("id") or "").strip()
+
+
+def _coerce_document_entity_row(row: Any, *, fallback_id: str, kind: str) -> dict[str, Any]:
+    if isinstance(row, dict):
+        coerced = dict(row)
+        coerced["id"] = str(coerced.get("id") or fallback_id).strip() or fallback_id
+        coerced["kind"] = str(coerced.get("kind") or kind).strip() or kind
+        return coerced
+    return {"id": fallback_id, "kind": kind}
+
+
+def _merge_paged_entity_model(
+    next_document: dict[str, Any],
+    current_document: dict[str, Any],
+    incoming_document: dict[str, Any],
+    *,
+    target_data_indexes: list[int],
+    merged_row_count: int,
+) -> None:
+    current_entity_rows = _extract_document_entity_rows(current_document)
+    incoming_entity_rows = _extract_document_entity_rows(incoming_document)
+    current_entity_cells = _extract_document_entity_cells(current_document)
+    incoming_entity_cells = _extract_document_entity_cells(incoming_document)
+    if not (current_entity_rows or incoming_entity_rows or current_entity_cells or incoming_entity_cells):
+        return
+
+    data_start_row = _normalize_document_data_start_row(next_document)
+    merged_entity_rows: list[dict[str, Any]] = []
+    for row_index in range(data_start_row):
+        source_row = (
+            incoming_entity_rows[row_index]
+            if row_index < len(incoming_entity_rows)
+            else current_entity_rows[row_index]
+            if row_index < len(current_entity_rows)
+            else None
+        )
+        merged_entity_rows.append(
+            _coerce_document_entity_row(
+                source_row,
+                fallback_id=f"header_{row_index + 1}",
+                kind="field" if row_index == max(0, data_start_row - 1) else "header_group",
+            )
+        )
+
+    for row_index in range(merged_row_count):
+        source_index = data_start_row + row_index
+        source_row = current_entity_rows[source_index] if source_index < len(current_entity_rows) else None
+        merged_entity_rows.append(
+            _coerce_document_entity_row(source_row, fallback_id=f"row_{row_index + 1}", kind="data")
+        )
+
+    for local_index, target_index in enumerate(target_data_indexes):
+        if target_index < 0 or target_index >= merged_row_count:
+            continue
+        incoming_index = data_start_row + local_index
+        source_row = incoming_entity_rows[incoming_index] if incoming_index < len(incoming_entity_rows) else None
+        merged_entity_rows[data_start_row + target_index] = _coerce_document_entity_row(
+            source_row,
+            fallback_id=f"row_{target_index + 1}",
+            kind="data",
+        )
+
+    next_entity_cells = dict(current_entity_cells)
+    for row_index in range(data_start_row):
+        target_row_id = _get_document_entity_row_id(merged_entity_rows[row_index])
+        incoming_row_id = _get_document_entity_row_id(incoming_entity_rows[row_index]) if row_index < len(incoming_entity_rows) else ""
+        current_row_id = _get_document_entity_row_id(current_entity_rows[row_index]) if row_index < len(current_entity_rows) else ""
+        source_row_id = incoming_row_id if incoming_row_id in incoming_entity_cells else current_row_id
+        source_cells = (
+            incoming_entity_cells.get(source_row_id)
+            if source_row_id == incoming_row_id
+            else current_entity_cells.get(source_row_id)
+        )
+        if isinstance(source_cells, dict) and target_row_id:
+            next_entity_cells[target_row_id] = source_cells
+
+    for local_index, target_index in enumerate(target_data_indexes):
+        if target_index < 0 or target_index >= merged_row_count:
+            continue
+        incoming_index = data_start_row + local_index
+        target_index_with_header = data_start_row + target_index
+        target_row_id = _get_document_entity_row_id(merged_entity_rows[target_index_with_header])
+        incoming_row_id = (
+            _get_document_entity_row_id(incoming_entity_rows[incoming_index])
+            if incoming_index < len(incoming_entity_rows)
+            else ""
+        )
+        current_row_id = (
+            _get_document_entity_row_id(current_entity_rows[target_index_with_header])
+            if target_index_with_header < len(current_entity_rows)
+            else ""
+        )
+        if current_row_id and current_row_id != target_row_id:
+            next_entity_cells.pop(current_row_id, None)
+        if incoming_row_id in incoming_entity_cells and target_row_id:
+            next_entity_cells[target_row_id] = incoming_entity_cells[incoming_row_id]
+        elif target_row_id:
+            next_entity_cells.pop(target_row_id, None)
+
+    next_document["entity_rows"] = merged_entity_rows
+    next_document["entity_cells"] = next_entity_cells
+
+
 def _merge_paged_document(
     current_document: dict[str, Any],
     incoming_document: dict[str, Any],
@@ -1280,7 +1433,7 @@ def _merge_paged_document(
             **{
                 key: value
                 for key, value in normalized_incoming.items()
-                if key not in {"rows", "grid_rows"}
+                if key not in {"rows", "grid_rows", "entity_rows", "entity_cells"}
             },
             "rows": merged_rows,
         }
@@ -1290,6 +1443,13 @@ def _merge_paged_document(
             data_start_row = _normalize_document_data_start_row(next_document)
             source_grid_rows = incoming_grid_rows or current_grid_rows
             next_document["grid_rows"] = [*source_grid_rows[:data_start_row], *merged_rows]
+        _merge_paged_entity_model(
+            next_document,
+            normalized_current,
+            normalized_incoming,
+            target_data_indexes=row_indexes,
+            merged_row_count=len(merged_rows),
+        )
         return next_document
 
     row_offset = min(max(int(page_patch.row_offset or 0), 0), len(current_rows))
@@ -1306,7 +1466,7 @@ def _merge_paged_document(
         **{
             key: value
             for key, value in normalized_incoming.items()
-            if key not in {"rows", "grid_rows"}
+            if key not in {"rows", "grid_rows", "entity_rows", "entity_cells"}
         },
         "rows": merged_rows,
     }
@@ -1316,6 +1476,13 @@ def _merge_paged_document(
         data_start_row = _normalize_document_data_start_row(next_document)
         source_grid_rows = incoming_grid_rows or current_grid_rows
         next_document["grid_rows"] = [*source_grid_rows[:data_start_row], *merged_rows]
+    _merge_paged_entity_model(
+        next_document,
+        normalized_current,
+        normalized_incoming,
+        target_data_indexes=list(range(row_offset, row_offset + len(incoming_rows))),
+        merged_row_count=len(merged_rows),
+    )
     return next_document
 
 
@@ -4169,8 +4336,8 @@ def _is_attendance_summary_document(session: Session, document: SheetDocument) -
 
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == document.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
     ).first()
     return link is not None
 
@@ -4479,17 +4646,54 @@ def _standardize_attendance_course_script_stem(value: Any) -> str:
     return text.strip(" .")
 
 
-def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
-    cell_meta = document_json.get("cell_meta")
-    if not isinstance(cell_meta, dict):
-        return ""
-    entry = cell_meta.get(f"{row_index}:{column_index}")
+def _get_document_cell_meta_link_url(entry: Any) -> str:
     if not isinstance(entry, dict):
         return ""
     link = entry.get("link")
     if not isinstance(link, dict):
         return ""
     return _normalize_sheet_text(link.get("url"))
+
+
+def _get_document_entity_cell_link_url(
+    document_json: dict[str, Any],
+    document_row_index: int,
+    column_index: int,
+) -> str:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row_index < 0 or document_row_index >= len(entity_rows):
+        return ""
+    if column_index < 0 or column_index >= len(entity_columns):
+        return ""
+
+    row_id = _get_document_entity_row_id(entity_rows[document_row_index])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return ""
+
+    row_cells = _extract_document_entity_cells(document_json).get(row_id)
+    if not isinstance(row_cells, dict):
+        return ""
+    return _get_document_cell_meta_link_url(row_cells.get(column_id))
+
+
+def _get_document_cell_link_url(document_json: dict[str, Any], row_index: int, column_index: int) -> str:
+    data_start_row = _normalize_document_data_start_row(document_json)
+    document_row_index = data_start_row + row_index
+
+    entity_url = _get_document_entity_cell_link_url(document_json, document_row_index, column_index)
+    if entity_url:
+        return entity_url
+
+    cell_meta = document_json.get("cell_meta")
+    if not isinstance(cell_meta, dict):
+        return ""
+    for candidate_row in (document_row_index, row_index):
+        url = _get_document_cell_meta_link_url(cell_meta.get(f"{candidate_row}:{column_index}"))
+        if url:
+            return url
+    return ""
 
 
 def _iter_attendance_course_script_files() -> list[Path]:
@@ -5235,22 +5439,13 @@ def _sort_sheet_document_rows(
     return next_document
 
 
-def _get_next_sheet_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(SheetDocument.numeric_id)
-        .where(SheetDocument.numeric_id.is_not(None))
-        .order_by(SheetDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
-
-
-def _get_next_workbook_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(WorkbookDocument.numeric_id)
-        .where(WorkbookDocument.numeric_id.is_not(None))
-        .order_by(WorkbookDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
+def _ensure_workbook_identity(session: Session, workbook: WorkbookDocument) -> int:
+    return ensure_resource_identity(
+        session,
+        RESOURCE_TYPE_WORKBOOK,
+        str(getattr(workbook, "legacy_id", None) or workbook.id),
+        None,
+    )
 
 
 def _require_sheet_numeric_id(document: SheetDocument) -> int:
@@ -5265,6 +5460,22 @@ def _require_workbook_numeric_id(workbook: WorkbookDocument) -> int:
     if numeric_id <= 0:
         raise HTTPException(status_code=500, detail="工作簿编号缺失")
     return numeric_id
+
+
+def _sheet_resource_id(document: SheetDocument) -> str:
+    return sheet_public_id(document)
+
+
+def _workbook_resource_id(workbook: WorkbookDocument) -> str:
+    return workbook_public_id(workbook)
+
+
+def _sheet_link_ref(document: SheetDocument) -> str:
+    return _sheet_resource_id(document)
+
+
+def _workbook_link_ref(workbook: WorkbookDocument) -> str:
+    return _workbook_resource_id(workbook)
 
 
 def _normalize_resource_role(value: Any) -> Literal["deny", "viewer", "editor", "manager"] | None:
@@ -5381,20 +5592,35 @@ def _get_sheet_ids_owned_only_by_workbook(
     if not sheet_ids:
         return []
 
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    unique_sheets = {str(sheet.id): sheet for sheet in sheet_map.values()}.values()
+    sheet_refs = sorted({ref for sheet in unique_sheets for ref in sheet_ref_aliases(sheet)})
+    if not sheet_refs:
+        return []
+    workbook_map = load_workbooks_by_refs(session, [workbook_id])
+    workbook_refs = {
+        ref
+        for workbook in {str(workbook.id): workbook for workbook in workbook_map.values()}.values()
+        for ref in workbook_ref_aliases(workbook)
+    } or {str(workbook_id)}
     links = session.exec(
-        select(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id.in_(sheet_ids))
+        select(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
     ).all()
     link_counts: dict[str, int] = {}
     target_sheet_ids: set[str] = set()
     for link in links:
-        link_counts[link.sheet_id] = link_counts.get(link.sheet_id, 0) + 1
-        if link.workbook_id == workbook_id:
-            target_sheet_ids.add(link.sheet_id)
+        sheet = sheet_map.get(str(link.sheet_id))
+        if sheet is None:
+            continue
+        sheet_id = str(sheet.id)
+        link_counts[sheet_id] = link_counts.get(sheet_id, 0) + 1
+        if str(link.workbook_id) in workbook_refs:
+            target_sheet_ids.add(sheet_id)
     return [
-        sheet_id
-        for sheet_id in sheet_ids
-        if link_counts.get(sheet_id, 0) <= 1
-        and sheet_id in target_sheet_ids
+        str(sheet.id)
+        for sheet in {str(sheet.id): sheet for sheet in sheet_map.values()}.values()
+        if link_counts.get(str(sheet.id), 0) <= 1
+        and str(sheet.id) in target_sheet_ids
     ]
 
 
@@ -5412,14 +5638,13 @@ def _resolve_subject_grant_role(
 
 def _get_workbooks_for_sheet(session: Session, document: SheetDocument) -> list[WorkbookDocument]:
     links = session.exec(
-        select(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id == document.id)
+        select(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
     ).all()
     workbook_ids = [link.workbook_id for link in links]
     if not workbook_ids:
         return []
-    return list(session.exec(
-        select(WorkbookDocument).where(WorkbookDocument.id.in_(workbook_ids))
-    ).all())
+    workbook_map = load_workbooks_by_refs(session, workbook_ids)
+    return list({str(workbook.id): workbook for workbook in workbook_map.values()}.values())
 
 
 def _get_workbook_by_numeric_id_or_404(session: Session, workbook_id: int) -> WorkbookDocument:
@@ -5456,7 +5681,7 @@ def _resolve_workbook_resource_access(
         return _build_resource_access("manager")
 
     role = _resolve_subject_grant_role(
-        _fetch_resource_grants(session, RESOURCE_TYPE_WORKBOOK, workbook.id),
+        _fetch_resource_grants(session, RESOURCE_TYPE_WORKBOOK, _workbook_resource_id(workbook)),
         current_user,
     )
     return _build_resource_access(role)
@@ -5480,7 +5705,7 @@ def _resolve_sheet_resource_access(
         return _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)
 
     direct_role = _resolve_subject_grant_role(
-        _fetch_resource_grants(session, RESOURCE_TYPE_SHEET, document.id),
+        _fetch_resource_grants(session, RESOURCE_TYPE_SHEET, _sheet_resource_id(document)),
         current_user,
     )
     if direct_role is not None:
@@ -5524,8 +5749,8 @@ def _get_note_sheet_or_404(
     if workbook is not None:
         link = session.exec(
             select(WorkbookSheetLink)
-            .where(WorkbookSheetLink.workbook_id == workbook.id)
-            .where(WorkbookSheetLink.sheet_id == document.id)
+            .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+            .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
         ).first()
         if link is None:
             raise HTTPException(status_code=404, detail="工作簿中不存在该工作表")
@@ -5579,8 +5804,8 @@ def _get_note_sheet_for_table_or_404(
     if workbook is not None:
         link = session.exec(
             select(WorkbookSheetLink)
-            .where(WorkbookSheetLink.workbook_id == workbook.id)
-            .where(WorkbookSheetLink.sheet_id == document.id)
+            .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+            .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
         ).first()
         if link is None:
             raise HTTPException(status_code=404, detail="工作簿中不存在该工作表")
@@ -5607,27 +5832,29 @@ def _list_workbook_refs_for_sheet_ids(session: Session, sheet_ids: list[str]) ->
     if not sheet_ids:
         return {}
 
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    unique_sheets = {str(sheet.id): sheet for sheet in sheet_map.values()}.values()
+    sheet_refs = sorted({ref for sheet in unique_sheets for ref in sheet_ref_aliases(sheet)})
+    if not sheet_refs:
+        return {sheet_id: [] for sheet_id in sheet_ids}
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.sheet_id.in_(sheet_ids))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     if not links:
         return {}
 
     workbook_ids = sorted({link.workbook_id for link in links})
-    workbooks = session.exec(
-        select(WorkbookDocument)
-        .where(WorkbookDocument.id.in_(workbook_ids))
-    ).all()
-    workbook_map = {workbook.id: workbook for workbook in workbooks}
+    workbook_map = load_workbooks_by_refs(session, workbook_ids)
 
     result: dict[str, list[WorkbookRefItem]] = {sheet_id: [] for sheet_id in sheet_ids}
     for link in links:
-        workbook = workbook_map.get(link.workbook_id)
-        if workbook is None:
+        workbook = workbook_map.get(str(link.workbook_id))
+        sheet = sheet_map.get(str(link.sheet_id))
+        if workbook is None or sheet is None:
             continue
-        result.setdefault(link.sheet_id, []).append(
+        result.setdefault(str(sheet.id), []).append(
             WorkbookRefItem(id=_require_workbook_numeric_id(workbook), title=workbook.title),
         )
     return result
@@ -6559,19 +6786,16 @@ def _serialize_workbook_detail(
 ) -> dict[str, Any]:
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     sheet_ids = [link.sheet_id for link in links]
-    sheets = session.exec(
-        select(SheetDocument)
-        .where(SheetDocument.id.in_(sheet_ids) if sheet_ids else False)
-    ).all() if sheet_ids else []
-    sheet_map = {sheet.id: sheet for sheet in sheets}
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    sheets = list({str(sheet.id): sheet for sheet in sheet_map.values()}.values())
     sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(session, sheet_ids)
     ordered_sheets: list[dict[str, Any]] = []
     for link in links:
-        sheet = sheet_map.get(link.sheet_id)
+        sheet = sheet_map.get(str(link.sheet_id))
         if sheet is None:
             continue
         sheet_access = _resolve_sheet_resource_access(session, sheet, current_user, workbook=workbook)
@@ -6579,7 +6803,7 @@ def _serialize_workbook_detail(
             continue
         ordered_sheets.append(_serialize_sheet_summary(
             sheet,
-            workbook_items=sheet_workbook_refs.get(link.sheet_id, []),
+            workbook_items=sheet_workbook_refs.get(str(sheet.id), []),
             access=sheet_access,
         ))
     return {
@@ -6720,9 +6944,15 @@ def _clone_sheet_document_json(
 
 
 def _get_next_workbook_link_order(session: Session, workbook_id: str) -> int:
+    workbook_map = load_workbooks_by_refs(session, [workbook_id])
+    workbook_refs = {
+        ref
+        for workbook in {str(workbook.id): workbook for workbook in workbook_map.values()}.values()
+        for ref in workbook_ref_aliases(workbook)
+    } or {str(workbook_id)}
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook_id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_refs))
         .order_by(WorkbookSheetLink.order_index.desc(), WorkbookSheetLink.created_at.desc())
     ).all()
     if not links:
@@ -6772,8 +7002,11 @@ def create_note_sheet(
         )
 
     now = time.time()
+    document_identity = allocate_new_sheet_identity(session)
     document = SheetDocument(
-        numeric_id=_get_next_sheet_numeric_id(session),
+        id=document_identity.primary_id,
+        numeric_id=document_identity.numeric_id,
+        legacy_id=document_identity.legacy_id,
         scope="notes",
         owner_type="user",
         owner_key=str(current_user.id),
@@ -6790,14 +7023,16 @@ def create_note_sheet(
     )
     session.add(document)
     session.flush()
-    document.sheet_key = str(document.numeric_id or document.id)
+    document.sheet_key = str(_require_sheet_numeric_id(document))
     session.add(document)
     if workbook is not None:
+        workbook_ref = _workbook_link_ref(workbook)
+        sheet_ref = _sheet_link_ref(document)
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=document.id,
-                order_index=_get_next_workbook_link_order(session, workbook.id),
+                workbook_id=workbook_ref,
+                sheet_id=sheet_ref,
+                order_index=_get_next_workbook_link_order(session, workbook_ref),
                 created_at=now,
             ),
         )
@@ -7014,7 +7249,7 @@ def get_sheet_access(
         session,
         resource_type=RESOURCE_TYPE_SHEET,
         numeric_id=_require_sheet_numeric_id(document),
-        resource_id=document.id,
+        resource_id=_sheet_resource_id(document),
         access=access,
     )
 
@@ -7030,7 +7265,7 @@ def update_sheet_access(
     _save_resource_access_grants(
         session,
         resource_type=RESOURCE_TYPE_SHEET,
-        resource_id=document.id,
+        resource_id=_sheet_resource_id(document),
         payload=payload,
         current_user=current_user,
     )
@@ -7040,7 +7275,7 @@ def update_sheet_access(
         session,
         resource_type=RESOURCE_TYPE_SHEET,
         numeric_id=_require_sheet_numeric_id(document),
-        resource_id=document.id,
+        resource_id=_sheet_resource_id(document),
         access=access,
     )
 
@@ -7680,11 +7915,11 @@ def delete_note_sheet(
 ):
     _require_note_sheets_feature(session, current_user)
     document, _access, _workbook = _get_note_sheet_or_404(session, current_user, sheet_id, required_role="manager")
-    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id == document.id))
+    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document))))
     _delete_resource_access_grants(
         session,
         resource_type=RESOURCE_TYPE_SHEET,
-        resource_ids=[document.id],
+        resource_ids=[_sheet_resource_id(document)],
     )
     session.delete(document)
     session.commit()
@@ -7710,9 +7945,9 @@ def list_workbooks(
             .where(ResourceAccessGrant.resource_type == RESOURCE_TYPE_WORKBOOK)
             .where(ResourceAccessGrant.subject_key.in_(subject_keys))
         ).all()
-        granted_workbook_ids = sorted({grant.resource_id for grant in grants})
+        granted_workbook_ids = sorted({int(grant.resource_id) for grant in grants if str(grant.resource_id).isdigit()})
         granted_workbooks = session.exec(
-            select(WorkbookDocument).where(WorkbookDocument.id.in_(granted_workbook_ids))
+            select(WorkbookDocument).where(WorkbookDocument.numeric_id.in_(granted_workbook_ids))
         ).all() if granted_workbook_ids else []
         workbook_map = {workbook.id: workbook for workbook in [*owned_workbooks, *granted_workbooks]}
         candidate_workbooks = list(workbook_map.values())
@@ -7734,20 +7969,29 @@ def list_workbooks(
     if not workbook_access_items:
         return []
 
-    workbook_ids = [workbook.id for workbook, _access in workbook_access_items]
+    workbook_refs = [ref for workbook, _access in workbook_access_items for ref in workbook_ref_aliases(workbook)]
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id.in_(workbook_ids))
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_refs))
     ).all()
     counts: dict[str, int] = {}
+    workbook_ref_map = {
+        ref: workbook
+        for workbook, _access in workbook_access_items
+        for ref in workbook_ref_aliases(workbook)
+    }
     for link in links:
-        counts[link.workbook_id] = counts.get(link.workbook_id, 0) + 1
+        workbook = workbook_ref_map.get(str(link.workbook_id))
+        if workbook is None:
+            continue
+        workbook_key = str(workbook.id)
+        counts[workbook_key] = counts.get(workbook_key, 0) + 1
 
     return [
         WorkbookSummaryResponse.model_validate(
             _serialize_workbook_summary(
                 workbook,
-                sheet_count=counts.get(workbook.id, 0),
+                sheet_count=counts.get(str(workbook.id), 0),
                 access=access,
             ),
         )
@@ -7763,8 +8007,11 @@ def create_workbook(
 ):
     _require_note_sheets_feature(session, current_user)
     now = time.time()
+    workbook_identity = allocate_new_workbook_identity(session)
     workbook = WorkbookDocument(
-        numeric_id=_get_next_workbook_numeric_id(session),
+        id=workbook_identity.primary_id,
+        numeric_id=workbook_identity.numeric_id,
+        legacy_id=workbook_identity.legacy_id,
         title=_normalize_title(payload.title, default_value="未命名工作簿"),
         owner_user_id=current_user.id,
         created_by_user_id=current_user.id,
@@ -7773,6 +8020,8 @@ def create_workbook(
         updated_at=now,
     )
     session.add(workbook)
+    session.flush()
+    _ensure_workbook_identity(session, workbook)
     session.commit()
     session.refresh(workbook)
     access = _resolve_workbook_resource_access(session, workbook, current_user)
@@ -7827,7 +8076,7 @@ def get_workbook_access(
         session,
         resource_type=RESOURCE_TYPE_WORKBOOK,
         numeric_id=_require_workbook_numeric_id(workbook),
-        resource_id=workbook.id,
+        resource_id=_workbook_resource_id(workbook),
         access=access,
     )
 
@@ -7843,7 +8092,7 @@ def update_workbook_access(
     _save_resource_access_grants(
         session,
         resource_type=RESOURCE_TYPE_WORKBOOK,
-        resource_id=workbook.id,
+        resource_id=_workbook_resource_id(workbook),
         payload=payload,
         current_user=current_user,
     )
@@ -7853,7 +8102,7 @@ def update_workbook_access(
         session,
         resource_type=RESOURCE_TYPE_WORKBOOK,
         numeric_id=_require_workbook_numeric_id(workbook),
-        resource_id=workbook.id,
+        resource_id=_workbook_resource_id(workbook),
         access=access,
     )
 
@@ -7874,19 +8123,18 @@ def save_as_workbook(
     )
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == source_workbook.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(source_workbook)))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     source_sheet_ids = [link.sheet_id for link in links]
-    source_sheets = session.exec(
-        select(SheetDocument)
-        .where(SheetDocument.id.in_(source_sheet_ids) if source_sheet_ids else False)
-    ).all() if source_sheet_ids else []
-    source_sheet_map = {sheet.id: sheet for sheet in source_sheets}
+    source_sheet_map = load_sheets_by_refs(session, source_sheet_ids)
 
     now = time.time()
+    workbook_identity = allocate_new_workbook_identity(session)
     workbook = WorkbookDocument(
-        numeric_id=_get_next_workbook_numeric_id(session),
+        id=workbook_identity.primary_id,
+        numeric_id=workbook_identity.numeric_id,
+        legacy_id=workbook_identity.legacy_id,
         title=_normalize_title(payload.title, default_value="未命名工作簿"),
         owner_user_id=current_user.id,
         created_by_user_id=current_user.id,
@@ -7896,14 +8144,18 @@ def save_as_workbook(
     )
     session.add(workbook)
     session.flush()
+    _ensure_workbook_identity(session, workbook)
 
     for link in links:
-        source_sheet = source_sheet_map.get(link.sheet_id)
+        source_sheet = source_sheet_map.get(str(link.sheet_id))
         if source_sheet is None:
             continue
 
+        document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
-            numeric_id=_get_next_sheet_numeric_id(session),
+            id=document_identity.primary_id,
+            numeric_id=document_identity.numeric_id,
+            legacy_id=document_identity.legacy_id,
             scope=source_sheet.scope,
             owner_type=source_sheet.owner_type,
             owner_key=source_sheet.owner_key,
@@ -7923,12 +8175,12 @@ def save_as_workbook(
         )
         session.add(document)
         session.flush()
-        document.sheet_key = str(document.numeric_id or document.id)
+        document.sheet_key = str(_require_sheet_numeric_id(document))
         session.add(document)
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=document.id,
+                workbook_id=_workbook_link_ref(workbook),
+                sheet_id=_sheet_link_ref(document),
                 order_index=link.order_index,
                 created_at=now,
             ),
@@ -7955,16 +8207,16 @@ def attach_sheet_to_workbook(
 
     existing = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == document.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
     ).first()
 
     if existing is None:
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=document.id,
-                order_index=_get_next_workbook_link_order(session, workbook.id),
+                workbook_id=_workbook_link_ref(workbook),
+                sheet_id=_sheet_link_ref(document),
+                order_index=_get_next_workbook_link_order(session, _workbook_link_ref(workbook)),
             ),
         )
         workbook.updated_by_user_id = current_user.id
@@ -7997,7 +8249,7 @@ def reorder_workbook_sheets(
 
     links = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
         .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
     ).all()
     if not links:
@@ -8006,16 +8258,18 @@ def reorder_workbook_sheets(
         )
 
     linked_sheet_ids = [link.sheet_id for link in links]
-    sheets = session.exec(
-        select(SheetDocument)
-        .where(SheetDocument.id.in_(linked_sheet_ids))
-    ).all()
+    sheet_ref_map = load_sheets_by_refs(session, linked_sheet_ids)
+    sheets = list({str(sheet.id): sheet for sheet in sheet_ref_map.values()}.values())
     sheet_by_numeric_id = {
         int(sheet.numeric_id): sheet
         for sheet in sheets
         if sheet.numeric_id is not None
     }
-    link_by_sheet_id = {link.sheet_id: link for link in links}
+    link_by_sheet_id: dict[str, WorkbookSheetLink] = {}
+    for link in links:
+        sheet = sheet_ref_map.get(str(link.sheet_id))
+        if sheet is not None:
+            link_by_sheet_id[str(sheet.id)] = link
 
     requested_sheet_ids: list[str] = []
     for numeric_id in requested_numeric_ids:
@@ -8032,7 +8286,9 @@ def reorder_workbook_sheets(
     requested_link_iter = iter(requested_links)
     next_links: list[WorkbookSheetLink] = []
     for link in links:
-        if link.sheet_id in requested_sheet_id_set:
+        linked_sheet = sheet_ref_map.get(str(link.sheet_id))
+        linked_sheet_id = str(linked_sheet.id) if linked_sheet is not None else str(link.sheet_id)
+        if linked_sheet_id in requested_sheet_id_set:
             next_links.append(next(requested_link_iter))
         else:
             next_links.append(link)
@@ -8067,8 +8323,8 @@ def remove_sheet_from_workbook(
 
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == document.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
     ).first()
     if link is not None:
         session.delete(link)
@@ -8091,11 +8347,11 @@ def unpack_workbook(
 ):
     _require_note_sheets_feature(session, current_user)
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
-    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id))
+    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook))))
     _delete_resource_access_grants(
         session,
         resource_type=RESOURCE_TYPE_WORKBOOK,
-        resource_ids=[workbook.id],
+        resource_ids=[_workbook_resource_id(workbook)],
     )
     session.delete(workbook)
     session.commit()
@@ -8111,30 +8367,28 @@ def delete_workbook(
     _require_note_sheets_feature(session, current_user)
     workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="manager")
     links = session.exec(
-        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)
+        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
     ).all()
     sheet_ids = sorted({link.sheet_id for link in links})
     owned_sheet_ids = _get_sheet_ids_owned_only_by_workbook(
         session,
-        workbook_id=workbook.id,
+        workbook_id=_workbook_link_ref(workbook),
         sheet_ids=sheet_ids,
     )
-    sheets = session.exec(
-        select(SheetDocument).where(SheetDocument.id.in_(owned_sheet_ids))
-    ).all() if owned_sheet_ids else []
+    sheets = list({str(sheet.id): sheet for sheet in load_sheets_by_refs(session, owned_sheet_ids).values()}.values()) if owned_sheet_ids else []
 
-    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id))
+    session.exec(delete(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook))))
     if owned_sheet_ids:
         _delete_resource_access_grants(
             session,
             resource_type=RESOURCE_TYPE_SHEET,
-            resource_ids=owned_sheet_ids,
+            resource_ids=[_sheet_resource_id(sheet) for sheet in sheets],
         )
 
     _delete_resource_access_grants(
         session,
         resource_type=RESOURCE_TYPE_WORKBOOK,
-        resource_ids=[workbook.id],
+        resource_ids=[_workbook_resource_id(workbook)],
     )
     for sheet in sheets:
         session.delete(sheet)

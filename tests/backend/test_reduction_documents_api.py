@@ -7,12 +7,19 @@ from sqlmodel import select
 from backend.core.ai_chat_user_config import save_user_ai_chat_provider_config
 from backend.core.document_reduction_cache import get_document_cache_db_path
 from backend.core.document_reduction_storage import get_document_assets_dir
+from backend.core.feature_access import FEATURE_ACCESS_SUBJECT_USER, save_feature_access_policy_overrides
 from backend.core.ollama_access_keys import create_ollama_access_key
 from backend.models import DocumentAsset, DocumentQueryHistory, DocumentReductionRun
 
 
 @pytest.fixture(autouse=True)
 def _configure_test_ollama_access(session, auth_user):
+    save_feature_access_policy_overrides(
+        session,
+        subject_type=FEATURE_ACCESS_SUBJECT_USER,
+        subject_user_id=auth_user.id,
+        overrides={"tools.ai-reduction": "allow"},
+    )
     created = create_ollama_access_key(session, created_by_user_id=auth_user.id, label="文档归纳测试 Key")
     save_user_ai_chat_provider_config(
         session,
@@ -23,7 +30,7 @@ def _configure_test_ollama_access(session, auth_user):
     return created["plaintext_value"]
 
 
-def test_reduction_document_upload_index_and_query_flow(client, auth_user, monkeypatch):
+def test_reduction_document_upload_index_and_query_flow(client, session, auth_user, monkeypatch):
     def fake_chat_with_provider(
         *,
         provider_id,
@@ -82,6 +89,8 @@ def test_reduction_document_upload_index_and_query_flow(client, auth_user, monke
     assert document_payload["title"] == "deploy-notes"
     assert document_payload["status"] == "uploaded"
     document_id = document_payload["id"]
+    assert isinstance(document_id, int)
+    assert document_payload["numeric_id"] == document_id
 
     index_response = client.post(
         f"/api/reduction-documents/{document_id}/index",
@@ -92,6 +101,7 @@ def test_reduction_document_upload_index_and_query_flow(client, auth_user, monke
     assert index_payload["document"]["status"] == "indexed"
     assert index_payload["document"]["latest_run_id"]
     assert index_payload["run"]["status"] == "completed"
+    assert index_payload["run"]["document_id"] == document_id
     assert index_payload["run"]["source_unit_count"] >= 1
     assert index_payload["run"]["estimated_level_count"] >= 1
     assert index_payload["run"]["completed_chunk_count"] >= 1
@@ -102,6 +112,10 @@ def test_reduction_document_upload_index_and_query_flow(client, auth_user, monke
     detail_payload = detail_response.json()
     assert detail_payload["active_run"]["completed_chunk_count"] >= 1
     assert detail_payload["latest_run"]["id"] == index_payload["run"]["id"]
+
+    stored_document = session.exec(select(DocumentAsset).where(DocumentAsset.numeric_id == document_id)).one()
+    legacy_detail_response = client.get(f"/api/reduction-documents/{stored_document.legacy_id}")
+    assert legacy_detail_response.status_code == 404
 
     query_response = client.post(
         f"/api/reduction-documents/{document_id}/query",
@@ -118,6 +132,10 @@ def test_reduction_document_upload_index_and_query_flow(client, auth_user, monke
     assert "配置缺失" in query_payload["answer"]
     assert query_payload["matched_nodes"]
     assert get_document_cache_db_path().exists()
+    run_row = session.get(DocumentReductionRun, index_payload["run"]["id"])
+    query_row = session.get(DocumentQueryHistory, query_payload["query_id"])
+    assert run_row is not None and run_row.document_id == str(document_id)
+    assert query_row is not None and query_row.document_id == str(document_id)
 
 
 def test_reduction_document_upload_rejects_binary_file(client, auth_user):
@@ -266,7 +284,9 @@ def test_reduction_document_delete_cascades_metadata_cache_and_assets(client, au
     )
     assert upload_response.status_code == 200
     document_id = upload_response.json()["id"]
-    asset_dir = get_document_assets_dir() / f"user-{auth_user.id}" / document_id
+    document = session.exec(select(DocumentAsset).where(DocumentAsset.numeric_id == document_id)).one()
+    legacy_document_id = str(document.legacy_id)
+    asset_dir = get_document_assets_dir() / f"user-{auth_user.id}" / str(document_id)
     assert asset_dir.exists()
 
     index_response = client.post(
@@ -286,7 +306,7 @@ def test_reduction_document_delete_cascades_metadata_cache_and_assets(client, au
     with sqlite3.connect(cache_db) as conn:
         cached_count = conn.execute(
             "SELECT COUNT(*) FROM document_node_index WHERE user_id = ? AND document_id = ?",
-            (auth_user.id, document_id),
+            (auth_user.id, str(document_id)),
         ).fetchone()[0]
     assert cached_count > 0
 
@@ -295,8 +315,12 @@ def test_reduction_document_delete_cascades_metadata_cache_and_assets(client, au
     assert delete_response.json()["document_id"] == document_id
 
     assert session.get(DocumentAsset, document_id) is None
-    remaining_runs = session.exec(select(DocumentReductionRun).where(DocumentReductionRun.document_id == document_id)).all()
-    remaining_queries = session.exec(select(DocumentQueryHistory).where(DocumentQueryHistory.document_id == document_id)).all()
+    remaining_runs = session.exec(
+        select(DocumentReductionRun).where(DocumentReductionRun.document_id.in_([str(document_id), legacy_document_id]))
+    ).all()
+    remaining_queries = session.exec(
+        select(DocumentQueryHistory).where(DocumentQueryHistory.document_id.in_([str(document_id), legacy_document_id]))
+    ).all()
     assert remaining_runs == []
     assert remaining_queries == []
     assert not asset_dir.exists()
@@ -304,7 +328,7 @@ def test_reduction_document_delete_cascades_metadata_cache_and_assets(client, au
     with sqlite3.connect(cache_db) as conn:
         remaining_cache = conn.execute(
             "SELECT COUNT(*) FROM document_node_index WHERE user_id = ? AND document_id = ?",
-            (auth_user.id, document_id),
+            (auth_user.id, str(document_id)),
         ).fetchone()[0]
     assert remaining_cache == 0
 

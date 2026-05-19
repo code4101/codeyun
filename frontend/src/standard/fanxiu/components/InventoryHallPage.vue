@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { ArrowDown, ArrowUp, Delete, Plus } from '@element-plus/icons-vue';
-import type { NoteNode } from '@/api/notes';
+import { noteKey, type NoteNode } from '@/api/notes';
 import type {
   FanxiuInventoryItem,
   FanxiuInventorySectionSnapshot,
@@ -742,7 +742,7 @@ function syncCachedNoteWithRow(item: FanxiuInventoryItem) {
 function applyLoadedNote(itemId: string, note: NoteNode) {
   const rowLocation = findRowById(itemId);
   if (!rowLocation) return;
-  rowLocation.item.note_id = note.id;
+  rowLocation.item.note_id = noteKey(note.id);
   const syncedNote = cloneNote({
     ...note,
     title: rowLocation.item.name,
@@ -970,7 +970,7 @@ function onEditorNoteChange(note: NoteNode) {
   if (!rowLocation) return;
   let inventoryChanged = false;
 
-  const nextNoteId = note.id || rowLocation.item.note_id || null;
+  const nextNoteId = note.id ? noteKey(note.id) : rowLocation.item.note_id || null;
   if (rowLocation.item.note_id !== nextNoteId) {
     rowLocation.item.note_id = nextNoteId;
     inventoryChanged = true;

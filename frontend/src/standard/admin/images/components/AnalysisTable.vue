@@ -31,14 +31,28 @@
         show-overflow-tooltip 
         sortable="custom"
       />
+
+      <el-table-column
+        v-if="type === 'file'"
+        prop="device_file_id"
+        label="ID"
+        width="84"
+        align="right"
+        sortable="custom"
+      >
+        <template #default="scope">{{ scope.row.device_file_id ?? '-' }}</template>
+      </el-table-column>
       
       <el-table-column 
         v-if="type === 'node'"
         prop="id" 
         label="ID" 
-        width="180" 
+        width="90"
+        align="right"
         show-overflow-tooltip 
-      />
+      >
+        <template #default="scope">{{ scope.row.id ?? '-' }}</template>
+      </el-table-column>
 
       <el-table-column 
         v-if="type === 'link'"

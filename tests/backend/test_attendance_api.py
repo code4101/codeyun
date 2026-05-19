@@ -122,7 +122,7 @@ def _get_anonymous_sheet_grant(session, sheet: SheetDocument) -> ResourceAccessG
     return session.exec(
         select(ResourceAccessGrant)
         .where(ResourceAccessGrant.resource_type == "sheet")
-        .where(ResourceAccessGrant.resource_id == sheet.id)
+        .where(ResourceAccessGrant.resource_id == str(sheet.numeric_id))
         .where(ResourceAccessGrant.subject_key == "anonymous")
     ).first()
 
@@ -941,8 +941,8 @@ def test_attendance_wjx_data_sheet_location_creates_standard_sheet_and_seeds_ent
     ]]
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == sheet.id)
+        .where(WorkbookSheetLink.workbook_id == str(workbook.numeric_id))
+        .where(WorkbookSheetLink.sheet_id == str(sheet.numeric_id))
     ).one()
     assert link.order_index == 10
     public_grant = _get_anonymous_sheet_grant(session, sheet)

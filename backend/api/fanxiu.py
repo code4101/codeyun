@@ -10,10 +10,12 @@ from typing import Any, List, Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from passlib.context import CryptContext
-from sqlmodel import Session, select
+from sqlmodel import Session, or_, select
 
 from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
 from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.core.note_identity import allocate_new_note_identity
+from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import get_session
 from backend.models import NoteEdge, NoteNode, User
 from backend.schemas import NoteRead, NoteUpdate
@@ -1988,8 +1990,11 @@ def get_fanxiu_note_by_id(
     if not normalized_note_id:
         return None
 
+    conditions = [NoteNode.id == normalized_note_id, NoteNode.legacy_id == normalized_note_id]
+    if normalized_note_id.isdecimal():
+        conditions.append(NoteNode.numeric_id == int(normalized_note_id))
     statement = select(NoteNode).where(
-        NoteNode.id == normalized_note_id,
+        or_(*conditions),
         NoteNode.user_id == fanxiu_user.id,
         NoteNode.note_kind == note_kind,
     )
@@ -2173,15 +2178,17 @@ def _retarget_fanxiu_char_edges(session: Session, source_note: NoteNode, target_
     if not source_note.id or not target_note.id or source_note.id == target_note.id:
         return
 
+    source_refs = note_ref_aliases(source_note)
+    target_ref = note_edge_ref(target_note)
     edges = session.exec(
         select(NoteEdge).where(
-            (NoteEdge.source_id == source_note.id) | (NoteEdge.target_id == source_note.id)
+            (NoteEdge.source_id.in_(source_refs)) | (NoteEdge.target_id.in_(source_refs))
         )
     ).all()
 
     for edge in edges:
-        next_source_id = target_note.id if edge.source_id == source_note.id else edge.source_id
-        next_target_id = target_note.id if edge.target_id == source_note.id else edge.target_id
+        next_source_id = target_ref if str(edge.source_id) in source_refs else edge.source_id
+        next_target_id = target_ref if str(edge.target_id) in source_refs else edge.target_id
         if next_source_id == next_target_id:
             session.delete(edge)
             continue
@@ -2503,6 +2510,7 @@ def update_fanxiu_wardrobe_hall(
             db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_WARDROBE_KIND)
             if db_note:
                 sync_wardrobe_note_fields(db_note, item)
+                item["note_id"] = note_public_id(db_note)
                 session.add(db_note)
                 touched_existing_note = True
             elif item.get("note_id"):
@@ -2549,6 +2557,7 @@ def update_fanxiu_spirit_beast_hall(
             db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_SPIRIT_BEAST_KIND)
             if db_note:
                 sync_wardrobe_note_fields(db_note, item)
+                item["note_id"] = note_public_id(db_note)
                 session.add(db_note)
                 touched_existing_note = True
             elif item.get("note_id"):
@@ -2595,6 +2604,7 @@ def update_fanxiu_magic_treasure_hall(
             db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_MAGIC_TREASURE_KIND)
             if db_note:
                 sync_wardrobe_note_fields(db_note, item)
+                item["note_id"] = note_public_id(db_note)
                 session.add(db_note)
                 touched_existing_note = True
             elif item.get("note_id"):
@@ -2737,6 +2747,7 @@ def update_fanxiu_activity_list(
         db_note = get_fanxiu_note_by_id(session, fanxiu_user, item.get("note_id"), FANXIU_ACTIVITY_KIND)
         if db_note:
             sync_activity_note_fields(db_note, item)
+            item["note_id"] = note_public_id(db_note)
             session.add(db_note)
             touched_existing_note = True
         elif item.get("note_id"):
@@ -3166,8 +3177,11 @@ def update_fanxiu_wardrobe_note(
         raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
 
     if not db_note:
+        note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
             title=item_title,
             content=note_in.content or "",
@@ -3244,7 +3258,7 @@ def update_fanxiu_wardrobe_note(
     session.commit()
     session.refresh(db_note)
 
-    item["note_id"] = db_note.id
+    item["note_id"] = note_public_id(db_note)
     try:
         save_wardrobe_hall(wardrobe_hall)
     except ValueError as exc:
@@ -3317,8 +3331,11 @@ def update_fanxiu_spirit_beast_note(
         raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
 
     if not db_note:
+        note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
             title=item_title,
             content=note_in.content or "",
@@ -3395,7 +3412,7 @@ def update_fanxiu_spirit_beast_note(
     session.commit()
     session.refresh(db_note)
 
-    item["note_id"] = db_note.id
+    item["note_id"] = note_public_id(db_note)
     try:
         save_spirit_beast_hall(spirit_beast_hall)
     except ValueError as exc:
@@ -3468,8 +3485,11 @@ def update_fanxiu_magic_treasure_note(
         raise HTTPException(status_code=400, detail="请先填写条目名称，再编辑文档。")
 
     if not db_note:
+        note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
             title=item_title,
             content=note_in.content or "",
@@ -3546,7 +3566,7 @@ def update_fanxiu_magic_treasure_note(
     session.commit()
     session.refresh(db_note)
 
-    item["note_id"] = db_note.id
+    item["note_id"] = note_public_id(db_note)
     try:
         save_magic_treasure_hall(magic_treasure_hall)
     except ValueError as exc:
@@ -3618,8 +3638,11 @@ def update_fanxiu_activity_note(
         raise HTTPException(status_code=400, detail="请先填写活动名称，再编辑文档。")
 
     if not db_note:
+        note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
             title=item_title,
             content=note_in.content or "",
@@ -3695,7 +3718,7 @@ def update_fanxiu_activity_note(
     session.commit()
     session.refresh(db_note)
 
-    item["note_id"] = db_note.id
+    item["note_id"] = note_public_id(db_note)
     try:
         save_activity_list(activity_list)
     except ValueError as exc:
@@ -3792,8 +3815,11 @@ def update_char(
     
     if not db_note:
         # Create new
+        note_identity = allocate_new_note_identity(session)
         db_note = NoteNode(
-            id=str(uuid.uuid4()),
+            id=note_identity.primary_id,
+            numeric_id=note_identity.numeric_id,
+            legacy_id=note_identity.legacy_id,
             user_id=fanxiu_user.id,
             title=char_name, 
             content=note_in.content or "",

@@ -12,7 +12,6 @@ import {
   fetchRimeContextLint,
   fetchRimeContextPredictionTree,
   importRimeContextArticle,
-  importRimeContextDeviceHistory,
   refreshRimeContextPredictionTree,
   saveRimeContextArticleContent,
   saveRimeContextHistoryArticle,
@@ -123,10 +122,8 @@ const articleContentDraft = ref('');
 const articleContentSaveStatus = ref<ArticleContentSaveStatus>('idle');
 const articleContentSaveError = ref('');
 const articleDialogVisible = ref(false);
-const deviceHistoryDialogVisible = ref(false);
 const candidateDialogVisible = ref(false);
 const submittingArticle = ref(false);
-const importingDeviceHistory = ref(false);
 const submittingCandidate = ref(false);
 const updatingArticleId = ref('');
 const deletingCandidateKey = ref('');
@@ -136,10 +133,6 @@ const articleForm = ref({
   enabled: true,
   sourceType: 'imported_article' as 'imported_article' | 'lexicon',
   weightMultiplier: 8,
-});
-const deviceHistoryForm = ref({
-  sourceEntryId: '',
-  enabled: true,
 });
 const candidateForm = ref({
   originalContext: '',
@@ -156,7 +149,6 @@ let articleContentDraftVersion = 0;
 const currentDevice = computed(() => devices.value.find((device) => device.id === selectedEntryId.value) || null);
 const hasDevices = computed(() => devices.value.length > 0);
 const normalizedSearch = computed(() => searchText.value.trim().toLowerCase());
-const articleSummary = computed(() => articlesState.value?.summary || unavailableArticles('').summary);
 const articleDialogTitle = computed(() => (articleForm.value.sourceType === 'lexicon' ? '导入自定义短语' : '导入语料'));
 const articleContentLabel = computed(() => (articleForm.value.sourceType === 'lexicon' ? '短语' : '正文'));
 const articleContentPlaceholder = computed(() => (
@@ -186,13 +178,6 @@ const lintIsStale = computed(() => Boolean(
   && (lintLoadedSource.value !== lintSource.value || lintLoadedMode.value !== lintMode.value),
 ));
 const canImportArticle = computed(() => Boolean(selectedEntryId.value && articlesState.value?.available));
-const historySourceDevices = computed(() => devices.value.filter((device) => device.id !== selectedEntryId.value));
-const canImportDeviceHistory = computed(() => Boolean(
-  selectedEntryId.value
-  && currentDevice.value?.mode === 'local'
-  && articlesState.value?.available
-  && historySourceDevices.value.length,
-));
 const historyHasDraftChanges = computed(() => historyDraft.value !== (historyState.value?.content || ''));
 const currentIndexSource = computed(() => (
   indexSourceOptions.find((item) => item.value === selectedIndexSource.value) || indexSourceOptions[0]
@@ -628,7 +613,35 @@ const deviceMeta = (device: Device | null) => {
   }
 };
 
-const formatNumber = (value: number | null | undefined) => Number(value || 0).toLocaleString('zh-CN');
+function formatNumber(value: number | null | undefined) {
+  const numberValue = Number(value || 0);
+  const normalized = Object.is(numberValue, -0) ? 0 : numberValue;
+  return formatSignificantUnitNumber(normalized);
+}
+
+function formatSignificantUnitNumber(value: number, significantDigits = 4) {
+  if (!Number.isFinite(value)) return '0';
+  const normalized = Object.is(value, -0) ? 0 : value;
+  const sign = normalized < 0 ? '-' : '';
+  const absValue = Math.abs(normalized);
+  if (absValue >= 100000000) {
+    return `${sign}${formatSignificantDigits(absValue / 100000000, significantDigits)}亿`;
+  }
+  if (absValue >= 10000) {
+    return `${sign}${formatSignificantDigits(absValue / 10000, significantDigits)}万`;
+  }
+  return `${sign}${formatSignificantDigits(absValue, significantDigits, false)}`;
+}
+
+function formatSignificantDigits(value: number, significantDigits: number, useGrouping = true) {
+  if (!Number.isFinite(value) || value === 0) return '0';
+  const decimalDigits = Math.max(0, significantDigits - Math.floor(Math.log10(Math.abs(value))) - 1);
+  return value.toLocaleString(undefined, {
+    useGrouping,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: decimalDigits,
+  });
+}
 
 const formatBytes = (value: number | null | undefined) => {
   const size = Number(value || 0);
@@ -656,11 +669,26 @@ const formatHistoryRange = (firstSeen: string, lastSeen: string) => {
 
 const candidateRowKey = (row: RimeContextPredictionRow) => `${row.context}\t${row.prefix}\t${row.candidate}`;
 const articleHashShort = (value: string) => (value ? value.slice(0, 10) : '');
+const stripInputHistoryPrefix = (value: string) => value.replace(/^输入历史\s*[·:：-]\s*/, '').trim();
 const articleKindLabel = (article: RimeContextArticle) => {
   if (article.source_type === 'lexicon' || article.source_type === 'manual_english_terms') return '自定义短语';
   if (article.source_type === 'device_history' || article.source_type === 'input_history') return '输入历史';
   return '文章';
 };
+const articleDisplayName = (article: RimeContextArticle) => {
+  if (article.source_type === 'device_history' || article.source_type === 'input_history') {
+    return stripInputHistoryPrefix(article.source_label || article.title) || stripInputHistoryPrefix(article.title) || '本机';
+  }
+  return article.title;
+};
+const articleTitleTooltip = (article: RimeContextArticle) => (
+  [
+    article.title,
+    article.source_label && article.source_label !== article.title ? article.source_label : '',
+    article.source_key,
+    articleHashShort(article.content_hash),
+  ].filter(Boolean).join('\n')
+);
 const isReadonlyArticle = (article: RimeContextArticle) => Boolean(article.readonly || article.source_type === 'input_history');
 const lintSourceLabel = (value: string) => {
   if (value === 'history') return '输入历史';
@@ -1074,15 +1102,6 @@ const openArticleDialog = (sourceType: 'imported_article' | 'lexicon' = 'importe
   articleDialogVisible.value = true;
 };
 
-const openDeviceHistoryDialog = () => {
-  const firstSource = historySourceDevices.value[0];
-  deviceHistoryForm.value = {
-    sourceEntryId: firstSource?.id || '',
-    enabled: true,
-  };
-  deviceHistoryDialogVisible.value = true;
-};
-
 const openCandidateDialog = (row: RimeContextPredictionRow) => {
   candidateForm.value = {
     originalContext: row.context,
@@ -1120,31 +1139,6 @@ const submitImportArticle = async () => {
     ElMessage.error(err.response?.data?.detail || err.message || `${articleDialogTitle.value}失败`);
   } finally {
     submittingArticle.value = false;
-  }
-};
-
-const submitImportDeviceHistory = async () => {
-  if (!selectedEntryId.value) return;
-  if (!deviceHistoryForm.value.sourceEntryId) {
-    ElMessage.warning('请选择来源设备');
-    return;
-  }
-  importingDeviceHistory.value = true;
-  try {
-    articlesState.value = await importRimeContextDeviceHistory(selectedEntryId.value, {
-      source_entry_id: deviceHistoryForm.value.sourceEntryId,
-      enabled: deviceHistoryForm.value.enabled,
-    });
-    deviceHistoryDialogVisible.value = false;
-    ElMessage.success(articlesState.value.message || '设备历史已同步');
-    if (selectedArticleId.value && articlesState.value.articles.some((article) => article.id === selectedArticleId.value)) {
-      await loadArticleContent(articleContentPage.value);
-    }
-    await loadTree();
-  } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || err.message || '同步设备历史失败');
-  } finally {
-    importingDeviceHistory.value = false;
   }
 };
 
@@ -1357,7 +1351,7 @@ onBeforeUnmount(() => {
     </header>
 
     <section v-if="!hasDevices && !loadingDevices" class="rime-empty">
-      当前没有可用设备，请先在设备任务里添加本机或远程设备。
+      当前没有可用设备，请先在运行管理里添加本机或远程设备。
     </section>
 
     <template v-else>
@@ -1516,41 +1510,43 @@ onBeforeUnmount(() => {
                   </button>
                 </nav>
 
-                <table class="rime-candidate-table" aria-label="预测候选词">
-                  <thead>
-                    <tr>
-                      <th>候选词</th>
-                      <th>权重</th>
-                      <th v-if="canEditCandidateRows"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      v-for="(row, index) in selectedRows"
-                      :key="`${row.context}:${row.prefix}:${row.candidate}:${index}`"
-                      class="candidate-row"
-                      :class="{ 'is-summary': !canEditCandidateRows }"
-                      :title="canEditCandidateRows ? `双击修改：${row.prefix} ${row.candidate}` : `汇总候选：${row.candidate}`"
-                      @dblclick="canEditCandidateRows && openCandidateDialog(row)"
-                    >
-                      <td>{{ row.candidate }}</td>
-                      <td>{{ formatNumber(row.weight) }}</td>
-                      <td v-if="canEditCandidateRows">
-                        <el-button
-                          link
-                          type="danger"
-                          :icon="Delete"
-                          :loading="deletingCandidateKey === candidateRowKey(row)"
-                          :disabled="Boolean(deletingCandidateKey)"
-                          title="删除候选词"
-                          aria-label="删除候选词"
-                          @dblclick.stop
-                          @click="handleDeleteCandidate(row)"
-                        />
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
+                <div class="rime-candidate-table-wrap">
+                  <table class="rime-candidate-table" aria-label="预测候选词">
+                    <thead>
+                      <tr>
+                        <th>候选词</th>
+                        <th>权重</th>
+                        <th v-if="canEditCandidateRows"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="(row, index) in selectedRows"
+                        :key="`${row.context}:${row.prefix}:${row.candidate}:${index}`"
+                        class="candidate-row"
+                        :class="{ 'is-summary': !canEditCandidateRows }"
+                        :title="canEditCandidateRows ? `双击修改：${row.prefix} ${row.candidate}` : `汇总候选：${row.candidate}`"
+                        @dblclick="canEditCandidateRows && openCandidateDialog(row)"
+                      >
+                        <td>{{ row.candidate }}</td>
+                        <td>{{ formatNumber(row.weight) }}</td>
+                        <td v-if="canEditCandidateRows">
+                          <el-button
+                            link
+                            type="danger"
+                            :icon="Delete"
+                            :loading="deletingCandidateKey === candidateRowKey(row)"
+                            :disabled="Boolean(deletingCandidateKey)"
+                            title="删除候选词"
+                            aria-label="删除候选词"
+                            @dblclick.stop
+                            @click="handleDeleteCandidate(row)"
+                          />
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </template>
               <div v-else class="rime-pane-empty">没有可展示的预测索引。</div>
             </main>
@@ -1704,10 +1700,17 @@ onBeforeUnmount(() => {
 
       <section v-else class="rime-articles" v-loading="loadingArticles">
         <section class="rime-section-head">
-          <strong>语料文件清单</strong>
+          <div class="rime-section-title">
+            <strong>语料文件清单</strong>
+            <span v-if="articlesState?.rime_dir" class="rime-section-path" :title="articlesState.rime_dir">
+              目录 {{ articlesState.rime_dir }}
+            </span>
+          </div>
           <div class="rime-section-actions">
             <el-button
               type="primary"
+              size="small"
+              plain
               :icon="Plus"
               :disabled="!canImportArticle"
               @click="openArticleDialog('imported_article')"
@@ -1715,33 +1718,14 @@ onBeforeUnmount(() => {
               导入语料
             </el-button>
             <el-button
+              size="small"
               :icon="Plus"
               :disabled="!canImportArticle"
               @click="openArticleDialog('lexicon')"
             >
               导入自定义短语
             </el-button>
-            <el-button
-              :icon="Refresh"
-              :loading="importingDeviceHistory"
-              :disabled="!canImportDeviceHistory"
-              title="把其他设备的输入历史同步为本机语料"
-              aria-label="把其他设备的输入历史同步为本机语料"
-              @click="openDeviceHistoryDialog"
-            >
-              拉取历史
-            </el-button>
           </div>
-        </section>
-
-        <section class="rime-summary">
-          <span><strong>来源</strong>{{ formatNumber(articleSummary.article_count) }}</span>
-          <span><strong>启用</strong>{{ formatNumber(articleSummary.enabled_count) }}</span>
-          <span><strong>自定义短语</strong>{{ formatNumber(articleSummary.lexicon_count || 0) }}</span>
-          <span><strong>贡献</strong>{{ formatNumber(articleSummary.contribution_count) }}</span>
-          <span v-if="articlesState?.rime_dir" class="summary-path" :title="articlesState.rime_dir">
-            <strong>目录</strong>{{ articlesState.rime_dir }}
-          </span>
         </section>
 
         <section v-if="!articlesState?.available" class="rime-unavailable">
@@ -1755,11 +1739,10 @@ onBeforeUnmount(() => {
                 <th>启用</th>
                 <th>类型</th>
                 <th>名称</th>
-                <th>来源</th>
-                <th>贡献</th>
                 <th>字符</th>
-                <th>状态</th>
-                <th>更新时间</th>
+                <th>语料更新</th>
+                <th>索引</th>
+                <th>索引更新</th>
                 <th></th>
               </tr>
             </thead>
@@ -1780,16 +1763,13 @@ onBeforeUnmount(() => {
                   />
                 </td>
                 <td>{{ articleKindLabel(article) }}</td>
-                <td class="article-title" :title="`${article.title}\n${articleHashShort(article.content_hash)}`">
-                  {{ article.title }}
+                <td class="article-title" :title="articleTitleTooltip(article)">
+                  {{ articleDisplayName(article) }}
                 </td>
-                <td class="article-source" :title="article.source_key || article.source_label">
-                  {{ article.source_label }}
-                </td>
-                <td>{{ formatNumber(article.row_count) }}</td>
                 <td>{{ formatNumber(article.char_count) }}</td>
-                <td>{{ article.status === 'ready' ? '已提炼' : article.status }}</td>
                 <td>{{ formatDateTime(article.updated_at) }}</td>
+                <td>{{ formatNumber(article.row_count) }}</td>
+                <td>{{ formatDateTime(article.processed_at) }}</td>
                 <td @click.stop>
                   <el-button
                     v-if="!isReadonlyArticle(article)"
@@ -1925,38 +1905,6 @@ onBeforeUnmount(() => {
       </template>
     </el-dialog>
 
-    <el-dialog
-      v-model="deviceHistoryDialogVisible"
-      title="拉取设备历史"
-      width="460px"
-      destroy-on-close
-    >
-      <div class="article-dialog-body">
-        <label class="article-dialog-field">
-          <span>来源设备</span>
-          <el-select
-            v-model="deviceHistoryForm.sourceEntryId"
-            class="rime-select"
-            placeholder="选择来源设备"
-            :disabled="importingDeviceHistory"
-          >
-            <el-option
-              v-for="device in historySourceDevices"
-              :key="device.id"
-              :label="`${device.name || device.device_id} · ${deviceMeta(device)}`"
-              :value="device.id"
-            />
-          </el-select>
-        </label>
-        <el-checkbox v-model="deviceHistoryForm.enabled">同步后立即参与预测索引</el-checkbox>
-      </div>
-      <template #footer>
-        <el-button @click="deviceHistoryDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="importingDeviceHistory" @click="submitImportDeviceHistory">
-          同步
-        </el-button>
-      </template>
-    </el-dialog>
   </div>
 </template>
 
@@ -2079,21 +2027,38 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 42px;
-  padding: 8px 14px;
+  min-height: 36px;
+  padding: 6px 14px;
   border-bottom: 1px solid #e3e7ed;
   background: #fff;
 }
 
-.rime-section-head > strong {
+.rime-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+}
+
+.rime-section-title > strong {
+  flex: 0 0 auto;
   font-size: 14px;
   font-weight: 600;
+}
+
+.rime-section-path {
+  min-width: 0;
+  overflow: hidden;
+  color: #344054;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rime-section-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-left: auto;
 }
 
@@ -2186,10 +2151,12 @@ onBeforeUnmount(() => {
   min-height: 0;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .rime-context-pane {
   min-height: 0;
+  max-height: 100%;
   overflow: auto;
   border-right: 1px solid #d8dee6;
   background: #fff;
@@ -2235,11 +2202,14 @@ onBeforeUnmount(() => {
 .rime-detail-pane {
   min-width: 0;
   min-height: 0;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   padding: 12px 14px 24px;
 }
 
 .rime-detail-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   gap: 10px;
@@ -2291,9 +2261,13 @@ onBeforeUnmount(() => {
 }
 
 .rime-context-tabs {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  max-height: 96px;
+  overflow: auto;
+  padding-right: 4px;
   margin-bottom: 10px;
 }
 
@@ -2329,6 +2303,7 @@ onBeforeUnmount(() => {
 }
 
 .rime-selected-prefix {
+  flex: 0 0 auto;
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -2351,9 +2326,13 @@ onBeforeUnmount(() => {
 }
 
 .rime-prefix-tabs {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 4px;
   margin-bottom: 12px;
 }
 
@@ -2378,6 +2357,18 @@ onBeforeUnmount(() => {
 
 .rime-prefix-tabs small {
   color: #7b8794;
+}
+
+.rime-candidate-table-wrap {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+}
+
+.rime-candidate-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .rime-candidate-table td:first-child {
@@ -2582,13 +2573,6 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
 }
 
-.article-source {
-  max-width: 180px;
-  color: #667085;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .article-empty {
   padding: 18px 14px;
 }
@@ -2643,6 +2627,12 @@ onBeforeUnmount(() => {
   .rime-section-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .rime-section-title {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
   }
 
   .rime-section-actions {

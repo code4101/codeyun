@@ -14,15 +14,17 @@ from backend.api.notes import (
     _serialize_note_read,
 )
 from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
+from backend.core.note_refs import load_notes_by_refs, note_public_id, note_ref_aliases
 from backend.core.note_progress import is_note_system_custom_field_key
 from backend.db import get_session
 from backend.models import NoteEdge, NoteNode, ResourceAccessGrant, User
 from backend.schemas import NoteRead
+from backend.core.resource_identity import RESOURCE_TYPE_NOTE
 
 
 router = APIRouter()
 
-NOTE_DOC_RESOURCE_TYPE = "note_doc"
+NOTE_DOC_RESOURCE_TYPE = RESOURCE_TYPE_NOTE
 RESOURCE_ACCESS_ROLES = ("deny", "viewer", "editor", "manager")
 RESOURCE_ACCESS_ROLE_RANK = {"deny": 0, "viewer": 1, "editor": 2, "manager": 3}
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -81,9 +83,9 @@ class NoteDocResourceAccessUpdateRequest(BaseModel):
 
 
 class NoteDocResourceAccessResponse(BaseModel):
-    resource_type: Literal["note_doc"] = NOTE_DOC_RESOURCE_TYPE
-    resource_id: str
-    public_id: str
+    resource_type: Literal["note"] = NOTE_DOC_RESOURCE_TYPE
+    resource_id: int
+    public_id: int
     access: NoteDocResourceAccess
     grants: list[NoteDocResourceAccessGrantItem] = Field(default_factory=list)
 
@@ -95,14 +97,10 @@ def _is_numeric_note_ref(value: str) -> bool:
 
 def _get_note_by_ref_or_404(session: Session, note_ref: str) -> NoteNode:
     normalized_ref = str(note_ref or "").strip()
-    if not normalized_ref:
+    if not _is_numeric_note_ref(normalized_ref):
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    if _is_numeric_note_ref(normalized_ref):
-        query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_ref))
-    else:
-        query = select(NoteNode).where(NoteNode.id == normalized_ref)
-
+    query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_ref))
     note = session.exec(query).first()
     if note is None:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -110,16 +108,30 @@ def _get_note_by_ref_or_404(session: Session, note_ref: str) -> NoteNode:
 
 
 def _require_note_resource_id(note: NoteNode) -> str:
-    note_id = str(note.id or "").strip()
+    return _public_note_ref(note)
+
+
+def _require_note_public_id(note: NoteNode) -> int:
+    numeric_id = int(note.numeric_id or 0)
+    if numeric_id <= 0:
+        raise HTTPException(status_code=500, detail="文档资源编号缺失")
+    return numeric_id
+
+
+def _require_note_legacy_id(note: NoteNode) -> str:
+    note_id = str(getattr(note, "legacy_id", None) or note.id or "").strip()
     if not note_id:
-        raise HTTPException(status_code=500, detail="文档资源 ID 缺失")
+        raise HTTPException(status_code=500, detail="文档内部 ID 缺失")
     return note_id
 
 
 def _public_note_ref(note: NoteNode) -> str:
     if note.numeric_id is not None and int(note.numeric_id) > 0:
         return str(note.numeric_id)
-    return _require_note_resource_id(note)
+    note_id = str(getattr(note, "legacy_id", None) or note.id or "").strip()
+    if not note_id:
+        raise HTTPException(status_code=500, detail="文档资源 ID 缺失")
+    return note_id
 
 
 def _normalize_resource_role(value: Any) -> Literal["deny", "viewer", "editor", "manager"] | None:
@@ -243,31 +255,24 @@ def _collect_custom_fields_from_note(note: NoteNode) -> dict[str, list[Any]]:
 
 
 def _build_inherited_fields(session: Session, note: NoteNode) -> dict[str, list[list[Any]]]:
-    resolved_note_id = _require_note_resource_id(note)
+    note_refs = note_ref_aliases(note)
     direct_parent_edges = session.exec(
         select(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.target_id == resolved_note_id,
+            NoteEdge.target_id.in_(note_refs),
         )
     ).all()
     parent_ids = [edge.source_id for edge in direct_parent_edges]
 
-    parent_nodes: list[NoteNode] = []
-    if parent_ids:
-        parent_nodes = list(session.exec(
-            select(NoteNode).where(
-                NoteNode.id.in_(parent_ids),
-                NoteNode.user_id == note.user_id,
-            )
-        ).all())
+    parent_nodes: list[NoteNode] = list({note_public_id(parent): parent for parent in load_notes_by_refs(session, note.user_id, parent_ids).values()}.values())
 
     direct_parent_fields: dict[str, list[Any]] = {}
     for parent_node in parent_nodes:
         direct_parent_fields.update(_collect_custom_fields_from_note(parent_node))
 
     ancestor_fields: dict[str, list[Any]] = {}
-    visited_ancestors = set(parent_ids)
-    queue = list(parent_ids)
+    visited_ancestors = {note_public_id(parent) for parent in parent_nodes}
+    queue = sorted({ref for parent in parent_nodes for ref in note_ref_aliases(parent)})
     max_depth = 3
     current_depth = 0
     while queue and current_depth < max_depth:
@@ -277,26 +282,25 @@ def _build_inherited_fields(session: Session, note: NoteNode) -> dict[str, list[
                 NoteEdge.target_id.in_(queue),
             )
         ).all()
-        new_ancestor_ids: list[str] = []
+        source_ref_map = load_notes_by_refs(session, note.user_id, [edge.source_id for edge in upstream_edges])
+        new_ancestor_nodes: list[NoteNode] = []
         for edge in upstream_edges:
-            if edge.source_id not in visited_ancestors and edge.source_id != resolved_note_id:
-                visited_ancestors.add(edge.source_id)
-                new_ancestor_ids.append(edge.source_id)
+            source_note = source_ref_map.get(str(edge.source_id))
+            if source_note is None:
+                continue
+            source_id = note_public_id(source_note)
+            if source_id not in visited_ancestors and source_id != note_public_id(note):
+                visited_ancestors.add(source_id)
+                new_ancestor_nodes.append(source_note)
 
-        if not new_ancestor_ids:
+        if not new_ancestor_nodes:
             queue = []
             current_depth += 1
             continue
 
-        ancestor_nodes = session.exec(
-            select(NoteNode).where(
-                NoteNode.id.in_(new_ancestor_ids),
-                NoteNode.user_id == note.user_id,
-            )
-        ).all()
-        for ancestor_node in ancestor_nodes:
+        for ancestor_node in new_ancestor_nodes:
             ancestor_fields.update(_collect_custom_fields_from_note(ancestor_node))
-        queue = new_ancestor_ids
+        queue = sorted({ref for ancestor_node in new_ancestor_nodes for ref in note_ref_aliases(ancestor_node)})
         current_depth += 1
 
     for key in list(ancestor_fields.keys()):
@@ -316,17 +320,17 @@ def _serialize_doc_note_detail(
     current_user: User | None,
     access: NoteDocResourceAccess,
 ) -> dict[str, Any]:
-    resolved_note_id = _require_note_resource_id(note)
+    note_refs = note_ref_aliases(note)
     edge_count = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            or_(NoteEdge.source_id == resolved_note_id, NoteEdge.target_id == resolved_note_id),
+            or_(NoteEdge.source_id.in_(note_refs), NoteEdge.target_id.in_(note_refs)),
         )
     ).one()
     out_degree = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.source_id == resolved_note_id,
+            NoteEdge.source_id.in_(note_refs),
         )
     ).one()
     return _serialize_note_read(
@@ -372,9 +376,10 @@ def _build_resource_access_response(
     note: NoteNode,
     access: NoteDocResourceAccess,
 ) -> NoteDocResourceAccessResponse:
+    public_id = _require_note_public_id(note)
     return NoteDocResourceAccessResponse(
-        resource_id=_require_note_resource_id(note),
-        public_id=_public_note_ref(note),
+        resource_id=public_id,
+        public_id=public_id,
         access=access,
         grants=_serialize_access_grants(session, note),
     )

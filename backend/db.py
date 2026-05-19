@@ -16,12 +16,16 @@ DATABASE_URL = settings.database_url
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
-from backend.migrations.manager import run_migrations as migrate_db_manager
+from backend.migrations.manager import (
+    run_migrations as migrate_db_manager,
+    run_startup_schema_repairs,
+)
 
 def migrate_db():
     """Perform automatic database migrations for schema changes."""
     print("Initializing Database Migration Manager...")
     try:
+        run_startup_schema_repairs(engine)
         migrate_db_manager(engine)
     except Exception as e:
         print(f"Migration Manager failed: {e}")

@@ -71,6 +71,7 @@ class DeviceFile(SQLModel, table=True):
     )
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
     device_id: str = Field(index=True)
     absolute_path: Optional[str] = Field(default=None, index=True)
     last_known_path: Optional[str] = Field(default=None, index=True)
@@ -108,6 +109,7 @@ class Task(SQLModel, table=True):
     
     description: Optional[str] = None
     device_id: str = Field(index=True) # Removed foreign key to device table
+    runtime_kind: Optional[str] = Field(default=None, index=True)
     schedule: Optional[str] = None 
     timeout: Optional[int] = None 
     order: Optional[int] = Field(default=0)
@@ -220,6 +222,20 @@ class FeatureAccessPolicy(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, index=True)
 
 
+class ResourceIdentity(SQLModel, table=True):
+    __tablename__ = "resourceidentity"
+    __table_args__ = (
+        UniqueConstraint("resource_type", "legacy_pk", name="uq_resourceidentity_type_legacy"),
+        {"extend_existing": True},
+    )
+
+    id: int = Field(primary_key=True)
+    resource_type: str = Field(index=True)
+    legacy_pk: str = Field(index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class ResourceAccessGrant(SQLModel, table=True):
     __tablename__ = "resourceaccessgrant"
     __table_args__ = (
@@ -246,8 +262,9 @@ class PdfDocument(SQLModel, table=True):
         {"extend_existing": True},
     )
 
-    id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
     numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     title: str = Field(default="")
     source_device_file_id: Optional[int] = Field(default=None, foreign_key="devicefile.id", index=True)
     source_entry_id: str = Field(default="", index=True)
@@ -272,7 +289,7 @@ class PdfUserState(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    pdf_document_id: str = Field(foreign_key="pdfdocument.id", index=True)
+    pdf_document_id: str = Field(index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     current_page: int = Field(default=1)
     zoom: str = Field(default="auto")
@@ -290,7 +307,7 @@ class PdfPageNote(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    pdf_document_id: str = Field(foreign_key="pdfdocument.id", index=True)
+    pdf_document_id: str = Field(index=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     page_number: int = Field(index=True)
     content_html: str = Field(default="", sa_column=Column(Text))
@@ -302,7 +319,9 @@ class DocumentAsset(SQLModel, table=True):
     __tablename__ = "documentasset"
     __table_args__ = {'extend_existing': True}
 
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    id: Optional[int] = Field(default=None, primary_key=True)
+    numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     title: str = Field(default="")
     original_filename: str = Field(index=True)
@@ -701,6 +720,7 @@ class SheetDocument(SQLModel, table=True):
 
     id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
     numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     scope: str = Field(default="", index=True)
     owner_type: str = Field(default="", index=True)
     owner_key: str = Field(default="", index=True)
@@ -722,6 +742,7 @@ class WorkbookDocument(SQLModel, table=True):
 
     id: str = Field(default_factory=generate_sheet_document_id, primary_key=True)
     numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     title: str = Field(default="")
     owner_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
@@ -738,8 +759,8 @@ class WorkbookSheetLink(SQLModel, table=True):
     )
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
-    workbook_id: str = Field(foreign_key="workbookdocument.id", index=True)
-    sheet_id: str = Field(foreign_key="sheetdocument.id", index=True)
+    workbook_id: str = Field(index=True)
+    sheet_id: str = Field(index=True)
     order_index: int = Field(default=0, index=True)
     created_at: float = Field(default_factory=time.time)
 
@@ -999,8 +1020,11 @@ class EastmoneyFundFlowRecord(SQLModel, table=True):
 
 class NoteNode(SQLModel, table=True):
     __table_args__ = {'extend_existing': True}
-    id: Optional[str] = Field(default=None, primary_key=True) # Using UUID string usually, or int? Frontend used string timestamp. Let's use string for flexibility.
+    # Runtime migrations rebuild this column as INTEGER; the Python type stays string-tolerant
+    # during the legacy_id transition window for old tests/import helpers that construct refs.
+    id: Optional[str] = Field(default=None, primary_key=True)
     numeric_id: Optional[int] = Field(default=None, index=True, unique=True)
+    legacy_id: Optional[str] = Field(default=None, index=True, unique=True)
     user_id: int = Field(foreign_key="user.id", index=True)
     title: Optional[str] = Field(default="Untitled")
     content: str = Field(default="") # HTML content
@@ -1059,8 +1083,8 @@ class NoteEdge(SQLModel, table=True):
     id: Optional[str] = Field(default=None, primary_key=True) # UUID
     user_id: int = Field(foreign_key="user.id", index=True)
     
-    source_id: str = Field(foreign_key="notenode.id", index=True)
-    target_id: str = Field(foreign_key="notenode.id", index=True)
+    source_id: str = Field(index=True)
+    target_id: str = Field(index=True)
     
     label: Optional[str] = None # Edge label (optional)
     

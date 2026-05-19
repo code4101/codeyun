@@ -12,13 +12,20 @@ from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-from sqlmodel import Session, select, text
+from sqlmodel import Session, select
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.db import engine
+from backend.core.resource_identity import (
+    RESOURCE_TYPE_SHEET,
+    RESOURCE_TYPE_WORKBOOK,
+    ensure_resource_identity,
+)
+from backend.core.sheet_identity import allocate_new_sheet_identity, allocate_new_workbook_identity
+from backend.core.sheet_refs import sheet_public_id, sheet_ref_aliases, workbook_public_id, workbook_ref_aliases
 from backend.models import SheetDocument, User, WorkbookDocument, WorkbookSheetLink
 
 
@@ -428,13 +435,17 @@ def _build_documents(xlsx_path: Path) -> list[tuple[str, str, dict[str, Any]]]:
         workbook.close()
 
 
-def _get_next_numeric_id(session: Session, table_name: str) -> int:
-    row = session.exec(text(f"SELECT COALESCE(MAX(numeric_id), 0) FROM {table_name}")).first()
-    try:
-        value = row[0] if row is not None else 0
-    except (KeyError, TypeError):
-        value = row
-    return int(value or 0) + 1
+def _ensure_workbook_identity(session: Session, workbook: WorkbookDocument) -> None:
+    ensure_resource_identity(session, RESOURCE_TYPE_WORKBOOK, str(workbook.legacy_id or workbook.id), None)
+
+
+def _ensure_sheet_identity(session: Session, sheet: SheetDocument) -> None:
+    sheet.numeric_id = ensure_resource_identity(
+        session,
+        RESOURCE_TYPE_SHEET,
+        str(sheet.legacy_id or sheet.id),
+        int(sheet.numeric_id or 0) if sheet.numeric_id else None,
+    )
 
 
 def _find_or_create_workbook(
@@ -455,11 +466,15 @@ def _find_or_create_workbook(
         workbook.updated_by_user_id = owner_user_id
         workbook.updated_at = time.time()
         session.add(workbook)
+        _ensure_workbook_identity(session, workbook)
         return workbook
 
     now = time.time()
+    workbook_identity = allocate_new_workbook_identity(session)
     workbook = WorkbookDocument(
-        numeric_id=_get_next_numeric_id(session, "workbookdocument"),
+        id=workbook_identity.primary_id,
+        numeric_id=workbook_identity.numeric_id,
+        legacy_id=workbook_identity.legacy_id,
         title=title,
         owner_user_id=owner_user_id,
         created_by_user_id=owner_user_id,
@@ -469,6 +484,7 @@ def _find_or_create_workbook(
     )
     session.add(workbook)
     session.flush()
+    _ensure_workbook_identity(session, workbook)
     return workbook
 
 
@@ -490,8 +506,11 @@ def _upsert_sheet(
     ).first()
     now = time.time()
     if sheet is None:
+        sheet_identity = allocate_new_sheet_identity(session)
         sheet = SheetDocument(
-            numeric_id=_get_next_numeric_id(session, "sheetdocument"),
+            id=sheet_identity.primary_id,
+            numeric_id=sheet_identity.numeric_id,
+            legacy_id=sheet_identity.legacy_id,
             scope="notes",
             owner_type="course_workbook",
             owner_key=owner_key,
@@ -515,6 +534,7 @@ def _upsert_sheet(
         sheet.updated_at = now
     session.add(sheet)
     session.flush()
+    _ensure_sheet_identity(session, sheet)
     return sheet
 
 
@@ -525,23 +545,41 @@ def _ensure_workbook_link(
     sheet: SheetDocument,
     order_index: int,
 ) -> None:
+    workbook_ref = workbook_public_id(workbook)
+    sheet_ref = sheet_public_id(sheet)
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == sheet.id)
+        .where(WorkbookSheetLink.workbook_id == workbook_ref)
+        .where(WorkbookSheetLink.sheet_id == sheet_ref)
     ).first()
+    if link is None:
+        link = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+            .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(sheet)))
+        ).first()
     if link is None:
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=sheet.id,
+                workbook_id=workbook_ref,
+                sheet_id=sheet_ref,
                 order_index=order_index,
                 created_at=time.time(),
             )
         )
-    elif int(link.order_index or 0) != order_index:
-        link.order_index = order_index
-        session.add(link)
+    else:
+        changed = False
+        if link.workbook_id != workbook_ref:
+            link.workbook_id = workbook_ref
+            changed = True
+        if link.sheet_id != sheet_ref:
+            link.sheet_id = sheet_ref
+            changed = True
+        if int(link.order_index or 0) != order_index:
+            link.order_index = order_index
+            changed = True
+        if changed:
+            session.add(link)
 
 
 def _link_summary_row(
