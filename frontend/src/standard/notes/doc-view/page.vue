@@ -114,6 +114,7 @@ import {
   type NoteDocResourceAccess,
   type NoteDocUpdatePayload,
   type NoteNode,
+  noteKey,
   useNoteStore,
 } from '@/api/notes'
 import type { EditableNotePatch } from '@/utils/noteAutoSave'
@@ -208,7 +209,7 @@ function writeLocalBoolean(key: string, value: boolean) {
 }
 
 const getDocRouteRef = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
-  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : note.id
+  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : noteKey(note.id)
 )
 
 const resolveDocHref = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
@@ -295,17 +296,17 @@ async function handleDocSave(note: NoteNode, patch: EditableNotePatch = {}) {
 
 function handleDocSaveKeepalive(note: NoteNode, patch: EditableNotePatch = {}) {
   const payload = (Object.keys(patch).length ? patch : note) as NoteDocUpdatePayload
-  putJsonKeepalive(`/api/note-docs/${encodeURIComponent(note.id)}`, toDocApiPatch(payload))
+  putJsonKeepalive(`/api/note-docs/${encodeURIComponent(noteKey(note.id))}`, toDocApiPatch(payload))
 }
 
 function openGraph(mode: 'planetary' | 'satellite') {
   if (!currentNote.value) return
   const suffix = mode === 'satellite' ? '卫星图' : '行星图'
   noteStore.addTab({
-    id: `planet-${currentNote.value.id}-${mode}`,
+    id: `planet-${noteKey(currentNote.value.id)}-${mode}`,
     label: `${(currentNote.value.title || 'Untitled').slice(0, 8)} - ${suffix}`,
     type: 'planet',
-    data: { noteId: currentNote.value.id, mode },
+    data: { noteId: noteKey(currentNote.value.id), mode },
     closable: true,
   })
   void router.push('/notes/center')

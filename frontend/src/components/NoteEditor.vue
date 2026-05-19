@@ -353,9 +353,13 @@ watch(autoWrapEnabled, value => {
 const toolbarConfig = {}
 
 interface UploadedImageData {
+  id?: number
   url?: string
   alt?: string
   href?: string
+  filename?: string
+  content_type?: string
+  size?: number
 }
 
 interface UploadImageResponse {
@@ -365,6 +369,7 @@ interface UploadImageResponse {
 }
 
 interface UploadedAttachmentData {
+  id?: number
   url?: string
   filename?: string
   original_filename?: string
@@ -466,7 +471,11 @@ const buildAttachmentLinkHtml = (attachment: UploadedAttachmentData) => {
   const url = String(attachment.url || '')
   const label = String(attachment.name || attachment.original_filename || attachment.filename || '附件')
   if (!url) return ''
-  return `<p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" download="${escapeHtml(label)}" data-codeyun-attachment="true">${escapeHtml(label)}</a></p>`
+  const resourceId = Number(attachment.id || 0)
+  const resourceAttrs = resourceId > 0
+    ? ` data-codeyun-resource-type="device_file" data-codeyun-resource-id="${resourceId}"`
+    : ''
+  return `<p><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" download="${escapeHtml(label)}" data-codeyun-attachment="true"${resourceAttrs}>${escapeHtml(label)}</a></p>`
 }
 
 const insertAttachmentLinks = (attachments: UploadedAttachmentData[]) => {

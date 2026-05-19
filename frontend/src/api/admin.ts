@@ -2,6 +2,7 @@ import api from '@/api';
 
 export interface OrphanImage {
   filename: string;
+  device_file_id: number | null;
   size: number;
   mtime: number;
   url: string;
@@ -31,26 +32,27 @@ export const deleteOrphanImages = async (filenames: string[]): Promise<{ deleted
 
 export interface TopFile {
   filename: string;
+  device_file_id: number | null;
   size: number;
   mtime: number;
   url: string;
 }
 
 export interface TopNode {
-  id: string;
+  id: number | null;
   title: string;
   size: number;
   updated_at: number;
 }
 
 export interface DeadLink {
-  note_id: string;
+  note_id: number | null;
   note_title: string;
   link: string;
 }
 
 export interface FixableLink {
-  note_id: string;
+  note_id: number | null;
   note_title: string;
   original_url: string;
   suggested_url: string;
@@ -146,73 +148,6 @@ export interface MaintenanceStatusResponse {
 export interface ScheduleConfig {
   enabled: boolean;
   cron_expression: string;
-}
-
-export interface BackgroundTaskRunSummary {
-  id?: string;
-  name?: string;
-  status?: string;
-  stage?: string;
-  stage_label?: string;
-  trigger_reason?: string;
-  repo_count?: number;
-  changed_repo_count?: number;
-  committed_repo_count?: number;
-  skipped_repo_count?: number;
-  failed_repo_count?: number;
-  sample_count?: number;
-  diary_date?: string;
-  source_turn_count?: number;
-  created_note_count?: number;
-  duplicate_note_ids?: string[];
-  error_message?: string | null;
-  queued_at?: number;
-  created_at?: number;
-  started_at?: number | null;
-  finished_at?: number | null;
-  updated_at?: number;
-  result?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-}
-
-export interface BackgroundTaskItem {
-  key: string;
-  title: string;
-  category: string;
-  description: string;
-  cron_expression: string;
-  schedule_label: string;
-  enabled: boolean;
-  scheduler_running: boolean;
-  runner_running: boolean;
-  next_run_at: string | null;
-  retry_policy: string;
-  can_trigger: boolean;
-  trigger_warning: string;
-  active: boolean;
-  latest_run: BackgroundTaskRunSummary | null;
-}
-
-export interface BackgroundTaskQueueSnapshot {
-  is_idle: boolean;
-  running: BackgroundTaskRunSummary | null;
-  pending: BackgroundTaskRunSummary[];
-  recent: BackgroundTaskRunSummary[];
-}
-
-export interface BackgroundTaskStatusResponse {
-  queue: BackgroundTaskQueueSnapshot;
-  tasks: BackgroundTaskItem[];
-  runner_running: boolean;
-  next_wake_at: string | null;
-  runner_error?: string | null;
-}
-
-export interface BackgroundTaskTriggerResponse {
-  task_key: string;
-  queued: boolean;
-  queue_task_id: string | null;
-  run: BackgroundTaskRunSummary | null;
 }
 
 export interface AdminAccountSummary {
@@ -324,31 +259,6 @@ export const fetchScheduleConfig = async (): Promise<ScheduleConfig> => {
 
 export const updateScheduleConfig = async (config: ScheduleConfig): Promise<ScheduleConfig> => {
   const response = await api.post('/admin/storage/schedule', config);
-  return response.data;
-};
-
-export const fetchBackgroundTaskStatus = async (): Promise<BackgroundTaskStatusResponse> => {
-  const response = await api.get('/admin/background-tasks/status');
-  return response.data;
-};
-
-export const triggerBackgroundTask = async (taskKey: string): Promise<BackgroundTaskTriggerResponse> => {
-  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/trigger`);
-  return response.data;
-};
-
-export const toggleBackgroundTask = async (taskKey: string, enabled: boolean) => {
-  const response = await api.post(`/admin/background-tasks/${encodeURIComponent(taskKey)}/toggle`, { enabled });
-  return response.data;
-};
-
-export const deleteBackgroundQueueTask = async (taskId: string) => {
-  const response = await api.delete(`/admin/background-tasks/queue/${encodeURIComponent(taskId)}`);
-  return response.data;
-};
-
-export const deleteBackgroundTask = async (taskKey: string) => {
-  const response = await api.delete(`/admin/background-tasks/${encodeURIComponent(taskKey)}`);
   return response.data;
 };
 

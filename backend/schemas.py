@@ -1,6 +1,8 @@
 from typing import Optional, List, Any, Dict, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
+PublicResourceId = int | str
+
 
 class Token(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -153,7 +155,7 @@ class NoteUpdate(BaseModel):
 
 class NoteRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    id: str
+    id: PublicResourceId
     numeric_id: Optional[int] = None
     user_id: int
     title: str
@@ -186,7 +188,7 @@ class NoteRead(BaseModel):
 
 class NoteListRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
-    id: str
+    id: PublicResourceId
     numeric_id: Optional[int] = None
     user_id: int
     title: str
@@ -251,7 +253,7 @@ class NoteFilterRule(BaseModel):
 
 class NoteQueryScope(BaseModel):
     mode: Literal["all", "planetary", "satellite"] = "all"
-    seed_note_id: Optional[str] = None
+    seed_note_id: Optional[PublicResourceId] = None
 
 class NoteQueryRequest(BaseModel):
     scope: NoteQueryScope = Field(default_factory=NoteQueryScope)
@@ -264,16 +266,16 @@ class NoteQueryRequest(BaseModel):
 
 # Edge Schemas
 class EdgeCreate(BaseModel):
-    source_id: str
-    target_id: str
+    source_id: PublicResourceId
+    target_id: PublicResourceId
     label: Optional[str] = None
 
 class EdgeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
     user_id: int
-    source_id: str
-    target_id: str
+    source_id: PublicResourceId
+    target_id: PublicResourceId
     label: Optional[str]
     created_at: float
 
@@ -298,7 +300,7 @@ class NoteTimePointExpr(BaseModel):
 
 class NoteProgramMatcher(BaseModel):
     kind: Literal["all", "none", "id", "field", "title_contains", "full_text_contains", "seed", "depth", "relative_month_window"]
-    ids: List[str] = Field(default_factory=list)
+    ids: List[PublicResourceId] = Field(default_factory=list)
     field: Optional[str] = None
     op: Optional[Literal["eq", "neq", "in", "not_in", "contains", "not_contains", "regex_search", "gte", "lte", "between"]] = None
     value: Optional[Any] = None
@@ -329,7 +331,7 @@ class NoteProgramChannels(BaseModel):
 
 class NoteProgramExecutor(BaseModel):
     kind: Literal["scan", "component"] = "scan"
-    seed_ids: List[str] = Field(default_factory=list)
+    seed_ids: List[PublicResourceId] = Field(default_factory=list)
     mode: Literal["planetary", "satellite"] = "planetary"
     max_depth: Optional[int] = None
 
@@ -366,7 +368,7 @@ class NoteBatchPatch(BaseModel):
 
 
 class NoteBatchUpdateRequest(BaseModel):
-    ids: List[str] = Field(default_factory=list)
+    ids: List[PublicResourceId] = Field(default_factory=list)
     patch: NoteBatchPatch = Field(default_factory=NoteBatchPatch)
 
 

@@ -4,6 +4,10 @@ from backend.core.note_semantics import build_note_category_palette_setting_key
 from backend.models import AppSetting, NoteNode
 
 
+def _numeric_note_id(note_id: str) -> int:
+    return sum((index + 1) * ord(char) for index, char in enumerate(note_id)) % 1000000 + 1000
+
+
 def _make_note(
     note_id,
     user_id,
@@ -17,6 +21,7 @@ def _make_note(
 ):
     return NoteNode(
         id=note_id,
+        numeric_id=_numeric_note_id(note_id),
         user_id=user_id,
         title=title,
         content=content,
@@ -39,6 +44,7 @@ def _make_note(
 def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     note = NoteNode(
         id="note-ai-categorize-1",
+        numeric_id=_numeric_note_id("note-ai-categorize-1"),
         user_id=auth_user.id,
         title="修复登录接口报错",
         content="<p>用户登录时会出现 500 报错，需要尽快定位并修复。</p>",
@@ -58,6 +64,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     )
     reference_bug = NoteNode(
         id="note-ai-categorize-ref-bug",
+        numeric_id=_numeric_note_id("note-ai-categorize-ref-bug"),
         user_id=auth_user.id,
         title="修复注册接口报错",
         content="<p>另一条参考笔记。</p>",
@@ -77,6 +84,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
     )
     reference_doc = NoteNode(
         id="note-ai-categorize-ref-doc",
+        numeric_id=_numeric_note_id("note-ai-categorize-ref-doc"),
         user_id=auth_user.id,
         title="登录模块技术方案",
         content="<p>另一条文档类参考笔记。</p>",
@@ -107,7 +115,7 @@ def test_ai_categorize_note_updates_note_taxonomy(client, session, auth_user):
         },
     ) as mock_chat:
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={
                 "provider": "deepseek",
                 "model": "deepseek-chat",
@@ -184,7 +192,7 @@ def test_ai_categorize_reference_samples_are_balanced_by_taxonomy_combo(client, 
         },
     ) as mock_chat:
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={
                 "provider": "deepseek",
                 "model": "deepseek-chat",
@@ -223,7 +231,7 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
         },
     ) as mock_chat:
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={"provider": "deepseek", "model": "deepseek-chat"},
         )
 
@@ -237,6 +245,7 @@ def test_ai_categorize_note_filters_blocked_custom_category_labels(client, sessi
 def test_ai_categorize_note_rejects_unknown_category(client, session, auth_user):
     note = NoteNode(
         id="note-ai-categorize-2",
+        numeric_id=_numeric_note_id("note-ai-categorize-2"),
         user_id=auth_user.id,
         title="一条普通笔记",
         content="<p>只是随手记录一点东西。</p>",
@@ -265,7 +274,7 @@ def test_ai_categorize_note_rejects_unknown_category(client, session, auth_user)
         },
     ):
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={
                 "provider": "deepseek",
                 "model": "deepseek-chat",
@@ -289,7 +298,7 @@ def test_ai_categorize_note_rejects_blocked_builtin_category(client, session, au
         },
     ):
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={"provider": "deepseek", "model": "deepseek-chat"},
         )
 
@@ -300,6 +309,7 @@ def test_ai_categorize_note_rejects_blocked_builtin_category(client, session, au
 def test_ai_categorize_note_requires_title_even_when_content_exists(client, session, auth_user):
     note = NoteNode(
         id="note-ai-categorize-no-title",
+        numeric_id=_numeric_note_id("note-ai-categorize-no-title"),
         user_id=auth_user.id,
         title="",
         content="<p>正文里其实有不少信息，但现在不应再参与分类。</p>",
@@ -322,7 +332,7 @@ def test_ai_categorize_note_requires_title_even_when_content_exists(client, sess
 
     with patch("backend.api.notes.chat_with_provider") as mock_chat:
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={
                 "provider": "deepseek",
                 "model": "deepseek-chat",

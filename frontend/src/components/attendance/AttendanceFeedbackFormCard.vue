@@ -26,6 +26,7 @@ type FeedbackDraft = {
 type PersistedFeedbackDraft = Pick<FeedbackDraft, 'course' | 'studentId' | 'studentName'>
 
 const FEEDBACK_FORM_STORAGE_KEY = 'codeyun-attendance-feedback-draft'
+const CODEYUN_PUBLIC_HOST = 'code4101.com'
 
 const props = withDefaults(
   defineProps<{
@@ -72,7 +73,7 @@ const hasSubmittedCurrentDraft = computed(() => (
   && lastSubmittedDraftKey.value === currentNormalizedDraftKey.value
 ))
 const publicSheetLinks = computed(() => [
-  { label: '问卷数据', url: formMeta.value?.data_sheet_url || '' },
+  { label: '问卷数据', url: normalizeProvidedCodeyunUrl(formMeta.value?.data_sheet_url) },
 ].filter((item) => item.url))
 const feedbackHistoryReady = computed(() => canLoadFeedbackHistory())
 
@@ -82,6 +83,57 @@ function normalizeStoredText(value: unknown) {
 
 function normalizeStoredCourse(value: unknown) {
   return normalizeStoredText(value)
+}
+
+function getUrlHostname(url: URL) {
+  return url.hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
+}
+
+function isLocalhostCodeyunHost(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+}
+
+function isLanIpv4Host(hostname: string) {
+  const parts = hostname.split('.').map((part) => Number(part))
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false
+  }
+  const [first, second] = parts
+  return (
+    first === 10
+    || first === 192
+    || (first === 172 && second >= 16 && second <= 31)
+  )
+}
+
+function shouldUsePublicCodeyunHost(url: URL) {
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    return false
+  }
+  const hostname = getUrlHostname(url)
+  return isLocalhostCodeyunHost(hostname) || isLanIpv4Host(hostname)
+}
+
+function normalizeProvidedCodeyunUrl(value: unknown) {
+  const rawUrl = normalizeStoredText(value).trim()
+  if (!rawUrl || typeof window === 'undefined') {
+    return rawUrl
+  }
+
+  try {
+    const sourceUrl = new URL(rawUrl, window.location.href)
+    if (!shouldUsePublicCodeyunHost(sourceUrl)) {
+      return rawUrl
+    }
+
+    const targetUrl = new URL(sourceUrl.toString())
+    targetUrl.protocol = 'https:'
+    targetUrl.hostname = CODEYUN_PUBLIC_HOST
+    targetUrl.port = ''
+    return targetUrl.toString()
+  } catch {
+    return rawUrl
+  }
 }
 
 function normalizeCourseMatchText(value: unknown) {
@@ -94,7 +146,7 @@ function normalizeCourseMatchText(value: unknown) {
 function normalizeCourseOption(value: AttendanceFeedbackCourseOption) {
   return {
     name: normalizeStoredText(value.name).trim(),
-    attendance_sheet_url: normalizeStoredText(value.attendance_sheet_url).trim(),
+    attendance_sheet_url: normalizeProvidedCodeyunUrl(value.attendance_sheet_url),
   }
 }
 

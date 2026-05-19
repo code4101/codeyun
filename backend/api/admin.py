@@ -3,6 +3,7 @@ import os
 import re
 import json
 import time
+from pathlib import Path
 from typing import Any, List, Set, Optional, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select, func, text
@@ -27,11 +28,12 @@ from backend.core.background_task_runner import (
 )
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
+from backend.core.attachment_resources import index_attachment_file_resource
 from backend.core.note_metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
 )
-from backend.models import AppSetting, User, NoteNode
+from backend.models import AppSetting, DeviceFile, User, NoteNode
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.storage import (
     ATTACHMENT_URL_PATTERN,
@@ -230,6 +232,7 @@ def _without_queue(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 class OrphanImage(BaseModel):
     filename: str
+    device_file_id: Optional[int] = None
     size: int
     mtime: float
     url: str
@@ -316,18 +319,24 @@ class WorkspaceUsageResponse(BaseModel):
 
 class TopFile(BaseModel):
     filename: str
+    device_file_id: Optional[int] = None
     size: int
     mtime: float
     url: str
 
 class TopNode(BaseModel):
-    id: str
+    id: Optional[int] = None
     title: str
     size: int
     updated_at: float
 
+class DeadLink(BaseModel):
+    note_id: Optional[int] = None
+    note_title: str
+    link: str
+
 class FixableLink(BaseModel):
-    note_id: str
+    note_id: Optional[int] = None
     note_title: str
     original_url: str
     suggested_url: str
@@ -340,7 +349,7 @@ class StorageAnalysisResponse(BaseModel):
 class MaintenanceStatusResponse(BaseModel):
     orphan_count: int
     orphan_size: int
-    dead_links: List[dict]
+    dead_links: List[DeadLink]
     fixable_links: List[FixableLink]
 
 class ScheduleConfig(BaseModel):
@@ -403,6 +412,66 @@ def _clamp_workspace_usage_top_limit(value: int) -> int:
 
 def _get_data_workspace_dir():
     return settings.data_workspace_dir
+
+
+def _note_numeric_public_id(note: NoteNode) -> int | None:
+    if note.numeric_id is None:
+        return None
+    return int(note.numeric_id)
+
+
+def _attachment_path_for_filename(filename: str) -> Path:
+    return (Path(ATTACHMENTS_ABS_PATH) / filename).resolve(strict=False)
+
+
+def _attachment_device_file_ids(
+    session: Session,
+    filenames: Set[str],
+    *,
+    ensure_missing: bool = False,
+) -> Dict[str, int | None]:
+    normalized_filenames = {str(filename or "").strip() for filename in filenames}
+    normalized_filenames.discard("")
+    if not normalized_filenames:
+        return {}
+
+    device_id = get_device_id()
+    paths_by_filename = {
+        filename: os.fspath(_attachment_path_for_filename(filename))
+        for filename in normalized_filenames
+    }
+    records = session.exec(
+        select(DeviceFile).where(
+            DeviceFile.device_id == device_id,
+            DeviceFile.absolute_path.in_(list(paths_by_filename.values())),
+        )
+    ).all()
+    records_by_path = {
+        str(record.absolute_path): record
+        for record in records
+        if record.absolute_path
+    }
+
+    result: Dict[str, int | None] = {}
+    changed = False
+    for filename, absolute_path in paths_by_filename.items():
+        record = records_by_path.get(absolute_path)
+        if ensure_missing and (record is None or record.numeric_id is None):
+            try:
+                record = index_attachment_file_resource(
+                    session,
+                    absolute_path,
+                    device_id=device_id,
+                )
+            except FileNotFoundError:
+                record = None
+            else:
+                changed = True
+        result[filename] = int(record.numeric_id) if record and record.numeric_id is not None else None
+
+    if changed:
+        session.commit()
+    return result
 
 
 def _resolve_storage_usage_scope(scope: str) -> tuple[str, str, Any]:
@@ -883,10 +952,16 @@ def get_storage_analysis(session: Session = Depends(get_session)):
                         file_types[ext] = file_types.get(ext, 0) + 1
             
             # Sort by size desc
+            device_file_ids = _attachment_device_file_ids(
+                session,
+                {str(f["filename"]) for f in file_list},
+                ensure_missing=True,
+            )
             file_list.sort(key=lambda x: x["size"], reverse=True)
             for f in file_list[:50]:
                 top_files.append(TopFile(
                     filename=f["filename"],
+                    device_file_id=device_file_ids.get(str(f["filename"])),
                     size=f["size"],
                     mtime=f["mtime"],
                     url=build_attachment_url(f["filename"])
@@ -898,14 +973,14 @@ def get_storage_analysis(session: Session = Depends(get_session)):
     top_nodes = []
     try:
         # Use SQL length function
-        stmt = select(NoteNode.id, NoteNode.title, func.length(NoteNode.content).label("size"), NoteNode.updated_at)\
+        stmt = select(NoteNode.numeric_id, NoteNode.title, func.length(NoteNode.content).label("size"), NoteNode.updated_at)\
                .order_by(text("size DESC"))\
                .limit(50)
         
         results = session.exec(stmt).all()
         for row in results:
             top_nodes.append(TopNode(
-                id=str(row.id),
+                id=int(row.numeric_id) if row.numeric_id is not None else None,
                 title=row.title or "Untitled",
                 size=row.size or 0,
                 updated_at=row.updated_at
@@ -960,17 +1035,17 @@ def get_maintenance_status(session: Session = Depends(get_session)):
                     candidates = disk_files_by_stem.get(stem)
                     if candidates:
                         fixable_links.append(FixableLink(
-                            note_id=str(note.id),
+                            note_id=_note_numeric_public_id(note),
                             note_title=note.title or "Untitled",
                             original_url=build_attachment_url(filename),
                             suggested_url=build_attachment_url(candidates[0])
                         ))
                     else:
-                        dead_links.append({
-                            "note_id": note.id,
-                            "note_title": note.title,
-                            "link": build_attachment_url(filename)
-                        })
+                        dead_links.append(DeadLink(
+                            note_id=_note_numeric_public_id(note),
+                            note_title=note.title or "Untitled",
+                            link=build_attachment_url(filename),
+                        ))
 
     # 3. Calculate Orphans
     orphan_filenames = disk_files - referenced_files
@@ -1011,12 +1086,14 @@ def get_orphan_images(session: Session = Depends(get_session)):
     
     orphans = []
     orphan_files = all_files - referenced
+    device_file_ids = _attachment_device_file_ids(session, orphan_files, ensure_missing=True)
     orphan_size = 0
     for f in orphan_files:
         s = file_stats.get(f, {"size": 0, "mtime": 0})
         orphan_size += s["size"]
         orphans.append(OrphanImage(
             filename=f,
+            device_file_id=device_file_ids.get(f),
             size=s["size"],
             mtime=s["mtime"],
             url=build_attachment_url(f)

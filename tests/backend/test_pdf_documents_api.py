@@ -191,6 +191,7 @@ def test_pdf_user_state_is_per_user(client: TestClient, session: Session, tmp_pa
     assert owner_detail.json()["my_state"]["current_page"] == 7
     states = session.exec(select(PdfUserState)).all()
     assert sorted(state.current_page for state in states) == [3, 7]
+    assert {state.pdf_document_id for state in states} == {str(document["id"])}
 
 
 def test_pdf_page_note_is_virtual_until_content_is_saved(client: TestClient, session: Session, tmp_path: Path):
@@ -276,6 +277,7 @@ def test_pdf_page_note_is_per_user_private_overlay(client: TestClient, session: 
     assert owner_saved.json()["content_html"] == "<p>owner note</p>"
     notes = session.exec(select(PdfPageNote)).all()
     assert sorted(note.content_html for note in notes) == ["<p>owner note</p>", "<p>viewer note</p>"]
+    assert {note.pdf_document_id for note in notes} == {str(document["id"])}
 
 
 def test_pdf_page_note_requires_login(client: TestClient, session: Session, tmp_path: Path):

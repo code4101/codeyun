@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 import uuid
 from typing import Any, Optional
@@ -430,6 +431,7 @@ def v11_upgrade_device_file_identity_schema(session: Session):
                 last_known_path,
                 content_hash,
                 hash_algorithm,
+                visual_hash_algorithm,
                 file_size,
                 match_status,
                 weight,
@@ -445,6 +447,7 @@ def v11_upgrade_device_file_identity_schema(session: Session):
                 absolute_path,
                 NULL,
                 'sha256',
+                'dhash-8',
                 NULL,
                 'matched',
                 COALESCE(weight, 0),
@@ -2313,13 +2316,14 @@ def v44_add_note_numeric_ids(session: Session):
     if "numeric_id" not in columns:
         session.exec(text("ALTER TABLE notenode ADD COLUMN numeric_id INTEGER"))
 
+    note_order_clause = "created_at ASC, rowid ASC" if "created_at" in columns else "rowid ASC"
     rows = session.exec(
         text(
-            """
-            SELECT rowid, created_at
+            f"""
+            SELECT rowid
             FROM notenode
             WHERE numeric_id IS NULL
-            ORDER BY created_at ASC, rowid ASC
+            ORDER BY {note_order_clause}
             """
         )
     ).all()
@@ -2339,6 +2343,2120 @@ def v44_add_note_numeric_ids(session: Session):
     session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_notenode_numeric_id ON notenode (numeric_id)"))
     session.commit()
     print("  Added note numeric ids.")
+
+
+def _migration_table_numeric_max(session: Session, table_name: str) -> int:
+    if not _table_exists(session, table_name):
+        return 0
+    columns = _get_table_columns(session, table_name)
+    if "numeric_id" not in columns:
+        return 0
+    row = session.exec(text(f"SELECT COALESCE(MAX(numeric_id), 0) FROM {table_name}")).first()
+    return max(int(_first_scalar(row) or 0), 0)
+
+
+def _migration_insert_resource_identity(
+    session: Session,
+    *,
+    resource_id: int,
+    resource_type: str,
+    legacy_pk: str,
+    now: float,
+) -> None:
+    session.execute(
+        text(
+            """
+            INSERT INTO resourceidentity (id, resource_type, legacy_pk, created_at, updated_at)
+            VALUES (:id, :resource_type, :legacy_pk, :created_at, :updated_at)
+            """
+        ),
+        {
+            "id": int(resource_id),
+            "resource_type": resource_type,
+            "legacy_pk": str(legacy_pk),
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+
+
+RESOURCE_IDENTITY_RESOURCE_TABLES = [
+    ("sheet", "sheetdocument"),
+    ("workbook", "workbookdocument"),
+    ("pdf", "pdfdocument"),
+    ("document_asset", "documentasset"),
+    ("note", "notenode"),
+    ("device_file", "devicefile"),
+]
+
+
+def _migration_resource_rows(session: Session, table_name: str) -> list[dict[str, Any]]:
+    if not _table_exists(session, table_name):
+        return []
+    columns = _get_table_columns(session, table_name)
+    if "numeric_id" not in columns:
+        return []
+    created_at_expr = "created_at" if "created_at" in columns else "0 AS created_at"
+    created_at_order = "created_at ASC," if "created_at" in columns else ""
+    legacy_pk_expr = (
+        "COALESCE(NULLIF(legacy_id, ''), CAST(id AS TEXT))"
+        if "legacy_id" in columns
+        else "CAST(id AS TEXT)"
+    )
+    rows = session.exec(
+        text(
+            f"""
+            SELECT rowid, {legacy_pk_expr} AS legacy_pk, numeric_id, {created_at_expr}
+            FROM {table_name}
+            ORDER BY
+                CASE WHEN numeric_id IS NULL OR numeric_id <= 0 THEN 1 ELSE 0 END,
+                numeric_id ASC,
+                {created_at_order}
+                rowid ASC
+            """
+        )
+    ).all()
+    return [
+        {
+            "rowid": int(row[0]),
+            "legacy_pk": str(row[1] or "").strip(),
+            "old_id": int(row[2] or (row[1] if table_name == "devicefile" and str(row[1] or "").isdecimal() else 0)),
+            "created_at": float(row[3] or 0),
+        }
+        for row in rows
+        if str(row[1] or "").strip()
+    ]
+
+
+def _migration_next_available_id(used_ids: set[int]) -> int:
+    next_id = max(used_ids, default=0) + 1
+    while next_id in used_ids:
+        next_id += 1
+    return next_id
+
+
+def _migration_assign_resource_ids_by_priority(
+    session: Session,
+    *,
+    force_reassign_types: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    force_reassign_types = force_reassign_types or set()
+    used_ids: set[int] = set()
+    assignments: list[dict[str, Any]] = []
+
+    for resource_type, table_name in RESOURCE_IDENTITY_RESOURCE_TABLES:
+        rows = _migration_resource_rows(session, table_name)
+        if not rows:
+            continue
+
+        assigned_by_rowid: dict[int, int] = {}
+        if resource_type not in force_reassign_types:
+            seen_preferred_ids: set[int] = set()
+            for row in rows:
+                preferred_id = int(row["old_id"] or 0)
+                if preferred_id <= 0 or preferred_id in used_ids or preferred_id in seen_preferred_ids:
+                    continue
+                assigned_by_rowid[int(row["rowid"])] = preferred_id
+                seen_preferred_ids.add(preferred_id)
+                used_ids.add(preferred_id)
+
+        for row in rows:
+            rowid = int(row["rowid"])
+            resource_id = assigned_by_rowid.get(rowid)
+            if resource_id is None:
+                resource_id = _migration_next_available_id(used_ids)
+                used_ids.add(resource_id)
+            assignments.append({
+                "resource_type": resource_type,
+                "table_name": table_name,
+                "rowid": rowid,
+                "legacy_pk": str(row["legacy_pk"]),
+                "old_id": int(row["old_id"] or 0),
+                "new_id": int(resource_id),
+            })
+
+    return assignments
+
+
+def _migration_workbook_route_ids_by_rowid(assignments: list[dict[str, Any]]) -> dict[int, int]:
+    used_ids: set[int] = set()
+    route_ids: dict[int, int] = {}
+    for item in assignments:
+        if str(item["resource_type"]) != "workbook":
+            continue
+        old_id = int(item["old_id"] or 0)
+        if old_id > 0 and old_id not in used_ids:
+            route_id = old_id
+        else:
+            route_id = _migration_next_available_id(used_ids)
+        used_ids.add(route_id)
+        route_ids[int(item["rowid"])] = route_id
+    return route_ids
+
+
+def _migration_apply_resource_identity_assignments(
+    session: Session,
+    assignments: list[dict[str, Any]],
+) -> dict[str, dict[str, str]]:
+    now = time.time()
+    changed_public_ids: dict[str, dict[str, str]] = {}
+    workbook_route_ids = _migration_workbook_route_ids_by_rowid(assignments)
+    for item in assignments:
+        table_name = str(item["table_name"])
+        old_id = int(item["old_id"] or 0)
+        identity_id = int(item["new_id"])
+        resource_type = str(item["resource_type"])
+        public_id = (
+            int(workbook_route_ids.get(int(item["rowid"]), old_id or identity_id))
+            if resource_type == "workbook"
+            else identity_id
+        )
+        session.execute(
+            text(f"UPDATE {table_name} SET numeric_id = :numeric_id WHERE rowid = :rowid"),
+            {"numeric_id": public_id, "rowid": int(item["rowid"])},
+        )
+        if old_id > 0 and old_id != public_id:
+            changed_public_ids.setdefault(resource_type, {})[str(old_id)] = str(public_id)
+        _migration_insert_resource_identity(
+            session,
+            resource_id=identity_id,
+            resource_type=resource_type,
+            legacy_pk=str(item["legacy_pk"]),
+            now=now,
+        )
+    return changed_public_ids
+
+
+def v45_add_global_resource_identity(session: Session):
+    """
+    Migration V45: Build a global numeric id namespace for user-facing resources.
+    """
+    print("Running System Upgrade V45: Add global resource identities...")
+    bind = session.get_bind()
+    from backend.models import ResourceIdentity
+
+    ResourceIdentity.__table__.create(bind, checkfirst=True)
+
+    if _table_exists(session, "documentasset"):
+        columns = _get_table_columns(session, "documentasset")
+        if "numeric_id" not in columns:
+            session.exec(text("ALTER TABLE documentasset ADD COLUMN numeric_id INTEGER"))
+    if _table_exists(session, "devicefile"):
+        columns = _get_table_columns(session, "devicefile")
+        if "numeric_id" not in columns:
+            session.exec(text("ALTER TABLE devicefile ADD COLUMN numeric_id INTEGER"))
+
+    for table_name in ("sheetdocument", "workbookdocument", "pdfdocument", "notenode", "documentasset", "devicefile"):
+        if _table_exists(session, table_name) and "numeric_id" in _get_table_columns(session, table_name):
+            session.exec(text(f"DROP INDEX IF EXISTS ux_{table_name}_numeric_id"))
+
+    session.exec(text("DELETE FROM resourceidentity"))
+
+    assignments = _migration_assign_resource_ids_by_priority(session)
+    _migration_apply_resource_identity_assignments(session, assignments)
+
+    if _table_exists(session, "resourceaccessgrant"):
+        identity_rows = session.exec(text("SELECT id, resource_type, legacy_pk FROM resourceidentity")).all()
+        identity_map = {
+            (str(row[1]), str(row[2])): str(int(row[0]))
+            for row in identity_rows
+        }
+        workbook_route_rows = (
+            session.exec(text("SELECT id, numeric_id FROM workbookdocument WHERE numeric_id IS NOT NULL")).all()
+            if _table_exists(session, "workbookdocument")
+            else []
+        )
+        workbook_route_map = {
+            str(row[0]): str(int(row[1]))
+            for row in workbook_route_rows
+            if row[0] is not None and row[1] is not None
+        }
+        grant_rows = session.exec(text("SELECT id, resource_type, resource_id FROM resourceaccessgrant")).all()
+        for row in grant_rows:
+            grant_id = str(row[0])
+            resource_type = str(row[1] or "")
+            resource_id = str(row[2] or "")
+            canonical_type = "note" if resource_type == "note_doc" else resource_type
+            public_resource_id = (
+                workbook_route_map.get(resource_id)
+                if canonical_type == "workbook"
+                else identity_map.get((canonical_type, resource_id))
+            )
+            if not public_resource_id:
+                continue
+            session.execute(
+                text(
+                    """
+                    UPDATE resourceaccessgrant
+                    SET resource_type = :resource_type, resource_id = :resource_id
+                    WHERE id = :id
+                    """
+                ),
+                {
+                    "id": grant_id,
+                    "resource_type": canonical_type,
+                    "resource_id": public_resource_id,
+                },
+            )
+
+    for table_name in ("sheetdocument", "workbookdocument", "pdfdocument", "notenode", "documentasset", "devicefile"):
+        if _table_exists(session, table_name) and "numeric_id" in _get_table_columns(session, table_name):
+            session.exec(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{table_name}_numeric_id ON {table_name} (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_resourceidentity_type_legacy ON resourceidentity (resource_type, legacy_pk)"))
+    session.commit()
+    print("  Added global resource identities.")
+
+
+def _migration_note_refs_to_public_ids(note_id_map: dict[str, str], value: Any) -> list[str]:
+    raw_items = _load_json_value(value, [])
+    if not isinstance(raw_items, list):
+        return []
+    converted: list[str] = []
+    for item in raw_items:
+        raw_id = str(item or "").strip()
+        if not raw_id:
+            continue
+        converted.append(note_id_map.get(raw_id, raw_id))
+    return converted
+
+
+def v46_migrate_resource_json_refs_to_public_ids(session: Session):
+    """
+    Migration V46: Convert stored JSON note resource refs to public numeric ids.
+    """
+    print("Running System Upgrade V46: Migrate resource JSON refs to public ids...")
+    if not _table_exists(session, "codexdiaryimportrun") or not _table_exists(session, "notenode"):
+        print("  Codex diary import run or note table missing, skipping.")
+        return
+
+    note_rows = session.exec(text("SELECT id, numeric_id FROM notenode WHERE numeric_id IS NOT NULL")).all()
+    note_id_map = {str(row[0]): str(int(row[1])) for row in note_rows if row[0] is not None and row[1] is not None}
+    if not note_id_map:
+        print("  No note id map available, skipping.")
+        return
+
+    run_rows = session.exec(text("SELECT id, created_note_ids, duplicate_note_ids FROM codexdiaryimportrun")).all()
+    for row in run_rows:
+        run_id = str(row[0])
+        created_note_ids = _migration_note_refs_to_public_ids(note_id_map, row[1])
+        duplicate_note_ids = _migration_note_refs_to_public_ids(note_id_map, row[2])
+        session.execute(
+            text(
+                """
+                UPDATE codexdiaryimportrun
+                SET created_note_ids = :created_note_ids,
+                    duplicate_note_ids = :duplicate_note_ids
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": run_id,
+                "created_note_ids": _dump_json_value(created_note_ids),
+                "duplicate_note_ids": _dump_json_value(duplicate_note_ids),
+            },
+        )
+    session.commit()
+    print("  Migrated Codex diary note refs to public ids.")
+
+
+def _migration_legacy_to_public_id_map(session: Session, resource_type: str) -> dict[str, str]:
+    if not _table_exists(session, "resourceidentity"):
+        return {}
+    rows = session.execute(
+        text(
+            """
+            SELECT legacy_pk, id
+            FROM resourceidentity
+            WHERE resource_type = :resource_type
+            """
+        ),
+        {"resource_type": resource_type},
+    ).all()
+    return {str(row[0]): str(int(row[1])) for row in rows if row[0] is not None and row[1] is not None}
+
+
+def _migration_table_legacy_to_numeric_id_map(session: Session, table_name: str) -> dict[str, str]:
+    if not _table_exists(session, table_name):
+        return {}
+    columns = _get_table_columns(session, table_name)
+    if "id" not in columns or "numeric_id" not in columns:
+        return {}
+    rows = session.exec(text(f"SELECT id, numeric_id FROM {table_name} WHERE numeric_id IS NOT NULL")).all()
+    return {str(row[0]): str(int(row[1])) for row in rows if row[0] is not None and row[1] is not None}
+
+
+def _migration_convert_ref_column_to_public_ids(
+    session: Session,
+    *,
+    table_name: str,
+    column_name: str,
+    resource_type: str,
+) -> int:
+    if not _table_exists(session, table_name):
+        return 0
+    columns = _get_table_columns(session, table_name)
+    if "id" not in columns or column_name not in columns:
+        return 0
+    id_map = _migration_legacy_to_public_id_map(session, resource_type)
+    if not id_map:
+        return 0
+
+    updated_count = 0
+    rows = session.exec(text(f"SELECT id, {column_name} FROM {table_name}")).all()
+    for row in rows:
+        row_id = str(row[0])
+        raw_ref = str(row[1] or "").strip()
+        public_ref = id_map.get(raw_ref)
+        if not public_ref or public_ref == raw_ref:
+            continue
+        session.execute(
+            text(f"UPDATE {table_name} SET {column_name} = :public_ref WHERE id = :id"),
+            {"id": row_id, "public_ref": public_ref},
+        )
+        updated_count += 1
+    return updated_count
+
+
+def v47_migrate_internal_resource_refs_to_public_ids(session: Session):
+    """
+    Migration V47: Move low-risk internal resource refs to public numeric ids.
+    """
+    print("Running System Upgrade V47: Migrate internal resource refs to public ids...")
+    conversions = [
+        ("pdfuserstate", "pdf_document_id", "pdf"),
+        ("pdfpagenote", "pdf_document_id", "pdf"),
+        ("documentreductionrun", "document_id", "document_asset"),
+        ("documentqueryhistory", "document_id", "document_asset"),
+        ("notemetadatafeedback", "note_id", "note"),
+    ]
+    updated_total = 0
+    for table_name, column_name, resource_type in conversions:
+        updated = _migration_convert_ref_column_to_public_ids(
+            session,
+            table_name=table_name,
+            column_name=column_name,
+            resource_type=resource_type,
+        )
+        updated_total += updated
+    session.commit()
+    print(f"  Migrated {updated_total} internal resource refs.")
+
+
+def v48_cleanup_unmapped_internal_resource_refs(session: Session):
+    """
+    Migration V48: Remove orphan metadata feedback rows that cannot map to a note resource id.
+    """
+    print("Running System Upgrade V48: Cleanup unmapped internal resource refs...")
+    if not _table_exists(session, "notemetadatafeedback"):
+        print("  Note metadata feedback table missing, skipping.")
+        return
+
+    note_id_map = _migration_legacy_to_public_id_map(session, "note")
+    converted_count = 0
+    deleted_count = 0
+    rows = session.exec(text("SELECT id, note_id FROM notemetadatafeedback WHERE note_id GLOB '*[^0-9]*'")).all()
+    for row in rows:
+        row_id = str(row[0])
+        raw_ref = str(row[1] or "").strip()
+        public_ref = note_id_map.get(raw_ref)
+        if public_ref:
+            session.execute(
+                text("UPDATE notemetadatafeedback SET note_id = :note_id WHERE id = :id"),
+                {"id": row_id, "note_id": public_ref},
+            )
+            converted_count += 1
+            continue
+        session.execute(text("DELETE FROM notemetadatafeedback WHERE id = :id"), {"id": row_id})
+        deleted_count += 1
+    session.commit()
+    print(f"  Converted {converted_count} feedback refs and deleted {deleted_count} orphan feedback rows.")
+
+
+def _migration_public_ref(id_map: dict[str, str], raw_ref: Any) -> str:
+    normalized = str(raw_ref or "").strip()
+    if not normalized:
+        return ""
+    return id_map.get(normalized, normalized)
+
+
+def _migration_quote_ident(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _migration_drop_readable_views(session: Session) -> None:
+    rows = session.exec(
+        text("SELECT name FROM sqlite_master WHERE type = 'view' AND name LIKE '%_readable'")
+    ).all()
+    for row in rows:
+        view_name = str(_first_scalar(row) or "")
+        if not view_name:
+            continue
+        session.exec(text(f"DROP VIEW IF EXISTS {_migration_quote_ident(view_name)}"))
+
+
+def _migration_rebuild_noteedge_public_refs(session: Session) -> tuple[int, int]:
+    if not _table_exists(session, "noteedge"):
+        return 0, 0
+    note_id_map = _migration_legacy_to_public_id_map(session, "note")
+    if not note_id_map:
+        return 0, 0
+
+    rows = session.exec(text("SELECT id, user_id, source_id, target_id, label, created_at FROM noteedge")).all()
+    converted_rows: list[dict[str, Any]] = []
+    updated_count = 0
+    dropped_orphans = 0
+    for row in rows:
+        raw_source = str(row[2] or "").strip()
+        raw_target = str(row[3] or "").strip()
+        source_ref = _migration_public_ref(note_id_map, raw_source)
+        target_ref = _migration_public_ref(note_id_map, raw_target)
+        if not source_ref.isdecimal() or not target_ref.isdecimal():
+            dropped_orphans += 1
+            continue
+        if source_ref != raw_source or target_ref != raw_target:
+            updated_count += 1
+        converted_rows.append({
+            "id": str(row[0] or uuid.uuid4()),
+            "user_id": int(row[1] or 0),
+            "source_id": source_ref,
+            "target_id": target_ref,
+            "label": row[4],
+            "created_at": float(row[5] or time.time()),
+        })
+
+    session.exec(text("PRAGMA foreign_keys=OFF"))
+    session.exec(text("DROP TABLE IF EXISTS noteedge_v49_backup"))
+    session.exec(text("ALTER TABLE noteedge RENAME TO noteedge_v49_backup"))
+    session.exec(text(
+        """
+        CREATE TABLE noteedge (
+            id VARCHAR PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            source_id VARCHAR NOT NULL,
+            target_id VARCHAR NOT NULL,
+            label VARCHAR,
+            created_at FLOAT NOT NULL
+        )
+        """
+    ))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_noteedge_user_id ON noteedge (user_id)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_noteedge_source_id ON noteedge (source_id)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_noteedge_target_id ON noteedge (target_id)"))
+    for item in converted_rows:
+        session.execute(
+            text(
+                """
+                INSERT INTO noteedge (id, user_id, source_id, target_id, label, created_at)
+                VALUES (:id, :user_id, :source_id, :target_id, :label, :created_at)
+                """
+            ),
+            item,
+        )
+    session.exec(text("DROP TABLE IF EXISTS noteedge_v49_backup"))
+    session.exec(text("PRAGMA foreign_keys=ON"))
+    return updated_count, dropped_orphans
+
+
+def _migration_rebuild_workbooksheetlink_public_refs(session: Session) -> tuple[int, int]:
+    if not _table_exists(session, "workbooksheetlink"):
+        return 0, 0
+    workbook_id_map = _migration_table_legacy_to_numeric_id_map(session, "workbookdocument")
+    sheet_id_map = _migration_table_legacy_to_numeric_id_map(session, "sheetdocument")
+    if not workbook_id_map or not sheet_id_map:
+        return 0, 0
+
+    rows = session.exec(
+        text("SELECT id, workbook_id, sheet_id, order_index, created_at FROM workbooksheetlink ORDER BY order_index, created_at")
+    ).all()
+    converted_rows: list[dict[str, Any]] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    updated_count = 0
+    dropped_duplicates = 0
+    for row in rows:
+        raw_workbook = str(row[1] or "").strip()
+        raw_sheet = str(row[2] or "").strip()
+        workbook_ref = _migration_public_ref(workbook_id_map, raw_workbook)
+        sheet_ref = _migration_public_ref(sheet_id_map, raw_sheet)
+        if workbook_ref != raw_workbook or sheet_ref != raw_sheet:
+            updated_count += 1
+        pair = (workbook_ref, sheet_ref)
+        if pair in seen_pairs:
+            dropped_duplicates += 1
+            continue
+        seen_pairs.add(pair)
+        converted_rows.append({
+            "id": str(row[0] or uuid.uuid4().hex),
+            "workbook_id": workbook_ref,
+            "sheet_id": sheet_ref,
+            "order_index": int(row[3] or 0),
+            "created_at": float(row[4] or time.time()),
+        })
+
+    session.exec(text("PRAGMA foreign_keys=OFF"))
+    session.exec(text("DROP TABLE IF EXISTS workbooksheetlink_v49_backup"))
+    session.exec(text("ALTER TABLE workbooksheetlink RENAME TO workbooksheetlink_v49_backup"))
+    session.exec(text(
+        """
+        CREATE TABLE workbooksheetlink (
+            id VARCHAR PRIMARY KEY,
+            workbook_id VARCHAR NOT NULL,
+            sheet_id VARCHAR NOT NULL,
+            order_index INTEGER NOT NULL,
+            created_at FLOAT NOT NULL,
+            CONSTRAINT uq_workbooksheetlink_workbook_sheet UNIQUE (workbook_id, sheet_id)
+        )
+        """
+    ))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_workbooksheetlink_workbook_id ON workbooksheetlink (workbook_id)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_workbooksheetlink_sheet_id ON workbooksheetlink (sheet_id)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_workbooksheetlink_order_index ON workbooksheetlink (order_index)"))
+    for item in converted_rows:
+        session.execute(
+            text(
+                """
+                INSERT INTO workbooksheetlink (id, workbook_id, sheet_id, order_index, created_at)
+                VALUES (:id, :workbook_id, :sheet_id, :order_index, :created_at)
+                """
+            ),
+            item,
+        )
+    session.exec(text("DROP TABLE IF EXISTS workbooksheetlink_v49_backup"))
+    session.exec(text("PRAGMA foreign_keys=ON"))
+    return updated_count, dropped_duplicates
+
+
+def v49_migrate_graph_and_workbook_links_to_public_ids(session: Session):
+    """
+    Migration V49: Store high-coupling graph/workbook refs as public numeric resource ids.
+    """
+    print("Running System Upgrade V49: Migrate graph and workbook links to public ids...")
+    _migration_drop_readable_views(session)
+    edge_updated, edge_dropped = _migration_rebuild_noteedge_public_refs(session)
+    link_updated, link_dropped = _migration_rebuild_workbooksheetlink_public_refs(session)
+    session.commit()
+    print(
+        "  Migrated "
+        f"{edge_updated} note edge refs and {link_updated} workbook link refs; "
+        f"dropped {edge_dropped} orphan note edges and {link_dropped} duplicate workbook links."
+    )
+
+
+def _migration_delete_nonnumeric_ref_rows(session: Session, table_name: str, columns: tuple[str, ...]) -> int:
+    if not _table_exists(session, table_name):
+        return 0
+    existing_columns = _get_table_columns(session, table_name)
+    target_columns = [column for column in columns if column in existing_columns]
+    if not target_columns:
+        return 0
+    predicate = " OR ".join(
+        f"({column} IS NOT NULL AND {column} != '' AND {column} GLOB '*[^0-9]*')"
+        for column in target_columns
+    )
+    count = int(_first_scalar(session.exec(text(f"SELECT COUNT(*) FROM {table_name} WHERE {predicate}")).first()) or 0)
+    if count:
+        session.exec(text(f"DELETE FROM {table_name} WHERE {predicate}"))
+    return count
+
+
+def v50_cleanup_unmapped_graph_and_workbook_refs(session: Session):
+    """
+    Migration V50: Remove orphan high-coupling refs that could not map to numeric resources.
+    """
+    print("Running System Upgrade V50: Cleanup unmapped graph and workbook refs...")
+    deleted_edges = _migration_delete_nonnumeric_ref_rows(session, "noteedge", ("source_id", "target_id"))
+    deleted_links = _migration_delete_nonnumeric_ref_rows(session, "workbooksheetlink", ("workbook_id", "sheet_id"))
+    session.commit()
+    print(f"  Deleted {deleted_edges} orphan note edges and {deleted_links} orphan workbook links.")
+
+
+def _migration_update_public_ref_column(
+    session: Session,
+    *,
+    table_name: str,
+    column_name: str,
+    id_map: dict[str, str],
+) -> int:
+    if not id_map or not _table_exists(session, table_name) or column_name not in _get_table_columns(session, table_name):
+        return 0
+    updated = 0
+    for old_id, new_id in id_map.items():
+        result = session.execute(
+            text(f"UPDATE {table_name} SET {column_name} = :new_id WHERE {column_name} = :old_id"),
+            {"old_id": str(old_id), "new_id": str(new_id)},
+        )
+        updated += int(result.rowcount or 0)
+    return updated
+
+
+def _migration_update_resource_grants_for_public_id_changes(
+    session: Session,
+    changed_public_ids: dict[str, dict[str, str]],
+) -> int:
+    if not changed_public_ids or not _table_exists(session, "resourceaccessgrant"):
+        return 0
+    updated = 0
+    for resource_type, id_map in changed_public_ids.items():
+        for old_id, new_id in id_map.items():
+            result = session.execute(
+                text(
+                    """
+                    UPDATE resourceaccessgrant
+                    SET resource_id = :new_id
+                    WHERE resource_type = :resource_type
+                      AND resource_id = :old_id
+                    """
+                ),
+                {"resource_type": resource_type, "old_id": str(old_id), "new_id": str(new_id)},
+            )
+            updated += int(result.rowcount or 0)
+    return updated
+
+
+def _migration_update_codex_diary_note_refs(
+    session: Session,
+    note_id_map: dict[str, str],
+) -> int:
+    if not note_id_map or not _table_exists(session, "codexdiaryimportrun"):
+        return 0
+    updated = 0
+    run_rows = session.exec(text("SELECT id, created_note_ids, duplicate_note_ids FROM codexdiaryimportrun")).all()
+    for row in run_rows:
+        run_id = str(row[0])
+        created_note_ids = _migration_note_refs_to_public_ids(note_id_map, row[1])
+        duplicate_note_ids = _migration_note_refs_to_public_ids(note_id_map, row[2])
+        old_created = _migration_note_refs_to_public_ids({}, row[1])
+        old_duplicate = _migration_note_refs_to_public_ids({}, row[2])
+        if created_note_ids == old_created and duplicate_note_ids == old_duplicate:
+            continue
+        session.execute(
+            text(
+                """
+                UPDATE codexdiaryimportrun
+                SET created_note_ids = :created_note_ids,
+                    duplicate_note_ids = :duplicate_note_ids
+                WHERE id = :id
+                """
+            ),
+            {
+                "id": run_id,
+                "created_note_ids": _dump_json_value(created_note_ids),
+                "duplicate_note_ids": _dump_json_value(duplicate_note_ids),
+            },
+        )
+        updated += 1
+    return updated
+
+
+def v51_repack_resource_ids_by_priority(session: Session):
+    """
+    Migration V51: Correct V45's overly-high workbook/pdf/asset ids.
+    """
+    print("Running System Upgrade V51: Repack resource ids by priority...")
+    if not _table_exists(session, "resourceidentity"):
+        print("  Resource identity table missing, skipping.")
+        return
+
+    for table_name in ("sheetdocument", "workbookdocument", "pdfdocument", "notenode", "documentasset", "devicefile"):
+        if _table_exists(session, table_name) and "numeric_id" in _get_table_columns(session, table_name):
+            session.exec(text(f"DROP INDEX IF EXISTS ux_{table_name}_numeric_id"))
+    session.exec(text("DELETE FROM resourceidentity"))
+
+    assignments = _migration_assign_resource_ids_by_priority(
+        session,
+        force_reassign_types={"pdf", "document_asset"},
+    )
+    changed_public_ids = _migration_apply_resource_identity_assignments(session, assignments)
+
+    updated_refs = 0
+    updated_refs += _migration_update_resource_grants_for_public_id_changes(session, changed_public_ids)
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="workbooksheetlink",
+        column_name="workbook_id",
+        id_map=changed_public_ids.get("workbook", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="workbooksheetlink",
+        column_name="sheet_id",
+        id_map=changed_public_ids.get("sheet", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="noteedge",
+        column_name="source_id",
+        id_map=changed_public_ids.get("note", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="noteedge",
+        column_name="target_id",
+        id_map=changed_public_ids.get("note", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="notemetadatafeedback",
+        column_name="note_id",
+        id_map=changed_public_ids.get("note", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="pdfuserstate",
+        column_name="pdf_document_id",
+        id_map=changed_public_ids.get("pdf", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="pdfpagenote",
+        column_name="pdf_document_id",
+        id_map=changed_public_ids.get("pdf", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="documentreductionrun",
+        column_name="document_id",
+        id_map=changed_public_ids.get("document_asset", {}),
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="documentqueryhistory",
+        column_name="document_id",
+        id_map=changed_public_ids.get("document_asset", {}),
+    )
+    updated_runs = _migration_update_codex_diary_note_refs(session, changed_public_ids.get("note", {}))
+
+    for table_name in ("sheetdocument", "workbookdocument", "pdfdocument", "notenode", "documentasset", "devicefile"):
+        if _table_exists(session, table_name) and "numeric_id" in _get_table_columns(session, table_name):
+            session.exec(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{table_name}_numeric_id ON {table_name} (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_resourceidentity_type_legacy ON resourceidentity (resource_type, legacy_pk)"))
+    session.commit()
+    print(
+        "  Repacked resource ids; "
+        f"changed {sum(len(item) for item in changed_public_ids.values())} resources, "
+        f"updated {updated_refs} scalar refs and {updated_runs} Codex diary runs."
+    )
+
+
+def v52_restore_workbook_route_ids(session: Session):
+    """
+    Migration V52: Restore workbook-local route ids after V51 moved them into the global namespace.
+    """
+    print("Running System Upgrade V52: Restore workbook route ids...")
+    if not _table_exists(session, "workbookdocument"):
+        print("  Workbook table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "workbookdocument")
+    if "numeric_id" not in columns:
+        print("  Workbook numeric id column missing, skipping.")
+        return
+
+    rows = session.exec(
+        text(
+            """
+            SELECT rowid, id, numeric_id
+            FROM workbookdocument
+            WHERE numeric_id IS NOT NULL
+            ORDER BY numeric_id ASC, rowid ASC
+            """
+        )
+    ).all()
+    if not rows:
+        print("  No workbook route ids found, skipping.")
+        return
+
+    current_ids = [int(row[2]) for row in rows]
+    sheet_max = _migration_table_numeric_max(session, "sheetdocument")
+    expected_v51_ids = list(range(sheet_max + 1, sheet_max + 1 + len(rows)))
+    if min(current_ids) <= sheet_max or current_ids != expected_v51_ids:
+        print("  Workbook route ids do not look like V51-shifted ids, skipping.")
+        return
+
+    target_ids = [int(row[0]) for row in rows]
+    if len(target_ids) != len(set(target_ids)) or any(item <= 0 for item in target_ids):
+        print("  Could not derive stable rowid-based workbook ids, skipping.")
+        return
+
+    id_map = {
+        str(int(row[2])): str(int(row[0]))
+        for row in rows
+        if int(row[2]) != int(row[0])
+    }
+    if not id_map:
+        print("  Workbook route ids already restored.")
+        return
+
+    session.exec(text("DROP INDEX IF EXISTS ux_workbookdocument_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_workbookdocument_numeric_id"))
+    for row in rows:
+        session.execute(
+            text("UPDATE workbookdocument SET numeric_id = :numeric_id WHERE id = :id"),
+            {"numeric_id": int(row[0]), "id": str(row[1])},
+        )
+
+    updated_refs = 0
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="workbooksheetlink",
+        column_name="workbook_id",
+        id_map=id_map,
+    )
+    updated_refs += _migration_update_resource_grants_for_public_id_changes(
+        session,
+        {"workbook": id_map},
+    )
+
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_workbookdocument_numeric_id ON workbookdocument (numeric_id)"))
+    session.commit()
+    print(f"  Restored {len(id_map)} workbook route ids and updated {updated_refs} refs.")
+
+
+def v53_add_device_file_resource_identities(session: Session):
+    """
+    Migration V53: Add tracked files/images to the global resource id namespace.
+    """
+    print("Running System Upgrade V53: Add device file resource identities...")
+    if not _table_exists(session, "devicefile"):
+        print("  Device file table missing, skipping.")
+        return
+
+    bind = session.get_bind()
+    from backend.models import ResourceIdentity
+
+    ResourceIdentity.__table__.create(bind, checkfirst=True)
+
+    columns = _get_table_columns(session, "devicefile")
+    if "numeric_id" not in columns:
+        session.exec(text("ALTER TABLE devicefile ADD COLUMN numeric_id INTEGER"))
+
+    session.exec(text("DROP INDEX IF EXISTS ux_devicefile_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_devicefile_numeric_id"))
+    session.exec(text("DELETE FROM resourceidentity WHERE resource_type = 'device_file'"))
+
+    used_ids = {
+        int(_first_scalar(row) or 0)
+        for row in session.exec(text("SELECT id FROM resourceidentity")).all()
+        if int(_first_scalar(row) or 0) > 0
+    }
+
+    rows = _migration_resource_rows(session, "devicefile")
+    changed_count = 0
+    now = time.time()
+    for row in rows:
+        old_id = int(row["old_id"] or 0)
+        if old_id > 0 and old_id not in used_ids:
+            public_id = old_id
+        else:
+            public_id = _migration_next_available_id(used_ids)
+        used_ids.add(public_id)
+        if old_id != public_id:
+            changed_count += 1
+
+        session.execute(
+            text("UPDATE devicefile SET numeric_id = :numeric_id WHERE rowid = :rowid"),
+            {"numeric_id": public_id, "rowid": int(row["rowid"])},
+        )
+        _migration_insert_resource_identity(
+            session,
+            resource_id=public_id,
+            resource_type="device_file",
+            legacy_pk=str(row["legacy_pk"]),
+            now=now,
+        )
+
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_devicefile_numeric_id ON devicefile (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_resourceidentity_type_legacy ON resourceidentity (resource_type, legacy_pk)"))
+    session.commit()
+    print(f"  Added {len(rows)} device file identities; reassigned {changed_count} conflicting ids.")
+
+
+def v54_index_attachment_file_resources(session: Session):
+    """
+    Migration V54: Index existing upload attachments as device_file resources.
+    """
+    print("Running System Upgrade V54: Index attachment file resources...")
+    if not _table_exists(session, "devicefile"):
+        print("  Device file table missing, skipping.")
+        return
+    columns = _get_table_columns(session, "devicefile")
+    if "numeric_id" not in columns:
+        print("  Device file numeric id column missing, skipping.")
+        return
+
+    from backend.core.attachment_resources import index_existing_attachment_resources
+
+    indexed_count = index_existing_attachment_resources(session)
+    print(f"  Indexed {indexed_count} attachment files as device resources.")
+
+
+def _migration_documentasset_has_numeric_primary_key(session: Session) -> bool:
+    if not _table_exists(session, "documentasset"):
+        return False
+    for row in session.exec(text("PRAGMA table_info(documentasset)")).all():
+        if str(row[1]) != "id":
+            continue
+        column_type = str(row[2] or "").upper()
+        return int(row[5] or 0) > 0 and "INT" in column_type
+    return False
+
+
+def _migration_documentasset_rows(session: Session) -> list[dict[str, Any]]:
+    columns = _get_table_columns(session, "documentasset")
+    legacy_expr = "COALESCE(NULLIF(legacy_id, ''), CAST(id AS TEXT))" if "legacy_id" in columns else "CAST(id AS TEXT)"
+    rows = session.exec(
+        text(
+            f"""
+            SELECT rowid, CAST(id AS TEXT) AS raw_id, {legacy_expr} AS legacy_id,
+                   numeric_id, user_id
+            FROM documentasset
+            ORDER BY
+                CASE WHEN numeric_id IS NULL OR numeric_id <= 0 THEN 1 ELSE 0 END,
+                numeric_id ASC,
+                created_at ASC,
+                rowid ASC
+            """
+        )
+    ).all()
+    return [
+        {
+            "rowid": int(row[0]),
+            "raw_id": str(row[1] or "").strip(),
+            "legacy_id": str(row[2] or "").strip(),
+            "numeric_id": int(row[3] or 0),
+            "user_id": int(row[4] or 0),
+        }
+        for row in rows
+        if str(row[2] or "").strip()
+    ]
+
+
+def _migration_used_global_resource_ids_except(
+    session: Session,
+    *,
+    resource_type: str,
+    excluded_table_name: str,
+) -> set[int]:
+    used_ids = {
+        int(_first_scalar(row) or 0)
+        for row in session.execute(
+            text("SELECT id FROM resourceidentity WHERE resource_type != :resource_type"),
+            {"resource_type": resource_type},
+        ).all()
+        if int(_first_scalar(row) or 0) > 0
+    }
+    for candidate_table_name in ("sheetdocument", "pdfdocument", "documentasset", "notenode", "devicefile"):
+        if candidate_table_name == excluded_table_name:
+            continue
+        if not _table_exists(session, candidate_table_name) or "numeric_id" not in _get_table_columns(session, candidate_table_name):
+            continue
+        used_ids.update(
+            int(_first_scalar(row) or 0)
+            for row in session.exec(text(f"SELECT numeric_id FROM {candidate_table_name} WHERE numeric_id IS NOT NULL")).all()
+            if int(_first_scalar(row) or 0) > 0
+        )
+    return used_ids
+
+
+def _migration_used_global_resource_ids_except_document_assets(session: Session) -> set[int]:
+    return _migration_used_global_resource_ids_except(
+        session,
+        resource_type="document_asset",
+        excluded_table_name="documentasset",
+    )
+
+
+def _migration_assign_documentasset_numeric_ids(session: Session) -> list[dict[str, Any]]:
+    from backend.models import ResourceIdentity
+
+    ResourceIdentity.__table__.create(session.get_bind(), checkfirst=True)
+    rows = _migration_documentasset_rows(session)
+    identity_rows = session.exec(
+        text("SELECT id, legacy_pk FROM resourceidentity WHERE resource_type = 'document_asset'")
+    ).all()
+    identity_by_legacy = {
+        str(row[1] or "").strip(): int(row[0])
+        for row in identity_rows
+        if str(row[1] or "").strip() and int(row[0] or 0) > 0
+    }
+    used_ids = _migration_used_global_resource_ids_except_document_assets(session)
+    assigned_ids: set[int] = set()
+    now = time.time()
+    assignments: list[dict[str, Any]] = []
+
+    for row in rows:
+        legacy_id = str(row["legacy_id"])
+        current_numeric_id = int(row["numeric_id"] or 0)
+        identity_id = int(identity_by_legacy.get(legacy_id) or 0)
+        if identity_id > 0 and identity_id not in used_ids and identity_id not in assigned_ids:
+            numeric_id = identity_id
+        elif current_numeric_id > 0 and current_numeric_id not in used_ids and current_numeric_id not in assigned_ids:
+            numeric_id = current_numeric_id
+        else:
+            numeric_id = _migration_next_available_id(used_ids | assigned_ids)
+
+        assigned_ids.add(numeric_id)
+        session.execute(
+            text(
+                """
+                UPDATE documentasset
+                SET numeric_id = :numeric_id,
+                    legacy_id = :legacy_id
+                WHERE rowid = :rowid
+                """
+            ),
+            {"numeric_id": numeric_id, "legacy_id": legacy_id, "rowid": int(row["rowid"])},
+        )
+        if identity_id <= 0:
+            _migration_insert_resource_identity(
+                session,
+                resource_id=numeric_id,
+                resource_type="document_asset",
+                legacy_pk=legacy_id,
+                now=now,
+            )
+        elif identity_id != numeric_id:
+            session.execute(
+                text(
+                    """
+                    UPDATE resourceidentity
+                    SET id = :numeric_id,
+                        updated_at = :updated_at
+                    WHERE resource_type = 'document_asset'
+                      AND legacy_pk = :legacy_id
+                    """
+                ),
+                {"numeric_id": numeric_id, "updated_at": now, "legacy_id": legacy_id},
+            )
+        assignments.append({
+            **row,
+            "numeric_id": numeric_id,
+            "old_numeric_id": current_numeric_id,
+        })
+    return assignments
+
+
+def _migration_rebuild_documentasset_with_numeric_pk(session: Session) -> None:
+    if _migration_documentasset_has_numeric_primary_key(session):
+        return
+
+    session.exec(text("DROP TABLE IF EXISTS documentasset_v55"))
+    session.exec(
+        text(
+            """
+            CREATE TABLE documentasset_v55 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                numeric_id INTEGER,
+                legacy_id VARCHAR,
+                user_id INTEGER NOT NULL,
+                title VARCHAR NOT NULL,
+                original_filename VARCHAR NOT NULL,
+                media_type VARCHAR NOT NULL,
+                file_ext VARCHAR NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                sha256 VARCHAR NOT NULL,
+                source_char_count INTEGER NOT NULL,
+                status VARCHAR NOT NULL,
+                latest_run_id VARCHAR,
+                latest_summary VARCHAR NOT NULL,
+                latest_query_at FLOAT,
+                run_count INTEGER NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            INSERT INTO documentasset_v55 (
+                id, numeric_id, legacy_id, user_id, title, original_filename,
+                media_type, file_ext, size_bytes, sha256, source_char_count,
+                status, latest_run_id, latest_summary, latest_query_at,
+                run_count, created_at, updated_at
+            )
+            SELECT
+                CAST(numeric_id AS INTEGER),
+                CAST(numeric_id AS INTEGER),
+                legacy_id,
+                user_id,
+                COALESCE(title, ''),
+                COALESCE(original_filename, ''),
+                COALESCE(media_type, 'text/plain'),
+                COALESCE(file_ext, ''),
+                COALESCE(size_bytes, 0),
+                COALESCE(sha256, ''),
+                COALESCE(source_char_count, 0),
+                COALESCE(status, 'uploaded'),
+                latest_run_id,
+                COALESCE(latest_summary, ''),
+                latest_query_at,
+                COALESCE(run_count, 0),
+                COALESCE(created_at, 0),
+                COALESCE(updated_at, 0)
+            FROM documentasset
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    )
+    session.exec(text("ALTER TABLE documentasset RENAME TO documentasset_legacy_v55"))
+    session.exec(text("ALTER TABLE documentasset_v55 RENAME TO documentasset"))
+    session.exec(text("DROP TABLE documentasset_legacy_v55"))
+
+
+def _migration_recreate_documentasset_indexes(session: Session) -> None:
+    if not _table_exists(session, "documentasset"):
+        return
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_documentasset_numeric_id ON documentasset (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_documentasset_legacy_id ON documentasset (legacy_id)"))
+    for column_name in (
+        "user_id",
+        "legacy_id",
+        "original_filename",
+        "media_type",
+        "file_ext",
+        "sha256",
+        "status",
+        "latest_run_id",
+        "latest_query_at",
+    ):
+        session.exec(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_documentasset_{column_name} "
+                f"ON documentasset ({column_name})"
+            )
+        )
+
+
+def _migration_update_document_cache_document_ids(assignments: list[dict[str, Any]]) -> int:
+    try:
+        from backend.core.document_reduction_cache import get_document_cache_db_path
+    except Exception:
+        return 0
+    cache_db_path = get_document_cache_db_path()
+    if not cache_db_path.exists():
+        return 0
+    updated = 0
+    with sqlite3.connect(cache_db_path) as conn:
+        for item in assignments:
+            old_ref = str(item["legacy_id"])
+            new_ref = str(int(item["numeric_id"]))
+            result = conn.execute(
+                """
+                UPDATE document_node_index
+                SET document_id = ?
+                WHERE user_id = ?
+                  AND document_id = ?
+                """,
+                (new_ref, int(item["user_id"] or 0), old_ref),
+            )
+            updated += int(result.rowcount or 0)
+        conn.commit()
+    return updated
+
+
+def _migration_migrate_documentasset_dirs(assignments: list[dict[str, Any]]) -> int:
+    try:
+        from backend.core.document_reduction_storage import migrate_document_asset_dir_id
+    except Exception:
+        return 0
+    moved = 0
+    for item in assignments:
+        if migrate_document_asset_dir_id(
+            user_id=int(item["user_id"] or 0),
+            old_document_id=str(item["legacy_id"]),
+            new_document_id=str(int(item["numeric_id"])),
+        ):
+            moved += 1
+    return moved
+
+
+def v55_migrate_documentasset_primary_key_to_numeric(session: Session):
+    """
+    Migration V55: Make documentasset.id the numeric global resource id.
+    """
+    print("Running System Upgrade V55: Migrate document assets to numeric primary keys...")
+    if not _table_exists(session, "documentasset"):
+        print("  Document asset table missing, skipping.")
+        return
+
+    _migration_drop_readable_views(session)
+    columns = _get_table_columns(session, "documentasset")
+    if "numeric_id" not in columns:
+        session.exec(text("ALTER TABLE documentasset ADD COLUMN numeric_id INTEGER"))
+        columns.add("numeric_id")
+    if "legacy_id" not in columns:
+        session.exec(text("ALTER TABLE documentasset ADD COLUMN legacy_id VARCHAR"))
+        columns.add("legacy_id")
+    session.exec(
+        text(
+            """
+            UPDATE documentasset
+            SET legacy_id = CAST(id AS TEXT)
+            WHERE legacy_id IS NULL OR legacy_id = ''
+            """
+        )
+    )
+
+    session.exec(text("DROP INDEX IF EXISTS ux_documentasset_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_documentasset_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ux_documentasset_legacy_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_documentasset_legacy_id"))
+
+    assignments = _migration_assign_documentasset_numeric_ids(session)
+
+    id_map: dict[str, str] = {}
+    for item in assignments:
+        public_id = str(int(item["numeric_id"]))
+        legacy_id = str(item["legacy_id"])
+        raw_id = str(item["raw_id"])
+        if legacy_id and legacy_id != public_id:
+            id_map[legacy_id] = public_id
+        if raw_id and raw_id != public_id:
+            id_map[raw_id] = public_id
+        old_numeric_id = int(item["old_numeric_id"] or 0)
+        if old_numeric_id > 0 and old_numeric_id != int(item["numeric_id"]):
+            id_map[str(old_numeric_id)] = public_id
+
+    updated_refs = 0
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="documentreductionrun",
+        column_name="document_id",
+        id_map=id_map,
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="documentqueryhistory",
+        column_name="document_id",
+        id_map=id_map,
+    )
+    updated_refs += _migration_update_resource_grants_for_public_id_changes(
+        session,
+        {"document_asset": id_map},
+    )
+
+    migrated_cache_rows = _migration_update_document_cache_document_ids(assignments)
+    moved_dirs = _migration_migrate_documentasset_dirs(assignments)
+    _migration_rebuild_documentasset_with_numeric_pk(session)
+    _migration_recreate_documentasset_indexes(session)
+    session.commit()
+    print(
+        "  Migrated document assets to numeric primary keys; "
+        f"updated {updated_refs} refs, {migrated_cache_rows} cache rows, moved {moved_dirs} asset dirs."
+    )
+
+
+def _migration_pdfdocument_has_numeric_primary_key(session: Session) -> bool:
+    if not _table_exists(session, "pdfdocument"):
+        return False
+    for row in session.exec(text("PRAGMA table_info(pdfdocument)")).all():
+        if str(row[1]) != "id":
+            continue
+        column_type = str(row[2] or "").upper()
+        return int(row[5] or 0) > 0 and "INT" in column_type
+    return False
+
+
+def _migration_pdfdocument_rows(session: Session) -> list[dict[str, Any]]:
+    columns = _get_table_columns(session, "pdfdocument")
+    legacy_expr = "COALESCE(NULLIF(legacy_id, ''), CAST(id AS TEXT))" if "legacy_id" in columns else "CAST(id AS TEXT)"
+    rows = session.exec(
+        text(
+            f"""
+            SELECT rowid, CAST(id AS TEXT) AS raw_id, {legacy_expr} AS legacy_id,
+                   numeric_id
+            FROM pdfdocument
+            ORDER BY
+                CASE WHEN numeric_id IS NULL OR numeric_id <= 0 THEN 1 ELSE 0 END,
+                numeric_id ASC,
+                created_at ASC,
+                rowid ASC
+            """
+        )
+    ).all()
+    return [
+        {
+            "rowid": int(row[0]),
+            "raw_id": str(row[1] or "").strip(),
+            "legacy_id": str(row[2] or "").strip(),
+            "numeric_id": int(row[3] or 0),
+        }
+        for row in rows
+        if str(row[2] or "").strip()
+    ]
+
+
+def _migration_assign_pdfdocument_numeric_ids(session: Session) -> list[dict[str, Any]]:
+    from backend.models import ResourceIdentity
+
+    ResourceIdentity.__table__.create(session.get_bind(), checkfirst=True)
+    rows = _migration_pdfdocument_rows(session)
+    identity_rows = session.exec(
+        text("SELECT id, legacy_pk FROM resourceidentity WHERE resource_type = 'pdf'")
+    ).all()
+    identity_by_legacy = {
+        str(row[1] or "").strip(): int(row[0])
+        for row in identity_rows
+        if str(row[1] or "").strip() and int(row[0] or 0) > 0
+    }
+    used_ids = _migration_used_global_resource_ids_except(
+        session,
+        resource_type="pdf",
+        excluded_table_name="pdfdocument",
+    )
+    assigned_ids: set[int] = set()
+    now = time.time()
+    assignments: list[dict[str, Any]] = []
+
+    for row in rows:
+        legacy_id = str(row["legacy_id"])
+        current_numeric_id = int(row["numeric_id"] or 0)
+        identity_id = int(identity_by_legacy.get(legacy_id) or 0)
+        if identity_id > 0 and identity_id not in used_ids and identity_id not in assigned_ids:
+            numeric_id = identity_id
+        elif current_numeric_id > 0 and current_numeric_id not in used_ids and current_numeric_id not in assigned_ids:
+            numeric_id = current_numeric_id
+        else:
+            numeric_id = _migration_next_available_id(used_ids | assigned_ids)
+
+        assigned_ids.add(numeric_id)
+        session.execute(
+            text(
+                """
+                UPDATE pdfdocument
+                SET numeric_id = :numeric_id,
+                    legacy_id = :legacy_id
+                WHERE rowid = :rowid
+                """
+            ),
+            {"numeric_id": numeric_id, "legacy_id": legacy_id, "rowid": int(row["rowid"])},
+        )
+        if identity_id <= 0:
+            _migration_insert_resource_identity(
+                session,
+                resource_id=numeric_id,
+                resource_type="pdf",
+                legacy_pk=legacy_id,
+                now=now,
+            )
+        elif identity_id != numeric_id:
+            session.execute(
+                text(
+                    """
+                    UPDATE resourceidentity
+                    SET id = :numeric_id,
+                        updated_at = :updated_at
+                    WHERE resource_type = 'pdf'
+                      AND legacy_pk = :legacy_id
+                    """
+                ),
+                {"numeric_id": numeric_id, "updated_at": now, "legacy_id": legacy_id},
+            )
+        assignments.append({
+            **row,
+            "numeric_id": numeric_id,
+            "old_numeric_id": current_numeric_id,
+        })
+    return assignments
+
+
+def _migration_rebuild_pdfdocument_with_numeric_pk(session: Session) -> None:
+    if _migration_pdfdocument_has_numeric_primary_key(session):
+        return
+
+    session.exec(text("DROP TABLE IF EXISTS pdfdocument_v56"))
+    session.exec(
+        text(
+            """
+            CREATE TABLE pdfdocument_v56 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                numeric_id INTEGER,
+                legacy_id VARCHAR,
+                title VARCHAR NOT NULL,
+                source_device_file_id INTEGER,
+                source_entry_id VARCHAR NOT NULL,
+                source_device_id VARCHAR NOT NULL,
+                source_absolute_path VARCHAR NOT NULL,
+                mime_type VARCHAR NOT NULL,
+                size_bytes INTEGER,
+                content_hash VARCHAR,
+                hash_algorithm VARCHAR NOT NULL,
+                owner_user_id INTEGER NOT NULL,
+                created_by_user_id INTEGER,
+                updated_by_user_id INTEGER,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(source_device_file_id) REFERENCES devicefile (id),
+                FOREIGN KEY(owner_user_id) REFERENCES user (id),
+                FOREIGN KEY(created_by_user_id) REFERENCES user (id),
+                FOREIGN KEY(updated_by_user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            INSERT INTO pdfdocument_v56 (
+                id, numeric_id, legacy_id, title, source_device_file_id,
+                source_entry_id, source_device_id, source_absolute_path,
+                mime_type, size_bytes, content_hash, hash_algorithm,
+                owner_user_id, created_by_user_id, updated_by_user_id,
+                created_at, updated_at
+            )
+            SELECT
+                CAST(numeric_id AS INTEGER),
+                CAST(numeric_id AS INTEGER),
+                legacy_id,
+                COALESCE(title, ''),
+                source_device_file_id,
+                COALESCE(source_entry_id, ''),
+                COALESCE(source_device_id, ''),
+                COALESCE(source_absolute_path, ''),
+                COALESCE(mime_type, 'application/pdf'),
+                size_bytes,
+                content_hash,
+                COALESCE(hash_algorithm, 'sha256'),
+                owner_user_id,
+                created_by_user_id,
+                updated_by_user_id,
+                COALESCE(created_at, 0),
+                COALESCE(updated_at, 0)
+            FROM pdfdocument
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    )
+    session.exec(text("ALTER TABLE pdfdocument RENAME TO pdfdocument_legacy_v56"))
+    session.exec(text("ALTER TABLE pdfdocument_v56 RENAME TO pdfdocument"))
+    session.exec(text("DROP TABLE pdfdocument_legacy_v56"))
+
+
+def _migration_recreate_pdfdocument_indexes(session: Session) -> None:
+    if not _table_exists(session, "pdfdocument"):
+        return
+    session.exec(
+        text(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_pdfdocument_owner_source
+            ON pdfdocument (owner_user_id, source_device_id, source_absolute_path)
+            """
+        )
+    )
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_pdfdocument_numeric_id ON pdfdocument (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_pdfdocument_legacy_id ON pdfdocument (legacy_id)"))
+    for column_name in (
+        "source_device_file_id",
+        "source_entry_id",
+        "source_device_id",
+        "source_absolute_path",
+        "mime_type",
+        "size_bytes",
+        "content_hash",
+        "owner_user_id",
+        "created_by_user_id",
+        "updated_by_user_id",
+    ):
+        session.exec(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_pdfdocument_{column_name} "
+                f"ON pdfdocument ({column_name})"
+            )
+        )
+
+
+def v56_migrate_pdfdocument_primary_key_to_numeric(session: Session):
+    """
+    Migration V56: Make pdfdocument.id the numeric global resource id.
+    """
+    print("Running System Upgrade V56: Migrate PDF documents to numeric primary keys...")
+    if not _table_exists(session, "pdfdocument"):
+        print("  PDF document table missing, skipping.")
+        return
+
+    _migration_drop_readable_views(session)
+    columns = _get_table_columns(session, "pdfdocument")
+    if "numeric_id" not in columns:
+        session.exec(text("ALTER TABLE pdfdocument ADD COLUMN numeric_id INTEGER"))
+        columns.add("numeric_id")
+    if "legacy_id" not in columns:
+        session.exec(text("ALTER TABLE pdfdocument ADD COLUMN legacy_id VARCHAR"))
+        columns.add("legacy_id")
+    session.exec(
+        text(
+            """
+            UPDATE pdfdocument
+            SET legacy_id = CAST(id AS TEXT)
+            WHERE legacy_id IS NULL OR legacy_id = ''
+            """
+        )
+    )
+
+    session.exec(text("DROP INDEX IF EXISTS ux_pdfdocument_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_pdfdocument_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ux_pdfdocument_legacy_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_pdfdocument_legacy_id"))
+    session.exec(text("DROP INDEX IF EXISTS uq_pdfdocument_owner_source"))
+
+    assignments = _migration_assign_pdfdocument_numeric_ids(session)
+    id_map: dict[str, str] = {}
+    for item in assignments:
+        public_id = str(int(item["numeric_id"]))
+        legacy_id = str(item["legacy_id"])
+        raw_id = str(item["raw_id"])
+        if legacy_id and legacy_id != public_id:
+            id_map[legacy_id] = public_id
+        if raw_id and raw_id != public_id:
+            id_map[raw_id] = public_id
+        old_numeric_id = int(item["old_numeric_id"] or 0)
+        if old_numeric_id > 0 and old_numeric_id != int(item["numeric_id"]):
+            id_map[str(old_numeric_id)] = public_id
+
+    updated_refs = 0
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="pdfuserstate",
+        column_name="pdf_document_id",
+        id_map=id_map,
+    )
+    updated_refs += _migration_update_public_ref_column(
+        session,
+        table_name="pdfpagenote",
+        column_name="pdf_document_id",
+        id_map=id_map,
+    )
+    updated_refs += _migration_update_resource_grants_for_public_id_changes(
+        session,
+        {"pdf": id_map},
+    )
+
+    _migration_rebuild_pdfdocument_with_numeric_pk(session)
+    _migration_recreate_pdfdocument_indexes(session)
+    session.commit()
+    print(
+        "  Migrated PDF documents to numeric primary keys; "
+        f"updated {updated_refs} refs."
+    )
+
+
+def _migration_backfill_legacy_id_column(session: Session, table_name: str) -> int:
+    if not _table_exists(session, table_name):
+        return 0
+    columns = _get_table_columns(session, table_name)
+    if "legacy_id" not in columns:
+        session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN legacy_id VARCHAR"))
+    result = session.execute(
+        text(
+            f"""
+            UPDATE {table_name}
+            SET legacy_id = CAST(id AS TEXT)
+            WHERE legacy_id IS NULL OR legacy_id = ''
+            """
+        )
+    )
+    session.exec(text(f"DROP INDEX IF EXISTS ux_{table_name}_legacy_id"))
+    session.exec(text(f"DROP INDEX IF EXISTS ix_{table_name}_legacy_id"))
+    session.exec(text(f"CREATE UNIQUE INDEX IF NOT EXISTS ux_{table_name}_legacy_id ON {table_name} (legacy_id)"))
+    return int(result.rowcount or 0)
+
+
+def v57_add_legacy_id_shadow_columns(session: Session):
+    """
+    Migration V57: Add legacy_id shadow columns before migrating high-risk resource primary keys.
+    """
+    print("Running System Upgrade V57: Add legacy id shadow columns...")
+    updated_counts = {
+        table_name: _migration_backfill_legacy_id_column(session, table_name)
+        for table_name in ("sheetdocument", "workbookdocument", "notenode")
+    }
+    session.commit()
+    print(
+        "  Backfilled legacy ids: "
+        + ", ".join(f"{table}={count}" for table, count in updated_counts.items())
+    )
+
+
+def _migration_note_ref_to_public_id_map(session: Session) -> dict[str, str]:
+    if not _table_exists(session, "notenode"):
+        return {}
+    columns = _get_table_columns(session, "notenode")
+    if "numeric_id" not in columns:
+        return {}
+    legacy_expr = "legacy_id" if "legacy_id" in columns else "NULL"
+    rows = session.exec(
+        text(
+            f"""
+            SELECT CAST(id AS TEXT) AS raw_id,
+                   CAST(numeric_id AS INTEGER) AS numeric_id,
+                   {legacy_expr} AS legacy_id
+            FROM notenode
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    ).all()
+    id_map: dict[str, str] = {}
+    for row in rows:
+        public_id = str(int(row[1]))
+        for raw_ref in (row[0], row[2]):
+            normalized_ref = str(raw_ref or "").strip()
+            if normalized_ref and normalized_ref != public_id:
+                id_map[normalized_ref] = public_id
+    return id_map
+
+
+def v58_migrate_fanxiu_inventory_note_refs(session: Session):
+    """
+    Migration V58: Convert Fanxiu inventory/activity JSON note_id refs to public numeric note ids.
+    """
+    print("Running System Upgrade V58: Migrate Fanxiu inventory note refs...")
+    note_id_map = _migration_note_ref_to_public_id_map(session)
+    if not note_id_map:
+        print("  No note id map available, skipping.")
+        return
+
+    try:
+        from backend.core.fanxiu_inventory import migrate_inventory_note_ids
+    except Exception as exc:
+        print(f"  Unable to load Fanxiu inventory storage helper, skipping: {exc}")
+        return
+
+    updated_count = migrate_inventory_note_ids(note_id_map)
+    session.commit()
+    print(f"  Migrated {updated_count} Fanxiu inventory note refs.")
+
+
+def _migration_notenode_has_numeric_primary_key(session: Session) -> bool:
+    column_types = _get_table_column_types(session, "notenode")
+    return column_types.get("id", "").startswith("INTEGER")
+
+
+def _migration_rebuild_notenode_with_numeric_pk(session: Session) -> None:
+    if _migration_notenode_has_numeric_primary_key(session):
+        return
+
+    columns = _get_table_columns(session, "notenode")
+    source_expr = {
+        "user_id": "user_id" if "user_id" in columns else "1",
+        "title": "title" if "title" in columns else "NULL",
+        "content": "content" if "content" in columns else "''",
+        "created_at": "created_at" if "created_at" in columns else "0",
+        "updated_at": "updated_at" if "updated_at" in columns else "0",
+        "weight": "weight" if "weight" in columns else "0",
+        "start_at": "start_at" if "start_at" in columns else "NULL",
+        "task_status": "task_status" if "task_status" in columns else "NULL",
+        "history": "history" if "history" in columns else "'[]'",
+        "node_type": "node_type" if "node_type" in columns else "NULL",
+        "node_status": "node_status" if "node_status" in columns else "NULL",
+        "custom_fields": "custom_fields" if "custom_fields" in columns else "'[]'",
+        "private_level": "private_level" if "private_level" in columns else "0",
+        "color": "color" if "color" in columns else "NULL",
+        "note_kind": "note_kind" if "note_kind" in columns else "NULL",
+        "weight_mode": "weight_mode" if "weight_mode" in columns else "NULL",
+        "note_types": "note_types" if "note_types" in columns else "'[]'",
+        "note_categories": "note_categories" if "note_categories" in columns else "'[]'",
+        "primary_category": "primary_category" if "primary_category" in columns else "NULL",
+        "note_form": "note_form" if "note_form" in columns else "NULL",
+        "lifecycle_stage": "lifecycle_stage" if "lifecycle_stage" in columns else "NULL",
+        "note_scene": "note_scene" if "note_scene" in columns else "NULL",
+    }
+
+    session.exec(text("DROP TABLE IF EXISTS notenode_v59"))
+    session.exec(
+        text(
+            """
+            CREATE TABLE notenode_v59 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                numeric_id INTEGER,
+                legacy_id VARCHAR,
+                user_id INTEGER NOT NULL,
+                title VARCHAR,
+                content VARCHAR NOT NULL,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                weight INTEGER,
+                start_at FLOAT,
+                task_status VARCHAR,
+                history JSON,
+                node_type VARCHAR,
+                node_status VARCHAR,
+                custom_fields JSON,
+                private_level INTEGER,
+                color VARCHAR,
+                note_kind VARCHAR,
+                weight_mode VARCHAR,
+                note_types JSON,
+                note_categories JSON,
+                primary_category VARCHAR,
+                note_form VARCHAR,
+                lifecycle_stage VARCHAR,
+                note_scene VARCHAR,
+                FOREIGN KEY(user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            f"""
+            INSERT INTO notenode_v59 (
+                id, numeric_id, legacy_id, user_id, title, content,
+                created_at, updated_at, weight, start_at, task_status,
+                history, node_type, node_status, custom_fields, private_level,
+                color, note_kind, weight_mode, note_types, note_categories,
+                primary_category, note_form, lifecycle_stage, note_scene
+            )
+            SELECT
+                CAST(numeric_id AS INTEGER),
+                CAST(numeric_id AS INTEGER),
+                legacy_id,
+                {source_expr["user_id"]},
+                {source_expr["title"]},
+                COALESCE({source_expr["content"]}, ''),
+                COALESCE({source_expr["created_at"]}, 0),
+                COALESCE({source_expr["updated_at"]}, 0),
+                COALESCE({source_expr["weight"]}, 0),
+                {source_expr["start_at"]},
+                {source_expr["task_status"]},
+                COALESCE({source_expr["history"]}, '[]'),
+                {source_expr["node_type"]},
+                {source_expr["node_status"]},
+                COALESCE({source_expr["custom_fields"]}, '[]'),
+                COALESCE({source_expr["private_level"]}, 0),
+                {source_expr["color"]},
+                {source_expr["note_kind"]},
+                {source_expr["weight_mode"]},
+                COALESCE({source_expr["note_types"]}, '[]'),
+                COALESCE({source_expr["note_categories"]}, '[]'),
+                {source_expr["primary_category"]},
+                {source_expr["note_form"]},
+                {source_expr["lifecycle_stage"]},
+                {source_expr["note_scene"]}
+            FROM notenode
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    )
+    session.exec(text("ALTER TABLE notenode RENAME TO notenode_legacy_v59"))
+    session.exec(text("ALTER TABLE notenode_v59 RENAME TO notenode"))
+    session.exec(text("DROP TABLE notenode_legacy_v59"))
+
+
+def _migration_recreate_notenode_indexes(session: Session) -> None:
+    if not _table_exists(session, "notenode"):
+        return
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_notenode_numeric_id ON notenode (numeric_id)"))
+    session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_notenode_legacy_id ON notenode (legacy_id)"))
+    for column_name in (
+        "user_id",
+        "node_type",
+        "primary_category",
+        "note_form",
+        "note_kind",
+        "note_scene",
+        "node_status",
+        "lifecycle_stage",
+        "weight_mode",
+        "private_level",
+    ):
+        session.exec(
+            text(
+                f"CREATE INDEX IF NOT EXISTS ix_notenode_{column_name} "
+                f"ON notenode ({column_name})"
+            )
+        )
+
+
+def v59_migrate_notenode_primary_key_to_numeric(session: Session):
+    """
+    Migration V59: Make notenode.id the numeric global resource id.
+    """
+    print("Running System Upgrade V59: Migrate note nodes to numeric primary keys...")
+    if not _table_exists(session, "notenode"):
+        print("  Note table missing, skipping.")
+        return
+    if _migration_notenode_has_numeric_primary_key(session):
+        print("  Note table already uses numeric primary keys.")
+        return
+
+    _migration_drop_readable_views(session)
+    columns = _get_table_columns(session, "notenode")
+    if "numeric_id" not in columns:
+        raise RuntimeError("notenode.numeric_id is required before numeric primary key migration")
+    if "legacy_id" not in columns:
+        session.exec(text("ALTER TABLE notenode ADD COLUMN legacy_id VARCHAR"))
+        columns.add("legacy_id")
+    session.exec(
+        text(
+            """
+            UPDATE notenode
+            SET legacy_id = CAST(id AS TEXT)
+            WHERE legacy_id IS NULL OR legacy_id = ''
+            """
+        )
+    )
+    missing_numeric = int(
+        _first_scalar(
+            session.exec(
+                text("SELECT COUNT(*) FROM notenode WHERE numeric_id IS NULL OR numeric_id <= 0")
+            ).first()
+        )
+        or 0
+    )
+    if missing_numeric:
+        raise RuntimeError(f"notenode contains {missing_numeric} rows without numeric_id")
+
+    session.exec(text("DROP INDEX IF EXISTS ux_notenode_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_notenode_numeric_id"))
+    session.exec(text("DROP INDEX IF EXISTS ux_notenode_legacy_id"))
+    session.exec(text("DROP INDEX IF EXISTS ix_notenode_legacy_id"))
+
+    _migration_rebuild_notenode_with_numeric_pk(session)
+    _migration_recreate_notenode_indexes(session)
+    session.commit()
+    print("  Migrated note nodes to numeric primary keys.")
+
+
+def _migration_table_has_numeric_primary_key(session: Session, table_name: str) -> bool:
+    column_types = _get_table_column_types(session, table_name)
+    return column_types.get("id", "").startswith("INTEGER")
+
+
+def _migration_rebuild_sheetdocument_with_numeric_pk(session: Session) -> None:
+    if _migration_table_has_numeric_primary_key(session, "sheetdocument"):
+        return
+    session.exec(text("DROP TABLE IF EXISTS sheetdocument_v60"))
+    session.exec(
+        text(
+            """
+            CREATE TABLE sheetdocument_v60 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                numeric_id INTEGER,
+                legacy_id VARCHAR,
+                scope VARCHAR NOT NULL,
+                owner_type VARCHAR NOT NULL,
+                owner_key VARCHAR NOT NULL,
+                sheet_key VARCHAR NOT NULL,
+                title VARCHAR NOT NULL,
+                engine VARCHAR NOT NULL,
+                document_json JSON,
+                version INTEGER NOT NULL,
+                owner_user_id INTEGER,
+                created_by_user_id INTEGER,
+                updated_by_user_id INTEGER,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(owner_user_id) REFERENCES user (id),
+                FOREIGN KEY(created_by_user_id) REFERENCES user (id),
+                FOREIGN KEY(updated_by_user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            INSERT INTO sheetdocument_v60 (
+                id, numeric_id, legacy_id, scope, owner_type, owner_key, sheet_key,
+                title, engine, document_json, version, owner_user_id,
+                created_by_user_id, updated_by_user_id, created_at, updated_at
+            )
+            SELECT
+                CAST(numeric_id AS INTEGER),
+                CAST(numeric_id AS INTEGER),
+                legacy_id,
+                COALESCE(scope, ''),
+                COALESCE(owner_type, ''),
+                COALESCE(owner_key, ''),
+                COALESCE(sheet_key, ''),
+                COALESCE(title, ''),
+                COALESCE(engine, 'handsontable'),
+                COALESCE(document_json, '{}'),
+                COALESCE(version, 1),
+                owner_user_id,
+                created_by_user_id,
+                updated_by_user_id,
+                COALESCE(created_at, 0),
+                COALESCE(updated_at, 0)
+            FROM sheetdocument
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    )
+    session.exec(text("ALTER TABLE sheetdocument RENAME TO sheetdocument_legacy_v60"))
+    session.exec(text("ALTER TABLE sheetdocument_v60 RENAME TO sheetdocument"))
+    session.exec(text("DROP TABLE sheetdocument_legacy_v60"))
+
+
+def _migration_rebuild_workbookdocument_with_numeric_pk(session: Session) -> None:
+    if _migration_table_has_numeric_primary_key(session, "workbookdocument"):
+        return
+    session.exec(text("DROP TABLE IF EXISTS workbookdocument_v60"))
+    session.exec(
+        text(
+            """
+            CREATE TABLE workbookdocument_v60 (
+                id INTEGER NOT NULL PRIMARY KEY,
+                numeric_id INTEGER,
+                legacy_id VARCHAR,
+                title VARCHAR NOT NULL,
+                owner_user_id INTEGER,
+                created_by_user_id INTEGER,
+                updated_by_user_id INTEGER,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(owner_user_id) REFERENCES user (id),
+                FOREIGN KEY(created_by_user_id) REFERENCES user (id),
+                FOREIGN KEY(updated_by_user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(
+        text(
+            """
+            INSERT INTO workbookdocument_v60 (
+                id, numeric_id, legacy_id, title, owner_user_id,
+                created_by_user_id, updated_by_user_id, created_at, updated_at
+            )
+            SELECT
+                CAST(numeric_id AS INTEGER),
+                CAST(numeric_id AS INTEGER),
+                legacy_id,
+                COALESCE(title, ''),
+                owner_user_id,
+                created_by_user_id,
+                updated_by_user_id,
+                COALESCE(created_at, 0),
+                COALESCE(updated_at, 0)
+            FROM workbookdocument
+            WHERE numeric_id IS NOT NULL AND numeric_id > 0
+            """
+        )
+    )
+    session.exec(text("ALTER TABLE workbookdocument RENAME TO workbookdocument_legacy_v60"))
+    session.exec(text("ALTER TABLE workbookdocument_v60 RENAME TO workbookdocument"))
+    session.exec(text("DROP TABLE workbookdocument_legacy_v60"))
+
+
+def _migration_recreate_sheet_workbook_indexes(session: Session) -> None:
+    if _table_exists(session, "sheetdocument"):
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_sheetdocument_numeric_id ON sheetdocument (numeric_id)"))
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_sheetdocument_legacy_id ON sheetdocument (legacy_id)"))
+        session.exec(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_sheetdocument_owner_locator "
+                "ON sheetdocument (scope, owner_type, owner_key, sheet_key)"
+            )
+        )
+        for column_name in (
+            "scope",
+            "owner_type",
+            "owner_key",
+            "sheet_key",
+            "engine",
+            "owner_user_id",
+            "created_by_user_id",
+            "updated_by_user_id",
+        ):
+            session.exec(text(f"CREATE INDEX IF NOT EXISTS ix_sheetdocument_{column_name} ON sheetdocument ({column_name})"))
+    if _table_exists(session, "workbookdocument"):
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_workbookdocument_numeric_id ON workbookdocument (numeric_id)"))
+        session.exec(text("CREATE UNIQUE INDEX IF NOT EXISTS ux_workbookdocument_legacy_id ON workbookdocument (legacy_id)"))
+        for column_name in ("owner_user_id", "created_by_user_id", "updated_by_user_id"):
+            session.exec(text(f"CREATE INDEX IF NOT EXISTS ix_workbookdocument_{column_name} ON workbookdocument ({column_name})"))
+
+
+def _migration_prepare_numeric_pk_owner_table(session: Session, table_name: str) -> None:
+    columns = _get_table_columns(session, table_name)
+    if "numeric_id" not in columns:
+        raise RuntimeError(f"{table_name}.numeric_id is required before numeric primary key migration")
+    if "legacy_id" not in columns:
+        session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN legacy_id VARCHAR"))
+        columns.add("legacy_id")
+    session.exec(
+        text(
+            f"""
+            UPDATE {table_name}
+            SET legacy_id = CAST(id AS TEXT)
+            WHERE legacy_id IS NULL OR legacy_id = ''
+            """
+        )
+    )
+    missing_numeric = int(
+        _first_scalar(
+            session.exec(
+                text(f"SELECT COUNT(*) FROM {table_name} WHERE numeric_id IS NULL OR numeric_id <= 0")
+            ).first()
+        )
+        or 0
+    )
+    if missing_numeric:
+        raise RuntimeError(f"{table_name} contains {missing_numeric} rows without numeric_id")
+
+
+def v60_migrate_sheet_workbook_primary_keys_to_numeric(session: Session):
+    """
+    Migration V60: Make sheet/workbook primary keys numeric while preserving public route ids.
+    """
+    print("Running System Upgrade V60: Migrate sheet/workbook primary keys to numeric ids...")
+    if not _table_exists(session, "sheetdocument") and not _table_exists(session, "workbookdocument"):
+        print("  Sheet/workbook tables missing, skipping.")
+        return
+
+    _migration_drop_readable_views(session)
+    for table_name in ("sheetdocument", "workbookdocument"):
+        if _table_exists(session, table_name):
+            _migration_prepare_numeric_pk_owner_table(session, table_name)
+            session.exec(text(f"DROP INDEX IF EXISTS ux_{table_name}_numeric_id"))
+            session.exec(text(f"DROP INDEX IF EXISTS ix_{table_name}_numeric_id"))
+            session.exec(text(f"DROP INDEX IF EXISTS ux_{table_name}_legacy_id"))
+            session.exec(text(f"DROP INDEX IF EXISTS ix_{table_name}_legacy_id"))
+    session.exec(text("DROP INDEX IF EXISTS ux_sheetdocument_owner_locator"))
+    session.exec(text("DROP INDEX IF EXISTS uq_sheetdocument_owner_locator"))
+
+    _migration_rebuild_sheetdocument_with_numeric_pk(session)
+    _migration_rebuild_workbookdocument_with_numeric_pk(session)
+    _migration_recreate_sheet_workbook_indexes(session)
+    session.commit()
+    print("  Migrated sheet/workbook primary keys to numeric ids.")
+
+
+def _ensure_task_runtime_kind_column(session: Session) -> bool:
+    if not _table_exists(session, "task"):
+        return False
+    columns = _get_table_columns(session, "task")
+    changed = False
+    if "runtime_kind" not in columns:
+        session.exec(text('ALTER TABLE "task" ADD COLUMN runtime_kind VARCHAR'))
+        changed = True
+    session.exec(text('CREATE INDEX IF NOT EXISTS ix_task_runtime_kind ON "task" (runtime_kind)'))
+    session.commit()
+    return changed
+
+
+def v61_add_task_runtime_kind(session: Session):
+    """
+    Migration V61: Add explicit command runtime kind for service/job grouping.
+    """
+    print("Running System Upgrade V61: Add task runtime kind...")
+    if not _table_exists(session, "task"):
+        print("  Task table missing, skipping.")
+        return
+    if not _ensure_task_runtime_kind_column(session):
+        print("  Column 'runtime_kind' already exists, skipping.")
+
+
+def run_startup_schema_repairs(engine):
+    """
+    Apply small idempotent repairs required before the full migration chain can
+    complete. These do not write version markers; normal migrations still record
+    the canonical version when reached.
+    """
+    if engine.url.get_backend_name() != "sqlite":
+        return
+    with Session(engine) as session:
+        _ensure_task_runtime_kind_column(session)
 
 
 # --- Migration Registry ---
@@ -2388,6 +4506,23 @@ MIGRATIONS = [
     (42, "Add Eastmoney PDF statement tables", v42_add_eastmoney_pdf_statement_tables),
     (43, "Add service access token table", v43_add_service_access_token_table),
     (44, "Add note numeric ids", v44_add_note_numeric_ids),
+    (45, "Add global resource identities", v45_add_global_resource_identity),
+    (46, "Migrate resource JSON refs to public ids", v46_migrate_resource_json_refs_to_public_ids),
+    (47, "Migrate internal resource refs to public ids", v47_migrate_internal_resource_refs_to_public_ids),
+    (48, "Cleanup unmapped internal resource refs", v48_cleanup_unmapped_internal_resource_refs),
+    (49, "Migrate graph/workbook refs to public ids", v49_migrate_graph_and_workbook_links_to_public_ids),
+    (50, "Cleanup unmapped graph/workbook refs", v50_cleanup_unmapped_graph_and_workbook_refs),
+    (51, "Repack resource ids by priority", v51_repack_resource_ids_by_priority),
+    (52, "Restore workbook route ids", v52_restore_workbook_route_ids),
+    (53, "Add device file resource identities", v53_add_device_file_resource_identities),
+    (54, "Index attachment file resources", v54_index_attachment_file_resources),
+    (55, "Migrate document asset primary keys to numeric ids", v55_migrate_documentasset_primary_key_to_numeric),
+    (56, "Migrate PDF document primary keys to numeric ids", v56_migrate_pdfdocument_primary_key_to_numeric),
+    (57, "Add legacy id shadow columns for high-risk resources", v57_add_legacy_id_shadow_columns),
+    (58, "Migrate Fanxiu inventory note refs to public ids", v58_migrate_fanxiu_inventory_note_refs),
+    (59, "Migrate note node primary keys to numeric ids", v59_migrate_notenode_primary_key_to_numeric),
+    (60, "Migrate sheet/workbook primary keys to numeric route ids", v60_migrate_sheet_workbook_primary_keys_to_numeric),
+    (61, "Add task runtime kind", v61_add_task_runtime_kind),
 ]
 
 def get_current_version(session: Session) -> int:

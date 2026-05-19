@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { Plus } from '@element-plus/icons-vue';
-import type { NoteNode } from '@/api/notes';
+import { noteKey, type NoteNode } from '@/api/notes';
 import {
   getFanxiuActivityList,
   getFanxiuActivityNote,
@@ -390,7 +390,7 @@ function syncCachedNoteWithRow(item: FanxiuActivityItem) {
 function applyLoadedNote(itemId: string, note: NoteNode) {
   const row = findRowById(itemId);
   if (!row) return;
-  row.note_id = note.id;
+  row.note_id = noteKey(note.id);
   const syncedNote = cloneNote({
     ...note,
     title: row.name,
@@ -583,7 +583,7 @@ function onEditorNoteChange(note: NoteNode) {
   const row = currentEditingRow.value;
   if (!row) return;
 
-  row.note_id = note.id || row.note_id || null;
+  row.note_id = note.id ? noteKey(note.id) : row.note_id || null;
 
   if (typeof note.start_at === 'number' && Number.isFinite(note.start_at) && note.start_at > 0) {
     const nextDate = timestampToDateText(note.start_at);

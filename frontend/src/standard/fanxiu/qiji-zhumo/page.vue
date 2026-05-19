@@ -272,7 +272,7 @@ onMounted(() => {
     <div class="page-header">
       <div>
         <h2 class="page-title">活动列表 · 奇技诛魔</h2>
-        <p class="page-subtitle">扣除暴击后的攻击/攻速 DPS 计算</p>
+        <p class="page-subtitle">扣除暴击后的攻击/攻速 DPS 计算；普通关卡用环绕类速度快，无尽模式用弹幕类生存久。</p>
       </div>
       <el-button :icon="RefreshLeft" @click="resetToDefault">恢复默认</el-button>
     </div>

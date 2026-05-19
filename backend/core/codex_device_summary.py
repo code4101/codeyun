@@ -194,6 +194,7 @@ def collect_multi_codex_daily_summary_source(
     session: Session,
 ) -> dict[str, Any]:
     sources: list[dict[str, Any]] = []
+    source_failures: list[dict[str, Any]] = []
     for entry_spec in entry_specs:
         device_name = codex_summary_entry_label(entry_spec)
         try:
@@ -214,10 +215,17 @@ def collect_multi_codex_daily_summary_source(
                     session=session,
                 )
         except HTTPException as exc:
-            raise HTTPException(
-                status_code=exc.status_code,
-                detail=f"设备 {device_name} 的 Codex 数据读取失败：{exc.detail}",
-            ) from exc
+            source_failures.append(
+                {
+                    "entry_id": str(entry_spec.get("entry_id") or ""),
+                    "device_id": str(entry_spec.get("device_id") or ""),
+                    "device_name": device_name,
+                    "mode": str(entry_spec.get("mode") or ""),
+                    "status_code": int(exc.status_code),
+                    "error": str(exc.detail),
+                }
+            )
+            continue
 
         sources.append(
             annotate_codex_daily_summary_source(
@@ -227,7 +235,14 @@ def collect_multi_codex_daily_summary_source(
             )
         )
 
-    return merge_codex_daily_summary_sources(
+    if not sources:
+        failure_text = "；".join(f"{item['device_name']}：{item['error']}" for item in source_failures)
+        raise HTTPException(
+            status_code=502,
+            detail=f"所有设备 Codex 数据读取失败：{failure_text or '没有可读取的设备来源'}",
+        )
+
+    merged = merge_codex_daily_summary_sources(
         sources,
         root_key=root_identity["root_key"],
         root_dir=root_identity["root_dir"],
@@ -235,3 +250,6 @@ def collect_multi_codex_daily_summary_source(
         user_id=user_id,
         session=session,
     )
+    if source_failures:
+        merged["source_failures"] = source_failures
+    return merged

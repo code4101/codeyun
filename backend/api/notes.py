@@ -2,7 +2,7 @@ import html
 import hashlib
 import json
 import threading
-from typing import Any, List, Optional, Tuple
+from typing import Any, Iterable, List, Optional, Tuple
 import re
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -107,7 +107,17 @@ from backend.core.note_metadata_feedback import (
     record_note_metadata_feedback_for_update,
     serialize_note_metadata_feedback_optimization_run,
 )
+from backend.core.note_refs import (
+    build_note_ref_map,
+    load_notes_by_refs,
+    note_edge_ref,
+    note_public_api_id,
+    note_public_id,
+    note_ref_aliases,
+)
 from backend.core.note_walker import NoteGraphContext, NoteWalker
+from backend.core.note_identity import allocate_new_note_identity
+from backend.core.resource_identity import RESOURCE_TYPE_NOTE
 import time
 import uuid
 
@@ -147,6 +157,7 @@ CALENDAR_YEAR_MONTH_MEMOS_SETTING_VERSION = 1
 CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 900.0
+CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
 CODEX_DIARY_PROMPT_VERSION = "2026-05-04.codex-cli-diary-draft-v2"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
 CODEX_DIARY_AUTO_IMPORT_CRON = "0 1 * * *"
@@ -156,9 +167,11 @@ CODEX_DIARY_DATE_FIELD = "__codex_diary_date"
 CODEX_DIARY_SCOPE_FIELD = "__codex_diary_scope_key"
 CODEX_DIARY_BLOCK_FIELD = "__codex_diary_block_key"
 CODEX_DIARY_SOURCE_THREADS_FIELD = "__codex_source_thread_ids"
+CODEX_DIARY_WORKLOG_FIELD = "__codex_diary_worklog"
 CODEX_DIARY_TARGET_SECONDS = 2 * 60 * 60
 CODEX_DIARY_PROGRESS_BASE_MINUTES = CODEX_DIARY_TARGET_SECONDS // 60
 CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
+CODEX_DIARY_DRAFT_BATCH_SIZE = 12
 CODEX_DIARY_RESULT_KEYWORDS = (
     "已",
     "完成",
@@ -254,7 +267,7 @@ class CalendarYearMonthMemosUpdate(BaseModel):
     year_titles: Optional[dict[str, str]] = None
 
 
-NOTE_DOC_RESOURCE_TYPE = "note_doc"
+NOTE_DOC_RESOURCE_TYPE = RESOURCE_TYPE_NOTE
 CODEX_DIARY_ITEM_NUMBER_PREFIX_RE = re.compile(
     r"^\s*(?:(?:第?\d+|[一二三四五六七八九十]+)[\.．、)]|[（(](?:\d+|[一二三四五六七八九十]+)[）)])\s*"
 )
@@ -314,6 +327,8 @@ CODEX_DIARY_CATEGORY_HINT_STOPWORDS = {
     "代码",
     "前端",
     "后端",
+    "OCR",
+    "token",
 }
 CODEX_DIARY_TOPIC_STOPWORDS = CODEX_DIARY_CATEGORY_HINT_STOPWORDS | {
     "codex",
@@ -379,6 +394,17 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
     (
         ("codeyun笔记", "codeyunnote", "codeyunnote"),
         (
+            "星图笔记",
+            "语雀",
+            "OneNote",
+            "年历",
+            "纪视图",
+            "月备注",
+            "年月总结",
+            "章节节点",
+            "文章大纲",
+            "自然序文档",
+            "/doc",
             "PDF",
             "PDF阅读器",
             "PDF 阅读器",
@@ -393,6 +419,22 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "文档预览",
             "pdf_document",
             "pdf_documents",
+        ),
+    ),
+    (
+        ("codeyun集群", "集群", "cluster"),
+        (
+            "CodeYun 集群",
+            "集群服务",
+            "服务管理",
+            "设备 token",
+            "服务 token",
+            "账号 token",
+            "局域网",
+            "OCR 集中",
+            "OCR集中",
+            "PaddleOCR",
+            "CodeYun OCR",
         ),
     ),
     (
@@ -428,6 +470,13 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "灵兽",
             "妖王",
             "仙花",
+            "洞天",
+            "福地",
+            "尊主",
+            "侍从",
+            "灵脉",
+            "仙府",
+            "首领",
             "宗城",
             "法宝",
             "道具",
@@ -440,6 +489,99 @@ CODEX_DIARY_CATEGORY_DOMAIN_ALIASES = (
             "抽卡",
         ),
     ),
+    (
+        ("AI", "人工智能"),
+        (
+            "人工智能",
+            "小狼毫",
+            "Rime",
+            "Weasel",
+            "librime",
+            "输入法",
+            "预编辑",
+            "自定义短语",
+            "输入历史",
+            "预测模型",
+            "上下文预测",
+            "预测索引",
+            "预测候选",
+            "词库",
+            "拼音标注",
+            "仓颉",
+        ),
+    ),
+)
+CODEX_DIARY_INPUT_METHOD_FORCE_TERMS = (
+    "小狼毫",
+    "Rime",
+    "Weasel",
+    "librime",
+    "输入法",
+    "预编辑",
+    "自定义短语",
+    "输入历史",
+    "预测模型",
+    "上下文预测",
+    "预测索引",
+    "预测候选",
+    "词库",
+    "拼音标注",
+    "仓颉",
+)
+CODEX_DIARY_CODEYUN_NOTE_FORCE_TERMS = (
+    "星图笔记",
+    "日历",
+    "年视图",
+    "月视图",
+    "卷视图",
+    "纪视图",
+    "CalendarNotes",
+    "语雀",
+    "OneNote",
+    "章节节点",
+    "文章大纲",
+    "自然序文档",
+    "/doc",
+)
+CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS = (
+    "CodeYun 集群",
+    "集群服务",
+    "服务管理",
+    "设备 token",
+    "服务 token",
+    "账号 token",
+    "局域网 CodeYun OCR",
+    "CodeYun OCR",
+    "OCR 集中",
+    "OCR集中",
+    "PaddleOCR",
+)
+CODEX_DIARY_FANXIU_FORCE_TERMS = (
+    "凡修",
+    "prayer_cycle",
+    "祈愿",
+    "炼丹",
+    "淬体",
+    "灵兽",
+    "妖王",
+    "仙花",
+    "洞天",
+    "福地",
+    "尊主",
+    "侍从",
+    "灵脉",
+    "仙府",
+    "首领",
+    "宗城",
+    "法宝",
+    "道具",
+    "仙舟",
+    "魔道",
+    "昆仑",
+    "寿元",
+    "翠剑",
+    "衣橱",
+    "抽卡",
 )
 CODEX_DIARY_ATTENDANCE_FORCE_TERMS = (
     "问卷",
@@ -478,8 +620,8 @@ class CodexDiaryImportRunRead(BaseModel):
     source_user_message_count: int = 0
     source_assistant_message_count: int = 0
     created_note_count: int = 0
-    created_note_ids: List[str] = Field(default_factory=list)
-    duplicate_note_ids: List[str] = Field(default_factory=list)
+    created_note_ids: List[int] = Field(default_factory=list)
+    duplicate_note_ids: List[int] = Field(default_factory=list)
     error_message: Optional[str] = None
     result: Optional[dict[str, Any]] = None
     created_notes: List[dict[str, Any]] = Field(default_factory=list)
@@ -622,8 +764,44 @@ def _find_existing_codex_diary_notes(
         if _get_custom_field_value(note.custom_fields, CODEX_DIARY_SCOPE_FIELD) != scope_key:
             continue
         if note.id:
-            duplicate_ids.append(str(note.id))
+            duplicate_ids.append(_note_public_id(note))
     return duplicate_ids
+
+
+def _codex_diary_public_note_ids(session: Session, user_id: int, note_ids: list[str]) -> list[str]:
+    normalized_ids = [str(note_id).strip() for note_id in note_ids if str(note_id).strip()]
+    if not normalized_ids:
+        return []
+    numeric_ids = [int(note_id) for note_id in normalized_ids if note_id.isdecimal()]
+    legacy_ids = [note_id for note_id in normalized_ids if not note_id.isdecimal()]
+    notes = session.exec(
+        select(NoteNode).where(
+            NoteNode.user_id == user_id,
+            or_(
+                or_(NoteNode.id.in_(legacy_ids), NoteNode.legacy_id.in_(legacy_ids)) if legacy_ids else False,
+                NoteNode.numeric_id.in_(numeric_ids) if numeric_ids else False,
+            ),
+        )
+    ).all()
+    note_by_ref: dict[str, NoteNode] = {}
+    for note in notes:
+        note_by_ref[str(note.id)] = note
+        if getattr(note, "legacy_id", None):
+            note_by_ref[str(note.legacy_id)] = note
+        if note.numeric_id is not None:
+            note_by_ref[str(int(note.numeric_id))] = note
+    return [_note_public_id(note_by_ref[note_id]) for note_id in normalized_ids if note_id in note_by_ref]
+
+
+def _codex_diary_public_note_numeric_ids(session: Session, user_id: int, note_ids: list[str]) -> list[int]:
+    public_note_ids = _codex_diary_public_note_ids(session, user_id, note_ids)
+    numeric_ids: list[int] = []
+    for note_id in public_note_ids:
+        normalized = str(note_id or "").strip()
+        if not normalized.isdecimal():
+            raise HTTPException(status_code=500, detail="Codex diary note is missing a numeric resource id")
+        numeric_ids.append(int(normalized))
+    return numeric_ids
 
 
 def _serialize_codex_diary_import_run(
@@ -634,9 +812,12 @@ def _serialize_codex_diary_import_run(
 ) -> dict[str, Any]:
     created_notes: list[dict[str, Any]] = []
     for note_id in run.created_note_ids or []:
-        note = session.get(NoteNode, note_id)
+        resolved_note_id = _resolve_note_legacy_id(str(note_id), current_user, session)
+        note = session.get(NoteNode, resolved_note_id) if resolved_note_id else None
         if note and note.user_id == current_user.id:
             created_notes.append(_serialize_note_read(note, current_user))
+    created_note_ids = _codex_diary_public_note_numeric_ids(session, current_user.id, list(run.created_note_ids or []))
+    duplicate_note_ids = _codex_diary_public_note_numeric_ids(session, current_user.id, list(run.duplicate_note_ids or []))
     return {
         "id": run.id,
         "date": run.diary_date,
@@ -653,8 +834,8 @@ def _serialize_codex_diary_import_run(
         "source_user_message_count": int(run.source_user_message_count or 0),
         "source_assistant_message_count": int(run.source_assistant_message_count or 0),
         "created_note_count": int(run.created_note_count or 0),
-        "created_note_ids": list(run.created_note_ids or []),
-        "duplicate_note_ids": list(run.duplicate_note_ids or []),
+        "created_note_ids": created_note_ids,
+        "duplicate_note_ids": duplicate_note_ids,
         "error_message": run.error_message,
         "result": run.result_json or None,
         "created_notes": created_notes,
@@ -665,9 +846,14 @@ def _serialize_codex_diary_import_run(
     }
 
 
-def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None) -> dict[str, Any] | None:
+def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None, session: Session | None = None) -> dict[str, Any] | None:
     if run is None:
         return None
+    created_note_ids = list(run.created_note_ids or [])
+    duplicate_note_ids = list(run.duplicate_note_ids or [])
+    if session is not None:
+        created_note_ids = _codex_diary_public_note_ids(session, int(run.user_id), created_note_ids)
+        duplicate_note_ids = _codex_diary_public_note_ids(session, int(run.user_id), duplicate_note_ids)
     return {
         "id": run.id,
         "user_id": run.user_id,
@@ -684,8 +870,8 @@ def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None) -
         "source_user_message_count": int(run.source_user_message_count or 0),
         "source_assistant_message_count": int(run.source_assistant_message_count or 0),
         "created_note_count": int(run.created_note_count or 0),
-        "created_note_ids": list(run.created_note_ids or []),
-        "duplicate_note_ids": list(run.duplicate_note_ids or []),
+        "created_note_ids": created_note_ids,
+        "duplicate_note_ids": duplicate_note_ids,
         "error_message": run.error_message,
         "result": run.result_json or {},
         "heartbeat_at": run.heartbeat_at,
@@ -696,6 +882,8 @@ def _serialize_codex_diary_import_run_summary(run: CodexDiaryImportRun | None) -
 
 
 def get_codex_diary_auto_import_status(session: Session) -> dict[str, Any]:
+    queue = background_task_queue.snapshot()
+    mark_stale_codex_diary_import_runs(session, queue_snapshot=queue)
     latest_run = session.exec(
         select(CodexDiaryImportRun).order_by(CodexDiaryImportRun.created_at.desc())
     ).first()
@@ -706,10 +894,49 @@ def get_codex_diary_auto_import_status(session: Session) -> dict[str, Any]:
     ).first()
     return {
         "cron": CODEX_DIARY_AUTO_IMPORT_CRON,
-        "latest_run": _serialize_codex_diary_import_run_summary(latest_run),
-        "active_run": _serialize_codex_diary_import_run_summary(active_run),
-        "queue": background_task_queue.snapshot(),
+        "latest_run": _serialize_codex_diary_import_run_summary(latest_run, session=session),
+        "active_run": _serialize_codex_diary_import_run_summary(active_run, session=session),
+        "queue": queue,
     }
+
+
+def mark_stale_codex_diary_import_runs(
+    session: Session,
+    *,
+    now_ts: float | None = None,
+    queue_snapshot: dict[str, Any] | None = None,
+) -> int:
+    current_ts = float(now_ts if now_ts is not None else time.time())
+    stale_before = current_ts - CODEX_DIARY_STALE_HEARTBEAT_SECONDS
+    stale_minutes = int(CODEX_DIARY_STALE_HEARTBEAT_SECONDS // 60)
+    if _codex_diary_queue_has_active_task(queue_snapshot=queue_snapshot):
+        return 0
+    runs = session.exec(
+        select(CodexDiaryImportRun)
+        .where(CodexDiaryImportRun.status.in_(["pending", "running"]))
+        .order_by(CodexDiaryImportRun.created_at.asc())
+    ).all()
+    changed_count = 0
+    for run in runs:
+        heartbeat = run.heartbeat_at or run.updated_at or run.created_at
+        if heartbeat is None or float(heartbeat) > stale_before:
+            continue
+        run.status = "failed"
+        run.stage = "stale"
+        run.stage_label = "任务心跳超时"
+        run.error_message = (
+            f"后台任务心跳超过 {stale_minutes} 分钟未更新，且当前执行队列中没有对应任务；"
+            "通常是服务重启、进程中断或 AI 调用被外部终止。"
+        )
+        run.finished_at = current_ts
+        run.heartbeat_at = current_ts
+        run.updated_at = current_ts
+        session.add(run)
+        changed_count += 1
+
+    if changed_count:
+        session.commit()
+    return changed_count
 
 
 def _touch_codex_diary_run(
@@ -827,6 +1054,18 @@ def _codex_diary_domain_aliases_for_palette_item(item: dict[str, Any]) -> list[s
     return aliases
 
 
+def _is_codex_diary_ai_palette_item(item: dict[str, Any] | None) -> bool:
+    if not isinstance(item, dict):
+        return False
+    candidates = _collect_project_palette_candidates(
+        item.get("key"),
+        item.get("label"),
+        str(item.get("key") or "").removeprefix("custom_"),
+    )
+    normalized_candidates = {_normalize_project_palette_token(candidate) for candidate in candidates}
+    return bool(normalized_candidates & {"ai", "人工智能"})
+
+
 def _find_codex_diary_category_key_by_domain_marker(
     palette_lookup: dict[str, dict[str, Any]],
     markers: tuple[str, ...],
@@ -854,6 +1093,18 @@ def _add_codex_diary_category_score(scores: dict[str, int], category_key: Any, s
     if not key or score <= 0:
         return
     scores[key] = scores.get(key, 0) + int(score)
+
+
+def _count_codex_diary_term_hits(text: str, terms: tuple[str, ...]) -> int:
+    normalized_text = _normalize_project_palette_token(text)
+    if not normalized_text:
+        return 0
+    hits = 0
+    for term in terms:
+        normalized_term = _normalize_project_palette_token(term)
+        if normalized_term and normalized_term in normalized_text:
+            hits += 1
+    return hits
 
 
 def _score_codex_diary_category_texts(
@@ -885,6 +1136,8 @@ def _score_codex_diary_category_texts(
             str(item.get("key") or "").removeprefix("custom_"),
         ):
             normalized_token = _normalize_project_palette_token(token)
+            if re.fullmatch(r"[a-z0-9]+", normalized_token or "") and len(normalized_token) < 3:
+                continue
             if len(normalized_token) >= 2 and normalized_token in combined_text:
                 _add_codex_diary_category_score(scores, category_key, palette_token_weight)
         for alias in _codex_diary_domain_aliases_for_palette_item(item):
@@ -956,10 +1209,13 @@ def _build_codex_diary_category_scores(
     for key, score in content_scores.items():
         combined_scores[key] = combined_scores.get(key, 0) + score
     attendance_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("考勤", "attendance", "kq"))
+    content_text = _normalize_project_palette_token(
+        " ".join(str(turn.get(key) or "") for key in ("user_request", "assistant_result", "thread_title"))
+    )
+    body_text = _normalize_project_palette_token(
+        " ".join(str(turn.get(key) or "") for key in ("user_request", "assistant_result"))
+    )
     if attendance_key:
-        content_text = _normalize_project_palette_token(
-            " ".join(str(turn.get(key) or "") for key in ("user_request", "assistant_result", "thread_title"))
-        )
         if any(_normalize_project_palette_token(term) in content_text for term in CODEX_DIARY_ATTENDANCE_FORCE_TERMS):
             _add_codex_diary_category_score(combined_scores, attendance_key, 120)
         elif (
@@ -967,6 +1223,30 @@ def _build_codex_diary_category_scores(
             and any(marker in content_text for marker in ("数据", "截图", "核对", "恢复", "记录"))
         ):
             _add_codex_diary_category_score(combined_scores, attendance_key, 80)
+
+    fanxiu_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("凡修", "fanxiu"))
+    fanxiu_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_FANXIU_FORCE_TERMS)
+    if fanxiu_key and fanxiu_hits:
+        _add_codex_diary_category_score(combined_scores, fanxiu_key, 160 + fanxiu_hits * 28)
+
+    input_method_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_INPUT_METHOD_FORCE_TERMS)
+    if input_method_hits:
+        input_method_key = (
+            _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("AI", "人工智能"))
+            or _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("编程", "技术", "programming"))
+        )
+        if input_method_key:
+            _add_codex_diary_category_score(combined_scores, input_method_key, 130 + input_method_hits * 24)
+
+    codeyun_note_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun笔记", "codeyunnote"))
+    codeyun_note_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_NOTE_FORCE_TERMS)
+    if codeyun_note_key and codeyun_note_hits:
+        _add_codex_diary_category_score(combined_scores, codeyun_note_key, 130 + codeyun_note_hits * 24)
+
+    codeyun_cluster_key = _find_codex_diary_category_key_by_domain_marker(palette_lookup, ("codeyun集群", "集群", "cluster"))
+    codeyun_cluster_hits = _count_codex_diary_term_hits(body_text, CODEX_DIARY_CODEYUN_CLUSTER_FORCE_TERMS)
+    if codeyun_cluster_key and codeyun_cluster_hits:
+        _add_codex_diary_category_score(combined_scores, codeyun_cluster_key, 130 + codeyun_cluster_hits * 24)
     return combined_scores
 
 
@@ -1260,6 +1540,7 @@ def _build_codex_diary_note_title_hints(
     session: Session,
     *,
     allowed_category_keys: set[str],
+    palette_lookup: dict[str, dict[str, Any]],
 ) -> dict[str, str]:
     rows = session.exec(
         select(NoteNode)
@@ -1269,6 +1550,8 @@ def _build_codex_diary_note_title_hints(
     ).all()
     hints: dict[str, str] = {}
     for note in rows:
+        if _get_custom_field_value(note.custom_fields, CODEX_DIARY_DATE_FIELD):
+            continue
         category_key = str(note.primary_category or "").strip()
         if not category_key:
             normalized_categories = normalize_note_categories(note.note_categories, fallback_category=NOTE_CATEGORY_DEFAULT)
@@ -1276,6 +1559,8 @@ def _build_codex_diary_note_title_hints(
         if not category_key:
             continue
         if category_key not in allowed_category_keys:
+            continue
+        if _is_codex_diary_ai_palette_item(_codex_diary_category_item_by_key(category_key, palette_lookup=palette_lookup)):
             continue
         for token in _collect_project_palette_candidates(note.title):
             normalized = _normalize_project_palette_token(token)
@@ -1535,6 +1820,37 @@ def _codex_diary_duration_minutes(duration_seconds: Any) -> int:
 def _build_codex_diary_completion_progress_expr(block: dict[str, Any]) -> str:
     minutes = _codex_diary_duration_minutes(block.get("duration_seconds"))
     return f"{minutes}/{CODEX_DIARY_PROGRESS_BASE_MINUTES}"
+
+
+def _build_codex_diary_worklog(
+    run: CodexDiaryImportRun,
+    block: dict[str, Any],
+    *,
+    source_thread_ids: list[str],
+) -> dict[str, Any]:
+    records = block.get("records") or []
+    duration_seconds = max(0, int(round(float(block.get("duration_seconds") or 0))))
+    start_at = float(block.get("start_at") or 0)
+    end_at = float(block.get("end_at") or start_at)
+    device_names = sorted({
+        str(record.get("source_device_name") or "").strip()
+        for record in records
+        if str(record.get("source_device_name") or "").strip()
+    })
+    return {
+        "version": 1,
+        "date": run.diary_date,
+        "timezone": run.timezone,
+        "scope_key": run.scope_key,
+        "block_key": str(block.get("block_key") or ""),
+        "duration_seconds": duration_seconds,
+        "duration_minutes": _codex_diary_duration_minutes(duration_seconds),
+        "start_at": start_at,
+        "end_at": end_at,
+        "turn_count": len(records),
+        "source_thread_ids": source_thread_ids,
+        "source_devices": device_names,
+    }
 
 
 def _build_codex_diary_block_key(block: dict[str, Any]) -> str:
@@ -2004,6 +2320,40 @@ def _draft_codex_diary_blocks_with_ai(
     return blocks
 
 
+def _draft_codex_diary_blocks_in_batches(
+    source: dict[str, Any],
+    blocks: list[dict[str, Any]],
+    *,
+    current_user: User,
+    session: Session,
+    run: CodexDiaryImportRun | None = None,
+) -> list[dict[str, Any]]:
+    if not blocks:
+        return blocks
+
+    drafted_blocks: list[dict[str, Any]] = []
+    total_batches = (len(blocks) + CODEX_DIARY_DRAFT_BATCH_SIZE - 1) // CODEX_DIARY_DRAFT_BATCH_SIZE
+    for batch_index, offset in enumerate(range(0, len(blocks), CODEX_DIARY_DRAFT_BATCH_SIZE), start=1):
+        if run is not None:
+            _touch_codex_diary_run(
+                session,
+                run,
+                status="running",
+                stage="drafting",
+                stage_label=f"调用 AI 生成日记草案 {batch_index}/{total_batches}",
+            )
+        batch = blocks[offset : offset + CODEX_DIARY_DRAFT_BATCH_SIZE]
+        drafted_blocks.extend(
+            _draft_codex_diary_blocks_with_ai(
+                source,
+                batch,
+                current_user=current_user,
+                session=session,
+            )
+        )
+    return drafted_blocks
+
+
 def _build_codex_diary_body_html(block: dict[str, Any]) -> str:
     records = block["records"]
     device_names = sorted({str(record.get("source_device_name") or "").strip() for record in records if record.get("source_device_name")})
@@ -2051,6 +2401,7 @@ def _build_codex_diary_blocks(source: dict[str, Any], *, user_id: int, session: 
         user_id,
         session,
         allowed_category_keys=allowed_category_keys,
+        palette_lookup=palette_lookup,
     )
     records: list[dict[str, Any]] = []
     for raw_record in sorted(source.get("turn_records") or [], key=lambda item: (float(item.get("start_at") or 0), str(item.get("thread_id") or ""))):
@@ -2197,6 +2548,11 @@ def _create_codex_diary_note(
         [CODEX_DIARY_SCOPE_FIELD, "string", run.scope_key],
         [CODEX_DIARY_BLOCK_FIELD, "string", str(block.get("block_key") or "")],
         [CODEX_DIARY_SOURCE_THREADS_FIELD, "json", source_thread_ids],
+        [
+            CODEX_DIARY_WORKLOG_FIELD,
+            "json",
+            _build_codex_diary_worklog(run, block, source_thread_ids=source_thread_ids),
+        ],
     ]
     normalized_custom_fields = _apply_completion_progress_expr_to_note_data(
         {
@@ -2206,8 +2562,11 @@ def _create_codex_diary_note(
         [],
     ).get("custom_fields", custom_fields)
     now = time.time()
+    note_identity = allocate_new_note_identity(session)
     note = NoteNode(
-        id=str(uuid.uuid4()),
+        id=note_identity.primary_id,
+        numeric_id=note_identity.numeric_id,
+        legacy_id=note_identity.legacy_id,
         user_id=current_user.id,
         title=str(block["title"]),
         content=_build_codex_diary_body_html(block),
@@ -2227,7 +2586,7 @@ def _create_codex_diary_note(
         custom_fields=normalized_custom_fields,
         created_at=now,
         updated_at=now,
-        start_at=float(block["start_at"]),
+        start_at=_codex_diary_note_start_at(run, block),
         history=[],
     )
     session.add(note)
@@ -2238,6 +2597,91 @@ def _create_codex_diary_note(
         source_ref_id=run.id,
     )
     return note
+
+
+def _codex_diary_note_start_at(run: CodexDiaryImportRun, block: dict[str, Any]) -> float:
+    start_at = float(block["start_at"])
+    end_at = float(block.get("end_at") or start_at)
+    try:
+        _, day_start_at, _ = _parse_codex_diary_date(run.diary_date)
+    except HTTPException:
+        return start_at
+    if start_at < day_start_at and end_at > day_start_at:
+        return day_start_at
+    return start_at
+
+
+def _build_codex_diary_source_result(run: CodexDiaryImportRun, source: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        "thread_count": run.source_thread_count,
+        "turn_count": run.source_turn_count,
+        "user_message_count": run.source_user_message_count,
+        "assistant_message_count": run.source_assistant_message_count,
+    }
+    source_failures = source.get("source_failures")
+    if isinstance(source_failures, list) and source_failures:
+        result["source_failures"] = source_failures
+    return result
+
+
+def _build_codex_diary_blocks_result(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "block_key": block.get("block_key"),
+            "title": block.get("title"),
+            "note_categories": block.get("note_categories"),
+            "category_key": block.get("category_key"),
+            "category_label": block.get("category_label"),
+            "duration_seconds": block.get("duration_seconds"),
+            "completion_progress_expr": _build_codex_diary_completion_progress_expr(block),
+            "start_at": block.get("start_at"),
+            "end_at": block.get("end_at"),
+            "source_thread_ids": sorted({str(record.get("thread_id") or "") for record in block.get("records") or []}),
+        }
+        for block in blocks
+    ]
+
+
+def _mark_codex_diary_import_run_failed(
+    db_bind: Any,
+    *,
+    run_id: str,
+    error_message: str,
+    session: Session | None = None,
+) -> None:
+    now = time.time()
+
+    def apply_failure(active_session: Session) -> bool:
+        failed_run = active_session.get(CodexDiaryImportRun, run_id)
+        if failed_run is None:
+            return False
+        failed_run.status = "failed"
+        failed_run.stage = "failed"
+        failed_run.stage_label = "导入失败"
+        failed_run.error_message = error_message
+        failed_run.finished_at = now
+        failed_run.updated_at = now
+        failed_run.heartbeat_at = now
+        active_session.add(failed_run)
+        active_session.commit()
+        return True
+
+    if session is not None:
+        try:
+            session.rollback()
+            if apply_failure(session):
+                return
+        except Exception:
+            try:
+                session.rollback()
+            except Exception:
+                pass
+
+    try:
+        with Session(db_bind) as fallback_session:
+            apply_failure(fallback_session)
+    except Exception:
+        pass
 
 
 def _run_codex_diary_import_worker(
@@ -2272,10 +2716,7 @@ def _run_codex_diary_import_worker(
             if not source.get("turn_records"):
                 run.result_json = {
                     "prompt_version": CODEX_DIARY_PROMPT_VERSION,
-                    "source": {
-                        "thread_count": run.source_thread_count,
-                        "turn_count": run.source_turn_count,
-                    },
+                    "source": _build_codex_diary_source_result(run, source),
                     "blocks": [],
                 }
                 run.status = "completed"
@@ -2292,43 +2733,34 @@ def _run_codex_diary_import_worker(
             blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
 
             _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 AI 生成日记草案")
-            blocks = _draft_codex_diary_blocks_with_ai(source, blocks, current_user=user, session=session)
+            blocks = _draft_codex_diary_blocks_in_batches(source, blocks, current_user=user, session=session, run=run)
 
             _touch_codex_diary_run(session, run, status="running", stage="writing", stage_label="写入星图笔记")
-            created_notes: list[NoteNode] = []
-            for block in blocks:
-                created_notes.append(_create_codex_diary_note(session, current_user=user, run=run, block=block))
-            session.commit()
-            for note in created_notes:
-                session.refresh(note)
-
-            run.created_note_ids = [str(note.id) for note in created_notes if note.id]
-            run.created_note_count = len(run.created_note_ids)
+            created_note_ids: list[str] = list(run.created_note_ids or [])
             run.result_json = {
                 "prompt_version": CODEX_DIARY_PROMPT_VERSION,
                 "draft_generator": "codex-cli-json-v1",
-                "source": {
-                    "thread_count": run.source_thread_count,
-                    "turn_count": run.source_turn_count,
-                    "user_message_count": run.source_user_message_count,
-                    "assistant_message_count": run.source_assistant_message_count,
-                },
-                "blocks": [
-                    {
-                        "block_key": block.get("block_key"),
-                        "title": block.get("title"),
-                        "note_categories": block.get("note_categories"),
-                        "category_key": block.get("category_key"),
-                        "category_label": block.get("category_label"),
-                        "duration_seconds": block.get("duration_seconds"),
-                        "completion_progress_expr": _build_codex_diary_completion_progress_expr(block),
-                        "start_at": block.get("start_at"),
-                        "end_at": block.get("end_at"),
-                        "source_thread_ids": sorted({str(record.get("thread_id") or "") for record in block.get("records") or []}),
-                    }
-                    for block in blocks
-                ],
+                "source": _build_codex_diary_source_result(run, source),
+                "blocks": _build_codex_diary_blocks_result(blocks),
             }
+            session.add(run)
+            session.commit()
+
+            total_blocks = len(blocks)
+            for index, block in enumerate(blocks, start=1):
+                note = _create_codex_diary_note(session, current_user=user, run=run, block=block)
+                note_id = _note_public_id(note)
+                created_note_ids = [*created_note_ids, note_id]
+                now = time.time()
+                run.created_note_ids = created_note_ids
+                run.created_note_count = len(created_note_ids)
+                run.stage_label = f"写入星图笔记 {index}/{total_blocks}"
+                run.updated_at = now
+                run.heartbeat_at = now
+                session.add(run)
+                session.commit()
+                session.refresh(note)
+
             run.status = "completed"
             run.stage = "completed"
             run.stage_label = f"已创建 {run.created_note_count} 个节点"
@@ -2338,15 +2770,12 @@ def _run_codex_diary_import_worker(
             session.add(run)
             session.commit()
         except Exception as exc:
-            run.status = "failed"
-            run.stage = "failed"
-            run.stage_label = "导入失败"
-            run.error_message = str(getattr(exc, "detail", None) or exc)
-            run.finished_at = time.time()
-            run.updated_at = run.finished_at
-            run.heartbeat_at = run.finished_at
-            session.add(run)
-            session.commit()
+            _mark_codex_diary_import_run_failed(
+                db_bind,
+                run_id=run_id,
+                error_message=str(getattr(exc, "detail", None) or exc),
+                session=session,
+            )
 
 
 def _normalize_note_type_palette_item(value: Any, fallback_order: int = 0) -> dict[str, Any] | None:
@@ -2806,6 +3235,53 @@ def _serialize_note_read(
     **extra_fields: Any,
 ) -> dict[str, Any]:
     return note_to_response_dict(note, current_user, **extra_fields)
+
+
+def _serialize_note_edge(
+    edge: NoteEdge,
+    *,
+    note_public_ids: dict[str, int | str] | None = None,
+    session: Session | None = None,
+    user_id: int | None = None,
+) -> dict[str, Any]:
+    public_ids = note_public_ids or {}
+
+    def resolve(note_id: str) -> int | str:
+        normalized = str(note_id or "")
+        if normalized in public_ids:
+            return public_ids[normalized]
+        if session is not None:
+            ref_conditions = [
+                NoteNode.id == normalized,
+                NoteNode.legacy_id == normalized,
+            ]
+            if normalized.isdecimal():
+                ref_conditions.append(NoteNode.numeric_id == int(normalized))
+            query = select(NoteNode).where(or_(*ref_conditions))
+            if user_id is not None:
+                query = query.where(NoteNode.user_id == user_id)
+            note = session.exec(query).first()
+            if note is not None:
+                return note_public_api_id(note)
+        return normalized
+
+    return {
+        "id": str(edge.id),
+        "user_id": int(edge.user_id),
+        "source_id": resolve(edge.source_id),
+        "target_id": resolve(edge.target_id),
+        "label": edge.label,
+        "created_at": float(edge.created_at or 0),
+    }
+
+
+def _serialize_note_edges_for_nodes(edges: list[NoteEdge], notes: list[NoteNode]) -> list[dict[str, Any]]:
+    note_public_ids: dict[str, int | str] = {}
+    for note in notes:
+        public_id = note_public_api_id(note)
+        for ref in note_ref_aliases(note):
+            note_public_ids[ref] = public_id
+    return [_serialize_note_edge(edge, note_public_ids=note_public_ids) for edge in edges]
 
 
 def _html_to_plain_text(value: Any) -> str:
@@ -3343,17 +3819,47 @@ def _is_numeric_note_ref(value: str) -> bool:
     return bool(text) and text.isdecimal()
 
 
-def _next_note_numeric_id(session: Session) -> int:
-    row = session.exec(select(func.coalesce(func.max(NoteNode.numeric_id), 0))).first()
-    return int(row or 0) + 1
+def _note_public_id(note: NoteNode) -> str:
+    return note_public_id(note)
 
 
-def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
+def _note_edge_ref_set(notes: Iterable[NoteNode]) -> set[str]:
+    refs: set[str] = set()
+    for note in notes:
+        refs.update(note_ref_aliases(note))
+    return refs
+
+
+def _resolve_note_legacy_id(note_ref: str, current_user: User, session: Session) -> str | None:
+    note = _get_accessible_note_by_any_ref(note_ref, current_user, session)
+    if note is None:
+        return None
+    return str(note.id)
+
+
+def _resolve_note_public_ref(note_ref: str, current_user: User, session: Session) -> str | None:
+    note = _get_accessible_note(note_ref, current_user, session)
+    if note is None:
+        return None
+    return _note_public_id(note)
+
+
+def _get_accessible_note_by_any_ref(note_id: str, current_user: User, session: Session) -> NoteNode | None:
     normalized_id = str(note_id or "").strip()
     if _is_numeric_note_ref(normalized_id):
         query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_id))
     else:
-        query = select(NoteNode).where(NoteNode.id == normalized_id)
+        query = select(NoteNode).where(or_(NoteNode.id == normalized_id, NoteNode.legacy_id == normalized_id))
+    if not current_user.is_superuser:
+        query = query.where(NoteNode.user_id == current_user.id)
+    return session.exec(query).first()
+
+
+def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
+    normalized_id = str(note_id or "").strip()
+    if not _is_numeric_note_ref(normalized_id):
+        return None
+    query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_id))
     if not current_user.is_superuser:
         query = query.where(NoteNode.user_id == current_user.id)
     return session.exec(query).first()
@@ -3367,7 +3873,8 @@ def _get_filtered_edge_pool(
 ) -> List[NoteEdge]:
     edges = session.exec(select(NoteEdge).where(NoteEdge.user_id == user_id)).all()
     if mode == "satellite":
-        edges = [edge for edge in edges if edge.target_id != seed_note_id]
+        seed_refs = {str(seed_note_id)}
+        edges = [edge for edge in edges if str(edge.target_id) not in seed_refs]
     return edges
 
 
@@ -3378,22 +3885,29 @@ def _get_component_note_ids(
     session: Session
 ) -> Tuple[set[str], List[NoteEdge]]:
     normalized_seed_id = str(seed_note_id or "").strip()
-    if _is_numeric_note_ref(normalized_seed_id):
-        start_note = session.exec(
-            select(NoteNode).where(NoteNode.numeric_id == int(normalized_seed_id), NoteNode.user_id == user_id)
-        ).first()
-    else:
-        start_note = session.exec(
-            select(NoteNode).where(NoteNode.id == normalized_seed_id, NoteNode.user_id == user_id)
-        ).first()
+    if not _is_numeric_note_ref(normalized_seed_id):
+        raise HTTPException(status_code=404, detail="Note not found")
+    start_note = session.exec(
+        select(NoteNode).where(NoteNode.numeric_id == int(normalized_seed_id), NoteNode.user_id == user_id)
+    ).first()
     if not start_note:
         raise HTTPException(status_code=404, detail="Note not found")
 
-    seed_node_id = str(start_note.id)
-    edges = _get_filtered_edge_pool(seed_node_id, mode, user_id, session)
+    seed_node_id = _note_public_id(start_note)
+    all_notes = session.exec(select(NoteNode).where(NoteNode.user_id == user_id)).all()
+    ref_to_note = build_note_ref_map(all_notes)
+    edges = session.exec(select(NoteEdge).where(NoteEdge.user_id == user_id)).all()
     adj: dict[str, list[str]] = {}
+    component_edges: list[NoteEdge] = []
     for edge in edges:
-        u, v = edge.source_id, edge.target_id
+        source_note = ref_to_note.get(str(edge.source_id))
+        target_note = ref_to_note.get(str(edge.target_id))
+        if source_note is None or target_note is None:
+            continue
+        u, v = _note_public_id(source_note), _note_public_id(target_note)
+        if mode == "satellite" and v == seed_node_id:
+            continue
+        component_edges.append(edge)
         adj.setdefault(u, []).append(v)
         adj.setdefault(v, []).append(u)
 
@@ -3406,10 +3920,12 @@ def _get_component_note_ids(
                 visited.add(neighbor)
                 queue.append(neighbor)
 
-    return visited, edges
+    return visited, component_edges
 
 
 def _get_rule_value(note: NoteNode, field: str):
+    if field == "id":
+        return _note_public_id(note)
     if field.startswith("custom_fields."):
         key = field.split(".", 1)[1]
         custom_fields = note.custom_fields or []
@@ -3478,6 +3994,8 @@ def _matches_rule(note: NoteNode, rule: NoteFilterRule) -> bool:
 
 def _apply_sql_rule(query, rule: NoteFilterRule):
     if rule.field.startswith("custom_fields."):
+        return query, False
+    if rule.field == "id":
         return query, False
 
     column = getattr(NoteNode, rule.field, None)
@@ -3629,6 +4147,24 @@ def _ensure_seed_ids_exist(context: NoteGraphContext, seed_ids: List[str]) -> No
         raise HTTPException(status_code=404, detail=f"Seed notes not found: {', '.join(missing)}")
 
 
+def _normalize_note_program_public_ids(request: NoteProgramRequest, current_user: User, session: Session) -> None:
+    def normalize_ids(values: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for value in values or []:
+            if not _is_numeric_note_ref(str(value)):
+                raise HTTPException(status_code=404, detail="Note not found")
+            public_ref = _resolve_note_public_ref(str(value), current_user, session)
+            if public_ref:
+                normalized.append(public_ref)
+        return normalized
+
+    request.executor.seed_ids = normalize_ids(request.executor.seed_ids)
+    for channel in (request.program.select, request.program.expand):
+        for rule in channel.rules:
+            if rule.matcher.kind == "id":
+                rule.matcher.ids = normalize_ids(rule.matcher.ids)
+
+
 def _execute_note_program(
     request: NoteProgramRequest,
     *,
@@ -3637,6 +4173,7 @@ def _execute_note_program(
     session: Session,
 ):
     need_edges = request.result.include_edges or request.executor.kind == "component"
+    _normalize_note_program_public_ids(request, current_user, session)
     context = _load_note_context(user_id, session, include_edges=need_edges)
     walker = _build_program_walker(context, request)
 
@@ -3658,7 +4195,7 @@ def _execute_note_program(
     sorted_nodes = _sort_notes(walk_result.nodes, request.result.order_by, request.result.order_desc)
     total_nodes = len(sorted_nodes)
     visible_nodes = sorted_nodes[request.result.skip: request.result.skip + request.result.limit]
-    visible_ids = {node.id for node in visible_nodes}
+    visible_ids = _note_edge_ref_set(visible_nodes)
 
     if request.result.include_edges:
         visible_edges = [
@@ -3670,7 +4207,7 @@ def _execute_note_program(
 
     return {
         "nodes": [_serialize_note_list(note, current_user) for note in visible_nodes],
-        "edges": visible_edges,
+        "edges": _serialize_note_edges_for_nodes(visible_edges, visible_nodes),
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges),
     }
@@ -3788,7 +4325,8 @@ def query_notes(
         )
         if not note_ids:
             return {"nodes": [], "edges": [], "total_nodes": 0, "total_edges": 0}
-        query = query.where(NoteNode.id.in_(note_ids))
+        numeric_note_ids = [int(note_id) for note_id in note_ids if str(note_id).isdecimal()]
+        query = query.where(NoteNode.numeric_id.in_(numeric_note_ids))
 
     python_rules: List[NoteFilterRule] = []
     for rule in request.rules:
@@ -3802,7 +4340,7 @@ def query_notes(
 
     total_nodes = len(sorted_notes)
     visible_notes = sorted_notes[request.skip: request.skip + request.limit]
-    visible_ids = {note.id for note in visible_notes}
+    visible_ids = _note_edge_ref_set(visible_notes)
 
     if request.include_edges:
         if not edge_pool:
@@ -3816,7 +4354,7 @@ def query_notes(
 
     return {
         "nodes": [_serialize_note_list(note, current_user) for note in visible_notes],
-        "edges": visible_edges,
+        "edges": _serialize_note_edges_for_nodes(visible_edges, visible_notes),
         "total_nodes": total_nodes,
         "total_edges": len(visible_edges)
     }
@@ -3843,9 +4381,10 @@ def batch_update_notes(
     """
     Batch update notes for the current user.
     """
-    note_ids = [str(note_id).strip() for note_id in request.ids if str(note_id).strip()]
-    if not note_ids:
+    requested_note_ids = [str(note_id).strip() for note_id in request.ids if str(note_id).strip()]
+    if not requested_note_ids or any(not _is_numeric_note_ref(note_id) for note_id in requested_note_ids):
         raise HTTPException(status_code=400, detail="ids is required")
+    numeric_ids = [int(note_id) for note_id in requested_note_ids]
 
     patch = request.patch.model_dump(exclude_unset=True)
     if not patch:
@@ -3856,12 +4395,12 @@ def batch_update_notes(
     notes = session.exec(
         select(NoteNode).where(
             NoteNode.user_id == current_user.id,
-            NoteNode.id.in_(note_ids)
+            NoteNode.numeric_id.in_(numeric_ids)
         )
     ).all()
 
-    note_by_id = {str(note.id): note for note in notes}
-    ordered_notes = [note_by_id[note_id] for note_id in note_ids if note_id in note_by_id]
+    note_by_id = {int(note.numeric_id): note for note in notes if note.numeric_id is not None}
+    ordered_notes = [note_by_id[note_id] for note_id in numeric_ids if note_id in note_by_id]
 
     now_ts = int(time.time())
     updated_notes: List[NoteNode] = []
@@ -4183,13 +4722,19 @@ def merge_note_category_palette_item(
     return _build_note_type_palette_response(current_user.id, session)
 
 
-def _build_codex_diary_duplicate_http_error(duplicate_note_ids: list[str]) -> HTTPException:
+def _build_codex_diary_duplicate_http_error(
+    duplicate_note_ids: list[str],
+    *,
+    user_id: int,
+    session: Session,
+) -> HTTPException:
+    public_duplicate_note_ids = _codex_diary_public_note_numeric_ids(session, user_id, duplicate_note_ids)
     return HTTPException(
         status_code=409,
         detail={
             "message": "该日期已导入过 Codex 总结日记，继续会重复生成一批新节点。",
-            "duplicate_note_ids": duplicate_note_ids,
-            "duplicate_count": len(duplicate_note_ids),
+            "duplicate_note_ids": public_duplicate_note_ids,
+            "duplicate_count": len(public_duplicate_note_ids),
         },
     )
 
@@ -4222,7 +4767,12 @@ def _create_codex_diary_import_run_record(
     now = time.time()
     if duplicate_note_ids and not confirm_duplicate:
         if not skip_duplicate:
-            raise _build_codex_diary_duplicate_http_error(duplicate_note_ids)
+            raise _build_codex_diary_duplicate_http_error(
+                duplicate_note_ids,
+                user_id=current_user.id,
+                session=session,
+            )
+        public_duplicate_note_ids = _codex_diary_public_note_ids(session, current_user.id, duplicate_note_ids)
         run = CodexDiaryImportRun(
             user_id=current_user.id,
             diary_date=diary_date,
@@ -4230,7 +4780,7 @@ def _create_codex_diary_import_run_record(
             entry_ids=[str(entry["entry_id"]) for entry in entry_specs],
             entry_snapshot=entry_specs,
             confirm_duplicate=False,
-            duplicate_note_ids=duplicate_note_ids,
+            duplicate_note_ids=public_duplicate_note_ids,
             status="skipped",
             stage="duplicate",
             stage_label="该日期已导入过，自动任务已跳过",
@@ -4244,6 +4794,7 @@ def _create_codex_diary_import_run_record(
         session.refresh(run)
         return run, entry_specs, root_identity, False
 
+    public_duplicate_note_ids = _codex_diary_public_note_ids(session, current_user.id, duplicate_note_ids)
     run = CodexDiaryImportRun(
         user_id=current_user.id,
         diary_date=diary_date,
@@ -4251,7 +4802,7 @@ def _create_codex_diary_import_run_record(
         entry_ids=[str(entry["entry_id"]) for entry in entry_specs],
         entry_snapshot=entry_specs,
         confirm_duplicate=bool(confirm_duplicate),
-        duplicate_note_ids=duplicate_note_ids,
+        duplicate_note_ids=public_duplicate_note_ids,
         status="running",
         stage="queued",
         stage_label="已进入队列",
@@ -4300,8 +4851,12 @@ def _codex_diary_yesterday_text(now: datetime | None = None) -> str:
     return (reference.date() - timedelta(days=1)).isoformat()
 
 
-def _codex_diary_queue_has_active_task(task_name: str = CODEX_DIARY_AUTO_IMPORT_TASK_NAME) -> bool:
-    queue = background_task_queue.snapshot()
+def _codex_diary_queue_has_active_task(
+    task_name: str = CODEX_DIARY_AUTO_IMPORT_TASK_NAME,
+    *,
+    queue_snapshot: dict[str, Any] | None = None,
+) -> bool:
+    queue = queue_snapshot if isinstance(queue_snapshot, dict) else background_task_queue.snapshot()
     running = queue.get("running")
     if isinstance(running, dict) and running.get("name") == task_name:
         return True
@@ -4567,9 +5122,11 @@ def create_note(
             effective_node_status,
         )
     current_time = time.time()
+    note_identity = allocate_new_note_identity(session)
     db_note = NoteNode(
-        id=str(uuid.uuid4()), # Generate UUID
-        numeric_id=_next_note_numeric_id(session),
+        id=note_identity.primary_id,
+        numeric_id=note_identity.numeric_id,
+        legacy_id=note_identity.legacy_id,
         user_id=current_user.id,
         title=note.title,
         content=note.content,
@@ -4611,13 +5168,13 @@ def read_note(
     note = _get_accessible_note(note_id, current_user, session)
     if not note:
         raise HTTPException(status_code=404, detail="Note not found")
-    resolved_note_id = str(note.id)
+    note_refs = note_ref_aliases(note)
     
     # Calculate edge count
     edge_count = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            or_(NoteEdge.source_id == resolved_note_id, NoteEdge.target_id == resolved_note_id)
+            or_(NoteEdge.source_id.in_(note_refs), NoteEdge.target_id.in_(note_refs))
         )
     ).one()
     
@@ -4625,7 +5182,7 @@ def read_note(
     out_degree = session.exec(
         select(func.count()).select_from(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.source_id == resolved_note_id
+            NoteEdge.source_id.in_(note_refs)
         )
     ).one()
 
@@ -4634,21 +5191,14 @@ def read_note(
     direct_parent_edges = session.exec(
         select(NoteEdge).where(
             NoteEdge.user_id == note.user_id,
-            NoteEdge.target_id == resolved_note_id
+            NoteEdge.target_id.in_(note_refs)
         )
     ).all()
     
     parent_ids = [e.source_id for e in direct_parent_edges]
     
     # 2. Fetch parent nodes
-    parent_nodes = []
-    if parent_ids:
-        parent_nodes = session.exec(
-            select(NoteNode).where(
-                NoteNode.id.in_(parent_ids),
-                NoteNode.user_id == note.user_id
-            )
-        ).all()
+    parent_nodes = list({note_public_id(parent): parent for parent in load_notes_by_refs(session, note.user_id, parent_ids).values()}.values()) if parent_ids else []
 
     # 3. Ancestors (Simplified: just one level up for now or BFS for full ancestors?)
     # User asked for "Direct Parent" and "Other Indirect Ancestors".
@@ -4680,8 +5230,8 @@ def read_note(
     
     # Process Ancestors (BFS Upstream)
     # We already have parents. Let's find their parents.
-    visited_ancestors = set(parent_ids)
-    queue = list(parent_ids)
+    visited_ancestors = {note_public_id(parent) for parent in parent_nodes}
+    queue = sorted(_note_edge_ref_set(parent_nodes))
     max_depth = 3 # Limit depth to prevent performance issues
     current_depth = 0
     
@@ -4697,22 +5247,19 @@ def read_note(
                 )
             ).all()
             
-            new_ancestor_ids = []
+            source_ref_map = load_notes_by_refs(session, note.user_id, [edge.source_id for edge in upstream_edges])
+            new_ancestor_nodes: list[NoteNode] = []
             for edge in upstream_edges:
-                if edge.source_id not in visited_ancestors and edge.source_id != resolved_note_id:
-                    visited_ancestors.add(edge.source_id)
-                    new_ancestor_ids.append(edge.source_id)
+                source_note = source_ref_map.get(str(edge.source_id))
+                if source_note is None:
+                    continue
+                source_id = note_public_id(source_note)
+                if source_id not in visited_ancestors and source_id != note_public_id(note):
+                    visited_ancestors.add(source_id)
+                    new_ancestor_nodes.append(source_note)
             
-            if new_ancestor_ids:
-                # Fetch these ancestor nodes
-                ancestor_nodes = session.exec(
-                    select(NoteNode).where(
-                        NoteNode.id.in_(new_ancestor_ids),
-                        NoteNode.user_id == note.user_id
-                    )
-                ).all()
-                
-                for anc_node in ancestor_nodes:
+            if new_ancestor_nodes:
+                for anc_node in new_ancestor_nodes:
                     if anc_node.custom_fields:
                         if isinstance(anc_node.custom_fields, list):
                             for field_item in anc_node.custom_fields:
@@ -4727,7 +5274,7 @@ def read_note(
                                     continue
                                 ancestor_fields[k] = [k, "string", v]
                 
-                queue = new_ancestor_ids
+                queue = sorted(_note_edge_ref_set(new_ancestor_nodes))
             else:
                 queue = []
         current_depth += 1
@@ -4784,11 +5331,15 @@ def get_connected_component(
     nodes = session.exec(
         select(NoteNode).where(
             NoteNode.user_id == current_user.id,
-            NoteNode.id.in_(note_ids)
+            NoteNode.numeric_id.in_([int(note_id) for note_id in note_ids if str(note_id).isdecimal()])
         )
     ).all()
-    component_edges = [edge for edge in edges if edge.source_id in note_ids and edge.target_id in note_ids]
-    return {"nodes": [_serialize_note_list(note, current_user) for note in nodes], "edges": component_edges}
+    component_refs = _note_edge_ref_set(nodes)
+    component_edges = [edge for edge in edges if str(edge.source_id) in component_refs and str(edge.target_id) in component_refs]
+    return {
+        "nodes": [_serialize_note_list(note, current_user) for note in nodes],
+        "edges": _serialize_note_edges_for_nodes(component_edges, nodes),
+    }
 
 @router.put("/{note_id}", response_model=NoteRead)
 def update_note(
@@ -4834,13 +5385,13 @@ def delete_note(
     db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
-    resolved_note_id = str(db_note.id)
+    note_refs = note_ref_aliases(db_note)
 
     edges = session.exec(
         select(NoteEdge).where(
             or_(
-                NoteEdge.source_id == resolved_note_id,
-                NoteEdge.target_id == resolved_note_id,
+                NoteEdge.source_id.in_(note_refs),
+                NoteEdge.target_id.in_(note_refs),
             )
         )
     ).all()
@@ -4849,7 +5400,7 @@ def delete_note(
     session.exec(
         delete(ResourceAccessGrant)
         .where(ResourceAccessGrant.resource_type == NOTE_DOC_RESOURCE_TYPE)
-        .where(ResourceAccessGrant.resource_id == resolved_note_id)
+        .where(ResourceAccessGrant.resource_id == _note_public_id(db_note))
     )
     session.delete(db_note)
     session.commit()
@@ -4867,7 +5418,7 @@ def read_edges(
     """
     statement = select(NoteEdge).where(NoteEdge.user_id == current_user.id)
     edges = session.exec(statement).all()
-    return edges
+    return [_serialize_note_edge(edge, session=session, user_id=current_user.id) for edge in edges]
 
 @router.post("/edges/", response_model=EdgeRead)
 def create_edge(
@@ -4879,47 +5430,58 @@ def create_edge(
     Create a directed edge between two notes.
     Idempotent: If edge exists, return existing one (or update timestamp).
     """
-    # Verify nodes exist and belong to user
-    source = session.exec(select(NoteNode).where(NoteNode.id == edge.source_id, NoteNode.user_id == current_user.id)).first()
-    target = session.exec(select(NoteNode).where(NoteNode.id == edge.target_id, NoteNode.user_id == current_user.id)).first()
+    source = _get_accessible_note(edge.source_id, current_user, session)
+    target = _get_accessible_note(edge.target_id, current_user, session)
     
     if not source or not target:
         raise HTTPException(status_code=404, detail="Source or Target node not found")
 
     # Prevent self-loop if desired (optional)
-    if edge.source_id == edge.target_id:
+    if str(source.id) == str(target.id):
         raise HTTPException(status_code=400, detail="Self-loops are not allowed")
+
+    source_ref = note_edge_ref(source)
+    target_ref = note_edge_ref(target)
+    source_refs = note_ref_aliases(source)
+    target_refs = note_ref_aliases(target)
 
     # Check if edge already exists
     statement = select(NoteEdge).where(
         NoteEdge.user_id == current_user.id,
-        NoteEdge.source_id == edge.source_id,
-        NoteEdge.target_id == edge.target_id
+        NoteEdge.source_id.in_(source_refs),
+        NoteEdge.target_id.in_(target_refs),
     )
     existing_edge = session.exec(statement).first()
     
     if existing_edge:
+        changed = False
+        if existing_edge.source_id != source_ref or existing_edge.target_id != target_ref:
+            existing_edge.source_id = source_ref
+            existing_edge.target_id = target_ref
+            changed = True
         # Idempotent: Return existing edge
         # Optionally update label if provided
         if edge.label is not None and edge.label != existing_edge.label:
             existing_edge.label = edge.label
+            changed = True
+        if changed:
             session.add(existing_edge)
             session.commit()
             session.refresh(existing_edge)
-        return existing_edge
+        return _serialize_note_edge(existing_edge, session=session, user_id=current_user.id)
 
     db_edge = NoteEdge(
         id=str(uuid.uuid4()),
         user_id=current_user.id,
-        source_id=edge.source_id,
-        target_id=edge.target_id,
+        source_id=source_ref,
+        target_id=target_ref,
         label=edge.label,
         created_at=time.time()
     )
     session.add(db_edge)
     session.commit()
     session.refresh(db_edge)
-    return db_edge
+    return _serialize_note_edge(db_edge, session=session, user_id=current_user.id)
 
 @router.delete("/edges/")
 def delete_edge_by_nodes(
@@ -4932,10 +5494,14 @@ def delete_edge_by_nodes(
     Delete an edge by source and target IDs.
     Robust: If edge doesn't exist, return success anyway (idempotent delete).
     """
+    source_note = _get_accessible_note(source, current_user, session)
+    target_note = _get_accessible_note(target, current_user, session)
+    source_refs = note_ref_aliases(source_note) if source_note is not None else {str(source)}
+    target_refs = note_ref_aliases(target_note) if target_note is not None else {str(target)}
     statement = select(NoteEdge).where(
         NoteEdge.user_id == current_user.id,
-        NoteEdge.source_id == source,
-        NoteEdge.target_id == target
+        NoteEdge.source_id.in_(source_refs),
+        NoteEdge.target_id.in_(target_refs),
     )
     db_edges = session.exec(statement).all()
     

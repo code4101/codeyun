@@ -8,6 +8,7 @@ def make_note(
     note_id: str,
     title: str,
     *,
+    numeric_id: int | None = None,
     content: str = "",
     node_status: str = "idea",
     node_type: str = "note",
@@ -18,6 +19,7 @@ def make_note(
 ) -> NoteNode:
     return NoteNode(
         id=note_id,
+        numeric_id=numeric_id,
         user_id=1,
         title=title,
         content=content,
@@ -174,3 +176,21 @@ def test_collect_all_filter_action_narrows_current_result_and_can_be_overridden(
     result = walker.collect_all()
 
     assert result.node_ids == ["keyword", "rescue"]
+
+
+def test_walker_uses_numeric_public_ids_with_legacy_edge_refs():
+    context = build_context(
+        [
+            make_note("legacy-root", "Root", numeric_id=101),
+            make_note("legacy-child", "Child", numeric_id=102),
+        ],
+        [make_edge("legacy-root", "legacy-child")],
+    )
+
+    walker = NoteWalker(context, expand=True, select=True)
+
+    result = walker.collect_graph(["101"], include_edges=True)
+
+    assert result.node_ids == ["101", "102"]
+    assert result.edges[0].source_id == "legacy-root"
+    assert result.edges[0].target_id == "legacy-child"

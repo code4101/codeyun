@@ -9,6 +9,7 @@ import re
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Literal, Optional, Sequence, Tuple
 
 from backend.models import NoteEdge, NoteNode
+from backend.core.note_refs import note_public_id, note_ref_aliases
 from backend.core.note_progress import is_note_system_custom_field_key
 from backend.core.note_semantics import NOTE_LIFECYCLE_STAGE_DEFAULT, normalize_lifecycle_stage
 
@@ -246,7 +247,7 @@ class NoteVisit:
 
     @property
     def node_id(self) -> str:
-        return str(self.node.id)
+        return note_public_id(self.node)
 
     @property
     def is_seed(self) -> bool:
@@ -261,7 +262,7 @@ class NoteWalkResult:
 
     @property
     def node_ids(self) -> List[str]:
-        return [str(node.id) for node in self.nodes]
+        return [note_public_id(node) for node in self.nodes]
 
     @property
     def edge_ids(self) -> List[str]:
@@ -284,15 +285,22 @@ class NoteGraphContext:
             target_id = str(edge.target_id)
             if source_id not in self.notes_by_id or target_id not in self.notes_by_id:
                 continue
-            outgoing[source_id].append(edge)
-            incoming[target_id].append(edge)
+            source_note = self.notes_by_id[source_id]
+            target_note = self.notes_by_id[target_id]
+            for source_alias in note_ref_aliases(source_note):
+                outgoing[source_alias].append(edge)
+            for target_alias in note_ref_aliases(target_note):
+                incoming[target_alias].append(edge)
 
         self.outgoing_edges = dict(outgoing)
         self.incoming_edges = dict(incoming)
 
     @classmethod
     def from_items(cls, notes: Iterable[NoteNode], edges: Iterable[NoteEdge]) -> "NoteGraphContext":
-        note_map = {str(note.id): note for note in notes}
+        note_map: Dict[str, NoteNode] = {}
+        for note in notes:
+            for ref in note_ref_aliases(note):
+                note_map[ref] = note
         return cls(notes_by_id=note_map, edges=list(edges))
 
     def get_note(self, note_id: str) -> Optional[NoteNode]:
@@ -300,7 +308,13 @@ class NoteGraphContext:
 
     def iter_notes(self, note_ids: Optional[Iterable[str]] = None) -> Iterator[NoteNode]:
         if note_ids is None:
-            yield from self.notes_by_id.values()
+            seen: set[str] = set()
+            for note in self.notes_by_id.values():
+                note_id = note_public_id(note)
+                if note_id in seen:
+                    continue
+                seen.add(note_id)
+                yield note
             return
 
         for note_id in note_ids:
@@ -333,14 +347,16 @@ class NoteGraphContext:
         blocked_ids = {str(note_id) for note_id in blocked_target_ids or []}
 
         for edge in self.outgoing_edges.get(note_id, []):
-            if str(edge.target_id) in blocked_ids:
+            target_note = self.get_note(str(edge.target_id))
+            if target_note is not None and (blocked_ids & note_ref_aliases(target_note)):
                 continue
-            neighbor = self.get_note(str(edge.target_id))
+            neighbor = target_note
             if neighbor is not None:
                 yield edge, neighbor
 
         for edge in self.incoming_edges.get(note_id, []):
-            if str(edge.target_id) in blocked_ids:
+            target_note = self.get_note(str(edge.target_id))
+            if target_note is not None and (blocked_ids & note_ref_aliases(target_note)):
                 continue
             neighbor = self.get_note(str(edge.source_id))
             if neighbor is not None:
@@ -348,10 +364,15 @@ class NoteGraphContext:
 
     def induced_edges(self, node_ids: Iterable[str]) -> List[NoteEdge]:
         selected_ids = {str(note_id) for note_id in node_ids}
-        return [
-            edge for edge in self.edges
-            if str(edge.source_id) in selected_ids and str(edge.target_id) in selected_ids
-        ]
+        result: List[NoteEdge] = []
+        for edge in self.edges:
+            source_note = self.get_note(str(edge.source_id))
+            target_note = self.get_note(str(edge.target_id))
+            if source_note is None or target_note is None:
+                continue
+            if note_ref_aliases(source_note) & selected_ids and note_ref_aliases(target_note) & selected_ids:
+                result.append(edge)
+        return result
 
 
 class NoteFilterFactory:
@@ -493,7 +514,7 @@ class NoteFilterFactory:
 
         def _check(visit: NoteVisit) -> bool:
             for _, neighbor in visit.context.iter_neighbors(visit.node_id, direction):
-                if str(neighbor.id) in note_ids:
+                if note_ref_aliases(neighbor) & note_ids:
                     return True
             return False
 
@@ -634,7 +655,7 @@ class NoteWalker:
                 context=self.context,
                 depth=0,
                 parent_id=None,
-                seed_id=str(note.id),
+                seed_id=note_public_id(note),
                 via_edge=None,
             )
             if self.should_select(visit):
@@ -659,7 +680,7 @@ class NoteWalker:
             note = self.context.get_note(str(seed_id))
             if note is None:
                 continue
-            note_id = str(note.id)
+            note_id = note_public_id(note)
             if note_id in visited:
                 continue
             visited.add(note_id)
@@ -686,7 +707,7 @@ class NoteWalker:
                 continue
 
             for edge, neighbor in self.context.iter_neighbors(visit.node_id, direction):
-                next_id = str(neighbor.id)
+                next_id = note_public_id(neighbor)
                 if next_id in visited:
                     continue
 
@@ -739,16 +760,19 @@ class NoteWalker:
 
         for seed_id in seed_ids:
             note = self.context.get_note(seed_id)
-            if note is None or seed_id in visited:
+            if note is None:
                 continue
-            visited.add(seed_id)
+            note_id = note_public_id(note)
+            if note_id in visited:
+                continue
+            visited.add(note_id)
             queue.append(
                 NoteVisit(
                     node=note,
                     context=self.context,
                     depth=0,
                     parent_id=None,
-                    seed_id=seed_id,
+                    seed_id=note_id,
                     via_edge=None,
                 )
             )
@@ -768,7 +792,7 @@ class NoteWalker:
                 visit.node_id,
                 blocked_target_ids=blocked_target_ids,
             ):
-                next_id = str(neighbor.id)
+                next_id = note_public_id(neighbor)
                 if next_id in visited:
                     continue
 

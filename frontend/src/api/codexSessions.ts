@@ -172,9 +172,29 @@ export async function fetchCodexThreadMessageImagesForEntry(
   return response.data;
 }
 
-export async function fetchCodexWorkloadForEntry(entryId: string, rootDir?: string) {
+export async function fetchCodexWorkloadForEntry(
+  entryId: string,
+  options?: string | {
+    rootDir?: string;
+    startAt?: number;
+    endAt?: number;
+  },
+) {
+  const rootDir = typeof options === 'string' ? options : options?.rootDir;
+  const requestParams: Record<string, string | number> = {};
+  if (rootDir?.trim()) {
+    requestParams.root_dir = rootDir.trim();
+  }
+  if (typeof options !== 'string') {
+    if (Number.isFinite(options?.startAt)) {
+      requestParams.start_at = Number(options?.startAt);
+    }
+    if (Number.isFinite(options?.endAt)) {
+      requestParams.end_at = Number(options?.endAt);
+    }
+  }
   const response = await api.get<CodexWorkloadResponse>(getDeviceEntryPath(entryId, '/codex/workload'), {
-    params: rootDir?.trim() ? { root_dir: rootDir.trim() } : undefined,
+    params: Object.keys(requestParams).length ? requestParams : undefined,
     timeout: CODEX_WORKLOAD_READ_TIMEOUT_MS,
   });
   return response.data;

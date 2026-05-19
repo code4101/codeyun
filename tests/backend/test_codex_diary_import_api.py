@@ -9,13 +9,16 @@ from backend.api import device_entries as device_entries_api
 from backend.core import codex_device_summary
 from backend.core.note_semantics import build_note_category_palette_setting_key
 from backend.api.notes import (
+    CODEX_DIARY_STALE_HEARTBEAT_SECONDS,
     _build_codex_diary_body_html,
     _build_codex_diary_blocks,
     _build_codex_diary_completion_progress_expr,
     _create_codex_diary_note,
+    _draft_codex_diary_blocks_in_batches,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
     _repair_codex_diary_body_number_prefixes,
+    mark_stale_codex_diary_import_runs,
     run_codex_diary_auto_import_job,
 )
 from backend.models import AppSetting, CodexDiaryImportRun, NoteNode, UserDevice
@@ -251,7 +254,18 @@ def _wait_for_import_run(client, run_id: str) -> dict:
     raise AssertionError(f"Codex diary import run did not finish: {payload}")
 
 
-def _fake_codex_diary_ai_draft(source, blocks):
+def _notes_by_public_ids(session: Session, public_ids: list[str]) -> list[NoteNode]:
+    numeric_ids = [int(note_id) for note_id in public_ids if str(note_id).isdigit()]
+    if not numeric_ids:
+        return []
+    return session.exec(
+        select(NoteNode)
+        .where(NoteNode.numeric_id.in_(numeric_ids))
+        .order_by(NoteNode.start_at)
+    ).all()
+
+
+def _fake_codex_diary_ai_draft(source, blocks, *args, **kwargs):
     for block in blocks:
         titles = []
         summary_items = []
@@ -267,6 +281,37 @@ def _fake_codex_diary_ai_draft(source, blocks):
         block["lifecycle_stage"] = "done"
         block["completion_progress"] = "1"
     return blocks
+
+
+def test_codex_diary_ai_draft_runs_in_batches(session: Session, auth_user, monkeypatch):
+    captured_batch_sizes: list[int] = []
+
+    def fake_draft(source, blocks, *, current_user, session):
+        captured_batch_sizes.append(len(blocks))
+        for block in blocks:
+            block["title"] = f"草案 {block['block_key']}"
+            block["summary_items"] = ["分批生成成功。"]
+            block["lifecycle_stage"] = "done"
+        return blocks
+
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", fake_draft)
+    blocks = [
+        {
+            "block_key": f"block-{index}",
+            "records": [{"assistant_result": "done"}],
+        }
+        for index in range(26)
+    ]
+
+    drafted = _draft_codex_diary_blocks_in_batches(
+        {"date": "2026-05-03", "timezone": ZoneInfo("Asia/Shanghai")},
+        blocks,
+        current_user=auth_user,
+        session=session,
+    )
+
+    assert captured_batch_sizes == [12, 12, 2]
+    assert [block["title"] for block in drafted] == [f"草案 block-{index}" for index in range(26)]
 
 
 def test_codex_diary_import_creates_notes_from_all_active_devices(
@@ -353,16 +398,16 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert completed["status"] == "completed"
     assert completed["source_turn_count"] == 2
     assert completed["created_note_count"] == 1
+    assert all(isinstance(note_id, int) for note_id in completed["created_note_ids"])
     assert len(captured_entry_specs[0]) == 2
 
-    notes = session.exec(
-        select(NoteNode)
-        .where(NoteNode.id.in_(completed["created_note_ids"]))
-        .order_by(NoteNode.start_at)
-    ).all()
+    notes = _notes_by_public_ids(session, completed["created_note_ids"])
     assert len(notes) == 1
     assert [note.start_at for note in notes] == [_ts(2026, 4, 30, 9, 0)]
     first_note = notes[0]
+    assert first_note.numeric_id is not None
+    assert first_note.numeric_id > 0
+    assert completed["created_notes"][0]["numeric_id"] == first_note.numeric_id
     for note in notes:
         assert not note.title.startswith("codeyun：")
         assert not note.title.endswith(("...", "…"))
@@ -376,6 +421,11 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
         assert any(item[0] == "__codex_diary_run_id" and item[2] == completed["id"] for item in custom_fields)
         assert any(item[0] == "__codex_diary_date" and item[2] == "2026-04-30" for item in custom_fields)
         assert any(item[0] == "__codex_source_thread_ids" and len(item[2]) == 2 for item in custom_fields)
+        worklog = next(item[2] for item in custom_fields if item[0] == "__codex_diary_worklog")
+        assert worklog["date"] == "2026-04-30"
+        assert worklog["duration_seconds"] == 75 * 60
+        assert worklog["turn_count"] == 2
+        assert worklog["source_devices"] == ["codepc_mf", "codepc_mi15"]
 
     first_plain_content = _plain_text(first_note.content)
     assert "统一 CodeYun 工作目录，并修复缓存接口。" not in first_plain_content
@@ -424,7 +474,7 @@ def test_codex_diary_import_empty_source_creates_no_notes(
     assert completed["created_note_ids"] == []
 
 
-def test_codex_diary_import_fails_when_any_device_unavailable(
+def test_codex_diary_import_continues_when_one_device_unavailable(
     client,
     session: Session,
     auth_user,
@@ -433,17 +483,67 @@ def test_codex_diary_import_fails_when_any_device_unavailable(
     _create_device_entries(session, auth_user.id)
 
     def fake_collect_local_source(root_dir, target_date_text, *, user_id, session):
+        start_at = _ts(2026, 5, 3, 9, 0)
         return {
             "date": target_date_text,
             "timezone": ZoneInfo("Asia/Shanghai"),
             "type_items": [],
-            "turn_records": [],
+            "turn_records": [
+                {
+                    "thread_id": "local-thread-1",
+                    "thread_title": "周日 Codex 日记",
+                    "project_label": "codeyun",
+                    "time_range": "2026-05-03 09:00 ~ 2026-05-03 09:30",
+                    "user_request": "整理周日 Codex 日记。",
+                    "assistant_result": "周日 Codex 日记来源已整理。",
+                    "assistant_process": "",
+                    "start_at": start_at,
+                    "end_at": start_at + 30 * 60,
+                }
+            ],
             "threads": [],
-            "thread_count": 0,
-            "turn_count": 0,
-            "user_message_count": 0,
-            "assistant_message_count": 0,
+            "thread_count": 1,
+            "turn_count": 1,
+            "user_message_count": 1,
+            "assistant_message_count": 1,
         }
+
+    def fake_collect_remote_source(entry_spec, target_date_text, *, user_id, session):
+        raise HTTPException(status_code=502, detail="连接远端设备失败：read timeout")
+
+    monkeypatch.setattr(codex_device_summary, "ensure_local_codex_entry", lambda entry: None)
+    monkeypatch.setattr(codex_device_summary, "collect_codex_daily_summary_source", fake_collect_local_source)
+    monkeypatch.setattr(codex_device_summary, "collect_remote_codex_entry_daily_summary_source", fake_collect_remote_source)
+    monkeypatch.setattr("backend.api.notes._draft_codex_diary_blocks_with_ai", _fake_codex_diary_ai_draft)
+
+    response = client.post(
+        "/api/notes/codex-diary/import-runs",
+        json={"date": "2026-05-03"},
+    )
+    assert response.status_code == 200
+    completed = _wait_for_import_run(client, response.json()["id"])
+
+    assert completed["status"] == "completed"
+    assert completed["source_turn_count"] == 1
+    assert completed["created_note_count"] == 1
+    assert completed["error_message"] is None
+    assert completed["result"]["source"]["source_failures"][0]["device_name"] == "codepc_mi15"
+    assert "read timeout" in completed["result"]["source"]["source_failures"][0]["error"]
+
+    note = session.exec(select(NoteNode).where(NoteNode.title == "周日 Codex 日记")).first()
+    assert note is not None
+
+
+def test_codex_diary_import_fails_when_all_devices_unavailable(
+    client,
+    session: Session,
+    auth_user,
+    monkeypatch,
+):
+    _create_device_entries(session, auth_user.id)
+
+    def fake_collect_local_source(root_dir, target_date_text, *, user_id, session):
+        raise HTTPException(status_code=500, detail="本机 Codex 缓存读取失败")
 
     def fake_collect_remote_source(entry_spec, target_date_text, *, user_id, session):
         raise HTTPException(status_code=502, detail="连接远端设备失败：read timeout")
@@ -464,11 +564,9 @@ def test_codex_diary_import_fails_when_any_device_unavailable(
     assert completed["created_note_count"] == 0
     assert completed["created_note_ids"] == []
     assert completed["stage_label"] == "导入失败"
-    assert "设备 codepc_mi15 的 Codex 数据读取失败" in completed["error_message"]
-    assert "read timeout" in completed["error_message"]
-
-    note = session.exec(select(NoteNode).where(NoteNode.title == "周日 Codex 日记")).first()
-    assert note is None
+    assert "所有设备 Codex 数据读取失败" in completed["error_message"]
+    assert "codepc_mf" in completed["error_message"]
+    assert "codepc_mi15" in completed["error_message"]
 
 
 def test_codex_diary_import_duplicate_requires_confirmation(
@@ -523,6 +621,7 @@ def test_codex_diary_import_duplicate_requires_confirmation(
         json={"date": "2026-05-01"},
     )
     assert duplicate_response.status_code == 409
+    assert all(isinstance(note_id, int) for note_id in duplicate_response.json()["detail"]["duplicate_note_ids"])
     assert duplicate_response.json()["detail"]["duplicate_note_ids"] == first_completed["created_note_ids"]
 
     confirmed_response = client.post(
@@ -681,7 +780,7 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
             "assistant_message_count": 3,
         }
 
-    def fake_draft(source, blocks):
+    def fake_draft(source, blocks, *args, **kwargs):
         captured_block_counts.append(len(blocks))
         assert len(blocks) == 1
         assert [len(block["records"]) for block in blocks] == [3]
@@ -704,11 +803,7 @@ def test_codex_diary_import_does_not_merge_unrelated_same_category_records(
     assert completed["created_note_count"] == 1
     assert captured_block_counts == [1]
 
-    notes = session.exec(
-        select(NoteNode)
-        .where(NoteNode.id.in_(completed["created_note_ids"]))
-        .order_by(NoteNode.start_at)
-    ).all()
+    notes = _notes_by_public_ids(session, completed["created_note_ids"])
     assert [note.title for note in notes] == ["Codex 日记工作汇总"]
     assert [note.start_at for note in notes] == [_ts(2026, 5, 2, 9, 0)]
 
@@ -828,6 +923,141 @@ def test_codex_diary_blocks_prefer_content_category_over_thread_context(
     assert blocks[1]["note_categories"] == [{"key": "custom_fanxiu", "weight": 100}]
     assert "课程脚本" in blocks[0]["records"][0]["user_request"]
     assert "prayer_cycle" in blocks[1]["records"][0]["user_request"]
+
+
+def test_codex_diary_blocks_split_rime_input_method_from_fanxiu(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_ai", "label": "AI", "color": "#6a0dad", "order": 10},
+                    {"key": "custom_fanxiu", "label": "凡修", "color": "#67c23a", "order": 20},
+                ]
+            },
+        )
+    )
+    session.add(
+        NoteNode(
+            id="wrong-codex-diary-hint",
+            user_id=auth_user.id,
+            title="小狼毫预测模型与凡修灵脉",
+            primary_category="custom_fanxiu",
+            note_categories=[{"key": "custom_fanxiu", "weight": 100}],
+            custom_fields=[["__codex_diary_date", "string", "2026-05-13"]],
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 5, 13, 10, 0)
+    source = {
+        "date": "2026-05-13",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "mixed:rime-fanxiu",
+                "thread_title": "小狼毫预测模型与凡修灵脉",
+                "project_label": "codeyun",
+                "user_request": "优化小狼毫 Rime 输入法上下文预测模型和预测索引。",
+                "assistant_result": "已完成预编辑、输入历史、自定义短语和预测候选链路。",
+                "start_at": start_at,
+                "end_at": start_at + 30 * 60,
+            },
+            {
+                "thread_id": "mixed:rime-fanxiu",
+                "thread_title": "小狼毫预测模型与凡修灵脉",
+                "project_label": "凡修",
+                "user_request": "补齐凡修洞天福地收益和造化灵脉清体力任务。",
+                "assistant_result": "已确认灵脉探索按钮、快速探索弹窗和每天固定清空的简化模型，并写入 AI_CONTEXT.md。",
+                "start_at": start_at + 40 * 60,
+                "end_at": start_at + 70 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert [block["category_key"] for block in blocks] == ["custom_ai", "custom_fanxiu"]
+    assert "小狼毫" in blocks[0]["records"][0]["user_request"]
+    assert "洞天福地" in blocks[1]["records"][0]["user_request"]
+
+
+def test_codex_diary_blocks_split_fanxiu_cluster_notes_and_attendance(
+    session: Session,
+    auth_user,
+):
+    session.add(
+        AppSetting(
+            key=build_note_category_palette_setting_key(auth_user.id),
+            value={
+                "items": [
+                    {"key": "general", "label": "综合", "color": "#909399", "order": 0},
+                    {"key": "custom_ai", "label": "AI", "color": "#6a0dad", "order": 10},
+                    {"key": "custom_fanxiu", "label": "凡修", "color": "#67c23a", "order": 20},
+                    {"key": "custom_codeyun_cluster", "label": "CodeYun/集群", "color": "#0067a5", "order": 30},
+                    {"key": "custom_codeyun_note", "label": "CodeYun/笔记", "color": "#446ccf", "order": 40},
+                    {"key": "custom_attendance", "label": "考勤", "color": "#c19a6b", "order": 50},
+                ]
+            },
+        )
+    )
+    session.commit()
+    start_at = _ts(2026, 5, 16, 0, 0)
+    source = {
+        "date": "2026-05-16",
+        "timezone": ZoneInfo("Asia/Shanghai"),
+        "turn_records": [
+            {
+                "thread_id": "mixed:codex",
+                "thread_title": "笔记与凡修OCR整合",
+                "project_label": "codeyun",
+                "user_request": "监控凡修午夜任务运行，确认行为树仍在计划队列中。",
+                "assistant_result": "已修复魔界地图页误判、凡修助手入口等无人值守卡点。",
+                "start_at": start_at,
+                "end_at": start_at + 10 * 60,
+            },
+            {
+                "thread_id": "mixed:codex",
+                "thread_title": "笔记与凡修OCR整合",
+                "project_label": "codeyun",
+                "user_request": "围绕 CodeYun 集群服务管理梳理 OCR 集中化方案。",
+                "assistant_result": "明确账号 token、设备 token、服务 token 的权限边界，并让凡修脚本优先尝试局域网 CodeYun OCR。",
+                "start_at": start_at + 20 * 60,
+                "end_at": start_at + 30 * 60,
+            },
+            {
+                "thread_id": "mixed:codex",
+                "thread_title": "笔记与凡修OCR整合",
+                "project_label": "codeyun",
+                "user_request": "推进星图笔记大跨度时间视图设计和语雀导入试验。",
+                "assistant_result": "已补充章节节点，并讨论文章大纲、独立 /doc 页面和自然序文档 URL。",
+                "start_at": start_at + 40 * 60,
+                "end_at": start_at + 50 * 60,
+            },
+            {
+                "thread_id": "mixed:codex",
+                "thread_title": "笔记与凡修OCR整合",
+                "project_label": "codeyun",
+                "user_request": "整理念住闯关课程迁移口径。",
+                "assistant_result": "明确 A 组冻结历史、B 组继续追踪，并为报名表增加 A/B 排序。",
+                "start_at": start_at + 60 * 60,
+                "end_at": start_at + 70 * 60,
+            },
+        ],
+    }
+
+    blocks = _build_codex_diary_blocks(source, user_id=auth_user.id, session=session)
+
+    assert [block["category_key"] for block in blocks] == [
+        "custom_fanxiu",
+        "custom_codeyun_cluster",
+        "custom_codeyun_note",
+        "custom_attendance",
+    ]
+    assert all(block["category_key"] != "custom_ai" for block in blocks)
 
 
 def test_codex_diary_blocks_group_topic_before_assigning_category(
@@ -1073,6 +1303,75 @@ def test_codex_diary_blocks_use_primary_category_only(
 
     assert note.primary_category == "custom_codeyun_note"
     assert note.note_categories == blocks[0]["note_categories"]
+
+
+def test_codex_diary_note_start_clamps_cross_midnight_to_diary_date(
+    session: Session,
+    auth_user,
+):
+    run = CodexDiaryImportRun(user_id=auth_user.id, diary_date="2026-05-04", scope_key="test")
+    session.add(run)
+    block = {
+        "block_key": "cross-midnight",
+        "title": "跨午夜 Codex 日记",
+        "summary_items": ["跨午夜会话已整理。"],
+        "lifecycle_stage": "done",
+        "category_key": "general",
+        "note_categories": [{"key": "general", "weight": 100}],
+        "duration_seconds": 20 * 60,
+        "start_at": _ts(2026, 5, 3, 23, 50),
+        "end_at": _ts(2026, 5, 4, 0, 10),
+        "records": [
+            {
+                "thread_id": "cross-midnight",
+                "assistant_result": "跨午夜会话已整理。",
+                "start_at": _ts(2026, 5, 3, 23, 50),
+                "end_at": _ts(2026, 5, 4, 0, 10),
+            }
+        ],
+    }
+
+    note = _create_codex_diary_note(session, current_user=auth_user, run=run, block=block)
+    session.commit()
+    session.refresh(note)
+
+    assert note.start_at == _ts(2026, 5, 4, 0, 0)
+
+
+def test_codex_diary_marks_stale_running_run_failed(
+    session: Session,
+    auth_user,
+):
+    now_ts = _ts(2026, 5, 18, 10, 0)
+    stale_ts = now_ts - CODEX_DIARY_STALE_HEARTBEAT_SECONDS - 1
+    run = CodexDiaryImportRun(
+        user_id=auth_user.id,
+        diary_date="2026-05-17",
+        scope_key="test",
+        status="running",
+        stage="drafting",
+        stage_label="调用 AI 生成日记草案",
+        heartbeat_at=stale_ts,
+        created_at=stale_ts,
+        updated_at=stale_ts,
+    )
+    session.add(run)
+    session.commit()
+
+    changed_count = mark_stale_codex_diary_import_runs(
+        session,
+        now_ts=now_ts,
+        queue_snapshot={"running": None, "pending": []},
+    )
+
+    assert changed_count == 1
+    session.expire_all()
+    updated = session.get(CodexDiaryImportRun, run.id)
+    assert updated.status == "failed"
+    assert updated.stage == "stale"
+    assert updated.stage_label == "任务心跳超时"
+    assert "当前执行队列中没有对应任务" in updated.error_message
+    assert updated.finished_at == now_ts
 
 
 def test_codex_diary_blocks_filter_blocked_auto_categories(

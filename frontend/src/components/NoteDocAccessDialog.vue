@@ -67,6 +67,7 @@ import {
   type NoteDocResourceAccess,
   type NoteDocResourceRole,
   type NoteNode,
+  noteKey,
   updateNoteDocAccess,
 } from '@/api/notes';
 
@@ -112,7 +113,7 @@ const userAccessRoleOptions = [
 ] as const;
 
 const getDocRouteRef = (note: Pick<NoteNode, 'id' | 'numeric_id'>) => (
-  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : note.id
+  note.numeric_id && note.numeric_id > 0 ? String(note.numeric_id) : noteKey(note.id)
 );
 
 const resolvedNoteRef = computed(() => {

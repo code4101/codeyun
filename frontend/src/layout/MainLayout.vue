@@ -109,7 +109,7 @@ const FREEBILL_PATH = requirePageMenuPath('Freebill');
 const NOTES_SHEETS_MANAGER_PATH = requirePageMenuPath('NotesSheetManager');
 const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
-const CLUSTER_TASKS_PATH = requirePageMenuPath('DeviceTasks');
+const CLUSTER_TASKS_PATH = requirePageMenuPath('RuntimeManagement');
 const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
 const CLUSTER_SERVICES_PATH = requirePageMenuPath('ClusterServices');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
@@ -122,7 +122,6 @@ const FANXIU_ACTIVITY_LIST_SUBMENU_INDEX = 'fanxiu-activity-list';
 const FANXIU_MAGIC_TREASURE_SUBMENU_INDEX = 'fanxiu-magic-treasure';
 const ADMIN_ACCOUNTS_PATH = requirePageMenuPath('AccountManager');
 const ADMIN_IMAGES_PATH = requirePageMenuPath('StorageManager');
-const ADMIN_BACKGROUND_TASKS_PATH = requirePageMenuPath('BackgroundTasks');
 const ATTENDANCE_PATH_PREFIX = requirePageCanonicalPath('AttendanceConfigs').split('/configs')[0];
 const HOME_TITLE = requirePermissionTitle('home');
 const AUTHOR_CONTACT_TITLE = requirePermissionTitleByMenuPath(AUTHOR_CONTACT_PATH);
@@ -189,7 +188,6 @@ const CLUSTER_LABELME_TITLE = requirePermissionTitleByMenuPath(CLUSTER_LABELME_P
 const ADMIN_TOOLS_TITLE = requirePermissionTitle('admin-tools');
 const ADMIN_ACCOUNTS_TITLE = requirePermissionTitleByMenuPath(ADMIN_ACCOUNTS_PATH);
 const ADMIN_IMAGES_TITLE = requirePermissionTitleByMenuPath(ADMIN_IMAGES_PATH);
-const ADMIN_BACKGROUND_TASKS_TITLE = requirePermissionTitleByMenuPath(ADMIN_BACKGROUND_TASKS_PATH);
 const BUILTIN_MENU_SECTION_KEYS = new Set([
   'tools',
   'ai-tools',
@@ -503,7 +501,6 @@ const adminMenuVisible = computed(() =>
   && [
     ADMIN_ACCOUNTS_PATH,
     ADMIN_IMAGES_PATH,
-    ADMIN_BACKGROUND_TASKS_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -937,9 +934,6 @@ watch(
             </el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(ADMIN_IMAGES_PATH)" :index="ADMIN_IMAGES_PATH">
               <span>{{ ADMIN_IMAGES_TITLE }}</span>
-            </el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(ADMIN_BACKGROUND_TASKS_PATH)" :index="ADMIN_BACKGROUND_TASKS_PATH">
-              <span>{{ ADMIN_BACKGROUND_TASKS_TITLE }}</span>
             </el-menu-item>
           </el-sub-menu>
         </el-menu>

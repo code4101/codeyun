@@ -294,7 +294,7 @@ type ColumnMarkerMode = 'none' | 'letters' | 'numbers'
 type RowMarkerNumbering = 'page' | 'global'
 type RowMarkerMode = 'none' | 'page_numbers' | 'global_numbers'
 type RowMarkerOrigin = 'data' | 'sheet' | 'sheet_zero'
-type ColumnNoteDisplayMode = 'hover' | 'row'
+type ColumnNoteDisplayMode = 'none' | 'hover' | 'row'
 type FormulaReferenceOrigin = 'data' | 'sheet' | 'sheet_v2'
 type SheetHeightMode = 'fill' | 'content'
 const DEFAULT_SHEET_HEIGHT_MODE: SheetHeightMode = 'content'
@@ -372,6 +372,25 @@ type SheetCellMeta = {
 }
 
 type SheetCellMetaMap = Record<string, SheetCellMeta>
+
+type SheetEntityRowKind = 'header_group' | 'field' | 'field_note' | 'data'
+
+type SheetEntityColumn = {
+  id: string
+  header: string
+}
+
+type SheetEntityRow = {
+  id: string
+  kind: SheetEntityRowKind
+  hidden?: boolean
+}
+
+type SheetEntityCell = SheetCellMeta & {
+  value?: string
+}
+
+type SheetEntityCellMap = Record<string, Record<string, SheetEntityCell>>
 
 type SheetCellStyleDraft = {
   background_color: string
@@ -624,6 +643,9 @@ type SheetDocument = {
   formula_reference_origin?: FormulaReferenceOrigin
   header_groups?: SheetHeaderGroupCell[][]
   cell_meta?: SheetCellMetaMap
+  entity_columns?: SheetEntityColumn[]
+  entity_rows?: SheetEntityRow[]
+  entity_cells?: SheetEntityCellMap
   column_configs?: Record<string, SheetColumnConfig>
   column_widths?: number[]
   view_settings?: SheetViewSettings
@@ -894,6 +916,10 @@ const mergedCells = ref<SheetMergedCell[]>([])
 const columnConfigs = ref<Record<string, SheetColumnConfig>>({})
 const sheetHeaderPrefixRows = ref<SheetRow[]>([])
 const cellMeta = ref<SheetCellMetaMap>({})
+const columnEntityIds = ref<string[]>([])
+const headerRowEntityIds = ref<string[]>([])
+const dataRowEntityIds = ref<string[]>([])
+const entityCells = ref<SheetEntityCellMap>({})
 const attendanceCourseScriptStatuses = ref<Record<number, AttendanceCourseScriptStatusItem>>({})
 const formulaEngineClass = shallowRef<FormulaEngineClass | null>(null)
 const sheetViewSettings = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
@@ -1093,6 +1119,8 @@ let formulaReferencePointerDown = false
 let formulaReferencePointerDownResetTimer: number | null = null
 let formulaReferenceRangeState: FormulaReferenceRangeState | null = null
 let formulaReferenceRangeFinishTimer: number | null = null
+let cellLinkOpenPointerGuardActive = false
+let cellLinkOpenPointerGuardTimer: number | null = null
 let inlineEditorFormulaBarSyncTimer: number | null = null
 let formulaBarDraftSyncFrame: number | null = null
 let formulaReferenceReplacementSpan: FormulaReferenceReplacementSpan | null = null
@@ -1863,7 +1891,7 @@ const externalRowFilterProgramActive = computed(() => (
   baseExternalRowFilterProgramActive.value
   || rowExternalRowFilterProgramActive.value
 ))
-const filteredVisibleRowCount = computed(() => Math.max(0, rows.value.length - sheetFilterHiddenRows.value.length))
+const filteredVisibleRowCount = computed(() => Math.max(0, rows.value.length - dataFilterHiddenRows.value.length))
 
 const columnHashColorStyleMap = computed(() => {
   const styleMap = new Map<string, HashColorStyle>()
@@ -2029,15 +2057,29 @@ const hiddenColumnsForSettings = computed(() => (
 
 const normalizedHeaderGroups = computed(() => normalizeHeaderGroups(headerGroups.value, columnHeaders.value.length))
 const columnNoteDisplayMode = computed(() => sheetViewSettings.value.column_note_display)
-const hasColumnNotes = computed(() => columnHeaders.value.some((_, index) => getColumnNote(index).trim() !== ''))
-const shouldShowColumnNoteRow = computed(() => columnNoteDisplayMode.value === 'row' && hasColumnNotes.value)
 const columnHeaderLevel = computed(() => normalizedHeaderGroups.value.length)
-const columnNoteHeaderLevel = computed(() => (shouldShowColumnNoteRow.value ? columnHeaderLevel.value + 1 : -1))
+const columnNoteEntityHeaderLevel = computed(() => columnHeaderLevel.value + 1)
+const hasMaterializedColumnNoteRow = computed(() => (
+  sheetHeaderPrefixRows.value.length > columnNoteEntityHeaderLevel.value
+))
+const hasColumnNoteEntityRow = computed(() => (
+  hasMaterializedColumnNoteRow.value
+  || columnNoteDisplayMode.value !== 'none'
+))
+const shouldShowColumnNoteRow = computed(() => columnNoteDisplayMode.value === 'row' && hasColumnNoteEntityRow.value)
+const columnNoteHeaderLevel = computed(() => (hasColumnNoteEntityRow.value ? columnNoteEntityHeaderLevel.value : -1))
 const sheetHeaderRowCount = computed(() => (
   normalizedHeaderGroups.value.length
   + 1
-  + (shouldShowColumnNoteRow.value ? 1 : 0)
+  + (hasColumnNoteEntityRow.value ? 1 : 0)
 ))
+const columnNoteHiddenRows = computed(() => {
+  const noteRowIndex = columnNoteHeaderLevel.value
+  if (noteRowIndex < 0 || shouldShowColumnNoteRow.value) {
+    return []
+  }
+  return [noteRowIndex]
+})
 const columnFilterHiddenRows = computed(() => {
   if (activeColumnFilterEntries.value.length === 0) return []
 
@@ -2072,10 +2114,17 @@ const externalRowFilterHiddenRows = computed(() => {
   })
   return hiddenRows
 })
-const sheetFilterHiddenRows = computed(() => {
+const dataFilterHiddenRows = computed(() => {
   const hiddenRowSet = new Set<number>([
     ...columnFilterHiddenRows.value,
     ...externalRowFilterHiddenRows.value,
+  ])
+  return [...hiddenRowSet].sort((left, right) => left - right)
+})
+const sheetFilterHiddenRows = computed(() => {
+  const hiddenRowSet = new Set<number>([
+    ...columnNoteHiddenRows.value,
+    ...dataFilterHiddenRows.value,
   ])
   return [...hiddenRowSet].sort((left, right) => left - right)
 })
@@ -2175,11 +2224,34 @@ function expandHeaderGroupLabels(row: SheetHeaderGroupCell[], columnCount: numbe
 }
 
 function getColumnNoteFromHeaderPrefixRow(columnIndex: number, headers = columnHeaders.value) {
-  const noteRowIndex = normalizedHeaderGroups.value.length + 1
+  const noteRowIndex = columnNoteEntityHeaderLevel.value
   if (noteRowIndex < 0 || noteRowIndex >= sheetHeaderPrefixRows.value.length) {
     return ''
   }
   return normalizeColumnNote(normalizeRow(sheetHeaderPrefixRows.value[noteRowIndex], headers)[columnIndex])
+}
+
+function materializeColumnNotePrefixRow(noteOverrides: Record<number, string> = {}) {
+  const headers = columnHeaders.value
+  const noteRowIndex = columnNoteEntityHeaderLevel.value
+  if (!headers.length || noteRowIndex < 0) {
+    return false
+  }
+
+  const nextPrefixRows = sheetHeaderPrefixRows.value.map((row) => normalizeRow(row, headers))
+  while (nextPrefixRows.length <= noteRowIndex) {
+    nextPrefixRows.push(createEmptyRow(headers.length))
+  }
+  const noteRow = normalizeRow(nextPrefixRows[noteRowIndex], headers)
+  headers.forEach((_, index) => {
+    const hasOverride = Object.prototype.hasOwnProperty.call(noteOverrides, index)
+    noteRow[index] = hasOverride
+      ? normalizeColumnNote(noteOverrides[index])
+      : (getColumnNote(index) || normalizeColumnNote(noteRow[index]))
+  })
+  nextPrefixRows[noteRowIndex] = noteRow
+  sheetHeaderPrefixRows.value = nextPrefixRows
+  return true
 }
 
 function syncColumnNotesFromHeaderPrefixRows() {
@@ -2205,7 +2277,7 @@ const sheetGridRows = computed<SheetRow[]>(() => {
   const headers = columnHeaders.value
   const headerRows = normalizedHeaderGroups.value.map((row) => expandHeaderGroupLabels(row, headers.length))
   headerRows.push([...headers])
-  if (shouldShowColumnNoteRow.value) {
+  if (hasColumnNoteEntityRow.value) {
     headerRows.push(headers.map((_, index) => getColumnNote(index) || getColumnNoteFromHeaderPrefixRow(index, headers)))
   }
   return [
@@ -2280,14 +2352,9 @@ function getDocumentColumnNote(header: string, sourceConfigs: Record<string, She
 }
 
 function shouldIncludeFormulaNoteRow(
-  headers: string[],
-  sourceConfigs: Record<string, SheetColumnConfig>,
   settings: Required<SheetViewSettings>,
 ) {
-  return (
-    settings.column_note_display === 'row'
-    && headers.some((header) => getDocumentColumnNote(header, sourceConfigs) !== '')
-  )
+  return settings.column_note_display !== 'none'
 }
 
 function getFormulaHeaderRowsForDocument(
@@ -2298,18 +2365,31 @@ function getFormulaHeaderRowsForDocument(
 ) {
   const headerRows = groups.map((row) => expandHeaderGroupLabels(row, headers.length))
   headerRows.push([...headers])
-  if (shouldIncludeFormulaNoteRow(headers, sourceConfigs, settings)) {
+  if (shouldIncludeFormulaNoteRow(settings)) {
     headerRows.push(headers.map((header) => getDocumentColumnNote(header, sourceConfigs)))
   }
   return headerRows
 }
 
 function getCurrentFormulaHeaderRows(headers = columnHeaders.value) {
-  return getFormulaHeaderRowsForDocument(
-    headers,
-    normalizeHeaderGroups(headerGroups.value, headers.length),
-    normalizeColumnConfigs(columnConfigs.value, headers),
-    sheetViewSettings.value,
+  return sheetGridRows.value
+    .slice(0, sheetHeaderRowCount.value)
+    .map((row) => normalizeRow(row, headers))
+}
+
+function getSheetHeaderRowCountForColumnNoteEntity(shouldHaveColumnNoteEntityRow: boolean) {
+  return normalizedHeaderGroups.value.length + 1 + (shouldHaveColumnNoteEntityRow ? 1 : 0)
+}
+
+function shouldHaveColumnNoteEntityRowForSettings(
+  settings: Required<SheetViewSettings>,
+) {
+  return hasColumnNoteEntityRow.value || settings.column_note_display !== 'none'
+}
+
+function getSheetHeaderRowCountForSettings(settings: Required<SheetViewSettings>) {
+  return getSheetHeaderRowCountForColumnNoteEntity(
+    shouldHaveColumnNoteEntityRowForSettings(settings),
   )
 }
 
@@ -2343,6 +2423,208 @@ function getCurrentGridRowIndexFromDocumentRow(documentGridRow: number) {
   return pageLocalRow >= 0 && pageLocalRow < rows.value.length
     ? sheetHeaderRowCount.value + pageLocalRow
     : -1
+}
+
+function getLocalDataRowIndexFromDocumentDataIndex(documentDataIndex: number) {
+  if (documentDataIndex < 0) {
+    return -1
+  }
+  if (pageRowIndexes.value !== null) {
+    return pageRowIndexes.value.indexOf(documentDataIndex)
+  }
+  const localIndex = documentDataIndex - (effectivePaginationEnabled.value ? pageRowOffset.value : 0)
+  return localIndex >= 0 && localIndex < rows.value.length ? localIndex : -1
+}
+
+function getDocumentRowEntityId(documentRow: number) {
+  if (documentRow < 0) {
+    return ''
+  }
+  if (documentRow < sheetHeaderRowCount.value) {
+    return headerRowEntityIds.value[documentRow] ?? ''
+  }
+
+  const localDataIndex = getLocalDataRowIndexFromDocumentDataIndex(documentRow - sheetHeaderRowCount.value)
+  return localDataIndex >= 0 ? dataRowEntityIds.value[localDataIndex] ?? '' : ''
+}
+
+function getColumnEntityId(columnIndex: number) {
+  return columnEntityIds.value[columnIndex] ?? ''
+}
+
+function getEntityCellAt(documentRow: number, columnIndex: number) {
+  const rowId = getDocumentRowEntityId(documentRow)
+  const columnId = getColumnEntityId(columnIndex)
+  return rowId && columnId ? entityCells.value[rowId]?.[columnId] ?? null : null
+}
+
+function updateEntityCellEntry(
+  documentRow: number,
+  columnIndex: number,
+  updater: (entry: SheetEntityCell) => SheetEntityCell | null,
+) {
+  const rowId = getDocumentRowEntityId(documentRow)
+  const columnId = getColumnEntityId(columnIndex)
+  if (!rowId || !columnId) {
+    return
+  }
+
+  const nextCells: SheetEntityCellMap = { ...entityCells.value }
+  const nextRowCells: Record<string, SheetEntityCell> = { ...(nextCells[rowId] ?? {}) }
+  const nextEntry = normalizeEntityCellEntry(updater({ ...(nextRowCells[columnId] ?? {}) }))
+  if (nextEntry) {
+    nextRowCells[columnId] = nextEntry
+  } else {
+    delete nextRowCells[columnId]
+  }
+
+  if (Object.keys(nextRowCells).length) {
+    nextCells[rowId] = nextRowCells
+  } else {
+    delete nextCells[rowId]
+  }
+  entityCells.value = nextCells
+}
+
+function setEntityCellRawValue(documentRow: number, columnIndex: number, value: string) {
+  updateEntityCellEntry(documentRow, columnIndex, (entry) => {
+    const nextEntry = { ...entry }
+    const normalizedValue = normalizeCellValue(value)
+    if (normalizedValue) {
+      nextEntry.value = normalizedValue
+    } else {
+      delete nextEntry.value
+    }
+    return nextEntry
+  })
+}
+
+function getHeaderEntityRowsForSnapshot(headerRows: SheetRow[]) {
+  const used = new Set<string>()
+  const sourceIds = [...headerRowEntityIds.value]
+  const nextIds = headerRows.map((row, rowIndex) => (
+    ensureUniqueSheetEntityId(
+      normalizeSheetEntityId(sourceIds[rowIndex])
+        || createFallbackSheetEntityId(
+          getSheetEntityRowKind(rowIndex, columnHeaderLevel.value, headerRows.length),
+          rowIndex,
+          row.join('\u001f'),
+        ),
+      used,
+      getSheetEntityRowKind(rowIndex, columnHeaderLevel.value, headerRows.length),
+    )
+  ))
+  headerRowEntityIds.value = nextIds
+  return nextIds.map((id, rowIndex) => {
+    const row: SheetEntityRow = {
+      id,
+      kind: getSheetEntityRowKind(rowIndex, columnHeaderLevel.value, headerRows.length),
+    }
+    if (rowIndex === columnNoteHeaderLevel.value && columnNoteDisplayMode.value !== 'row') {
+      row.hidden = true
+    }
+    return row
+  })
+}
+
+function getColumnEntitiesForSnapshot(headers: string[]) {
+  const used = new Set<string>()
+  const sourceIds = [...columnEntityIds.value]
+  const nextIds = headers.map((header, columnIndex) => (
+    ensureUniqueSheetEntityId(
+      normalizeSheetEntityId(sourceIds[columnIndex])
+        || createFallbackSheetEntityId('col', columnIndex, header),
+      used,
+      'col',
+    )
+  ))
+  columnEntityIds.value = nextIds
+  return headers.map((header, index) => ({
+    id: nextIds[index],
+    header,
+  }))
+}
+
+function getDataEntityRowsForSnapshot(normalizedRows: SheetRow[]) {
+  const used = new Set(headerRowEntityIds.value)
+  const sourceIds = [...dataRowEntityIds.value]
+  const nextIds = normalizedRows.map((row, rowIndex) => (
+    ensureUniqueSheetEntityId(
+      normalizeSheetEntityId(sourceIds[rowIndex])
+        || createFallbackSheetEntityId('row', getDocumentRowIndex(rowIndex), row.join('\u001f')),
+      used,
+      'row',
+    )
+  ))
+  dataRowEntityIds.value = nextIds
+  return nextIds.map((id) => ({ id, kind: 'data' as const }))
+}
+
+function buildLegacyCellMetaFromEntitySnapshot(
+  entityRows: SheetEntityRow[],
+  entityColumns: SheetEntityColumn[],
+  cells: SheetEntityCellMap,
+  sourceMeta: SheetCellMetaMap,
+  getDocumentRow: (entityRowIndex: number) => number,
+) {
+  const nextMeta: SheetCellMetaMap = { ...normalizeCellMetaMap(sourceMeta, entityColumns.length) }
+  entityRows.forEach((row, rowIndex) => {
+    entityColumns.forEach((column, columnIndex) => {
+      const key = createCellMetaKey(getDocumentRow(rowIndex), columnIndex)
+      const meta = getEntityCellMeta(cells[row.id]?.[column.id])
+      if (meta) {
+        nextMeta[key] = meta
+      } else {
+        delete nextMeta[key]
+      }
+    })
+  })
+  return normalizeCellMetaMap(nextMeta, entityColumns.length)
+}
+
+function buildCurrentEntitySnapshot(headers: string[], normalizedRows: SheetRow[]) {
+  const headerRows = sheetGridRows.value
+    .slice(0, sheetHeaderRowCount.value)
+    .map((row) => normalizeRow(row, headers))
+  const entityColumns = getColumnEntitiesForSnapshot(headers)
+  const headerEntityRows = getHeaderEntityRowsForSnapshot(headerRows)
+  const dataEntityRows = getDataEntityRowsForSnapshot(normalizedRows)
+  const entityRows = [...headerEntityRows, ...dataEntityRows]
+  const documentRows = [...headerRows, ...normalizedRows]
+  const getDocumentRow = (entityRowIndex: number) => (
+    entityRowIndex < headerRows.length
+      ? entityRowIndex
+      : headerRows.length + getDocumentRowIndex(entityRowIndex - headerRows.length)
+  )
+  const nextCells: SheetEntityCellMap = {}
+
+  entityRows.forEach((row, rowIndex) => {
+    const sourceRowCells = entityCells.value[row.id] ?? {}
+    const nextRowCells: Record<string, SheetEntityCell> = {}
+    entityColumns.forEach((column, columnIndex) => {
+      const existingCell = sourceRowCells[column.id]
+      const existingMeta = getEntityCellMeta(existingCell)
+      const legacyMeta = cellMeta.value[createCellMetaKey(getDocumentRow(rowIndex), columnIndex)] ?? null
+      const cell = extractEntityCellForSave(
+        documentRows[rowIndex]?.[columnIndex] ?? '',
+        existingMeta ?? legacyMeta,
+      )
+      if (cell) {
+        nextRowCells[column.id] = cell
+      }
+    })
+    if (Object.keys(nextRowCells).length) {
+      nextCells[row.id] = nextRowCells
+    }
+  })
+
+  entityCells.value = nextCells
+  return {
+    entity_columns: entityColumns,
+    entity_rows: entityRows,
+    entity_cells: nextCells,
+    cell_meta: buildLegacyCellMetaFromEntitySnapshot(entityRows, entityColumns, nextCells, cellMeta.value, getDocumentRow),
+  }
 }
 
 function getRenderableMergedCells() {
@@ -2564,6 +2846,95 @@ let lastNotifiedUserMatchRunId = ''
 let lastNotifiedUserMatchRunStatus = ''
 let pendingColumnInsertionTemplate: ColumnInsertionTemplate | null = null
 let pendingRowInsertionTemplate: RowInsertionTemplate | null = null
+let contextMenuRowInsertAmount = 1
+
+const ROW_INSERT_AMOUNT_MIN = 1
+const ROW_INSERT_AMOUNT_MAX = 1000
+
+function normalizeRowInsertAmount(value: unknown) {
+  const numeric = Math.floor(Number(value))
+  if (!Number.isFinite(numeric)) {
+    return ROW_INSERT_AMOUNT_MIN
+  }
+  return Math.min(Math.max(numeric, ROW_INSERT_AMOUNT_MIN), ROW_INSERT_AMOUNT_MAX)
+}
+
+function stopRowInsertMenuEvent(event: Event) {
+  event.stopPropagation()
+}
+
+function commitRowInsertAmountInput(input: HTMLInputElement) {
+  const amount = normalizeRowInsertAmount(input.value)
+  contextMenuRowInsertAmount = amount
+  input.value = String(amount)
+  return amount
+}
+
+function executeContextMenuRowInsertion(side: 'above' | 'below', input?: HTMLInputElement) {
+  const amount = input
+    ? commitRowInsertAmountInput(input)
+    : normalizeRowInsertAmount(contextMenuRowInsertAmount)
+  contextMenuRowInsertAmount = amount
+  getContextMenuPlugin()?.close?.()
+  insertRowFromSelection(side, amount)
+}
+
+function createRowInsertMenuRenderer() {
+  return (
+    _hot: Handsontable,
+    _wrapper: HTMLElement,
+    _row: number,
+    _col: number,
+    _prop: number | string,
+    _itemValue: string,
+  ) => {
+    const root = document.createElement('div')
+    root.className = 'note-sheet-row-insert-menu note-sheet-row-insert-menu--submenu'
+    root.addEventListener('mousedown', stopRowInsertMenuEvent)
+    root.addEventListener('mouseup', stopRowInsertMenuEvent)
+    root.addEventListener('click', stopRowInsertMenuEvent)
+    root.addEventListener('dblclick', stopRowInsertMenuEvent)
+
+    const label = document.createElement('button')
+    label.className = 'note-sheet-row-insert-menu-action'
+    label.type = 'button'
+    label.textContent = '添加行'
+
+    const input = document.createElement('input')
+    input.className = 'note-sheet-row-insert-menu-input'
+    input.type = 'number'
+    input.min = String(ROW_INSERT_AMOUNT_MIN)
+    input.max = String(ROW_INSERT_AMOUNT_MAX)
+    input.step = '1'
+    input.value = String(contextMenuRowInsertAmount)
+    input.inputMode = 'numeric'
+    input.ariaLabel = `${label.textContent}数量`
+    input.addEventListener('input', () => {
+      const rawValue = Number(input.value)
+      if (Number.isFinite(rawValue)) {
+        contextMenuRowInsertAmount = normalizeRowInsertAmount(rawValue)
+      }
+    })
+    input.addEventListener('change', () => {
+      commitRowInsertAmountInput(input)
+    })
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation()
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        executeContextMenuRowInsertion('above', input)
+      }
+    })
+    label.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      executeContextMenuRowInsertion('above', input)
+    })
+
+    root.append(label, input)
+    return root
+  }
+}
 
 const contextMenu = {
   items: {
@@ -2578,18 +2949,28 @@ const contextMenu = {
       name: '---------',
       hidden: () => !(canOpenSelectedRowDetailDialog() && canEditData.value),
     },
-    row_above: {
-      name: '上方插入行',
+    row_insert: {
+      name: '添加行',
+      isCommand: false,
       hidden: () => !shouldShowRowActions() || !canEditData.value,
-      callback: () => {
-        insertRowFromSelection('above')
-      },
-    },
-    row_below: {
-      name: '下方插入行',
-      hidden: () => !shouldShowRowActions() || !canEditData.value,
-      callback: () => {
-        insertRowFromSelection('below')
+      renderer: createRowInsertMenuRenderer(),
+      submenu: {
+        items: [
+          {
+            key: 'row_insert:above',
+            name: '上方添加行',
+            callback: () => {
+              executeContextMenuRowInsertion('above')
+            },
+          },
+          {
+            key: 'row_insert:below',
+            name: '下方添加行',
+            callback: () => {
+              executeContextMenuRowInsertion('below')
+            },
+          },
+        ],
       },
     },
     hsep1: {
@@ -2677,14 +3058,14 @@ const contextMenu = {
       },
     },
     remove_col: {
-      name: '删除选中列',
+      name: '删除列',
       hidden: () => !shouldShowRemoveColumnAction() || !canEditConfig.value,
       callback: () => {
         removeSelectedColumns()
       },
     },
     remove_row: {
-      name: '删除选中行',
+      name: '删除行',
       hidden: () => !shouldShowRemoveRowAction() || !canEditData.value,
       callback: () => {
         removeSelectedRows()
@@ -2797,21 +3178,62 @@ const contextMenu = {
       name: '---------',
       hidden: () => !shouldShowLinkContextMenuGroup(),
     },
-    set_cell_link: {
-      name: '设置超链接',
-      hidden: () => !hasSingleLinkTargetSelection() || !canEditConfig.value,
-      callback: () => {
-        openSelectedCellLinkDialog()
-      },
-    },
     open_cell_link: {
       name: '打开超链接',
-      hidden: () => !hasSelectedCellLink(),
-      callback: () => {
-        openSelectedCellLink()
+      hidden: () => !shouldShowLinkContextMenuGroup(),
+      submenu: {
+        items: [
+          {
+            key: 'open_cell_link:set',
+            name: '设置',
+            hidden: () => !hasSingleLinkTargetSelection() || !canEditConfig.value,
+            callback: () => {
+              openSelectedCellLinkDialog()
+            },
+          },
+          {
+            key: 'open_cell_link:copy',
+            name: '复制',
+            hidden: () => !hasSelectedCellLink(),
+            callback: () => {
+              void copySelectedCellLink()
+            },
+          },
+          {
+            key: 'open_cell_link:local',
+            name: '在本地打开',
+            hidden: () => !canOpenSelectedCellLinkVariant('local'),
+            callback: () => {
+              openSelectedCellLinkVariant('local')
+            },
+          },
+          {
+            key: 'open_cell_link:public',
+            name: '在 code4101.com 打开',
+            hidden: () => !canOpenSelectedCellLinkVariant('public'),
+            callback: () => {
+              openSelectedCellLinkVariant('public')
+            },
+          },
+        ],
       },
     },
   },
+}
+
+type SheetContextMenuItem = {
+  key?: string
+}
+
+type SheetContextMenuPlugin = {
+  close?: () => void
+  open?: (
+    position: { left: number; top: number } | Event,
+    offset?: { above?: number; below?: number; left?: number; right?: number },
+  ) => void
+  menu?: {
+    hotMenu?: Handsontable
+  }
 }
 
 function warnReadOnlyAction() {
@@ -3674,6 +4096,10 @@ function resetWorkspaceState() {
   columnConfigs.value = {}
   sheetHeaderPrefixRows.value = []
   cellMeta.value = {}
+  columnEntityIds.value = []
+  headerRowEntityIds.value = []
+  dataRowEntityIds.value = []
+  entityCells.value = {}
   attendanceCourseScriptStatuses.value = {}
   remoteAccessCapabilities.value = null
   sheetViewSettings.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
@@ -4168,6 +4594,24 @@ function getMergedCellsSourceRowCount(source: unknown) {
   }, 0)
 }
 
+function insertRowsIntoMergedCellSource(
+  source: unknown,
+  startRow: number,
+  amount: number,
+  rowCount: number,
+  columnCount: number,
+) {
+  if (amount <= 0) {
+    return normalizeMergedCells(source, rowCount, columnCount)
+  }
+  return normalizeMergedCells(source, rowCount, columnCount).map((cell) => {
+    if (cell.row < startRow && startRow < cell.row + cell.rowspan) {
+      return { ...cell, rowspan: cell.rowspan + amount }
+    }
+    return cell.row >= startRow ? { ...cell, row: cell.row + amount } : cell
+  })
+}
+
 function shiftCellMetaRowKeys(source: unknown, rowDelta: number, columnCount: number) {
   const normalized = normalizeCellMetaMap(source, columnCount)
   if (rowDelta === 0) {
@@ -4180,6 +4624,23 @@ function shiftCellMetaRowKeys(source: unknown, rowDelta: number, columnCount: nu
       continue
     }
     shifted[createCellMetaKey(Math.max(0, position.row + rowDelta), position.column)] = meta
+  }
+  return normalizeCellMetaMap(shifted, columnCount)
+}
+
+function insertCellMetaRowKeys(source: unknown, startRow: number, amount: number, columnCount: number) {
+  const normalized = normalizeCellMetaMap(source, columnCount)
+  if (amount <= 0) {
+    return normalized
+  }
+  const shifted: SheetCellMetaMap = {}
+  for (const [key, meta] of Object.entries(normalized)) {
+    const position = parseCellMetaKey(key)
+    if (!position) {
+      continue
+    }
+    const row = position.row >= startRow ? position.row + amount : position.row
+    shifted[createCellMetaKey(row, position.column)] = meta
   }
   return normalizeCellMetaMap(shifted, columnCount)
 }
@@ -4318,6 +4779,177 @@ function normalizeCellMetaMap(source: unknown, columnCount: number): SheetCellMe
     }
   }
   return normalized
+}
+
+let sheetEntityIdCounter = 0
+
+function normalizeSheetEntityId(value: unknown) {
+  return typeof value === 'string' ? value.trim().slice(0, 128) : ''
+}
+
+function createSheetEntityId(prefix: string) {
+  sheetEntityIdCounter += 1
+  return `${prefix}_${Date.now().toString(36)}_${sheetEntityIdCounter.toString(36)}`
+}
+
+function createFallbackSheetEntityId(prefix: string, index: number, seed = '') {
+  const normalizedSeed = normalizeCellValue(seed).trim()
+  const hash = stableHash32(`${prefix}:${index}:${normalizedSeed}`).toString(36)
+  return `${prefix}_${index + 1}_${hash}`
+}
+
+function ensureUniqueSheetEntityId(candidate: string, used: Set<string>, prefix: string) {
+  const base = candidate || createSheetEntityId(prefix)
+  if (!used.has(base)) {
+    used.add(base)
+    return base
+  }
+
+  let suffix = 2
+  while (used.has(`${base}_${suffix}`)) {
+    suffix += 1
+  }
+  const uniqueId = `${base}_${suffix}`
+  used.add(uniqueId)
+  return uniqueId
+}
+
+function normalizeSheetEntityRowKind(value: unknown): SheetEntityRowKind | null {
+  return value === 'header_group' || value === 'field' || value === 'field_note' || value === 'data'
+    ? value
+    : null
+}
+
+function getSheetEntityRowKind(rowIndex: number, fieldRowIndex: number, dataStartRow: number): SheetEntityRowKind {
+  if (rowIndex >= dataStartRow) {
+    return 'data'
+  }
+  if (rowIndex === fieldRowIndex) {
+    return 'field'
+  }
+  if (rowIndex > fieldRowIndex) {
+    return 'field_note'
+  }
+  return 'header_group'
+}
+
+function normalizeEntityCellEntry(source: unknown): SheetEntityCell | null {
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+
+  const record = source as Record<string, unknown>
+  const value = normalizeCellValue(record.value)
+  const meta = normalizeCellMetaEntry(record)
+  const cell: SheetEntityCell = { ...(meta ?? {}) }
+  if (value) {
+    cell.value = value
+  }
+  return Object.keys(cell).length ? cell : null
+}
+
+function normalizeEntityCellMap(source: unknown): SheetEntityCellMap {
+  if (!source || typeof source !== 'object') {
+    return {}
+  }
+
+  const normalized: SheetEntityCellMap = {}
+  for (const [rawRowId, rawCells] of Object.entries(source as Record<string, unknown>)) {
+    const rowId = normalizeSheetEntityId(rawRowId)
+    if (!rowId || !rawCells || typeof rawCells !== 'object') {
+      continue
+    }
+
+    const rowCells: Record<string, SheetEntityCell> = {}
+    for (const [rawColumnId, rawCell] of Object.entries(rawCells as Record<string, unknown>)) {
+      const columnId = normalizeSheetEntityId(rawColumnId)
+      if (!columnId) {
+        continue
+      }
+      const cell = normalizeEntityCellEntry(rawCell)
+      if (cell) {
+        rowCells[columnId] = cell
+      }
+    }
+    if (Object.keys(rowCells).length) {
+      normalized[rowId] = rowCells
+    }
+  }
+  return normalized
+}
+
+function getEntityCellMeta(cell: SheetEntityCell | null | undefined): SheetCellMeta | null {
+  return normalizeCellMetaEntry(cell ?? null)
+}
+
+function replaceEntityCellMeta(entry: SheetEntityCell, meta: SheetCellMeta | null): SheetEntityCell {
+  const nextEntry = { ...entry }
+  delete nextEntry.link
+  delete nextEntry.action
+  delete nextEntry.style
+  if (meta?.link) {
+    nextEntry.link = meta.link
+  }
+  if (meta?.action) {
+    nextEntry.action = meta.action
+  }
+  if (meta?.style) {
+    nextEntry.style = meta.style
+  }
+  return nextEntry
+}
+
+function normalizeEntityColumns(source: unknown, headers: string[]): SheetEntityColumn[] {
+  const sourceColumns = Array.isArray(source) ? source : []
+  const used = new Set<string>()
+  return headers.map((header, index) => {
+    const record = sourceColumns[index] && typeof sourceColumns[index] === 'object'
+      ? sourceColumns[index] as Record<string, unknown>
+      : null
+    const sourceId = normalizeSheetEntityId(record?.id)
+    const fallbackId = createFallbackSheetEntityId('col', index, header)
+    return {
+      id: ensureUniqueSheetEntityId(sourceId || fallbackId, used, 'col'),
+      header,
+    }
+  })
+}
+
+function normalizeEntityRows(
+  source: unknown,
+  dataStartRow: number,
+  fieldRowIndex: number,
+  dataRowCount: number,
+): SheetEntityRow[] {
+  const sourceRows = Array.isArray(source) ? source : []
+  const used = new Set<string>()
+  const rowCount = Math.max(0, dataStartRow) + Math.max(0, dataRowCount)
+  return Array.from({ length: rowCount }, (_, index) => {
+    const record = sourceRows[index] && typeof sourceRows[index] === 'object'
+      ? sourceRows[index] as Record<string, unknown>
+      : null
+    const kind = getSheetEntityRowKind(index, fieldRowIndex, dataStartRow)
+    const sourceId = normalizeSheetEntityId(record?.id)
+    const fallbackId = createFallbackSheetEntityId(kind === 'data' ? 'row' : kind, index)
+    const row: SheetEntityRow = {
+      id: ensureUniqueSheetEntityId(sourceId || fallbackId, used, kind === 'data' ? 'row' : kind),
+      kind: normalizeSheetEntityRowKind(record?.kind) ?? kind,
+    }
+    if (record?.hidden === true) {
+      row.hidden = true
+    }
+    return row
+  })
+}
+
+function extractEntityCellForSave(value: unknown, meta: SheetCellMeta | null | undefined): SheetEntityCell | null {
+  const normalizedValue = normalizeCellValue(value)
+  const normalizedMeta = normalizeCellMetaEntry(meta ?? null)
+  const cell: SheetEntityCell = { ...(normalizedMeta ?? {}) }
+  if (normalizedValue) {
+    cell.value = normalizedValue
+  }
+  return Object.keys(cell).length ? cell : null
 }
 
 function normalizeLegacySheetCellActionType(value: unknown): SheetCellActionType | null {
@@ -4696,7 +5328,7 @@ function createDefaultSheetViewSettings(heightMode: SheetHeightMode = DEFAULT_SH
     row_marker_origin: 'sheet',
     show_column_markers: true,
     column_marker_style: 'letters',
-    column_note_display: 'hover',
+    column_note_display: 'none',
     height_mode: heightMode,
     mobile_default_view: 'sheet',
     frozen_column_count: 0,
@@ -4722,8 +5354,14 @@ function normalizeRowMarkerOrigin(value: unknown): RowMarkerOrigin {
   return 'data'
 }
 
-function normalizeColumnNoteDisplayMode(value: unknown): ColumnNoteDisplayMode {
-  return value === 'row' ? 'row' : 'hover'
+function normalizeColumnNoteDisplayMode(
+  value: unknown,
+  fallback: ColumnNoteDisplayMode = 'none',
+): ColumnNoteDisplayMode {
+  if (value === 'none' || value === 'hover' || value === 'row') {
+    return value
+  }
+  return fallback
 }
 
 function normalizeSheetHeightMode(value: unknown, fallback: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE): SheetHeightMode {
@@ -4771,8 +5409,10 @@ function normalizeSheetViewSettings(
   source: unknown,
   columnCount = Number.MAX_SAFE_INTEGER,
   defaultHeightMode: SheetHeightMode = DEFAULT_SHEET_HEIGHT_MODE,
+  defaultColumnNoteDisplay: ColumnNoteDisplayMode = 'none',
 ): Required<SheetViewSettings> {
   const defaults = createDefaultSheetViewSettings(defaultHeightMode)
+  defaults.column_note_display = defaultColumnNoteDisplay
   if (!source || typeof source !== 'object') {
     return defaults
   }
@@ -4784,7 +5424,7 @@ function normalizeSheetViewSettings(
     row_marker_origin: normalizeRowMarkerOrigin(record.row_marker_origin),
     show_column_markers: record.show_column_markers !== false,
     column_marker_style: normalizeColumnMarkerStyle(record.column_marker_style),
-    column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display),
+    column_note_display: normalizeColumnNoteDisplayMode(record.column_note_display, defaults.column_note_display),
     height_mode: normalizeSheetHeightMode(record.height_mode, defaultHeightMode),
     mobile_default_view: normalizeSheetMobileDefaultView(record.mobile_default_view),
     frozen_column_count: normalizeFrozenColumnCount(record.frozen_column_count, columnCount),
@@ -5183,22 +5823,71 @@ function normalizeSheetDocument(
   const sourceWidths = Array.isArray(record.column_widths) ? record.column_widths : []
   let normalizedColumnConfigs = normalizeColumnConfigs(record.column_configs, headers)
   const sourceHeaderGroups = normalizeHeaderGroups(record.header_groups, headers.length)
-  const normalizedSettings = normalizeSheetViewSettings(record.view_settings, headers.length, defaultHeightMode)
+  const hasConfigColumnNotes = headers.some((header) => getDocumentColumnNote(header, normalizedColumnConfigs) !== '')
+  const hasUnifiedGridRows = Array.isArray(record.grid_rows)
+  const unifiedSourceGridRows = hasUnifiedGridRows
+    ? (record.grid_rows as unknown[]).map((row) => normalizeRow(row, headers))
+    : []
+  const inferredFieldRowIndex = normalizeNonNegativeInt(record.field_row_index, sourceHeaderGroups.length)
+  const inferredDataStartRow = normalizeNonNegativeInt(record.data_start_row, sourceHeaderGroups.length + 1)
+  const sourceHasMaterializedColumnNoteRow = (
+    hasUnifiedGridRows
+    && inferredDataStartRow > inferredFieldRowIndex + 1
+    && unifiedSourceGridRows.length > inferredFieldRowIndex + 1
+  )
+  const fallbackColumnNoteDisplay = sourceHasMaterializedColumnNoteRow
+    ? 'row'
+    : hasConfigColumnNotes
+      ? 'hover'
+      : 'none'
+  let normalizedSettings = normalizeSheetViewSettings(
+    record.view_settings,
+    headers.length,
+    defaultHeightMode,
+    fallbackColumnNoteDisplay,
+  )
+  if (
+    normalizedSettings.column_note_display === 'hover'
+    && !sourceHasMaterializedColumnNoteRow
+    && !hasConfigColumnNotes
+  ) {
+    normalizedSettings = { ...normalizedSettings, column_note_display: 'none' }
+  }
   const formulaHeaderRows = getFormulaHeaderRowsForDocument(
     headers,
     sourceHeaderGroups,
     normalizedColumnConfigs,
     normalizedSettings,
   )
-  const dataStartRow = normalizeNonNegativeInt(record.data_start_row, formulaHeaderRows.length)
+  let dataStartRow = normalizeNonNegativeInt(record.data_start_row, formulaHeaderRows.length)
   const fieldRowIndex = normalizeNonNegativeInt(record.field_row_index, Math.max(0, formulaHeaderRows.length - 1))
-  const hasUnifiedGridRows = Array.isArray(record.grid_rows)
-  const sourceGridRows = hasUnifiedGridRows
-    ? (record.grid_rows as unknown[]).map((row) => normalizeRow(row, headers))
+  let sourceGridRows = hasUnifiedGridRows
+    ? unifiedSourceGridRows
     : [
       ...formulaHeaderRows.map((row) => normalizeRow(row, headers)),
       ...sourceRows.map((row) => normalizeRow(row, headers)),
     ]
+  const columnNoteRowIndex = fieldRowIndex + 1
+  const shouldInsertMissingColumnNoteRow = (
+    hasUnifiedGridRows
+    && normalizedSettings.column_note_display !== 'none'
+    && !sourceHasMaterializedColumnNoteRow
+    && dataStartRow <= columnNoteRowIndex
+  )
+  const previousDataStartRow = dataStartRow
+  if (shouldInsertMissingColumnNoteRow) {
+    const nextGridRows = sourceGridRows.map((row) => normalizeRow(row, headers))
+    while (nextGridRows.length < columnNoteRowIndex) {
+      nextGridRows.push(createEmptyRow(headers.length))
+    }
+    nextGridRows.splice(
+      columnNoteRowIndex,
+      0,
+      headers.map((header) => getDocumentColumnNote(header, normalizedColumnConfigs)),
+    )
+    sourceGridRows = nextGridRows
+    dataStartRow += 1
+  }
   const sourceFormulaOrigin = normalizeFormulaReferenceOrigin(record.formula_reference_origin)
   const sourceNormalizedRows = trimTrailingBlankRows(
     (hasUnifiedGridRows ? sourceGridRows.slice(dataStartRow) : sourceRows.map((row) => normalizeRow(row, headers))),
@@ -5206,18 +5895,35 @@ function normalizeSheetDocument(
   let normalizedRows = normalizeRowsFormulaReferencesForOrigin(
     sourceNormalizedRows,
     sourceFormulaOrigin,
-    formulaHeaderRows.length,
+    dataStartRow,
   )
+  if (shouldInsertMissingColumnNoteRow && sourceFormulaOrigin === 'sheet_v2') {
+    normalizedRows = remapRowsFormulaReferencesForHeaderRowCountChange(
+      normalizedRows,
+      previousDataStartRow,
+      dataStartRow,
+    )
+  }
   const initialNormalizedGridRows = [
     ...sourceGridRows.slice(0, dataStartRow).map((row) => normalizeRow(row, headers)),
     ...normalizedRows,
   ]
+  const sourceMergedCells = [
+    ...(!hasUnifiedGridRows ? getHeaderGroupMergeCells(sourceHeaderGroups) : []),
+    ...(Array.isArray(record.merged_cells) ? record.merged_cells : []),
+  ]
+  const migratedMergedCells = shouldInsertMissingColumnNoteRow
+    ? insertRowsIntoMergedCellSource(
+      sourceMergedCells,
+      columnNoteRowIndex,
+      1,
+      Math.max(initialNormalizedGridRows.length, getMergedCellsSourceRowCount(sourceMergedCells) + 1),
+      headers.length,
+    )
+    : sourceMergedCells
   const normalizedMergedCells = normalizeMergedCells(
-    [
-      ...(!hasUnifiedGridRows ? getHeaderGroupMergeCells(sourceHeaderGroups) : []),
-      ...(Array.isArray(record.merged_cells) ? record.merged_cells : []),
-    ],
-    Math.max(initialNormalizedGridRows.length, getMergedCellsSourceRowCount(record.merged_cells)),
+    migratedMergedCells,
+    Math.max(initialNormalizedGridRows.length, getMergedCellsSourceRowCount(migratedMergedCells)),
     headers.length,
   )
   let normalizedGridRows = repairBlankHeaderMergeAnchors(
@@ -5246,21 +5952,39 @@ function normalizeSheetDocument(
     ? createSingleCellHeaderGroupsFromGridRows(normalizedGridRows, fieldRowIndex, headers)
     : expandHeaderGroupsToSingleCellRows(sourceHeaderGroups, headers.length)
   const sourceCellMeta = hasUnifiedGridRows
-    ? normalizeCellMetaMap(record.cell_meta, headers.length)
+    ? (
+        shouldInsertMissingColumnNoteRow
+          ? insertCellMetaRowKeys(record.cell_meta, columnNoteRowIndex, 1, headers.length)
+          : normalizeCellMetaMap(record.cell_meta, headers.length)
+      )
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
   const normalizedCellMeta = addLegacySheetCellActions(
     sourceCellMeta,
     normalizedGridRows,
     headers.length,
   )
+  const normalizedEntityColumns = normalizeEntityColumns(record.entity_columns, headers)
+  const normalizedEntityRows = normalizeEntityRows(
+    record.entity_rows,
+    dataStartRow,
+    fieldRowIndex,
+    Math.max(
+      normalizedRows.length,
+      Array.isArray(record.entity_rows) ? Math.max(0, record.entity_rows.length - dataStartRow) : 0,
+    ),
+  )
+  const normalizedEntityCells = normalizeEntityCellMap(record.entity_cells)
+  const normalizedFormulaHeaderRows = normalizedGridRows
+    .slice(0, dataStartRow)
+    .map((row) => normalizeRow(row, headers))
   const formulaDisplayForWidths = buildFormulaDisplayStateForRows(
     headers,
     normalizedRows,
     normalizedColumnConfigs,
     {
       ...formulaOptions,
-      headerRows: formulaHeaderRows,
-      headerRowCount: formulaHeaderRows.length,
+      headerRows: normalizedFormulaHeaderRows,
+      headerRowCount: dataStartRow,
     },
   )
   const normalizedWidths = headers.map((_, index) => {
@@ -5282,6 +6006,9 @@ function normalizeSheetDocument(
     formula_reference_origin: 'sheet_v2',
     header_groups: normalizedHeaderGroups,
     cell_meta: normalizedCellMeta,
+    entity_columns: normalizedEntityColumns,
+    entity_rows: normalizedEntityRows,
+    entity_cells: normalizedEntityCells,
     column_configs: normalizedColumnConfigs,
     column_widths: normalizedWidths,
     view_settings: normalizedSettings,
@@ -5422,6 +6149,7 @@ function isRemoteHeaderPrefixCompatibleWithLocalDraft(localDocument: SheetDocume
 function buildCurrentDocument(): SheetDocument {
   const headers = normalizeHeaders(columnHeaders.value)
   const normalizedRows = trimTrailingBlankRows(rows.value.map((row) => normalizeRow(row, headers)))
+  const entitySnapshot = buildCurrentEntitySnapshot(headers, normalizedRows)
   return {
     schema_version: 1,
     columns: headers,
@@ -5432,7 +6160,10 @@ function buildCurrentDocument(): SheetDocument {
     merged_cells: normalizeMergedCells(mergedCells.value, sheetHeaderRowCount.value + totalRowCount.value, headers.length),
     formula_reference_origin: 'sheet_v2',
     header_groups: normalizeHeaderGroups(headerGroups.value, headers.length),
-    cell_meta: normalizeCellMetaMap(cellMeta.value, headers.length),
+    cell_meta: entitySnapshot.cell_meta,
+    entity_columns: entitySnapshot.entity_columns,
+    entity_rows: entitySnapshot.entity_rows,
+    entity_cells: entitySnapshot.entity_cells,
     column_configs: normalizeColumnConfigs(columnConfigs.value, headers),
     column_widths: headers.map((_, index) => columnWidths.value[index] ?? getAutoColumnWidth(
       index,
@@ -5442,6 +6173,99 @@ function buildCurrentDocument(): SheetDocument {
     )),
     view_settings: normalizeSheetViewSettings(sheetViewSettings.value, headers.length),
   }
+}
+
+function getEntitySourceDataRowIndex(sourceRowCount: number, dataStartRow: number, loadedRowCount: number, localDataIndex: number) {
+  const sequentialIndex = dataStartRow + localDataIndex
+  if (sourceRowCount <= dataStartRow + loadedRowCount) {
+    return sequentialIndex
+  }
+
+  const documentDataIndex = getDocumentRowIndex(localDataIndex)
+  const documentIndex = dataStartRow + documentDataIndex
+  return documentIndex >= dataStartRow && documentIndex < sourceRowCount ? documentIndex : sequentialIndex
+}
+
+function initializeSheetEntitiesFromDocument(
+  document: SheetDocument,
+  headers: string[],
+  dataStartRow: number,
+  fieldRowIndex: number,
+  normalizedRows: SheetRow[],
+  normalizedCellMeta: SheetCellMetaMap,
+) {
+  const entityColumns = normalizeEntityColumns(document.entity_columns, headers)
+  columnEntityIds.value = entityColumns.map((column) => column.id)
+
+  const sourceEntityRows = normalizeEntityRows(
+    document.entity_rows,
+    dataStartRow,
+    fieldRowIndex,
+    Math.max(
+      normalizedRows.length,
+      Array.isArray(document.entity_rows) ? Math.max(0, document.entity_rows.length - dataStartRow) : 0,
+    ),
+  )
+  const headerRows = sourceEntityRows.slice(0, dataStartRow)
+  const fallbackHeaderRows = normalizeEntityRows([], dataStartRow, fieldRowIndex, 0)
+  headerRowEntityIds.value = Array.from({ length: dataStartRow }, (_, index) => (
+    headerRows[index]?.id ?? fallbackHeaderRows[index]?.id ?? createSheetEntityId('header')
+  ))
+  dataRowEntityIds.value = normalizedRows.map((row, localIndex) => {
+    const sourceIndex = getEntitySourceDataRowIndex(sourceEntityRows.length, dataStartRow, normalizedRows.length, localIndex)
+    return sourceEntityRows[sourceIndex]?.id
+      ?? createFallbackSheetEntityId('row', getDocumentRowIndex(localIndex), row.join('\u001f'))
+  })
+
+  const normalizedEntityCells = normalizeEntityCellMap(document.entity_cells)
+  const sourceGridRows = Array.isArray(document.grid_rows)
+    ? document.grid_rows.map((row) => normalizeRow(row, headers))
+    : [
+      ...sheetGridRows.value.slice(0, dataStartRow).map((row) => normalizeRow(row, headers)),
+      ...normalizedRows,
+    ]
+  const nextCells: SheetEntityCellMap = {}
+  const writeCell = (
+    targetRowId: string,
+    sourceRowId: string,
+    documentRow: number,
+    row: SheetRow,
+  ) => {
+    if (!targetRowId) {
+      return
+    }
+    const rowCells: Record<string, SheetEntityCell> = {}
+    entityColumns.forEach((column, columnIndex) => {
+      const existingCell = normalizedEntityCells[sourceRowId]?.[column.id]
+        ?? normalizedEntityCells[targetRowId]?.[column.id]
+        ?? null
+      const existingMeta = getEntityCellMeta(existingCell)
+      const legacyMeta = normalizedCellMeta[createCellMetaKey(documentRow, columnIndex)] ?? null
+      const cell = extractEntityCellForSave(row[columnIndex] ?? '', existingMeta ?? legacyMeta)
+      if (cell) {
+        rowCells[column.id] = cell
+      }
+    })
+    if (Object.keys(rowCells).length) {
+      nextCells[targetRowId] = rowCells
+    }
+  }
+
+  headerRowEntityIds.value.forEach((rowId, rowIndex) => {
+    const sourceRowId = sourceEntityRows[rowIndex]?.id ?? rowId
+    writeCell(rowId, sourceRowId, rowIndex, normalizeRow(sourceGridRows[rowIndex], headers))
+  })
+  normalizedRows.forEach((row, localIndex) => {
+    const sourceIndex = getEntitySourceDataRowIndex(sourceEntityRows.length, dataStartRow, normalizedRows.length, localIndex)
+    const sourceRowId = sourceEntityRows[sourceIndex]?.id ?? dataRowEntityIds.value[localIndex]
+    writeCell(
+      dataRowEntityIds.value[localIndex],
+      sourceRowId,
+      dataStartRow + getDocumentRowIndex(localIndex),
+      normalizeRow(row, headers),
+    )
+  })
+  entityCells.value = nextCells
 }
 
 function isFormulaExpression(value: unknown) {
@@ -7755,6 +8579,7 @@ function hasMeaningfulSheetDocumentContent(document: SheetDocument) {
   return (
     normalizeHeaderGroups(document.header_groups, headers.length).length > 0
     || Object.keys(normalizeCellMetaMap(document.cell_meta, headers.length)).length > 0
+    || Object.keys(normalizeEntityCellMap(document.entity_cells)).length > 0
     || Object.keys(normalizeColumnConfigs(document.column_configs, headers)).length > 0
   )
 }
@@ -7894,12 +8719,71 @@ function getUndoRedoPlugin() {
 }
 
 function getContextMenuPlugin() {
-  return getHotInstance()?.getPlugin('contextMenu') as {
-    open?: (
-      position: { left: number; top: number } | Event,
-      offset?: { above?: number; below?: number; left?: number; right?: number },
-    ) => void
-  } | null
+  return getHotInstance()?.getPlugin('contextMenu') as SheetContextMenuPlugin | null
+}
+
+function handleColumnSortParentMenuMouseUp(event: MouseEvent) {
+  if (event.button !== 0) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+  getContextMenuPlugin()?.close?.()
+  void handleSelectedColumnSort('asc')
+}
+
+function handleOpenCellLinkParentMenuMouseUp(event: MouseEvent) {
+  if (event.button !== 0) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+  getContextMenuPlugin()?.close?.()
+  openSelectedCellLinkDefault()
+}
+
+function bindContextMenuParentAction(
+  menuHot: Handsontable,
+  itemKey: string,
+  title: string,
+  onMouseUp: (event: MouseEvent) => void,
+) {
+  for (let rowIndex = 0; rowIndex < menuHot.countRows(); rowIndex += 1) {
+    const item = menuHot.getSourceDataAtRow(rowIndex) as SheetContextMenuItem | null
+    if (item?.key !== itemKey) {
+      continue
+    }
+    const cell = menuHot.getCell(rowIndex, 0)
+    if (cell) {
+      cell.title = title
+      cell.addEventListener('mouseup', onMouseUp, { capture: true })
+    }
+    break
+  }
+}
+
+function handleAfterContextMenuShow(plugin: SheetContextMenuPlugin) {
+  const menuHot = plugin.menu?.hotMenu
+  if (!menuHot) {
+    return
+  }
+
+  bindContextMenuParentAction(
+    menuHot,
+    'column_sort',
+    '默认按当前列升序排序；悬浮可选择降序',
+    handleColumnSortParentMenuMouseUp,
+  )
+  bindContextMenuParentAction(
+    menuHot,
+    'open_cell_link',
+    '有链接时直接打开；无链接时进入设置',
+    handleOpenCellLinkParentMenuMouseUp,
+  )
 }
 
 function shouldEnableTouchContextMenuFallback() {
@@ -7991,13 +8875,16 @@ function syncContextMenuSelectionFromEvent(event: MouseEvent) {
     return
   }
 
-  if (headerLevel === columnHeaderLevel.value) {
-    selectColumnMarker(headerColumn)
-    return
-  }
-
-  selectedSheetHeaderCell.value = { column: headerColumn, headerLevel }
+  const anchor = getMergeAnchorForGridCell(headerLevel, headerColumn)
+  const anchoredHeaderLevel = getSheetHeaderGridLevel(anchor.row)
+  selectedSheetHeaderCell.value = { column: anchor.column, headerLevel: anchoredHeaderLevel }
   clearColumnMarkerSelection()
+  setFormulaBarGridCell(anchor.row, anchor.column)
+  const hot = getHotInstance()
+  if (hot) {
+    hot.selectCell(anchor.row, toHotColumnIndex(anchor.column), anchor.row, toHotColumnIndex(anchor.column), true, false)
+    hot.listen()
+  }
 }
 
 function openSheetContextMenuAt(event: MouseEvent) {
@@ -8714,6 +9601,88 @@ function reorderItemsByMove<T>(items: T[], movedIndexes: number[], finalIndex: n
   return remainingItems
 }
 
+function insertDataEntityRows(startIndex: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const nextIds = [...dataRowEntityIds.value]
+  nextIds.splice(
+    Math.min(Math.max(startIndex, 0), nextIds.length),
+    0,
+    ...Array.from({ length: amount }, (_, offset) => (
+      createSheetEntityId(`row_${getDocumentRowIndex(startIndex + offset)}`)
+    )),
+  )
+  dataRowEntityIds.value = nextIds
+}
+
+function removeDataEntityRows(startIndex: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const nextIds = [...dataRowEntityIds.value]
+  const removedIds = nextIds.splice(Math.max(startIndex, 0), amount)
+  dataRowEntityIds.value = nextIds
+  if (!removedIds.length) {
+    return
+  }
+
+  const removed = new Set(removedIds)
+  const nextCells: SheetEntityCellMap = { ...entityCells.value }
+  removed.forEach((rowId) => {
+    delete nextCells[rowId]
+  })
+  entityCells.value = nextCells
+}
+
+function moveDataEntityRows(movedRows: number[], finalIndex: number) {
+  dataRowEntityIds.value = reorderItemsByMove(dataRowEntityIds.value, movedRows, finalIndex)
+}
+
+function insertColumnEntityIds(startIndex: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const nextIds = [...columnEntityIds.value]
+  nextIds.splice(
+    Math.min(Math.max(startIndex, 0), nextIds.length),
+    0,
+    ...Array.from({ length: amount }, (_, offset) => (
+      createSheetEntityId(`col_${startIndex + offset}`)
+    )),
+  )
+  columnEntityIds.value = nextIds
+}
+
+function removeColumnEntityIds(startIndex: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  const nextIds = [...columnEntityIds.value]
+  const removedIds = nextIds.splice(Math.max(startIndex, 0), amount)
+  columnEntityIds.value = nextIds
+  if (!removedIds.length) {
+    return
+  }
+
+  const removed = new Set(removedIds)
+  const nextCells: SheetEntityCellMap = {}
+  for (const [rowId, rowCells] of Object.entries(entityCells.value)) {
+    const nextRowCells = { ...rowCells }
+    removed.forEach((columnId) => {
+      delete nextRowCells[columnId]
+    })
+    if (Object.keys(nextRowCells).length) {
+      nextCells[rowId] = nextRowCells
+    }
+  }
+  entityCells.value = nextCells
+}
+
+function moveColumnEntityIds(movedColumns: number[], finalIndex: number) {
+  columnEntityIds.value = reorderItemsByMove(columnEntityIds.value, movedColumns, finalIndex)
+}
+
 function transformCellMetaPositions(
   source: SheetCellMetaMap,
   mapper: (position: { row: number; column: number }) => { row: number; column: number } | null,
@@ -8828,6 +9797,36 @@ function removeMergedCellRows(startRow: number, amount: number) {
     const nextRow = cell.row >= startRow ? startRow : cell.row
     return { ...cell, row: nextRow, rowspan: nextRowspan }
   }).filter((cell) => cell.rowspan > 1 || cell.colspan > 1))
+}
+
+function insertDocumentGridRows(startDocumentRow: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  shiftCellMetaRows(startDocumentRow, amount)
+  insertMergedCellRows(startDocumentRow, amount)
+}
+
+function removeDocumentGridRows(startDocumentRow: number, amount: number) {
+  if (amount <= 0) {
+    return
+  }
+  removeCellMetaRows(startDocumentRow, amount)
+  removeMergedCellRows(startDocumentRow, amount)
+}
+
+function remapDocumentAnchorsForHeaderRowCountChange(previousHeaderRowCount: number, nextHeaderRowCount: number) {
+  const delta = nextHeaderRowCount - previousHeaderRowCount
+  if (delta === 0) {
+    return
+  }
+
+  if (delta > 0) {
+    insertDocumentGridRows(previousHeaderRowCount, delta)
+    return
+  }
+
+  removeDocumentGridRows(nextHeaderRowCount, -delta)
 }
 
 function insertMergedCellColumns(startColumn: number, amount: number) {
@@ -9098,6 +10097,7 @@ function handleBeforeColumnMove(
   }
 
   clearEditingColumnState()
+  moveColumnEntityIds(effectiveMovedColumns, effectiveFinalIndex)
   moveCellMetaColumns(effectiveMovedColumns, effectiveFinalIndex)
   moveMergedCellsColumns(effectiveMovedColumns, effectiveFinalIndex)
   columnHeaders.value = nextHeaders
@@ -9162,6 +10162,7 @@ function handleBeforeRowMove(
   }
 
   clearEditingColumnState()
+  moveDataEntityRows(effectiveMovedRows, effectiveFinalIndex)
   moveCellMetaRows(effectiveMovedRows, effectiveFinalIndex)
   moveMergedCellsRows(effectiveMovedRows, effectiveFinalIndex)
   rows.value = nextRows
@@ -9309,30 +10310,23 @@ function setColumnNoteAtIndex(columnIndex: number, nextNoteSource: string) {
     delete nextConfig.note
   }
   nextConfigs[header] = nextConfig
-  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
+  const previousHeaderRowCount = sheetHeaderRowCount.value
   const normalizedNextConfigs = normalizeColumnConfigs(nextConfigs, columnHeaders.value)
-  const nextFormulaHeaderRowCount = getFormulaHeaderRowsForDocument(
-    columnHeaders.value,
-    normalizedHeaderGroups.value,
-    normalizedNextConfigs,
-    sheetViewSettings.value,
-  ).length
-  columnConfigs.value = normalizedNextConfigs
+  const willHaveColumnNoteEntityRow = hasColumnNoteEntityRow.value || nextNote !== ''
+  const nextHeaderRowCount = getSheetHeaderRowCountForColumnNoteEntity(willHaveColumnNoteEntityRow)
   const nextRows = remapRowsFormulaReferencesForHeaderRowCountChange(
     rows.value,
-    previousFormulaHeaderRowCount,
-    nextFormulaHeaderRowCount,
+    previousHeaderRowCount,
+    nextHeaderRowCount,
   )
+  columnConfigs.value = normalizedNextConfigs
   if (nextRows !== rows.value) {
     rows.value = nextRows
   }
-  const notePrefixRowIndex = normalizedHeaderGroups.value.length + 1
-  const nextPrefixRows = sheetHeaderPrefixRows.value.map((row) => normalizeRow(row, columnHeaders.value))
-  while (nextPrefixRows.length <= notePrefixRowIndex) {
-    nextPrefixRows.push(createEmptyRow(columnHeaders.value.length))
+  remapDocumentAnchorsForHeaderRowCountChange(previousHeaderRowCount, nextHeaderRowCount)
+  if (willHaveColumnNoteEntityRow) {
+    materializeColumnNotePrefixRow({ [columnIndex]: nextNote })
   }
-  nextPrefixRows[notePrefixRowIndex][columnIndex] = nextNote
-  sheetHeaderPrefixRows.value = nextPrefixRows
   return true
 }
 
@@ -9421,16 +10415,121 @@ function shouldDeferCellSelectionForDrag(event: MouseEvent) {
   )
 }
 
-function stopNativeCellSelectionForDeferredDrag(
-  event: MouseEvent,
-  controller?: CellMouseSelectionController,
-) {
+function disableNativeCellSelection(controller?: CellMouseSelectionController) {
   if (controller) {
     controller.row = false
     controller.column = false
     controller.cell = false
   }
+}
+
+function stopNativeCellSelectionForDeferredDrag(
+  event: MouseEvent,
+  controller?: CellMouseSelectionController,
+) {
+  disableNativeCellSelection(controller)
   event.stopImmediatePropagation()
+}
+
+function isCellLinkOpenMouseEvent(event: MouseEvent) {
+  return event.button === 0 && (event.ctrlKey || event.metaKey) && !event.altKey
+}
+
+function clearFormulaReferenceInteractionState() {
+  finishFormulaReferenceRange()
+  clearFormulaReferencePreviewRange()
+  clearFormulaReferenceReplacementSpan()
+  clearFormulaReferencePointerDownReset()
+  formulaReferencePointerDown = false
+}
+
+function clearCellLinkOpenPointerGuard() {
+  window.removeEventListener('mousemove', handleCellLinkOpenPointerGuardEvent, true)
+  window.removeEventListener('mouseover', handleCellLinkOpenPointerGuardEvent, true)
+  window.removeEventListener('mouseup', handleCellLinkOpenPointerGuardEvent, true)
+  window.removeEventListener('click', handleCellLinkOpenPointerGuardEvent, true)
+  if (cellLinkOpenPointerGuardTimer != null) {
+    window.clearTimeout(cellLinkOpenPointerGuardTimer)
+    cellLinkOpenPointerGuardTimer = null
+  }
+  cellLinkOpenPointerGuardActive = false
+}
+
+function handleCellLinkOpenPointerGuardEvent(event: MouseEvent) {
+  if (!cellLinkOpenPointerGuardActive) {
+    return
+  }
+
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  if (event.type === 'mouseup' || event.type === 'click' || event.buttons === 0) {
+    clearCellLinkOpenPointerGuard()
+  }
+}
+
+function beginCellLinkOpenPointerGuard() {
+  clearCellLinkOpenPointerGuard()
+  cellLinkOpenPointerGuardActive = true
+  window.addEventListener('mousemove', handleCellLinkOpenPointerGuardEvent, true)
+  window.addEventListener('mouseover', handleCellLinkOpenPointerGuardEvent, true)
+  window.addEventListener('mouseup', handleCellLinkOpenPointerGuardEvent, true)
+  window.addEventListener('click', handleCellLinkOpenPointerGuardEvent, true)
+  cellLinkOpenPointerGuardTimer = window.setTimeout(() => {
+    clearCellLinkOpenPointerGuard()
+  }, 1200)
+}
+
+function selectCellForLinkOpen(gridRowIndex: number, columnIndex: number) {
+  const hotColumn = toHotColumnIndex(columnIndex)
+  if (gridRowIndex < 0 || hotColumn < 0) {
+    return
+  }
+
+  clearFormulaReferenceInteractionState()
+  if (formulaBarFocused.value) {
+    commitFormulaBarDraft()
+    blurFormulaBarInput()
+  }
+
+  const editor = getActiveOpenedEditor()
+  if (editor && typeof editor.finishEditing === 'function') {
+    editor.finishEditing(false)
+  }
+
+  const applySelection = () => {
+    const hot = getHotInstance()
+    if (hot && !hot.isDestroyed) {
+      hot.selectCell(gridRowIndex, hotColumn, gridRowIndex, hotColumn, true, false)
+      hot.listen()
+    } else {
+      setFormulaBarGridCell(gridRowIndex, columnIndex)
+    }
+    syncColumnMarkerSelection()
+    refreshContextMenuFallbackSelectionState()
+  }
+
+  applySelection()
+  window.setTimeout(applySelection, 0)
+}
+
+function openCellLinkFromMouseEvent(
+  event: MouseEvent,
+  controller: CellMouseSelectionController,
+  link: SheetCellLink | null,
+  gridRowIndex: number,
+  columnIndex: number,
+) {
+  if (!link || !isCellLinkOpenMouseEvent(event)) {
+    return false
+  }
+
+  disableNativeCellSelection(controller)
+  event.preventDefault()
+  event.stopImmediatePropagation()
+  selectCellForLinkOpen(gridRowIndex, columnIndex)
+  beginCellLinkOpenPointerGuard()
+  openCellLink(link)
+  return true
 }
 
 function clearDeferredCellSelectionState() {
@@ -9598,6 +10697,13 @@ function handleBeforeCellMouseDown(
 
   if (isSheetHeaderGridRow(coords.row)) {
     const headerLevel = getSheetHeaderGridLevel(anchor.row)
+    const headerLink = headerLevel === columnHeaderLevel.value
+      ? getCellLinkAt(anchor.documentRow, anchor.column) ?? getColumnHeaderLink(anchor.column)
+      : null
+    if (openCellLinkFromMouseEvent(event, controller, headerLink, anchor.row, anchor.column)) {
+      return
+    }
+
     if (
       event.button === 0
       && insertFormulaReferenceText(getCellReferenceLabelForSheetRow(anchor.documentRow, anchor.column))
@@ -9607,15 +10713,6 @@ function handleBeforeCellMouseDown(
       return
     }
 
-    if (headerLevel === columnHeaderLevel.value && (event.ctrlKey || event.metaKey)) {
-      const headerLink = getCellLinkAt(anchor.documentRow, anchor.column) ?? getColumnHeaderLink(anchor.column)
-      if (headerLink) {
-        event.preventDefault()
-        event.stopPropagation()
-        openCellLink(headerLink)
-        return
-      }
-    }
     if (shouldDeferCellSelectionForDrag(event)) {
       beginDeferredCellSelectionForDrag(event, coords)
       stopNativeCellSelectionForDeferredDrag(event, controller)
@@ -9639,8 +10736,13 @@ function handleBeforeCellMouseDown(
     stopNativeCellSelectionForDeferredDrag(event, controller)
     return
   }
+  const link = getCellLinkAt(anchor.documentRow, anchor.column)
+  if (openCellLinkFromMouseEvent(event, controller, link, anchor.row, anchor.column)) {
+    return
+  }
   if (beginFormulaReferenceRange(dataRow, anchor.column)) {
     stopFormulaReferenceCellSelection(event, controller)
+    return
   }
 }
 
@@ -9650,6 +10752,13 @@ function handleBeforeCellMouseOver(
   _td: HTMLTableCellElement,
   controller: CellMouseSelectionController,
 ) {
+  if (cellLinkOpenPointerGuardActive) {
+    disableNativeCellSelection(controller)
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    return
+  }
+
   if (deferredCellSelectionState) {
     if (
       coords.row !== deferredCellSelectionState.startRow
@@ -9683,7 +10792,20 @@ function handleBeforeCellMouseOver(
   stopFormulaReferenceCellSelection(event, controller)
 }
 
-function handleBeforeCellMouseUp(event: MouseEvent, coords: { row: number; col: number }) {
+function handleBeforeCellMouseUp(
+  event: MouseEvent,
+  coords: { row: number; col: number },
+  _td: HTMLTableCellElement,
+  controller: CellMouseSelectionController,
+) {
+  if (cellLinkOpenPointerGuardActive) {
+    disableNativeCellSelection(controller)
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    clearCellLinkOpenPointerGuard()
+    return
+  }
+
   if (finishDeferredCellSelectionFromCell(event, coords)) {
     return
   }
@@ -9708,16 +10830,6 @@ function handleHeaderMouseDown(event: MouseEvent, coords: { row: number; col: nu
   const dataRow = coords.row >= 0 ? getDataRowIndex(coords.row) : -1
   if (dataRow >= 0 && column >= 0 && event.button === 0 && isFormulaReferencePickMode()) {
     markFormulaReferencePointerDown()
-    return
-  }
-
-  if (dataRow >= 0 && column >= 0 && (event.ctrlKey || event.metaKey)) {
-    const link = getCellLinkAt(getDocumentRowIndex(dataRow), column)
-    if (link) {
-      event.preventDefault()
-      event.stopPropagation()
-      openCellLink(link)
-    }
     return
   }
 
@@ -10137,26 +11249,33 @@ async function applySheetSettings() {
   }
   const previousColumnConfigs = columnConfigs.value
   const previousRows = rows.value
+  const previousCellMeta = cellMeta.value
+  const previousColumnEntityIds = columnEntityIds.value
+  const previousHeaderRowEntityIds = headerRowEntityIds.value
+  const previousDataRowEntityIds = dataRowEntityIds.value
+  const previousEntityCells = entityCells.value
+  const previousMergedCells = mergedCells.value
+  const previousSheetHeaderPrefixRows = sheetHeaderPrefixRows.value
 
   const paginationChanged = (
     sheetViewSettings.value.pagination.enabled !== nextSettings.pagination.enabled
     || sheetViewSettings.value.pagination.page_size !== nextSettings.pagination.page_size
   )
-  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
-  const nextFormulaHeaderRowCount = getFormulaHeaderRowsForDocument(
-    columnHeaders.value,
-    normalizedHeaderGroups.value,
-    normalizeColumnConfigs(columnConfigs.value, columnHeaders.value),
-    nextSettings,
-  ).length
+  const previousHeaderRowCount = sheetHeaderRowCount.value
+  const willHaveColumnNoteEntityRow = shouldHaveColumnNoteEntityRowForSettings(nextSettings)
+  const nextHeaderRowCount = getSheetHeaderRowCountForSettings(nextSettings)
   const nextRows = remapRowsFormulaReferencesForHeaderRowCountChange(
     rows.value,
-    previousFormulaHeaderRowCount,
-    nextFormulaHeaderRowCount,
+    previousHeaderRowCount,
+    nextHeaderRowCount,
   )
 
   if (nextRows !== rows.value) {
     rows.value = nextRows
+  }
+  remapDocumentAnchorsForHeaderRowCountChange(previousHeaderRowCount, nextHeaderRowCount)
+  if (willHaveColumnNoteEntityRow && !hasMaterializedColumnNoteRow.value) {
+    materializeColumnNotePrefixRow()
   }
   sheetViewSettings.value = nextSettings
   if (columnFiltersChanged) {
@@ -10180,6 +11299,13 @@ async function applySheetSettings() {
       sheetViewSettings.value = previousSettings
       columnConfigs.value = previousColumnConfigs
       rows.value = previousRows
+      cellMeta.value = previousCellMeta
+      columnEntityIds.value = previousColumnEntityIds
+      headerRowEntityIds.value = previousHeaderRowEntityIds
+      dataRowEntityIds.value = previousDataRowEntityIds
+      entityCells.value = previousEntityCells
+      mergedCells.value = previousMergedCells
+      sheetHeaderPrefixRows.value = previousSheetHeaderPrefixRows
       refreshGridStructure()
       await refreshComputedRowHeights()
       await updateSheetViewportHeight()
@@ -10264,6 +11390,14 @@ function loadSheetDocument(document: SheetDocument) {
       formulaDisplayForWidths,
     ))
   rows.value = normalizedRows
+  initializeSheetEntitiesFromDocument(
+    document,
+    normalizedHeaders,
+    sheetHeaderRowCount.value,
+    columnHeaderLevel.value,
+    normalizedRows,
+    cellMeta.value,
+  )
   refreshFormulaDisplayState()
 
   const hot = getHotInstance()
@@ -10650,6 +11784,7 @@ function sortColumnLocally(columnIndex: number, direction: SortDirection) {
     rowIndexMap.set(item.rowIndex, nextIndex)
   })
   rows.value = decoratedRows.map((item) => item.row)
+  dataRowEntityIds.value = decoratedRows.map((item) => dataRowEntityIds.value[item.rowIndex] ?? createSheetEntityId('row_sort'))
   remapVisiblePageCellMetaRows(rowIndexMap)
 
   const hot = getHotInstance()
@@ -11948,6 +13083,7 @@ function markRegistrationSubmittedAtAsAuto(nextMeta: SheetCellMetaMap, documentR
   if (normalized) {
     nextMeta[key] = normalized
   }
+  updateEntityCellEntry(documentRow, columnIndex, (entry) => replaceEntityCellMeta(entry, normalized))
 }
 
 function clearAutoRegistrationSubmittedAtStyle(nextMeta: SheetCellMetaMap, documentRow: number, columnIndex: number) {
@@ -11965,6 +13101,7 @@ function clearAutoRegistrationSubmittedAtStyle(nextMeta: SheetCellMetaMap, docum
   } else {
     delete nextMeta[key]
   }
+  updateEntityCellEntry(documentRow, columnIndex, (entityEntry) => replaceEntityCellMeta(entityEntry, normalized))
   return true
 }
 
@@ -12226,9 +13363,9 @@ function handleAfterCreateRow(index = 0, amount = 1) {
   const documentDataIndex = getDocumentRowIndex(dataIndex)
   const documentGridRow = sheetHeaderRowCount.value + documentDataIndex
   const insertionTemplate = pendingRowInsertionTemplate
-  shiftCellMetaRows(documentGridRow, amount)
+  insertDocumentGridRows(documentGridRow, amount)
+  insertDataEntityRows(dataIndex, amount)
   applyRowInsertionTemplateCellStyles(documentGridRow, amount, insertionTemplate)
-  insertMergedCellRows(documentGridRow, amount)
   syncRowsFromGrid()
   remapFormulaReferencesInRows((rowIndex) => (rowIndex >= documentDataIndex ? rowIndex + amount : rowIndex))
   if (applyDefaultRegistrationSubmittedAtRows(dataIndex, amount, documentDataIndex)) {
@@ -12240,8 +13377,8 @@ function handleAfterCreateRow(index = 0, amount = 1) {
 function handleAfterRemoveRow(index = 0, amount = 1) {
   const dataIndex = Math.max(0, getDataRowIndex(index))
   const documentDataIndex = getDocumentRowIndex(dataIndex)
-  removeCellMetaRows(sheetHeaderRowCount.value + documentDataIndex, amount)
-  removeMergedCellRows(sheetHeaderRowCount.value + documentDataIndex, amount)
+  removeDataEntityRows(dataIndex, amount)
+  removeDocumentGridRows(sheetHeaderRowCount.value + documentDataIndex, amount)
   syncRowsFromGrid()
   const endIndex = documentDataIndex + amount
   remapFormulaReferencesInRows((rowIndex) => {
@@ -12270,6 +13407,7 @@ function handleAfterCreateCol(hotIndex: number, amount: number) {
   )
   columnWidths.value = nextWidths
   columnConfigs.value = applyColumnInsertionTemplate(nextHeaders, index, amount, insertionTemplate)
+  insertColumnEntityIds(index, amount)
   shiftCellMetaColumns(index, amount)
   applyColumnInsertionTemplateCellStyles(index, amount, insertionTemplate)
   insertMergedCellColumns(index, amount)
@@ -12298,6 +13436,7 @@ function handleAfterRemoveCol(hotIndex: number, amount: number) {
     ? nextWidths.slice(0, columnHeaders.value.length)
     : [getAdaptiveColumnWidth(columnHeaders.value[0])]
   columnConfigs.value = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
+  removeColumnEntityIds(index, amount)
   removeCellMetaColumns(index, amount)
   removeMergedCellColumns(index, amount)
   refreshGridStructure()
@@ -12684,7 +13823,7 @@ function isSameFormulaBarCell(rowIndex: number, columnIndex: number) {
 }
 
 function isFormulaReferencePickMode() {
-  return !!formulaBarCell.value && formulaBarFocused.value && formulaBarDraft.value.trimStart().startsWith('=')
+  return !!formulaBarCell.value && formulaBarFocused.value && formulaBarDraft.value.startsWith('=')
 }
 
 function getSheetFormulaRowIndex(dataRowIndex: number) {
@@ -13073,7 +14212,7 @@ function getFormulaReferenceInsertionTarget(): FormulaReferenceInsertionTarget |
   const editor = getActiveOpenedEditor()
   if (editor) {
     const currentValue = getActiveEditorDraft(editor)
-    if (currentValue.trimStart().startsWith('=')) {
+    if (currentValue.startsWith('=')) {
       const selection = normalizeTextSelection(getEditorTextInput(editor), currentValue)
       return {
         kind: 'inline',
@@ -13102,7 +14241,7 @@ function isInlineFormulaReferencePickMode() {
   if (!editor) {
     return false
   }
-  return getActiveEditorDraft(editor).trimStart().startsWith('=')
+  return getActiveEditorDraft(editor).startsWith('=')
 }
 
 function stopFormulaReferenceCellSelection(event: MouseEvent, controller?: CellMouseSelectionController) {
@@ -14000,7 +15139,11 @@ function setSheetCellRawValueAtDocumentCell(documentRow: number, columnIndex: nu
   }
 
   if (gridRow < sheetHeaderRowCount.value) {
-    return applySheetHeaderGridChange(gridRow, columnIndex, value)
+    const changed = applySheetHeaderGridChange(gridRow, columnIndex, value)
+    if (changed) {
+      setEntityCellRawValue(documentRow, columnIndex, value)
+    }
+    return changed
   }
 
   const dataRow = getDataRowIndex(gridRow)
@@ -14014,6 +15157,7 @@ function setSheetCellRawValueAtDocumentCell(documentRow: number, columnIndex: nu
   }
   nextRows[dataRow][columnIndex] = normalizeCellInputValueForColumn(value, columnIndex)
   rows.value = nextRows
+  setEntityCellRawValue(documentRow, columnIndex, nextRows[dataRow][columnIndex])
   return true
 }
 
@@ -14063,7 +15207,9 @@ function unmergeSelectedCells() {
 }
 
 function getCellMetaAt(documentRow: number, columnIndex: number) {
-  return cellMeta.value[createCellMetaKey(documentRow, columnIndex)] ?? null
+  return getEntityCellMeta(getEntityCellAt(documentRow, columnIndex))
+    ?? cellMeta.value[createCellMetaKey(documentRow, columnIndex)]
+    ?? null
 }
 
 function getCellLinkAt(documentRow: number, columnIndex: number) {
@@ -14089,6 +15235,11 @@ function updateCellMetaEntry(
   const nextMeta = { ...cellMeta.value }
   const key = createCellMetaKey(targetRow, targetColumn)
   const nextEntry = normalizeCellMetaEntry(updater({ ...(nextMeta[key] ?? {}) }))
+  updateEntityCellEntry(targetRow, targetColumn, (entry) => {
+    const currentMeta = getEntityCellMeta(entry) ?? nextMeta[key] ?? {}
+    const updatedMeta = normalizeCellMetaEntry(updater({ ...currentMeta }))
+    return replaceEntityCellMeta(entry, updatedMeta)
+  })
   if (nextEntry) {
     nextMeta[key] = nextEntry
   } else {
@@ -14156,6 +15307,11 @@ function updateCellMetaEntries(
   anchorCells.forEach((cell) => {
     const key = createCellMetaKey(cell.documentRow, cell.column)
     const nextEntry = normalizeCellMetaEntry(updater({ ...(nextMeta[key] ?? {}) }, cell))
+    updateEntityCellEntry(cell.documentRow, cell.column, (entry) => {
+      const currentMeta = getEntityCellMeta(entry) ?? nextMeta[key] ?? {}
+      const updatedMeta = normalizeCellMetaEntry(updater({ ...currentMeta }, cell))
+      return replaceEntityCellMeta(entry, updatedMeta)
+    })
     if (nextEntry) {
       nextMeta[key] = nextEntry
     } else {
@@ -14404,12 +15560,20 @@ function clearCellStyleDialog() {
   closeCellStyleDialog()
 }
 
-function openCellLink(link: SheetCellLink | null) {
-  if (!link?.url || typeof window === 'undefined') {
+type CodeyunLinkVariant = 'local' | 'public'
+
+const CODEYUN_PUBLIC_HOST = 'code4101.com'
+
+function openUrlInNewWindow(url: string) {
+  if (!url || typeof window === 'undefined') {
     return
   }
 
-  window.open(link.url, '_blank', 'noopener,noreferrer')
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+function openCellLink(link: SheetCellLink | null) {
+  openUrlInNewWindow(link?.url ?? '')
 }
 
 function getSelectedColumnHeaderCellIndex() {
@@ -14424,12 +15588,35 @@ function getSelectedColumnHeaderCellIndex() {
 }
 
 function hasSingleLinkTargetSelection() {
-  return !!getSingleSelectedSheetCell()
+  return !!getSelectedLinkTarget()
+}
+
+function getSelectedLinkTarget(): LinkDialogTarget | null {
+  const cell = getSingleSelectedSheetCell()
+  if (!cell) {
+    return null
+  }
+
+  if (cell.row === columnHeaderLevel.value) {
+    return { kind: 'column_header', column: cell.column }
+  }
+  return { kind: 'cell', row: cell.documentRow, column: cell.column }
+}
+
+function getLinkTargetLink(target: LinkDialogTarget | null) {
+  if (!target) {
+    return null
+  }
+  if (target.kind === 'cell') {
+    return getCellLinkAt(target.row, target.column)
+  }
+
+  const headerDocumentRow = getDocumentGridRowIndex(columnHeaderLevel.value)
+  return getCellLinkAt(headerDocumentRow, target.column) ?? getColumnHeaderLink(target.column)
 }
 
 function getSelectedLinkTargetLink() {
-  const cell = getSingleSelectedSheetCell()
-  return cell ? getCellLinkAt(cell.documentRow, cell.column) : null
+  return getLinkTargetLink(getSelectedLinkTarget())
 }
 
 function hasSelectedCellLink() {
@@ -14453,29 +15640,149 @@ function shouldShowLinkContextMenuGroup() {
   )
 }
 
+function parseSelectedCellLinkUrl() {
+  const link = getSelectedLinkTargetLink()
+  if (!link?.url || typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return new URL(link.url, window.location.href)
+  } catch {
+    return null
+  }
+}
+
+function getUrlHostname(url: URL) {
+  return url.hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
+}
+
+function isLocalhostCodeyunHost(hostname: string) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
+}
+
+function isLanIpv4Host(hostname: string) {
+  const parts = hostname.split('.').map((part) => Number(part))
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false
+  }
+  const [first, second] = parts
+  return (
+    first === 10
+    || first === 192
+    || (first === 172 && second >= 16 && second <= 31)
+  )
+}
+
+function isSwitchableCodeyunHost(hostname: string) {
+  return (
+    isLocalhostCodeyunHost(hostname)
+    || isLanIpv4Host(hostname)
+    || hostname === CODEYUN_PUBLIC_HOST
+  )
+}
+
+function isSwitchableCodeyunUrl(url: URL) {
+  return (
+    (url.protocol === 'http:' || url.protocol === 'https:')
+    && isSwitchableCodeyunHost(getUrlHostname(url))
+  )
+}
+
+function getCurrentLocationUrl() {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  try {
+    return new URL(window.location.href)
+  } catch {
+    return null
+  }
+}
+
+function getLocalCodeyunPort(sourceUrl: URL) {
+  if (sourceUrl.port) {
+    return sourceUrl.port
+  }
+
+  const currentUrl = getCurrentLocationUrl()
+  if (currentUrl && isSwitchableCodeyunHost(getUrlHostname(currentUrl)) && currentUrl.port) {
+    return currentUrl.port
+  }
+  return '5173'
+}
+
+function buildCodeyunLinkVariantUrl(variant: CodeyunLinkVariant) {
+  const sourceUrl = parseSelectedCellLinkUrl()
+  if (!sourceUrl || !isSwitchableCodeyunUrl(sourceUrl)) {
+    return ''
+  }
+
+  const targetUrl = new URL(sourceUrl.toString())
+  if (variant === 'local') {
+    const currentUrl = getCurrentLocationUrl()
+    targetUrl.protocol = currentUrl && isLocalhostCodeyunHost(getUrlHostname(currentUrl))
+      ? currentUrl.protocol
+      : 'http:'
+    targetUrl.hostname = 'localhost'
+    targetUrl.port = getLocalCodeyunPort(sourceUrl)
+    return targetUrl.toString()
+  }
+
+  targetUrl.protocol = 'https:'
+  targetUrl.hostname = CODEYUN_PUBLIC_HOST
+  targetUrl.port = ''
+  return targetUrl.toString()
+}
+
+function canOpenSelectedCellLinkVariant(variant: CodeyunLinkVariant) {
+  return !!buildCodeyunLinkVariantUrl(variant)
+}
+
+function openSelectedCellLinkVariant(variant: CodeyunLinkVariant) {
+  openUrlInNewWindow(buildCodeyunLinkVariantUrl(variant))
+}
+
 function openSelectedCellLink() {
-  const cell = getSingleSelectedSheetCell()
-  if (!cell) {
+  openCellLink(getSelectedLinkTargetLink())
+}
+
+function openSelectedCellLinkDefault() {
+  if (hasSelectedCellLink()) {
+    openSelectedCellLink()
     return
   }
-  openCellLink(getCellLinkAt(cell.documentRow, cell.column))
+
+  openSelectedCellLinkDialog()
+}
+
+async function copySelectedCellLink() {
+  const link = getSelectedLinkTargetLink()
+  if (!link?.url) {
+    return
+  }
+
+  try {
+    await copyTextToClipboard(link.url)
+    ElMessage.success('已复制超链接')
+  } catch (error) {
+    console.warn('Failed to copy cell link:', error)
+    ElMessage.error('复制超链接失败')
+  }
 }
 
 function openSelectedCellLinkDialog() {
   if (!ensureCanEditConfig()) {
     return
   }
-  const cell = getSingleSelectedSheetCell()
-  if (!cell) {
+  const target = getSelectedLinkTarget()
+  if (!target) {
     return
   }
 
-  cellLinkDialogTarget.value = {
-    kind: 'cell',
-    row: cell.documentRow,
-    column: cell.column,
-  }
-  cellLinkDraftUrl.value = getCellLinkAt(cell.documentRow, cell.column)?.url ?? ''
+  cellLinkDialogTarget.value = target
+  cellLinkDraftUrl.value = getLinkTargetLink(target)?.url ?? ''
   cellLinkDialogVisible.value = true
 }
 
@@ -14507,6 +15814,7 @@ function applyCellLinkDialog() {
     if (target.kind === 'cell') {
       setCellLink(target.row, target.column, '')
     } else {
+      setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, '')
       setColumnHeaderLink(target.column, '')
     }
     closeCellLinkDialog()
@@ -14516,6 +15824,7 @@ function applyCellLinkDialog() {
   if (target.kind === 'cell') {
     setCellLink(target.row, target.column, normalizedUrl)
   } else {
+    setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, normalizedUrl)
     setColumnHeaderLink(target.column, normalizedUrl)
   }
   closeCellLinkDialog()
@@ -15073,7 +16382,7 @@ function applyColumnSettings() {
   const currentNormalizedConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
   const nextNormalizedConfigs = { ...currentNormalizedConfigs }
   const nextWidths = [...columnWidths.value]
-  const previousFormulaHeaderRowCount = getCurrentFormulaHeaderRows().length
+  const previousHeaderRowCount = sheetHeaderRowCount.value
   let configChanged = false
   let widthChanged = false
   let normalizedValuesChanged = false
@@ -15144,13 +16453,8 @@ function applyColumnSettings() {
   const nextRows = configChanged
     ? remapRowsFormulaReferencesForHeaderRowCountChange(
       rows.value,
-      previousFormulaHeaderRowCount,
-      getFormulaHeaderRowsForDocument(
-        columnHeaders.value,
-        normalizedHeaderGroups.value,
-        normalizeColumnConfigs(nextNormalizedConfigs, columnHeaders.value),
-        sheetViewSettings.value,
-      ).length,
+      previousHeaderRowCount,
+      getSheetHeaderRowCountForColumnNoteEntity(hasColumnNoteEntityRow.value),
     )
     : rows.value
 
@@ -15728,7 +17032,7 @@ function insertColumnFromSelection(side: 'left' | 'right') {
   }
 }
 
-function insertRowFromSelection(side: 'above' | 'below') {
+function insertRowFromSelection(side: 'above' | 'below', amount = 1) {
   if (!ensureCanEditData()) {
     return
   }
@@ -15739,6 +17043,7 @@ function insertRowFromSelection(side: 'above' | 'below') {
   }
 
   const bounds = getSelectionRowBounds()
+  const rowAmount = normalizeRowInsertAmount(amount)
   const targetDataIndex = bounds
     ? (side === 'above' ? bounds.start : bounds.end + 1)
     : rows.value.length
@@ -15748,7 +17053,7 @@ function insertRowFromSelection(side: 'above' | 'below') {
 
   pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
   try {
-    hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
+    hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), rowAmount)
   } finally {
     pendingRowInsertionTemplate = null
   }
@@ -15843,6 +17148,7 @@ function restoreHiddenColumn(header: string) {
   const restoreIndex = normalizeNonNegativeInt(columnConfigs.value[header]?.restore_index, -1)
   let nextHeaders = [...columnHeaders.value]
   let nextWidths = [...columnWidths.value]
+  let nextColumnEntityIds = [...columnEntityIds.value]
   let nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
 
   if (restoreIndex >= 0 && currentIndex !== restoreIndex) {
@@ -15851,6 +17157,7 @@ function restoreHiddenColumn(header: string) {
     const columnIndexMap = buildMoveIndexMap(columnHeaders.value.length, [currentIndex], targetIndex)
     nextHeaders = reorderItemsByMove(columnHeaders.value, [currentIndex], targetIndex)
     nextWidths = reorderItemsByMove(columnWidths.value, [currentIndex], targetIndex)
+    nextColumnEntityIds = reorderItemsByMove(columnEntityIds.value, [currentIndex], targetIndex)
     nextRows = remapRowsWithFormulaReferenceMaps(rows.value, undefined, columnIndexMap)
   }
 
@@ -15870,6 +17177,7 @@ function restoreHiddenColumn(header: string) {
   }
   columnHeaders.value = nextHeaders
   columnWidths.value = nextWidths
+  columnEntityIds.value = nextColumnEntityIds
   rows.value = nextRows
   columnConfigs.value = nextConfigs
   refreshGridStructure()
@@ -16567,6 +17875,7 @@ onBeforeUnmount(() => {
     readOnlyActionWarningSuppressTimer = null
   }
   clearDeferredCellSelectionState()
+  clearCellLinkOpenPointerGuard()
   resetSheetFilterReloadState()
   clearUserMatchRunPollTimer()
   finishFormulaReferenceRange()
@@ -16896,7 +18205,7 @@ defineExpose({
         :render-all-rows="false"
         :height="sheetGridHeight"
         :stretch-h="'none'"
-        :selection-mode="'multiple'"
+        :selection-mode="'range'"
         :outside-click-deselects="false"
         :theme-name="'ht-theme-main'"
         :license-key="'non-commercial-and-evaluation'"
@@ -16918,6 +18227,7 @@ defineExpose({
         :before-on-cell-mouse-down="handleBeforeCellMouseDown"
         :before-on-cell-mouse-over="handleBeforeCellMouseOver"
         :before-on-cell-mouse-up="handleBeforeCellMouseUp"
+        :after-context-menu-show="handleAfterContextMenuShow"
         :after-on-cell-mouse-down="handleHeaderMouseDown"
         :after-begin-editing="handleAfterBeginEditing"
         :before-key-down="handleBeforeKeyDown"
@@ -17114,6 +18424,7 @@ defineExpose({
         <div class="sheet-settings-inline-field">
           <div class="sheet-settings-label">字段备注</div>
           <el-select v-model="sheetSettingsDraft.column_note_display" class="sheet-settings-inline-select">
+            <el-option label="无" value="none" />
             <el-option label="悬停展示" value="hover" />
             <el-option label="备注行展示" value="row" />
           </el-select>
@@ -17604,7 +18915,6 @@ defineExpose({
     >
       <div class="sheet-settings-form">
         <div class="sheet-settings-field">
-          <div class="sheet-settings-label">链接地址</div>
           <el-input
             v-model="cellLinkDraftUrl"
             placeholder="https://..."
@@ -17809,6 +19119,63 @@ defineExpose({
 </template>
 
 <style scoped>
+:global(.handsontable.htContextMenu table tbody tr td.htCustomMenuRenderer:not(.htSubmenu) > .htItemWrapper:empty) {
+  display: none;
+}
+
+:global(.note-sheet-row-insert-menu) {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 170px;
+  min-height: 26px;
+  margin-inline: calc(2 * var(--ht-gap-size, 4px));
+  font: inherit;
+}
+
+:global(.note-sheet-row-insert-menu--submenu) {
+  padding-inline-end: calc(var(--ht-icon-size, 16px) + var(--ht-gap-size, 4px) * 3);
+}
+
+:global(.note-sheet-row-insert-menu-action) {
+  flex: 1 1 auto;
+  min-width: 72px;
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+:global(.note-sheet-row-insert-menu-action:hover) {
+  color: #1d4ed8;
+}
+
+:global(.note-sheet-row-insert-menu-input) {
+  flex: 0 0 56px;
+  width: 56px;
+  height: 26px;
+  box-sizing: border-box;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 0 6px;
+  background: #fff;
+  color: #111827;
+  font: inherit;
+  line-height: 24px;
+}
+
+:global(.note-sheet-row-insert-menu-input:focus) {
+  border-color: #2563eb;
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
+}
+
 .note-sheet-workspace {
   box-sizing: border-box;
   display: flex;

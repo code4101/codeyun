@@ -5,7 +5,7 @@
       <h2>{{ emptyStateTitle }}</h2>
       <p>{{ emptyStateDescription }}</p>
       <div class="empty-actions">
-        <el-button type="primary" @click="router.push('/cluster/tasks')">去设备任务</el-button>
+        <el-button type="primary" @click="router.push('/cluster/runtime')">去运行管理</el-button>
       </div>
     </section>
 
@@ -1249,9 +1249,9 @@ const emptyStateTitle = computed(() =>
 const emptyStateDescription = computed(() => {
   if (isLockedDeviceMissing.value) {
     const targetPath = normalizedFixedRootPath.value || '固定目录';
-    return `当前页面固定使用设备 ${props.fixedDeviceId}，但当前账号下没有找到对应入口。先到设备任务里添加或授权该设备，再回来加载 ${targetPath} 中的图片和标注文件。`;
+    return `当前页面固定使用设备 ${props.fixedDeviceId}，但当前账号下没有找到对应入口。先到运行管理里添加或授权该设备，再回来加载 ${targetPath} 中的图片和标注文件。`;
   }
-  return '先到设备任务里添加本地或远程设备入口，再从设备上下文里加载真实目录中的图片和标注文件。';
+  return '先到运行管理里添加本地或远程设备入口，再从设备上下文里加载真实目录中的图片和标注文件。';
 });
 const searchPlaceholder = computed(() =>
   includeAnnotationContentSearch.value ? '按文件名、路径或标注正文筛选' : '按文件名或相对路径筛选'
@@ -2397,7 +2397,7 @@ const mapAnnotationItem = (record: DeviceImageRecord): DeviceAnnotationItem | nu
   }
 
   return {
-    id: record.id,
+    id: String(record.id),
     name: record.name,
     relativePath: record.relative_path,
     folderPath: record.folder_path || '',

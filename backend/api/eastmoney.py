@@ -20,6 +20,7 @@ from backend.core.stock import (
     list_latest_position_snapshots,
     list_sync_runs,
     list_trade_records,
+    open_trade_account_page,
     read_trade_snapshot,
     refresh_eastmoney_sheet_workbook,
     snapshot_to_dict,
@@ -51,6 +52,16 @@ def get_trade_snapshot(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"读取东方财富交易页失败：{exc}") from exc
+
+
+@router.post("/trade-account/open")
+def open_eastmoney_trade_account_page():
+    try:
+        return open_trade_account_page()
+    except EastmoneyTradeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"打开东方财富交易页失败：{exc}") from exc
 
 
 @router.post("/sync")

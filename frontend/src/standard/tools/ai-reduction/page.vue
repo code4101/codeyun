@@ -434,7 +434,7 @@ const form = reactive<PersistedFormState>({
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const documents = ref<ReductionDocumentRead[]>([])
-const selectedDocumentId = ref('')
+const selectedDocumentId = ref<number | null>(null)
 const detail = ref<ReductionDocumentDetailResponse | null>(null)
 const indexResult = ref<ReductionDocumentIndexResponse | null>(null)
 const queryResult = ref<ReductionDocumentQueryResponse | null>(null)
@@ -517,11 +517,11 @@ async function loadDocuments(options: { keepSelection: boolean; preserveOutputs:
     const items = await fetchReductionDocuments()
     documents.value = items
     const keepCurrent = options.keepSelection && items.some(item => item.id === selectedDocumentId.value)
-    const nextId = keepCurrent ? selectedDocumentId.value : (items[0]?.id || '')
+    const nextId = keepCurrent ? selectedDocumentId.value : (items[0]?.id ?? null)
     if (nextId !== selectedDocumentId.value) {
       selectedDocumentId.value = nextId
     }
-    if (selectedDocumentId.value) {
+    if (selectedDocumentId.value != null) {
       await loadDetail(selectedDocumentId.value, { preserveOutputs: options.preserveOutputs })
     } else {
       detail.value = null
@@ -535,8 +535,8 @@ async function loadDocuments(options: { keepSelection: boolean; preserveOutputs:
   }
 }
 
-async function loadDetail(documentId: string, options: { preserveOutputs: boolean } = { preserveOutputs: false }) {
-  if (!documentId) {
+async function loadDetail(documentId: number | null, options: { preserveOutputs: boolean } = { preserveOutputs: false }) {
+  if (documentId == null) {
     detail.value = null
     return
   }
@@ -561,8 +561,8 @@ function syncDocumentInList(document: ReductionDocumentRead) {
   }
 }
 
-async function refreshCurrentDetailSilently(documentId: string) {
-  if (!documentId || progressPollInFlight) {
+async function refreshCurrentDetailSilently(documentId: number) {
+  if (progressPollInFlight) {
     return
   }
   progressPollInFlight = true
@@ -580,7 +580,7 @@ async function refreshCurrentDetailSilently(documentId: string) {
   }
 }
 
-function startProgressPolling(documentId: string) {
+function startProgressPolling(documentId: number) {
   stopProgressPolling()
   void refreshCurrentDetailSilently(documentId)
   progressPollTimer = window.setInterval(() => {
@@ -595,8 +595,8 @@ function stopProgressPolling() {
   }
 }
 
-async function selectDocument(documentId: string) {
-  if (!documentId || documentId === selectedDocumentId.value) {
+async function selectDocument(documentId: number) {
+  if (documentId === selectedDocumentId.value) {
     return
   }
   selectedDocumentId.value = documentId
@@ -705,7 +705,7 @@ async function confirmDeleteDocument(document: ReductionDocumentRead) {
   try {
     await deleteReductionDocument(document.id)
     if (selectedDocumentId.value === document.id) {
-      selectedDocumentId.value = ''
+      selectedDocumentId.value = null
       detail.value = null
       indexResult.value = null
       queryResult.value = null

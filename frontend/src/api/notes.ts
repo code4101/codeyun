@@ -22,6 +22,11 @@ import {
 
 export type NoteDocResourceRole = 'none' | 'deny' | 'viewer' | 'editor' | 'manager';
 export type NoteDocAccessSubjectType = 'anonymous' | 'user';
+export type NoteId = number;
+export type NoteRef = NoteId | string;
+export type NoteKey = string;
+
+export const noteKey = (id: NoteRef | null | undefined): NoteKey => String(id ?? '').trim();
 
 export interface NoteDocAccessCapabilities {
   can_read: boolean;
@@ -51,15 +56,15 @@ export interface NoteDocResourceAccessGrantUpdate {
 }
 
 export interface NoteDocResourceAccessResponse {
-  resource_type: 'note_doc';
-  resource_id: string;
-  public_id: string;
+  resource_type: 'note';
+  resource_id: number;
+  public_id: number;
   access: NoteDocResourceAccess;
   grants: NoteDocResourceAccessGrantItem[];
 }
 
 export interface NoteNode {
-  id: string;
+  id: NoteId;
   numeric_id?: number | null;
   user_id?: number;
   title: string;
@@ -96,8 +101,8 @@ export interface NoteNode {
 
 export interface NoteEdge {
   id: string;
-  source_id: string;
-  target_id: string;
+  source_id: NoteId;
+  target_id: NoteId;
   source_handle?: string;
   target_handle?: string;
   label?: string;
@@ -108,7 +113,7 @@ export interface TabState {
   id: string;
   label: string;
   type: 'galaxy' | 'calendar' | 'list' | 'planet';
-  data?: { noteId: string; mode?: 'planetary' | 'satellite' };
+  data?: { noteId: NoteKey; mode?: 'planetary' | 'satellite' };
   closable: boolean;
 }
 
@@ -130,7 +135,7 @@ export interface NoteFilterRule {
 export interface NoteQueryRequest {
   scope?: {
     mode: 'all' | 'planetary' | 'satellite';
-    seed_note_id?: string;
+    seed_note_id?: NoteRef;
   };
   rules?: NoteFilterRule[];
   order_by?: string;
@@ -164,7 +169,7 @@ export interface NoteTimePointExpr {
 
 export interface NoteProgramMatcher {
   kind: NoteProgramMatcherKind;
-  ids?: string[];
+  ids?: NoteRef[];
   field?: string | null;
   op?: 'eq' | 'neq' | 'in' | 'not_in' | 'contains' | 'not_contains' | 'regex_search' | 'gte' | 'lte' | 'between' | null;
   value?: any;
@@ -191,7 +196,7 @@ export interface NoteProgramChannel {
 export interface NoteProgramRequest {
   executor?: {
     kind: 'scan' | 'component';
-    seed_ids?: string[];
+    seed_ids?: NoteRef[];
     mode?: 'planetary' | 'satellite';
     max_depth?: number | null;
   };
@@ -216,7 +221,7 @@ export interface NoteProgramResponse {
 }
 
 export interface NoteBatchUpdateRequest {
-  ids: string[];
+  ids: NoteRef[];
   patch: {
     private_level?: number;
     weight?: number;
@@ -270,8 +275,8 @@ export interface CodexDiaryImportRunResponse {
   source_user_message_count: number;
   source_assistant_message_count: number;
   created_note_count: number;
-  created_note_ids: string[];
-  duplicate_note_ids: string[];
+  created_note_ids: NoteId[];
+  duplicate_note_ids: NoteId[];
   error_message?: string | null;
   result?: Record<string, any> | null;
   created_notes: NoteNode[];
@@ -337,6 +342,15 @@ const normalizeInteger = (value: unknown, fallback: number = 0) => {
   return fallback;
 };
 
+const normalizeNoteId = (value: unknown): NoteId => normalizeInteger(value, 0);
+const normalizeNoteKey = (value: NoteRef | null | undefined): NoteKey => noteKey(value);
+
+const normalizeNoteDocAccessResponse = (raw: NoteDocResourceAccessResponse): NoteDocResourceAccessResponse => ({
+  ...raw,
+  resource_id: normalizeNoteId(raw.resource_id),
+  public_id: normalizeNoteId(raw.public_id),
+});
+
 export const normalizeNote = (raw: any): NoteNode => ({
   ...raw,
   ...(() => {
@@ -362,7 +376,7 @@ export const normalizeNote = (raw: any): NoteNode => ({
       };
 
     return {
-      id: String(raw.id),
+      id: normalizeNoteId(raw.id),
       numeric_id: raw.numeric_id == null ? null : normalizeInteger(raw.numeric_id, 0) || null,
       created_at: raw.created_at * 1000,
       updated_at: raw.updated_at * 1000,
@@ -441,7 +455,7 @@ export async function updateNoteDoc(
 
 export async function fetchNoteDocAccess(noteRef: string): Promise<NoteDocResourceAccessResponse> {
   const response = await api.get<NoteDocResourceAccessResponse>(`/note-docs/${encodeURIComponent(noteRef)}/access`);
-  return response.data;
+  return normalizeNoteDocAccessResponse(response.data);
 }
 
 export async function updateNoteDocAccess(
@@ -451,14 +465,14 @@ export async function updateNoteDocAccess(
   const response = await api.put<NoteDocResourceAccessResponse>(`/note-docs/${encodeURIComponent(noteRef)}/access`, {
     grants
   });
-  return response.data;
+  return normalizeNoteDocAccessResponse(response.data);
 }
 
 const normalizeEdge = (raw: any): NoteEdge => ({
   ...raw,
   id: String(raw.id),
-  source_id: String(raw.source_id),
-  target_id: String(raw.target_id),
+  source_id: normalizeNoteId(raw.source_id),
+  target_id: normalizeNoteId(raw.target_id),
   created_at: raw.created_at * 1000
 });
 
@@ -467,8 +481,8 @@ const normalizeCodexDiaryImportRun = (raw: any): CodexDiaryImportRunResponse => 
   id: String(raw.id),
   entry_ids: Array.isArray(raw.entry_ids) ? raw.entry_ids.map((id: any) => String(id)) : [],
   entry_snapshot: Array.isArray(raw.entry_snapshot) ? raw.entry_snapshot : [],
-  created_note_ids: Array.isArray(raw.created_note_ids) ? raw.created_note_ids.map((id: any) => String(id)) : [],
-  duplicate_note_ids: Array.isArray(raw.duplicate_note_ids) ? raw.duplicate_note_ids.map((id: any) => String(id)) : [],
+  created_note_ids: Array.isArray(raw.created_note_ids) ? raw.created_note_ids.map((id: any) => normalizeNoteId(id)).filter(Boolean) : [],
+  duplicate_note_ids: Array.isArray(raw.duplicate_note_ids) ? raw.duplicate_note_ids.map((id: any) => normalizeNoteId(id)).filter(Boolean) : [],
   created_notes: Array.isArray(raw.created_notes) ? raw.created_notes.map((note: any) => normalizeNote(note)) : [],
   created_at: raw.created_at * 1000,
   updated_at: raw.updated_at * 1000,
@@ -540,9 +554,10 @@ export const saveCalendarYearMonthMemos = async (
 
 const patchNoteDetails = (detailMap: Record<string, NoteNode>, incomingNotes: NoteNode[]) => {
   incomingNotes.forEach(note => {
-    if (!detailMap[note.id]) return;
-    const existing = detailMap[note.id];
-    detailMap[note.id] = {
+    const key = normalizeNoteKey(note.id);
+    if (!detailMap[key]) return;
+    const existing = detailMap[key];
+    detailMap[key] = {
       ...existing,
       ...note,
       inherited_fields: note.inherited_fields ?? existing.inherited_fields
@@ -1064,7 +1079,7 @@ export const matchNoteProgramMatcherLocally = (
 
   if (normalized.kind === 'all') return true;
   if (normalized.kind === 'none') return false;
-  if (normalized.kind === 'id') return normalizeProgramIds(normalized.ids).includes(note.id);
+  if (normalized.kind === 'id') return normalizeProgramIds(normalized.ids).includes(noteKey(note.id));
   if (normalized.kind === 'field') {
     const field = normalized.field ?? '';
     const fieldValue = getNoteMatcherValue(note, field);
@@ -1491,12 +1506,13 @@ export const useNoteStore = defineStore('notes', () => {
   const mergeNoteSummaries = (incomingNotes: NoteNode[]) => {
     const ids: string[] = [];
     incomingNotes.forEach(note => {
+      const key = normalizeNoteKey(note.id);
       const summary = stripNoteDetail(note);
-      noteMap.value[note.id] = {
-        ...noteMap.value[note.id],
+      noteMap.value[key] = {
+        ...noteMap.value[key],
         ...summary
       };
-      ids.push(note.id);
+      ids.push(key);
     });
     touchNotes(ids);
     return ids;
@@ -1505,13 +1521,14 @@ export const useNoteStore = defineStore('notes', () => {
   const mergeNoteDetails = (incomingNotes: NoteNode[]) => {
     const ids: string[] = [];
     incomingNotes.forEach(note => {
-      const existing = noteDetailMap.value[note.id];
-      noteDetailMap.value[note.id] = {
+      const key = normalizeNoteKey(note.id);
+      const existing = noteDetailMap.value[key];
+      noteDetailMap.value[key] = {
         ...existing,
         ...note,
         inherited_fields: note.inherited_fields ?? existing?.inherited_fields
       };
-      ids.push(note.id);
+      ids.push(key);
     });
     touchNoteDetails(ids);
     return ids;
@@ -1528,9 +1545,10 @@ export const useNoteStore = defineStore('notes', () => {
   };
 
   const mergeNoteDetailAndPrune = (note: NoteNode) => {
+    const key = normalizeNoteKey(note.id);
     const summary = stripNoteDetail(note);
-    if (areNoteSummariesEqual(noteMap.value[note.id], summary)) {
-      touchNotes([note.id]);
+    if (areNoteSummariesEqual(noteMap.value[key], summary)) {
+      touchNotes([key]);
     } else {
       mergeNoteSummaries([note]);
     }
@@ -1661,19 +1679,20 @@ export const useNoteStore = defineStore('notes', () => {
     saveTabViewState(tabId, session.viewState);
   };
 
-  const addNoteToTab = (tabId: string, noteId: string) => {
+  const addNoteToTab = (tabId: string, noteId: NoteRef) => {
     const session = ensureTabSession(tabId);
     if (!session) return;
+    const key = normalizeNoteKey(noteId);
 
-    if (!session.noteIds.includes(noteId)) {
-      session.noteIds = [noteId, ...session.noteIds];
+    if (!session.noteIds.includes(key)) {
+      session.noteIds = [key, ...session.noteIds];
       session.lastLoadedAt = Date.now();
-      touchNotes([noteId]);
+      touchNotes([key]);
     }
 
     const visibleNoteIds = new Set(session.noteIds);
     const missingEdgeIds = Object.values(edgeMap.value)
-      .filter(edge => visibleNoteIds.has(edge.source_id) && visibleNoteIds.has(edge.target_id))
+      .filter(edge => visibleNoteIds.has(noteKey(edge.source_id)) && visibleNoteIds.has(noteKey(edge.target_id)))
       .map(edge => edge.id)
       .filter(edgeId => !session.edgeIds.includes(edgeId));
 
@@ -1684,13 +1703,14 @@ export const useNoteStore = defineStore('notes', () => {
     pruneCaches();
   };
 
-  const getNoteSummaryById = (id: string) => {
-    return noteMap.value[id];
+  const getNoteSummaryById = (id: NoteRef) => {
+    return noteMap.value[normalizeNoteKey(id)];
   };
 
-  const getNoteById = (id: string) => {
-    const summary = noteMap.value[id];
-    const detail = noteDetailMap.value[id];
+  const getNoteById = (id: NoteRef) => {
+    const key = normalizeNoteKey(id);
+    const summary = noteMap.value[key];
+    const detail = noteDetailMap.value[key];
     if (!summary && !detail) return undefined;
 
     return detail ? { ...summary, ...detail } : summary;
@@ -1823,16 +1843,17 @@ export const useNoteStore = defineStore('notes', () => {
     });
   };
 
-  const fetchNoteDetail = async (id: string, options: { force?: boolean } = {}) => {
-    const cached = noteDetailMap.value[id];
+  const fetchNoteDetail = async (id: NoteRef, options: { force?: boolean } = {}) => {
+    const key = normalizeNoteKey(id);
+    const cached = noteDetailMap.value[key];
     if (!options.force && cached?.content !== undefined) {
-      touchNoteDetails([id]);
+      touchNoteDetails([key]);
       return getNoteById(id) || cached;
     }
 
     bumpPending(1);
     try {
-      const response = await api.get(`/notes/${id}`);
+      const response = await api.get(`/notes/${encodeURIComponent(noteKey(id))}`);
       const detailedNote = normalizeNote(response.data);
       return mergeNoteDetailAndPrune(detailedNote);
     } catch (error) {
@@ -1861,7 +1882,7 @@ export const useNoteStore = defineStore('notes', () => {
 
   const fetchConnectedComponentForTab = async (
     tabId: string,
-    id: string,
+    id: NoteRef,
     mode: 'planetary' | 'satellite' = 'planetary'
   ) => {
     const result = await queryNotesForTab(tabId, {
@@ -1878,7 +1899,7 @@ export const useNoteStore = defineStore('notes', () => {
 
     if (result) {
       updateTabViewState(tabId, {
-        targetNoteId: id,
+        targetNoteId: noteKey(id),
         graphMode: mode
       });
     }
@@ -1962,7 +1983,7 @@ export const useNoteStore = defineStore('notes', () => {
   };
 
   const updateNote = async (
-    id: string,
+    id: NoteRef,
     data: {
       title?: string;
       content?: string;
@@ -1990,7 +2011,7 @@ export const useNoteStore = defineStore('notes', () => {
       if (data.start_at !== undefined) updateData.start_at = data.start_at / 1000;
       if (data.private_level !== undefined) updateData.private_level = normalizeInteger(data.private_level, 0);
 
-      const response = await api.put(`/notes/${id}`, updateData);
+      const response = await api.put(`/notes/${encodeURIComponent(noteKey(id))}`, updateData);
       const updatedNote = normalizeNote(response.data);
       const mergedNote = mergeNoteDetailAndPrune(updatedNote);
       postNoteSyncMessage(mergedNote);
@@ -2045,18 +2066,19 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const deleteNote = async (id: string) => {
+  const deleteNote = async (id: NoteRef) => {
     bumpPending(1);
     try {
-      await api.delete(`/notes/${id}`);
+      const key = normalizeNoteKey(id);
+      await api.delete(`/notes/${encodeURIComponent(key)}`);
 
-      delete noteMap.value[id];
-      delete noteTouchedAt.value[id];
-      delete noteDetailMap.value[id];
-      delete noteDetailTouchedAt.value[id];
+      delete noteMap.value[key];
+      delete noteTouchedAt.value[key];
+      delete noteDetailMap.value[key];
+      delete noteDetailTouchedAt.value[key];
 
       const removedEdgeIds = Object.values(edgeMap.value)
-        .filter(edge => edge.source_id === id || edge.target_id === id)
+        .filter(edge => noteKey(edge.source_id) === key || noteKey(edge.target_id) === key)
         .map(edge => edge.id);
 
       removedEdgeIds.forEach(edgeId => {
@@ -2065,7 +2087,7 @@ export const useNoteStore = defineStore('notes', () => {
       });
 
       Object.values(tabSessions.value).forEach(session => {
-        session.noteIds = session.noteIds.filter(noteId => noteId !== id);
+        session.noteIds = session.noteIds.filter(noteId => noteId !== key);
         session.edgeIds = session.edgeIds.filter(edgeId => !removedEdgeIds.includes(edgeId));
       });
 
@@ -2081,8 +2103,8 @@ export const useNoteStore = defineStore('notes', () => {
   };
 
   const createEdge = async (
-    sourceId: string,
-    targetId: string,
+    sourceId: NoteRef,
+    targetId: NoteRef,
     sourceHandle?: string,
     targetHandle?: string
   ) => {
@@ -2099,7 +2121,7 @@ export const useNoteStore = defineStore('notes', () => {
 
       Object.values(tabSessions.value).forEach(session => {
         const visibleNotes = new Set(session.noteIds);
-        if (visibleNotes.has(sourceId) && visibleNotes.has(targetId) && !session.edgeIds.includes(newEdge.id)) {
+        if (visibleNotes.has(noteKey(sourceId)) && visibleNotes.has(noteKey(targetId)) && !session.edgeIds.includes(newEdge.id)) {
           session.edgeIds = [...session.edgeIds, newEdge.id];
         }
       });
@@ -2114,13 +2136,15 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const deleteEdge = async (sourceId: string, targetId: string) => {
+  const deleteEdge = async (sourceId: NoteRef, targetId: NoteRef) => {
     bumpPending(1);
     try {
-      await api.delete(`/notes/edges/?source=${sourceId}&target=${targetId}`);
+      const sourceKey = noteKey(sourceId);
+      const targetKey = noteKey(targetId);
+      await api.delete(`/notes/edges/?source=${encodeURIComponent(sourceKey)}&target=${encodeURIComponent(targetKey)}`);
 
       const removedEdgeIds = Object.values(edgeMap.value)
-        .filter(edge => edge.source_id === sourceId && edge.target_id === targetId)
+        .filter(edge => noteKey(edge.source_id) === sourceKey && noteKey(edge.target_id) === targetKey)
         .map(edge => edge.id);
 
       removedEdgeIds.forEach(edgeId => {
@@ -2141,7 +2165,7 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
-  const aiCategorizeNote = async (id: string) => {
+  const aiCategorizeNote = async (id: NoteRef) => {
     const userStore = useUserStore();
     const aiProviderStore = useAiProviderStore();
     const aiAppStore = useAiAppStore();

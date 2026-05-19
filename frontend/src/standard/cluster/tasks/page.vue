@@ -5,8 +5,18 @@ import DocPage from '@/components/DocPage.vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, Refresh, Clock, View, Hide } from '@element-plus/icons-vue';
+import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
+import {
+  deleteRuntimeJob,
+  fetchRuntimeStatus,
+  toggleRuntimeJob,
+  triggerRuntimeItem,
+  triggerRuntimeJob,
+  type RuntimeKind,
+  type RuntimeItem,
+  type RuntimeStatusResponse,
+} from '@/api/runtime';
 import Sortable from 'sortablejs';
 
 const router = useRouter();
@@ -16,9 +26,13 @@ const currentDevice = computed(() => {
   return taskStore.devices.find(d => d.id === currentDeviceId.value);
 });
 
-const currentTasks = computed(() => {
-  return taskStore.tasks[currentDeviceId.value] || [];
-});
+const runtimeStatuses = ref<Record<string, RuntimeStatusResponse>>({});
+const currentRuntimeStatus = computed(() => runtimeStatuses.value[currentDeviceId.value] || null);
+const currentRuntimeItems = computed<RuntimeItem[]>(() => currentRuntimeStatus.value?.items || []);
+const serviceItems = computed(() => currentRuntimeItems.value.filter(item => item.kind === 'service'));
+const jobItems = computed(() => currentRuntimeItems.value.filter(item => item.kind === 'job'));
+const sortedJobItems = computed(() => [...jobItems.value].sort(compareRuntimeJobs));
+const queueSnapshot = computed(() => currentRuntimeStatus.value?.queue || null);
 const getDeviceTypeTagType = (deviceType?: string): 'success' | undefined => {
   return deviceType === 'LocalDevice' ? undefined : 'success';
 };
@@ -52,12 +66,24 @@ const isEditingDevice = ref(false);
 const isEditingTask = ref(false);
 const currentTaskId = ref<string>('');
 const addDeviceLoading = ref(false);
+const runtimeContextMenu = ref<{
+  visible: boolean;
+  x: number;
+  y: number;
+  target: RuntimeItem | null;
+}>({
+  visible: false,
+  x: 0,
+  y: 0,
+  target: null,
+});
 const form = ref({
   name: '',
   command: '',
   cwd: '',
   description: '',
   device_id: '',
+  runtime_kind: 'service' as RuntimeKind,
   run_as_admin: false,
   schedule: '',
   timeout: null as number | null
@@ -343,19 +369,27 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     }
     
     try {
-        const response = await api.get(getDeviceEntryPath(deviceId, '/task/'));
-        
-        const tasks = response.data;
-        tasks.forEach((t: Task) => {
-             t.entry_id = deviceId;
+        const runtime = await fetchRuntimeStatus(deviceId);
+        runtime.items.forEach((item: RuntimeItem) => {
+          item.actionLoading = false;
+          item.toggleLoading = false;
         });
-
-        // Update store
-        taskStore.tasks[deviceId] = tasks;
+        runtimeStatuses.value[deviceId] = runtime;
+        taskStore.tasks[deviceId] = runtime.items
+          .filter(item => item.source === 'command')
+          .map((item: RuntimeItem) => ({
+            ...(item.raw || {}),
+            status: item.status || { running: item.active },
+            entry_id: deviceId,
+          })) as Task[];
         deviceError.value = false;
         
     } catch (err: any) {
         console.error('Failed to fetch tasks', err);
+        if (err.response?.status === 404) {
+            await fetchLegacyTasks(deviceId, isPolling);
+            return;
+        }
         if (!isPolling) {
             if (err.response?.status === 401 || err.response?.status === 502 || err.code === 'ERR_NETWORK') {
                 deviceError.value = true;
@@ -370,20 +404,72 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
         }
     } finally {
         if (!isPolling) loading.value = false;
+        if (!isPolling) nextTick(initRuntimeSortables);
     }
 };
 
-const handleStatusClick = async (task: Task) => {
-    const device = devices.value.find(d => d.id === task.entry_id);
+const fetchLegacyTasks = async (deviceId: string, isPolling: boolean) => {
+  try {
+    const response = await api.get(getDeviceEntryPath(deviceId, '/task/'));
+    const tasks = response.data;
+    tasks.forEach((t: Task) => {
+      t.entry_id = deviceId;
+    });
+    taskStore.tasks[deviceId] = tasks;
+    runtimeStatuses.value[deviceId] = {
+      device_id: devices.value.find(d => d.id === deviceId)?.device_id || deviceId,
+      device: {},
+      groups: [{ id: 'service:legacy', kind: 'service', title: '旧运行命令' }],
+      items: tasks.map((task: Task) => ({
+        id: `command:${task.id}`,
+        key: task.id,
+        kind: task.schedule ? 'job' : 'service',
+        source: 'command',
+        group_id: task.schedule ? 'job:legacy' : 'service:legacy',
+        group_title: task.schedule ? '旧命令调度' : '旧运行命令',
+        title: task.name,
+        description: task.description,
+        command: task.command,
+        cwd: task.cwd,
+        runtime_kind: task.runtime_kind || (task.schedule ? 'job' : 'service'),
+        schedule: task.schedule,
+        schedule_label: task.schedule || '',
+        timeout: task.timeout,
+        order: 0,
+        active: Boolean(task.status?.running),
+        status: task.status || { running: false },
+        actions: ['start', 'stop', 'logs', 'delete', 'reorder'],
+        raw: task as any,
+      })),
+      queue: null,
+      runner_running: false,
+      next_wake_at: null,
+    };
+    deviceError.value = false;
+  } catch (err: any) {
+    if (!isPolling) {
+      deviceError.value = true;
+      ElMessage.error(err.response?.data?.detail || '无法读取运行列表');
+    }
+  }
+};
+
+const handleStatusClick = async (item: RuntimeItem) => {
+    if (item.source !== 'command') return;
+    const device = devices.value.find(d => d.id === currentDeviceId.value);
     if (!device) return;
     
-    task.actionLoading = true;
+    item.actionLoading = true;
     try {
-        const action = task.status.running ? 'stop' : 'start';
-        await api.post(getDeviceEntryPath(device.id, `/task/${task.id}/${action}`));
+        const action = item.active || item.status?.running ? 'stop' : 'start';
+        await api.post(getDeviceEntryPath(device.id, `/task/${item.key}/${action}`));
         
         // Optimistic update
-        task.status.running = !task.status.running;
+        item.active = action === 'start';
+        item.status = {
+          ...item.status,
+          running: action === 'start',
+        };
         
         // Refresh after delay
         setTimeout(() => fetchTasks(device.id, true), 1000);
@@ -391,8 +477,79 @@ const handleStatusClick = async (task: Task) => {
     } catch (err: any) {
         ElMessage.error(err.response?.data?.detail || '操作失败');
     } finally {
-        task.actionLoading = false;
+        item.actionLoading = false;
     }
+};
+
+const handleTriggerRuntimeJob = async (item: RuntimeItem) => {
+  if (item.source !== 'builtin') return;
+  item.actionLoading = true;
+  try {
+    await triggerRuntimeJob(currentDeviceId.value, item.key);
+    ElMessage.success('作业已提交');
+    await fetchTasks(currentDeviceId.value, true);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '作业提交失败');
+  } finally {
+    item.actionLoading = false;
+  }
+};
+
+const handleTriggerRuntimeItem = async (item: RuntimeItem) => {
+  item.actionLoading = true;
+  try {
+    const result = await triggerRuntimeItem(currentDeviceId.value, item.source, item.key);
+    ElMessage.success(result?.queued === false ? '作业已在队列中' : '作业已提交');
+    await fetchTasks(currentDeviceId.value, true);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '作业提交失败');
+  } finally {
+    item.actionLoading = false;
+  }
+};
+
+const handleToggleRuntimeJob = async (item: RuntimeItem, enabled: string | number | boolean) => {
+  if (item.source !== 'builtin') return;
+  item.toggleLoading = true;
+  const nextEnabled = Boolean(enabled);
+  try {
+    await toggleRuntimeJob(currentDeviceId.value, item.key, nextEnabled);
+    item.enabled = nextEnabled;
+    item.status = {
+      ...item.status,
+      enabled: nextEnabled,
+    };
+  } catch (err: any) {
+    item.enabled = !nextEnabled;
+    ElMessage.error(err.response?.data?.detail || '调度状态更新失败');
+  } finally {
+    item.toggleLoading = false;
+  }
+};
+
+const isRuntimeItemRunning = (item: RuntimeItem | null | undefined) => {
+  return Boolean(item?.active || item?.status?.running);
+};
+
+const isRuntimeItemQueued = (item: RuntimeItem | null | undefined) => {
+  return Boolean(item?.status?.queued && !isRuntimeItemRunning(item));
+};
+
+const handleJobStatusClick = async (item: RuntimeItem) => {
+  if (item.kind !== 'job') return;
+  if (item.source === 'command') {
+    if (isRuntimeItemRunning(item)) {
+      await handleStatusClick(item);
+      return;
+    }
+    if (!isRuntimeItemQueued(item)) {
+      await handleTriggerRuntimeItem(item);
+    }
+    return;
+  }
+  if (!isRuntimeItemRunning(item)) {
+    await handleTriggerRuntimeJob(item);
+  }
 };
 
 const handleSwitchDevice = (device: Device) => {
@@ -400,7 +557,52 @@ const handleSwitchDevice = (device: Device) => {
     deviceDialogVisible.value = false;
 };
 
-const openCreateDialog = () => {
+const closeRuntimeContextMenu = () => {
+  runtimeContextMenu.value.visible = false;
+  runtimeContextMenu.value.target = null;
+};
+
+const handleRuntimeRowContextMenu = (row: RuntimeItem, _column: unknown, event: MouseEvent) => {
+  event.preventDefault();
+  runtimeContextMenu.value = {
+    visible: true,
+    x: event.clientX,
+    y: event.clientY,
+    target: row,
+  };
+};
+
+const handleRuntimeContextDelete = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!target) return;
+  await handleDelete(target);
+};
+
+const handleRuntimeContextLogs = () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!target || target.source !== 'command') return;
+  viewLogs(target);
+};
+
+const handleRuntimeContextExecute = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!target || target.kind !== 'job') return;
+  await handleStatusClick(target);
+};
+
+const handleRuntimeContextToggleSchedule = async () => {
+  const target = runtimeContextMenu.value.target;
+  closeRuntimeContextMenu();
+  if (!target || target.kind !== 'job' || target.source !== 'builtin') return;
+  await handleToggleRuntimeJob(target, !target.enabled);
+};
+
+const runtimeKindLabel = (kind: RuntimeKind | null | undefined) => kind === 'job' ? '作业' : '服务';
+
+const openCreateDialog = (kind: RuntimeKind) => {
     if (!currentDeviceId.value) {
         ElMessage.warning('请先选择一个设备');
         return;
@@ -414,6 +616,7 @@ const openCreateDialog = () => {
         cwd: '',
         description: '',
         device_id: currentDevice.value?.device_id || '',
+        runtime_kind: kind,
         run_as_admin: false,
         schedule: '',
         timeout: null
@@ -437,7 +640,7 @@ const handleSubmitTask = async () => {
             // For now, assume create only or re-create
         } else {
             await api.post(getDeviceEntryPath(entryId, '/task/create'), form.value);
-            ElMessage.success('任务创建成功');
+            ElMessage.success(`${runtimeKindLabel(form.value.runtime_kind)}创建成功`);
         }
         
         dialogVisible.value = false;
@@ -537,82 +740,216 @@ const handleDeleteDevice = async (device: Device) => {
   }
 };
 
-const handleDelete = async (task: Task) => {
+const handleDelete = async (item: RuntimeItem) => {
   try {
-    await ElMessageBox.confirm(`Are you sure to delete task "${task.name}"?`, 'Warning', {
+    await ElMessageBox.confirm(`确定删除 "${item.title}" 吗？`, '删除确认', {
       type: 'warning',
-      confirmButtonText: 'Delete',
-      cancelButtonText: 'Cancel'
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
     });
-    
-    const device = devices.value.find(d => d.id === task.entry_id);
+
+    const device = devices.value.find(d => d.id === currentDeviceId.value);
     if (!device) return;
-    
-    await api.delete(getDeviceEntryPath(device.id, `/task/${task.id}`));
-    ElMessage.success('Task deleted');
-    await fetchTasks(task.entry_id || currentDeviceId.value, false);
+
+    if (item.source === 'builtin') {
+      await deleteRuntimeJob(device.id, item.key);
+    } else {
+      await api.delete(getDeviceEntryPath(device.id, `/task/${item.key}`));
+    }
+    ElMessage.success('已删除');
+    await fetchTasks(currentDeviceId.value, false);
   } catch (err) {
     // Cancelled
   }
 };
 
-const viewLogs = (task: Task) => {
-  router.push({ name: 'TaskLogs', params: { id: task.id }, query: { entry_id: task.entry_id } });
+const viewLogs = (item: RuntimeItem) => {
+  if (item.source !== 'command') return;
+  router.push({ name: 'TaskLogs', params: { id: item.key }, query: { entry_id: currentDeviceId.value } });
 };
 
-const formatDuration = (seconds: number | undefined | null) => {
-  if (seconds === undefined || seconds === null || seconds <= 0) return '';
-  
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  
-  let result = '';
-  if (h > 0) result += `${h}小时`;
-  if (m > 0) result += `${m}分`;
-  if (s > 0) result += `${s}秒`;
-  
-  return result || `${seconds}秒`;
+const jobRuntimeStatusType = (item: RuntimeItem): 'success' | 'info' | 'warning' => {
+  if (isRuntimeItemQueued(item)) return 'warning';
+  return isRuntimeItemRunning(item) ? 'success' : 'info';
 };
 
-const tableRef = ref<any>(null);
+const isJobStatusButtonDisabled = (item: RuntimeItem) => {
+  return isRuntimeItemQueued(item) || (item.source === 'builtin' && isRuntimeItemRunning(item));
+};
+
+const getJobStatusButtonTitle = (item: RuntimeItem) => {
+  if (isRuntimeItemQueued(item)) return '排队中';
+  if (!isRuntimeItemRunning(item)) return '点击执行';
+  return item.source === 'command' ? '点击停止' : '作业正在运行';
+};
+
+function getRuntimeNextRunAt(item: RuntimeItem): string {
+  const value = item.next_run_at || item.status?.next_run_at || item.raw?.next_run_at || '';
+  return typeof value === 'string' ? value : '';
+}
+
+function getRuntimeNextRunTime(item: RuntimeItem): number {
+  const nextRunAt = getRuntimeNextRunAt(item);
+  if (!nextRunAt) return Number.POSITIVE_INFINITY;
+  const time = new Date(nextRunAt).getTime();
+  return Number.isFinite(time) ? time : Number.POSITIVE_INFINITY;
+}
+
+function isRuntimeJobEnabledForSort(item: RuntimeItem): boolean {
+  if (item.source === 'builtin') return Boolean(item.enabled);
+  return Boolean(item.schedule || item.schedule_label || getRuntimeNextRunAt(item) || item.active || item.status?.running);
+}
+
+function compareRuntimeJobs(a: RuntimeItem, b: RuntimeItem): number {
+  const activeDiff = Number(Boolean(b.active || b.status?.running)) - Number(Boolean(a.active || a.status?.running));
+  if (activeDiff) return activeDiff;
+
+  const enabledDiff = Number(isRuntimeJobEnabledForSort(b)) - Number(isRuntimeJobEnabledForSort(a));
+  if (enabledDiff) return enabledDiff;
+
+  const aNext = getRuntimeNextRunTime(a);
+  const bNext = getRuntimeNextRunTime(b);
+  const aHasNext = Number.isFinite(aNext);
+  const bHasNext = Number.isFinite(bNext);
+  if (aHasNext !== bHasNext) return aHasNext ? -1 : 1;
+  if (aHasNext && aNext !== bNext) return aNext - bNext;
+
+  return (a.order || 0) - (b.order || 0);
+}
+
+const pad2 = (value: number) => String(value).padStart(2, '0');
+
+const formatJobNextRun = (item: RuntimeItem) => {
+  const nextRunAt = getRuntimeNextRunAt(item);
+  if (!nextRunAt) return '';
+
+  const date = new Date(nextRunAt);
+  if (!Number.isFinite(date.getTime())) return '';
+
+  const now = new Date();
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const isSameDate = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  const isWithinNext24Hours = date.getTime() >= now.getTime()
+    && date.getTime() - now.getTime() < 24 * 60 * 60 * 1000;
+  if (isSameDate || isWithinNext24Hours) return time;
+
+  const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
+  if (date.getFullYear() === now.getFullYear()) return monthDayTime;
+  return `${date.getFullYear()}-${monthDayTime}`;
+};
+
+const getJobNextRunTitle = (item: RuntimeItem) => {
+  const nextRunAt = getRuntimeNextRunAt(item);
+  if (!nextRunAt) return '';
+  const date = new Date(nextRunAt);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : nextRunAt;
+};
+
+const runtimeQueueRecordName = (item: Record<string, any>) => {
+  const metadata = item?.metadata || {};
+  return metadata.title || metadata.task_title || item?.name || item?.id;
+};
+
+const formatQueueRecordTimestamp = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return '';
+  const raw = typeof value === 'number' ? value * 1000 : value;
+  const date = new Date(raw as any);
+  if (!Number.isFinite(date.getTime())) return '';
+
+  const now = new Date();
+  const time = `${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+  const sameDate = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate();
+  if (sameDate) return time;
+
+  const monthDayTime = `${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${time}`;
+  if (date.getFullYear() === now.getFullYear()) return monthDayTime;
+  return `${date.getFullYear()}-${monthDayTime}`;
+};
+
+const getQueueRecordFinishedLabel = (item: Record<string, any>) => (
+  formatQueueRecordTimestamp(item?.finished_at) || item?.status || '完成'
+);
+
+const getQueueRecordTimeTitle = (value: unknown) => {
+  if (value === null || value === undefined || value === '') return '';
+  const raw = typeof value === 'number' ? value * 1000 : value;
+  const date = new Date(raw as any);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : '';
+};
+
+const getRuntimeRowClassName = ({ row }: { row: RuntimeItem }) => (
+  row.source === 'command' ? '' : 'is-not-sortable'
+);
+
+const serviceTableRef = ref<any>(null);
 const tabsRef = ref<any>(null);
-let sortableInstance: Sortable | null = null;
+let serviceSortableInstance: Sortable | null = null;
 let tabsSortableInstance: Sortable | null = null;
 
-const initSortable = () => {
-  if (sortableInstance) sortableInstance.destroy();
+const createRuntimeSortable = (
+  tableComponent: any,
+  items: RuntimeItem[],
+  assignInstance: (instance: Sortable | null) => void
+) => {
+  if (!tableComponent) {
+    assignInstance(null);
+    return;
+  }
+  const el = tableComponent.$el.querySelector('.el-table__body-wrapper tbody');
+  if (!el) {
+    assignInstance(null);
+    return;
+  }
+  const commandItems = items.filter(item => item.source === 'command');
+  if (!commandItems.length) {
+    assignInstance(null);
+    return;
+  }
 
-  if (!tableRef.value) return;
-  const el = tableRef.value.$el.querySelector('.el-table__body-wrapper tbody');
-  if (!el) return;
-
-  sortableInstance = Sortable.create(el, {
+  const instance = Sortable.create(el, {
     handle: '.sortable-order-handle',
     animation: 150,
+    filter: '.is-not-sortable',
+    onMove: (evt: any) => !evt.related?.classList.contains('is-not-sortable'),
     onEnd: async ({ newIndex, oldIndex }: any) => {
-      if (newIndex === oldIndex) return;
+      if (newIndex === oldIndex || newIndex == null || oldIndex == null) return;
       
-      const currList = [...currentTasks.value];
+      const currList = [...commandItems];
       const targetRow = currList.splice(oldIndex, 1)[0];
+      if (!targetRow) return;
       currList.splice(newIndex, 0, targetRow);
-      
-      // Update local state
-      taskStore.tasks[currentDeviceId.value] = currList;
-      
-      // Call API
+
       const device = devices.value.find(d => d.id === currentDeviceId.value);
       if (!device) return;
       
       try {
-        await api.post(getDeviceEntryPath(device.id, '/task/reorder'), currList.map(t => t.id));
+        await api.post(getDeviceEntryPath(device.id, '/task/reorder'), currList.map(t => t.key));
         ElMessage.success('顺序已更新');
+        await fetchTasks(currentDeviceId.value, true);
       } catch (err) {
         ElMessage.error('排序保存失败');
-        fetchTasks(currentDeviceId.value, true); // Revert
+        fetchTasks(currentDeviceId.value, true);
       }
     }
   });
+  assignInstance(instance);
+};
+
+const initRuntimeSortables = () => {
+  if (serviceSortableInstance) serviceSortableInstance.destroy();
+  serviceSortableInstance = null;
+
+  createRuntimeSortable(serviceTableRef.value, serviceItems.value, instance => {
+    serviceSortableInstance = instance;
+  });
+};
+
+const initSortable = () => {
+  initRuntimeSortables();
 };
 
 const initDeviceSortable = () => {
@@ -654,6 +991,7 @@ const initDeviceSortable = () => {
 };
 
 onMounted(async () => {
+  window.addEventListener('click', closeRuntimeContextMenu);
   if (taskStore.devices.length > 0) {
     // Cache hit: trigger background refresh, don't wait
     fetchDevices();
@@ -675,14 +1013,15 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  window.removeEventListener('click', closeRuntimeContextMenu);
   stopTaskPolling();
-  if (sortableInstance) sortableInstance.destroy();
+  if (serviceSortableInstance) serviceSortableInstance.destroy();
   if (tabsSortableInstance) tabsSortableInstance.destroy();
 });
 </script>
 
 <template>
-  <DocPage title="设备任务" :description="`管理设备清单与设备任务。\n\n注意：每台设备的任务列表是全平台共享的，即对这台机器的统一状态管理。所有用户操作的都是同一份任务列表，请谨慎修改，以免影响他人使用。`">
+  <DocPage title="运行管理">
     <!-- Device Tabs -->
     <el-tabs v-model="currentDeviceId" type="card" class="device-tabs" ref="tabsRef">
       <el-tab-pane
@@ -770,75 +1109,237 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="toolbar">
-      <el-button type="primary" :icon="Plus" @click="openCreateDialog">新建任务</el-button>
-      <el-button :icon="Refresh" @click="fetchTasks(currentDeviceId, false)">刷新列表</el-button>
+    <section class="runtime-section">
+      <div class="runtime-section-title">
+        <span>服务</span>
+        <el-button
+          :icon="Plus"
+          circle
+          size="small"
+          text
+          title="新建服务"
+          aria-label="新建服务"
+          @click="openCreateDialog('service')"
+        />
+      </div>
+      <el-table
+        ref="serviceTableRef"
+        :data="serviceItems"
+        v-loading="loading"
+        table-layout="auto"
+        :fit="false"
+        class="runtime-table"
+        row-key="id"
+        :row-class-name="getRuntimeRowClassName"
+        @row-contextmenu="handleRuntimeRowContextMenu"
+      >
+        <el-table-column width="60" align="center" label="序号">
+          <template #default="scope">
+            <SortableOrderHandle
+              v-if="scope.row.source === 'command'"
+              :index="scope.$index"
+              :total="serviceItems.length"
+              :pad="false"
+              size="sm"
+            />
+            <span v-else class="runtime-order-badge">{{ scope.$index + 1 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="名称" width="116">
+          <template #default="{ row }">
+            <div class="task-name">{{ row.title }}</div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="执行" min-width="520">
+          <template #default="{ row }">
+            <div v-if="row.source === 'command'" class="command-cell" :title="row.command">{{ row.command }}</div>
+            <div v-else class="muted command-cell" :title="[row.schedule_label, row.description].filter(Boolean).join(' · ')">
+              {{ [row.schedule_label, row.description].filter(Boolean).join(' · ') || row.title }}
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="状态" width="84" align="center">
+          <template #default="{ row }">
+            <div v-if="row.source === 'command'" class="status-action">
+              <el-button
+                circle
+                :type="row.actionLoading ? 'warning' : (row.active || row.status?.running ? 'success' : 'info')"
+                :loading="row.actionLoading"
+                @click="handleStatusClick(row)"
+                :title="row.active || row.status?.running ? '点击停止' : '点击启动'"
+              >
+                <template #icon>
+                  <component :is="row.active || row.status?.running ? VideoPause : VideoPlay" v-if="!row.actionLoading" />
+                </template>
+              </el-button>
+            </div>
+            <div v-else class="job-state">
+              <el-switch
+                v-model="row.enabled"
+                :loading="row.toggleLoading"
+                inline-prompt
+                active-text="启用"
+                inactive-text="停用"
+                @change="handleToggleRuntimeJob(row, $event)"
+              />
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <section class="runtime-section">
+      <div class="runtime-section-title">
+        <span>作业</span>
+        <el-button
+          :icon="Plus"
+          circle
+          size="small"
+          text
+          title="新建作业"
+          aria-label="新建作业"
+          @click="openCreateDialog('job')"
+        />
+      </div>
+      <el-table
+        :data="sortedJobItems"
+        v-loading="loading"
+        table-layout="auto"
+        :fit="false"
+        class="runtime-table"
+        row-key="id"
+        @row-contextmenu="handleRuntimeRowContextMenu"
+      >
+        <el-table-column width="60" align="center" label="序号">
+          <template #default="scope">
+            <span class="runtime-order-badge">{{ scope.$index + 1 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="名称" width="116">
+          <template #default="{ row }">
+            <div class="task-name">{{ row.title }}</div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="执行" min-width="520">
+          <template #default="{ row }">
+            <div v-if="row.source === 'command'" class="command-cell" :title="row.command">{{ row.command }}</div>
+            <div v-else class="muted command-cell" :title="row.description || row.title">
+              {{ row.description || row.title }}
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="状态" width="84" align="center">
+          <template #default="{ row }">
+            <div class="status-action">
+              <el-button
+                circle
+                :type="row.actionLoading ? 'warning' : jobRuntimeStatusType(row)"
+                :loading="row.actionLoading"
+                :disabled="isJobStatusButtonDisabled(row)"
+                :title="getJobStatusButtonTitle(row)"
+                @click.stop="handleJobStatusClick(row)"
+              >
+                <template #icon>
+                  <component :is="isRuntimeItemRunning(row) ? VideoPause : VideoPlay" v-if="!row.actionLoading" />
+                </template>
+              </el-button>
+            </div>
+          </template>
+        </el-table-column>
+
+        <el-table-column label="下次运行" width="130" align="right">
+          <template #default="{ row }">
+            <div class="job-next-cell">
+              <span
+                class="job-next-run"
+                :class="{
+                  running: row.active || row.status?.running,
+                  disabled: row.source === 'builtin' && !row.enabled
+                }"
+                :title="getJobNextRunTitle(row)"
+              >
+                {{ formatJobNextRun(row) }}
+              </span>
+            </div>
+          </template>
+        </el-table-column>
+      </el-table>
+    </section>
+
+    <div
+      v-if="runtimeContextMenu.visible"
+      class="runtime-context-menu"
+      :style="{ left: `${runtimeContextMenu.x}px`, top: `${runtimeContextMenu.y}px` }"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <button
+        v-if="runtimeContextMenu.target?.kind === 'job' && runtimeContextMenu.target?.source === 'command' && isRuntimeItemRunning(runtimeContextMenu.target)"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextExecute"
+      >
+        <el-icon>
+          <VideoPause />
+        </el-icon>
+        <span>停止</span>
+      </button>
+      <button
+        v-if="runtimeContextMenu.target?.kind === 'job' && runtimeContextMenu.target?.source === 'builtin'"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextToggleSchedule"
+      >
+        <el-icon><Setting /></el-icon>
+        <span>{{ runtimeContextMenu.target?.enabled ? '停用定时' : '启用定时' }}</span>
+      </button>
+      <button
+        v-if="runtimeContextMenu.target?.source === 'command'"
+        type="button"
+        class="context-menu-item"
+        @click="handleRuntimeContextLogs"
+      >
+        <el-icon><Document /></el-icon>
+        <span>日志</span>
+      </button>
+      <button type="button" class="context-menu-item danger" @click="handleRuntimeContextDelete">
+        <el-icon><Delete /></el-icon>
+        <span>删除</span>
+      </button>
     </div>
 
-    <el-table ref="tableRef" :data="currentTasks" v-loading="loading" style="width: 100%" row-key="id">
-      <el-table-column width="60" align="center" label="排序">
-        <template #default="scope">
-          <SortableOrderHandle :index="scope.$index" :total="currentTasks.length" size="sm" />
-        </template>
-      </el-table-column>
-      <el-table-column prop="name" label="任务名称" width="200">
-        <template #default="{ row }">
-          <div class="task-name">
-            {{ row.name }}
-            <el-tag v-if="row.run_as_admin" type="danger" size="small" effect="plain" style="margin-left: 5px;">Admin</el-tag>
-          </div>
-          <div class="task-desc" v-if="row.description">{{ row.description }}</div>
-          <div class="task-desc" v-if="row.schedule" style="color: #409EFF; display: flex; align-items: center; margin-top: 2px;">
-            <el-icon style="margin-right: 3px;"><Clock /></el-icon>
-            {{ row.schedule }}
-          </div>
-          <div class="task-desc" v-if="row.timeout" style="color: #E6A23C; display: flex; align-items: center; margin-top: 2px;">
-            <el-icon style="margin-right: 3px;"><Clock /></el-icon>
-            超时: {{ formatDuration(row.timeout) }}
-          </div>
-        </template>
-      </el-table-column>
-      
-      <el-table-column prop="command" label="命令" show-overflow-tooltip />
-      
-      <el-table-column label="状态" width="120" align="center">
-        <template #default="{ row }">
-          <!-- 
-            Yellow: Checking/Loading (actionLoading)
-            Green: Running
-            Gray: Stopped
-          -->
-          <el-button 
-            circle
-            :type="row.actionLoading ? 'warning' : (row.status.running ? 'success' : 'info')"
-            :loading="row.actionLoading"
-            @click="handleStatusClick(row)"
-            :title="row.status.running ? '点击停止' : '点击启动'"
-          >
-            <template #icon>
-              <component :is="row.status.running ? VideoPause : VideoPlay" v-if="!row.actionLoading" />
-            </template>
-          </el-button>
-        </template>
-      </el-table-column>
+    <div v-if="queueSnapshot?.running || (queueSnapshot?.pending || []).length || (queueSnapshot?.recent || []).length" class="runtime-records">
+      <div class="section-title">队列记录</div>
+      <div v-if="queueSnapshot?.running" class="record-row">
+        <span>运行中</span>
+        <strong>{{ runtimeQueueRecordName(queueSnapshot.running) }}</strong>
+      </div>
+      <div v-for="item in queueSnapshot?.pending || []" :key="`pending-${item.id}`" class="record-row">
+        <span>等待</span>
+        <strong>{{ runtimeQueueRecordName(item) }}</strong>
+      </div>
+      <div v-for="item in queueSnapshot?.recent || []" :key="`recent-${item.id}`" class="record-row">
+        <span :title="getQueueRecordTimeTitle(item.finished_at)">{{ getQueueRecordFinishedLabel(item) }}</span>
+        <strong>{{ runtimeQueueRecordName(item) }}</strong>
+      </div>
+      <div v-if="!queueSnapshot?.running && !(queueSnapshot?.pending || []).length && !(queueSnapshot?.recent || []).length" class="empty-records">
+        暂无作业队列记录
+      </div>
+    </div>
 
-      <el-table-column label="操作" width="200" align="right">
-        <template #default="{ row }">
-          <el-button size="small" :icon="Document" @click="viewLogs(row)" title="详情" circle />
-          <el-button size="small" type="danger" :icon="Delete" @click="handleDelete(row)" plain title="删除" circle />
-        </template>
-      </el-table-column>
-    </el-table>
-
-    <!-- Create Task Dialog -->
-    <el-dialog v-model="dialogVisible" title="新建任务" width="500px">
+    <!-- Create Runtime Command Dialog -->
+    <el-dialog v-model="dialogVisible" :title="`新建${runtimeKindLabel(form.runtime_kind)}`" width="500px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="名称" required>
-          <el-input v-model="form.name" placeholder="任务名称" />
+          <el-input v-model="form.name" placeholder="名称" />
         </el-form-item>
         <el-form-item label="设备">
           <el-input v-model="form.device_id" disabled />
-          <div class="form-tip">默认创建在当前选中的设备上</div>
+          <div class="form-tip">默认创建在当前选中的 CodeYun 实例上</div>
         </el-form-item>
         <el-form-item label="命令" required>
           <el-input v-model="form.command" type="textarea" placeholder="例如: python -m module.name args" />
@@ -855,7 +1356,7 @@ onUnmounted(() => {
         </el-form-item>
         <el-form-item label="超时时间">
           <el-input v-model.number="form.timeout" placeholder="单位: 秒" type="number" />
-          <div class="form-tip">任务运行超过指定秒数后自动停止。留空表示不限制。</div>
+          <div class="form-tip">命令运行超过指定秒数后自动停止。留空表示不限制。</div>
         </el-form-item>
         <el-collapse accordion style="margin-top: 10px; width: 100%;">
           <el-collapse-item title="自然语言解析 (实验性)">
@@ -957,10 +1458,153 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.toolbar {
-  margin-bottom: 20px;
+.muted {
+  color: #909399;
+  font-size: 12px;
+}
+
+.runtime-section {
+  margin-top: 16px;
+}
+
+.runtime-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 8px;
+  color: #303133;
+  font-weight: 600;
+}
+
+.runtime-table {
+  width: 100%;
+}
+
+.runtime-order-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 5px;
+  border-radius: 7px;
+  background: rgba(226, 232, 240, 0.92);
+  color: #475569;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.command-cell {
+  max-width: 720px;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.status-action,
+.job-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.job-next-cell {
   display: flex;
-  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.job-next-run {
+  color: #606266;
+  font-size: 13px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.job-next-run.running {
+  color: #67c23a;
+  font-weight: 600;
+}
+
+.job-next-run.disabled {
+  color: #a8abb2;
+}
+
+.runtime-records {
+  border-top: 1px solid #ebeef5;
+}
+
+.section-title {
+  padding: 12px 0;
+  font-weight: 600;
+}
+
+.record-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 9px 0;
+  border-top: 1px solid #ebeef5;
+}
+
+.record-row span {
+  width: 82px;
+  color: #909399;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.record-row strong {
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.empty-records {
+  padding: 18px 0;
+  color: #909399;
+}
+
+.runtime-context-menu {
+  position: fixed;
+  z-index: 3000;
+  min-width: 118px;
+  padding: 5px;
+  border: 1px solid #dcdfe6;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 6px 18px rgb(0 0 0 / 12%);
+}
+
+.context-menu-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 3px;
+  color: #303133;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.context-menu-item:hover {
+  background: #f5f7fa;
+}
+
+.context-menu-item.danger {
+  color: #f56c6c;
 }
 
 .device-tabs {
@@ -1028,12 +1672,13 @@ onUnmounted(() => {
 }
 
 .task-name {
-  font-weight: bold;
-}
-
-.task-desc {
-  font-size: 12px;
-  color: #888;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.28;
+  display: inline-flex;
+  align-items: center;
+  max-width: 108px;
+  overflow-wrap: anywhere;
 }
 
 .form-tip {

@@ -110,3 +110,34 @@ def test_background_task_queue_can_delete_pending_tasks_by_name():
             break
         time.sleep(0.02)
     background_task_queue.reset_for_tests()
+
+
+def test_background_task_queue_enqueue_once_reuses_active_task():
+    background_task_queue.reset_for_tests()
+    release_first = threading.Event()
+
+    def blocking_task():
+        release_first.wait(timeout=3)
+
+    first_id, first_queued = background_task_queue.enqueue_once("same-name", blocking_task)
+
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        snapshot = background_task_queue.snapshot()
+        if snapshot["running"] and snapshot["running"]["id"] == first_id:
+            break
+        time.sleep(0.02)
+
+    second_id, second_queued = background_task_queue.enqueue_once("same-name", lambda: None)
+
+    assert first_queued is True
+    assert second_queued is False
+    assert second_id == first_id
+
+    release_first.set()
+    deadline = time.time() + 3
+    while time.time() < deadline:
+        if background_task_queue.snapshot()["is_idle"]:
+            break
+        time.sleep(0.02)
+    background_task_queue.reset_for_tests()

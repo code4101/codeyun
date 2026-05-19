@@ -14,6 +14,11 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+try:
+    from resource_identity_sqlite import note_public_ref
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import note_public_ref
+
 
 USER_ID = 2
 TZ = dt.timezone(dt.timedelta(hours=8))
@@ -79,12 +84,22 @@ def find_candidates(con: sqlite3.Connection) -> list[sqlite3.Row]:
     return [row for row in rows if is_empty_week_marker(row)]
 
 
+def note_edge_ref(con: sqlite3.Connection, node_id: str) -> str:
+    row = con.execute("select numeric_id from notenode where id=? limit 1", (node_id,)).fetchone()
+    numeric_id = int((row["numeric_id"] if row is not None else 0) or 0)
+    if numeric_id > 0:
+        return str(numeric_id)
+    return note_public_ref(con, node_id)
+
+
 def child_count(con: sqlite3.Connection, node_id: str) -> int:
-    return int(con.execute("select count(*) from noteedge where user_id=? and source_id=?", (USER_ID, node_id)).fetchone()[0])
+    node_ref = note_edge_ref(con, node_id)
+    return int(con.execute("select count(*) from noteedge where user_id=? and source_id=?", (USER_ID, node_ref)).fetchone()[0])
 
 
 def parent_count(con: sqlite3.Connection, node_id: str) -> int:
-    return int(con.execute("select count(*) from noteedge where user_id=? and target_id=?", (USER_ID, node_id)).fetchone()[0])
+    node_ref = note_edge_ref(con, node_id)
+    return int(con.execute("select count(*) from noteedge where user_id=? and target_id=?", (USER_ID, node_ref)).fetchone()[0])
 
 
 def run(args: argparse.Namespace) -> None:
@@ -123,7 +138,8 @@ def run(args: argparse.Namespace) -> None:
     )
     shutil.copy2(db_path(data_dir), backup)
     for node_id in edge_ids:
-        con.execute("delete from noteedge where user_id=? and (source_id=? or target_id=?)", (USER_ID, node_id, node_id))
+        node_ref = note_edge_ref(con, node_id)
+        con.execute("delete from noteedge where user_id=? and (source_id=? or target_id=?)", (USER_ID, node_ref, node_ref))
         con.execute("delete from notenode where user_id=? and id=?", (USER_ID, node_id))
     con.commit()
     con.close()

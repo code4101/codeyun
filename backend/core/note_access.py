@@ -1,6 +1,7 @@
 from typing import Any, Optional
 
 from backend.models import NoteNode, User
+from backend.core.note_refs import note_public_api_id
 from backend.core.note_semantics import (
     NOTE_CATEGORY_DEFAULT,
     NOTE_FORM_DEFAULT,
@@ -64,6 +65,7 @@ def note_to_response_dict(
     **extra_fields: Any,
 ) -> dict[str, Any]:
     payload = note.model_dump()
+    payload["id"] = note_public_api_id(note)
     if payload.get("note_categories") or payload.get("primary_category") or payload.get("note_form") or payload.get("note_scene") or payload.get("lifecycle_stage"):
         normalized = derive_legacy_semantics_from_taxonomy(
             payload.get("note_categories"),

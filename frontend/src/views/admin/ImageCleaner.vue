@@ -84,6 +84,12 @@
       </el-table-column>
       
       <el-table-column prop="filename" label="文件名" show-overflow-tooltip sortable />
+
+      <el-table-column prop="device_file_id" label="ID" width="90" align="right" sortable>
+        <template #default="scope">
+          {{ scope.row.device_file_id ?? '-' }}
+        </template>
+      </el-table-column>
       
       <el-table-column prop="size" label="大小" width="120" sortable>
         <template #default="scope">

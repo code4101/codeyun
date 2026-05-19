@@ -9,6 +9,7 @@ from backend.core.stock.eastmoney_browser import (
     get_eastmoney_browser_paths,
 )
 from backend.core.stock.eastmoney_trade import _open_tab
+from backend.core.stock import eastmoney_trade
 
 
 def test_get_eastmoney_browser_paths_uses_data_dir():
@@ -57,13 +58,24 @@ def test_capture_tab_snapshot_reads_basic_state():
 
 
 class FakeTradeTab:
-    def __init__(self, url: str):
+    def __init__(self, url: str, body_text: str = ""):
         self.url = url
+        self.body_text = body_text
         self.get_calls: list[str] = []
+        self.js_calls: list[str] = []
 
     def get(self, url: str):
         self.get_calls.append(url)
         self.url = url
+
+    def ele(self, selector: str):
+        if selector == "tag:body":
+            return SimpleNamespace(text=self.body_text)
+        raise LookupError(selector)
+
+    def run_js(self, script: str):
+        self.js_calls.append(script)
+        return '{"ok": true}'
 
 
 class FakeTradeBrowser:
@@ -92,3 +104,70 @@ def test_open_tab_reuses_existing_trade_login_without_reopening_target():
     assert tab is login_tab
     assert login_tab.get_calls == []
     assert browser.new_tab_calls == []
+
+
+def test_open_trade_account_page_opens_position_page(monkeypatch):
+    browser = FakeTradeBrowser([])
+    monkeypatch.setattr(eastmoney_trade, "_get_browser", lambda: browser)
+
+    state = eastmoney_trade.open_trade_account_page()
+
+    assert browser.new_tab_calls == ["https://jywg.18.cn/Search/Position"]
+    assert state["url"] == "https://jywg.18.cn/Search/Position"
+    assert state["login_required"] is False
+    assert state["login_duration_preset"] is False
+    assert state["captcha_ocr_filled"] is False
+
+
+def test_open_trade_account_page_presets_three_hour_duration(monkeypatch):
+    login_tab = FakeTradeTab(
+        "https://jywg.18.cn/Login?returl=%2fSearch%2fPosition",
+        body_text="交易登录 请输入资金账号 在线时间 15分钟 30分钟 3小时",
+    )
+    browser = FakeTradeBrowser([login_tab])
+    monkeypatch.setattr(eastmoney_trade, "_get_browser", lambda: browser)
+    monkeypatch.setattr(eastmoney_trade, "_try_fill_login_captcha", lambda _tab: eastmoney_trade._empty_captcha_state())
+
+    state = eastmoney_trade.open_trade_account_page()
+
+    assert state["login_required"] is True
+    assert state["login_duration_preset"] is True
+    assert len(login_tab.js_calls) == 1
+    assert "3小时" in login_tab.js_calls[0]
+
+
+def test_open_trade_account_page_reports_captcha_ocr_state(monkeypatch):
+    login_tab = FakeTradeTab(
+        "https://jywg.18.cn/Login?returl=%2fSearch%2fPosition",
+        body_text="交易登录 请输入资金账号 在线时间 15分钟 30分钟 3小时",
+    )
+    browser = FakeTradeBrowser([login_tab])
+    monkeypatch.setattr(eastmoney_trade, "_get_browser", lambda: browser)
+    monkeypatch.setattr(
+        eastmoney_trade,
+        "_try_fill_login_captcha",
+        lambda _tab: {
+            "captcha_ocr_text": "9129",
+            "captcha_ocr_filled": True,
+            "captcha_ocr_error": "",
+        },
+    )
+
+    state = eastmoney_trade.open_trade_account_page()
+
+    assert state["login_required"] is True
+    assert state["captcha_ocr_text"] == "9129"
+    assert state["captcha_ocr_filled"] is True
+    assert state["captcha_ocr_error"] == ""
+
+
+def test_extract_captcha_text_from_ocr_document_normalizes_labels():
+    document = {
+        "shapes": [
+            {"label": '{"text":"验"}', "points": [[0, 0], [8, 8]]},
+            {"label": '{"text":"9"}', "points": [[10, 0], [18, 8]]},
+            {"label": '{"text":"q 2"}', "points": [[20, 0], [36, 8]]},
+        ]
+    }
+
+    assert eastmoney_trade._extract_captcha_text_from_ocr_document(document) == "9Q2"

@@ -19,18 +19,20 @@ const props = withDefaults(defineProps<{
   total: number
   disabled?: boolean
   size?: 'xs' | 'sm' | 'md'
+  pad?: boolean
   title?: string
   ariaLabel?: string
 }>(), {
   disabled: false,
   size: 'md',
+  pad: true,
   title: '',
   ariaLabel: '',
 })
 
 const orderLabel = computed(() => {
   const order = String(props.index + 1)
-  if (props.total < 10) {
+  if (!props.pad || props.total < 10) {
     return order
   }
   const width = Math.max(2, String(props.total).length)

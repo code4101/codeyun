@@ -115,6 +115,13 @@
               <div class="day-number" :class="{ 'is-today': isToday(day.date) }">
                 <div class="day-left">
                   <span class="solar-day" :class="{ 'is-rest-text': day.isRest }">{{ day.dayNum }}</span>
+                  <span
+                    v-if="shouldShowCodexHours(getCodexSecondsForDate(day.date))"
+                    class="codex-hours"
+                    :title="getCodexHoursTitle(getCodexSecondsForDate(day.date))"
+                  >
+                    {{ formatCodexHours(getCodexSecondsForDate(day.date)) }}
+                  </span>
                   <span v-if="isToday(day.date)" class="today-tag">今天</span>
                   <span v-if="day.holidayName" class="holiday-marker" :class="{ 'is-rest': day.isRest === true, 'is-work': day.isRest === false }">
                     {{ day.isRest === true ? '休' : '班' }}
@@ -197,14 +204,23 @@
               :class="{ 'is-current-month': month.isCurrentMonth }"
             >
               <div class="year-month-label">
-                <button
-                  type="button"
-                  class="year-month-name-button"
-                  :title="`${month.monthLabel}，点击进入月视图`"
-                  @click="openMonthFromYear(month.monthIndex)"
-                >
-                  {{ month.monthLabel }}
-                </button>
+                <div class="year-month-heading">
+                  <button
+                    type="button"
+                    class="year-month-name-button"
+                    :title="`${month.monthLabel}，点击进入月视图`"
+                    @click="openMonthFromYear(month.monthIndex)"
+                  >
+                    {{ month.monthLabel }}
+                  </button>
+                  <span
+                    v-if="shouldShowCodexHours(month.codexSeconds)"
+                    class="codex-hours year-month-codex-hours"
+                    :title="getCodexHoursTitle(month.codexSeconds)"
+                  >
+                    {{ formatCodexHours(month.codexSeconds) }}
+                  </span>
+                </div>
 
                 <textarea
                   v-if="editingYearMonthMemoKey === month.memoKey"
@@ -481,9 +497,12 @@ import {
   startCodexDiaryImportRun,
   fetchCodexDiaryImportRun,
   fetchCalendarYearMonthMemos,
+  noteKey,
   saveCalendarYearMonthMemos
 } from '@/api/notes';
 import { useUserStore } from '@/store/userStore';
+import { fetchCodexWorkloadForEntry, type CodexWorkloadResponse, type CodexWorkloadTurn } from '@/api/codexSessions';
+import { taskStore, type Device } from '@/store/taskStore';
 import { ArrowLeft, ArrowRight, Plus } from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Solar, HolidayUtil } from 'lunar-javascript';
@@ -507,6 +526,17 @@ const session = computed(() => noteStore.getTabSession(props.tabId));
 type CalendarScale = 'month' | 'year' | 'volume' | 'era';
 type YearMonthMemoMap = Record<string, string>;
 type YearTitleMap = Record<string, string>;
+type CodexWorkloadDaySeconds = Record<string, number>;
+type CodexWorkloadDeviceStatsCache = {
+  cachedThrough: string;
+  days: CodexWorkloadDaySeconds;
+  updatedAt: number;
+};
+type CodexWorkloadStatsCache = {
+  version: number;
+  timezone: string;
+  devices: Record<string, CodexWorkloadDeviceStatsCache>;
+};
 type CalendarVolumeDefinition = {
   id: string;
   label: string;
@@ -524,6 +554,13 @@ const YEAR_MONTH_SPARSE_TOTAL_LIMIT = 4;
 const CALENDAR_QUERY_LIMIT_DEFAULT = 5000;
 const CALENDAR_VOLUME_QUERY_LIMIT = 10000;
 const CALENDAR_ERA_QUERY_LIMIT = 30000;
+const MONTH_WEEK_ROW_MIN_HEIGHT = 108;
+const MONTH_WEEK_ROW_UNIT_HEIGHT = 18;
+const MONTH_WEEK_ROW_MAX_HEIGHT = 240;
+const CODEX_WORKLOAD_DEVICE_CACHE_MS = 60_000;
+const CODEX_WORKLOAD_HOUR_SECONDS = 3600;
+const CODEX_WORKLOAD_STATS_CACHE_KEY = 'codeyun:notes:calendar:codex-workload-days:v2';
+const CODEX_WORKLOAD_STATS_CACHE_VERSION = 2;
 
 const CALENDAR_VOLUME_DEFINITIONS: CalendarVolumeDefinition[] = [
   { id: 'v1', label: '卷一 开辟鸿蒙~2008.7', start: [1992, 1, 1], endExclusive: [2008, 8, 1] },
@@ -627,8 +664,13 @@ const weekDays = ['周一', '周二', '周三', '周四', '周五', '周六', '�
 const currentNoteId = ref('');
 const loading = ref(false);
 const codexDiaryImporting = ref(false);
+const codexWorkloadTurns = ref<CodexWorkloadTurn[]>([]);
+const codexHistoricalSecondsByDay = ref<CodexWorkloadDaySeconds>({});
+const codexWorkloadLoaded = ref(false);
+const codexWorkloadError = ref('');
 const CODEX_DIARY_IMPORT_POLL_INTERVAL_MS = 1500;
 const CODEX_DIARY_IMPORT_WAIT_TIMEOUT_MS = 16 * 60 * 1000;
+let latestCodexWorkloadRequestId = 0;
 const dayContextMenu = ref({
   visible: false,
   x: 0,
@@ -755,7 +797,7 @@ const createNoteForDay = async (date: Date) => {
   const newNote = await noteStore.createNote(defaultTitle, '', NOTE_WEIGHT_DEFAULT, startAt);
   if (newNote) {
     noteStore.addNoteToTab(props.tabId, newNote.id);
-    currentNoteId.value = newNote.id;
+    currentNoteId.value = noteKey(newNote.id);
     ElMessage.success('已创建节点');
   }
 };
@@ -867,7 +909,7 @@ const importCodexDiaryForDay = async (date: Date) => {
     await refreshData({ silent: true });
     completedRun.created_note_ids.forEach(noteId => noteStore.addNoteToTab(props.tabId, noteId));
     if (completedRun.created_note_ids.length > 0) {
-      currentNoteId.value = completedRun.created_note_ids[0];
+      currentNoteId.value = noteKey(completedRun.created_note_ids[0]);
       ElMessage.success(completedRun.stage_label || `已创建 ${completedRun.created_note_ids.length} 个节点`);
     } else {
       ElMessage.info(completedRun.stage_label || '当天没有可导入的 Codex 会话记录');
@@ -892,6 +934,92 @@ const importCodexDiaryFromContextMenu = async () => {
   closeDayContextMenu();
   if (!date) return;
   await importCodexDiaryForDay(date);
+};
+
+const extractCodexWorkloadErrorMessage = (error: any, fallback: string) => {
+  const detail = error?.response?.data?.detail;
+  const message = typeof detail === 'string' ? detail : error?.message;
+  return typeof message === 'string' && message.trim() ? message : fallback;
+};
+
+const refreshCodexWorkloadStats = async () => {
+  const requestId = ++latestCodexWorkloadRequestId;
+  codexWorkloadError.value = '';
+  try {
+    if (!taskStore.devices.length || Date.now() - taskStore.lastDeviceFetch > CODEX_WORKLOAD_DEVICE_CACHE_MS) {
+      await taskStore.fetchDevices();
+    }
+    const devices = taskStore.devices.slice();
+    if (requestId !== latestCodexWorkloadRequestId) return;
+    if (!devices.length) {
+      codexWorkloadTurns.value = [];
+      codexHistoricalSecondsByDay.value = {};
+      codexWorkloadLoaded.value = true;
+      return;
+    }
+
+    const cache = loadCodexWorkloadStatsCache();
+    codexHistoricalSecondsByDay.value = collectCachedCodexDaySeconds(cache, devices);
+    const todayStartMs = getCodexTodayStartMs();
+    const yesterdayKey = toDateStr(new Date(todayStartMs - 1));
+
+    const results = await Promise.allSettled(
+      devices.map(async (device) => {
+        const requestStartMs = resolveCodexCacheRequestStartAt(cache.devices[device.id], todayStartMs);
+        return {
+          device,
+          requestStartMs,
+          workload: await fetchCodexWorkloadForEntry(
+            device.id,
+            requestStartMs === undefined ? undefined : { startAt: requestStartMs / 1000 }
+          ),
+        };
+      })
+    );
+    if (requestId !== latestCodexWorkloadRequestId) return;
+
+    const fulfilled = results
+      .filter((item): item is PromiseFulfilledResult<{
+        device: Device;
+        requestStartMs: number | undefined;
+        workload: CodexWorkloadResponse;
+      }> => item.status === 'fulfilled')
+      .map(item => item.value);
+    for (const { device, requestStartMs, workload } of fulfilled) {
+      const deviceCache = cache.devices[device.id] ?? {
+        cachedThrough: '',
+        days: {},
+        updatedAt: 0,
+      };
+      cache.devices[device.id] = deviceCache;
+      const historicalDays = mapToCodexWorkloadDaySeconds(
+        aggregateCodexTurnsByDay(workload.turns || [], requestStartMs ?? Number.NEGATIVE_INFINITY, todayStartMs)
+      );
+      mergeCodexHistoricalDeviceDays(deviceCache, historicalDays, requestStartMs, todayStartMs, yesterdayKey);
+    }
+    saveCodexWorkloadStatsCache(cache);
+    codexHistoricalSecondsByDay.value = collectCachedCodexDaySeconds(cache, devices);
+    codexWorkloadTurns.value = fulfilled.flatMap(({ device, workload }) => (
+      (workload.turns || [])
+        .filter(turn => isCodexTurnActiveAfter(turn, todayStartMs))
+        .map(turn => ({
+          ...turn,
+          id: `${device.id}:${turn.id}`,
+        }))
+    ));
+    codexWorkloadLoaded.value = true;
+
+    if (!fulfilled.length) {
+      const firstRejected = results.find((item): item is PromiseRejectedResult => item.status === 'rejected');
+      codexWorkloadError.value = extractCodexWorkloadErrorMessage(firstRejected?.reason, '读取 Codex workload 失败');
+    }
+  } catch (error) {
+    if (requestId !== latestCodexWorkloadRequestId) return;
+    codexWorkloadTurns.value = [];
+    codexHistoricalSecondsByDay.value = {};
+    codexWorkloadLoaded.value = true;
+    codexWorkloadError.value = extractCodexWorkloadErrorMessage(error, '读取 Codex workload 失败');
+  }
 };
 
 const onPeriodChange = (value: Date | string | number | undefined) => {
@@ -1113,7 +1241,13 @@ const gridTemplateRows = computed(() => {
     weights.push(Number((WEEK_BASE_WEIGHT + level).toFixed(3)));
   }
 
-  return weights.map(w => `minmax(${Math.round(w * 18)}px, auto)`).join(' ');
+  return weights.map((weight) => {
+    const height = Math.min(
+      MONTH_WEEK_ROW_MAX_HEIGHT,
+      Math.max(MONTH_WEEK_ROW_MIN_HEIGHT, Math.round(weight * MONTH_WEEK_ROW_UNIT_HEIGHT))
+    );
+    return `${height}px`;
+  }).join(' ');
 });
 
 const gridStartTs = computed(() => gridDays.value[0]?.date.getTime() ?? monthStartTs.value);
@@ -1167,7 +1301,7 @@ const getNotesForDay = (date: Date) => {
 };
 
 const openNote = (note: NoteNode) => {
-  currentNoteId.value = note.id;
+  currentNoteId.value = noteKey(note.id);
 };
 
 const getNoteDisplayTheme = (note: NoteNode) => getNodeDisplayStyle(
@@ -1210,14 +1344,228 @@ const getYearNoteScore = (note: NoteNode) => {
   return weight * 10 + relationScore + progressScore + stageScore;
 };
 
-const getNoteCustomFieldValue = (note: NoteNode, key: string) => {
+const getNoteCustomFieldRawValue = (note: NoteNode, key: string) => {
   const fields = toRaw(note).custom_fields;
-  if (!Array.isArray(fields)) return '';
+  if (!Array.isArray(fields)) return undefined;
   for (const item of fields) {
-    if (Array.isArray(item) && item[0] === key) return String(item[2] ?? '').trim();
-    if (item && typeof item === 'object' && (item as any).key === key) return String((item as any).value ?? '').trim();
+    if (Array.isArray(item) && item[0] === key) return item[2];
+    if (item && typeof item === 'object' && (item as any).key === key) return (item as any).value;
   }
-  return '';
+  return undefined;
+};
+
+const getNoteCustomFieldValue = (note: NoteNode, key: string) => {
+  const value = getNoteCustomFieldRawValue(note, key);
+  return value == null ? '' : String(value).trim();
+};
+
+const toEpochMs = (value?: number | string | null) => {
+  if (value == null || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return Math.abs(numeric) < 1_000_000_000_000 ? numeric * 1000 : numeric;
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const startOfLocalDayMs = (value: number) => {
+  const date = new Date(value);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+};
+
+const addLocalDaysMs = (value: number, days = 1) => {
+  const date = new Date(value);
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + days).getTime();
+};
+
+const parseLocalDateKeyMs = (dateKey: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
+  if (!match) return 0;
+  const [, year, month, day] = match;
+  const value = new Date(Number(year), Number(month) - 1, Number(day)).getTime();
+  return Number.isNaN(value) ? 0 : value;
+};
+
+const normalizeCodexWorkloadDaySeconds = (value: unknown): CodexWorkloadDaySeconds => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([dateKey, seconds]) => /^\d{4}-\d{2}-\d{2}$/.test(dateKey) && Number(seconds) > 0)
+      .map(([dateKey, seconds]) => [dateKey, Number(seconds)])
+  );
+};
+
+const canUseCodexWorkloadStatsCache = () => (
+  typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+);
+
+const createEmptyCodexWorkloadStatsCache = (): CodexWorkloadStatsCache => ({
+  version: CODEX_WORKLOAD_STATS_CACHE_VERSION,
+  timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+  devices: {},
+});
+
+const loadCodexWorkloadStatsCache = (): CodexWorkloadStatsCache => {
+  if (!canUseCodexWorkloadStatsCache()) return createEmptyCodexWorkloadStatsCache();
+  try {
+    const raw = window.localStorage.getItem(CODEX_WORKLOAD_STATS_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!parsed || parsed.version !== CODEX_WORKLOAD_STATS_CACHE_VERSION || typeof parsed.devices !== 'object') {
+      return createEmptyCodexWorkloadStatsCache();
+    }
+    return {
+      version: CODEX_WORKLOAD_STATS_CACHE_VERSION,
+      timezone: typeof parsed.timezone === 'string' ? parsed.timezone : '',
+      devices: Object.fromEntries(
+        Object.entries(parsed.devices as Record<string, any>).map(([deviceId, item]) => [
+          deviceId,
+          {
+            cachedThrough: typeof item?.cachedThrough === 'string' ? item.cachedThrough : '',
+            days: normalizeCodexWorkloadDaySeconds(item?.days),
+            updatedAt: Number(item?.updatedAt || 0),
+          },
+        ])
+      ),
+    };
+  } catch {
+    return createEmptyCodexWorkloadStatsCache();
+  }
+};
+
+const saveCodexWorkloadStatsCache = (cache: CodexWorkloadStatsCache) => {
+  if (!canUseCodexWorkloadStatsCache()) return;
+  try {
+    window.localStorage.setItem(CODEX_WORKLOAD_STATS_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // 缓存失败不影响页面实时统计。
+  }
+};
+
+const collectCachedCodexDaySeconds = (
+  cache: CodexWorkloadStatsCache,
+  devices: Device[],
+): CodexWorkloadDaySeconds => {
+  const days: CodexWorkloadDaySeconds = {};
+  for (const device of devices) {
+    const deviceCache = cache.devices[device.id];
+    if (!deviceCache) continue;
+    for (const [dateKey, seconds] of Object.entries(deviceCache.days)) {
+      days[dateKey] = (days[dateKey] || 0) + seconds;
+    }
+  }
+  return days;
+};
+
+const aggregateCodexTurnsByDay = (
+  turns: CodexWorkloadTurn[],
+  rangeStartMs = Number.NEGATIVE_INFINITY,
+  rangeEndMs = Number.POSITIVE_INFINITY,
+) => {
+  const map = new Map<string, number>();
+  for (const turn of turns) {
+    const startMs = toEpochMs(turn.start_at);
+    const rawEndMs = toEpochMs(turn.end_at);
+    const durationMs = Math.max(0, Number(turn.duration_seconds || 0) * 1000);
+    const endMs = rawEndMs > startMs ? rawEndMs : startMs + durationMs;
+    const clippedStartMs = Math.max(startMs, rangeStartMs);
+    const clippedEndMs = Math.min(endMs, rangeEndMs);
+    if (!startMs || clippedEndMs <= clippedStartMs) continue;
+
+    for (
+      let dayStartMs = startOfLocalDayMs(clippedStartMs);
+      dayStartMs < clippedEndMs;
+      dayStartMs = addLocalDaysMs(dayStartMs)
+    ) {
+      const dayEndMs = addLocalDaysMs(dayStartMs);
+      const overlapMs = Math.max(0, Math.min(clippedEndMs, dayEndMs) - Math.max(clippedStartMs, dayStartMs));
+      if (!overlapMs) continue;
+      const dateKey = toDateStr(new Date(dayStartMs));
+      map.set(dateKey, (map.get(dateKey) || 0) + overlapMs / 1000);
+    }
+  }
+  return map;
+};
+
+const getCodexTodayStartMs = () => startOfLocalDayMs(Date.now());
+
+const mapToCodexWorkloadDaySeconds = (map: Map<string, number>): CodexWorkloadDaySeconds => (
+  Object.fromEntries(Array.from(map.entries()).filter(([, seconds]) => seconds > 0))
+);
+
+const isCodexTurnActiveAfter = (turn: CodexWorkloadTurn, startMs: number) => {
+  const turnStartMs = toEpochMs(turn.start_at);
+  const rawEndMs = toEpochMs(turn.end_at);
+  const durationMs = Math.max(0, Number(turn.duration_seconds || 0) * 1000);
+  const turnEndMs = rawEndMs > turnStartMs ? rawEndMs : turnStartMs + durationMs;
+  return turnEndMs > startMs;
+};
+
+const resolveCodexCacheRequestStartAt = (
+  deviceCache: CodexWorkloadDeviceStatsCache | undefined,
+  todayStartMs: number,
+) => {
+  if (!deviceCache?.cachedThrough) return undefined;
+  const cachedThroughMs = parseLocalDateKeyMs(deviceCache.cachedThrough);
+  if (!cachedThroughMs) return undefined;
+  const nextMissingDayMs = addLocalDaysMs(cachedThroughMs);
+  return Math.min(nextMissingDayMs, todayStartMs);
+};
+
+const mergeCodexHistoricalDeviceDays = (
+  deviceCache: CodexWorkloadDeviceStatsCache,
+  days: CodexWorkloadDaySeconds,
+  rangeStartMs: number | undefined,
+  todayStartMs: number,
+  cachedThroughKey: string,
+) => {
+  if (rangeStartMs === undefined) {
+    deviceCache.days = days;
+  } else if (rangeStartMs < todayStartMs) {
+    for (const dateKey of Object.keys(deviceCache.days)) {
+      const dateMs = parseLocalDateKeyMs(dateKey);
+      if (dateMs >= rangeStartMs && dateMs < todayStartMs) {
+        delete deviceCache.days[dateKey];
+      }
+    }
+    Object.assign(deviceCache.days, days);
+  }
+  deviceCache.cachedThrough = cachedThroughKey;
+  deviceCache.updatedAt = Date.now();
+};
+
+const codexDynamicSecondsByDay = computed(() => (
+  aggregateCodexTurnsByDay(codexWorkloadTurns.value, getCodexTodayStartMs())
+));
+
+const codexSecondsByDay = computed(() => {
+  const map = new Map<string, number>(
+    Object.entries(codexHistoricalSecondsByDay.value)
+  );
+  for (const [dateKey, seconds] of codexDynamicSecondsByDay.value.entries()) {
+    map.set(dateKey, (map.get(dateKey) || 0) + seconds);
+  }
+  return map;
+});
+
+const codexSecondsByMonth = computed(() => {
+  const map = new Map<string, number>();
+  for (const [dateKey, seconds] of codexSecondsByDay.value.entries()) {
+    const monthKey = dateKey.slice(0, 7);
+    map.set(monthKey, (map.get(monthKey) || 0) + seconds);
+  }
+  return map;
+});
+
+const getCodexSecondsForDate = (date: Date) => codexSecondsByDay.value.get(toDateStr(date)) || 0;
+const getCodexSecondsForYearMonth = (year: number, monthIndex: number) => (
+  codexSecondsByMonth.value.get(`${year}-${pad2(monthIndex + 1)}`) || 0
+);
+
+const shouldShowCodexHours = (seconds: number) => Math.round(seconds / CODEX_WORKLOAD_HOUR_SECONDS) > 0;
+const formatCodexHours = (seconds: number) => `${Math.round(seconds / CODEX_WORKLOAD_HOUR_SECONDS)}h`;
+const getCodexHoursTitle = (seconds: number) => {
+  const minutes = Math.round(seconds / 60);
+  const sourceText = codexWorkloadLoaded.value ? '来自 Codex workload' : '正在读取 Codex workload';
+  return `Codex 工作约 ${formatCodexHours(seconds)}（${minutes} 分钟，${sourceText}）`;
 };
 
 const getVolumeNoteScore = (note: NoteNode) => {
@@ -1424,6 +1772,7 @@ type YearMonthSummary = {
   totalCount: number;
   visibleNotes: NoteNode[];
   hiddenCount: number;
+  codexSeconds: number;
   isCurrentMonth: boolean;
   isSparse: boolean;
 };
@@ -1455,6 +1804,7 @@ const yearMonthSummaries = computed<YearMonthSummary[]>(() => {
       totalCount: bucket.totalCount,
       visibleNotes: visible,
       hiddenCount: Math.max(0, bucket.totalCount - visible.length),
+      codexSeconds: getCodexSecondsForYearMonth(currentYear.value, monthIndex),
       isCurrentMonth: currentYear.value === now.getFullYear() && monthIndex === now.getMonth(),
       isSparse: bucket.totalCount > 0 && bucket.totalCount <= YEAR_MONTH_SPARSE_TOTAL_LIMIT
     };
@@ -1886,7 +2236,7 @@ const handleNoteDelete = (noteId: string) => {
 
 const handleNoteCreate = (note: NoteNode) => {
   noteStore.addNoteToTab(props.tabId, note.id);
-  currentNoteId.value = note.id;
+  currentNoteId.value = noteKey(note.id);
 };
 
 const {
@@ -1912,6 +2262,7 @@ const calendarPaneHeight = computed(() => (
 
 onMounted(() => {
   void loadYearMonthMemos();
+  void refreshCodexWorkloadStats();
   refreshData({ silent: true });
   window.addEventListener('click', closeContextMenus);
   window.addEventListener('scroll', closeContextMenus, true);
@@ -1957,6 +2308,17 @@ watch(viewProgram, (value) => {
     viewProgram: normalizeNoteProgramChannel(value)
   });
 }, { deep: true });
+
+watch(() => userStore.isAuthenticated, (isAuthenticated) => {
+  if (isAuthenticated) {
+    void refreshCodexWorkloadStats();
+  } else {
+    codexWorkloadTurns.value = [];
+    codexHistoricalSecondsByDay.value = {};
+    codexWorkloadLoaded.value = false;
+    codexWorkloadError.value = '';
+  }
+});
 
 </script>
 
@@ -2477,6 +2839,13 @@ watch(viewProgram, (value) => {
   color: #409eff;
 }
 
+.year-month-heading {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
 .year-month-name-button {
   font-size: 15px;
   font-weight: 700;
@@ -2640,8 +3009,8 @@ watch(viewProgram, (value) => {
   flex: none;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
-  grid-auto-rows: minmax(108px, auto);
-  overflow: visible;
+  grid-auto-rows: 108px;
+  overflow: hidden;
 }
 
 .day-cell {
@@ -2650,7 +3019,8 @@ watch(viewProgram, (value) => {
   padding: 5px;
   display: flex;
   flex-direction: column;
-  overflow: visible;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .day-cell:nth-child(7n) {
@@ -2687,15 +3057,31 @@ watch(viewProgram, (value) => {
   font-weight: bold;
   color: #303133;
   margin-bottom: 5px;
+  flex: none;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  min-width: 0;
 }
 
 .day-left {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+}
+
+.codex-hours {
+  flex: none;
+  color: #168466;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.year-month-codex-hours {
+  font-size: 12px;
 }
 
 .solar-day.is-rest-text {
@@ -2705,6 +3091,7 @@ watch(viewProgram, (value) => {
 .day-right {
   display: flex;
   align-items: center;
+  min-width: 0;
 }
 
 .lunar-info {
@@ -2748,7 +3135,25 @@ watch(viewProgram, (value) => {
 
 .day-content {
   flex: 1;
-  overflow: visible;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+.day-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.day-content::-webkit-scrollbar-thumb {
+  background: #dcdfe6;
+  border-radius: 999px;
+}
+
+.day-content::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .note-item {

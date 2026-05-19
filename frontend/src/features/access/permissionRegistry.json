@@ -611,12 +611,12 @@
     },
     {
       "key": "cluster.tasks",
-      "title": "设备任务",
+      "title": "运行管理",
       "node_type": "feature",
       "parent_key": "cluster-tools",
       "sort_order": 10,
-      "route_paths": ["/cluster/tasks", "/cluster"],
-      "menu_paths": ["/cluster/tasks"],
+      "route_paths": ["/cluster/runtime", "/cluster/tasks", "/cluster"],
+      "menu_paths": ["/cluster/runtime"],
       "api_scopes": ["cluster-tools.tasks"],
       "default_anonymous_allow": false
     },
@@ -716,17 +716,6 @@
       "route_paths": ["/admin/images"],
       "menu_paths": ["/admin/images"],
       "api_scopes": ["admin-tools.images"],
-      "default_anonymous_allow": false
-    },
-    {
-      "key": "admin.background-tasks",
-      "title": "后台任务",
-      "node_type": "feature",
-      "parent_key": "admin-tools",
-      "sort_order": 30,
-      "route_paths": ["/admin/background-tasks"],
-      "menu_paths": ["/admin/background-tasks"],
-      "api_scopes": ["admin-tools.background-tasks"],
       "default_anonymous_allow": false
     }
   ]

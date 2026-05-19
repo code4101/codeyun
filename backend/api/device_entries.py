@@ -80,6 +80,7 @@ from backend.api.git_tools import (
     GitToolReductionInputResponse,
 )
 from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_manager
+from backend.api.runtime_management import RuntimeJobToggleRequest
 from backend.core.ai_git_commit import (
     AiGitCommitError,
     generate_ai_git_commit_draft,
@@ -117,6 +118,15 @@ from backend.core.codex_device_summary import (
 )
 from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
+from backend.core.runtime_management import (
+    build_runtime_status,
+    delete_builtin_runtime_job,
+    delete_builtin_runtime_queue_task,
+    reset_builtin_runtime_job_schedule,
+    toggle_builtin_runtime_job,
+    trigger_builtin_runtime_job,
+    trigger_command_runtime_item,
+)
 from backend.core.notebook_lab import (
     NotebookBindingUpdateRequest,
     NotebookLabError,
@@ -782,6 +792,7 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
         cwd=req.cwd,
         description=req.description,
         device_id=entry.device_id,
+        runtime_kind=req.runtime_kind,
         schedule=req.schedule,
         timeout=req.timeout,
         created_at=time.time(),
@@ -836,6 +847,8 @@ def _update_local_task(session: Session, entry: UserDevice, task_id: str, req: U
         task.cwd = req.cwd
     if req.description is not None:
         task.description = req.description
+    if req.runtime_kind is not None:
+        task.runtime_kind = req.runtime_kind
     if req.schedule is not None:
         task.schedule = req.schedule
         task_manager.update_schedule(task_id, req.schedule)
@@ -1080,6 +1093,102 @@ def associate_process_for_entry(
     if entry.mode == "local":
         return _associate_local_process(session, entry, task_id, pid)
     return _proxy_request(entry, "POST", f"/task/{task_id}/associate", json_body=req)
+
+
+@router.get("/{entry_id}/runtime/status")
+def get_runtime_status_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return build_runtime_status(session, entry.device_id)
+    return _proxy_request(entry, "GET", "/runtime/status")
+
+
+@router.post("/{entry_id}/runtime/jobs/{job_key}/trigger")
+def trigger_runtime_job_for_entry(
+    entry_id: str,
+    job_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return trigger_builtin_runtime_job(job_key, session)
+    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/trigger")
+
+
+@router.post("/{entry_id}/runtime/items/{source}/{item_key}/trigger")
+def trigger_runtime_item_for_entry(
+    entry_id: str,
+    source: str,
+    item_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        if source == "builtin":
+            return trigger_builtin_runtime_job(item_key, session)
+        if source == "command":
+            return trigger_command_runtime_item(item_key, session)
+        raise HTTPException(status_code=400, detail="不支持的运行单元来源")
+    return _proxy_request(entry, "POST", f"/runtime/items/{source}/{item_key}/trigger")
+
+
+@router.post("/{entry_id}/runtime/jobs/{job_key}/toggle")
+def toggle_runtime_job_for_entry(
+    entry_id: str,
+    job_key: str,
+    payload: RuntimeJobToggleRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return toggle_builtin_runtime_job(job_key, payload.enabled, session)
+    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/toggle", json_body=payload.model_dump())
+
+
+@router.delete("/{entry_id}/runtime/jobs/queue/{task_id}")
+def delete_runtime_queue_task_for_entry(
+    entry_id: str,
+    task_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return delete_builtin_runtime_queue_task(task_id)
+    return _proxy_request(entry, "DELETE", f"/runtime/jobs/queue/{task_id}")
+
+
+@router.delete("/{entry_id}/runtime/jobs/{job_key}")
+def delete_runtime_job_for_entry(
+    entry_id: str,
+    job_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return delete_builtin_runtime_job(job_key)
+    return _proxy_request(entry, "DELETE", f"/runtime/jobs/{job_key}")
+
+
+@router.post("/{entry_id}/runtime/jobs/{job_key}/reset-schedule")
+def reset_runtime_job_schedule_for_entry(
+    entry_id: str,
+    job_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return reset_builtin_runtime_job_schedule(job_key)
+    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/reset-schedule")
 
 
 class GitToolStartReductionRunRequest(BaseModel):
@@ -1954,30 +2063,39 @@ def get_codex_thread_message_images_for_entry(
 def get_codex_workload_for_entry(
     entry_id: str,
     root_dir: str | None = Query(default=None),
+    start_at: float | None = Query(default=None),
+    end_at: float | None = Query(default=None),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_user_from_token),
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         try:
-            return build_codex_workload(root_dir, session=session)
+            return build_codex_workload(root_dir, session=session, start_at=start_at, end_at=end_at)
         except Exception as exc:  # pragma: no cover - translated for HTTP callers
             _raise_codex_http_error(exc)
 
-    params = {"root_dir": root_dir} if root_dir else None
+    params: Dict[str, Any] = {}
+    if root_dir:
+        params["root_dir"] = root_dir
+    if start_at is not None:
+        params["start_at"] = start_at
+    if end_at is not None:
+        params["end_at"] = end_at
     payload, error_response = _fetch_remote_json(
         entry,
         "GET",
         "/codex/workload",
-        params=params,
+        params=params or None,
         timeout=CODEX_REMOTE_WORKLOAD_TIMEOUT_SECONDS,
     )
     if error_response is not None:
         return _proxy_response(error_response)
-    try:
-        cache_remote_codex_workload(entry.entry_id, payload, session=session)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
+    if start_at is None and end_at is None:
+        try:
+            cache_remote_codex_workload(entry.entry_id, payload, session=session)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"写入远端 Codex 缓存失败：{exc}") from exc
     return payload
 
 

@@ -38,8 +38,22 @@ export const legacyRouteRedirects: LegacyRouteRedirectDefinition[] = [
   {
     scope: 'main',
     path: '/cluster',
-    redirect: to => ({ path: '/cluster/tasks', query: to.query }),
+    redirect: to => ({ path: '/cluster/runtime', query: to.query }),
     requiresAuth: true,
+  },
+  {
+    scope: 'main',
+    path: '/cluster/tasks',
+    redirect: to => ({ path: '/cluster/runtime', query: to.query }),
+    requiresAuth: true,
+  },
+  {
+    scope: 'main',
+    path: '/admin/background-tasks',
+    redirect: to => ({ path: '/cluster/runtime', query: to.query }),
+    requiresAuth: true,
+    requiresAdmin: true,
+    skipFeatureAccess: true,
   },
   {
     scope: 'main',

@@ -145,14 +145,14 @@ def test_note_sheet_workbook_mvp_flow(client, session):
         assert sheet_record is not None
         session.add(ResourceAccessGrant(
             resource_type="workbook",
-            resource_id=workbook_record.id,
+            resource_id=str(workbook_record.numeric_id),
             subject_key="anonymous",
             subject_type="anonymous",
             role="viewer",
         ))
         session.add(ResourceAccessGrant(
             resource_type="sheet",
-            resource_id=sheet_record.id,
+            resource_id=str(sheet_record.numeric_id),
             subject_key="anonymous",
             subject_type="anonymous",
             role="viewer",
@@ -215,13 +215,13 @@ def test_note_sheet_workbook_reorders_sheets(client, session):
         ).one()
         links = session.exec(
             select(WorkbookSheetLink)
-            .where(WorkbookSheetLink.workbook_id == workbook_record.id)
+            .where(WorkbookSheetLink.workbook_id == str(workbook_record.numeric_id))
             .order_by(WorkbookSheetLink.order_index)
         ).all()
         sheets = session.exec(
-            select(SheetDocument).where(SheetDocument.id.in_([link.sheet_id for link in links]))
+            select(SheetDocument).where(SheetDocument.numeric_id.in_([int(link.sheet_id) for link in links]))
         ).all()
-        numeric_id_by_sheet_id = {sheet.id: sheet.numeric_id for sheet in sheets}
+        numeric_id_by_sheet_id = {str(sheet.numeric_id): sheet.numeric_id for sheet in sheets}
         assert [numeric_id_by_sheet_id[link.sheet_id] for link in links] == target_order
         assert [link.order_index for link in links] == [10, 20, 30]
 
@@ -257,7 +257,7 @@ def test_note_sheet_unpack_workbook_preserves_sheets(client, session):
         assert workbook_record is not None
         session.add(ResourceAccessGrant(
             resource_type="workbook",
-            resource_id=workbook_record.id,
+            resource_id=str(workbook_record.numeric_id),
             subject_key="anonymous",
             subject_type="anonymous",
             role="viewer",
@@ -334,7 +334,7 @@ def test_delete_workbook_preserves_sheets_linked_from_other_workbooks(client, se
         assert sheet_record is not None
         session.add(ResourceAccessGrant(
             resource_type="sheet",
-            resource_id=sheet_record.id,
+            resource_id=str(sheet_record.numeric_id),
             subject_key="anonymous",
             subject_type="anonymous",
             role="viewer",
@@ -398,7 +398,7 @@ def test_note_sheet_workbook_library_lists_owned_shared_and_superuser_items(clie
 
     session.add(ResourceAccessGrant(
         resource_type="workbook",
-        resource_id=shared_to_viewer.id,
+        resource_id=str(shared_to_viewer.numeric_id),
         subject_key=f"user:{viewer.id}",
         subject_type="user",
         subject_user_id=viewer.id,
@@ -1173,7 +1173,7 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     session.refresh(sheet)
     session.add(ResourceAccessGrant(
         resource_type="sheet",
-        resource_id=sheet.id,
+        resource_id=str(sheet.numeric_id),
         subject_key="anonymous",
         subject_type="anonymous",
         role="viewer",
@@ -2874,6 +2874,138 @@ def test_note_sheet_unified_grid_page_patch_preserves_headers_and_merges(client,
         assert saved_document["cell_meta"] == {"0:0": {"style": {"background_color": "#e0f2fe"}}}
     finally:
         _clear_user_override()
+
+
+def test_note_sheet_page_patch_merges_entity_cells_without_overwriting_unloaded_rows(client, session):
+    user = _create_user(session, username="note-sheet-entity-page-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        document = {
+            "schema_version": 1,
+            "columns": ["序号", "链接"],
+            "rows": [["1", "row-1"], ["2", "row-2"], ["3", "row-3"]],
+            "grid_rows": [["序号", "链接"], ["1", "row-1"], ["2", "row-2"], ["3", "row-3"]],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "entity_columns": [{"id": "c0", "header": "序号"}, {"id": "c1", "header": "链接"}],
+            "entity_rows": [
+                {"id": "h0", "kind": "field"},
+                {"id": "r1", "kind": "data"},
+                {"id": "r2", "kind": "data"},
+                {"id": "r3", "kind": "data"},
+            ],
+            "entity_cells": {
+                "r1": {"c1": {"value": "row-1", "link": {"url": "https://example.com/1"}}},
+                "r2": {"c1": {"value": "row-2", "link": {"url": "https://example.com/2"}}},
+                "r3": {"c1": {"value": "row-3", "link": {"url": "https://example.com/3"}}},
+            },
+            "view_settings": {"pagination": {"enabled": True, "page_size": 2}},
+        }
+        create_response = client.post(
+            "/api/note-sheets/sheets",
+            json={"title": "实体分页", "document_json": document},
+        )
+        assert create_response.status_code == 200
+        sheet_id = create_response.json()["id"]
+
+        page2_response = client.get(f"/api/note-sheets/sheets/{sheet_id}", params={"page": 2, "page_size": 2})
+        assert page2_response.status_code == 200
+        page2_document = page2_response.json()["document_json"]
+        save_response = client.put(
+            f"/api/note-sheets/sheets/{sheet_id}",
+            json={
+                "document_json": {
+                    **page2_document,
+                    "rows": [["3", "row-30"]],
+                    "grid_rows": [["序号", "链接"], ["3", "row-30"]],
+                    "entity_rows": [{"id": "h0", "kind": "field"}, {"id": "r3", "kind": "data"}],
+                    "entity_cells": {
+                        "r3": {
+                            "c1": {
+                                "value": "row-30",
+                                "link": {"url": "https://example.com/30"},
+                            },
+                        },
+                    },
+                },
+                "page_patch": {
+                    "page": 2,
+                    "page_size": 2,
+                    "row_offset": 2,
+                    "loaded_row_count": 1,
+                },
+            },
+        )
+        assert save_response.status_code == 200
+
+        full_response = client.get(f"/api/note-sheets/sheets/{sheet_id}", params={"paginate": False})
+        assert full_response.status_code == 200
+        saved_document = full_response.json()["document_json"]
+        assert saved_document["rows"] == [["1", "row-1"], ["2", "row-2"], ["3", "row-30"]]
+        assert saved_document["entity_rows"] == [
+            {"id": "h0", "kind": "field"},
+            {"id": "r1", "kind": "data"},
+            {"id": "r2", "kind": "data"},
+            {"id": "r3", "kind": "data"},
+        ]
+        assert saved_document["entity_cells"]["r1"]["c1"]["link"]["url"] == "https://example.com/1"
+        assert saved_document["entity_cells"]["r2"]["c1"]["link"]["url"] == "https://example.com/2"
+        assert saved_document["entity_cells"]["r3"]["c1"]["value"] == "row-30"
+        assert saved_document["entity_cells"]["r3"]["c1"]["link"]["url"] == "https://example.com/30"
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_summary_link_lookup_prefers_entity_and_document_row_meta():
+    document = {
+        "schema_version": 1,
+        "columns": ["课程类型", "课程名称", "在线考勤表"],
+        "rows": [["禅宗4.5阶", "禅宗8期4.5阶", "20260308禅宗8期4.5阶"]],
+        "grid_rows": [
+            ["课程类型", "课程名称", "在线考勤表"],
+            ["", "", "备注"],
+            ["禅宗4.5阶", "禅宗8期4.5阶", "20260308禅宗8期4.5阶"],
+        ],
+        "data_start_row": 2,
+        "entity_columns": [
+            {"id": "c0", "header": "课程类型"},
+            {"id": "c1", "header": "课程名称"},
+            {"id": "c2", "header": "在线考勤表"},
+        ],
+        "entity_rows": [
+            {"id": "h0", "kind": "field"},
+            {"id": "h1", "kind": "field_note"},
+            {"id": "r0", "kind": "data"},
+        ],
+        "entity_cells": {
+            "r0": {
+                "c2": {
+                    "value": "20260308禅宗8期4.5阶",
+                    "link": {"url": "https://www.kdocs.cn/l/entity-token"},
+                },
+            },
+        },
+        "cell_meta": {
+            "0:2": {"link": {"url": "https://www.kdocs.cn/l/shifted-token"}},
+            "2:2": {"link": {"url": "https://www.kdocs.cn/l/document-row-token"}},
+        },
+    }
+
+    assert (
+        note_sheets_api._get_document_cell_link_url(document, 0, 2)
+        == "https://www.kdocs.cn/l/entity-token"
+    )
+
+    document_without_entity = {
+        **document,
+        "entity_cells": {},
+    }
+    assert (
+        note_sheets_api._get_document_cell_link_url(document_without_entity, 0, 2)
+        == "https://www.kdocs.cn/l/document-row-token"
+    )
 
 
 def test_note_sheet_unified_grid_sort_remaps_sheet_meta_and_rejects_rowspan_merge(client, session):

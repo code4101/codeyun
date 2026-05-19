@@ -5,7 +5,7 @@
       <h2>{{ emptyStateTitle }}</h2>
       <p>{{ emptyStateDescription }}</p>
       <div class="empty-actions">
-        <el-button type="primary" @click="router.push('/cluster/tasks')">去设备任务</el-button>
+        <el-button type="primary" @click="router.push('/cluster/runtime')">去运行管理</el-button>
       </div>
     </section>
 
@@ -897,9 +897,9 @@ const emptyStateTitle = computed(() =>
 const emptyStateDescription = computed(() => {
   if (isLockedDeviceMissing.value) {
     const targetPath = normalizedFixedRootPath.value || '固定目录';
-    return `当前页面固定使用设备 ${props.fixedDeviceId}，但当前账号下没有找到对应入口。先到设备任务里添加或授权该设备，再回来浏览 ${targetPath}。`;
+    return `当前页面固定使用设备 ${props.fixedDeviceId}，但当前账号下没有找到对应入口。先到运行管理里添加或授权该设备，再回来浏览 ${targetPath}。`;
   }
-  return '先到设备任务里添加本地或远程设备入口，再从设备上下文里浏览真实目录。';
+  return '先到运行管理里添加本地或远程设备入口，再从设备上下文里浏览真实目录。';
 });
 const listingItems = computed(() => listing.value?.items ?? []);
 const galleryStorageKey = computed(() => `device_media_gallery_${selectedEntryId.value || 'default'}`);
@@ -1096,7 +1096,7 @@ const resetMediaPagination = () => {
 const mapDeviceMediaRecord = (record: DeviceImageRecord): DeviceBrowserImage => {
   const absolutePath = record.absolute_path || record.path;
   return {
-    id: record.id,
+    id: String(record.id),
     name: record.name,
     relativePath: record.relative_path,
     folderPath: record.folder_path || '',

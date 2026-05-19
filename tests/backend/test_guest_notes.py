@@ -40,7 +40,7 @@ def test_anonymous_can_create_and_update_guest_note(client, session):
     assert updated.json()["title"] == "游客已编辑节点"
 
     guest_user = session.exec(select(User).where(User.username == GUEST_NOTES_USERNAME)).one()
-    saved_note = session.get(NoteNode, created_payload["id"])
+    saved_note = session.exec(select(NoteNode).where(NoteNode.numeric_id == int(created_payload["id"]))).first()
 
     assert saved_note is not None
     assert saved_note.user_id == guest_user.id

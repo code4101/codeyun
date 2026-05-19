@@ -41,7 +41,7 @@ ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
 ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
 
-ARTICLE_EXTRACTOR_VERSION = 4
+ARTICLE_EXTRACTOR_VERSION = 5
 MAX_CONTEXT_TOKENS = 4
 MAX_ARTICLE_CHARS = 1_000_000
 DEFAULT_TOPK_PER_KEY = 20
@@ -70,6 +70,9 @@ _LOWER_LATIN_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_/-])([a-z]{6,})(?![A-Za-z0-9
 _ENGLISH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9+#._-]{1,31})(?![A-Za-z0-9_])")
 _REPEATED_CJK_CHUNK_RE = re.compile(r"([\u3400-\u9fff]{2,6})\1+")
 _LEXICON_PINYIN_ANNOTATION_RE = re.compile(r"([\u3400-\u9fff])\(([^()]*)\)")
+_SUSPICIOUS_JIU_PHRASE_RE = re.compile(
+    r"(久是|久全|久表示|久指导|久重置|久足够|久数据|久可以|列久|新书久|信息量久|作业组久|冲突久|错了久|更新时间久|更后面久)"
+)
 
 _COMMON_TEXT_CORRECTIONS: tuple[tuple[str, str, str], ...] = (
     ("才复合", "才符合", "这里表达“满足条件/一致”时通常应写“符合”。"),
@@ -908,7 +911,17 @@ def _normalize_history_phrase_segment(segment: list[str]) -> list[str]:
 
 
 def _is_bad_history_phrase(phrase: str) -> bool:
-    return any(f"{particle}{particle}" in phrase for particle in _REDUNDANT_PHRASE_PARTICLES)
+    return _is_bad_corpus_phrase(phrase)
+
+
+def _is_bad_corpus_phrase(phrase: str) -> bool:
+    if not phrase:
+        return True
+    if any(f"{particle}{particle}" in phrase for particle in _REDUNDANT_PHRASE_PARTICLES):
+        return True
+    if phrase == "久":
+        return True
+    return bool(_SUSPICIOUS_JIU_PHRASE_RE.search(phrase))
 
 
 def _extract_history_phrase_contributions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2011,6 +2024,11 @@ def _looks_like_pinyin_sequence(code: str) -> bool:
     return reachable[-1]
 
 
+def _is_single_pinyin_syllable(code: str) -> bool:
+    text = str(code or "").lower().replace("ü", "v").replace("u:", "v")
+    return bool(text) and text in _PINYIN_SYLLABLES
+
+
 def _is_valid_domain_token(candidate: str) -> bool:
     text = str(candidate or "").strip().lower()
     if "." not in text:
@@ -2265,10 +2283,14 @@ def _extract_article_contributions(article_id: str, text: str) -> list[dict[str,
             prefix = _token_to_pinyin(candidate)
             if not prefix:
                 continue
+            if _is_bad_corpus_phrase(candidate):
+                continue
             counts[("__global", prefix, candidate)] += 1.0
             max_len = min(MAX_CONTEXT_TOKENS, index)
             for length in range(1, max_len + 1):
                 context = " ".join(tokens[index - length : index])
+                if _is_bad_corpus_phrase(context.replace(" ", "")):
+                    continue
                 counts[(context, prefix, candidate)] += 1.0
 
     return [
@@ -2481,6 +2503,13 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
                 updated_at = max(updated_at, float(path.stat().st_mtime))
             except OSError:
                 pass
+    indexed_at = 0.0
+    for path in [rime_dir / COUNTS_FILE, rime_dir / SNAPSHOT_FILE, rime_dir / HOT_FILE]:
+        if path.exists():
+            try:
+                indexed_at = max(indexed_at, float(path.stat().st_mtime))
+            except OSError:
+                pass
 
     source_label = f"输入历史 · {local_history_label or '本机'}"
     count_rows = _read_count_rows(rime_dir / COUNTS_FILE)
@@ -2502,7 +2531,7 @@ def _local_input_history_article_payload(rime_dir: Path, *, local_history_label:
             "extractor_version": ARTICLE_EXTRACTOR_VERSION,
             "created_at": _parse_history_timestamp(first_seen) if first_seen else updated_at,
             "updated_at": updated_at,
-            "processed_at": updated_at,
+            "processed_at": indexed_at,
             "readonly": True,
         }
     )
@@ -2664,13 +2693,15 @@ def _write_prediction_runtime(rime_dir: Path, rows: list[tuple[str, str, str, fl
 
 
 def _is_hot_prediction_row(row: tuple[str, str, str, float, str]) -> bool:
-    context, _prefix, candidate, weight, comment = row
+    context, prefix, candidate, weight, comment = row
     if context != "__global" or float(weight or 0) < DEFAULT_HOT_MIN_WEIGHT:
         return False
     if _is_manual_rule_comment(comment):
         return True
     if _normalize_lexicon_display_name(comment) == CUSTOM_PHRASE_LABEL:
         return True
+    if _is_single_pinyin_syllable(prefix):
+        return False
     return len(str(candidate or "")) > 1
 
 

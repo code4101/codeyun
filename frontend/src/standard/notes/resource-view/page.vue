@@ -167,6 +167,26 @@ function resolveSheetId() {
     .find((id) => id != null && validIds.has(id)) ?? null
 }
 
+async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
+  const staleWorkbookId = workbookId.value
+  const targetSheetId = querySheetId.value
+  if (targetSheetId == null) {
+    return false
+  }
+
+  const detail = await fetchNoteSheet(targetSheetId, { paginate: false })
+  const targetWorkbook = detail?.workbook_items.find((item) => item.id !== staleWorkbookId) ?? detail?.workbook_items[0]
+  if (!targetWorkbook || targetWorkbook.id === staleWorkbookId) {
+    return false
+  }
+
+  void router.replace({
+    path: `/workbook/${targetWorkbook.id}`,
+    query: { ...route.query, sheet: String(targetSheetId) },
+  })
+  return true
+}
+
 async function loadWorkbookResource() {
   if (!isWorkbookMode.value) {
     return
@@ -183,6 +203,9 @@ async function loadWorkbookResource() {
   try {
     const detail = await fetchWorkbook(workbookId.value)
     if (!detail) {
+      if (await redirectWorkbookRouteFromSheetQuery()) {
+        return
+      }
       errorText.value = '工作簿不存在或不可访问'
       workbook.value = null
       activeSheetId.value = null
@@ -198,6 +221,9 @@ async function loadWorkbookResource() {
     }
   } catch (error) {
     console.warn('Failed to load public workbook resource:', error)
+    if (await redirectWorkbookRouteFromSheetQuery()) {
+      return
+    }
     errorText.value = '没有权限访问该工作簿'
     workbook.value = null
     activeSheetId.value = null

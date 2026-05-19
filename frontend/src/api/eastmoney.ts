@@ -211,10 +211,28 @@ export interface EastmoneySheetWorkbook {
   refreshed_at: number
 }
 
+export interface EastmoneyTradeAccountPageState {
+  title: string
+  url: string
+  account_label: string
+  login_required: boolean
+  login_duration_preset: boolean
+  captcha_ocr_text: string
+  captcha_ocr_filled: boolean
+  captcha_ocr_error: string
+}
+
 export async function fetchEastmoneyTradeSnapshot(params: FetchTradeSnapshotParams = {}) {
   const response = await api.get<EastmoneyTradeSnapshot>('/eastmoney/trade-snapshot', {
     params,
     timeout: 60000,
+  })
+  return response.data
+}
+
+export async function openEastmoneyTradeAccountPage() {
+  const response = await api.post<EastmoneyTradeAccountPageState>('/eastmoney/trade-account/open', {}, {
+    timeout: 120000,
   })
   return response.data
 }

@@ -119,6 +119,8 @@ def test_maybe_create_weekly_note_creates_note_after_current_friday_publication(
 
     assert result.status == "created"
     note = session.exec(select(NoteNode).where(NoteNode.id == result.created_note_id)).one()
+    assert note.numeric_id == int(result.created_note_id)
+    assert note.legacy_id and note.legacy_id != note.id
     assert note.user_id == auth_user.id
     assert note.title == "科技周刊第第第395期：下一期标题"
     assert note.content == (

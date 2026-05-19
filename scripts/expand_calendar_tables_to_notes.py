@@ -25,6 +25,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.core.yuque_html import normalize_legacy_yuque_lake_html
+try:
+    from resource_identity_sqlite import allocate_note_numeric_id, insert_note_edge
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import allocate_note_numeric_id, insert_note_edge
 
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -736,29 +740,19 @@ def existing_expanded_nodes(con: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     return result
 
 
-def next_note_numeric_id(con: sqlite3.Connection) -> int:
-    row = con.execute("select coalesce(max(numeric_id), 0) + 1 from notenode").fetchone()
-    return int(row[0] or 1)
-
-
 def insert_edge(con: sqlite3.Connection, source_id: str, target_id: str) -> bool:
-    if not source_id or not target_id or source_id == target_id:
-        return False
-    exists = con.execute(
-        "select 1 from noteedge where user_id=? and source_id=? and target_id=? limit 1",
-        (USER_ID, source_id, target_id),
-    ).fetchone()
-    if exists:
-        return False
-    con.execute(
-        "insert into noteedge(id,user_id,source_id,target_id,label,created_at) values (?,?,?,?,?,?)",
-        (str(uuid.uuid4()), USER_ID, source_id, target_id, None, time.time()),
+    return insert_note_edge(
+        con,
+        user_id=USER_ID,
+        source_id=source_id,
+        target_id=target_id,
+        edge_id=str(uuid.uuid4()),
     )
-    return True
 
 
-def insert_item(con: sqlite3.Connection, item: CalendarItem, numeric_id: int) -> str:
+def insert_item(con: sqlite3.Connection, item: CalendarItem) -> str:
     node_id = str(uuid.uuid4())
+    numeric_id = allocate_note_numeric_id(con, node_id)
     now = time.time()
     con.execute(
         """
@@ -1011,13 +1005,11 @@ def run(args: argparse.Namespace) -> None:
     )
     shutil.copy2(db_path(data_dir), backup)
 
-    next_numeric_id = next_note_numeric_id(con)
     inserted = 0
     updated = 0
     edges = 0
     for item in todo_insert:
-        node_id = insert_item(con, item, next_numeric_id)
-        next_numeric_id += 1
+        node_id = insert_item(con, item)
         inserted += 1
         if insert_edge(con, item.source_note_id, node_id):
             edges += 1

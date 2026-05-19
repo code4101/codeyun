@@ -20,8 +20,10 @@ def _make_note(
     content: str = "<p>这是一段用于反馈摘要的正文内容。</p>",
     note_form: str = "note",
 ) -> NoteNode:
+    numeric_id = sum((index + 1) * ord(char) for index, char in enumerate(note_id)) % 1000000 + 1000
     return NoteNode(
         id=note_id,
+        numeric_id=numeric_id,
         user_id=user_id,
         title=title,
         content=content,
@@ -48,17 +50,18 @@ def test_metadata_feedback_records_metadata_changes_not_body_only(client, sessio
     session.add(note)
     session.commit()
 
-    content_response = client.put(f"/api/notes/{note.id}", json={"content": "<p>只改正文。</p>"})
+    content_response = client.put(f"/api/notes/{note.numeric_id}", json={"content": "<p>只改正文。</p>"})
     assert content_response.status_code == 200
     assert session.exec(select(NoteMetadataFeedback)).all() == []
 
-    title_response = client.put(f"/api/notes/{note.id}", json={"title": "修正后的标题"})
+    title_response = client.put(f"/api/notes/{note.numeric_id}", json={"title": "修正后的标题"})
     assert title_response.status_code == 200
 
     rows = session.exec(select(NoteMetadataFeedback)).all()
     assert len(rows) == 1
     row = rows[0]
     assert row.status == "pending"
+    assert row.note_id == str(note.numeric_id)
     assert row.source_kind == "manual_update"
     assert row.field_names == ["title"]
     assert row.before_snapshot["title"] == "原始标题"
@@ -74,8 +77,8 @@ def test_metadata_feedback_coalesces_document_node_to_latest_state(client, sessi
     session.add(note)
     session.commit()
 
-    first = client.put(f"/api/notes/{note.id}", json={"title": "文档标题一"})
-    second = client.put(f"/api/notes/{note.id}", json={"weight": 3})
+    first = client.put(f"/api/notes/{note.numeric_id}", json={"title": "文档标题一"})
+    second = client.put(f"/api/notes/{note.numeric_id}", json={"weight": 3})
     assert first.status_code == 200
     assert second.status_code == 200
 
@@ -103,12 +106,13 @@ def test_ai_categorize_writes_metadata_feedback(client, session: Session, auth_u
         },
     ):
         response = client.post(
-            f"/api/notes/{note.id}/ai-categorize",
+            f"/api/notes/{note.numeric_id}/ai-categorize",
             json={"provider": "deepseek", "model": "deepseek-chat"},
         )
 
     assert response.status_code == 200
     row = session.exec(select(NoteMetadataFeedback)).one()
+    assert row.note_id == str(note.numeric_id)
     assert row.source_kind == "ai_categorize"
     assert row.source_kinds == ["ai_categorize"]
     assert row.source_ref_id == "note-taxonomy"
@@ -121,7 +125,7 @@ def test_feedback_optimizer_codex_failure_is_skipped_without_consuming(client, s
     note = _make_note(auth_user.id, "feedback-failure-1")
     session.add(note)
     session.commit()
-    response = client.put(f"/api/notes/{note.id}", json={"title": "失败场景标题"})
+    response = client.put(f"/api/notes/{note.numeric_id}", json={"title": "失败场景标题"})
     assert response.status_code == 200
     feedback_id = session.exec(select(NoteMetadataFeedback.id)).one()
 
@@ -142,7 +146,7 @@ def test_feedback_optimizer_codex_failure_is_skipped_without_consuming(client, s
     assert feedback.status == "pending"
     assert feedback.consumer_run_id is None
 
-    normal_response = client.put(f"/api/notes/{note.id}", json={"content": "<p>后端仍可正常保存。</p>"})
+    normal_response = client.put(f"/api/notes/{note.numeric_id}", json={"content": "<p>后端仍可正常保存。</p>"})
     assert normal_response.status_code == 200
 
 

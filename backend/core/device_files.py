@@ -5,11 +5,38 @@ from dataclasses import dataclass
 
 from sqlmodel import Session, select
 
+from backend.core.resource_identity import RESOURCE_TYPE_DEVICE_FILE, allocate_resource_id
 from backend.models import DeviceFile
 
 
 MATCH_STATUS_MATCHED = "matched"
 MATCH_STATUS_DANGLING = "dangling"
+
+
+def get_device_file_public_id(record: DeviceFile) -> int | None:
+    if record.numeric_id is not None:
+        return int(record.numeric_id)
+    if record.id is not None:
+        return int(record.id)
+    return None
+
+
+def ensure_device_file_resource_identity(session: Session, record: DeviceFile) -> int:
+    if record.id is None:
+        session.flush()
+    if record.id is None:
+        raise ValueError("device file id is required")
+
+    public_id = allocate_resource_id(
+        session,
+        RESOURCE_TYPE_DEVICE_FILE,
+        str(record.id),
+        preferred_id=int(record.numeric_id or record.id),
+    )
+    if record.numeric_id != public_id:
+        record.numeric_id = public_id
+        session.add(record)
+    return public_id
 
 
 @dataclass(frozen=True)
@@ -609,6 +636,7 @@ def reconcile_device_file_batch(
             _merge_duplicate_metadata(target, duplicate_candidates)
         session.add(target)
         session.flush()
+        ensure_device_file_resource_identity(session, target)
         processed_records.append(target)
 
     dangling_count = 0
@@ -625,6 +653,8 @@ def reconcile_device_file_batch(
                 continue
             _mark_record_dangling(record, now=now)
             session.add(record)
+            session.flush()
+            ensure_device_file_resource_identity(session, record)
             dangling_count += 1
 
     session.commit()
@@ -668,6 +698,8 @@ def update_device_file_weight(
     record.updated_at = now
 
     session.add(record)
+    session.flush()
+    ensure_device_file_resource_identity(session, record)
     session.commit()
     session.refresh(record)
     return record

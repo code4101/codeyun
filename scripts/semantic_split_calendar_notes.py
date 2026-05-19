@@ -21,6 +21,11 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+try:
+    from resource_identity_sqlite import allocate_note_numeric_id, insert_note_edge, note_public_ref
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import allocate_note_numeric_id, insert_note_edge, note_public_ref
+
 
 USER_ID = 2
 TZ = dt.timezone(dt.timedelta(hours=8))
@@ -143,6 +148,10 @@ class SourceRow:
     date: dt.date
     semantic_text: str
     normalized_text: str
+
+
+def source_row_public_id(row: SourceRow) -> int | None:
+    return int(row.numeric_id) if row.numeric_id is not None else None
 
 
 @dataclass
@@ -888,11 +897,6 @@ def existing_semantic_nodes(con: sqlite3.Connection) -> dict[str, sqlite3.Row]:
     return result
 
 
-def next_note_numeric_id(con: sqlite3.Connection) -> int:
-    row = con.execute("select coalesce(max(numeric_id), 0) + 1 from notenode").fetchone()
-    return int(row[0] or 1)
-
-
 def note_categories(category: str) -> str:
     return json.dumps([{"key": category, "weight": 100}], ensure_ascii=False)
 
@@ -937,19 +941,13 @@ def fields_for_item(group: SourceGroup, item: SemanticItem, index: int, split_co
 
 
 def insert_edge(con: sqlite3.Connection, source_id: str, target_id: str) -> bool:
-    if not source_id or not target_id or source_id == target_id:
-        return False
-    exists = con.execute(
-        "select 1 from noteedge where user_id=? and source_id=? and target_id=? limit 1",
-        (USER_ID, source_id, target_id),
-    ).fetchone()
-    if exists:
-        return False
-    con.execute(
-        "insert into noteedge(id,user_id,source_id,target_id,label,created_at) values (?,?,?,?,?,?)",
-        (str(uuid.uuid4()), USER_ID, source_id, target_id, None, time.time()),
+    return insert_note_edge(
+        con,
+        user_id=USER_ID,
+        source_id=source_id,
+        target_id=target_id,
+        edge_id=str(uuid.uuid4()),
     )
-    return True
 
 
 def note_payload(group: SourceGroup, item: SemanticItem, index: int, split_count: int) -> dict[str, Any]:
@@ -980,10 +978,10 @@ def insert_item(
     item: SemanticItem,
     index: int,
     split_count: int,
-    numeric_id: int,
 ) -> str:
     payload = note_payload(group, item, index, split_count)
     node_id = str(uuid.uuid4())
+    numeric_id = allocate_note_numeric_id(con, node_id)
     now = time.time()
     con.execute(
         """
@@ -1084,7 +1082,8 @@ def hide_or_delete_row(con: sqlite3.Connection, node_id: str, source_action: str
         )
         return max(0, cursor.rowcount)
     if source_action == "delete":
-        con.execute("delete from noteedge where user_id=? and (source_id=? or target_id=?)", (USER_ID, node_id, node_id))
+        node_ref = note_public_ref(con, node_id)
+        con.execute("delete from noteedge where user_id=? and (source_id=? or target_id=?)", (USER_ID, node_ref, node_ref))
         cursor = con.execute("delete from notenode where user_id=? and id=?", (USER_ID, node_id))
         return max(0, cursor.rowcount)
     return 0
@@ -1132,7 +1131,7 @@ def run(args: argparse.Namespace) -> None:
             "preview": [
                 {
                     "date": row.date.isoformat(),
-                    "source_id": row.numeric_id or row.id,
+                    "source_id": source_row_public_id(row),
                     "title": row.title,
                     "text": row.semantic_text,
                 }
@@ -1221,7 +1220,7 @@ def run(args: argparse.Namespace) -> None:
                 "group_id": group.group_id,
                 "date": group.date.isoformat(),
                 "source_count": len(group.rows),
-                "source_ids": [row.numeric_id or row.id for row in group.rows],
+                "source_ids": [source_row_public_id(row) for row in group.rows],
                 "source_kinds": [row.source_kind for row in group.rows],
                 "source_titles": original_titles[:4],
                 "original_text": group.text,
@@ -1266,7 +1265,6 @@ def run(args: argparse.Namespace) -> None:
     palette_changed = ensure_import_category_palette(con)
 
     existing = existing_semantic_nodes(con)
-    next_numeric_id = next_note_numeric_id(con)
     inserted = 0
     updated = 0
     edges = 0
@@ -1280,8 +1278,7 @@ def run(args: argparse.Namespace) -> None:
                 target_id = existing_id
                 updated += 1
             else:
-                target_id = insert_item(con, group, item, index, len(items), next_numeric_id)
-                next_numeric_id += 1
+                target_id = insert_item(con, group, item, index, len(items))
                 inserted += 1
             for row in group.rows:
                 if insert_edge(con, row.id, target_id):

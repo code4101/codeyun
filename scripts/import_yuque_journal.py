@@ -32,6 +32,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.core.yuque_html import normalize_legacy_yuque_lake_html
 
+try:
+    from resource_identity_sqlite import allocate_note_numeric_id, ensure_device_file_resource, insert_note_edge, note_edge_exists
+except ImportError:  # pragma: no cover - supports package imports in tests/tools
+    from scripts.resource_identity_sqlite import allocate_note_numeric_id, ensure_device_file_resource, insert_note_edge, note_edge_exists
+
 
 BOOK_ID = "24363220"
 USER_ID = 2
@@ -863,17 +868,33 @@ def safe_download_name(name: str, extension: str) -> str:
 
 
 class MediaLocalizer:
-    def __init__(self, session: requests.Session, attach_dir: Path):
+    def __init__(self, session: requests.Session, attach_dir: Path, db_con: sqlite3.Connection | None = None):
         self.session = session
         self.attach_dir = attach_dir
+        self.db_con = db_con
         self.attach_dir.mkdir(parents=True, exist_ok=True)
         self.totals = {"images": 0, "attachments": 0, "downloaded": 0, "reused": 0, "failed": []}
+        self.resource_ids: dict[str, int] = {}
+
+    def _index_asset(self, path: Path, *, as_image: bool, content_type: str | None = None) -> int | None:
+        if self.db_con is None:
+            return None
+        resource_id = ensure_device_file_resource(
+            self.db_con,
+            path,
+            media_kind="image" if as_image else None,
+            mime_type=content_type,
+        )
+        if resource_id:
+            self.resource_ids[path.name] = resource_id
+        return resource_id
 
     def localize_asset(self, url: str, label: str | None, as_image: bool) -> tuple[str, str]:
         url = absolute_url(url).rstrip(")）]】>,，。")
         digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:24]
         for existing in self.attach_dir.glob(f"yuque_{digest}.*"):
             self.totals["reused"] += 1
+            self._index_asset(existing, as_image=as_image)
             return f"/static/attachments/{existing.name}", existing.name
 
         try:
@@ -882,7 +903,8 @@ class MediaLocalizer:
             response = self.session.get(url, timeout=80, stream=True, verify=False)
         if response.status_code != 200:
             raise RuntimeError(f"{response.status_code} {url[:180]}")
-        extension = extension_from_response(response.headers.get("content-type", ""), url, label)
+        content_type = response.headers.get("content-type", "")
+        extension = extension_from_response(content_type, url, label)
         if as_image and extension == ".bin":
             extension = ".png"
         filename = f"yuque_{digest}{extension}"
@@ -894,6 +916,7 @@ class MediaLocalizer:
                     stream.write(chunk)
         tmp.replace(target)
         self.totals["downloaded"] += 1
+        self._index_asset(target, as_image=as_image, content_type=content_type)
         return f"/static/attachments/{filename}", filename
 
     def rewrite(self, content: str) -> tuple[str, dict[str, Any]]:
@@ -903,9 +926,13 @@ class MediaLocalizer:
             src = image.get("src") or image.get("data-href")
             if should_localize(src, "img"):
                 try:
-                    local_url, _ = self.localize_asset(src, image.get("alt") or "image.png", True)
+                    local_url, filename = self.localize_asset(src, image.get("alt") or "image.png", True)
                     image["src"] = local_url
                     image["data-href"] = local_url
+                    resource_id = self.resource_ids.get(filename)
+                    if resource_id:
+                        image["data-codeyun-resource-type"] = "device_file"
+                        image["data-codeyun-resource-id"] = str(resource_id)
                     stats["images"] += 1
                     self.totals["images"] += 1
                 except Exception as exc:
@@ -936,6 +963,10 @@ class MediaLocalizer:
                 link["rel"] = "noopener noreferrer"
                 link["download"] = safe_download_name(text, Path(filename).suffix)
                 link["data-codeyun-attachment"] = "true"
+                resource_id = self.resource_ids.get(filename)
+                if resource_id:
+                    link["data-codeyun-resource-type"] = "device_file"
+                    link["data-codeyun-resource-id"] = str(resource_id)
                 if not text:
                     link.string = link["download"]
                 stats["attachments"] += 1
@@ -1043,18 +1074,19 @@ def insert_node(
     custom_fields: str,
 ) -> str:
     node_id = str(uuid.uuid4())
+    numeric_id = allocate_note_numeric_id(con, node_id)
     now = time.time()
     cats = note_categories(category)
     con.execute(
         """
         insert into notenode(
-            id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
+            id,numeric_id,user_id,title,content,created_at,updated_at,weight,start_at,task_status,history,
             node_type,node_status,custom_fields,private_level,color,note_kind,weight_mode,
             note_types,note_categories,primary_category,note_form,lifecycle_stage,note_scene
-        ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (
-            node_id, USER_ID, title, content, now, now, weight, start_at, None, "[]",
+            node_id, numeric_id, USER_ID, title, content, now, now, weight, start_at, None, "[]",
             category, "done", custom_fields, 0, None, "note", None,
             cats, cats, category, "note", "done", "note",
         ),
@@ -1062,21 +1094,18 @@ def insert_node(
     return node_id
 
 
-def edge_exists(con: sqlite3.Connection, source_id: str, target_id: str) -> bool:
-    return con.execute(
-        "select 1 from noteedge where user_id=? and source_id=? and target_id=? limit 1",
-        (USER_ID, source_id, target_id),
-    ).fetchone() is not None
-
-
 def insert_edge(con: sqlite3.Connection, source_id: str | None, target_id: str | None) -> bool:
-    if not source_id or not target_id or edge_exists(con, source_id, target_id):
-        return False
-    con.execute(
-        "insert into noteedge(id,user_id,source_id,target_id,label,created_at) values (?,?,?,?,?,?)",
-        (str(uuid.uuid4()), USER_ID, source_id, target_id, None, time.time()),
+    return insert_note_edge(
+        con,
+        user_id=USER_ID,
+        source_id=source_id,
+        target_id=target_id,
+        edge_id=str(uuid.uuid4()),
     )
-    return True
+
+
+def edge_exists(con: sqlite3.Connection, source_id: str | None, target_id: str | None) -> bool:
+    return note_edge_exists(con, user_id=USER_ID, source_id=source_id, target_id=target_id)
 
 
 def source_doc_exists(con: sqlite3.Connection, source_key: str) -> sqlite3.Row | None:
@@ -1109,10 +1138,10 @@ def import_candidates(args: argparse.Namespace) -> None:
     backup = Path(os.environ["TEMP"]) / f"codeyun_yuque_{year}_backup_{dt.datetime.now(TZ).strftime('%Y%m%d_%H%M%S')}.db"
     shutil.copy2(db_path(data_dir), backup)
 
-    session = yuque_session()
-    media = MediaLocalizer(session, attachments_dir(data_dir))
     con = sqlite3.connect(db_path(data_dir), timeout=60)
     con.row_factory = sqlite3.Row
+    session = yuque_session()
+    media = MediaLocalizer(session, attachments_dir(data_dir), con)
 
     parent_by_chapter_doc: dict[str, str] = {}
     parent_by_week: dict[str, str] = {}

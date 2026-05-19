@@ -877,10 +877,10 @@ def import_candidates(args: argparse.Namespace) -> None:
     backup = Path(tempfile.gettempdir()) / f"codeyun_yuque_legacy_2011_2015_backup_{dt.datetime.now(TZ).strftime('%Y%m%d_%H%M%S')}.db"
     shutil.copy2(db_path(data_dir), backup)
 
-    session = yuque_session()
-    media = MediaLocalizer(session, attachments_dir(data_dir))
     con = sqlite3.connect(db_path(data_dir), timeout=60)
     con.row_factory = sqlite3.Row
+    session = yuque_session()
+    media = MediaLocalizer(session, attachments_dir(data_dir), con)
     source_map, fingerprint_map = build_existing_maps(con)
 
     node_by_source_key = {key: row["id"] for key, row in source_map.items()}

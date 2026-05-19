@@ -34,11 +34,13 @@ MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
 MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "00:35"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 3
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 4
+BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
     "note_metadata_feedback_optimization",
     "codex_diary_yesterday_import",
+    "attendance_summary_monthly_templates",
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
 }
@@ -167,9 +169,7 @@ def _enqueue_storage_analysis() -> str:
     return background_task_queue.enqueue("storage_analysis", scheduled_analysis_job)
 
 
-def _enqueue_attendance_summary_if_due() -> str | None:
-    if dt.date.today().day != 27:
-        return None
+def _enqueue_attendance_summary() -> str:
     from backend.api.note_sheets import run_attendance_summary_template_job
 
     return background_task_queue.enqueue("attendance_summary_monthly_templates", run_attendance_summary_template_job)
@@ -284,9 +284,9 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="考勤汇总模板",
         category="表格",
         description="每月 27 日凌晨为考勤汇总表补下月模板。",
-        schedule_label=f"每天 {ATTENDANCE_SUMMARY_RUN_TIME} 检查，27 日执行",
-        retry_label="无额外重试",
-        action=_enqueue_attendance_summary_if_due,
+        schedule_label=f"每月 27 日 {ATTENDANCE_SUMMARY_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_attendance_summary,
     ),
     BackgroundTaskSpec(
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
@@ -320,7 +320,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     ),
     BackgroundTaskSpec(
         key="rime_config_sync",
-        title="小狼毫配置同步",
+        title="小狼毫自动同步",
         category="输入法",
         description="每小时拉取辅助设备输入历史，刷新主设备预测索引，并把主设备小狼毫共享配置增量同步到辅助设备。",
         schedule_label="每小时检查",
@@ -453,12 +453,15 @@ class BackgroundTaskRunner:
                     enabled=_is_task_enabled("codex_diary_yesterday_import"),
                 )
                 .retry(minutes=10),
-                Action(self._run_task_if_enabled, "attendance_summary_monthly_templates").daily(
+                Action(self._run_task_if_enabled, "attendance_summary_monthly_templates")
+                .monthly(
+                    27,
                     ATTENDANCE_SUMMARY_RUN_TIME,
                     label="attendance_summary_monthly_templates",
                     start="next",
                     enabled=_is_task_enabled("attendance_summary_monthly_templates"),
-                ),
+                )
+                .retry(minutes=10),
                 Action(self._run_task_if_enabled, MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY)
                 .daily(
                     MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME,
@@ -500,13 +503,33 @@ class BackgroundTaskRunner:
             )
         )
 
-    def _run_task_if_enabled(self, task_key: str) -> None:
+    def _run_task_if_enabled(self, ctx, task_key: str):
         if not _is_task_enabled(task_key):
             return
         spec = get_background_task_spec(task_key)
         if spec is None:
             return
-        spec.action()
+        queue_task_id = spec.action()
+        if queue_task_id:
+            yield from self._wait_for_queue_task(ctx, queue_task_id)
+
+    def _wait_for_queue_task(self, ctx, queue_task_id: str):
+        while True:
+            queue_task = _find_queue_task_by_id(background_task_queue.snapshot(), queue_task_id)
+            if queue_task is None:
+                raise RuntimeError(f"后台队列任务丢失：{queue_task_id}")
+
+            status = str(queue_task.get("status") or "")
+            if status in {"pending", "running"}:
+                ctx.sleep(BACKGROUND_QUEUE_POLL_SECONDS)
+                yield
+                continue
+
+            if status == "completed":
+                return
+
+            error_message = queue_task.get("error_message") or f"后台队列任务失败：{queue_task_id}"
+            raise RuntimeError(str(error_message))
 
     def _record_idle_summary(self) -> None:
         return None
@@ -617,6 +640,23 @@ def _find_task_next_run(node_states: dict[str, Any], task_key: str) -> dt.dateti
         if parsed is not None:
             values.append(parsed)
     return min(values) if values else None
+
+
+def _find_queue_task_by_id(queue: dict[str, Any], queue_task_id: str) -> dict[str, Any] | None:
+    normalized_id = str(queue_task_id or "").strip()
+    if not normalized_id:
+        return None
+
+    running = queue.get("running")
+    if isinstance(running, dict) and running.get("id") == normalized_id:
+        return running
+
+    for section in ("pending", "recent"):
+        for item in queue.get(section) or []:
+            if isinstance(item, dict) and item.get("id") == normalized_id:
+                return item
+
+    return None
 
 
 background_task_runner = BackgroundTaskRunner()

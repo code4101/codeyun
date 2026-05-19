@@ -60,6 +60,16 @@ from backend.models import (
     WorkbookDocument,
     WorkbookSheetLink,
 )
+from backend.core.resource_identity import RESOURCE_TYPE_SHEET, allocate_resource_id
+from backend.core.sheet_identity import allocate_new_sheet_identity
+from backend.core.sheet_refs import (
+    load_sheets_by_refs,
+    load_workbooks_by_refs,
+    sheet_public_id,
+    sheet_ref_aliases,
+    workbook_public_id,
+    workbook_ref_aliases,
+)
 
 public_router = APIRouter()
 
@@ -656,19 +666,20 @@ def _build_attendance_header_tool_response(course_name_source: Any) -> Attendanc
     )
 
 
-def _get_next_sheet_numeric_id(session: Session) -> int:
-    current_max = session.exec(
-        select(SheetDocument.numeric_id)
-        .where(SheetDocument.numeric_id.is_not(None))
-        .order_by(SheetDocument.numeric_id.desc())
-    ).first()
-    return max(int(current_max or 0), 0) + 1
+def _get_next_sheet_numeric_id(session: Session, legacy_pk: str) -> int:
+    return allocate_resource_id(session, RESOURCE_TYPE_SHEET, legacy_pk)
 
 
 def _get_next_workbook_link_order(session: Session, workbook_id: str) -> int:
+    workbook_map = load_workbooks_by_refs(session, [workbook_id])
+    workbook_refs = {
+        ref
+        for workbook in {str(workbook.id): workbook for workbook in workbook_map.values()}.values()
+        for ref in workbook_ref_aliases(workbook)
+    } or {str(workbook_id)}
     current_max = session.exec(
         select(func.max(WorkbookSheetLink.order_index))
-        .where(WorkbookSheetLink.workbook_id == workbook_id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_refs))
     ).one()
     return max(int(current_max or 0), 0) + 10
 
@@ -682,11 +693,15 @@ def _build_public_note_sheet_url(document: SheetDocument | None) -> str:
 def _ensure_note_sheet_anonymous_viewer(session: Session, document: SheetDocument | None) -> str:
     if document is None:
         return ""
+    numeric_id = int(document.numeric_id or 0)
+    if numeric_id <= 0:
+        raise HTTPException(status_code=500, detail="考勤表格资源编号缺失")
+    resource_id = str(numeric_id)
 
     grant = session.exec(
         select(ResourceAccessGrant)
         .where(ResourceAccessGrant.resource_type == NOTE_SHEET_PUBLIC_RESOURCE_TYPE)
-        .where(ResourceAccessGrant.resource_id == document.id)
+        .where(ResourceAccessGrant.resource_id == resource_id)
         .where(ResourceAccessGrant.subject_key == NOTE_SHEET_PUBLIC_SUBJECT_KEY)
     ).first()
     now = time.time()
@@ -694,7 +709,7 @@ def _ensure_note_sheet_anonymous_viewer(session: Session, document: SheetDocumen
     if grant is None:
         grant = ResourceAccessGrant(
             resource_type=NOTE_SHEET_PUBLIC_RESOURCE_TYPE,
-            resource_id=document.id,
+            resource_id=resource_id,
             subject_key=NOTE_SHEET_PUBLIC_SUBJECT_KEY,
             subject_type=NOTE_SHEET_PUBLIC_SUBJECT_TYPE,
             role=NOTE_SHEET_PUBLIC_VIEWER_ROLE,
@@ -1331,17 +1346,17 @@ def _find_attendance_wjx_sheet_document(
         return document
 
     links = session.exec(
-        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id == workbook.id)
+        select(WorkbookSheetLink).where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
     ).all()
     if not links:
         return None
 
     linked_sheet_ids = [link.sheet_id for link in links]
-    return session.exec(
-        select(SheetDocument)
-        .where(SheetDocument.id.in_(linked_sheet_ids))
-        .where(SheetDocument.title == ATTENDANCE_WJX_DATA_SHEET_TITLE)
-    ).first()
+    sheet_map = load_sheets_by_refs(session, linked_sheet_ids)
+    for sheet in {str(sheet.id): sheet for sheet in sheet_map.values()}.values():
+        if sheet.title == ATTENDANCE_WJX_DATA_SHEET_TITLE:
+            return sheet
+    return None
 
 
 def _ensure_attendance_wjx_sheet_document(
@@ -1362,8 +1377,11 @@ def _ensure_attendance_wjx_sheet_document(
     if document is None:
         if not create:
             return None
+        document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
-            numeric_id=_get_next_sheet_numeric_id(session),
+            id=document_identity.primary_id,
+            numeric_id=document_identity.numeric_id,
+            legacy_id=document_identity.legacy_id,
             scope="notes",
             owner_type=ATTENDANCE_WJX_DATA_OWNER_TYPE,
             owner_key=ATTENDANCE_WJX_DATA_OWNER_KEY,
@@ -1384,7 +1402,7 @@ def _ensure_attendance_wjx_sheet_document(
         created_document = True
     else:
         if document.numeric_id is None:
-            document.numeric_id = _get_next_sheet_numeric_id(session)
+            document.numeric_id = _get_next_sheet_numeric_id(session, str(document.legacy_id or document.id))
             mutated = True
         if document.owner_type != ATTENDANCE_WJX_DATA_OWNER_TYPE:
             document.owner_type = ATTENDANCE_WJX_DATA_OWNER_TYPE
@@ -1401,15 +1419,17 @@ def _ensure_attendance_wjx_sheet_document(
 
     link = session.exec(
         select(WorkbookSheetLink)
-        .where(WorkbookSheetLink.workbook_id == workbook.id)
-        .where(WorkbookSheetLink.sheet_id == document.id)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_ref_aliases(document)))
     ).first()
     if link is None:
+        workbook_ref = workbook_public_id(workbook)
+        sheet_ref = sheet_public_id(document)
         session.add(
             WorkbookSheetLink(
-                workbook_id=workbook.id,
-                sheet_id=document.id,
-                order_index=_get_next_workbook_link_order(session, workbook.id),
+                workbook_id=workbook_ref,
+                sheet_id=sheet_ref,
+                order_index=_get_next_workbook_link_order(session, workbook_ref),
                 created_at=now,
             )
         )
@@ -2815,8 +2835,11 @@ def upsert_attendance_sheet_document(
 
     if document is None:
         now = time.time()
+        document_identity = allocate_new_sheet_identity(session)
         document = SheetDocument(
-            numeric_id=_get_next_sheet_numeric_id(session),
+            id=document_identity.primary_id,
+            numeric_id=document_identity.numeric_id,
+            legacy_id=document_identity.legacy_id,
             scope="attendance",
             owner_type=owner_type,
             owner_key=owner_key,
@@ -2847,7 +2870,7 @@ def upsert_attendance_sheet_document(
     document.engine = payload.engine
     document.document_json = document_json
     if document.numeric_id is None:
-        document.numeric_id = _get_next_sheet_numeric_id(session)
+        document.numeric_id = _get_next_sheet_numeric_id(session, str(document.legacy_id or document.id))
     if document.owner_user_id is None:
         document.owner_user_id = current_user.id
     document.version = max(int(document.version or 1), 1) + 1

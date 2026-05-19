@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 
 from backend.core.device_files import DeviceFileSyncSnapshot, reconcile_device_file_batch
 from backend.migrations.manager import run_migrations
-from backend.models import DeviceFile
+from backend.models import DeviceFile, ResourceIdentity
 
 
 def test_device_file_defaults_support_rematching(session):
@@ -470,9 +470,17 @@ def test_run_migrations_upgrades_legacy_devicefile_table():
     assert "height_px" in columns
     assert "media_kind" in columns
     assert "mime_type" in columns
+    assert "numeric_id" in columns
     assert record.absolute_path == r"C:\legacy\a.txt"
     assert record.last_known_path == r"C:\legacy\a.txt"
     assert record.match_status == "matched"
     assert record.weight == 7
+    assert record.numeric_id == 1
+
+    with Session(engine) as session:
+        identity = session.get(ResourceIdentity, 1)
+    assert identity is not None
+    assert identity.resource_type == "device_file"
+    assert identity.legacy_pk == "1"
 
     SQLModel.metadata.drop_all(engine)

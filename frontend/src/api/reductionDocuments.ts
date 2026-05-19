@@ -3,7 +3,8 @@ import api from '@/api'
 const DOCUMENT_REDUCTION_TIMEOUT_MS = 10 * 60 * 1000
 
 export interface ReductionDocumentRead {
-  id: string
+  id: number
+  numeric_id?: number | null
   title: string
   original_filename: string
   media_type: string
@@ -22,7 +23,7 @@ export interface ReductionDocumentRead {
 
 export interface ReductionDocumentRunRead {
   id: string
-  document_id: string
+  document_id: number
   provider: string
   model: string
   task_type: string
@@ -106,7 +107,7 @@ export interface ReductionDocumentQueryRequest {
 
 export interface ReductionDocumentQueryResponse {
   query_id: string
-  document_id: string
+  document_id: number
   run_id: string
   model: string
   answer: string
@@ -126,12 +127,39 @@ export interface ReductionDocumentQueryResponse {
 
 export interface ReductionDocumentDeleteResponse {
   ok: boolean
-  document_id: string
+  document_id: number
 }
+
+const normalizeNumericId = (value: unknown): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value)
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return Math.trunc(parsed)
+  }
+  return 0
+}
+
+const normalizeReductionDocument = (raw: ReductionDocumentRead): ReductionDocumentRead => ({
+  ...raw,
+  id: normalizeNumericId(raw.id),
+  numeric_id: raw.numeric_id == null ? null : normalizeNumericId(raw.numeric_id),
+})
+
+const normalizeReductionRun = (raw: ReductionDocumentRunRead): ReductionDocumentRunRead => ({
+  ...raw,
+  document_id: normalizeNumericId(raw.document_id),
+})
+
+const normalizeReductionDetail = (raw: ReductionDocumentDetailResponse): ReductionDocumentDetailResponse => ({
+  ...raw,
+  document: normalizeReductionDocument(raw.document),
+  active_run: raw.active_run ? normalizeReductionRun(raw.active_run) : null,
+  latest_run: raw.latest_run ? normalizeReductionRun(raw.latest_run) : null,
+})
 
 export async function fetchReductionDocuments() {
   const response = await api.get<{ items: ReductionDocumentRead[] }>('/reduction-documents')
-  return response.data.items
+  return response.data.items.map(normalizeReductionDocument)
 }
 
 export async function uploadReductionDocument(file: File) {
@@ -144,15 +172,15 @@ export async function uploadReductionDocument(file: File) {
       timeout: DOCUMENT_REDUCTION_TIMEOUT_MS,
     },
   )
-  return response.data
+  return normalizeReductionDocument(response.data)
 }
 
-export async function fetchReductionDocumentDetail(documentId: string) {
+export async function fetchReductionDocumentDetail(documentId: number | string) {
   const response = await api.get<ReductionDocumentDetailResponse>(`/reduction-documents/${documentId}`)
-  return response.data
+  return normalizeReductionDetail(response.data)
 }
 
-export async function indexReductionDocument(documentId: string, payload: ReductionDocumentIndexRequest) {
+export async function indexReductionDocument(documentId: number | string, payload: ReductionDocumentIndexRequest) {
   const response = await api.post<ReductionDocumentIndexResponse>(
     `/reduction-documents/${documentId}/index`,
     payload,
@@ -160,10 +188,14 @@ export async function indexReductionDocument(documentId: string, payload: Reduct
       timeout: DOCUMENT_REDUCTION_TIMEOUT_MS,
     },
   )
-  return response.data
+  return {
+    ...response.data,
+    document: normalizeReductionDocument(response.data.document),
+    run: normalizeReductionRun(response.data.run),
+  }
 }
 
-export async function queryReductionDocument(documentId: string, payload: ReductionDocumentQueryRequest) {
+export async function queryReductionDocument(documentId: number | string, payload: ReductionDocumentQueryRequest) {
   const response = await api.post<ReductionDocumentQueryResponse>(
     `/reduction-documents/${documentId}/query`,
     payload,
@@ -171,10 +203,16 @@ export async function queryReductionDocument(documentId: string, payload: Reduct
       timeout: DOCUMENT_REDUCTION_TIMEOUT_MS,
     },
   )
-  return response.data
+  return {
+    ...response.data,
+    document_id: normalizeNumericId(response.data.document_id),
+  }
 }
 
-export async function deleteReductionDocument(documentId: string) {
+export async function deleteReductionDocument(documentId: number | string) {
   const response = await api.delete<ReductionDocumentDeleteResponse>(`/reduction-documents/${documentId}`)
-  return response.data
+  return {
+    ...response.data,
+    document_id: normalizeNumericId(response.data.document_id),
+  }
 }

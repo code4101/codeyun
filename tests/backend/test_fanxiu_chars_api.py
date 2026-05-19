@@ -45,6 +45,10 @@ def test_fanxiu_char_put_returns_valid_note_read(client, session):
     assert payload["title"] == "银月"
     assert payload["custom_fields"] == []
     assert payload["history"] == []
+    created_note = session.exec(select(NoteNode).where(NoteNode.title == "银月")).one()
+    assert payload["id"] == created_note.numeric_id
+    assert created_note.id == str(created_note.numeric_id)
+    assert created_note.legacy_id and created_note.legacy_id != created_note.id
 
 
 def test_fanxiu_chars_list_migrates_legacy_note(client, session):

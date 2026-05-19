@@ -9,7 +9,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 from sqlmodel import Session, select
 
-from backend.core.device_files import DeviceFileSyncSnapshot, reconcile_device_file_batch
+from backend.core.device_files import DeviceFileSyncSnapshot, ensure_device_file_resource_identity, reconcile_device_file_batch
 from backend.core.settings import get_settings
 from backend.models import DeviceFile
 
@@ -75,6 +75,7 @@ def ensure_device_file_record(session: Session, device_id: str, absolute_path: s
     )
     session.add(record)
     session.flush()
+    ensure_device_file_resource_identity(session, record)
     return record
 
 

@@ -58,6 +58,35 @@ class BackgroundTaskQueue:
             self._ensure_worker_locked()
         return snapshot.id
 
+    def enqueue_once(
+        self,
+        name: str,
+        func: Callable[..., Any],
+        *args: Any,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> tuple[str, bool]:
+        snapshot = BackgroundTaskSnapshot(
+            id=uuid.uuid4().hex,
+            name=name,
+            status="pending",
+            queued_at=time.time(),
+            metadata=dict(metadata or {}),
+        )
+        task = _QueuedBackgroundTask(snapshot=snapshot, func=func, args=args, kwargs=kwargs)
+        with self._lock:
+            existing = self._find_active_by_name_locked(name)
+            if existing is not None:
+                return existing.id, False
+            self._pending.append(task)
+            self._ensure_worker_locked()
+        return snapshot.id, True
+
+    def active_snapshot_by_name(self, name: str) -> dict[str, Any] | None:
+        with self._lock:
+            snapshot = self._find_active_by_name_locked(name)
+            return self._serialize_snapshot(snapshot)
+
     def is_idle(self) -> bool:
         with self._lock:
             return self._running is None and not self._pending
@@ -108,6 +137,17 @@ class BackgroundTaskQueue:
                 kept.append(task)
             self._pending = kept
         return deleted_count
+
+    def _find_active_by_name_locked(self, name: str) -> BackgroundTaskSnapshot | None:
+        normalized_name = str(name or "").strip()
+        if not normalized_name:
+            return None
+        if self._running is not None and self._running.name == normalized_name:
+            return self._running
+        for task in self._pending:
+            if task.snapshot.name == normalized_name:
+                return task.snapshot
+        return None
 
     def reset_for_tests(self) -> None:
         with self._lock:

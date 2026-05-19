@@ -34,6 +34,7 @@ from sqlmodel import Session, select
 from backend.core.device import get_device_id
 from backend.core.device_files import (
     DeviceFileSyncSnapshot,
+    get_device_file_public_id,
     reconcile_device_file_batch,
     update_device_file_weight,
 )
@@ -3103,6 +3104,9 @@ def _attach_cached_media_metadata(
         if file_path is None and absolute_identity_path:
             file_path = Path(absolute_identity_path)
         cached_record = cached_records.get(absolute_identity_path) if absolute_identity_path else None
+        cached_public_id = get_device_file_public_id(cached_record) if cached_record is not None else None
+        if cached_public_id is not None:
+            entry["id"] = cached_public_id
 
         duration_ms = None
         width_px = None
@@ -3236,10 +3240,20 @@ def _attach_cached_media_metadata(
                 )
                 for entry, absolute_identity_path in snapshot_refs
             ]
-            upsert_device_file_metadata_batch(session, device_id, snapshots)
+            updated_records = upsert_device_file_metadata_batch(session, device_id, snapshots)
         except Exception:
             pass
         else:
+            updated_by_path = {
+                record.absolute_path: record
+                for record in updated_records
+                if record.absolute_path
+            }
+            for entry, absolute_identity_path in snapshot_refs:
+                record = updated_by_path.get(absolute_identity_path)
+                public_id = get_device_file_public_id(record) if record is not None else None
+                if public_id is not None:
+                    entry["id"] = public_id
             if prewarm_requested and prewarm_candidates:
                 _schedule_visual_hash_prewarm(prewarm_visual_hash_key, device_id, prewarm_candidates)
     return _build_visual_hash_status(
@@ -5040,7 +5054,7 @@ def sync_device_file_records(
         "dangling_count": result.dangling_count,
         "records": [
             {
-                "id": record.id,
+                "id": get_device_file_public_id(record),
                 "absolute_path": record.absolute_path,
                 "last_known_path": record.last_known_path,
                 "content_hash": record.content_hash,
@@ -5087,6 +5101,7 @@ def update_device_file_weight_for_request(
 
     return {
         "ok": True,
+        "id": get_device_file_public_id(record),
         "device_id": device_id,
         "root": resolved["root"],
         "path": resolved["path"],
@@ -5275,6 +5290,7 @@ def scan_device_file_records(
         response_items.append(
             {
                 **item,
+                "id": get_device_file_public_id(record) if record else item.get("id"),
                 "hashed": hashed,
                 "match_status": record.match_status if record else "matched",
                 "weight": record.weight if record else 0,

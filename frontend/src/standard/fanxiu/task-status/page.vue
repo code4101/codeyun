@@ -795,7 +795,7 @@ onUnmounted(() => {
           <template v-else>
             <div v-if="!canUseDeviceSource" class="readonly-path">登录后可使用设备文件浏览。</div>
             <div v-else-if="!devices.length && !isLoadingDevices" class="readonly-path">
-              还没有可用设备，请先到“设备任务”添加设备入口。
+              还没有可用设备，请先到“运行管理”添加设备入口。
             </div>
             <div v-else class="device-browser">
               <div class="device-config-field">

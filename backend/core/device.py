@@ -568,7 +568,7 @@ class BaseDevice(ABC):
         pass
 
     @abstractmethod
-    def scan_running_tasks(self, tasks_to_check: List[Any]):
+    def scan_running_tasks(self, tasks_to_check: List[Any], *, deep_scan: bool = False):
         pass
 
     def to_dict(self):
@@ -900,7 +900,7 @@ class LocalDevice(BaseDevice):
         except Exception as e:
             print(f"Failed to save PIDs: {e}")
     
-    def scan_running_tasks(self, tasks_to_check: List[Any]):
+    def scan_running_tasks(self, tasks_to_check: List[Any], *, deep_scan: bool = False):
         with self.lock:
             pids_changed = False
             
@@ -966,7 +966,7 @@ class LocalDevice(BaseDevice):
             # 3. Deep scan for missing tasks (Re-association)
             missing_tasks = [t for t in tasks_to_check if str(t.id) not in self.processes]
             
-            if missing_tasks:
+            if deep_scan and missing_tasks:
                 candidates = []
                 try:
                     # Snapshot all system processes once

@@ -510,6 +510,16 @@ def test_local_device_entry_reads_codex_overview_and_thread_detail(client, sessi
         {"start_at": 1776920404.0, "end_at": 1776920405.0, "duration_seconds": 1.0, "concurrency": 1},
     ]
 
+    filtered_workload_response = client.get(
+        f"/api/device-entries/{entry_id}/codex/workload",
+        params={"root_dir": str(codex_root), "start_at": 1776920404.1},
+    )
+    assert filtered_workload_response.status_code == 200
+    filtered_workload = filtered_workload_response.json()
+    assert filtered_workload["total_threads"] == 1
+    assert filtered_workload["total_turns"] == 1
+    assert [item["id"] for item in filtered_workload["turns"]] == ["thread-2:1"]
+
     root_key = os.path.normcase(os.path.normpath(str(codex_root.resolve(strict=False))))
     root_cache = session.get(CodexTextCacheRoot, root_key)
     assert root_cache is not None
@@ -1087,3 +1097,70 @@ def test_remote_device_entry_proxies_codex_requests(client, session: Session, au
     assert captured[6]["method"] == "GET"
     assert captured[6]["url"] == "http://remote-device:8000/api/codex/daily-summary/runs/run-new"
     assert captured[6]["timeout"] == 20
+
+
+def test_remote_codex_workload_filter_is_not_cached_as_full_payload(client, session: Session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-device-filter",
+        mode="remote",
+        name="Remote Filter Device",
+        server_url="http://remote-device:8000",
+        token="remote-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    captured: list[dict[str, object]] = []
+    cache_calls: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+
+        def json(self):
+            return {
+                "root_dir": "C:/Users/test/.codex",
+                "total_threads": 0,
+                "total_turns": 0,
+                "skipped_threads": 0,
+                "max_concurrency": 0,
+                "time_range_start": None,
+                "time_range_end": None,
+                "turns": [],
+                "segments": [],
+            }
+
+        @property
+        def content(self):
+            return json.dumps(self.json()).encode("utf-8")
+
+    def fake_request(method, url, headers=None, params=None, json=None, proxies=None, timeout=None, stream=False):
+        captured.append({"method": method, "url": url, "params": params, "timeout": timeout})
+        return FakeResponse()
+
+    def fake_cache_remote_codex_workload(*args, **kwargs):
+        cache_calls.append({"args": args, "kwargs": kwargs})
+
+    monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
+    monkeypatch.setattr("backend.api.device_entries.cache_remote_codex_workload", fake_cache_remote_codex_workload)
+
+    response = client.get(
+        f"/api/device-entries/{entry.entry_id}/codex/workload",
+        params={"root_dir": "C:\\Users\\test\\.codex", "start_at": 1776920404.1, "end_at": 1777000000},
+    )
+    assert response.status_code == 200
+    assert captured == [
+        {
+            "method": "GET",
+            "url": "http://remote-device:8000/api/codex/workload",
+            "params": {
+                "root_dir": "C:\\Users\\test\\.codex",
+                "start_at": 1776920404.1,
+                "end_at": 1777000000.0,
+            },
+            "timeout": 180,
+        }
+    ]
+    assert cache_calls == []

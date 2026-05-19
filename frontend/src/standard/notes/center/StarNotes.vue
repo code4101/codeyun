@@ -101,6 +101,7 @@ import {
   cloneNoteProgramChannel,
   createDefaultRecentMonthProgram,
   createIncludeAllProgram,
+  noteKey,
   normalizeNoteProgramChannel
 } from '@/api/notes';
 import { VueFlow, useVueFlow, useNodesInitialized, Connection, MarkerType, type EdgeTypesObject, type NodeTypesObject } from '@vue-flow/core';
@@ -269,8 +270,8 @@ const resolveGraphEdgeHandles = (
 
   const relativeHandles = options?.nodeLookup
     ? resolveRelativeEdgeHandles(
-        options.nodeLookup.get(edge.source_id),
-        options.nodeLookup.get(edge.target_id)
+        options.nodeLookup.get(noteKey(edge.source_id)),
+        options.nodeLookup.get(noteKey(edge.target_id))
       )
     : { sourceHandle: undefined, targetHandle: undefined };
 
@@ -300,8 +301,8 @@ const buildGraphEdge = (
 ) => ({
   ...resolveGraphEdgeHandles(edge, options),
   id: edge.id,
-  source: edge.source_id,
-  target: edge.target_id,
+  source: noteKey(edge.source_id),
+  target: noteKey(edge.target_id),
   label: edge.label,
   type: 'elk',
   data:
@@ -694,8 +695,8 @@ const rerouteVisibleEdgeSubset = (
     .filter(edge =>
       rerouteEdgeIds.has(String(edge.id)) &&
       currentEdgeIds.has(String(edge.id)) &&
-      nodeLookup.has(edge.source_id) &&
-      nodeLookup.has(edge.target_id)
+      nodeLookup.has(noteKey(edge.source_id)) &&
+      nodeLookup.has(noteKey(edge.target_id))
     )
     .map(edge => buildGraphEdge(edge, {
       nodeLookup,
@@ -753,7 +754,7 @@ const rebuildVisibleEdges = (rerouteEdgeIds?: Set<string>) => {
   const nodeIds = new Set(nodes.value.map(node => String(node.id)));
   const nodeLookup = new Map(nodes.value.map(node => [String(node.id), node]));
   const graphEdges = sourceEdges.value
-    .filter(edge => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+    .filter(edge => nodeIds.has(noteKey(edge.source_id)) && nodeIds.has(noteKey(edge.target_id)))
     .map(edge => buildGraphEdge(edge, {
       nodeLookup,
       preferDynamicHandles: true
@@ -774,7 +775,7 @@ const rebuildVisibleEdgesWithOptions = (options: {
   const nodeIds = new Set(nodes.value.map(node => String(node.id)));
   const nodeLookup = new Map(nodes.value.map(node => [String(node.id), node]));
   const graphEdges = sourceEdges.value
-    .filter(edge => nodeIds.has(edge.source_id) && nodeIds.has(edge.target_id))
+    .filter(edge => nodeIds.has(noteKey(edge.source_id)) && nodeIds.has(noteKey(edge.target_id)))
     .map(edge => buildGraphEdge(edge, {
       nodeLookup,
       preferDynamicHandles: true
@@ -790,7 +791,7 @@ const getAffectedEdgeIdsForNodes = (nodeIds: Iterable<string>) => {
   const draggedNodeIds = new Set(Array.from(nodeIds, nodeId => String(nodeId)));
   return new Set(
     sourceEdges.value
-      .filter(edge => draggedNodeIds.has(edge.source_id) || draggedNodeIds.has(edge.target_id))
+      .filter(edge => draggedNodeIds.has(noteKey(edge.source_id)) || draggedNodeIds.has(noteKey(edge.target_id)))
       .map(edge => String(edge.id))
   );
 };
@@ -834,9 +835,9 @@ const getGraphDataForRender = () => {
   const filteredNotes = isGlobalGraph.value
     ? applyNoteProgramChannelLocally(sourceNotes.value, viewProgram.value)
     : sourceNotes.value;
-  const visibleNodeIds = new Set(filteredNotes.map(note => note.id));
+  const visibleNodeIds = new Set(filteredNotes.map(note => noteKey(note.id)));
   const filteredEdges = sourceEdges.value.filter(edge =>
-    visibleNodeIds.has(edge.source_id) && visibleNodeIds.has(edge.target_id)
+    visibleNodeIds.has(noteKey(edge.source_id)) && visibleNodeIds.has(noteKey(edge.target_id))
   );
 
   return {
@@ -884,9 +885,10 @@ const buildGraphNodeData = (note: NoteNode) => ({
 });
 
 const buildGraphNode = (note: NoteNode, index: number, useCachedPosition: boolean) => {
-  const cachedPosition = useCachedPosition ? nodePositionCache.value[note.id] : null;
+  const key = noteKey(note.id);
+  const cachedPosition = useCachedPosition ? nodePositionCache.value[key] : null;
   return {
-    id: note.id,
+    id: key,
     label: note.title || 'Untitled',
     position: cachedPosition ? { ...cachedPosition } : getFallbackNodePosition(index),
     data: buildGraphNodeData(note),
@@ -980,15 +982,16 @@ const selectNote = async (noteId: string) => {
 
 const handleNoteUpdate = (note: NoteNode) => {
     // Update graph node data
-    const node = nodes.value.find(n => n.id === note.id);
+    const key = noteKey(note.id);
+    const node = nodes.value.find(n => n.id === key);
     if (node) {
         node.label = note.title;
         node.data = {
           ...(node.data || {}),
           ...buildGraphNodeData(note)
         };
-        void refreshNodeInternals([String(note.id)]).then(() => {
-          const affectedEdgeIds = getAffectedEdgeIdsForNodes([String(note.id)]);
+        void refreshNodeInternals([key]).then(() => {
+          const affectedEdgeIds = getAffectedEdgeIdsForNodes([key]);
           if (affectedEdgeIds.size > 0) {
             rebuildVisibleEdgesWithOptions({ rerouteEdgeIds: affectedEdgeIds });
           }
@@ -997,6 +1000,7 @@ const handleNoteUpdate = (note: NoteNode) => {
 };
 
 const handleNoteCreate = (note: NoteNode) => {
+    const key = noteKey(note.id);
     let pos = { x: Math.random() * 500, y: Math.random() * 300 };
     
     // Try to place near source node if possible
@@ -1011,7 +1015,7 @@ const handleNoteCreate = (note: NoteNode) => {
     }
     
     const newNode = {
-      id: note.id,
+      id: key,
       label: note.title,
       position: pos,
       data: buildGraphNodeData(note),
@@ -1019,11 +1023,11 @@ const handleNoteCreate = (note: NoteNode) => {
     };
     nodePositionCache.value = {
       ...nodePositionCache.value,
-      [note.id]: { ...pos }
+      [key]: { ...pos }
     };
     nodes.value.push(newNode);
     noteStore.addNoteToTab(props.tabId, note.id);
-    selectNote(note.id);
+    selectNote(key);
 };
 
 const handleNoteDelete = (noteId: string) => {
@@ -1269,9 +1273,10 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
   // Calculate center position or random
   const newNote = await noteStore.createNote(defaultTitle, '');
   if (newNote) {
+    const key = noteKey(newNote.id);
     // Add to graph
     const newNode = {
-      id: newNote.id,
+      id: key,
       label: newNote.title,
       position: pos,
       data: buildGraphNodeData(newNote),
@@ -1279,12 +1284,12 @@ const createNewNote = async (targetPosition?: { x: number, y: number }) => {
     };
     nodePositionCache.value = {
       ...nodePositionCache.value,
-      [newNote.id]: { ...pos }
+      [key]: { ...pos }
     };
     nodes.value.push(newNode);
     noteStore.addNoteToTab(props.tabId, newNote.id);
     
-    selectNote(newNote.id);
+    selectNote(key);
   }
 };
 
