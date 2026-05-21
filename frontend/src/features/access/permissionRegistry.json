@@ -315,6 +315,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "fanxiu.game-window",
+      "title": "游戏窗口",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 6,
+      "route_paths": ["/fanxiu/game-window"],
+      "menu_paths": ["/fanxiu/game-window"],
+      "api_scopes": ["fanxiu.task-status"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "fanxiu.activity-list",
       "title": "活动列表",
       "node_type": "group",
@@ -454,6 +465,17 @@
       "sort_order": 31,
       "route_paths": ["/fanxiu/inventory/magic-treasure-hall/formations"],
       "menu_paths": ["/fanxiu/inventory/magic-treasure-hall/formations"],
+      "api_scopes": [],
+      "default_anonymous_allow": true
+    },
+    {
+      "key": "fanxiu.inventory.spirit-artifact-hall",
+      "title": "4 灵器",
+      "node_type": "feature",
+      "parent_key": "fanxiu.inventory",
+      "sort_order": 40,
+      "route_paths": ["/fanxiu/inventory/spirit-artifact-hall"],
+      "menu_paths": ["/fanxiu/inventory/spirit-artifact-hall"],
       "api_scopes": [],
       "default_anonymous_allow": true
     },
@@ -638,7 +660,7 @@
       "parent_key": "cluster-tools",
       "sort_order": 18,
       "route_paths": ["/cluster/services"],
-      "menu_paths": ["/cluster/services"],
+      "menu_paths": [],
       "api_scopes": ["cluster-tools.services"],
       "default_anonymous_allow": false
     },

@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 
 import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
+import NoteSheetAccessDialog from './NoteSheetAccessDialog.vue'
 import {
   fetchAttendanceFeedbackHistory,
+  runAttendanceWjxDataAiPrecheck,
   submitAttendanceFeedback,
   type AttendanceWjxDataItem,
 } from '@/api/attendance'
@@ -19,7 +21,8 @@ import {
   fetchAttendanceCourseScriptStatuses,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
-  importNoteSheetFromExcelReset,
+  getNoteSheetApiErrorStatus,
+  importNoteSheetFromExcel,
   organizeAttendanceCourseScripts,
   queryNoteSheet,
   setAttendanceRowCompleted,
@@ -30,8 +33,10 @@ import {
   type AttendanceCourseScriptStatusItem,
   type NoteSheetAccessCapabilities,
   type NoteSheetColumnOptionItem,
+  type NoteSheetExcelImportMode,
   type NoteSheetPaginationState,
   type NoteSheetRegistrationMatchRunResponse,
+  type NoteSheetResourceAccess,
   type WorkbookRefItem,
   sortNoteSheet,
   updateNoteSheet,
@@ -47,6 +52,11 @@ import {
   type StableVisualToken,
 } from '@/utils/stableVisualColor'
 import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
+import {
+  buildCodeyunUrlVariant,
+  openUrlInNewWindow,
+  type CodeyunLinkVariant,
+} from '@/utils/codeyunLinks'
 
 import 'handsontable/styles/handsontable.css'
 import 'handsontable/styles/ht-theme-main.css'
@@ -117,6 +127,10 @@ const FORMULA_CELL_REFERENCE_RE = /(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(
 const MULTI_TEXT_ITEM_SEPARATOR_RE = /[,\uFF0C\u3001;\uFF1B\r\n]+/g
 const ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
 const ATTENDANCE_SUMMARY_SHEET_ID = 4
+const ATTENDANCE_WJX_DATA_TITLE = '问卷数据'
+const ATTENDANCE_WJX_SEQUENCE_HEADER = '序号'
+const ATTENDANCE_WJX_AI_HEADER = 'AI初判'
+const ATTENDANCE_WJX_SIGNAL_HEADERS = ['提交时间', '课程', '修正需求', '处理状态']
 const ATTENDANCE_COMPLETED_ROW_BACKGROUND = '#f2f2f2'
 const STUDENT_LOOKUP_SEQUENCE_HEADER = '序号'
 const STUDENT_LOOKUP_GROUP_HEADER = '分组'
@@ -143,10 +157,18 @@ const DEFERRED_CELL_SELECTION_DRAG_THRESHOLD_PX = 8
 const PAGED_ROW_EXPANSION_MESSAGE = '分页模式下不能跨页粘贴并自动新增行。请切到最后一页追加，或关闭分页后再粘贴。'
 const PAGED_AUTO_ROW_INSERT_MESSAGE = '分页模式只允许在最后一页自动新增行。请切到最后一页追加，或关闭分页后再操作。'
 const SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = 'excel_import_reset'
+const SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT = 'registration_add_student'
 const SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = 'registration_order_match'
 const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
+const ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY = 'codeyun.noteSheet.rowDetailDialog.size.v1'
+const ROW_DETAIL_DIALOG_DEFAULT_WIDTH = 760
+const ROW_DETAIL_DIALOG_DEFAULT_HEIGHT = 760
+const ROW_DETAIL_DIALOG_MIN_WIDTH = 420
+const ROW_DETAIL_DIALOG_MIN_HEIGHT = 280
+const ROW_DETAIL_DIALOG_VIEWPORT_MARGIN = 24
 const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]: '导入excel',
+  [SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT]: '新增学员',
   [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]: '更新订单匹配',
   [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]: '更新用户匹配',
 } as const
@@ -311,6 +333,8 @@ type ColumnHashColorMode = 'none' | 'text' | 'background'
 type ColumnHashColorTone = 'light' | 'dark'
 type ColumnFontFamily = 'default' | 'monospace'
 type CellFontFamily = ColumnFontFamily
+type CellTextAlign = Exclude<ColumnTextAlign, 'auto'>
+type CellVerticalAlign = 'top' | 'middle' | 'bottom'
 
 type SheetHeaderCellStyle = {
   background_color?: string
@@ -350,6 +374,8 @@ type SheetCellStyle = {
   background_color?: string
   text_color?: string
   font_family?: CellFontFamily
+  text_align?: CellTextAlign
+  vertical_align?: CellVerticalAlign
 }
 
 type SheetResolvedCellValueStyle = {
@@ -358,6 +384,7 @@ type SheetResolvedCellValueStyle = {
   fontFamily?: string
   fontSize?: string
   lineHeight?: string
+  textAlign?: string
 }
 
 type HashColorStyle = {
@@ -396,6 +423,8 @@ type SheetCellStyleDraft = {
   background_color: string
   text_color: string
   font_family: CellFontFamily | ''
+  text_align: CellTextAlign | ''
+  vertical_align: CellVerticalAlign | ''
 }
 
 type SheetCellStyleField = keyof SheetCellStyleDraft
@@ -414,6 +443,109 @@ type FormulaBarCell = {
   dataRow: number
   column: number
   documentGridRow: number
+}
+
+type SheetPerfLogPhase = {
+  name: string
+  ms: number
+}
+
+type SheetPerfLogEntry = {
+  id: number
+  type: string
+  at: number
+  sheetId: number | null
+  sheetTitle: string
+  row?: number
+  hotColumn?: number
+  column?: number
+  dataRow?: number
+  documentGridRow?: number
+  address?: string
+  valueLength?: number
+  formulaBarFocused?: boolean
+  force?: boolean
+  waitMs?: number
+  duration?: number
+  perfStart?: number
+  perfEnd?: number
+  renderId?: number
+  isForced?: boolean
+  exit?: string
+  phases?: SheetPerfLogPhase[]
+  totalMs?: number
+  nextFrameMs?: number
+  detail?: Record<string, unknown>
+}
+
+type SheetPerfMetricSummary = {
+  metric: string
+  count: number
+  avg: number
+  p50: number
+  p90: number
+  max: number
+}
+
+type SheetPerfSummary = {
+  enabled: boolean
+  count: number
+  sheetId: number | null
+  sheetTitle: string
+  metrics: SheetPerfMetricSummary[]
+}
+
+type SheetPerfLogger = {
+  enabled: boolean
+  entries: SheetPerfLogEntry[]
+  enable: () => void
+  disable: () => void
+  clear: () => void
+  flush: () => Promise<void>
+  dump: () => SheetPerfLogEntry[]
+  table: () => void
+  summary: () => SheetPerfSummary
+  copy: () => Promise<string>
+}
+
+type SheetPerfWindow = Window & {
+  __codeyunSheetPerf?: SheetPerfLogger
+}
+
+type SheetPerfLogContext = Partial<Omit<SheetPerfLogEntry, 'id' | 'type' | 'at' | 'sheetId' | 'sheetTitle' | 'phases' | 'totalMs' | 'nextFrameMs'>>
+
+type SheetPerfPatchedHandsontable = Handsontable & {
+  __codeyunSheetPerfPatched?: boolean
+  __codeyunSheetPerfOriginalRender?: (...args: unknown[]) => unknown
+  __codeyunSheetPerfOriginalUpdateSettings?: (...args: unknown[]) => unknown
+  render: (...args: unknown[]) => unknown
+  updateSettings: (...args: unknown[]) => unknown
+}
+
+type SheetPerfInputMarker = {
+  kind: 'mouse' | 'keyboard'
+  at: number
+  row?: number
+  hotColumn?: number
+  key?: string
+  button?: number
+}
+
+type SheetPerfRenderState = {
+  id: number
+  start: number
+  isForced: boolean
+  cellCount: number
+  cellMetaCount: number
+  cellMetaMs: number
+  rowHeightCount: number
+  rowHeightMs: number
+  rendererCount: number
+  rendererMs: number
+  selectionId?: number
+  selectionAddress?: string
+  selectionRow?: number
+  selectionHotColumn?: number
 }
 
 type SelectedSheetCell = {
@@ -614,6 +746,20 @@ const CELL_FONT_FAMILY_OPTIONS = [
   ...COLUMN_FONT_FAMILY_OPTIONS,
 ] as const
 
+const CELL_TEXT_ALIGN_OPTIONS = [
+  { label: '跟随字段', value: '' },
+  { label: '左对齐', value: 'left' },
+  { label: '居中', value: 'center' },
+  { label: '右对齐', value: 'right' },
+] as const satisfies readonly { label: string; value: CellTextAlign | '' }[]
+
+const CELL_VERTICAL_ALIGN_OPTIONS = [
+  { label: '默认', value: '' },
+  { label: '顶部', value: 'top' },
+  { label: '居中', value: 'middle' },
+  { label: '底部', value: 'bottom' },
+] as const satisfies readonly { label: string; value: CellVerticalAlign | '' }[]
+
 type SheetMobileDefaultView = 'sheet' | 'lookup'
 
 type SheetViewSettings = {
@@ -665,17 +811,31 @@ type SheetWorkspaceSyncPayload = {
   title: string
   version: number
   updatedAt: number
+  parentWorkbookId: number | null
   workbookItems: WorkbookRefItem[]
+}
+
+type SheetWorkspaceLoadErrorPayload = {
+  sheetId: number
+  status: number | null
+  message: string
 }
 
 type SheetRowDetailItem = {
   columnIndex: number
   marker: string
   label: string
+  rawValue: string
   value: string
   empty: boolean
+  editable: boolean
   valueStyle?: SheetResolvedCellValueStyle | null
   link?: SheetCellLink | null
+}
+
+type RowDetailDialogSize = {
+  width: number
+  height: number
 }
 
 type SheetRowDetail = {
@@ -858,6 +1018,7 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   missing: [sheetId: number]
+  loadError: [payload: SheetWorkspaceLoadErrorPayload]
   sheetSync: [payload: SheetWorkspaceSyncPayload]
 }>()
 
@@ -881,6 +1042,7 @@ const editableDataColumnSet = computed(() => new Set(
 const canEditPartialData = computed(() => editableDataColumnSet.value.size > 0)
 const canEditConfig = computed(() => effectiveAccessCapabilities.value.can_edit_config)
 const canRunSheetActions = computed(() => effectiveAccessCapabilities.value.can_run_sheet_actions)
+const canManageAccess = computed(() => effectiveAccessCapabilities.value.can_manage_access)
 const canPersistSheet = computed(() => (
   props.sheetId != null && (canEditData.value || canEditPartialData.value || canEditConfig.value)
 ))
@@ -934,19 +1096,23 @@ const sheetViewportHeight = ref<number | 'auto'>('auto')
 const sheetSettingsDialogVisible = ref(false)
 const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
 const sheetSettingsColumnFilterDraft = ref<Record<string, boolean>>({})
+const sheetAccessDialogVisible = ref(false)
 const excelImportDialogVisible = ref(false)
 const excelImportFileInputRef = ref<HTMLInputElement | null>(null)
 const excelImportFile = ref<File | null>(null)
 const excelImportInstruction = ref('')
-const excelImportRunning = ref(false)
+const excelImportRunningMode = ref<NoteSheetExcelImportMode | null>(null)
+const excelImportRunning = computed(() => excelImportRunningMode.value !== null)
 const excelImportActionCell = ref<{ documentRow: number; column: number } | null>(null)
 const userMatchDialogVisible = ref(false)
 const userMatchUseBrowserFallback = ref(false)
 const userMatchStartPending = ref(false)
 const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(null)
 const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
+const attendanceWjxAiPrecheckRunning = ref(false)
 const rowDetailDialogVisible = ref(false)
 const rowDetail = ref<SheetRowDetail | null>(null)
+const rowDetailDialogSize = ref<RowDetailDialogSize | null>(loadRowDetailDialogSizePreference())
 const studentLookupFeedbackDialogVisible = ref(false)
 const studentLookupFeedbackCorrectionRequest = ref('')
 const studentLookupFeedbackSubmitting = ref(false)
@@ -982,7 +1148,17 @@ const userMatchRunSummary = computed(() => {
   return `后台匹配中：${progress}，已更新 ${run.updated_count} 行${fallbackSuffix}`
 })
 const rowDetailDialogTitle = computed(() => (
-  rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显式此条'
+  rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显示此条'
+))
+const rowDetailDialogWidth = computed(() => (
+  rowDetailDialogSize.value?.width
+    ? `${rowDetailDialogSize.value.width}px`
+    : 'min(760px, calc(100vw - 48px))'
+))
+const rowDetailDialogStyle = computed(() => (
+  rowDetailDialogSize.value?.height
+    ? { '--sheet-row-detail-dialog-height': `${rowDetailDialogSize.value.height}px` }
+    : {}
 ))
 const sheetSettingsRowMarkerMode = computed<RowMarkerMode>({
   get() {
@@ -1037,17 +1213,30 @@ const cellStyleDraft = ref<SheetCellStyleDraft>({
   background_color: '',
   text_color: '',
   font_family: '',
+  text_align: '',
+  vertical_align: '',
 })
 const cellStyleDraftTouched = ref<SheetCellStyleDraftTouched>({
   background_color: false,
   text_color: false,
   font_family: false,
+  text_align: false,
+  vertical_align: false,
 })
 const copiedCellFormat = ref<{ style: SheetCellStyle | null } | null>(null)
 const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
 const formulaBarInputRef = ref<FormulaBarInputExpose | null>(null)
+const SHEET_PERF_LOG_STORAGE_KEY = 'codeyun.sheetPerf.enabled.v2'
+const SHEET_PERF_LOG_LIMIT = 1000
+const SHEET_PERF_LOG_FLUSH_URL = '/api/note-sheets/perf-logs'
+const SHEET_PERF_LOG_FLUSH_DELAY_MS = 800
+const SHEET_PERF_LOG_FLUSH_BATCH_SIZE = 40
+const SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE = 160
+const SHEET_PERF_FRAME_GAP_THRESHOLD_MS = 80
+const sheetPerfLoggingEnabled = ref(readSheetPerfLoggingEnabledPreference())
+const sheetPerfLogEntries: SheetPerfLogEntry[] = []
 const touchContextMenuFallbackEnabled = ref(false)
 const hasContextMenuFallbackSelection = ref(false)
 const selectedColumnMarkerBounds = ref<{ start: number; end: number } | null>(null)
@@ -1112,6 +1301,7 @@ const expandedColumnFilterOptionGroups = ref<Set<string>>(new Set())
 const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
 const sheetLoadSettled = ref(props.sheetId == null)
+const sheetLoadErrorText = ref('')
 let columnFilterOptionRequestSeq = 0
 let readOnlyActionWarningSuppressTimer: number | null = null
 let readOnlyActionWarningsSuppressedForRender = false
@@ -1121,14 +1311,667 @@ let formulaReferenceRangeState: FormulaReferenceRangeState | null = null
 let formulaReferenceRangeFinishTimer: number | null = null
 let cellLinkOpenPointerGuardActive = false
 let cellLinkOpenPointerGuardTimer: number | null = null
+let cellLinkOpenPendingLink: SheetCellLink | null = null
+let cellLinkOpenPendingCompleted = false
 let inlineEditorFormulaBarSyncTimer: number | null = null
 let formulaBarDraftSyncFrame: number | null = null
 let formulaReferenceReplacementSpan: FormulaReferenceReplacementSpan | null = null
 let rowMarkerSelectionTimer: number | null = null
+let rowMarkerSelectionAnchor: number | null = null
+let sheetPerfLogSeq = 0
+let sheetPerfLastInputMarker: SheetPerfInputMarker | null = null
+let sheetPerfLogFlushTimer: number | null = null
+let sheetPerfLogFlushInFlight = false
+let sheetPerfLogFlushFailureCount = 0
+const sheetPerfLogPendingEntries: SheetPerfLogEntry[] = []
+const sheetPerfLogSessionId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+let sheetPerfRenderSeq = 0
+let sheetPerfCurrentRender: SheetPerfRenderState | null = null
+let sheetPerfLastSelectionEntry: SheetPerfLogEntry | null = null
+let sheetPerfLongTaskObserver: PerformanceObserver | null = null
+let sheetPerfFrameMonitorId: number | null = null
+let sheetPerfLastFrameTime: number | null = null
 let restoringStudentLookupSelection = false
 let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
 let sheetInternalClipboard: SheetInternalClipboard | null = null
+
+function readSheetPerfLoggingEnabledPreference() {
+  if (typeof window === 'undefined') {
+    return false
+  }
+
+  try {
+    const params = new URLSearchParams(window.location.search)
+    const queryValue = params.get('sheetPerf') ?? params.get('perf')
+    if (queryValue === '1' || queryValue === 'true') {
+      return true
+    }
+    if (queryValue === '0' || queryValue === 'false') {
+      return false
+    }
+    const storedValue = window.localStorage.getItem(SHEET_PERF_LOG_STORAGE_KEY)
+    if (storedValue === '0') {
+      return false
+    }
+    if (storedValue === '1') {
+      return true
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+function roundSheetPerfMs(value: number) {
+  return Math.round(value * 100) / 100
+}
+
+function getSheetPerfNow() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now()
+}
+
+function markSheetPerfInput(marker: Omit<SheetPerfInputMarker, 'at'>) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  sheetPerfLastInputMarker = {
+    ...marker,
+    at: getSheetPerfNow(),
+  }
+}
+
+function consumeSheetPerfInputMarker() {
+  if (!sheetPerfLastInputMarker) {
+    return null
+  }
+  const marker = sheetPerfLastInputMarker
+  sheetPerfLastInputMarker = null
+  const elapsed = getSheetPerfNow() - marker.at
+  if (elapsed < 0 || elapsed > 2000) {
+    return null
+  }
+  return {
+    marker,
+    waitMs: roundSheetPerfMs(elapsed),
+  }
+}
+
+function isSheetNavigationKey(event: KeyboardEvent) {
+  if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) {
+    return false
+  }
+  return event.key === 'ArrowUp'
+    || event.key === 'ArrowDown'
+    || event.key === 'ArrowLeft'
+    || event.key === 'ArrowRight'
+    || event.key === 'Tab'
+    || event.key === 'Home'
+    || event.key === 'End'
+    || event.key === 'PageUp'
+    || event.key === 'PageDown'
+}
+
+function setSheetPerfLoggingEnabled(enabled: boolean) {
+  sheetPerfLoggingEnabled.value = enabled
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(SHEET_PERF_LOG_STORAGE_KEY, enabled ? '1' : '0')
+    } catch {
+      // Ignore private-mode storage failures; the in-memory switch still works.
+    }
+  }
+  if (!enabled) {
+    clearSheetPerfLogFlushTimer()
+    sheetPerfLogPendingEntries.splice(0, sheetPerfLogPendingEntries.length)
+    stopSheetPerfRuntimeObservers()
+  } else {
+    startSheetPerfRuntimeObservers()
+  }
+  console.info(`[sheet-perf] ${enabled ? 'enabled' : 'disabled'}`)
+}
+
+function getSheetPerfBaseContext() {
+  return {
+    sheetId: props.sheetId ?? null,
+    sheetTitle: sheetTitle.value,
+  }
+}
+
+function getSheetPerfBackendPayload(entries: SheetPerfLogEntry[]) {
+  return {
+    session_id: sheetPerfLogSessionId,
+    url: typeof window !== 'undefined' ? window.location.href : '',
+    user_agent: typeof navigator !== 'undefined' ? navigator.userAgent : '',
+    workbook_id: props.workbookId ?? null,
+    sheet_id: props.sheetId ?? null,
+    entries: entries.map((entry) => ({
+      ...entry,
+      phases: entry.phases ? entry.phases.map((phase) => ({ ...phase })) : undefined,
+      detail: entry.detail ? { ...entry.detail } : undefined,
+    })),
+  }
+}
+
+function clearSheetPerfLogFlushTimer() {
+  if (sheetPerfLogFlushTimer == null) {
+    return
+  }
+  window.clearTimeout(sheetPerfLogFlushTimer)
+  sheetPerfLogFlushTimer = null
+}
+
+function scheduleSheetPerfLogFlush(delay = SHEET_PERF_LOG_FLUSH_DELAY_MS) {
+  if (!sheetPerfLoggingEnabled.value || typeof window === 'undefined' || sheetPerfLogFlushTimer != null) {
+    return
+  }
+  sheetPerfLogFlushTimer = window.setTimeout(() => {
+    sheetPerfLogFlushTimer = null
+    void flushSheetPerfLogEntries()
+  }, delay)
+}
+
+function sendSheetPerfLogPayload(body: string, preferBeacon: boolean) {
+  if (
+    preferBeacon
+    && typeof navigator !== 'undefined'
+    && navigator.sendBeacon
+  ) {
+    const blob = new Blob([body], { type: 'application/json' })
+    if (navigator.sendBeacon(SHEET_PERF_LOG_FLUSH_URL, blob)) {
+      return Promise.resolve(true)
+    }
+  }
+
+  return fetch(SHEET_PERF_LOG_FLUSH_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body,
+    keepalive: body.length <= 60_000,
+  }).then((response) => response.ok)
+}
+
+async function flushSheetPerfLogEntries(options: { beacon?: boolean } = {}) {
+  if (sheetPerfLogFlushInFlight && !options.beacon) {
+    scheduleSheetPerfLogFlush(400)
+    return
+  }
+
+  clearSheetPerfLogFlushTimer()
+  const batch = sheetPerfLogPendingEntries.splice(0, SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE)
+  if (!batch.length) {
+    return
+  }
+
+  const body = JSON.stringify(getSheetPerfBackendPayload(batch))
+  sheetPerfLogFlushInFlight = true
+  try {
+    const ok = await sendSheetPerfLogPayload(body, options.beacon === true)
+    if (!ok) {
+      throw new Error('sheet perf log upload failed')
+    }
+    sheetPerfLogFlushFailureCount = 0
+  } catch (error) {
+    sheetPerfLogFlushFailureCount += 1
+    if (sheetPerfLogFlushFailureCount <= 3) {
+      sheetPerfLogPendingEntries.unshift(...batch)
+    }
+    console.warn('[sheet-perf] failed to flush backend log batch', error)
+  } finally {
+    sheetPerfLogFlushInFlight = false
+    if (sheetPerfLogPendingEntries.length) {
+      scheduleSheetPerfLogFlush(sheetPerfLogFlushFailureCount ? 2000 : 400)
+    }
+  }
+}
+
+function queueSheetPerfBackendLogEntry(entry: SheetPerfLogEntry) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  sheetPerfLogPendingEntries.push(entry)
+  if (sheetPerfLogPendingEntries.length >= SHEET_PERF_LOG_FLUSH_BATCH_SIZE) {
+    void flushSheetPerfLogEntries()
+    return
+  }
+  scheduleSheetPerfLogFlush()
+}
+
+function getSheetPerfHotViewport() {
+  const hot = getHotInstance()
+  if (!hot) {
+    return null
+  }
+  return {
+    rows: hot.countRows(),
+    columns: hot.countCols(),
+    visibleRows: hot.countVisibleRows(),
+    visibleColumns: hot.countVisibleCols(),
+    renderedRows: hot.countRenderedRows(),
+    renderedColumns: hot.countRenderedCols(),
+    firstRenderedRow: hot.getFirstRenderedVisibleRow(),
+    lastRenderedRow: hot.getLastRenderedVisibleRow(),
+    firstRenderedColumn: hot.getFirstRenderedVisibleColumn(),
+    lastRenderedColumn: hot.getLastRenderedVisibleColumn(),
+    firstVisibleRow: hot.getFirstPartiallyVisibleRow(),
+    lastVisibleRow: hot.getLastPartiallyVisibleRow(),
+    firstVisibleColumn: hot.getFirstPartiallyVisibleColumn(),
+    lastVisibleColumn: hot.getLastPartiallyVisibleColumn(),
+  }
+}
+
+function getSheetPerfCellAddress(cell: FormulaBarCell | null) {
+  return cell ? getCellReferenceLabelForSheetRow(cell.documentGridRow, cell.column) : undefined
+}
+
+function getSheetPerfSelectedCellContext() {
+  const cell = formulaBarCell.value
+  return {
+    selectedAddress: getSheetPerfCellAddress(cell),
+    selectedDataRow: cell?.dataRow,
+    selectedColumn: cell?.column,
+    selectedDocumentGridRow: cell?.documentGridRow,
+  }
+}
+
+function getSheetPerfCellValueLength(cell: FormulaBarCell | null) {
+  return cell ? normalizeCellValue(getFormulaBarCellEditText(cell)).length : undefined
+}
+
+function recordSheetPerfEvent(type: string, context: SheetPerfLogContext = {}) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return null
+  }
+  const now = getSheetPerfNow()
+  const duration = typeof context.duration === 'number' ? context.duration : undefined
+  return pushSheetPerfLogEntry({
+    type,
+    perfStart: context.perfStart ?? now,
+    perfEnd: context.perfEnd ?? now,
+    totalMs: duration,
+    ...context,
+  })
+}
+
+function getSheetPerfRenderCallbackStart() {
+  return sheetPerfLoggingEnabled.value && sheetPerfCurrentRender ? getSheetPerfNow() : 0
+}
+
+function recordSheetPerfRenderCallback(
+  kind: 'cellMeta' | 'rowHeight' | 'renderer',
+  start: number,
+) {
+  const renderState = sheetPerfCurrentRender
+  if (!renderState || !start) {
+    return
+  }
+
+  const duration = Math.max(0, getSheetPerfNow() - start)
+  if (kind === 'cellMeta') {
+    renderState.cellMetaCount += 1
+    renderState.cellMetaMs += duration
+    return
+  }
+  if (kind === 'rowHeight') {
+    renderState.rowHeightCount += 1
+    renderState.rowHeightMs += duration
+    return
+  }
+
+  renderState.cellCount += 1
+  renderState.rendererCount += 1
+  renderState.rendererMs += duration
+}
+
+function getSheetPerfStackTrace() {
+  return new Error().stack
+    ?.split('\n')
+    .slice(2, 10)
+    .map((line) => line.trim())
+    .filter(Boolean)
+}
+
+function patchSheetPerfHotInstance() {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  const hot = getHotInstance() as SheetPerfPatchedHandsontable | null
+  if (!hot || hot.__codeyunSheetPerfPatched) {
+    return
+  }
+
+  const originalRender = hot.render.bind(hot)
+  const originalUpdateSettings = hot.updateSettings.bind(hot)
+  hot.__codeyunSheetPerfOriginalRender = originalRender
+  hot.__codeyunSheetPerfOriginalUpdateSettings = originalUpdateSettings
+  hot.__codeyunSheetPerfPatched = true
+
+  hot.render = (...args: unknown[]) => {
+    recordSheetPerfEvent('handsontable.renderCall', {
+      detail: {
+        ...getSheetPerfSelectedCellContext(),
+        stack: getSheetPerfStackTrace(),
+      },
+    })
+    return originalRender(...args)
+  }
+
+  hot.updateSettings = (...args: unknown[]) => {
+    const settings = args[0]
+    recordSheetPerfEvent('handsontable.updateSettingsCall', {
+      detail: {
+        keys: settings && typeof settings === 'object' ? Object.keys(settings) : [],
+        init: args[1] ?? null,
+        ...getSheetPerfSelectedCellContext(),
+        stack: getSheetPerfStackTrace(),
+      },
+    })
+    return originalUpdateSettings(...args)
+  }
+}
+
+function unpatchSheetPerfHotInstance() {
+  const hot = getHotInstance() as SheetPerfPatchedHandsontable | null
+  if (!hot?.__codeyunSheetPerfPatched) {
+    return
+  }
+  if (hot.__codeyunSheetPerfOriginalRender) {
+    hot.render = hot.__codeyunSheetPerfOriginalRender
+  }
+  if (hot.__codeyunSheetPerfOriginalUpdateSettings) {
+    hot.updateSettings = hot.__codeyunSheetPerfOriginalUpdateSettings
+  }
+  delete hot.__codeyunSheetPerfOriginalRender
+  delete hot.__codeyunSheetPerfOriginalUpdateSettings
+  delete hot.__codeyunSheetPerfPatched
+}
+
+function startSheetPerfFrameMonitor() {
+  if (typeof window === 'undefined' || sheetPerfFrameMonitorId != null) {
+    return
+  }
+
+  const tick = (timestamp: number) => {
+    if (!sheetPerfLoggingEnabled.value) {
+      sheetPerfFrameMonitorId = null
+      sheetPerfLastFrameTime = null
+      return
+    }
+
+    if (sheetPerfLastFrameTime != null) {
+      const duration = roundSheetPerfMs(timestamp - sheetPerfLastFrameTime)
+      if (duration >= SHEET_PERF_FRAME_GAP_THRESHOLD_MS) {
+        recordSheetPerfEvent('browser.frameGap', {
+          duration,
+          perfStart: roundSheetPerfMs(sheetPerfLastFrameTime),
+          perfEnd: roundSheetPerfMs(timestamp),
+          detail: {
+            thresholdMs: SHEET_PERF_FRAME_GAP_THRESHOLD_MS,
+            ...getSheetPerfSelectedCellContext(),
+            viewport: getSheetPerfHotViewport(),
+          },
+        })
+      }
+    }
+
+    sheetPerfLastFrameTime = timestamp
+    sheetPerfFrameMonitorId = window.requestAnimationFrame(tick)
+  }
+
+  sheetPerfLastFrameTime = null
+  sheetPerfFrameMonitorId = window.requestAnimationFrame(tick)
+}
+
+function stopSheetPerfFrameMonitor() {
+  if (typeof window !== 'undefined' && sheetPerfFrameMonitorId != null) {
+    window.cancelAnimationFrame(sheetPerfFrameMonitorId)
+  }
+  sheetPerfFrameMonitorId = null
+  sheetPerfLastFrameTime = null
+}
+
+function startSheetPerfLongTaskObserver() {
+  if (
+    typeof PerformanceObserver === 'undefined'
+    || sheetPerfLongTaskObserver
+    || !PerformanceObserver.supportedEntryTypes?.includes('longtask')
+  ) {
+    return
+  }
+
+  sheetPerfLongTaskObserver = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      recordSheetPerfEvent('browser.longTask', {
+        duration: roundSheetPerfMs(entry.duration),
+        perfStart: roundSheetPerfMs(entry.startTime),
+        perfEnd: roundSheetPerfMs(entry.startTime + entry.duration),
+        detail: {
+          name: entry.name,
+          entryType: entry.entryType,
+          ...getSheetPerfSelectedCellContext(),
+          viewport: getSheetPerfHotViewport(),
+        },
+      })
+    }
+  })
+
+  try {
+    sheetPerfLongTaskObserver.observe({ type: 'longtask', buffered: true })
+  } catch {
+    sheetPerfLongTaskObserver.disconnect()
+    sheetPerfLongTaskObserver = null
+  }
+}
+
+function stopSheetPerfLongTaskObserver() {
+  sheetPerfLongTaskObserver?.disconnect()
+  sheetPerfLongTaskObserver = null
+}
+
+function startSheetPerfRuntimeObservers() {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  void nextTick(() => {
+    patchSheetPerfHotInstance()
+  })
+  startSheetPerfLongTaskObserver()
+  startSheetPerfFrameMonitor()
+}
+
+function stopSheetPerfRuntimeObservers() {
+  unpatchSheetPerfHotInstance()
+  stopSheetPerfLongTaskObserver()
+  stopSheetPerfFrameMonitor()
+  sheetPerfCurrentRender = null
+}
+
+function pushSheetPerfLogEntry(
+  entry: Omit<SheetPerfLogEntry, 'id' | 'at' | 'sheetId' | 'sheetTitle'>,
+) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return null
+  }
+
+  const nextEntry: SheetPerfLogEntry = {
+    id: ++sheetPerfLogSeq,
+    at: Date.now(),
+    ...getSheetPerfBaseContext(),
+    ...entry,
+  }
+  sheetPerfLogEntries.push(nextEntry)
+  if (sheetPerfLogEntries.length > SHEET_PERF_LOG_LIMIT) {
+    sheetPerfLogEntries.splice(0, sheetPerfLogEntries.length - SHEET_PERF_LOG_LIMIT)
+  }
+  if (nextEntry.type === 'selection.after') {
+    sheetPerfLastSelectionEntry = nextEntry
+  }
+  queueSheetPerfBackendLogEntry(nextEntry)
+  return nextEntry
+}
+
+function startSheetPerfTrace(
+  type: string,
+  context: SheetPerfLogContext = {},
+) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return null
+  }
+
+  const start = getSheetPerfNow()
+  let previous = start
+  const phases: SheetPerfLogPhase[] = []
+
+  return {
+    mark(name: string) {
+      const now = getSheetPerfNow()
+      phases.push({
+        name,
+        ms: roundSheetPerfMs(now - previous),
+      })
+      previous = now
+    },
+    finish(detail: SheetPerfLogContext = {}) {
+      const end = getSheetPerfNow()
+      const logEntry = pushSheetPerfLogEntry({
+        type,
+        ...context,
+        ...detail,
+        perfStart: roundSheetPerfMs(start),
+        perfEnd: roundSheetPerfMs(end),
+        phases: [...phases],
+        totalMs: roundSheetPerfMs(end - start),
+      })
+      if (logEntry && typeof window !== 'undefined') {
+        window.requestAnimationFrame(() => {
+          logEntry.nextFrameMs = roundSheetPerfMs(getSheetPerfNow() - start)
+        })
+      }
+    },
+  }
+}
+
+function getSheetPerfMetricSummary(metric: string, values: number[]): SheetPerfMetricSummary {
+  const sorted = [...values].sort((left, right) => left - right)
+  const sum = sorted.reduce((total, value) => total + value, 0)
+  const percentile = (ratio: number) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * ratio))] ?? 0
+  return {
+    metric,
+    count: sorted.length,
+    avg: roundSheetPerfMs(sum / Math.max(1, sorted.length)),
+    p50: roundSheetPerfMs(percentile(0.5)),
+    p90: roundSheetPerfMs(percentile(0.9)),
+    max: roundSheetPerfMs(sorted[sorted.length - 1] ?? 0),
+  }
+}
+
+function buildSheetPerfSummary(): SheetPerfSummary {
+  const samples = new Map<string, number[]>()
+  const addSample = (metric: string, value: unknown) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return
+    }
+    const values = samples.get(metric) ?? []
+    values.push(value)
+    samples.set(metric, values)
+  }
+
+  for (const entry of sheetPerfLogEntries) {
+    addSample(`${entry.type}.total`, entry.totalMs)
+    addSample(`${entry.type}.nextFrame`, entry.nextFrameMs)
+    addSample(`${entry.type}.wait`, entry.waitMs)
+    for (const phase of entry.phases ?? []) {
+      addSample(`${entry.type}.${phase.name}`, phase.ms)
+    }
+  }
+
+  return {
+    enabled: sheetPerfLoggingEnabled.value,
+    count: sheetPerfLogEntries.length,
+    ...getSheetPerfBaseContext(),
+    metrics: [...samples.entries()]
+      .map(([metric, values]) => getSheetPerfMetricSummary(metric, values))
+      .sort((left, right) => right.max - left.max),
+  }
+}
+
+function installSheetPerfLogger() {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  const logger: SheetPerfLogger = {
+    get enabled() {
+      return sheetPerfLoggingEnabled.value
+    },
+    set enabled(enabled: boolean) {
+      setSheetPerfLoggingEnabled(enabled)
+    },
+    entries: sheetPerfLogEntries,
+    enable() {
+      setSheetPerfLoggingEnabled(true)
+    },
+    disable() {
+      setSheetPerfLoggingEnabled(false)
+    },
+    clear() {
+      sheetPerfLogEntries.splice(0, sheetPerfLogEntries.length)
+      sheetPerfLogPendingEntries.splice(0, sheetPerfLogPendingEntries.length)
+      clearSheetPerfLogFlushTimer()
+      console.info('[sheet-perf] cleared')
+    },
+    flush() {
+      return flushSheetPerfLogEntries()
+    },
+    dump() {
+      const entries = sheetPerfLogEntries.map((entry) => ({ ...entry }))
+      console.log(entries)
+      return entries
+    },
+    table() {
+      console.table(sheetPerfLogEntries)
+    },
+    summary() {
+      const summary = buildSheetPerfSummary()
+      console.table(summary.metrics)
+      return summary
+    },
+    async copy() {
+      const payload = {
+        summary: buildSheetPerfSummary(),
+        entries: sheetPerfLogEntries,
+      }
+      const text = JSON.stringify(payload, null, 2)
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        console.info('[sheet-perf] copied JSON to clipboard')
+      } else {
+        console.warn('[sheet-perf] clipboard API unavailable; returning JSON text')
+      }
+      return text
+    },
+  }
+
+  ;(window as SheetPerfWindow).__codeyunSheetPerf = logger
+  if (sheetPerfLoggingEnabled.value) {
+    startSheetPerfRuntimeObservers()
+    console.info('[sheet-perf] enabled; use __codeyunSheetPerf.summary() / copy() after reproducing')
+  }
+}
+
+function uninstallSheetPerfLogger() {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const perfWindow = window as SheetPerfWindow
+  if (perfWindow.__codeyunSheetPerf?.entries === sheetPerfLogEntries) {
+    delete perfWindow.__codeyunSheetPerf
+  }
+  stopSheetPerfRuntimeObservers()
+}
+
 const columnSettingsSelectedCount = computed(() => {
   const bounds = columnSettingsSelectionBounds.value
   return bounds ? bounds.end - bounds.start + 1 : 0
@@ -1149,9 +1992,12 @@ const shouldRenderSheetContent = computed(() => (
   (props.sheetId != null || hasInlineDocument.value) && sheetContentReady.value
 ))
 const sheetEmptyStateText = computed(() => (
-  props.sheetId != null && !sheetContentReady.value && !sheetLoadSettled.value
-    ? '正在连接工作表...'
-    : props.emptyText
+  sheetLoadErrorText.value
+    || (
+      props.sheetId != null && !sheetContentReady.value && !sheetLoadSettled.value
+        ? '正在连接工作表...'
+        : props.emptyText
+    )
 ))
 const sheetWorkspaceView = ref<SheetWorkspaceView>('sheet')
 const studentLookupGroup = ref('')
@@ -1671,7 +2517,8 @@ function openSheetWorkspaceViewLinkMenu(event: MouseEvent) {
 
   const margin = 8
   const menuWidth = 148
-  const menuHeight = 44
+  const menuItemCount = 1 + (canEditConfig.value ? 2 : 0) + (canManageAccess.value ? 1 : 0)
+  const menuHeight = 8 + menuItemCount * 32
   const maxX = Math.max(margin, window.innerWidth - menuWidth - margin)
   const maxY = Math.max(margin, window.innerHeight - menuHeight - margin)
   sheetWorkspaceViewLinkMenu.value.x = Math.min(Math.max(event.clientX, margin), maxX)
@@ -1718,6 +2565,69 @@ async function copySheetWorkspaceViewLink(view: SheetWorkspaceView) {
   } finally {
     closeSheetWorkspaceViewLinkMenu()
   }
+}
+
+function openSheetSettingsFromWorkspaceViewMenu() {
+  closeSheetWorkspaceViewLinkMenu()
+  openSheetSettings()
+}
+
+async function renameSheetFromWorkspaceViewMenu() {
+  closeSheetWorkspaceViewLinkMenu()
+  if (props.sheetId == null) {
+    return
+  }
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  let value = ''
+  try {
+    const result = await ElMessageBox.prompt('请输入工作表名称', '重命名工作表', {
+      inputValue: sheetTitle.value,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作表名称不能为空',
+    })
+    value = result.value
+  } catch {
+    return
+  }
+
+  const nextTitle = value.trim()
+  if (!nextTitle || nextTitle === sheetTitle.value) {
+    return
+  }
+
+  const previousTitle = sheetTitle.value
+  sheetTitle.value = nextTitle
+  try {
+    const saved = await updateNoteSheet(props.sheetId, { title: nextTitle }, { workbookId: props.workbookId })
+    sheetTitle.value = saved.title || nextTitle
+    sheetVersion.value = Number(saved.version || sheetVersion.value)
+    emitSheetSync(saved)
+    ElMessage.success('已重命名')
+  } catch (error) {
+    sheetTitle.value = previousTitle
+    console.warn('Failed to rename sheet:', error)
+    ElMessage.error('重命名失败')
+  }
+}
+
+function openSheetAccessFromWorkspaceViewMenu() {
+  closeSheetWorkspaceViewLinkMenu()
+  if (props.sheetId == null) {
+    return
+  }
+  if (!canManageAccess.value) {
+    warnReadOnlyAction()
+    return
+  }
+  sheetAccessDialogVisible.value = true
+}
+
+function handleSheetAccessSaved(access: NoteSheetResourceAccess) {
+  remoteAccessCapabilities.value = access.capabilities
 }
 const showContextMenuFallbackButton = computed(() => (
   touchContextMenuFallbackEnabled.value
@@ -2329,6 +3239,16 @@ const hotHiddenColumnIndexes = computed(() => (
   hiddenColumnIndexes.value.map((index) => toHotColumnIndex(index))
 ))
 
+const sheetHotHiddenColumnsSettings = computed(() => ({
+  columns: hotHiddenColumnIndexes.value,
+  indicators: false,
+}))
+
+const sheetHotHiddenRowsSettings = computed(() => ({
+  rows: sheetFilterHiddenRows.value,
+  indicators: false,
+}))
+
 const sheetContentWidth = computed(() => {
   const hiddenHotColumnSet = new Set(hotHiddenColumnIndexes.value)
   const visibleWidth = sheetHotColumnWidths.value.reduce((total, width, index) => (
@@ -2344,7 +3264,7 @@ const sheetWorkspaceStyle = computed(() => (
 ))
 
 const fixedHotColumnsStart = computed(() => (
-  fixedColumnsStart.value > 0 ? rowMarkerColumnCount.value + fixedColumnsStart.value : 0
+  rowMarkerColumnCount.value + fixedColumnsStart.value
 ))
 
 function getDocumentColumnNote(header: string, sourceConfigs: Record<string, SheetColumnConfig>) {
@@ -2837,6 +3757,9 @@ let lastQueuedSerial = 0
 let savedChangeSerial = 0
 let saveInFlight = false
 let sheetLayoutObserver: ResizeObserver | null = null
+let rowDetailDialogResizeObserver: ResizeObserver | null = null
+let rowDetailDialogResizeInitialized = false
+let rowDetailDialogResizeSaveTimer: ReturnType<typeof setTimeout> | null = null
 let editingHeaderInputEl: HTMLInputElement | null = null
 let formulaEngineImportPromise: Promise<FormulaEngineClass | null> | null = null
 let sheetFormulaPluginRegistered = false
@@ -2847,9 +3770,12 @@ let lastNotifiedUserMatchRunStatus = ''
 let pendingColumnInsertionTemplate: ColumnInsertionTemplate | null = null
 let pendingRowInsertionTemplate: RowInsertionTemplate | null = null
 let contextMenuRowInsertAmount = 1
+let contextMenuColumnInsertAmount = 1
 
 const ROW_INSERT_AMOUNT_MIN = 1
 const ROW_INSERT_AMOUNT_MAX = 1000
+const COLUMN_INSERT_AMOUNT_MIN = 1
+const COLUMN_INSERT_AMOUNT_MAX = 1000
 
 function normalizeRowInsertAmount(value: unknown) {
   const numeric = Math.floor(Number(value))
@@ -2859,7 +3785,137 @@ function normalizeRowInsertAmount(value: unknown) {
   return Math.min(Math.max(numeric, ROW_INSERT_AMOUNT_MIN), ROW_INSERT_AMOUNT_MAX)
 }
 
-function stopRowInsertMenuEvent(event: Event) {
+function normalizeColumnInsertAmount(value: unknown) {
+  const numeric = Math.floor(Number(value))
+  if (!Number.isFinite(numeric)) {
+    return COLUMN_INSERT_AMOUNT_MIN
+  }
+  return Math.min(Math.max(numeric, COLUMN_INSERT_AMOUNT_MIN), COLUMN_INSERT_AMOUNT_MAX)
+}
+
+function canUseBrowserLocalStorage() {
+  return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined'
+}
+
+function getRowDetailDialogViewportBounds() {
+  const viewportWidth = typeof window === 'undefined'
+    ? ROW_DETAIL_DIALOG_DEFAULT_WIDTH + ROW_DETAIL_DIALOG_VIEWPORT_MARGIN * 2
+    : window.innerWidth
+  const viewportHeight = typeof window === 'undefined'
+    ? ROW_DETAIL_DIALOG_DEFAULT_HEIGHT + ROW_DETAIL_DIALOG_VIEWPORT_MARGIN * 2
+    : window.innerHeight
+  const maxWidth = Math.max(320, viewportWidth - ROW_DETAIL_DIALOG_VIEWPORT_MARGIN)
+  const maxHeight = Math.max(220, viewportHeight - ROW_DETAIL_DIALOG_VIEWPORT_MARGIN)
+  return {
+    minWidth: Math.min(ROW_DETAIL_DIALOG_MIN_WIDTH, maxWidth),
+    minHeight: Math.min(ROW_DETAIL_DIALOG_MIN_HEIGHT, maxHeight),
+    maxWidth,
+    maxHeight,
+  }
+}
+
+function clampRowDetailDialogSize(size: Partial<RowDetailDialogSize> | null | undefined): RowDetailDialogSize | null {
+  const width = Number(size?.width)
+  const height = Number(size?.height)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null
+  }
+
+  const bounds = getRowDetailDialogViewportBounds()
+  return {
+    width: Math.round(Math.min(Math.max(width, bounds.minWidth), bounds.maxWidth)),
+    height: Math.round(Math.min(Math.max(height, bounds.minHeight), bounds.maxHeight)),
+  }
+}
+
+function loadRowDetailDialogSizePreference(): RowDetailDialogSize | null {
+  if (!canUseBrowserLocalStorage()) {
+    return null
+  }
+  try {
+    const raw = window.localStorage.getItem(ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY)
+    if (!raw) {
+      return null
+    }
+    return clampRowDetailDialogSize(JSON.parse(raw) as Partial<RowDetailDialogSize>)
+  } catch {
+    window.localStorage.removeItem(ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY)
+    return null
+  }
+}
+
+function saveRowDetailDialogSizePreference(size: RowDetailDialogSize) {
+  const nextSize = clampRowDetailDialogSize(size)
+  if (!nextSize) {
+    return
+  }
+  rowDetailDialogSize.value = nextSize
+  if (!canUseBrowserLocalStorage()) {
+    return
+  }
+  window.localStorage.setItem(ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY, JSON.stringify(nextSize))
+}
+
+function getRowDetailDialogElement() {
+  return document.querySelector<HTMLElement>('.sheet-row-detail-dialog.el-dialog')
+}
+
+function clearRowDetailDialogResizeSaveTimer() {
+  if (rowDetailDialogResizeSaveTimer != null) {
+    window.clearTimeout(rowDetailDialogResizeSaveTimer)
+    rowDetailDialogResizeSaveTimer = null
+  }
+}
+
+function scheduleSaveRowDetailDialogSize(element: HTMLElement) {
+  clearRowDetailDialogResizeSaveTimer()
+  rowDetailDialogResizeSaveTimer = window.setTimeout(() => {
+    rowDetailDialogResizeSaveTimer = null
+    if (!element.isConnected) {
+      return
+    }
+    const rect = element.getBoundingClientRect()
+    saveRowDetailDialogSizePreference({ width: rect.width, height: rect.height })
+  }, 250)
+}
+
+async function bindRowDetailDialogSizeObserver() {
+  unbindRowDetailDialogSizeObserver()
+  await nextTick()
+  if (typeof ResizeObserver === 'undefined') {
+    return
+  }
+
+  const element = getRowDetailDialogElement()
+  if (!element) {
+    return
+  }
+
+  const savedSize = rowDetailDialogSize.value
+  if (savedSize) {
+    element.style.width = `${savedSize.width}px`
+    element.style.height = `${savedSize.height}px`
+  }
+
+  rowDetailDialogResizeInitialized = false
+  rowDetailDialogResizeObserver = new ResizeObserver(() => {
+    if (!rowDetailDialogResizeInitialized) {
+      rowDetailDialogResizeInitialized = true
+      return
+    }
+    scheduleSaveRowDetailDialogSize(element)
+  })
+  rowDetailDialogResizeObserver.observe(element)
+}
+
+function unbindRowDetailDialogSizeObserver() {
+  rowDetailDialogResizeObserver?.disconnect()
+  rowDetailDialogResizeObserver = null
+  rowDetailDialogResizeInitialized = false
+  clearRowDetailDialogResizeSaveTimer()
+}
+
+function stopInsertMenuEvent(event: Event) {
   event.stopPropagation()
 }
 
@@ -2879,6 +3935,22 @@ function executeContextMenuRowInsertion(side: 'above' | 'below', input?: HTMLInp
   insertRowFromSelection(side, amount)
 }
 
+function commitColumnInsertAmountInput(input: HTMLInputElement) {
+  const amount = normalizeColumnInsertAmount(input.value)
+  contextMenuColumnInsertAmount = amount
+  input.value = String(amount)
+  return amount
+}
+
+function executeContextMenuColumnInsertion(side: 'left' | 'right', input?: HTMLInputElement) {
+  const amount = input
+    ? commitColumnInsertAmountInput(input)
+    : normalizeColumnInsertAmount(contextMenuColumnInsertAmount)
+  contextMenuColumnInsertAmount = amount
+  getContextMenuPlugin()?.close?.()
+  insertColumnFromSelection(side, amount)
+}
+
 function createRowInsertMenuRenderer() {
   return (
     _hot: Handsontable,
@@ -2889,19 +3961,19 @@ function createRowInsertMenuRenderer() {
     _itemValue: string,
   ) => {
     const root = document.createElement('div')
-    root.className = 'note-sheet-row-insert-menu note-sheet-row-insert-menu--submenu'
-    root.addEventListener('mousedown', stopRowInsertMenuEvent)
-    root.addEventListener('mouseup', stopRowInsertMenuEvent)
-    root.addEventListener('click', stopRowInsertMenuEvent)
-    root.addEventListener('dblclick', stopRowInsertMenuEvent)
+    root.className = 'note-sheet-insert-menu note-sheet-insert-menu--submenu'
+    root.addEventListener('mousedown', stopInsertMenuEvent)
+    root.addEventListener('mouseup', stopInsertMenuEvent)
+    root.addEventListener('click', stopInsertMenuEvent)
+    root.addEventListener('dblclick', stopInsertMenuEvent)
 
     const label = document.createElement('button')
-    label.className = 'note-sheet-row-insert-menu-action'
+    label.className = 'note-sheet-insert-menu-action'
     label.type = 'button'
     label.textContent = '添加行'
 
     const input = document.createElement('input')
-    input.className = 'note-sheet-row-insert-menu-input'
+    input.className = 'note-sheet-insert-menu-input'
     input.type = 'number'
     input.min = String(ROW_INSERT_AMOUNT_MIN)
     input.max = String(ROW_INSERT_AMOUNT_MAX)
@@ -2936,10 +4008,67 @@ function createRowInsertMenuRenderer() {
   }
 }
 
+function createColumnInsertMenuRenderer() {
+  return (
+    _hot: Handsontable,
+    _wrapper: HTMLElement,
+    _row: number,
+    _col: number,
+    _prop: number | string,
+    _itemValue: string,
+  ) => {
+    const root = document.createElement('div')
+    root.className = 'note-sheet-insert-menu note-sheet-insert-menu--submenu'
+    root.addEventListener('mousedown', stopInsertMenuEvent)
+    root.addEventListener('mouseup', stopInsertMenuEvent)
+    root.addEventListener('click', stopInsertMenuEvent)
+    root.addEventListener('dblclick', stopInsertMenuEvent)
+
+    const label = document.createElement('button')
+    label.className = 'note-sheet-insert-menu-action'
+    label.type = 'button'
+    label.textContent = '插入列'
+
+    const input = document.createElement('input')
+    input.className = 'note-sheet-insert-menu-input'
+    input.type = 'number'
+    input.min = String(COLUMN_INSERT_AMOUNT_MIN)
+    input.max = String(COLUMN_INSERT_AMOUNT_MAX)
+    input.step = '1'
+    input.value = String(contextMenuColumnInsertAmount)
+    input.inputMode = 'numeric'
+    input.ariaLabel = `${label.textContent}数量`
+    input.addEventListener('input', () => {
+      const rawValue = Number(input.value)
+      if (Number.isFinite(rawValue)) {
+        contextMenuColumnInsertAmount = normalizeColumnInsertAmount(rawValue)
+      }
+    })
+    input.addEventListener('change', () => {
+      commitColumnInsertAmountInput(input)
+    })
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation()
+      if (event.key === 'Enter') {
+        event.preventDefault()
+        executeContextMenuColumnInsertion('left', input)
+      }
+    })
+    label.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      executeContextMenuColumnInsertion('left', input)
+    })
+
+    root.append(label, input)
+    return root
+  }
+}
+
 const contextMenu = {
   items: {
     row_detail: {
-      name: '单独显式此条',
+      name: '单独显示此条',
       hidden: () => !canOpenSelectedRowDetailDialog(),
       callback: () => {
         openSelectedRowDetailDialog()
@@ -2982,18 +4111,28 @@ const contextMenu = {
         && canEditConfig.value
       ),
     },
-    insert_col_left: {
-      name: '左方插入列',
+    column_insert: {
+      name: '插入列',
+      isCommand: false,
       hidden: () => !shouldShowColumnActions() || !canEditConfig.value,
-      callback: () => {
-        insertColumnFromSelection('left')
-      },
-    },
-    insert_col_right: {
-      name: '右方插入列',
-      hidden: () => !shouldShowColumnActions() || !canEditConfig.value,
-      callback: () => {
-        insertColumnFromSelection('right')
+      renderer: createColumnInsertMenuRenderer(),
+      submenu: {
+        items: [
+          {
+            key: 'column_insert:left',
+            name: '左方插入列',
+            callback: () => {
+              executeContextMenuColumnInsertion('left')
+            },
+          },
+          {
+            key: 'column_insert:right',
+            name: '右方插入列',
+            callback: () => {
+              executeContextMenuColumnInsertion('right')
+            },
+          },
+        ],
       },
     },
     column_sort: {
@@ -3037,7 +4176,7 @@ const contextMenu = {
       },
     },
     column_settings: {
-      name: '设置',
+      name: '设置字段',
       hidden: () => !hasColumnSettingsContextSelection() || !canEditConfig.value,
       callback: () => {
         openSelectedColumnSettings()
@@ -3069,6 +4208,44 @@ const contextMenu = {
       hidden: () => !shouldShowRemoveRowAction() || !canEditData.value,
       callback: () => {
         removeSelectedRows()
+      },
+    },
+    hsep_sheet_advanced: {
+      name: '---------',
+      hidden: () => !canEditConfig.value,
+    },
+    sheet_advanced: {
+      name: '高级功能',
+      hidden: () => !canEditConfig.value,
+      submenu: {
+        items: [
+          {
+            key: 'sheet_advanced:hide_empty_columns',
+            name: '隐藏空列',
+            callback: () => {
+              hideEmptyColumns()
+            },
+          },
+          {
+            key: 'sheet_advanced:detect_option_filters',
+            name: '检测并设置选项筛选',
+            callback: () => {
+              detectAndSetOptionFilters()
+            },
+          },
+        ],
+      },
+    },
+    hsep_attendance_wjx_ai_precheck: {
+      name: '---------',
+      hidden: () => !canRunAttendanceWjxAiPrecheckFromSelection() || !canRunSheetActions.value,
+    },
+    attendance_wjx_ai_precheck: {
+      name: '填写AI初判',
+      hidden: () => !canRunAttendanceWjxAiPrecheckFromSelection() || !canRunSheetActions.value,
+      disabled: () => workspaceLoading.value || attendanceWjxAiPrecheckRunning.value,
+      callback: () => {
+        void handleRunAttendanceWjxAiPrecheckFromSelection()
       },
     },
     hsep_attendance_completion: {
@@ -3342,6 +4519,72 @@ function getExcelImportErrorMessage(error: unknown) {
   return getSheetActionErrorMessage(error, '导入 Excel 失败')
 }
 
+const isAttendanceWjxDataSheet = computed(() => (
+  sheetTitle.value.trim() === ATTENDANCE_WJX_DATA_TITLE
+  && ATTENDANCE_WJX_SIGNAL_HEADERS.every((header) => findHeaderIndex(columnHeaders.value, header) >= 0)
+))
+
+function parsePositiveIntegerCellValue(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  if (!/^\d+(?:\.0+)?$/.test(text)) {
+    return 0
+  }
+  const numeric = Number(text)
+  return Number.isInteger(numeric) && numeric > 0 ? numeric : 0
+}
+
+function getSelectedAttendanceWjxAiPrecheckCell() {
+  if (!isOriginalSheetViewActive.value || !isAttendanceWjxDataSheet.value) {
+    return null
+  }
+
+  const cell = getSingleSelectedDataCell()
+  const aiColumn = findHeaderIndex(columnHeaders.value, ATTENDANCE_WJX_AI_HEADER)
+  if (!cell || aiColumn < 0 || cell.column !== aiColumn) {
+    return null
+  }
+
+  const sequenceColumn = findHeaderIndex(columnHeaders.value, ATTENDANCE_WJX_SEQUENCE_HEADER)
+  if (sequenceColumn < 0) {
+    return null
+  }
+  const seq = parsePositiveIntegerCellValue(rows.value[cell.row]?.[sequenceColumn])
+  return seq > 0 ? { ...cell, seq } : null
+}
+
+function canRunAttendanceWjxAiPrecheckFromSelection() {
+  return !!getSelectedAttendanceWjxAiPrecheckCell()
+}
+
+async function handleRunAttendanceWjxAiPrecheckFromSelection() {
+  const selectedCell = getSelectedAttendanceWjxAiPrecheckCell()
+  if (!selectedCell) {
+    ElMessage.warning('请选择一个 AI初判 单元格')
+    return
+  }
+  if (!ensureCanRunSheetActions() || attendanceWjxAiPrecheckRunning.value) {
+    return
+  }
+
+  attendanceWjxAiPrecheckRunning.value = true
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const result = await runAttendanceWjxDataAiPrecheck(selectedCell.seq, {
+      persist: true,
+      use_codex_cli: true,
+    })
+    await restoreInitialDocument({ preserveContent: true })
+    const summary = normalizeCellValue(result.precheck?.summary).trim()
+    ElMessage.success(summary ? `AI初判完成：${summary}` : 'AI初判已生成')
+  } catch (error) {
+    console.warn('Failed to run attendance wjx AI precheck', error)
+    ElMessage.error(getSheetActionErrorMessage(error, 'AI初判失败'))
+  } finally {
+    attendanceWjxAiPrecheckRunning.value = false
+  }
+}
+
 function clearUserMatchRunPollTimer() {
   if (userMatchRunPollTimer) {
     clearTimeout(userMatchRunPollTimer)
@@ -3470,7 +4713,7 @@ function handleExcelImportFileChange(event: Event) {
   excelImportFile.value = input?.files?.[0] ?? null
 }
 
-async function applyExcelImportReset() {
+async function applyExcelImport(mode: NoteSheetExcelImportMode) {
   if (props.sheetId == null || !excelImportFile.value) {
     ElMessage.warning('请选择 Excel 文件')
     return
@@ -3480,15 +4723,16 @@ async function applyExcelImportReset() {
     return
   }
 
-  excelImportRunning.value = true
+  excelImportRunningMode.value = mode
   try {
     commitPendingSheetGridEdit()
     await flushRemoteSave()
-    const result = await importNoteSheetFromExcelReset(
+    const result = await importNoteSheetFromExcel(
       props.sheetId,
       {
         file: excelImportFile.value,
         instruction: excelImportInstruction.value,
+        mode,
         actionCell: excelImportActionCell.value ?? undefined,
       },
       { workbookId: props.workbookId },
@@ -3498,13 +4742,16 @@ async function applyExcelImportReset() {
       ? `，追加 ${result.extra_columns.length} 列`
       : ''
     const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
-    ElMessage.success(`已导入 ${result.imported_count} 行${extraColumnSuffix}${warningSuffix}`)
+    const modeText = mode === 'append'
+      ? `已在末尾插入 ${result.imported_count} 行文件数据`
+      : `已清空后导入 ${result.imported_count} 行`
+    ElMessage.success(`${modeText}${extraColumnSuffix}${warningSuffix}`)
     closeExcelImportDialog(true)
   } catch (error) {
     console.warn('Failed to import note sheet from Excel', error)
     ElMessage.error(getExcelImportErrorMessage(error))
   } finally {
-    excelImportRunning.value = false
+    excelImportRunningMode.value = null
   }
 }
 
@@ -3597,6 +4844,10 @@ async function startUserMatchRun(forceRestart = false, useBrowserFallback = user
 function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: number; column: number }) {
   if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
     openExcelImportDialog(actionCell)
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
+    addRegistrationStudentRow()
     return
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
@@ -4086,9 +5337,11 @@ function resetWorkspaceState() {
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearRowMarkerSelectionAnchor()
   clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
   sheetContentReady.value = false
+  sheetLoadErrorText.value = ''
   closeColumnNotePopover()
   columnHeaders.value = [...DEFAULT_SHEET_COLUMNS]
   headerGroups.value = []
@@ -4123,6 +5376,7 @@ function resetWorkspaceState() {
   userMatchStartPending.value = false
   userMatchRunStatus.value = null
   sheetCellActionRunning.value = null
+  attendanceWjxAiPrecheckRunning.value = false
   closeSheetWorkspaceViewLinkMenu()
   columnSettingsDialogVisible.value = false
   columnSettingsColumnIndex.value = null
@@ -4709,6 +5963,30 @@ function normalizeCellFontFamily(value: unknown): CellFontFamily | '' {
   return ''
 }
 
+function normalizeCellTextAlign(value: unknown): CellTextAlign | '' {
+  if (value === 'left' || value === 'center' || value === 'right') {
+    return value
+  }
+  return ''
+}
+
+function normalizeCellVerticalAlign(value: unknown): CellVerticalAlign | '' {
+  if (value === 'top' || value === 'middle' || value === 'bottom') {
+    return value
+  }
+  return ''
+}
+
+function hasCellStyleValue(style: SheetCellStyle) {
+  return Boolean(
+    style.background_color
+    || style.text_color
+    || style.font_family
+    || style.text_align
+    || style.vertical_align,
+  )
+}
+
 function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   if (!source || typeof source !== 'object') {
     return null
@@ -4718,7 +5996,9 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   const backgroundColor = normalizeCssColor(record.background_color)
   const textColor = normalizeCssColor(record.text_color)
   const fontFamily = normalizeCellFontFamily(record.font_family)
-  if (!backgroundColor && !textColor && !fontFamily) {
+  const textAlign = normalizeCellTextAlign(record.text_align)
+  const verticalAlign = normalizeCellVerticalAlign(record.vertical_align)
+  if (!backgroundColor && !textColor && !fontFamily && !textAlign && !verticalAlign) {
     return null
   }
 
@@ -4731,6 +6011,12 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   }
   if (fontFamily) {
     style.font_family = fontFamily
+  }
+  if (textAlign) {
+    style.text_align = textAlign
+  }
+  if (verticalAlign) {
+    style.vertical_align = verticalAlign
   }
   return style
 }
@@ -4956,6 +6242,7 @@ function normalizeLegacySheetCellActionType(value: unknown): SheetCellActionType
   const compactValue = normalizeCellValue(value).replace(/\s+/g, '').toLowerCase()
   const legacyLabels: Array<[SheetCellActionType, string]> = [
     [SHEET_CELL_ACTION_EXCEL_IMPORT_RESET, EXCEL_IMPORT_ACTION_LABEL],
+    [SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT]],
     [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]],
     [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]],
   ]
@@ -4997,6 +6284,57 @@ function addLegacySheetCellActions(
   })
 
   return changed ? normalizeCellMetaMap(nextMeta, columnCount) : sourceMeta
+}
+
+function cellMetaHasActionType(meta: SheetCellMeta | null | undefined, actionType: SheetCellActionType) {
+  return meta?.action?.type === actionType
+}
+
+function addDefaultRegistrationAddStudentAction(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  headers: string[],
+  dataStartRow: number,
+) {
+  const submittedAtColumn = headers.findIndex((header) => normalizeCellValue(header).trim() === STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+  if (
+    submittedAtColumn < 0
+    || !headers.some((header) => normalizeCellValue(header).trim() === '姓名')
+  ) {
+    return sourceMeta
+  }
+
+  const prefixRowCount = Math.min(Math.max(dataStartRow, 0), normalizedGridRows.length)
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  for (let rowIndex = 0; rowIndex < prefixRowCount; rowIndex += 1) {
+    const row = normalizedGridRows[rowIndex]
+    const hasExcelImportAction = row.some((value, columnIndex) => {
+      const key = createCellMetaKey(rowIndex, columnIndex)
+      return (
+        cellMetaHasActionType(nextMeta[key], SHEET_CELL_ACTION_EXCEL_IMPORT_RESET)
+        || normalizeLegacySheetCellActionType(value) === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET
+      )
+    })
+    if (!hasExcelImportAction) {
+      continue
+    }
+
+    const key = createCellMetaKey(rowIndex, submittedAtColumn)
+    const currentMeta = nextMeta[key]
+    if (currentMeta?.action || normalizeCellValue(row[submittedAtColumn]).trim()) {
+      return sourceMeta
+    }
+    nextMeta[key] = {
+      ...(currentMeta ?? {}),
+      action: {
+        type: SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT,
+        label: SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT],
+      },
+    }
+    return normalizeCellMetaMap(nextMeta, headers.length)
+  }
+
+  return sourceMeta
 }
 
 function splitColumnNoteLeadingLink(source: unknown) {
@@ -5958,10 +7296,15 @@ function normalizeSheetDocument(
           : normalizeCellMetaMap(record.cell_meta, headers.length)
       )
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
-  const normalizedCellMeta = addLegacySheetCellActions(
-    sourceCellMeta,
+  const normalizedCellMeta = addDefaultRegistrationAddStudentAction(
+    addLegacySheetCellActions(
+      sourceCellMeta,
+      normalizedGridRows,
+      headers.length,
+    ),
     normalizedGridRows,
-    headers.length,
+    headers,
+    dataStartRow,
   )
   const normalizedEntityColumns = normalizeEntityColumns(record.entity_columns, headers)
   const normalizedEntityRows = normalizeEntityRows(
@@ -8541,7 +9884,10 @@ function getCellActionDisplayLabel(action: SheetCellAction, rawText: string) {
 
 function getCellActionTitle(action: SheetCellAction) {
   if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
-    return '导入 Excel：上传文件并重置此按钮后的数据行'
+    return '导入 Excel：可在末尾插入文件数据，也可清空后导入'
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
+    return '新增学员：添加一条空白学员记录并打开详情编辑'
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH) {
     return '更新订单匹配：按微信支付订单号补全订单日期、商户订单号、订单金额和已返款'
@@ -8864,7 +10210,10 @@ function syncContextMenuSelectionFromEvent(event: MouseEvent) {
   if (rowMarkerValue != null) {
     const row = normalizeNonNegativeInt(rowMarkerValue, -1)
     if (row >= 0) {
-      selectRowFromMarker(row)
+      if (shouldPreserveSelectionForContextPointer(event, row, 0)) {
+        return
+      }
+      selectRowFromMarker(row, event.shiftKey)
     }
     return
   }
@@ -8876,6 +10225,9 @@ function syncContextMenuSelectionFromEvent(event: MouseEvent) {
   }
 
   const anchor = getMergeAnchorForGridCell(headerLevel, headerColumn)
+  if (shouldPreserveSelectionForContextPointer(event, anchor.row, toHotColumnIndex(anchor.column))) {
+    return
+  }
   const anchoredHeaderLevel = getSheetHeaderGridLevel(anchor.row)
   selectedSheetHeaderCell.value = { column: anchor.column, headerLevel: anchoredHeaderLevel }
   clearColumnMarkerSelection()
@@ -8963,6 +10315,98 @@ function isSelectedByRowMarkerSelection() {
   )
 }
 
+function isSingleRowMarkerCellSelection(selection = getHotInstance()?.getSelectedLast()) {
+  if (rowMarkerColumnCount.value <= 0 || !selection) {
+    return false
+  }
+  return (
+    selection[0] === selection[2]
+    && selection[1] === 0
+    && selection[3] === 0
+    && selection[0] >= 0
+  )
+}
+
+function selectFirstSheetCellInGridRow(gridRow: number) {
+  const hot = getHotInstance()
+  if (!hot || gridRow < 0 || columnHeaders.value.length <= 0) {
+    return false
+  }
+
+  hot.selectCell(gridRow, toHotColumnIndex(0), gridRow, toHotColumnIndex(0), true, false)
+  hot.listen()
+  return true
+}
+
+function redirectSingleRowMarkerSelection(selection = getHotInstance()?.getSelectedLast()) {
+  if (!isSingleRowMarkerCellSelection(selection)) {
+    return false
+  }
+  return selectFirstSheetCellInGridRow(selection![0])
+}
+
+function shouldBlockRowMarkerKeyboardNavigation(event: KeyboardEvent) {
+  if (
+    rowMarkerColumnCount.value <= 0
+    || event.ctrlKey
+    || event.metaKey
+    || event.altKey
+    || event.isComposing
+  ) {
+    return false
+  }
+
+  const selection = getHotInstance()?.getSelectedLast()
+  if (!selection) {
+    return false
+  }
+  const startColumn = Math.min(selection[1], selection[3])
+  if (event.key === 'ArrowLeft') {
+    return startColumn <= rowMarkerColumnCount.value
+  }
+  if (event.key === 'Home') {
+    return startColumn <= rowMarkerColumnCount.value
+  }
+  if (event.key === 'Tab' && event.shiftKey) {
+    return startColumn <= rowMarkerColumnCount.value
+  }
+  return false
+}
+
+function isHotGridCellInsideSelection(gridRow: number, hotColumn: number) {
+  const hot = getHotInstance()
+  const selections = hot?.getSelected?.() as number[][] | undefined
+  if (!selections?.length) {
+    return false
+  }
+
+  return selections.some((selection) => {
+    if (!Array.isArray(selection) || selection.length < 4) {
+      return false
+    }
+    const startRow = Math.min(selection[0], selection[2])
+    const endRow = Math.max(selection[0], selection[2])
+    const startColumn = Math.min(selection[1], selection[3])
+    const endColumn = Math.max(selection[1], selection[3])
+    return (
+      gridRow >= startRow
+      && gridRow <= endRow
+      && hotColumn >= startColumn
+      && hotColumn <= endColumn
+    )
+  })
+}
+
+function shouldPreserveSelectionForContextPointer(event: MouseEvent, gridRow: number, hotColumn: number) {
+  return (
+    (event.button === 2 || event.type === 'contextmenu')
+    && !event.shiftKey
+    && gridRow >= 0
+    && hotColumn >= 0
+    && isHotGridCellInsideSelection(gridRow, hotColumn)
+  )
+}
+
 function clearScheduledRowMarkerSelection() {
   if (rowMarkerSelectionTimer != null && typeof window !== 'undefined') {
     window.clearTimeout(rowMarkerSelectionTimer)
@@ -8970,13 +10414,51 @@ function clearScheduledRowMarkerSelection() {
   rowMarkerSelectionTimer = null
 }
 
-function selectRowFromMarker(gridRow: number) {
+function clearRowMarkerSelectionAnchor() {
+  rowMarkerSelectionAnchor = null
+}
+
+function getRowMarkerSelectionAnchor(gridRow: number, extendSelection: boolean) {
+  if (!extendSelection) {
+    return gridRow
+  }
+
+  const currentRowBounds = getSelectionRowBounds()
+  const anchorDataRow = rowMarkerSelectionAnchor == null ? -1 : getDataRowIndex(rowMarkerSelectionAnchor)
+  if (
+    rowMarkerSelectionAnchor != null
+    && isSelectedByRowMarkerSelection()
+    && currentRowBounds
+    && anchorDataRow >= currentRowBounds.start
+    && anchorDataRow <= currentRowBounds.end
+  ) {
+    return rowMarkerSelectionAnchor
+  }
+
+  const selection = normalizeHotSelectionRange(getHotInstance()?.getSelectedLast())
+  if (!selection) {
+    return gridRow
+  }
+
+  if (selection[0] >= sheetHeaderRowCount.value) {
+    return selection[0]
+  }
+  if (selection[2] >= sheetHeaderRowCount.value) {
+    return selection[2]
+  }
+  return gridRow
+}
+
+function selectRowFromMarker(gridRow: number, extendSelection = false) {
   const hot = getHotInstance()
   if (!hot || gridRow < sheetHeaderRowCount.value) {
     return false
   }
 
   clearScheduledRowMarkerSelection()
+  const anchorRow = getRowMarkerSelectionAnchor(gridRow, extendSelection)
+  const startRow = Math.min(anchorRow, gridRow)
+  const endRow = Math.max(anchorRow, gridRow)
   const run = () => {
     rowMarkerSelectionTimer = null
     const latestHot = getHotInstance()
@@ -8984,7 +10466,8 @@ function selectRowFromMarker(gridRow: number) {
       return
     }
 
-    latestHot.selectCell(gridRow, 0, gridRow, Math.max(0, getHotColumnCount() - 1), true, false)
+    rowMarkerSelectionAnchor = anchorRow
+    latestHot.selectCell(startRow, 0, endRow, Math.max(0, getHotColumnCount() - 1), true, false)
     latestHot.listen()
     refreshContextMenuFallbackSelectionState()
   }
@@ -9319,47 +10802,79 @@ function getWrappedLineCount(text: string, availableWidth: number, font = TABLE_
 }
 
 function resolveRowHeight(rowIndex: number) {
-  if (isSheetHeaderGridRow(rowIndex)) {
-    if (rowIndex < normalizedHeaderGroups.value.length) {
-      return 32
-    }
-    if (rowIndex === columnHeaderLevel.value) {
-      return 36
-    }
-    return 92
-  }
-
-  const dataRowIndex = getDataRowIndex(rowIndex)
-  const layoutState = rowHeightLayoutState.value
-  if (!layoutState.hasWrappedColumns) {
-    return layoutState.singleLineHeight
-  }
-
-  const row = rows.value[dataRowIndex] ?? []
-  let maxContentHeight = layoutState.singleLineHeight - TABLE_CELL_VERTICAL_PADDING * 2 - TABLE_CELL_BORDER_WIDTH
-
-  for (const columnLayout of layoutState.wrappedColumns) {
-    const cellText = getCellTextForLayout(dataRowIndex, columnLayout.index, row[columnLayout.index] ?? '')
-    if (!cellText) {
-      maxContentHeight = Math.max(maxContentHeight, columnLayout.lineHeight)
-      continue
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (isSheetHeaderGridRow(rowIndex)) {
+      if (rowIndex < normalizedHeaderGroups.value.length) {
+        return 32
+      }
+      if (rowIndex === columnHeaderLevel.value) {
+        return 36
+      }
+      return 92
     }
 
-    const availableWidth = Math.max(
-      getEffectiveColumnWidth(columnLayout.index) - TABLE_CELL_HORIZONTAL_PADDING * 2,
-      12,
-    )
-    const cellFont = getColumnCellFontFromSize(columnLayout.fontSize, columnLayout.fontFamily)
-    maxContentHeight = Math.max(
-      maxContentHeight,
-      getWrappedLineCount(cellText, availableWidth, cellFont) * columnLayout.lineHeight,
-    )
-  }
+    const dataRowIndex = getDataRowIndex(rowIndex)
+    const layoutState = rowHeightLayoutState.value
+    if (!layoutState.hasWrappedColumns) {
+      return layoutState.singleLineHeight
+    }
 
-  return maxContentHeight + TABLE_CELL_VERTICAL_PADDING * 2 + TABLE_CELL_BORDER_WIDTH
+    const row = rows.value[dataRowIndex] ?? []
+    let maxContentHeight = layoutState.singleLineHeight - TABLE_CELL_VERTICAL_PADDING * 2 - TABLE_CELL_BORDER_WIDTH
+
+    for (const columnLayout of layoutState.wrappedColumns) {
+      const cellText = getCellTextForLayout(dataRowIndex, columnLayout.index, row[columnLayout.index] ?? '')
+      if (!cellText) {
+        maxContentHeight = Math.max(maxContentHeight, columnLayout.lineHeight)
+        continue
+      }
+
+      const availableWidth = Math.max(
+        getEffectiveColumnWidth(columnLayout.index) - TABLE_CELL_HORIZONTAL_PADDING * 2,
+        12,
+      )
+      const cellFont = getColumnCellFontFromSize(columnLayout.fontSize, columnLayout.fontFamily)
+      maxContentHeight = Math.max(
+        maxContentHeight,
+        getWrappedLineCount(cellText, availableWidth, cellFont) * columnLayout.lineHeight,
+      )
+    }
+
+    return maxContentHeight + TABLE_CELL_VERTICAL_PADDING * 2 + TABLE_CELL_BORDER_WIDTH
+  } finally {
+    recordSheetPerfRenderCallback('rowHeight', perfStart)
+  }
 }
 
-async function updateSheetViewportHeight() {
+async function updateSheetViewportHeight(reason = 'unknown') {
+  const perfStart = sheetPerfLoggingEnabled.value ? getSheetPerfNow() : 0
+  const previousHeight = sheetViewportHeight.value
+  const finishPerfLog = (
+    nextHeight: number | 'auto',
+    changed: boolean,
+    rendered: boolean,
+    detail: Record<string, unknown> = {},
+  ) => {
+    if (!perfStart) {
+      return
+    }
+    const perfEnd = getSheetPerfNow()
+    recordSheetPerfEvent('layout.viewportHeight', {
+      duration: roundSheetPerfMs(perfEnd - perfStart),
+      perfStart: roundSheetPerfMs(perfStart),
+      perfEnd: roundSheetPerfMs(perfEnd),
+      detail: {
+        reason,
+        previousHeight,
+        nextHeight,
+        changed,
+        rendered,
+        ...detail,
+      },
+    })
+  }
+
   await nextTick()
 
   const sheetFrame = sheetFrameRef.value
@@ -9369,23 +10884,39 @@ async function updateSheetViewportHeight() {
     if (changed) {
       getHotInstance()?.render()
     }
+    finishPerfLog('auto', changed, changed, {
+      hasSheetFrame: !!sheetFrame,
+      sheetId: props.sheetId,
+      isContentHeightMode: isContentHeightMode.value,
+    })
     return
   }
 
   const frameRect = sheetFrame.getBoundingClientRect()
   const availableHeight = Math.floor(sheetFrame.clientHeight || frameRect.height)
   if (!Number.isFinite(availableHeight) || availableHeight <= 0) {
+    finishPerfLog(previousHeight, false, false, {
+      availableHeight,
+      frameClientHeight: sheetFrame.clientHeight,
+      frameRectHeight: frameRect.height,
+    })
     return
   }
 
-  sheetViewportHeight.value = availableHeight
-
-  getHotInstance()?.render()
+  const changed = sheetViewportHeight.value !== availableHeight
+  if (changed) {
+    sheetViewportHeight.value = availableHeight
+    getHotInstance()?.render()
+  }
+  finishPerfLog(availableHeight, changed, changed, {
+    frameClientHeight: sheetFrame.clientHeight,
+    frameRectHeight: frameRect.height,
+  })
 }
 
 function handleWindowResize() {
   closeColumnNotePopover()
-  void updateSheetViewportHeight()
+  void updateSheetViewportHeight('windowResize')
 }
 
 function captureSheetScrollPosition() {
@@ -9428,7 +10959,7 @@ function bindSheetLayoutObserver() {
   }
 
   sheetLayoutObserver = new ResizeObserver(() => {
-    void updateSheetViewportHeight()
+    void updateSheetViewportHeight('layoutResizeObserver')
   })
   sheetLayoutObserver.observe(scrollContainer)
 }
@@ -10446,13 +11977,25 @@ function clearFormulaReferenceInteractionState() {
 function clearCellLinkOpenPointerGuard() {
   window.removeEventListener('mousemove', handleCellLinkOpenPointerGuardEvent, true)
   window.removeEventListener('mouseover', handleCellLinkOpenPointerGuardEvent, true)
-  window.removeEventListener('mouseup', handleCellLinkOpenPointerGuardEvent, true)
+  window.removeEventListener('mouseup', handleCellLinkOpenPointerGuardMouseUp)
   window.removeEventListener('click', handleCellLinkOpenPointerGuardEvent, true)
   if (cellLinkOpenPointerGuardTimer != null) {
     window.clearTimeout(cellLinkOpenPointerGuardTimer)
     cellLinkOpenPointerGuardTimer = null
   }
   cellLinkOpenPointerGuardActive = false
+  cellLinkOpenPendingLink = null
+  cellLinkOpenPendingCompleted = false
+}
+
+function completePendingCellLinkOpen() {
+  if (!cellLinkOpenPointerGuardActive || cellLinkOpenPendingCompleted || !cellLinkOpenPendingLink) {
+    return
+  }
+
+  const link = cellLinkOpenPendingLink
+  cellLinkOpenPendingCompleted = true
+  openCellLink(link)
 }
 
 function handleCellLinkOpenPointerGuardEvent(event: MouseEvent) {
@@ -10462,17 +12005,35 @@ function handleCellLinkOpenPointerGuardEvent(event: MouseEvent) {
 
   event.preventDefault()
   event.stopImmediatePropagation()
-  if (event.type === 'mouseup' || event.type === 'click' || event.buttons === 0) {
+  if (event.type === 'click') {
+    completePendingCellLinkOpen()
     clearCellLinkOpenPointerGuard()
   }
 }
 
-function beginCellLinkOpenPointerGuard() {
+function handleCellLinkOpenPointerGuardMouseUp(event: MouseEvent) {
+  if (!cellLinkOpenPointerGuardActive) {
+    return
+  }
+
+  event.preventDefault()
+  completePendingCellLinkOpen()
+  if (cellLinkOpenPointerGuardTimer != null) {
+    window.clearTimeout(cellLinkOpenPointerGuardTimer)
+  }
+  cellLinkOpenPointerGuardTimer = window.setTimeout(() => {
+    clearCellLinkOpenPointerGuard()
+  }, 250)
+}
+
+function beginCellLinkOpenPointerGuard(link: SheetCellLink) {
   clearCellLinkOpenPointerGuard()
   cellLinkOpenPointerGuardActive = true
+  cellLinkOpenPendingLink = link
+  cellLinkOpenPendingCompleted = false
   window.addEventListener('mousemove', handleCellLinkOpenPointerGuardEvent, true)
   window.addEventListener('mouseover', handleCellLinkOpenPointerGuardEvent, true)
-  window.addEventListener('mouseup', handleCellLinkOpenPointerGuardEvent, true)
+  window.addEventListener('mouseup', handleCellLinkOpenPointerGuardMouseUp)
   window.addEventListener('click', handleCellLinkOpenPointerGuardEvent, true)
   cellLinkOpenPointerGuardTimer = window.setTimeout(() => {
     clearCellLinkOpenPointerGuard()
@@ -10527,8 +12088,7 @@ function openCellLinkFromMouseEvent(
   event.preventDefault()
   event.stopImmediatePropagation()
   selectCellForLinkOpen(gridRowIndex, columnIndex)
-  beginCellLinkOpenPointerGuard()
-  openCellLink(link)
+  beginCellLinkOpenPointerGuard(link)
   return true
 }
 
@@ -10649,11 +12209,24 @@ function handleBeforeCellMouseDown(
   _td: HTMLTableCellElement,
   controller: CellMouseSelectionController,
 ) {
+  markSheetPerfInput({
+    kind: 'mouse',
+    row: coords.row,
+    hotColumn: coords.col,
+    button: event.button,
+  })
+
   if (coords.row < 0) {
     return
   }
 
   if (coords.col < 0) {
+    return
+  }
+
+  if (shouldPreserveSelectionForContextPointer(event, coords.row, coords.col)) {
+    disableNativeCellSelection(controller)
+    event.stopImmediatePropagation()
     return
   }
 
@@ -10667,7 +12240,7 @@ function handleBeforeCellMouseDown(
     }
     clearSheetHeaderSelection()
     clearFormulaBarSelection()
-    selectRowFromMarker(coords.row)
+    selectRowFromMarker(coords.row, event.shiftKey)
     return
   }
 
@@ -10801,8 +12374,6 @@ function handleBeforeCellMouseUp(
   if (cellLinkOpenPointerGuardActive) {
     disableNativeCellSelection(controller)
     event.preventDefault()
-    event.stopImmediatePropagation()
-    clearCellLinkOpenPointerGuard()
     return
   }
 
@@ -10871,6 +12442,12 @@ function applyCellMetaStyle(TD: HTMLTableCellElement, style: SheetCellStyle | nu
   if (style?.font_family) {
     TD.style.setProperty('font-family', getCellFontFamilyStyle(style.font_family), 'important')
   }
+  if (style?.text_align) {
+    TD.style.setProperty('text-align', style.text_align, 'important')
+  }
+  if (style?.vertical_align) {
+    TD.style.setProperty('vertical-align', style.vertical_align, 'important')
+  }
 }
 
 function resetRenderedCellState(TD: HTMLTableCellElement) {
@@ -10881,6 +12458,8 @@ function resetRenderedCellState(TD: HTMLTableCellElement) {
     'sheet-cell-formula',
     'sheet-cell-formula-error',
     'sheet-cell-formula-reference-preview',
+    'sheet-cell-single-line',
+    'sheet-cell-wrap',
     'sheet-freeze-column-boundary',
     'sheet-freeze-row-boundary',
     'sheet-row-marker-cell',
@@ -10898,6 +12477,7 @@ function resetRenderedCellState(TD: HTMLTableCellElement) {
   TD.style.removeProperty('font-weight')
   TD.style.removeProperty('line-height')
   TD.style.removeProperty('text-align')
+  TD.style.removeProperty('vertical-align')
   if (TD.dataset.hyperlinkUrl) {
     delete TD.dataset.hyperlinkUrl
   }
@@ -10919,6 +12499,14 @@ function renderFieldHeaderCell(TD: HTMLTableCellElement, column: number) {
     TD.textContent = ''
     const label = document.createElement('span')
     label.className = 'sheet-header-label'
+    const cellStyle = getCellStyleAt(getDocumentGridRowIndex(columnHeaderLevel.value), column)
+    if (cellStyle?.text_align === 'left') {
+      label.style.justifyContent = 'flex-start'
+    } else if (cellStyle?.text_align === 'right') {
+      label.style.justifyContent = 'flex-end'
+    } else if (cellStyle?.text_align === 'center') {
+      label.style.justifyContent = 'center'
+    }
 
     const titleEl = document.createElement('span')
     titleEl.className = 'sheet-header-title'
@@ -11016,9 +12604,12 @@ function renderRowMarkerCell(TD: HTMLTableCellElement, row: number) {
     if (event.button !== 0 && event.button !== 2) {
       return
     }
+    if (shouldPreserveSelectionForContextPointer(event, row, 0)) {
+      return
+    }
     clearSheetHeaderSelection()
     clearFormulaBarSelection()
-    if (!selectRowFromMarker(row)) {
+    if (!selectRowFromMarker(row, event.shiftKey)) {
       return
     }
     if (event.button === 0) {
@@ -11107,8 +12698,8 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
       note && note !== formulaText ? `${note}\n= ${formulaText}` : formulaText,
       link?.url,
     ].filter(Boolean).join('\n')
-  } else if (note || link) {
-    TD.title = [note, link?.url].filter(Boolean).join('\n')
+  } else if (link) {
+    TD.title = link.url
   }
 }
 
@@ -11309,7 +12900,7 @@ async function applySheetSettings() {
       refreshGridStructure()
       await refreshComputedRowHeights()
       await updateSheetViewportHeight()
-      ElMessage.error('保存表格设置失败')
+      ElMessage.error('设置表格保存失败')
       return
     }
     currentPage.value = 1
@@ -11326,6 +12917,7 @@ function loadSheetDocument(document: SheetDocument) {
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearRowMarkerSelectionAnchor()
   clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
   closeColumnNotePopover()
@@ -11524,6 +13116,7 @@ function emitSheetSync(detail: NoteSheetDetail) {
     title: detail.title || '未命名表格',
     version: Number(detail.version || 1),
     updatedAt: Number(detail.updated_at || 0),
+    parentWorkbookId: Number.isInteger(detail.parent_workbook_id) ? Number(detail.parent_workbook_id) : null,
     workbookItems,
   })
 }
@@ -12319,6 +13912,7 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
     sheetContentReady.value = false
     sheetLoadSettled.value = false
   }
+  sheetLoadErrorText.value = ''
   suppressPersistence = true
   try {
     let localDraft = readDraftPayload()
@@ -12438,6 +14032,7 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
 
     loadSheetDocument(activeDocument)
     sheetContentReady.value = true
+    sheetLoadErrorText.value = ''
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
     restoreSheetWorkspaceViewFromLocalStorage()
@@ -12452,6 +14047,21 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
       scheduleRemoteSave(0)
     }
     void refreshAttendanceCourseScriptStatuses()
+  } catch (error) {
+    const status = getNoteSheetApiErrorStatus(error)
+    const message = status === 401 || status === 403
+      ? '没有权限访问该工作表'
+      : '工作表加载失败'
+    if (!shouldPreserveContent) {
+      sheetContentReady.value = false
+    }
+    sheetLoadErrorText.value = message
+    console.warn('Failed to load note sheet document:', error)
+    emit('loadError', {
+      sheetId: props.sheetId,
+      status,
+      message,
+    })
   } finally {
     suppressPersistence = false
     if (!shouldPreserveContent) {
@@ -13069,6 +14679,8 @@ function isAutoRegistrationSubmittedAtStyle(style: SheetCellStyle | null | undef
     normalizeCssColor(style?.text_color) === REGISTRATION_AUTO_SUBMITTED_AT_TEXT_COLOR
     && !normalizeCssColor(style?.background_color)
     && !style?.font_family
+    && !style?.text_align
+    && !style?.vertical_align
   )
 }
 
@@ -13790,15 +15402,36 @@ function getFormulaBarCellEditText(cell: FormulaBarCell) {
 }
 
 function syncFormulaBarDraftFromSelectedCell(force = false) {
+  const trace = startSheetPerfTrace('formulaBar.sync', {
+    force,
+    formulaBarFocused: formulaBarFocused.value,
+  })
   const cell = formulaBarCell.value
   if (!cell) {
     formulaBarDraft.value = ''
+    trace?.finish({ exit: 'empty' })
     return
   }
   if (formulaBarFocused.value && !force) {
+    trace?.finish({
+      exit: 'focused',
+      address: getSheetPerfCellAddress(cell),
+      valueLength: getSheetPerfCellValueLength(cell),
+    })
     return
   }
-  formulaBarDraft.value = getFormulaBarCellEditText(cell)
+  const editText = getFormulaBarCellEditText(cell)
+  trace?.mark('readEditText')
+  formulaBarDraft.value = editText
+  trace?.mark('assignDraft')
+  trace?.finish({
+    exit: 'synced',
+    address: getSheetPerfCellAddress(cell),
+    dataRow: cell.dataRow,
+    column: cell.column,
+    documentGridRow: cell.documentGridRow,
+    valueLength: normalizeCellValue(editText).length,
+  })
 }
 
 function clearScheduledFormulaBarDraftSync() {
@@ -13811,9 +15444,24 @@ function clearScheduledFormulaBarDraftSync() {
 
 function scheduleFormulaBarDraftFromSelectedCell(force = false) {
   clearScheduledFormulaBarDraftSync()
+  const scheduledAt = sheetPerfLoggingEnabled.value ? getSheetPerfNow() : 0
   formulaBarDraftSyncFrame = window.requestAnimationFrame(() => {
+    const trace = startSheetPerfTrace('formulaBar.rafSync', {
+      force,
+      waitMs: scheduledAt ? roundSheetPerfMs(getSheetPerfNow() - scheduledAt) : undefined,
+      formulaBarFocused: formulaBarFocused.value,
+    })
     formulaBarDraftSyncFrame = null
     syncFormulaBarDraftFromSelectedCell(force)
+    trace?.mark('sync')
+    const cell = formulaBarCell.value
+    trace?.finish({
+      address: getSheetPerfCellAddress(cell),
+      dataRow: cell?.dataRow,
+      column: cell?.column,
+      documentGridRow: cell?.documentGridRow,
+      valueLength: getSheetPerfCellValueLength(cell),
+    })
   })
 }
 
@@ -14643,6 +16291,19 @@ function handleUndoRedoShortcut(event: KeyboardEvent, options: { allowSyncedForm
 }
 
 function handleBeforeKeyDown(event: KeyboardEvent) {
+  if (isSheetNavigationKey(event)) {
+    markSheetPerfInput({
+      kind: 'keyboard',
+      key: event.key,
+    })
+  }
+
+  if (shouldBlockRowMarkerKeyboardNavigation(event)) {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    redirectSingleRowMarkerSelection()
+    return false
+  }
   if (handleUndoRedoShortcut(event)) {
     return false
   }
@@ -14801,59 +16462,129 @@ function resetFormulaBarDraftAndExit() {
 }
 
 function handleAfterSelection(row: number, hotColumn: number) {
+  const inputTiming = consumeSheetPerfInputMarker()
+  const trace = startSheetPerfTrace('selection.after', {
+    row,
+    hotColumn,
+    waitMs: inputTiming?.waitMs,
+    detail: inputTiming
+      ? {
+          inputKind: inputTiming.marker.kind,
+          inputKey: inputTiming.marker.key,
+          inputButton: inputTiming.marker.button,
+          inputRow: inputTiming.marker.row,
+          inputHotColumn: inputTiming.marker.hotColumn,
+        }
+      : undefined,
+  })
+  const finishPerf = (exit: string, detail: SheetPerfLogContext = {}) => {
+    const cell = formulaBarCell.value
+    trace?.finish({
+      exit,
+      formulaBarFocused: formulaBarFocused.value,
+      address: getSheetPerfCellAddress(cell),
+      dataRow: cell?.dataRow,
+      column: cell?.column,
+      documentGridRow: cell?.documentGridRow,
+      ...detail,
+    })
+  }
+
   refreshContextMenuFallbackSelectionState()
+  trace?.mark('contextMenuSelection')
   if (deferredCellSelectionState) {
+    finishPerf('deferred')
+    return
+  }
+  if (hotColumn >= 0 && isSingleRowMarkerCellSelection()) {
+    trace?.mark('rowMarkerRedirect')
+    redirectSingleRowMarkerSelection()
+    finishPerf('rowMarkerRedirect')
     return
   }
   const column = hotColumn >= 0 ? toSheetColumnIndex(hotColumn) : hotColumn
+  trace?.mark('resolveColumn')
   if (hotColumn >= 0 && column < 0) {
     clearSheetHeaderSelection()
+    trace?.mark('clearHeader')
     clearFormulaBarSelection()
+    trace?.mark('clearFormulaBar')
     syncColumnMarkerSelection()
+    trace?.mark('columnMarker')
+    finishPerf('invalidHotColumn', { column })
     return
   }
   if (isSheetHeaderGridRow(row) && column >= 0) {
     const anchor = getMergeAnchorForGridCell(row, column)
     const headerLevel = getSheetHeaderGridLevel(anchor.row)
+    trace?.mark('headerAnchor')
     if (!isSheetHeaderCellSelected(anchor.column, headerLevel)) {
       selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
       getHotInstance()?.render()
     }
+    trace?.mark('headerState')
     setFormulaBarGridCell(anchor.row, anchor.column)
+    trace?.mark('formulaBar')
     syncColumnMarkerSelection()
+    trace?.mark('columnMarker')
+    finishPerf('header', {
+      row: anchor.row,
+      column: anchor.column,
+      documentGridRow: anchor.documentRow,
+    })
     return
   }
   clearSheetHeaderSelection()
+  trace?.mark('clearHeader')
   if (formulaReferenceRangeState) {
     syncColumnMarkerSelection()
+    trace?.mark('columnMarker')
+    finishPerf('formulaReferenceRange', { column })
     return
   }
 
   const dataRow = row >= 0 ? getDataRowIndex(row) : -1
+  trace?.mark('resolveDataRow')
   if (formulaReferencePointerDown && dataRow >= 0 && column >= 0 && isFormulaReferencePickMode()) {
     clearFormulaReferencePointerDownReset()
     formulaReferencePointerDown = false
     const anchor = getMergeAnchorForGridCell(row, column)
+    trace?.mark('referenceAnchor')
     insertFormulaReferenceIntoDraft(getDataRowIndex(anchor.row), anchor.column)
+    trace?.mark('insertFormulaReference')
     syncColumnMarkerSelection()
+    trace?.mark('columnMarker')
+    finishPerf('formulaReferencePick', {
+      row: anchor.row,
+      column: anchor.column,
+      dataRow: getDataRowIndex(anchor.row),
+      documentGridRow: anchor.documentRow,
+    })
     return
   }
 
   clearFormulaReferencePointerDownReset()
   formulaReferencePointerDown = false
   clearFormulaReferencePreviewRange()
+  trace?.mark('clearFormulaReference')
   if (row >= 0 && column >= 0) {
     const anchor = getMergeAnchorForGridCell(row, column)
+    trace?.mark('cellAnchor')
     setFormulaBarGridCell(anchor.row, anchor.column)
+    trace?.mark('formulaBar')
   } else {
     clearFormulaBarSelection()
+    trace?.mark('clearFormulaBar')
   }
   syncColumnMarkerSelection()
+  trace?.mark('columnMarker')
+  finishPerf(row >= 0 && column >= 0 ? 'cell' : 'cleared', { column })
 }
 
 function handleAfterDeselect() {
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
+  clearRowMarkerSelectionAnchor()
   clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
 }
@@ -15446,9 +17177,31 @@ function setCellStyleDraftFontFamily(value: unknown) {
   }
 }
 
+function setCellStyleDraftTextAlign(value: unknown) {
+  cellStyleDraftTouched.value.text_align = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    text_align: normalizeCellTextAlign(value),
+  }
+}
+
+function setCellStyleDraftVerticalAlign(value: unknown) {
+  cellStyleDraftTouched.value.vertical_align = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    vertical_align: normalizeCellVerticalAlign(value),
+  }
+}
+
 function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
   const touched = cellStyleDraftTouched.value
-  if (!touched.background_color && !touched.text_color && !touched.font_family) {
+  if (
+    !touched.background_color
+    && !touched.text_color
+    && !touched.font_family
+    && !touched.text_align
+    && !touched.vertical_align
+  ) {
     return
   }
 
@@ -15479,8 +17232,24 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
         delete nextStyle.font_family
       }
     }
+    if (touched.text_align) {
+      const textAlign = normalizeCellTextAlign(cellStyleDraft.value.text_align)
+      if (textAlign) {
+        nextStyle.text_align = textAlign
+      } else {
+        delete nextStyle.text_align
+      }
+    }
+    if (touched.vertical_align) {
+      const verticalAlign = normalizeCellVerticalAlign(cellStyleDraft.value.vertical_align)
+      if (verticalAlign) {
+        nextStyle.vertical_align = verticalAlign
+      } else {
+        delete nextStyle.vertical_align
+      }
+    }
 
-    if (nextStyle.background_color || nextStyle.text_color || nextStyle.font_family) {
+    if (hasCellStyleValue(nextStyle)) {
       nextEntry.style = nextStyle
     } else {
       delete nextEntry.style
@@ -15504,11 +17273,15 @@ function openSelectedCellStyleDialog() {
     background_color: getCommonSelectedCellStyle(cells, 'background_color'),
     text_color: getCommonSelectedCellStyle(cells, 'text_color'),
     font_family: normalizeCellFontFamily(getCommonSelectedCellStyle(cells, 'font_family')),
+    text_align: normalizeCellTextAlign(getCommonSelectedCellStyle(cells, 'text_align')),
+    vertical_align: normalizeCellVerticalAlign(getCommonSelectedCellStyle(cells, 'vertical_align')),
   }
   cellStyleDraftTouched.value = {
     background_color: false,
     text_color: false,
     font_family: false,
+    text_align: false,
+    vertical_align: false,
   }
   cellStyleDialogVisible.value = true
 }
@@ -15521,11 +17294,15 @@ function closeCellStyleDialog() {
     background_color: '',
     text_color: '',
     font_family: '',
+    text_align: '',
+    vertical_align: '',
   }
   cellStyleDraftTouched.value = {
     background_color: false,
     text_color: false,
     font_family: false,
+    text_align: false,
+    vertical_align: false,
   }
 }
 
@@ -15558,18 +17335,6 @@ function clearCellStyleDialog() {
     })
   }
   closeCellStyleDialog()
-}
-
-type CodeyunLinkVariant = 'local' | 'public'
-
-const CODEYUN_PUBLIC_HOST = 'code4101.com'
-
-function openUrlInNewWindow(url: string) {
-  if (!url || typeof window === 'undefined') {
-    return
-  }
-
-  window.open(url, '_blank', 'noopener,noreferrer')
 }
 
 function openCellLink(link: SheetCellLink | null) {
@@ -15653,87 +17418,9 @@ function parseSelectedCellLinkUrl() {
   }
 }
 
-function getUrlHostname(url: URL) {
-  return url.hostname.trim().toLowerCase().replace(/^\[|\]$/g, '')
-}
-
-function isLocalhostCodeyunHost(hostname: string) {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1'
-}
-
-function isLanIpv4Host(hostname: string) {
-  const parts = hostname.split('.').map((part) => Number(part))
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
-    return false
-  }
-  const [first, second] = parts
-  return (
-    first === 10
-    || first === 192
-    || (first === 172 && second >= 16 && second <= 31)
-  )
-}
-
-function isSwitchableCodeyunHost(hostname: string) {
-  return (
-    isLocalhostCodeyunHost(hostname)
-    || isLanIpv4Host(hostname)
-    || hostname === CODEYUN_PUBLIC_HOST
-  )
-}
-
-function isSwitchableCodeyunUrl(url: URL) {
-  return (
-    (url.protocol === 'http:' || url.protocol === 'https:')
-    && isSwitchableCodeyunHost(getUrlHostname(url))
-  )
-}
-
-function getCurrentLocationUrl() {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    return new URL(window.location.href)
-  } catch {
-    return null
-  }
-}
-
-function getLocalCodeyunPort(sourceUrl: URL) {
-  if (sourceUrl.port) {
-    return sourceUrl.port
-  }
-
-  const currentUrl = getCurrentLocationUrl()
-  if (currentUrl && isSwitchableCodeyunHost(getUrlHostname(currentUrl)) && currentUrl.port) {
-    return currentUrl.port
-  }
-  return '5173'
-}
-
 function buildCodeyunLinkVariantUrl(variant: CodeyunLinkVariant) {
   const sourceUrl = parseSelectedCellLinkUrl()
-  if (!sourceUrl || !isSwitchableCodeyunUrl(sourceUrl)) {
-    return ''
-  }
-
-  const targetUrl = new URL(sourceUrl.toString())
-  if (variant === 'local') {
-    const currentUrl = getCurrentLocationUrl()
-    targetUrl.protocol = currentUrl && isLocalhostCodeyunHost(getUrlHostname(currentUrl))
-      ? currentUrl.protocol
-      : 'http:'
-    targetUrl.hostname = 'localhost'
-    targetUrl.port = getLocalCodeyunPort(sourceUrl)
-    return targetUrl.toString()
-  }
-
-  targetUrl.protocol = 'https:'
-  targetUrl.hostname = CODEYUN_PUBLIC_HOST
-  targetUrl.port = ''
-  return targetUrl.toString()
+  return buildCodeyunUrlVariant(sourceUrl, variant)
 }
 
 function canOpenSelectedCellLinkVariant(variant: CodeyunLinkVariant) {
@@ -16276,16 +17963,16 @@ function getColumnHeaderLink(columnIndex: number) {
 function getColumnSettingsTitle() {
   const selectedCount = columnSettingsSelectedCount.value
   if (selectedCount > 1) {
-    return `字段设置：已选 ${selectedCount} 个字段`
+    return `设置字段：已选 ${selectedCount} 个字段`
   }
 
   const columnIndex = columnSettingsColumnIndex.value
   if (columnIndex == null) {
-    return '字段设置'
+    return '设置字段'
   }
 
   const header = columnHeaders.value[columnIndex]
-  return header ? `字段设置：${header}` : '字段设置'
+  return header ? `设置字段：${header}` : '设置字段'
 }
 
 function openColumnSettingsForBounds(bounds: { start: number; end: number }) {
@@ -16469,6 +18156,9 @@ function applyColumnSettings() {
   }
   refreshGridStructure()
   void refreshComputedRowHeights()
+  void nextTick(() => {
+    scheduleRemoteSave(0)
+  })
 }
 
 function shouldShowRemoveColumnAction() {
@@ -16636,6 +18326,7 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
   let fontFamilyStyle = getColumnFontFamilyStyle(columnConfig)
   let fontSizeStyle = ''
   let lineHeightStyle = ''
+  let textAlignStyle = resolveColumnTextAlign(columnConfig)
 
   if (detailFontSize !== DEFAULT_COLUMN_FONT_SIZE) {
     fontSizeStyle = `${detailFontSize}px`
@@ -16664,6 +18355,9 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
   if (cellStyle?.font_family) {
     fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
   }
+  if (cellStyle?.text_align) {
+    textAlignStyle = cellStyle.text_align
+  }
 
   const style: SheetResolvedCellValueStyle = {}
   if (backgroundColor) {
@@ -16680,6 +18374,9 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
   }
   if (lineHeightStyle) {
     style.lineHeight = lineHeightStyle
+  }
+  if (textAlignStyle) {
+    style.textAlign = textAlignStyle
   }
   return style
 }
@@ -16700,19 +18397,23 @@ function buildRowDetail(rowIndex: number): SheetRowDetail | null {
       }
 
       const rawValue = row[columnIndex] ?? ''
+      const normalizedRawValue = normalizeCellValue(rawValue)
       const link = getCellLinkAt(documentGridRow, columnIndex)
       const action = getCellActionAt(documentGridRow, columnIndex)
       const displayValue = action
-        ? getCellActionDisplayLabel(action, normalizeCellValue(rawValue))
+        ? getCellActionDisplayLabel(action, normalizedRawValue)
         : getCellDisplayText(rowIndex, columnIndex, rawValue)
       const linkDisplayValue = link ? (displayValue || link.title || link.url) : displayValue
       const value = normalizeCellValue(linkDisplayValue)
+      const editValue = action ? normalizedRawValue : getCellEditText(columnIndex, rawValue)
       return {
         columnIndex,
         marker: getColumnMarkerLabel(columnIndex),
         label: header || createFallbackHeader(columnIndex),
+        rawValue: editValue,
         value,
         empty: !value.trim(),
+        editable: canEditDataColumn(columnIndex) && !action,
         valueStyle: getResolvedCellValueStyle(rowIndex, columnIndex, value),
         link,
       }
@@ -16720,6 +18421,35 @@ function buildRowDetail(rowIndex: number): SheetRowDetail | null {
     .filter((item): item is SheetRowDetailItem => !!item)
 
   return { rowIndex, rowLabel, items }
+}
+
+function updateRowDetailItemValue(item: SheetRowDetailItem, value: unknown) {
+  const detail = rowDetail.value
+  if (!detail || !item.editable || !canEditDataColumn(item.columnIndex)) {
+    return
+  }
+
+  const rowIndex = detail.rowIndex
+  if (rowIndex < 0 || rowIndex >= rows.value.length) {
+    return
+  }
+
+  const nextValue = normalizeCellInputValueForColumn(normalizeCellValue(value), item.columnIndex)
+  item.rawValue = nextValue
+  item.value = nextValue
+  item.empty = !nextValue.trim()
+
+  const hot = getHotInstance()
+  const gridRow = getGridRowIndex(rowIndex)
+  if (hot && gridRow >= sheetHeaderRowCount.value) {
+    hot.setDataAtCell(gridRow, toHotColumnIndex(item.columnIndex), nextValue, 'row-detail')
+    return
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  nextRows[rowIndex][item.columnIndex] = nextValue
+  rows.value = nextRows
+  scheduleRemoteSave()
 }
 
 function getStudentLookupSectionTitle(columnIndex: number) {
@@ -16740,17 +18470,21 @@ function getStudentLookupSectionTitle(columnIndex: number) {
   return ''
 }
 
-function openSelectedRowDetailDialog() {
-  const rowIndex = getSingleSelectedRowDetailIndex()
-  if (rowIndex == null) {
-    return
-  }
+function openRowDetailDialog(rowIndex: number) {
   const detail = buildRowDetail(rowIndex)
   if (!detail) {
     return
   }
   rowDetail.value = detail
   rowDetailDialogVisible.value = true
+}
+
+function openSelectedRowDetailDialog() {
+  const rowIndex = getSingleSelectedRowDetailIndex()
+  if (rowIndex == null) {
+    return
+  }
+  openRowDetailDialog(rowIndex)
 }
 
 function openStudentLookupFeedbackDialog() {
@@ -17006,7 +18740,7 @@ function applyRowInsertionTemplateCellStyles(startDocumentRow: number, amount: n
   cellMeta.value = normalizeCellMetaMap(nextMeta, columnHeaders.value.length)
 }
 
-function insertColumnFromSelection(side: 'left' | 'right') {
+function insertColumnFromSelection(side: 'left' | 'right', amount = 1) {
   if (!ensureCanEditConfig()) {
     return
   }
@@ -17017,6 +18751,7 @@ function insertColumnFromSelection(side: 'left' | 'right') {
   }
 
   const bounds = getSelectionColumnBounds()
+  const columnAmount = normalizeColumnInsertAmount(amount)
   const targetIndex = bounds
     ? (side === 'left' ? bounds.start : bounds.end + 1)
     : columnHeaders.value.length
@@ -17026,7 +18761,7 @@ function insertColumnFromSelection(side: 'left' | 'right') {
 
   pendingColumnInsertionTemplate = createColumnInsertionTemplate(templateColumnIndex, targetIndex)
   try {
-    hot.alter('insert_col_start', toHotColumnIndex(targetIndex), 1)
+    hot.alter('insert_col_start', toHotColumnIndex(targetIndex), columnAmount)
   } finally {
     pendingColumnInsertionTemplate = null
   }
@@ -17057,6 +18792,164 @@ function insertRowFromSelection(side: 'above' | 'below', amount = 1) {
   } finally {
     pendingRowInsertionTemplate = null
   }
+}
+
+function isArchivedRegistrationRowForInsert(row: SheetRow, now = new Date()) {
+  const groupColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_GROUP_HEADER)
+  const statusColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_STATUS_HEADER)
+  const submittedAtColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
+  const normalizedRow = normalizeRow(row, columnHeaders.value)
+
+  if (
+    groupColumn >= 0
+    && normalizeCellValue(normalizedRow[groupColumn]).trim() === REGISTRATION_FROZEN_GROUP
+  ) {
+    return true
+  }
+  if (
+    statusColumn >= 0
+    && normalizeCellValue(normalizedRow[statusColumn]).trim() === REGISTRATION_FROZEN_STATUS
+  ) {
+    return true
+  }
+
+  if (submittedAtColumn < 0) {
+    return false
+  }
+  const submittedAt = getRegistrationSubmittedAtDate(normalizedRow[submittedAtColumn])
+  if (!submittedAt) {
+    return false
+  }
+
+  const submittedDate = new Date(submittedAt.getFullYear(), submittedAt.getMonth(), submittedAt.getDate())
+  return submittedDate < getRegistrationCutoffDate(now)
+}
+
+function getRegistrationStudentInsertDataIndex() {
+  const now = new Date()
+  const archivedIndex = rows.value.findIndex((row) => isArchivedRegistrationRowForInsert(row, now))
+  return archivedIndex >= 0 ? archivedIndex : rows.value.length
+}
+
+function applyRegistrationStudentGroupDefault(targetDataIndex: number) {
+  const groupColumn = getHeaderColumnIndex(STUDENT_LOOKUP_GROUP_HEADER)
+  if (groupColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
+    return
+  }
+
+  const currentGroup = normalizeCellValue(rows.value[targetDataIndex]?.[groupColumn]).trim()
+  if (currentGroup) {
+    return
+  }
+
+  let groupValue = ''
+  for (let rowIndex = targetDataIndex - 1; rowIndex >= 0; rowIndex -= 1) {
+    groupValue = normalizeCellValue(rows.value[rowIndex]?.[groupColumn]).trim()
+    if (groupValue) {
+      break
+    }
+  }
+  if (!groupValue) {
+    return
+  }
+
+  const nextValue = normalizeCellInputValueForColumn(groupValue, groupColumn)
+  const hot = getHotInstance()
+  const gridRow = getGridRowIndex(targetDataIndex)
+  if (hot && gridRow >= sheetHeaderRowCount.value) {
+    hot.setDataAtCell(gridRow, toHotColumnIndex(groupColumn), nextValue, 'registration-add-student')
+    return
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  nextRows[targetDataIndex][groupColumn] = nextValue
+  rows.value = nextRows
+  scheduleRemoteSave()
+}
+
+function parseRegistrationSequenceValue(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  if (!text) {
+    return null
+  }
+
+  const numericValue = Number(text)
+  if (!Number.isFinite(numericValue)) {
+    return null
+  }
+
+  const integerValue = Math.floor(numericValue)
+  return integerValue >= 0 ? integerValue : null
+}
+
+function getNextRegistrationSequenceValue(targetDataIndex: number) {
+  const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
+  if (sequenceColumn < 0) {
+    return ''
+  }
+
+  const maxSequence = rows.value.reduce((maxValue, row, rowIndex) => {
+    if (rowIndex === targetDataIndex) {
+      return maxValue
+    }
+
+    const sequence = parseRegistrationSequenceValue(row[sequenceColumn])
+    return sequence == null ? maxValue : Math.max(maxValue, sequence)
+  }, 0)
+  return String(maxSequence + 1)
+}
+
+function applyRegistrationStudentSequenceDefault(targetDataIndex: number) {
+  const sequenceColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SEQUENCE_HEADER)
+  if (sequenceColumn < 0 || targetDataIndex < 0 || targetDataIndex >= rows.value.length) {
+    return
+  }
+
+  if (normalizeCellValue(rows.value[targetDataIndex]?.[sequenceColumn]).trim()) {
+    return
+  }
+
+  const nextValue = normalizeCellInputValueForColumn(getNextRegistrationSequenceValue(targetDataIndex), sequenceColumn)
+  const hot = getHotInstance()
+  const gridRow = getGridRowIndex(targetDataIndex)
+  if (hot && gridRow >= sheetHeaderRowCount.value) {
+    hot.setDataAtCell(gridRow, toHotColumnIndex(sequenceColumn), nextValue, 'registration-add-student')
+    return
+  }
+
+  const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+  nextRows[targetDataIndex][sequenceColumn] = nextValue
+  rows.value = nextRows
+  scheduleRemoteSave()
+}
+
+function addRegistrationStudentRow() {
+  if (!ensureCanEditData()) {
+    return
+  }
+
+  const hot = getHotInstance()
+  if (!hot) {
+    return
+  }
+
+  const targetDataIndex = getRegistrationStudentInsertDataIndex()
+  const templateDataIndex = targetDataIndex > 0
+    ? targetDataIndex - 1
+    : (rows.value.length > 0 ? 0 : -1)
+  pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
+  try {
+    hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
+  } finally {
+    pendingRowInsertionTemplate = null
+  }
+
+  applyRegistrationStudentGroupDefault(targetDataIndex)
+  applyRegistrationStudentSequenceDefault(targetDataIndex)
+  void nextTick(() => {
+    selectRowFromMarker(getGridRowIndex(targetDataIndex))
+    openRowDetailDialog(targetDataIndex)
+  })
 }
 
 function removeSelectedColumns() {
@@ -17102,6 +18995,157 @@ function hideSelectedColumns() {
   refreshGridStructure()
   void refreshComputedRowHeights()
   scheduleRemoteSave(0)
+}
+
+function isVisibleColumnEmpty(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex]
+  if (!header || columnConfigs.value[header]?.hidden === true) {
+    return false
+  }
+
+  return rows.value.every((row, rowIndex) => {
+    const normalizedRow = normalizeRow(row, columnHeaders.value)
+    const value = getCellSemanticValue(rowIndex, columnIndex, normalizedRow[columnIndex])
+    return !normalizeCellValue(value).trim()
+  })
+}
+
+function getEmptyVisibleColumnIndexes() {
+  return columnHeaders.value
+    .map((_, index) => (isVisibleColumnEmpty(index) ? index : -1))
+    .filter((index) => index >= 0)
+}
+
+function looksLikeUrlValue(value: string) {
+  return /^(?:https?:\/\/|www\.)/i.test(value)
+}
+
+function isColumnLikelyOptionFilter(columnIndex: number) {
+  const header = columnHeaders.value[columnIndex]
+  if (!header || columnConfigs.value[header]?.hidden === true) {
+    return false
+  }
+
+  const values: string[] = []
+  for (const [rowIndex, row] of rows.value.entries()) {
+    const normalizedRow = normalizeRow(row, columnHeaders.value)
+    const value = normalizeColumnFilterOptionValue(
+      getCellDisplayText(rowIndex, columnIndex, normalizedRow[columnIndex]),
+    )
+    if (value) {
+      values.push(value)
+    }
+  }
+  if (values.length < 3) {
+    return false
+  }
+
+  const distinctValues = new Set(values)
+  const distinctCount = distinctValues.size
+  if (distinctCount < 2 || distinctCount >= values.length || distinctCount > 200) {
+    return false
+  }
+
+  const distinctRatio = distinctCount / values.length
+  const maxDistinctRatio = values.length >= 30 ? 0.6 : 0.7
+  if (distinctRatio > maxDistinctRatio) {
+    return false
+  }
+
+  let totalLength = 0
+  let urlCount = 0
+  for (const value of distinctValues) {
+    if (value.length > 80 || /[\r\n]/.test(value)) {
+      return false
+    }
+    totalLength += value.length
+    if (looksLikeUrlValue(value)) {
+      urlCount += 1
+    }
+  }
+
+  if (urlCount > 0 && urlCount / distinctCount >= 0.5) {
+    return false
+  }
+  return totalLength / distinctCount <= 40
+}
+
+function getDetectableOptionFilterColumnIndexes() {
+  return columnHeaders.value
+    .map((header, index) => {
+      if (!isColumnLikelyOptionFilter(index)) {
+        return -1
+      }
+      const config = normalizeColumnConfig(columnConfigs.value[header])
+      return config.value_mode === 'fixed_options' && config.filter_enabled ? -1 : index
+    })
+    .filter((index) => index >= 0)
+}
+
+function detectAndSetOptionFilters() {
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  const indexes = getDetectableOptionFilterColumnIndexes()
+  if (!indexes.length) {
+    ElMessage.info('没有检测到需要设置的选项筛选字段')
+    return
+  }
+
+  const nextConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
+  indexes.forEach((index) => {
+    const header = columnHeaders.value[index]
+    if (!header) {
+      return
+    }
+    nextConfigs[header] = {
+      ...(nextConfigs[header] ?? {}),
+      value_mode: 'fixed_options',
+      filter_enabled: true,
+    }
+  })
+
+  closeColumnFilterPopover()
+  closeColumnNotePopover()
+  columnConfigs.value = nextConfigs
+  refreshGridStructure()
+  void refreshComputedRowHeights()
+  scheduleRemoteSave(0)
+  ElMessage.success(`已设置 ${indexes.length} 个选项筛选字段`)
+}
+
+function hideEmptyColumns() {
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  const indexes = getEmptyVisibleColumnIndexes()
+  if (!indexes.length) {
+    ElMessage.info('没有可隐藏的空列')
+    return
+  }
+
+  const nextConfigs = normalizeColumnConfigs(columnConfigs.value, columnHeaders.value)
+  indexes.forEach((index) => {
+    const header = columnHeaders.value[index]
+    if (!header) {
+      return
+    }
+    nextConfigs[header] = {
+      ...(nextConfigs[header] ?? {}),
+      hidden: true,
+    }
+    delete nextConfigs[header].restore_index
+  })
+
+  clearEditingColumnState()
+  closeColumnNotePopover()
+  columnConfigs.value = nextConfigs
+  refreshGridStructure()
+  void refreshComputedRowHeights()
+  scheduleRemoteSave(0)
+  ElMessage.success(`已隐藏 ${indexes.length} 个空列`)
 }
 
 function showHiddenColumnsFromSelection() {
@@ -17200,48 +19244,53 @@ function removeSelectedRows() {
 }
 
 function resolveCellMeta(row: number, col: number) {
-  if (isRowMarkerHotColumn(col)) {
-    return {
-      wordWrap: false,
-      textEllipsis: false,
-      readOnly: true,
-      className: 'sheet-row-marker-cell',
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (isRowMarkerHotColumn(col)) {
+      return {
+        wordWrap: false,
+        textEllipsis: false,
+        readOnly: true,
+        className: 'sheet-row-marker-cell',
+      }
     }
-  }
 
-  const column = toSheetColumnIndex(col)
-  if (column < 0) {
+    const column = toSheetColumnIndex(col)
+    if (column < 0) {
+      return {
+        wordWrap: true,
+        textEllipsis: false,
+        readOnly: true,
+      }
+    }
+
+    const action = row >= 0
+      ? getCellActionAt(getDocumentGridRowIndex(row), column)
+      : null
+    if (isSheetHeaderGridRow(row)) {
+      return {
+        wordWrap: true,
+        textEllipsis: false,
+        readOnly: !!action || !canEditConfig.value,
+        className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
+      }
+    }
+
+    if (getColumnDisplayMode(column) === 'single_line') {
+      return {
+        wordWrap: false,
+        textEllipsis: true,
+        readOnly: !!action || !canEditDataColumn(column),
+      }
+    }
+
     return {
       wordWrap: true,
       textEllipsis: false,
-      readOnly: true,
-    }
-  }
-
-  const action = row >= 0
-    ? getCellActionAt(getDocumentGridRowIndex(row), column)
-    : null
-  if (isSheetHeaderGridRow(row)) {
-    return {
-      wordWrap: true,
-      textEllipsis: false,
-      readOnly: !!action || !canEditConfig.value,
-      className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
-    }
-  }
-
-  if (getColumnDisplayMode(column) === 'single_line') {
-    return {
-      wordWrap: false,
-      textEllipsis: true,
       readOnly: !!action || !canEditDataColumn(column),
     }
-  }
-
-  return {
-    wordWrap: true,
-    textEllipsis: false,
-    readOnly: !!action || !canEditDataColumn(column),
+  } finally {
+    recordSheetPerfRenderCallback('cellMeta', perfStart)
   }
 }
 
@@ -17360,6 +19409,98 @@ function getCellHashColorStyle(columnIndex: number, config: SheetColumnConfig | 
   return style
 }
 
+function handleBeforeRender(isForced: boolean) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  patchSheetPerfHotInstance()
+  const selection = sheetPerfLastSelectionEntry
+  sheetPerfCurrentRender = {
+    id: ++sheetPerfRenderSeq,
+    start: getSheetPerfNow(),
+    isForced,
+    cellCount: 0,
+    cellMetaCount: 0,
+    cellMetaMs: 0,
+    rowHeightCount: 0,
+    rowHeightMs: 0,
+    rendererCount: 0,
+    rendererMs: 0,
+    selectionId: selection?.id,
+    selectionAddress: selection?.address,
+    selectionRow: selection?.row,
+    selectionHotColumn: selection?.hotColumn,
+  }
+}
+
+function handleAfterRender(isForced: boolean) {
+  if (!sheetPerfLoggingEnabled.value) {
+    return
+  }
+  const end = getSheetPerfNow()
+  const renderState = sheetPerfCurrentRender
+  sheetPerfCurrentRender = null
+  if (!renderState) {
+    recordSheetPerfEvent('handsontable.render', {
+      isForced,
+      duration: 0,
+      detail: {
+        missingBeforeRender: true,
+        ...getSheetPerfSelectedCellContext(),
+        viewport: getSheetPerfHotViewport(),
+      },
+    })
+    return
+  }
+
+  const duration = Math.max(0, end - renderState.start)
+  recordSheetPerfEvent('handsontable.render', {
+    renderId: renderState.id,
+    isForced,
+    duration: roundSheetPerfMs(duration),
+    perfStart: roundSheetPerfMs(renderState.start),
+    perfEnd: roundSheetPerfMs(end),
+    detail: {
+      beforeRenderIsForced: renderState.isForced,
+      cellCount: renderState.cellCount,
+      cellMetaCount: renderState.cellMetaCount,
+      cellMetaMs: roundSheetPerfMs(renderState.cellMetaMs),
+      rowHeightCount: renderState.rowHeightCount,
+      rowHeightMs: roundSheetPerfMs(renderState.rowHeightMs),
+      rendererCount: renderState.rendererCount,
+      rendererMs: roundSheetPerfMs(renderState.rendererMs),
+      callbackMs: roundSheetPerfMs(renderState.cellMetaMs + renderState.rowHeightMs + renderState.rendererMs),
+      callbackShare: duration > 0
+        ? roundSheetPerfMs((renderState.cellMetaMs + renderState.rowHeightMs + renderState.rendererMs) / duration)
+        : 0,
+      selectionId: renderState.selectionId,
+      selectionAddress: renderState.selectionAddress,
+      selectionRow: renderState.selectionRow,
+      selectionHotColumn: renderState.selectionHotColumn,
+      ...getSheetPerfSelectedCellContext(),
+      viewport: getSheetPerfHotViewport(),
+    },
+  })
+}
+
+function handleAfterScrollHorizontally() {
+  recordSheetPerfEvent('handsontable.scrollHorizontal', {
+    detail: {
+      ...getSheetPerfSelectedCellContext(),
+      viewport: getSheetPerfHotViewport(),
+    },
+  })
+}
+
+function handleAfterScrollVertically() {
+  recordSheetPerfEvent('handsontable.scrollVertical', {
+    detail: {
+      ...getSheetPerfSelectedCellContext(),
+      viewport: getSheetPerfHotViewport(),
+    },
+  })
+}
+
 function handleAfterRenderer(
   TD: HTMLTableCellElement,
   row: number,
@@ -17367,22 +19508,24 @@ function handleAfterRenderer(
   _prop: string | number,
   value: string,
 ) {
-  if (row >= 0 && isRowMarkerHotColumn(hotColumn)) {
-    renderRowMarkerCell(TD, row)
-    return
-  }
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (row >= 0 && isRowMarkerHotColumn(hotColumn)) {
+      renderRowMarkerCell(TD, row)
+      return
+    }
 
-  const column = toSheetColumnIndex(hotColumn)
-  if (column < 0) {
-    resetRenderedCellState(TD)
-    return
-  }
+    const column = toSheetColumnIndex(hotColumn)
+    if (column < 0) {
+      resetRenderedCellState(TD)
+      return
+    }
 
-  if (row >= 0 && column >= 0 && isSheetHeaderGridRow(row)) {
-    const anchor = getMergeAnchorForGridCell(row, column)
-    renderSheetHeaderGridCell(TD, anchor.row, anchor.column, getGridCellRenderSourceValue(anchor.row, anchor.column))
-    return
-  }
+    if (row >= 0 && column >= 0 && isSheetHeaderGridRow(row)) {
+      const anchor = getMergeAnchorForGridCell(row, column)
+      renderSheetHeaderGridCell(TD, anchor.row, anchor.column, getGridCellRenderSourceValue(anchor.row, anchor.column))
+      return
+    }
 
   const anchor = row >= 0 && column >= 0
     ? getMergeAnchorForGridCell(row, column)
@@ -17428,6 +19571,7 @@ function handleAfterRenderer(
   const hasFormula = formulaText != null
   const hasFormulaError = hasFormula && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#'))
   const isFormulaReferencePreview = dataRow >= 0 && renderColumn >= 0 && isCellInFormulaReferencePreview(dataRow, renderColumn)
+  const displayMode = normalizeColumnDisplayMode(columnConfig?.display_mode)
 
   const cellStyle = documentRow >= 0 && renderColumn >= 0
     ? getCellStyleAt(documentRow, renderColumn)
@@ -17438,6 +19582,7 @@ function handleAfterRenderer(
   let fontSizeStyle = ''
   let lineHeightStyle = ''
   let textAlignStyle = ''
+  let verticalAlignStyle = ''
 
   if (renderColumn >= 0) {
     backgroundColor = getPluginRowBackgroundColor(dataRow)
@@ -17471,6 +19616,12 @@ function handleAfterRenderer(
     if (cellStyle?.font_family) {
       fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
     }
+    if (cellStyle?.text_align) {
+      textAlignStyle = cellStyle.text_align
+    }
+    if (cellStyle?.vertical_align) {
+      verticalAlignStyle = cellStyle.vertical_align
+    }
   }
 
   let title = ''
@@ -17481,12 +19632,15 @@ function handleAfterRenderer(
   TD.classList.toggle('sheet-cell-formula', hasFormula)
   TD.classList.toggle('sheet-cell-formula-error', hasFormulaError)
   TD.classList.toggle('sheet-cell-formula-reference-preview', isFormulaReferencePreview)
+  TD.classList.toggle('sheet-cell-single-line', displayMode === 'single_line')
+  TD.classList.toggle('sheet-cell-wrap', displayMode === 'wrap')
   TD.style.backgroundColor = backgroundColor
   TD.style.color = textColor
   TD.style.fontFamily = fontFamilyStyle
   TD.style.fontSize = fontSizeStyle
   TD.style.lineHeight = lineHeightStyle
   TD.style.textAlign = textAlignStyle
+  TD.style.verticalAlign = verticalAlignStyle
 
   if (link) {
     TD.dataset.hyperlinkUrl = link.url
@@ -17518,6 +19672,9 @@ function handleAfterRenderer(
     }
   } else if (TD.title) {
     TD.removeAttribute('title')
+  }
+  } finally {
+    recordSheetPerfRenderCallback('renderer', perfStart)
   }
 }
 
@@ -17851,6 +20008,7 @@ watch(
 )
 
 onMounted(() => {
+  installSheetPerfLogger()
   touchContextMenuFallbackEnabled.value = shouldEnableTouchContextMenuFallback()
   bindSheetLayoutObserver()
   window.addEventListener('resize', handleWindowResize)
@@ -17882,17 +20040,23 @@ onBeforeUnmount(() => {
   clearScheduledFormulaBarDraftSync()
   clearScheduledInlineEditorFormulaBarSync()
   clearScheduledRowMarkerSelection()
+  clearRowMarkerSelectionAnchor()
+  unbindRowDetailDialogSizeObserver()
   clearFormulaReferencePointerDownReset()
   studentLookupFeedbackHistoryRequestId += 1
   window.removeEventListener('resize', handleWindowResize)
   window.removeEventListener('mousedown', handleGlobalMouseDown)
   document.removeEventListener('input', handleInlineEditorInput, true)
+  void flushSheetPerfLogEntries({ beacon: true })
+  uninstallSheetPerfLogger()
   sheetLayoutObserver?.disconnect()
   sheetLayoutObserver = null
 })
 
 defineExpose({
   openSheetSettings,
+  hideEmptyColumns,
+  detectAndSetOptionFilters,
 })
 </script>
 
@@ -18179,6 +20343,7 @@ defineExpose({
       <HotTable
         v-if="isOriginalSheetViewActive && shouldRenderSheetContent"
         ref="hotTableRef"
+        class="ht-theme-main"
         :data="sheetHotGridRows"
         :language="'zh-CN'"
         :col-headers="sheetColumnHeaders"
@@ -18187,8 +20352,8 @@ defineExpose({
         :fixed-rows-top="sheetHeaderRowCount"
         :fixed-columns-start="fixedHotColumnsStart"
         :merge-cells="sheetHotMergeCells"
-        :hidden-columns="{ columns: hotHiddenColumnIndexes, indicators: false }"
-        :hidden-rows="{ rows: sheetFilterHiddenRows, indicators: false }"
+        :hidden-columns="sheetHotHiddenColumnsSettings"
+        :hidden-rows="sheetHotHiddenRowsSettings"
         :manual-column-resize="canEditConfig"
         :manual-column-move="canEditConfig"
         :manual-row-resize="true"
@@ -18207,7 +20372,6 @@ defineExpose({
         :stretch-h="'none'"
         :selection-mode="'range'"
         :outside-click-deselects="false"
-        :theme-name="'ht-theme-main'"
         :license-key="'non-commercial-and-evaluation'"
         :before-change="handleBeforeChange"
         :before-autofill="handleBeforeAutofill"
@@ -18236,6 +20400,10 @@ defineExpose({
         :after-deselect="handleAfterDeselect"
         :after-get-col-header="handleAfterGetColHeader"
         :after-get-row-header="handleAfterGetRowHeader"
+        :before-render="handleBeforeRender"
+        :after-render="handleAfterRender"
+        :after-scroll-horizontally="handleAfterScrollHorizontally"
+        :after-scroll-vertically="handleAfterScrollVertically"
         :after-renderer="handleAfterRenderer"
       />
 
@@ -18260,9 +20428,14 @@ defineExpose({
     <el-dialog
       v-model="rowDetailDialogVisible"
       :title="rowDetailDialogTitle"
-      width="560px"
+      :width="rowDetailDialogWidth"
+      :style="rowDetailDialogStyle"
+      class="sheet-row-detail-dialog"
+      draggable
       destroy-on-close
       append-to-body
+      @opened="bindRowDetailDialogSizeObserver"
+      @closed="unbindRowDetailDialogSizeObserver"
     >
       <div v-if="rowDetail" class="sheet-row-detail-list">
         <div
@@ -18276,8 +20449,16 @@ defineExpose({
             <span class="sheet-row-detail-label">{{ item.label }}</span>
           </div>
           <div class="sheet-row-detail-value" :style="item.valueStyle">
+            <el-input
+              v-if="item.editable"
+              v-model="item.rawValue"
+              class="sheet-row-detail-editor"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 6 }"
+              @input="(value) => updateRowDetailItemValue(item, value)"
+            />
             <a
-              v-if="item.link"
+              v-else-if="item.link"
               :href="item.link.url"
               target="_blank"
               rel="noreferrer"
@@ -18300,7 +20481,6 @@ defineExpose({
     >
       <div class="sheet-settings-form">
         <div class="sheet-settings-field">
-          <div class="sheet-settings-label">Excel 文件</div>
           <input
             ref="excelImportFileInputRef"
             class="sheet-excel-file-input"
@@ -18321,20 +20501,26 @@ defineExpose({
             placeholder="例如：只导入报名学员；日志批阅师资不要导入"
           />
         </div>
-        <div class="sheet-excel-import-hint">
-          会保留当前导入按钮所在的操作行，并重置其后的数据行。
-        </div>
       </div>
       <template #footer>
         <div class="sheet-settings-footer">
           <el-button :disabled="excelImportRunning" @click="() => closeExcelImportDialog()">取消</el-button>
           <el-button
-            type="primary"
-            :loading="excelImportRunning"
-            :disabled="!excelImportFile"
-            @click="applyExcelImportReset"
+            type="danger"
+            plain
+            :loading="excelImportRunningMode === 'reset'"
+            :disabled="excelImportRunning || !excelImportFile"
+            @click="applyExcelImport('reset')"
           >
-            导入并重置
+            清空后导入
+          </el-button>
+          <el-button
+            type="primary"
+            :loading="excelImportRunningMode === 'append'"
+            :disabled="excelImportRunning || !excelImportFile"
+            @click="applyExcelImport('append')"
+          >
+            在末尾插入文件数据
           </el-button>
         </div>
       </template>
@@ -18391,7 +20577,7 @@ defineExpose({
 
     <el-dialog
       v-model="sheetSettingsDialogVisible"
-      title="表格设置"
+      title="设置表格"
       width="360px"
       destroy-on-close
       append-to-body
@@ -18833,6 +21019,36 @@ defineExpose({
           </el-select>
         </div>
         <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">水平对齐</div>
+          <el-select
+            :model-value="cellStyleDraft.text_align"
+            class="sheet-settings-inline-select"
+            @change="setCellStyleDraftTextAlign"
+          >
+            <el-option
+              v-for="option in CELL_TEXT_ALIGN_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">垂直对齐</div>
+          <el-select
+            :model-value="cellStyleDraft.vertical_align"
+            class="sheet-settings-inline-select"
+            @change="setCellStyleDraftVerticalAlign"
+          >
+            <el-option
+              v-for="option in CELL_VERTICAL_ALIGN_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
           <div class="sheet-settings-label">文字颜色</div>
           <div class="sheet-color-setting-control">
             <StandardColorPickerPopover
@@ -18931,6 +21147,14 @@ defineExpose({
       </template>
     </el-dialog>
 
+    <NoteSheetAccessDialog
+      v-model="sheetAccessDialogVisible"
+      resource-type="sheet"
+      :resource-id="sheetId"
+      :title="sheetTitle"
+      @saved="handleSheetAccessSaved"
+    />
+
     <Teleport to="body">
       <div
         v-if="sheetWorkspaceViewLinkMenu.visible"
@@ -18939,6 +21163,27 @@ defineExpose({
         @mousedown.stop
         @contextmenu.prevent
       >
+        <button
+          v-if="canEditConfig"
+          type="button"
+          @click="renameSheetFromWorkspaceViewMenu"
+        >
+          重命名
+        </button>
+        <button
+          v-if="canEditConfig"
+          type="button"
+          @click="openSheetSettingsFromWorkspaceViewMenu"
+        >
+          设置表格
+        </button>
+        <button
+          v-if="canManageAccess"
+          type="button"
+          @click="openSheetAccessFromWorkspaceViewMenu"
+        >
+          设置权限
+        </button>
         <button type="button" @click="copySheetWorkspaceViewLink(sheetWorkspaceView)">
           复制{{ getSheetWorkspaceViewLabel(sheetWorkspaceView) }}链接
         </button>
@@ -19123,7 +21368,7 @@ defineExpose({
   display: none;
 }
 
-:global(.note-sheet-row-insert-menu) {
+:global(.note-sheet-insert-menu) {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -19133,11 +21378,11 @@ defineExpose({
   font: inherit;
 }
 
-:global(.note-sheet-row-insert-menu--submenu) {
+:global(.note-sheet-insert-menu--submenu) {
   padding-inline-end: calc(var(--ht-icon-size, 16px) + var(--ht-gap-size, 4px) * 3);
 }
 
-:global(.note-sheet-row-insert-menu-action) {
+:global(.note-sheet-insert-menu-action) {
   flex: 1 1 auto;
   min-width: 72px;
   appearance: none;
@@ -19152,11 +21397,11 @@ defineExpose({
   cursor: pointer;
 }
 
-:global(.note-sheet-row-insert-menu-action:hover) {
+:global(.note-sheet-insert-menu-action:hover) {
   color: #1d4ed8;
 }
 
-:global(.note-sheet-row-insert-menu-input) {
+:global(.note-sheet-insert-menu-input) {
   flex: 0 0 56px;
   width: 56px;
   height: 26px;
@@ -19170,7 +21415,7 @@ defineExpose({
   line-height: 24px;
 }
 
-:global(.note-sheet-row-insert-menu-input:focus) {
+:global(.note-sheet-insert-menu-input:focus) {
   border-color: #2563eb;
   outline: none;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14);
@@ -19622,6 +21867,16 @@ defineExpose({
   outline: none;
 }
 
+.sheet-workspace-view-link-menu button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+}
+
+.sheet-workspace-view-link-menu button:disabled:hover,
+.sheet-workspace-view-link-menu button:disabled:focus-visible {
+  background: transparent;
+}
+
 .sheet-formula-address {
   flex: 0 0 92px;
   display: flex;
@@ -19762,8 +22017,31 @@ defineExpose({
   line-height: 1.5;
 }
 
+:global(.sheet-row-detail-dialog.el-dialog) {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, calc(100vw - 48px));
+  height: var(--sheet-row-detail-dialog-height, min(78vh, 760px));
+  min-width: min(420px, calc(100vw - 32px));
+  min-height: 280px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  resize: both;
+  overflow: hidden;
+}
+
+:global(.sheet-row-detail-dialog.el-dialog .el-dialog__header) {
+  flex: 0 0 auto;
+}
+
+:global(.sheet-row-detail-dialog.el-dialog .el-dialog__body) {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .sheet-row-detail-list {
-  max-height: min(68vh, 680px);
+  height: 100%;
   overflow: auto;
   border-top: 1px solid #ebe2d4;
 }
@@ -19817,6 +22095,26 @@ defineExpose({
   color: inherit;
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.sheet-row-detail-editor {
+  width: 100%;
+}
+
+.sheet-row-detail-editor :deep(.el-textarea__inner) {
+  min-height: 24px !important;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  font: inherit;
+  line-height: inherit;
+  resize: vertical;
+}
+
+.sheet-row-detail-editor :deep(.el-textarea__inner:focus) {
+  box-shadow: inset 0 -1px 0 #409eff;
 }
 
 .sheet-row-detail-item.is-empty .sheet-row-detail-value {
@@ -20196,6 +22494,18 @@ defineExpose({
   outline: 2px solid #409eff;
   outline-offset: -2px;
   background-color: rgba(64, 158, 255, 0.08) !important;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-single-line) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-wrap) {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .sheet-frame.has-frozen-columns :deep(.handsontable .ht_clone_inline_start::after),

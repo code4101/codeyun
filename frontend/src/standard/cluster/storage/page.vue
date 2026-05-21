@@ -2814,6 +2814,8 @@ onBeforeUnmount(() => {
   width: max-content;
   max-width: 360px;
   min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   border: none;
   background: transparent;
   color: #111827;

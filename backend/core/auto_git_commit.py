@@ -38,6 +38,9 @@ AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS = 1800
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS + 900
 AUTO_GIT_PRE_COMMIT_RESULT_LIMIT = 3000
 AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS = ("codeyun",)
+AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
+AUTO_GIT_CHECKPOINT_FILE_THRESHOLD = 50
+AUTO_GIT_CHECKPOINT_LINE_THRESHOLD = 3000
 
 auto_git_commit_scheduler = BackgroundScheduler()
 
@@ -496,6 +499,160 @@ def _auto_git_processing_stage_label(candidate: AutoGitCommitCandidate) -> str:
     return f"检查/优化 {candidate.name}"
 
 
+def _uses_lightweight_draft(candidate: AutoGitCommitCandidate) -> bool:
+    return _normalize_repo_key(candidate.name) in AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS
+
+
+def _changed_line_count_from_inspect(inspect_payload: dict[str, Any]) -> int:
+    return int(inspect_payload.get("added_line_count") or 0) + int(inspect_payload.get("deleted_line_count") or 0)
+
+
+def _checkpoint_reason(inspect_payload: dict[str, Any]) -> str | None:
+    changed_file_count = len(inspect_payload.get("changed_files") or [])
+    changed_line_count = _changed_line_count_from_inspect(inspect_payload)
+    reasons: list[str] = []
+    if changed_file_count > AUTO_GIT_CHECKPOINT_FILE_THRESHOLD:
+        reasons.append(f"变更文件数 {changed_file_count} > {AUTO_GIT_CHECKPOINT_FILE_THRESHOLD}")
+    if changed_line_count > AUTO_GIT_CHECKPOINT_LINE_THRESHOLD:
+        reasons.append(f"估算变更行数 {changed_line_count} > {AUTO_GIT_CHECKPOINT_LINE_THRESHOLD}")
+    return "；".join(reasons) if reasons else None
+
+
+def _should_checkpoint_commit(candidate: AutoGitCommitCandidate, inspect_payload: dict[str, Any]) -> bool:
+    return _uses_lightweight_draft(candidate) and _checkpoint_reason(inspect_payload) is not None
+
+
+def _format_auto_git_diff_stat(value: Any, *, line_limit: int = AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT) -> str:
+    lines = [line.rstrip() for line in str(value or "").splitlines() if line.strip()]
+    if len(lines) <= line_limit:
+        return "\n".join(lines)
+    omitted_count = len(lines) - line_limit
+    return "\n".join([*lines[:line_limit], f"... 还有 {omitted_count} 行 diff stat 未列出"])
+
+
+def _format_auto_git_split_groups(inspect_payload: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for item in inspect_payload.get("suggested_split_groups") or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label") or "").strip()
+        file_count = int(item.get("file_count") or 0)
+        sample_paths = [
+            str(path).strip()
+            for path in (item.get("sample_paths") or [])
+            if str(path).strip()
+        ]
+        if not label and not sample_paths:
+            continue
+        sample_text = f"；例如：{', '.join(sample_paths)}" if sample_paths else ""
+        lines.append(f"- {label or '未分类'}：{file_count} 个文件{sample_text}")
+    return lines
+
+
+def _build_lightweight_reduction_input(
+    candidate: AutoGitCommitCandidate,
+    inspect_payload: dict[str, Any],
+) -> dict[str, Any]:
+    changed_file_count = len(inspect_payload.get("changed_files") or [])
+    added_line_count = int(inspect_payload.get("added_line_count") or 0)
+    deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
+    changed_paths = _changed_paths_from_inspect(inspect_payload)
+    omitted_path_count = max(0, changed_file_count - len(changed_paths))
+    path_lines = [f"- {path}" for path in changed_paths]
+    if omitted_path_count:
+        path_lines.append(f"- ... 还有 {omitted_path_count} 个文件未列出")
+
+    status_lines = [
+        str(line).strip()
+        for line in inspect_payload.get("status_lines") or []
+        if str(line).strip()
+    ]
+    if len(status_lines) > AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT:
+        omitted_status_count = len(status_lines) - AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT
+        status_lines = [
+            *status_lines[:AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT],
+            f"... 还有 {omitted_status_count} 行状态未列出",
+        ]
+
+    content_sections = [
+        "仓库轻量提交摘要输入",
+        "",
+        "仓库信息：",
+        f"- 名称：{candidate.name}",
+        f"- 路径：{candidate.cwd}",
+        f"- 分支：{inspect_payload.get('branch') or ''}",
+        f"- 变更文件数：{changed_file_count}",
+        f"- 估算变更行数：+{added_line_count}/-{deleted_line_count}",
+        "",
+        "工作区状态：",
+        *(f"- {line}" for line in status_lines[:AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT]),
+        "",
+        "变更文件：",
+        *(path_lines or ["- (未列出)"]),
+        "",
+        "未暂存 diff 统计：",
+        _format_auto_git_diff_stat(inspect_payload.get("diff_stat")) or "(无)",
+        "",
+        "已暂存 diff 统计：",
+        _format_auto_git_diff_stat(inspect_payload.get("staged_diff_stat")) or "(无)",
+    ]
+    group_lines = _format_auto_git_split_groups(inspect_payload)
+    if group_lines:
+        content_sections.extend(["", "路径分组概览：", *group_lines])
+    if bool(inspect_payload.get("split_recommended")):
+        content_sections.extend(["", "规模提示：", str(inspect_payload.get("split_reason") or "建议拆分提交")])
+    content_sections.extend(
+        [
+            "",
+            "生成要求：",
+            "- 只根据工作区状态、路径和 diff 统计生成提交信息。",
+            "- 不要展开或臆测具体代码实现细节。",
+            "- 如果主题混杂，标题要概括为 checkpoint 或整体维护性质。",
+        ]
+    )
+
+    return {
+        **inspect_payload,
+        "source_units": [
+            {
+                "unit_id": "lightweight_git_summary",
+                "path": "(lightweight-summary)",
+                "group": "(lightweight)",
+                "content": "\n".join(content_sections).strip(),
+                "truncated": omitted_path_count > 0,
+            }
+        ],
+        "source_unit_count": 1,
+        "source_unit_truncated_count": int(omitted_path_count > 0),
+        "lightweight": True,
+    }
+
+
+def _build_checkpoint_commit_draft(
+    candidate: AutoGitCommitCandidate,
+    inspect_payload: dict[str, Any],
+) -> dict[str, Any]:
+    changed_file_count = len(inspect_payload.get("changed_files") or [])
+    added_line_count = int(inspect_payload.get("added_line_count") or 0)
+    deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
+    reason = _checkpoint_reason(inspect_payload) or "变更规模较大"
+    group_lines = _format_auto_git_split_groups(inspect_payload)
+    body = [
+        "大规模变更自动降级为轻量 checkpoint，未调用 AI 展开完整 diff。",
+        f"变更规模：{changed_file_count} 个文件，约 +{added_line_count}/-{deleted_line_count} 行。",
+    ]
+    if group_lines:
+        body.append("主要范围：" + "；".join(line.removeprefix("- ") for line in group_lines[:3]))
+    return {
+        "subject": f"chore: checkpoint {candidate.name} changes",
+        "body": body,
+        "model": "local-checkpoint-policy",
+        "needs_split": True,
+        "reason": reason,
+        "strategy": "checkpoint",
+    }
+
+
 def _build_auto_git_pre_commit_codex_provider(cwd: str) -> AiProviderConfig:
     return AiProviderConfig(
         id=AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID,
@@ -607,6 +764,17 @@ def _sync_run(session: Session, run: AutoGitCommitRun, results: list[dict[str, A
     session.commit()
 
 
+def _format_auto_git_completed_stage_label(run: AutoGitCommitRun) -> str:
+    parts: list[str] = []
+    if run.committed_repo_count:
+        parts.append(f"已提交 {run.committed_repo_count} 个仓库")
+    if run.failed_repo_count:
+        parts.append(f"{run.failed_repo_count} 个仓库失败")
+    if not parts:
+        parts.append("未提交仓库")
+    return "，".join(parts)
+
+
 def _run_one_repo(
     session: Session,
     candidate: AutoGitCommitCandidate,
@@ -667,36 +835,46 @@ def _run_one_repo(
         )
         return result
 
-    user = session.get(User, candidate.user_id)
-    if user is None:
-        result.update({"status": "failed", "error_message": "关联用户不存在"})
-        return result
-
-    runtime_config = resolve_ai_runtime_config(
-        session=session,
-        current_user=user,
-        provider=None,
-        base_url=None,
-        api_key=None,
-        model=None,
-    )
-    if len(runtime_config) == 4:
-        provider_id, base_url, api_key, extra_providers = runtime_config
-        model = None
+    if _should_checkpoint_commit(candidate, inspect_payload):
+        draft = _build_checkpoint_commit_draft(candidate, inspect_payload)
+        provider_id = "local-policy"
+        model = str(draft.get("model") or provider_id)
+        extra_providers: tuple[AiProviderConfig, ...] = ()
     else:
-        provider_id, base_url, api_key, model, extra_providers = runtime_config
+        user = session.get(User, candidate.user_id)
+        if user is None:
+            result.update({"status": "failed", "error_message": "关联用户不存在"})
+            return result
 
-    draft = draft_generator(
-        cwd=candidate.cwd,
-        provider_id=provider_id,
-        base_url=base_url,
-        api_key=api_key,
-        model=model,
-        style="summary",
-        include_body=True,
-        extra_providers=extra_providers,
-        branch_factor=AUTO_GIT_COMMIT_BRANCH_FACTOR,
-    )
+        runtime_config = resolve_ai_runtime_config(
+            session=session,
+            current_user=user,
+            provider=None,
+            base_url=None,
+            api_key=None,
+            model=None,
+        )
+        if len(runtime_config) == 4:
+            provider_id, base_url, api_key, extra_providers = runtime_config
+            model = None
+        else:
+            provider_id, base_url, api_key, model, extra_providers = runtime_config
+
+        draft_kwargs: dict[str, Any] = {
+            "cwd": candidate.cwd,
+            "provider_id": provider_id,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "style": "summary",
+            "include_body": True,
+            "extra_providers": extra_providers,
+            "branch_factor": AUTO_GIT_COMMIT_BRANCH_FACTOR,
+        }
+        if _uses_lightweight_draft(candidate):
+            draft_kwargs["reduction_input"] = _build_lightweight_reduction_input(candidate, inspect_payload)
+        draft = draft_generator(**draft_kwargs)
+
     subject = str(draft.get("subject") or "").strip()
     if not subject:
         raise AiGitCommitError("AI 没有生成有效的提交标题")
@@ -716,6 +894,10 @@ def _run_one_repo(
             "body": body,
             "needs_split": bool(draft.get("needs_split")),
             "split_reason": str(draft.get("reason") or ""),
+            "commit_strategy": str(
+                draft.get("strategy")
+                or ("lightweight_ai" if _uses_lightweight_draft(candidate) else "ai")
+            ),
             "commit": commit_payload,
         }
     )
@@ -821,9 +1003,9 @@ def run_auto_git_commit_worker(
                 run.stage = "no_changes"
                 run.stage_label = "没有可提交变更"
             else:
-                run.status = "completed"
-                run.stage = "completed"
-                run.stage_label = f"已提交 {run.committed_repo_count} 个仓库"
+                run.status = "failed" if run.failed_repo_count else "completed"
+                run.stage = "failed" if run.failed_repo_count else "completed"
+                run.stage_label = _format_auto_git_completed_stage_label(run)
                 if run.failed_repo_count:
                     run.error_message = f"{run.failed_repo_count} 个仓库自动提交失败"
             run.finished_at = time.time()

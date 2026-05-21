@@ -88,6 +88,7 @@ const FANXIU_DRAW_CALC_PATH = requirePageMenuPath('DrawCalculator');
 const FANXIU_LOTTERY_MODEL_PATH = requirePageMenuPath('FanxiuLotteryModel');
 const FANXIU_DISCOUNT_PATH = requirePageMenuPath('FanxiuDiscountGuide');
 const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
+const FANXIU_GAME_WINDOW_PATH = requirePageMenuPath('FanxiuGameWindow');
 const FANXIU_ACTIVITY_LIST_PATH = requirePageMenuPath('FanxiuActivityList');
 const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH = requirePageMenuPath('FanxiuKunlunSecret');
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH = requirePageMenuPath('FanxiuModaoInvasion');
@@ -100,6 +101,7 @@ const FANXIU_WARDROBE_HALL_PATH = requirePageMenuPath('FanxiuWardrobeHall');
 const FANXIU_SPIRIT_BEAST_HALL_PATH = requirePageMenuPath('FanxiuSpiritBeastHall');
 const FANXIU_MAGIC_TREASURE_HALL_PATH = requirePageMenuPath('FanxiuMagicTreasureHall');
 const FANXIU_MAGIC_TREASURE_FORMATIONS_PATH = requirePageMenuPath('FanxiuMagicTreasureFormations');
+const FANXIU_SPIRIT_ARTIFACT_HALL_PATH = requirePageMenuPath('FanxiuSpiritArtifactHall');
 const FANXIU_LABELME_PATH = requirePageMenuPath('FanxiuLabelmeBrowser');
 const FANXIU_RECHARGE_PATH = requirePageMenuPath('FanxiuRecharge');
 const FANXIU_CUIJIAN_TRIAL_PATH = requirePageMenuPath('CuijianTrial');
@@ -111,7 +113,6 @@ const NOTES_WECHAT_PATH = requirePageMenuPath('NotesWechat');
 const NOTES_INFINITE_CANVAS_PATH = requirePageMenuPath('InfiniteCanvas');
 const CLUSTER_TASKS_PATH = requirePageMenuPath('RuntimeManagement');
 const CLUSTER_RIME_CONTEXT_PATH = requirePageMenuPath('ClusterRimeContextPrediction');
-const CLUSTER_SERVICES_PATH = requirePageMenuPath('ClusterServices');
 const CLUSTER_FILES_PATH = requirePageMenuPath('DeviceFileBrowser');
 const CLUSTER_TREESIZE_PATH = requirePageMenuPath('ClusterTreeSize');
 const CLUSTER_CODEX_PATH = requirePageMenuPath('ClusterCodexSessions');
@@ -153,6 +154,7 @@ const FANXIU_DRAW_CALC_TITLE = requirePermissionTitleByMenuPath(FANXIU_DRAW_CALC
 const FANXIU_LOTTERY_MODEL_TITLE = requirePermissionTitleByMenuPath(FANXIU_LOTTERY_MODEL_PATH);
 const FANXIU_DISCOUNT_TITLE = requirePermissionTitleByMenuPath(FANXIU_DISCOUNT_PATH);
 const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_STATUS_PATH);
+const FANXIU_GAME_WINDOW_TITLE = requirePermissionTitleByMenuPath(FANXIU_GAME_WINDOW_PATH);
 const FANXIU_ACTIVITY_LIST_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_PATH);
 const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH);
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH);
@@ -166,6 +168,7 @@ const FANXIU_WARDROBE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_WARDR
 const FANXIU_SPIRIT_BEAST_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_BEAST_HALL_PATH);
 const FANXIU_MAGIC_TREASURE_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_HALL_PATH);
 const FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE = requirePermissionTitleByMenuPath(FANXIU_MAGIC_TREASURE_FORMATIONS_PATH);
+const FANXIU_SPIRIT_ARTIFACT_HALL_TITLE = requirePermissionTitleByMenuPath(FANXIU_SPIRIT_ARTIFACT_HALL_PATH);
 const FANXIU_LABELME_TITLE = requirePermissionTitleByMenuPath(FANXIU_LABELME_PATH);
 const FANXIU_RECHARGE_TITLE = requirePermissionTitleByMenuPath(FANXIU_RECHARGE_PATH);
 const FANXIU_CUIJIAN_TRIAL_TITLE = requirePermissionTitleByMenuPath(FANXIU_CUIJIAN_TRIAL_PATH);
@@ -179,7 +182,6 @@ const NOTES_INFINITE_CANVAS_TITLE = requirePermissionTitleByMenuPath(NOTES_INFIN
 const CLUSTER_TOOLS_TITLE = requirePermissionTitle('cluster-tools');
 const CLUSTER_TASKS_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TASKS_PATH);
 const CLUSTER_RIME_CONTEXT_TITLE = requirePermissionTitleByMenuPath(CLUSTER_RIME_CONTEXT_PATH);
-const CLUSTER_SERVICES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_SERVICES_PATH);
 const CLUSTER_FILES_TITLE = requirePermissionTitleByMenuPath(CLUSTER_FILES_PATH);
 const CLUSTER_TREESIZE_TITLE = requirePermissionTitleByMenuPath(CLUSTER_TREESIZE_PATH);
 const CLUSTER_CODEX_TITLE = requirePermissionTitleByMenuPath(CLUSTER_CODEX_PATH);
@@ -376,6 +378,7 @@ const fanxiuMenuVisible = computed(() =>
   canAccessFeature('fanxiu')
   && [
     FANXIU_TASK_STATUS_PATH,
+    FANXIU_GAME_WINDOW_PATH,
     FANXIU_ACTIVITY_LIST_PATH,
     FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
     FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
@@ -387,6 +390,7 @@ const fanxiuMenuVisible = computed(() =>
     FANXIU_SPIRIT_BEAST_HALL_PATH,
     FANXIU_MAGIC_TREASURE_HALL_PATH,
     FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
+    FANXIU_SPIRIT_ARTIFACT_HALL_PATH,
     FANXIU_LABELME_PATH,
     FANXIU_CALCULATOR_PATH,
     FANXIU_DRAW_CALC_PATH,
@@ -417,6 +421,7 @@ const fanxiuInventoryMenuVisible = computed(() =>
     FANXIU_SPIRIT_BEAST_HALL_PATH,
     FANXIU_MAGIC_TREASURE_HALL_PATH,
     FANXIU_MAGIC_TREASURE_FORMATIONS_PATH,
+    FANXIU_SPIRIT_ARTIFACT_HALL_PATH,
   ].some((path) => canAccessMenuPath(path)),
 );
 
@@ -486,7 +491,6 @@ const clusterMenuVisible = computed(() =>
     [
       CLUSTER_TASKS_PATH,
       CLUSTER_RIME_CONTEXT_PATH,
-      CLUSTER_SERVICES_PATH,
       CLUSTER_TREESIZE_PATH,
       CLUSTER_LABELME_PATH,
     ].some((path) => canAccessMenuPath(path))
@@ -792,6 +796,7 @@ watch(
                 <span>{{ FANXIU_TITLE }}</span>
               </template>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_TASK_STATUS_PATH)" :index="FANXIU_TASK_STATUS_PATH">{{ FANXIU_TASK_STATUS_TITLE }}</el-menu-item>
+              <el-menu-item v-if="canAccessMenuPath(FANXIU_GAME_WINDOW_PATH)" :index="FANXIU_GAME_WINDOW_PATH">{{ FANXIU_GAME_WINDOW_TITLE }}</el-menu-item>
               <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">
                 <template #title>
                   <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath, $event)">
@@ -855,6 +860,7 @@ watch(
                     {{ FANXIU_MAGIC_TREASURE_FORMATIONS_TITLE }}
                   </el-menu-item>
                 </el-sub-menu>
+                <el-menu-item v-if="canAccessMenuPath(FANXIU_SPIRIT_ARTIFACT_HALL_PATH)" :index="FANXIU_SPIRIT_ARTIFACT_HALL_PATH">{{ FANXIU_SPIRIT_ARTIFACT_HALL_TITLE }}</el-menu-item>
               </el-sub-menu>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_LABELME_PATH)" :index="FANXIU_LABELME_PATH">{{ FANXIU_LABELME_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_CALCULATOR_PATH)" :index="FANXIU_CALCULATOR_PATH">{{ FANXIU_CALCULATOR_TITLE }}</el-menu-item>
@@ -904,7 +910,6 @@ watch(
             </template>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TASKS_PATH)" :index="CLUSTER_TASKS_PATH">{{ CLUSTER_TASKS_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_RIME_CONTEXT_PATH)" :index="CLUSTER_RIME_CONTEXT_PATH">{{ CLUSTER_RIME_CONTEXT_TITLE }}</el-menu-item>
-            <el-menu-item v-if="canAccessMenuPath(CLUSTER_SERVICES_PATH)" :index="CLUSTER_SERVICES_PATH">{{ CLUSTER_SERVICES_TITLE }}</el-menu-item>
             <el-menu-item v-if="canAccessMenuPath(CLUSTER_TREESIZE_PATH)" :index="CLUSTER_TREESIZE_PATH">{{ CLUSTER_TREESIZE_TITLE }}</el-menu-item>
             <el-sub-menu v-if="clusterFilesMenuVisible" :index="CLUSTER_FILES_SUBMENU_INDEX">
               <template #title>

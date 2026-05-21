@@ -10,7 +10,8 @@ from typing import Any, Callable
 from filelock import FileLock, Timeout
 from sqlmodel import Session
 
-from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, IdleUntilNextWake, MemorySelector, Root, Sequence, Status
+from pyxllib.prog.behavior_tree import Action, BehaviorTreeRunner, DynamicTime, IdleUntilNextWake, MemorySelector, NextWake, Root, Sequence, Status
+from pyxllib.prog.schedule_policy import compute_next_trigger_at, schedule_policy_label
 
 from backend.core.background_task_queue import background_task_queue
 from backend.core.fanbei_attendance_schedule import (
@@ -20,6 +21,12 @@ from backend.core.fanbei_attendance_schedule import (
     FANBEI_ATTENDANCE_MORNING_TASK_KEY,
     enqueue_fanbei_attendance_evening_steps,
     enqueue_fanbei_attendance_morning_steps,
+)
+from backend.core.fanxiu_slimming import (
+    FANXIU_SLIMMING_RUN_TIME,
+    FANXIU_SLIMMING_TASK_KEY,
+    enqueue_fanxiu_slimming,
+    is_fanxiu_slimming_allowed_host,
 )
 from backend.core.settings import get_settings
 from backend.models import AppSetting
@@ -34,7 +41,8 @@ MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
 MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "00:35"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 4
+MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 5
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
@@ -43,6 +51,8 @@ SCHEDULE_VERSIONED_TASK_KEYS = {
     "attendance_summary_monthly_templates",
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
+    MARKET_QUOTE_REFRESH_TASK_KEY,
+    FANXIU_SLIMMING_TASK_KEY,
 }
 
 
@@ -60,6 +70,8 @@ class BackgroundTaskSpec:
 
 DEFAULT_ENABLED_TASK_KEYS = {
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
+    MARKET_QUOTE_REFRESH_TASK_KEY,
+    FANXIU_SLIMMING_TASK_KEY,
 }
 
 
@@ -96,6 +108,99 @@ def _deleted_setting_key(task_key: str) -> str:
     return f"background_task.{task_key}.deleted"
 
 
+def _schedule_policy_setting_key(task_key: str) -> str:
+    return f"background_task.{task_key}.schedule_policy"
+
+
+def _retry_after_policy(minutes: int) -> dict[str, Any]:
+    return {
+        "on_failure": {"type": "retry_after", "minutes": minutes},
+        "on_timeout": {"type": "retry_after", "minutes": minutes},
+    }
+
+
+def _job_schedule_policy(trigger: dict[str, Any], *, retry_minutes: int | None = None) -> dict[str, Any]:
+    policy: dict[str, Any] = {
+        "enabled": True,
+        "trigger": trigger,
+        "action": {"type": "enqueue"},
+        "concurrency": {"scope": "group", "policy": "queue"},
+    }
+    if retry_minutes:
+        policy["outcome"] = _retry_after_policy(retry_minutes)
+    return policy
+
+
+def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
+    if task_key == "auto_git_commit":
+        return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=10)
+    if task_key == "note_metadata_feedback_optimization":
+        return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
+    if task_key == "codex_diary_yesterday_import":
+        return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
+    if task_key == "attendance_summary_monthly_templates":
+        return _job_schedule_policy({"type": "monthly", "day": 27, "time": ATTENDANCE_SUMMARY_RUN_TIME}, retry_minutes=10)
+    if task_key == MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}, retry_minutes=10)
+    if task_key == FANBEI_ATTENDANCE_EVENING_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_EVENING_RUN_TIME})
+    if task_key == FANBEI_ATTENDANCE_MORNING_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": FANBEI_ATTENDANCE_MORNING_RUN_TIME})
+    if task_key == "rime_config_sync":
+        return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"}, retry_minutes=10)
+    if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
+        return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
+    if task_key == "storage_analysis":
+        return _job_schedule_policy({"type": "daily", "time": STORAGE_ANALYSIS_RUN_TIME})
+    if task_key == FANXIU_SLIMMING_TASK_KEY:
+        return _job_schedule_policy({"type": "daily", "time": FANXIU_SLIMMING_RUN_TIME}, retry_minutes=10)
+    return None
+
+
+def _read_background_task_schedule_policy(task_key: str, session: Session | None = None) -> dict[str, Any] | None:
+    def _read(current_session: Session) -> dict[str, Any] | None:
+        row = current_session.get(AppSetting, _schedule_policy_setting_key(task_key))
+        if not row or not isinstance(row.value, dict):
+            return None
+        policy = row.value.get("policy")
+        return dict(policy) if isinstance(policy, dict) else None
+
+    if session is not None:
+        return _read(session)
+
+    from backend.db import engine
+
+    with Session(engine) as current_session:
+        return _read(current_session)
+
+
+def _effective_background_task_schedule_policy(task_key: str, *, enabled: bool | None = None) -> dict[str, Any] | None:
+    policy = _read_background_task_schedule_policy(task_key) or _default_background_task_schedule_policy(task_key)
+    if policy is None:
+        return None
+    policy = dict(policy)
+    policy["enabled"] = bool(_is_task_enabled(task_key) if enabled is None else enabled)
+    return policy
+
+
+def set_background_task_schedule_policy(task_key: str, policy: dict[str, Any] | None) -> None:
+    from backend.db import engine
+
+    with Session(engine) as session:
+        row = session.get(AppSetting, _schedule_policy_setting_key(task_key))
+        if policy:
+            if row is None:
+                row = AppSetting(key=_schedule_policy_setting_key(task_key))
+            next_policy = dict(policy)
+            next_policy["enabled"] = True
+            row.value = {"policy": next_policy}
+            row.updated_at = time.time()
+            session.add(row)
+        elif row is not None:
+            session.delete(row)
+        session.commit()
+
+
 def _is_task_deleted(task_key: str, session: Session | None = None) -> bool:
     def _read(current_session: Session) -> bool:
         row = current_session.get(AppSetting, _deleted_setting_key(task_key))
@@ -118,7 +223,11 @@ def _is_task_enabled(task_key: str) -> bool:
             return False
         row = session.get(AppSetting, _setting_key(task_key))
         if row and isinstance(row.value, dict):
+            if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
+                return False
             return bool(row.value.get("enabled", False))
+        if task_key == FANXIU_SLIMMING_TASK_KEY and not is_fanxiu_slimming_allowed_host():
+            return False
         if task_key in DEFAULT_ENABLED_TASK_KEYS:
             return True
         if task_key == "storage_analysis":
@@ -166,13 +275,15 @@ def set_background_task_deleted(task_key: str, deleted: bool = True) -> None:
 def _enqueue_storage_analysis() -> str:
     from backend.api.admin import scheduled_analysis_job
 
-    return background_task_queue.enqueue("storage_analysis", scheduled_analysis_job)
+    task_id, _ = background_task_queue.enqueue_once("storage_analysis", scheduled_analysis_job)
+    return task_id
 
 
 def _enqueue_attendance_summary() -> str:
     from backend.api.note_sheets import run_attendance_summary_template_job
 
-    return background_task_queue.enqueue("attendance_summary_monthly_templates", run_attendance_summary_template_job)
+    task_id, _ = background_task_queue.enqueue_once("attendance_summary_monthly_templates", run_attendance_summary_template_job)
+    return task_id
 
 
 def _enqueue_note_metadata_feedback() -> str | None:
@@ -229,7 +340,8 @@ def _run_media_sync_home_discovery_job() -> None:
 
 
 def _enqueue_media_sync_home_discovery() -> str | None:
-    return background_task_queue.enqueue(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _run_media_sync_home_discovery_job)
+    task_id, _ = background_task_queue.enqueue_once(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY, _run_media_sync_home_discovery_job)
+    return task_id
 
 
 def _run_rime_config_sync_job() -> None:
@@ -245,7 +357,50 @@ def _run_rime_config_sync_job() -> None:
 
 
 def _enqueue_rime_config_sync() -> str | None:
-    return background_task_queue.enqueue("rime_config_sync", _run_rime_config_sync_job)
+    task_id, _ = background_task_queue.enqueue_once("rime_config_sync", _run_rime_config_sync_job)
+    return task_id
+
+
+def _run_market_quote_refresh_job() -> None:
+    from sqlmodel import select
+
+    from backend.core.stock import refresh_market_quotes_from_eastmoney_public
+    from backend.db import engine
+    from backend.models import EastmoneyPositionSnapshot
+
+    with Session(engine) as session:
+        user_ids = sorted(
+            {
+                int(user_id)
+                for user_id in session.exec(select(EastmoneyPositionSnapshot.user_id).distinct()).all()
+                if user_id is not None
+            }
+        )
+        if not user_ids:
+            print("Market quote refresh skipped: no Eastmoney positions.")
+            return
+
+        refreshed_count = 0
+        error_count = 0
+        failures: list[str] = []
+        for user_id in user_ids:
+            try:
+                result = refresh_market_quotes_from_eastmoney_public(session, user_id=user_id)
+            except Exception as exc:
+                failures.append(f"user={user_id}: {exc}")
+                continue
+            refreshed_count += result.refreshed_count
+            error_count += result.error_count
+
+    message = f"Market quote refresh completed: users={len(user_ids)} refreshed={refreshed_count} errors={error_count}"
+    if failures:
+        message += " failures=" + " | ".join(failures[:3])
+    print(message)
+
+
+def _enqueue_market_quote_refresh() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(MARKET_QUOTE_REFRESH_TASK_KEY, _run_market_quote_refresh_job)
+    return task_id
 
 
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
@@ -253,11 +408,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key="auto_git_commit",
         title="自动 Git 提交",
         category="Git",
-        description="凌晨检查 pyxllib、xlproject、codeyun；pyxllib/xlproject 先调用 Codex CLI review 和优化，codeyun 只生成提交信息并提交。",
+        description="凌晨检查 pyxllib、xlproject、codeyun；pyxllib/xlproject 先调用 Codex CLI review 和优化，codeyun 只用轻量状态摘要生成提交信息，大变更自动 checkpoint。",
         schedule_label=f"每天 {AUTO_GIT_COMMIT_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_auto_git,
-        manual_warning="会调用 Codex CLI 处理 pyxllib/xlproject，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 不做提交前自动优化。",
+        manual_warning="会调用 Codex CLI 处理 pyxllib/xlproject，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 不做提交前自动优化，超过阈值会直接 checkpoint。",
     ),
     BackgroundTaskSpec(
         key="note_metadata_feedback_optimization",
@@ -292,8 +447,8 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
         title="媒体首页发现",
         category="图片",
-        description="每天在自动 Git 提交之后，按当前媒体同步配置分别从 Pixiv 和 Pinterest 首页增量下载新图。",
-        schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}，Pixiv/Pinterest 各 {MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT} 张",
+        description="每天在自动 Git 提交之后，按当前媒体同步配置从首页推荐流增量发现新图。",
+        schedule_label=f"每天 {MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_media_sync_home_discovery,
         manual_warning="会使用媒体同步插件和浏览器登录态访问 Pixiv、Pinterest 首页推荐流，并写入当前媒体同步根目录。",
@@ -329,6 +484,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="会刷新主设备小狼毫预测索引，并把共享配置写入默认辅助设备；有变化时会触发辅助设备重新部署小狼毫。",
     ),
     BackgroundTaskSpec(
+        key=MARKET_QUOTE_REFRESH_TASK_KEY,
+        title="持仓行情刷新",
+        category="股票",
+        description="每小时通过免登录的东方财富公共行情刷新当前持仓现价，并写入本地行情缓存；页面打开时会额外按分钟刷新。",
+        schedule_label="每小时刷新",
+        retry_label="失败后下次调度重试",
+        action=_enqueue_market_quote_refresh,
+        manual_warning="会访问东方财富公共行情接口，仅刷新当前持仓现价缓存，不修改交易数据。",
+    ),
+    BackgroundTaskSpec(
         key="storage_analysis",
         title="存储分析",
         category="存储",
@@ -336,6 +501,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         schedule_label=f"每天 {STORAGE_ANALYSIS_RUN_TIME}",
         retry_label="无额外重试",
         action=_enqueue_storage_analysis,
+    ),
+    BackgroundTaskSpec(
+        key=FANXIU_SLIMMING_TASK_KEY,
+        title="凡修减肥巡检",
+        category="凡修",
+        description="每天在 mf 检查凡修同步数据目录和 fx 源码目录，调用 Codex CLI 安全清理 24 小时前的明确日志、缓存和生成物，并输出源码功能减肥候选报告。",
+        schedule_label=f"每天 {FANXIU_SLIMMING_RUN_TIME}",
+        retry_label="失败后 10 分钟重试",
+        action=enqueue_fanxiu_slimming,
+        manual_warning="会调用 Codex CLI；只允许在 mf 执行。自动清理限 24 小时前的低风险日志/临时/生成物，源码功能只报告候选，不自动删除业务代码。",
     ),
 )
 
@@ -427,75 +602,12 @@ class BackgroundTaskRunner:
         runner.save_state()
 
     def build_tree(self) -> Root:
+        def scheduled(spec: BackgroundTaskSpec) -> DynamicTime:
+            return self._build_scheduled_task(spec)
+
         return Root(
             MemorySelector(
-                Action(self._run_task_if_enabled, "auto_git_commit")
-                .daily(
-                    AUTO_GIT_COMMIT_RUN_TIME,
-                    label="auto_git_commit",
-                    start="next",
-                    enabled=_is_task_enabled("auto_git_commit"),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, "note_metadata_feedback_optimization")
-                .daily(
-                    METADATA_FEEDBACK_RUN_TIME,
-                    label="note_metadata_feedback_optimization",
-                    start="next",
-                    enabled=_is_task_enabled("note_metadata_feedback_optimization"),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, "codex_diary_yesterday_import")
-                .daily(
-                    CODEX_DIARY_RUN_TIME,
-                    label="codex_diary_yesterday_import",
-                    start="next",
-                    enabled=_is_task_enabled("codex_diary_yesterday_import"),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, "attendance_summary_monthly_templates")
-                .monthly(
-                    27,
-                    ATTENDANCE_SUMMARY_RUN_TIME,
-                    label="attendance_summary_monthly_templates",
-                    start="next",
-                    enabled=_is_task_enabled("attendance_summary_monthly_templates"),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY)
-                .daily(
-                    MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME,
-                    label=MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
-                    start="next",
-                    enabled=_is_task_enabled(MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, FANBEI_ATTENDANCE_EVENING_TASK_KEY).daily(
-                    FANBEI_ATTENDANCE_EVENING_RUN_TIME,
-                    label=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
-                    start="next",
-                    enabled=_is_task_enabled(FANBEI_ATTENDANCE_EVENING_TASK_KEY),
-                ),
-                Action(self._run_task_if_enabled, FANBEI_ATTENDANCE_MORNING_TASK_KEY).daily(
-                    FANBEI_ATTENDANCE_MORNING_RUN_TIME,
-                    label=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
-                    start="next",
-                    enabled=_is_task_enabled(FANBEI_ATTENDANCE_MORNING_TASK_KEY),
-                ),
-                Action(self._run_task_if_enabled, "rime_config_sync")
-                .every(
-                    minutes=60,
-                    label="rime_config_sync",
-                    persist=True,
-                    enabled=_is_task_enabled("rime_config_sync"),
-                )
-                .retry(minutes=10),
-                Action(self._run_task_if_enabled, "storage_analysis").daily(
-                    STORAGE_ANALYSIS_RUN_TIME,
-                    label="storage_analysis",
-                    start="next",
-                    enabled=_is_task_enabled("storage_analysis"),
-                ),
+                *(scheduled(spec) for spec in BACKGROUND_TASK_SPECS if not _is_task_deleted(spec.key)),
                 Sequence(
                     Action(self._record_idle_summary),
                     IdleUntilNextWake(ratio=0.8, min_seconds=1, max_seconds=300),
@@ -503,15 +615,40 @@ class BackgroundTaskRunner:
             )
         )
 
+    def _build_scheduled_task(self, spec: BackgroundTaskSpec) -> DynamicTime:
+        task_key = spec.key
+
+        def default_next_time(runner: BehaviorTreeRunner):
+            policy = _effective_background_task_schedule_policy(task_key)
+            return compute_next_trigger_at(policy, base_time=runner.now())
+
+        node = DynamicTime(
+            Action(self._run_task_if_enabled, task_key),
+            label=task_key,
+            persist=True,
+            default_next_time=default_next_time,
+            enabled=_is_task_enabled(task_key),
+        )
+        retry_policy = ((_effective_background_task_schedule_policy(task_key) or {}).get("outcome") or {}).get("on_failure") or {}
+        if str(retry_policy.get("type") or "").lower() == "retry_after":
+            minutes = int(retry_policy.get("minutes") or max(1, round(int(retry_policy.get("seconds") or 600) / 60)))
+            node.retry(minutes=minutes)
+        return node
+
     def _run_task_if_enabled(self, ctx, task_key: str):
         if not _is_task_enabled(task_key):
             return
         spec = get_background_task_spec(task_key)
         if spec is None:
             return
+        policy = _effective_background_task_schedule_policy(task_key, enabled=True)
+        ctx.next_run_at = compute_next_trigger_at(policy, base_time=ctx.now())
         queue_task_id = spec.action()
         if queue_task_id:
             yield from self._wait_for_queue_task(ctx, queue_task_id)
+        next_run_at = compute_next_trigger_at(policy, base_time=ctx.now())
+        if next_run_at is not None:
+            return NextWake(next_run_at)
 
     def _wait_for_queue_task(self, ctx, queue_task_id: str):
         while True:
@@ -539,6 +676,7 @@ class BackgroundTaskRunner:
             runner = self._runner
             if runner is not None:
                 _sync_runner_enabled_states(runner, task_key=task_key)
+                self.reset_task(task_key) if task_key else None
             self._wake_event.set()
 
     def snapshot(self) -> dict[str, Any]:
@@ -557,7 +695,8 @@ class BackgroundTaskRunner:
                 spec.key: {
                     "next_run_at": _format_datetime(_find_task_next_run(node_states, spec.key)),
                     "enabled": bool(enabled_by_key.get(spec.key)),
-                    "schedule_label": spec.schedule_label,
+                    "schedule_policy": _effective_background_task_schedule_policy(spec.key, enabled=bool(enabled_by_key.get(spec.key))),
+                    "schedule_label": schedule_policy_label(_effective_background_task_schedule_policy(spec.key, enabled=bool(enabled_by_key.get(spec.key)))) or spec.schedule_label,
                     "retry_label": spec.retry_label,
                 }
                 for spec in BACKGROUND_TASK_SPECS

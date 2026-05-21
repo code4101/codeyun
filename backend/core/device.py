@@ -36,6 +36,23 @@ LOG_FOLLOW_POLL_INTERVAL_SECONDS = 0.5
 WINDOWS_CREATE_NEW_PROCESS_GROUP = 0x00000200
 WINDOWS_CREATE_BREAKAWAY_FROM_JOB = 0x01000000
 WINDOWS_CREATE_NO_WINDOW = 0x08000000
+WINDOWS_TH32CS_SNAPPROCESS = 0x00000002
+WINDOWS_MAX_PATH = 260
+
+
+class WindowsProcessEntry32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", wintypes.DWORD),
+        ("cntUsage", wintypes.DWORD),
+        ("th32ProcessID", wintypes.DWORD),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", wintypes.DWORD),
+        ("cntThreads", wintypes.DWORD),
+        ("th32ParentProcessID", wintypes.DWORD),
+        ("pcPriClassBase", wintypes.LONG),
+        ("dwFlags", wintypes.DWORD),
+        ("szExeFile", wintypes.WCHAR * WINDOWS_MAX_PATH),
+    ]
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
@@ -519,6 +536,92 @@ def parse_cmdline(cmdline: str) -> List[str]:
     except Exception:
         return shlex.split(cmdline, posix=False)
 
+def candidate_process_names_for_command(command: str) -> set[str]:
+    try:
+        args = parse_cmdline(command)
+    except Exception:
+        args = command.split()
+
+    if not args:
+        return set()
+
+    exe_name = os.path.basename(str(args[0]).strip('"')).lower()
+    if not exe_name:
+        return set()
+
+    names = {exe_name}
+    root, ext = os.path.splitext(exe_name)
+    if sys.platform == 'win32':
+        if not ext:
+            names.add(f"{exe_name}.exe")
+            names.add(f"{exe_name}.cmd")
+            names.add(f"{exe_name}.bat")
+        if ext in {".cmd", ".bat"}:
+            names.add("cmd.exe")
+        if root in {"python", "python3", "py"} or exe_name.startswith("python"):
+            names.update({"python.exe", "py.exe"})
+
+    return names
+
+def windows_process_ids_by_name(process_names: set[str]) -> List[int]:
+    wanted = {name.lower() for name in process_names if name}
+    if not wanted:
+        return []
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(WindowsProcessEntry32)]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(WindowsProcessEntry32)]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    snapshot = kernel32.CreateToolhelp32Snapshot(WINDOWS_TH32CS_SNAPPROCESS, 0)
+    if snapshot == ctypes.c_void_p(-1).value:
+        return []
+
+    pids: List[int] = []
+    entry = WindowsProcessEntry32()
+    entry.dwSize = ctypes.sizeof(WindowsProcessEntry32)
+    try:
+        has_entry = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while has_entry:
+            if entry.szExeFile.lower() in wanted:
+                pids.append(int(entry.th32ProcessID))
+            has_entry = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return pids
+
+def process_candidates_by_name(process_names: set[str]) -> List[psutil.Process]:
+    if not process_names:
+        return []
+
+    if sys.platform == 'win32':
+        processes: List[psutil.Process] = []
+        seen_pids = set()
+        for pid in windows_process_ids_by_name(process_names):
+            if pid in seen_pids:
+                continue
+            seen_pids.add(pid)
+            try:
+                processes.append(psutil.Process(pid))
+            except psutil.NoSuchProcess:
+                continue
+        return processes
+
+    processes = []
+    for proc in psutil.process_iter(['pid', 'name', 'create_time']):
+        try:
+            info = getattr(proc, "info", {}) or {}
+            proc_name = str(info.get("name") or "").lower()
+            if proc_name in process_names:
+                processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return processes
+
 class BaseDevice(ABC):
     def __init__(self, device_id: str, name: str, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):
         self.device_id = device_id
@@ -967,17 +1070,26 @@ class LocalDevice(BaseDevice):
             missing_tasks = [t for t in tasks_to_check if str(t.id) not in self.processes]
             
             if deep_scan and missing_tasks:
+                target_names = set()
+                for task in missing_tasks:
+                    cmd = getattr(task, 'command', None)
+                    if cmd:
+                        target_names.update(candidate_process_names_for_command(cmd))
+
                 candidates = []
-                try:
-                    # Snapshot all system processes once
-                    for proc in psutil.process_iter(['pid', 'cmdline', 'create_time']):
-                        try:
-                            if proc.info['cmdline']:
-                                candidates.append(proc)
-                        except (psutil.NoSuchProcess, psutil.AccessDenied):
-                            continue
-                except Exception:
-                    pass
+                if target_names:
+                    try:
+                        # Snapshot matching process command lines once. Fetching cmdline for every
+                        # Windows process is slow and can fail on protected/system processes.
+                        for proc in process_candidates_by_name(target_names):
+                            try:
+                                cmdline = proc.cmdline()
+                                if cmdline:
+                                    candidates.append((proc, list(cmdline)))
+                            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                                continue
+                    except Exception:
+                        pass
                 
                 used_pids = set(p.pid for p in self.processes.values())
                 
@@ -987,12 +1099,12 @@ class LocalDevice(BaseDevice):
                     if not cmd:
                         continue
                         
-                    for proc in candidates:
+                    for proc, proc_cmdline in candidates:
                         if proc.pid in used_pids:
                             continue
                             
                         try:
-                            if match_cmdline(cmd, proc.info['cmdline']):
+                            if match_cmdline(cmd, proc_cmdline):
                                 # Found a match!
                                 self.processes[t_id] = proc
                                 self.saved_pids[t_id] = proc.pid
@@ -1200,9 +1312,10 @@ class LocalDevice(BaseDevice):
 
         # Double check: Scan actual processes just in case cache is stale (Lazy Loading scenario)
         try:
-            for proc in psutil.process_iter(['pid', 'cmdline']):
+            target_names = candidate_process_names_for_command(command)
+            for proc in process_candidates_by_name(target_names):
                 try:
-                    cmdline = proc.info['cmdline']
+                    cmdline = proc.cmdline()
                     if not cmdline:
                         continue
                     if match_cmdline(command, cmdline):

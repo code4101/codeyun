@@ -20,7 +20,7 @@
       text
       circle
       :icon="Share"
-      title="共享权限"
+      title="设置权限"
       :disabled="!canShare"
       @click.stop="emit('share')"
     />

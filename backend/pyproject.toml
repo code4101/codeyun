@@ -29,6 +29,7 @@ dependencies = [
     "pypdf>=6.0.0",
     "pypinyin>=0.55.0",
     "jieba>=0.42.1",
+    "futu-api>=10.5.6508",
 ]
 
 [project.optional-dependencies]

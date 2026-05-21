@@ -449,4 +449,96 @@ def test_import_pdf_statement_stores_flows_positions_and_trades(session, monkeyp
     ).first()
     assert trade_sheet is not None
     assert trade_sheet.document_json["rows"][0][5] == "-2000"
-    assert trade_sheet.document_json["rows"][0][9] == "-0.11"
+    trade_headers = trade_sheet.document_json["columns"]
+    assert trade_sheet.document_json["rows"][0][trade_headers.index("费用")] == "-0.11"
+
+
+def test_eastmoney_trade_sheet_adds_batch_profit_attribution_columns(session):
+    user = User(username="eastmoney-attribution-user", email="eastmoney-attr@example.com", hashed_password="pw")
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    run = EastmoneyTradeSyncRun(
+        user_id=int(user.id),
+        account_label="陈坤泽",
+        start_date="2026-01-01",
+        end_date="2026-01-05",
+        status="success",
+    )
+    session.add(run)
+    session.commit()
+    session.refresh(run)
+
+    rows = [
+        ("2026-01-01", "09:30:00", "证券买入", "100", "10.000", "1000", "B001"),
+        ("2026-01-02", "09:30:00", "证券买入", "50", "15.000", "750", "B002"),
+        ("2026-01-03", "09:30:00", "证券买入", "50", "10.000", "500", "B003"),
+        ("2026-01-04", "09:30:00", "证券卖出", "20", "20.000", "400", "S001"),
+        ("2026-01-05", "09:30:00", "证券卖出", "60", "15.000", "900", "S002"),
+    ]
+    for index, (date, trade_time, direction, quantity, price, amount, deal_id) in enumerate(rows, start=1):
+        normalized = _normalize_trade_row(
+            {
+                "成交日期": date,
+                "成交时间": trade_time,
+                "证券名称": "机器人PH",
+                "证券代码": "159278",
+                "委托方向": direction,
+                "成交数量": quantity,
+                "成交价格": price,
+                "成交金额": amount,
+                "成交编号": deal_id,
+            },
+            TRADE_SOURCE_NORMAL,
+            "陈坤泽",
+        )
+        session.add(
+            EastmoneyTradeRecord(
+                user_id=int(user.id),
+                sync_run_id=run.id,
+                account_label="陈坤泽",
+                first_seen_at=index,
+                last_seen_at=index,
+                created_at=index,
+                updated_at=index,
+                **normalized,
+            )
+        )
+    session.commit()
+
+    refresh_eastmoney_sheet_workbook(
+        session,
+        user_id=int(user.id),
+        actor_user_id=int(user.id),
+    )
+
+    trade_sheet = session.exec(
+        select(SheetDocument).where(
+            SheetDocument.owner_type == "eastmoney",
+            SheetDocument.owner_key == str(user.id),
+            SheetDocument.sheet_key == "local-history",
+        )
+    ).first()
+    assert trade_sheet is not None
+
+    headers = trade_sheet.document_json["columns"]
+    rows_by_date = {row[headers.index("日期")]: row for row in trade_sheet.document_json["rows"]}
+    first_sell = rows_by_date["2026-01-04"]
+    second_sell = rows_by_date["2026-01-05"]
+
+    assert trade_sheet.document_json["header_groups"] == []
+    assert trade_sheet.document_json["data_start_row"] == 1
+    assert trade_sheet.document_json["column_configs"]["归因动作"]["header_background_color"] == "#dbeafe"
+    assert first_sell[headers.index("归因动作")] == "出池匹配"
+    assert first_sell[headers.index("匹配成本均价")] == "15.000"
+    assert first_sell[headers.index("匹配成本金额")] == "300"
+    assert first_sell[headers.index("本次归因盈亏")] == "+100"
+    assert first_sell[headers.index("本次归因收益率")] == "+33.33%"
+    assert first_sell[headers.index("匹配批次")] == "20@15.000"
+
+    assert second_sell[headers.index("匹配成本均价")] == "12.500"
+    assert second_sell[headers.index("匹配成本金额")] == "750"
+    assert second_sell[headers.index("本次归因盈亏")] == "+150"
+    assert second_sell[headers.index("本次归因收益率")] == "+20.00%"
+    assert second_sell[headers.index("匹配批次")] == "30@15.000 + 30@10.000"

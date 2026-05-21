@@ -111,6 +111,8 @@ class Task(SQLModel, table=True):
     device_id: str = Field(index=True) # Removed foreign key to device table
     runtime_kind: Optional[str] = Field(default=None, index=True)
     schedule: Optional[str] = None 
+    schedule_policy: Optional[dict] = Field(default=None, sa_column=Column(JSON))
+    schedule_state: dict = Field(default_factory=dict, sa_column=Column(JSON))
     timeout: Optional[int] = None 
     order: Optional[int] = Field(default=0)
     created_at: float = Field(default_factory=time.time)

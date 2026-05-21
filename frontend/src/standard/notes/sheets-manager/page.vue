@@ -226,7 +226,7 @@ async function handleDeleteWorkbook(workbook: WorkbookSummary) {
 
   try {
     await ElMessageBox.confirm(
-      `删除工作簿“${workbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其共享权限。此操作不可恢复。`,
+      `删除工作簿“${workbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其权限设置。此操作不可恢复。`,
       '删除工作簿',
       {
         confirmButtonText: '确认删除',
@@ -355,7 +355,7 @@ onMounted(() => {
                           重命名
                         </el-dropdown-item>
                         <el-dropdown-item v-if="canManageWorkbook(workbook)" command="access" :icon="Share">
-                          共享权限
+                          设置权限
                         </el-dropdown-item>
                         <el-dropdown-item command="template">
                           另存为模版

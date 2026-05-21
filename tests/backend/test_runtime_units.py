@@ -16,6 +16,7 @@ def _task(**kwargs):
         "description": "",
         "runtime_kind": None,
         "schedule": None,
+        "schedule_policy": None,
         "timeout": None,
     }
     defaults.update(kwargs)
@@ -58,3 +59,19 @@ def test_explicit_runtime_kind_keeps_manual_command_as_job():
     assert infer_command_runtime_kind(task) == "job"
     assert policy.kind == "job"
     assert policy.schedule_kind == "manual"
+
+
+def test_schedule_policy_trigger_kind_replaces_legacy_cron_kind():
+    task = _task(
+        name="capture",
+        schedule=None,
+        schedule_policy={
+            "enabled": True,
+            "trigger": {"type": "monthly", "day": 27, "time": "00:00"},
+        },
+    )
+
+    policy = resolve_command_runtime_policy(task)
+
+    assert policy.kind == "service"
+    assert policy.schedule_kind == "monthly"

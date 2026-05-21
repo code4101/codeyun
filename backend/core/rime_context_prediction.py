@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 from typing import Any
 import unicodedata
@@ -40,6 +41,7 @@ ENGLISH_DICT_FILE = "codeyun_english.dict.yaml"
 ENGLISH_BASE_DICT_FILE = "codeyun_english_base.dict.yaml"
 ENGLISH_LEARNED_DICT_FILE = "codeyun_english_learned.dict.yaml"
 ENGLISH_SCHEMA_FILE = "codeyun_english.schema.yaml"
+RIME_LUA_FILE = "rime.lua"
 
 ARTICLE_EXTRACTOR_VERSION = 5
 MAX_CONTEXT_TOKENS = 4
@@ -59,8 +61,42 @@ LEXICON_SOURCE_TYPE = "lexicon"
 LEXICON_SOURCE_TYPES = {LEXICON_SOURCE_TYPE, "manual_english_terms"}
 LEXICON_DEFAULT_WEIGHT = 8.0
 CUSTOM_PHRASE_LABEL = "自定义短语"
+NEGATIVE_LEXICON_SOURCE_TYPE = "negative_lexicon"
+NEGATIVE_LEXICON_SOURCE_TYPES = {NEGATIVE_LEXICON_SOURCE_TYPE, "negative_terms"}
+NEGATIVE_PHRASE_LABEL = "负向短语"
 DEFAULT_LINT_ISSUE_LIMIT = 200
 MAX_LINT_AI_CHARS = 8000
+
+RIME_RUNTIME_CONFIG_FIELDS: dict[str, dict[str, Any]] = {
+    "max_context": {"type": "int", "min": 0, "max": 16, "label": "前文长度"},
+    "max_source_candidates": {"type": "int", "min": 1, "max": 100, "label": "来源候选"},
+    "max_candidates": {"type": "int", "min": 0, "max": 20, "label": "预测候选"},
+    "min_input_length": {"type": "int", "min": 1, "max": 12, "label": "起效长度"},
+    "prefix_completion_min_length": {"type": "int", "min": 1, "max": 20, "label": "拼音补全长度"},
+    "prefix_completion_weight_ratio": {"type": "float", "min": 0, "max": 1, "label": "拼音补全权重"},
+    "initials_completion_min_length": {"type": "int", "min": 1, "max": 12, "label": "首字母补全长度"},
+    "initials_completion_weight_ratio": {"type": "float", "min": 0, "max": 1, "label": "首字母补全权重"},
+    "max_buffer_rows": {"type": "int", "min": 0, "max": 100000, "label": "内存缓冲上限"},
+    "flush_batch_size": {"type": "int", "min": 1, "max": 10000, "label": "写盘批量"},
+    "flush_interval_seconds": {"type": "int", "min": 1, "max": 86400, "label": "写盘间隔"},
+    "enable_commit_capture": {"type": "bool", "label": "捕捉输入"},
+    "commit_capture_mode": {
+        "type": "enum",
+        "values": [
+            "deferred_flush",
+            "flush_check",
+            "timestamp_buffer",
+            "memory_only",
+            "normalize_only",
+            "read_only",
+            "hook_only",
+        ],
+        "label": "捕捉模式",
+    },
+    "enable_realtime_learning": {"type": "bool", "label": "实时学习"},
+    "capture_to_disk": {"type": "bool", "label": "实时写盘"},
+    "enable_context_keys": {"type": "bool", "label": "上下文索引"},
+}
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]+")
 _SENTENCE_SPLIT_RE = re.compile(r"[\r\n。！？!?；;]+")
@@ -337,6 +373,7 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
     return [
         _file_info(rime_dir, item)
         for item in [
+            RIME_LUA_FILE,
             SNAPSHOT_FILE,
             RUNTIME_FILE,
             HOT_FILE,
@@ -357,6 +394,293 @@ def _tracked_files(rime_dir: Path | None) -> list[dict[str, Any]]:
             HTML_REPORT_FILE,
         ]
     ]
+
+
+def _runtime_config_path(rime_dir: Path) -> Path:
+    return rime_dir / RIME_LUA_FILE
+
+
+def _parse_lua_literal(raw: str, field_type: str) -> Any:
+    text = str(raw or "").strip()
+    if field_type == "bool":
+        if text == "true":
+            return True
+        if text == "false":
+            return False
+        return None
+    if field_type == "enum":
+        match = re.fullmatch(r'"([^"]*)"|\'([^\']*)\'', text)
+        if not match:
+            return None
+        return match.group(1) if match.group(1) is not None else match.group(2)
+    if field_type == "int":
+        try:
+            return int(float(text))
+        except ValueError:
+            return None
+    if field_type == "float":
+        try:
+            return float(text)
+        except ValueError:
+            return None
+    return text
+
+
+def _format_lua_literal(value: Any, field_type: str) -> str:
+    if field_type == "bool":
+        return "true" if bool(value) else "false"
+    if field_type == "enum":
+        return json.dumps(str(value), ensure_ascii=False)
+    if field_type == "int":
+        return str(int(value))
+    if field_type == "float":
+        number = float(value)
+        return f"{number:.6f}".rstrip("0").rstrip(".") or "0"
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def _coerce_runtime_config_value(key: str, value: Any) -> Any:
+    spec = RIME_RUNTIME_CONFIG_FIELDS.get(key)
+    if not spec:
+        raise RimeContextPredictionError(f"不支持的运行配置项：{key}")
+    field_type = str(spec.get("type") or "")
+    if field_type == "bool":
+        return bool(value)
+    if field_type == "enum":
+        normalized = str(value or "").strip()
+        values = [str(item) for item in spec.get("values") or []]
+        if normalized not in values:
+            raise RimeContextPredictionError(f"{spec.get('label') or key} 必须是：{', '.join(values)}")
+        return normalized
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RimeContextPredictionError(f"{spec.get('label') or key} 必须是数字。") from exc
+    minimum = spec.get("min")
+    maximum = spec.get("max")
+    if minimum is not None and number < float(minimum):
+        raise RimeContextPredictionError(f"{spec.get('label') or key} 不能小于 {minimum}。")
+    if maximum is not None and number > float(maximum):
+        raise RimeContextPredictionError(f"{spec.get('label') or key} 不能大于 {maximum}。")
+    return int(number) if field_type == "int" else number
+
+
+def _read_runtime_config_values(text: str) -> tuple[dict[str, Any], dict[str, bool]]:
+    config: dict[str, Any] = {}
+    present: dict[str, bool] = {}
+    for key, spec in RIME_RUNTIME_CONFIG_FIELDS.items():
+        pattern = re.compile(rf"(?m)^(\s*{re.escape(key)}\s*=\s*)([^,\n]+)(,)")
+        match = pattern.search(text)
+        present[key] = bool(match)
+        if match:
+            config[key] = _parse_lua_literal(match.group(2), str(spec.get("type") or ""))
+    return config, present
+
+
+def _find_weasel_deployer() -> Path | None:
+    configured = os.environ.get("CODEYUN_WEASEL_DEPLOYER")
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return path
+
+    if os.name != "nt":
+        return None
+
+    roots: list[Path] = []
+    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
+        value = os.environ.get(env_key)
+        if value:
+            roots.append(Path(value) / "Rime")
+
+    candidates: list[Path] = []
+    for root in roots:
+        if root.exists():
+            candidates.extend(root.rglob("WeaselDeployer.exe"))
+    return sorted(candidates, key=lambda item: str(item), reverse=True)[0] if candidates else None
+
+
+def deploy_rime_weasel() -> dict[str, Any]:
+    deployer = _find_weasel_deployer()
+    if not deployer:
+        return {
+            "ok": False,
+            "status": "deployer_missing",
+            "message": "未找到 WeaselDeployer.exe，运行配置已保存但未能自动重新部署。",
+            "deployer": None,
+        }
+
+    try:
+        completed = subprocess.run(
+            [str(deployer), "/deploy"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "status": "timeout",
+            "message": "小狼毫重新部署超时，运行配置已保存。",
+            "deployer": str(deployer),
+        }
+    except OSError as exc:
+        return {
+            "ok": False,
+            "status": "failed_to_start",
+            "message": f"启动 WeaselDeployer 失败：{exc}",
+            "deployer": str(deployer),
+        }
+
+    output = "\n".join(
+        item.strip()
+        for item in [completed.stdout, completed.stderr]
+        if item and item.strip()
+    )
+    if completed.returncode != 0:
+        detail = output[-300:] if output else f"退出码 {completed.returncode}"
+        return {
+            "ok": False,
+            "status": "failed",
+            "message": f"小狼毫重新部署失败：{detail}",
+            "deployer": str(deployer),
+            "returncode": completed.returncode,
+        }
+
+    return {
+        "ok": True,
+        "status": "deployed",
+        "message": "小狼毫已重新部署。",
+        "deployer": str(deployer),
+        "returncode": completed.returncode,
+    }
+
+
+def make_rime_runtime_config_unavailable(
+    *,
+    status: str,
+    message: str,
+    rime_dir: str | None = None,
+    files: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "status": status,
+        "message": message,
+        "rime_dir": rime_dir,
+        "source": RIME_LUA_FILE,
+        "source_path": None,
+        "updated_at": None,
+        "files": files or [],
+        "config": {},
+        "fields": RIME_RUNTIME_CONFIG_FIELDS,
+        "missing_keys": [],
+        "requires_reload": False,
+        "deploy": None,
+    }
+
+
+def collect_rime_runtime_config() -> dict[str, Any]:
+    rime_dir = _resolve_rime_dir()
+    files = _tracked_files(rime_dir)
+    if not rime_dir:
+        return make_rime_runtime_config_unavailable(
+            status="unsupported_platform",
+            message="当前系统没有可识别的 Rime 用户目录位置。",
+            files=files,
+        )
+    if not rime_dir.exists():
+        return make_rime_runtime_config_unavailable(
+            status="rime_missing",
+            message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+    path = _runtime_config_path(rime_dir)
+    if not path.exists():
+        return make_rime_runtime_config_unavailable(
+            status="config_missing",
+            message="未找到 rime.lua，无法读取小狼毫运行配置。",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return make_rime_runtime_config_unavailable(
+            status="read_failed",
+            message=f"读取 rime.lua 失败：{exc}",
+            rime_dir=str(rime_dir),
+            files=files,
+        )
+    config, present = _read_runtime_config_values(text)
+    stat = path.stat()
+    return {
+        "available": True,
+        "status": "ready",
+        "message": "已读取小狼毫运行配置。",
+        "rime_dir": str(rime_dir),
+        "source": RIME_LUA_FILE,
+        "source_path": str(path),
+        "updated_at": stat.st_mtime,
+        "files": files,
+        "config": config,
+        "fields": RIME_RUNTIME_CONFIG_FIELDS,
+        "missing_keys": [key for key, exists in present.items() if not exists],
+        "requires_reload": False,
+        "deploy": None,
+    }
+
+
+def update_rime_runtime_config(values: dict[str, Any], *, deploy: bool = True) -> dict[str, Any]:
+    if not isinstance(values, dict):
+        raise RimeContextPredictionError("运行配置必须是对象。")
+    rime_dir = _ensure_writable_rime_dir()
+    path = _runtime_config_path(rime_dir)
+    if not path.exists():
+        raise RimeContextPredictionError("未找到 rime.lua，无法保存小狼毫运行配置。")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RimeContextPredictionError(f"读取 rime.lua 失败：{exc}") from exc
+
+    next_text = text
+    changed = False
+    for raw_key, raw_value in values.items():
+        key = str(raw_key)
+        spec = RIME_RUNTIME_CONFIG_FIELDS.get(key)
+        if not spec:
+            raise RimeContextPredictionError(f"不支持的运行配置项：{key}")
+        value = _coerce_runtime_config_value(key, raw_value)
+        pattern = re.compile(rf"(?m)^(\s*{re.escape(key)}\s*=\s*)([^,\n]+)(,)")
+        if not pattern.search(next_text):
+            raise RimeContextPredictionError(f"rime.lua 中未找到配置项：{key}")
+        replacement = rf"\g<1>{_format_lua_literal(value, str(spec.get('type') or ''))}\g<3>"
+        updated = pattern.sub(replacement, next_text, count=1)
+        changed = changed or updated != next_text
+        next_text = updated
+
+    deploy_result = None
+    if changed:
+        _write_text_atomic(path, next_text)
+        if deploy:
+            deploy_result = deploy_rime_weasel()
+    payload = collect_rime_runtime_config()
+    payload["deploy"] = deploy_result
+    if not changed:
+        payload["message"] = "运行配置没有变化。"
+        payload["requires_reload"] = False
+    elif deploy_result and deploy_result.get("ok"):
+        payload["message"] = "运行配置已保存，并已重新部署小狼毫。"
+        payload["requires_reload"] = False
+    elif deploy_result:
+        payload["message"] = str(deploy_result.get("message") or "运行配置已保存，但自动重新部署失败。")
+        payload["requires_reload"] = True
+    else:
+        payload["message"] = "运行配置已保存，重新部署或重新加载小狼毫后生效。"
+        payload["requires_reload"] = True
+    return payload
 
 
 def _clean_tsv_field(value: Any) -> str:
@@ -533,10 +857,33 @@ def _is_lexicon_article(article: dict[str, Any]) -> bool:
     return _is_lexicon_source_type(article.get("source_type"))
 
 
+def _is_negative_lexicon_source_type(value: Any) -> bool:
+    return str(value or "") in NEGATIVE_LEXICON_SOURCE_TYPES
+
+
+def _is_negative_lexicon_article(article: dict[str, Any]) -> bool:
+    return _is_negative_lexicon_source_type(article.get("source_type"))
+
+
+def _is_weighted_phrase_source_type(value: Any) -> bool:
+    return _is_lexicon_source_type(value) or _is_negative_lexicon_source_type(value)
+
+
+def _is_weighted_phrase_article(article: dict[str, Any]) -> bool:
+    return _is_weighted_phrase_source_type(article.get("source_type"))
+
+
 def _normalize_lexicon_display_name(value: Any) -> str:
     text = str(value or "").strip()
     if not text or text in {"专用词库", "快捷词库", "英文快捷词"}:
         return CUSTOM_PHRASE_LABEL
+    return text
+
+
+def _normalize_negative_lexicon_display_name(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text or text in {"负向词", "负向词库", "降权短语"}:
+        return NEGATIVE_PHRASE_LABEL
     return text
 
 
@@ -1842,9 +2189,11 @@ def collect_rime_context_prediction_lint(
     }
 
 
-def _normalize_article_text(content: str) -> str:
+def _normalize_article_text(content: str, *, allow_empty: bool = False) -> str:
     text = (content or "").replace("\r\n", "\n").replace("\r", "\n")
     if not text.strip():
+        if allow_empty:
+            return text
         raise RimeContextPredictionError("文章内容不能为空。")
     if len(text) > MAX_ARTICLE_CHARS:
         raise RimeContextPredictionError(f"文章内容过长，当前上限是 {MAX_ARTICLE_CHARS} 个字符。")
@@ -1857,6 +2206,14 @@ def _normalize_article_title(title: str | None, content: str) -> str:
         first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
         value = first_line[:30].strip()
     return value or "未命名文章"
+
+
+def _normalize_article_title_for_source(title: str | None, content: str, source_type: str) -> str:
+    if _is_negative_lexicon_source_type(source_type):
+        return _normalize_negative_lexicon_display_name(title)
+    if _is_lexicon_source_type(source_type):
+        return _normalize_lexicon_display_name(title)
+    return _normalize_article_title(title, content)
 
 
 def _content_hash(content: str) -> str:
@@ -2117,7 +2474,7 @@ def _collect_english_entries_from_texts(
 
 
 def _article_weight_multiplier(article: dict[str, Any]) -> float:
-    if _is_lexicon_article(article):
+    if _is_weighted_phrase_article(article):
         try:
             return max(1.0, float(article.get("weight_multiplier") or LEXICON_DEFAULT_WEIGHT))
         except (TypeError, ValueError):
@@ -2135,6 +2492,8 @@ def _collect_english_source_texts(rime_dir: Path) -> list[tuple[str, float]]:
     manifest = _read_article_manifest(rime_dir)
     for article in manifest.get("articles", []):
         if not isinstance(article, dict) or not article.get("enabled", True):
+            continue
+        if _is_negative_lexicon_article(article):
             continue
         path = _article_content_path(rime_dir, article)
         try:
@@ -2378,6 +2737,24 @@ def _extract_lexicon_contributions(article_id: str, text: str, default_weight: f
     ]
 
 
+def _extract_negative_lexicon_contributions(article_id: str, text: str, default_weight: float) -> list[dict[str, Any]]:
+    counts: dict[tuple[str, str, str], float] = defaultdict(float)
+    for line in text.splitlines():
+        for candidate, prefix, weight in _parse_lexicon_line(line, default_weight):
+            counts[("__global", prefix, candidate)] += abs(weight)
+
+    return [
+        {
+            "source_id": article_id,
+            "context": context,
+            "prefix": prefix,
+            "candidate": candidate,
+            "weight": weight,
+        }
+        for (context, prefix, candidate), weight in counts.items()
+    ]
+
+
 def _lexicon_candidate_text(content: str) -> str:
     candidates: list[str] = []
     for line in str(content or "").splitlines():
@@ -2395,13 +2772,19 @@ def _article_to_payload(article: dict[str, Any]) -> dict[str, Any]:
     if not source_label:
         if source_type in {"device_history", INPUT_HISTORY_SOURCE_TYPE}:
             source_label = "输入历史"
+        elif _is_negative_lexicon_source_type(source_type):
+            source_label = NEGATIVE_PHRASE_LABEL
         elif _is_lexicon_source_type(source_type):
             source_label = CUSTOM_PHRASE_LABEL
         else:
             source_label = "导入文章"
+    if _is_negative_lexicon_source_type(source_type):
+        source_label = _normalize_negative_lexicon_display_name(source_label)
     if _is_lexicon_source_type(source_type):
         source_label = _normalize_lexicon_display_name(source_label)
     title = str(article.get("title") or "未命名文章")
+    if _is_negative_lexicon_source_type(source_type):
+        title = _normalize_negative_lexicon_display_name(title)
     if _is_lexicon_source_type(source_type):
         title = _normalize_lexicon_display_name(title)
     return {
@@ -2441,6 +2824,7 @@ def make_rime_context_prediction_articles_unavailable(
             "article_count": 0,
             "enabled_count": 0,
             "lexicon_count": 0,
+            "negative_lexicon_count": 0,
             "contribution_count": 0,
         },
         "articles": [],
@@ -2559,6 +2943,9 @@ def _article_sources_response(
             "article_count": len(articles),
             "enabled_count": sum(1 for article in articles if article["enabled"]),
             "lexicon_count": sum(1 for article in articles if _is_lexicon_source_type(article["source_type"])),
+            "negative_lexicon_count": sum(
+                1 for article in articles if _is_negative_lexicon_source_type(article["source_type"])
+            ),
             "contribution_count": sum(article["row_count"] for article in articles if article["enabled"]),
         },
         "articles": articles,
@@ -2596,6 +2983,15 @@ def _merge_snapshot_row(
     key = (context, prefix)
     candidate_map = rows_by_key[key]
     existing = candidate_map.get(candidate)
+    if float(weight) < 0:
+        if not existing:
+            return
+        existing["weight"] = float(existing.get("weight") or 0) + float(weight)
+        if float(existing.get("weight") or 0) <= 0:
+            del candidate_map[candidate]
+        elif comment:
+            existing["comment"] = comment
+        return
     if replace_existing:
         candidate_map[candidate] = {
             "weight": float(weight),
@@ -2615,6 +3011,31 @@ def _merge_snapshot_row(
         "comment": comment or "",
         "locked": lock_entry,
     }
+
+
+def _apply_negative_lexicon_rows(
+    rows_by_key: dict[tuple[str, str], dict[str, dict[str, Any]]],
+    rows: list[dict[str, Any]],
+) -> None:
+    penalties: dict[tuple[str, str], float] = defaultdict(float)
+    for row in rows:
+        prefix = _clean_tsv_field(row.get("prefix"))
+        candidate = _clean_tsv_field(row.get("candidate"))
+        if not prefix or not candidate:
+            continue
+        penalties[(prefix, candidate)] += abs(float(row.get("weight") or 0))
+    if not penalties:
+        return
+
+    for (_context, prefix), candidate_map in list(rows_by_key.items()):
+        for candidate in list(candidate_map.keys()):
+            penalty = penalties.get((prefix, candidate))
+            if not penalty:
+                continue
+            entry = candidate_map[candidate]
+            entry["weight"] = float(entry.get("weight") or 0) - penalty
+            if float(entry.get("weight") or 0) <= 0:
+                del candidate_map[candidate]
 
 
 def _write_prediction_snapshot(rime_dir: Path, rows: list[tuple[str, str, str, float, str]]) -> None:
@@ -2752,6 +3173,7 @@ def rebuild_rime_context_prediction_snapshot(
 
     rows_by_key: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     merged_source_rows = 0
+    negative_lexicon_rows: list[dict[str, Any]] = []
     for row in _read_prediction_rows(target_dir / SEED_FILE):
         merged_source_rows += 1
         _merge_snapshot_row(
@@ -2780,6 +3202,10 @@ def rebuild_rime_context_prediction_snapshot(
         if row["source_id"] in enabled_ids:
             source_article = article_by_id.get(str(row["source_id"]))
             source_type = str((source_article or {}).get("source_type") or "imported_article")
+            if _is_negative_lexicon_source_type(source_type):
+                negative_lexicon_rows.append(row)
+                merged_source_rows += 1
+                continue
             if _is_lexicon_source_type(source_type):
                 comment = CUSTOM_PHRASE_LABEL
             elif source_type == "device_history":
@@ -2796,6 +3222,8 @@ def rebuild_rime_context_prediction_snapshot(
                 comment,
                 deleted_keys,
             )
+
+    _apply_negative_lexicon_rows(rows_by_key, negative_lexicon_rows)
 
     if allow_snapshot_fallback and not merged_source_rows:
         for row in _read_prediction_rows(target_dir / SNAPSHOT_FILE):
@@ -2867,6 +3295,33 @@ def update_rime_context_prediction_candidate(
         raise RimeContextPredictionError("权重必须大于 0。")
 
     rime_dir = _ensure_writable_rime_dir()
+    _upsert_manual_candidate_rule(
+        rime_dir,
+        original_context=original_context,
+        original_prefix=original_prefix,
+        original_candidate=original_candidate,
+        context=context,
+        prefix=prefix,
+        candidate=candidate,
+        weight=weight,
+    )
+    rebuild_rime_context_prediction_snapshot(rime_dir, allow_snapshot_fallback=True)
+    payload = collect_rime_context_prediction_tree()
+    payload["message"] = "已更新候选词手动规则。"
+    return payload
+
+
+def _upsert_manual_candidate_rule(
+    rime_dir: Path,
+    *,
+    original_context: str | None,
+    original_prefix: str | None,
+    original_candidate: str | None,
+    context: str,
+    prefix: str,
+    candidate: str,
+    weight: float,
+) -> None:
     target_key = _normalize_candidate_key(context, prefix, candidate)
     original_key = None
     if original_context and original_prefix and original_candidate:
@@ -2910,8 +3365,36 @@ def update_rime_context_prediction_candidate(
     if len(next_deleted_rows) != len(deleted_rows) or (original_key and original_key != target_key):
         _write_deleted_candidate_rows(rime_dir, next_deleted_rows)
 
-    rebuild_rime_context_prediction_snapshot(rime_dir, allow_snapshot_fallback=True)
-    payload = collect_rime_context_prediction_tree()
+
+def adjust_rime_context_weight_compare_candidate(
+    *,
+    prefix: str,
+    candidate: str,
+    weight: float,
+    candidates: list[str],
+    source: str | None = "snapshot",
+    limit: int = 20,
+) -> dict[str, Any]:
+    if float(weight) <= 0:
+        raise RimeContextPredictionError("权重必须大于 0。")
+    normalized_prefix = _clean_tsv_field(prefix)
+    normalized_candidate = _normalize_weight_compare_candidate(candidate)
+    if not normalized_prefix or not normalized_candidate:
+        raise RimeContextPredictionError("候选词和拼音不能为空。")
+
+    rime_dir = _ensure_writable_rime_dir()
+    _upsert_manual_candidate_rule(
+        rime_dir,
+        original_context="__global",
+        original_prefix=normalized_prefix,
+        original_candidate=normalized_candidate,
+        context="__global",
+        prefix=normalized_prefix,
+        candidate=normalized_candidate,
+        weight=float(weight),
+    )
+    compare_candidates = candidates or [normalized_candidate]
+    payload = collect_rime_context_weight_compare(compare_candidates, source=source, limit=limit)
     payload["message"] = "已更新候选词手动规则。"
     return payload
 
@@ -3092,6 +3575,8 @@ def _upsert_article_contributions(rime_dir: Path, article: dict[str, Any], conte
     existing = [row for row in _read_article_contributions(rime_dir) if row["source_id"] != article["id"]]
     if _is_lexicon_article(article):
         rows = _extract_lexicon_contributions(str(article["id"]), content, _article_weight_multiplier(article))
+    elif _is_negative_lexicon_article(article):
+        rows = _extract_negative_lexicon_contributions(str(article["id"]), content, _article_weight_multiplier(article))
     else:
         rows = _extract_article_contributions(str(article["id"]), content)
     article["row_count"] = len(rows)
@@ -3112,13 +3597,17 @@ def import_rime_context_prediction_article(
     weight_multiplier: float | None = None,
 ) -> dict[str, Any]:
     rime_dir = _ensure_writable_rime_dir()
-    text = _normalize_article_text(content)
+    normalized_source_type = _clean_tsv_field(source_type or "imported_article") or "imported_article"
+    text = _normalize_article_text(content, allow_empty=_is_weighted_phrase_source_type(normalized_source_type))
     now = time.time()
     digest = _content_hash(text)
-    normalized_source_type = _clean_tsv_field(source_type or "imported_article") or "imported_article"
     normalized_source_key = _clean_tsv_field(source_key or "")
     normalized_source_label = _clean_tsv_field(source_label or "")
-    if _is_lexicon_source_type(normalized_source_type):
+    if _is_negative_lexicon_source_type(normalized_source_type):
+        normalized_source_label = _normalize_negative_lexicon_display_name(normalized_source_label)
+    elif _is_lexicon_source_type(normalized_source_type):
+        normalized_source_label = _normalize_lexicon_display_name(normalized_source_label)
+    if _is_weighted_phrase_source_type(normalized_source_type):
         try:
             normalized_weight_multiplier = max(1.0, float(weight_multiplier or LEXICON_DEFAULT_WEIGHT))
         except (TypeError, ValueError):
@@ -3156,7 +3645,7 @@ def import_rime_context_prediction_article(
         content_path.write_text(text, encoding="utf-8")
         target_article = {
             "id": article_id,
-            "title": _normalize_article_title(title, text),
+            "title": _normalize_article_title_for_source(title, text, normalized_source_type),
             "enabled": bool(enabled),
             "source_type": normalized_source_type,
             "source_key": normalized_source_key,
@@ -3177,7 +3666,7 @@ def import_rime_context_prediction_article(
     else:
         old_digest = str(target_article.get("content_hash") or "")
         old_weight_multiplier = _article_weight_multiplier(target_article)
-        next_title = _normalize_article_title(title, text)
+        next_title = _normalize_article_title_for_source(title, text, normalized_source_type)
         next_enabled = bool(enabled)
         content_path = _article_content_path(rime_dir, target_article)
         if (
@@ -3288,7 +3777,10 @@ def save_rime_context_prediction_article_content(
     else:
         start = 0
         end = 0
-    new_text = _normalize_article_text(f"{old_text[:start]}{page_text}{old_text[end:]}")
+    new_text = _normalize_article_text(
+        f"{old_text[:start]}{page_text}{old_text[end:]}",
+        allow_empty=_is_weighted_phrase_article(article),
+    )
 
     now = time.time()
     digest = _content_hash(new_text)
@@ -3380,6 +3872,33 @@ def make_rime_context_prediction_unavailable(
     }
 
 
+def make_rime_context_weight_compare_unavailable(
+    *,
+    status: str,
+    message: str,
+    rime_dir: str | None = None,
+    files: list[dict[str, Any]] | None = None,
+    source_kind: str = "snapshot",
+) -> dict[str, Any]:
+    return {
+        "available": False,
+        "status": status,
+        "message": message,
+        "rime_dir": rime_dir,
+        "source_kind": source_kind,
+        "source": None,
+        "source_path": None,
+        "updated_at": None,
+        "files": files or [],
+        "summary": {
+            "candidate_count": 0,
+            "matched_count": 0,
+            "row_count": 0,
+        },
+        "items": [],
+    }
+
+
 def _normalize_prediction_tree_source(source: str | None) -> str:
     value = str(source or "").strip().lower()
     if value in {"snapshot", "hot", "seed"}:
@@ -3397,6 +3916,30 @@ def _prediction_tree_source_candidates(rime_dir: Path, source_kind: str) -> list
         (COUNTS_FILE, rime_dir / COUNTS_FILE),
         (SEED_FILE, rime_dir / SEED_FILE),
     ]
+
+
+def _overlay_manual_prediction_rows(rime_dir: Path, rows: list[dict[str, Any]], source_kind: str) -> list[dict[str, Any]]:
+    if source_kind == "seed":
+        return rows
+    seed_path = rime_dir / SEED_FILE
+    if not seed_path.exists():
+        return rows
+
+    manual_rows = [
+        row for row in _read_prediction_rows(seed_path)
+        if _is_manual_rule_comment(row.get("comment"))
+    ]
+    if not manual_rows:
+        return rows
+
+    manual_keys = {
+        _candidate_key(row.get("context"), row.get("prefix"), row.get("candidate"))
+        for row in manual_rows
+    }
+    return [
+        row for row in rows
+        if _candidate_key(row.get("context"), row.get("prefix"), row.get("candidate")) not in manual_keys
+    ] + manual_rows
 
 
 def collect_rime_context_prediction_tree(
@@ -3477,4 +4020,193 @@ def collect_rime_context_prediction_tree(
         "files": files,
         "summary": summary,
         "rows": rows,
+    }
+
+
+def _normalize_weight_compare_candidate(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return _LEXICON_PINYIN_ANNOTATION_RE.sub(lambda match: match.group(1), text)
+
+
+def _candidate_default_pinyin(candidate: str) -> str:
+    raw = "".join(lazy_pinyin(candidate, style=Style.NORMAL))
+    return re.sub(r"[^a-z0-9]+", "", raw.lower())
+
+
+def _summarize_weight_group(
+    weight_by_key: dict[str, float],
+    count_by_key: dict[str, int],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            "weight": weight,
+            "row_count": count_by_key.get(key, 0),
+        }
+        for key, weight in sorted(
+            weight_by_key.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:limit]
+    ]
+
+
+def collect_rime_context_weight_compare(
+    candidates: list[str],
+    *,
+    source: str | None = "snapshot",
+    limit: int = 20,
+) -> dict[str, Any]:
+    rime_dir = _resolve_rime_dir()
+    files = _tracked_files(rime_dir)
+    source_kind = _normalize_prediction_tree_source(source)
+    group_limit = min(max(int(limit or 20), 1), 100)
+
+    if not rime_dir:
+        return make_rime_context_weight_compare_unavailable(
+            status="unsupported_platform",
+            message="当前系统没有可识别的 Rime 用户目录位置。",
+            files=files,
+            source_kind=source_kind,
+        )
+
+    if not rime_dir.exists():
+        return make_rime_context_weight_compare_unavailable(
+            status="rime_missing",
+            message="该设备未发现 Rime 用户目录，可能没有安装小狼毫或尚未启动过 Rime。",
+            rime_dir=str(rime_dir),
+            files=files,
+            source_kind=source_kind,
+        )
+
+    normalized_candidates: list[dict[str, str]] = []
+    seen_candidates: set[str] = set()
+    for value in candidates or []:
+        original = str(value or "").strip()
+        candidate = _normalize_weight_compare_candidate(original)
+        if not candidate or candidate in seen_candidates:
+            continue
+        normalized_candidates.append({"input": original, "candidate": candidate})
+        seen_candidates.add(candidate)
+
+    source_name = None
+    source_path = None
+    rows: list[dict[str, Any]] = []
+    read_error = None
+    for name, path in _prediction_tree_source_candidates(rime_dir, source_kind):
+        if not path.exists():
+            continue
+        source_name = name
+        source_path = path
+        try:
+            rows = _read_prediction_rows(path)
+        except OSError as exc:
+            read_error = str(exc)
+            rows = []
+        break
+
+    if not source_path:
+        return make_rime_context_weight_compare_unavailable(
+            status="extension_missing",
+            message="该设备已发现 Rime 用户目录，但没有上下文预测扩展的数据文件。",
+            rime_dir=str(rime_dir),
+            files=files,
+            source_kind=source_kind,
+        )
+
+    if read_error:
+        return make_rime_context_weight_compare_unavailable(
+            status="read_error",
+            message=f"读取上下文预测索引失败：{read_error}",
+            rime_dir=str(rime_dir),
+            files=files,
+            source_kind=source_kind,
+        )
+
+    rows = _overlay_manual_prediction_rows(rime_dir, rows, source_kind)
+
+    rows_by_candidate: dict[str, list[dict[str, Any]]] = {item["candidate"]: [] for item in normalized_candidates}
+    target_candidates = set(rows_by_candidate)
+    for row in rows:
+        candidate = str(row.get("candidate") or "")
+        if candidate in target_candidates:
+            rows_by_candidate[candidate].append(row)
+
+    items: list[dict[str, Any]] = []
+    matched_count = 0
+    matched_row_count = 0
+    for item in normalized_candidates:
+        candidate = item["candidate"]
+        candidate_rows = rows_by_candidate.get(candidate, [])
+        default_pinyin = _candidate_default_pinyin(candidate)
+        total_weight = sum(float(row.get("weight") or 0) for row in candidate_rows)
+        exact_prefix_weight = sum(
+            float(row.get("weight") or 0)
+            for row in candidate_rows
+            if default_pinyin and str(row.get("prefix") or "") == default_pinyin
+        )
+        prefix_weights: dict[str, float] = defaultdict(float)
+        prefix_counts: dict[str, int] = defaultdict(int)
+        context_weights: dict[str, float] = defaultdict(float)
+        context_counts: dict[str, int] = defaultdict(int)
+        comment_weights: dict[str, float] = defaultdict(float)
+        comment_counts: dict[str, int] = defaultdict(int)
+        for row in candidate_rows:
+            weight = float(row.get("weight") or 0)
+            prefix = str(row.get("prefix") or "")
+            context = str(row.get("context") or "__global")
+            comment = str(row.get("comment") or "")
+            prefix_weights[prefix] += weight
+            prefix_counts[prefix] += 1
+            context_weights[context] += weight
+            context_counts[context] += 1
+            if comment:
+                comment_weights[comment] += weight
+                comment_counts[comment] += 1
+        top_prefixes = _summarize_weight_group(prefix_weights, prefix_counts, limit=group_limit)
+        matched_count += 1 if candidate_rows else 0
+        matched_row_count += len(candidate_rows)
+        items.append(
+            {
+                "input": item["input"],
+                "candidate": candidate,
+                "pinyin": top_prefixes[0]["key"] if top_prefixes else default_pinyin,
+                "default_pinyin": default_pinyin,
+                "total_weight": total_weight,
+                "exact_prefix_weight": exact_prefix_weight,
+                "row_count": len(candidate_rows),
+                "prefixes": top_prefixes,
+                "contexts": _summarize_weight_group(context_weights, context_counts, limit=group_limit),
+                "comments": _summarize_weight_group(comment_weights, comment_counts, limit=group_limit),
+                "rows": sorted(
+                    candidate_rows,
+                    key=lambda row: (
+                        -float(row.get("weight") or 0),
+                        str(row.get("prefix") or ""),
+                        str(row.get("context") or ""),
+                    ),
+                )[:group_limit],
+            }
+        )
+
+    stat = source_path.stat()
+    return {
+        "available": True,
+        "status": "ready" if rows else "empty",
+        "message": "已读取候选词权重。" if rows else "索引文件存在，但暂时没有可比较记录。",
+        "rime_dir": str(rime_dir),
+        "source_kind": source_kind,
+        "source": source_name,
+        "source_path": str(source_path),
+        "updated_at": stat.st_mtime,
+        "files": files,
+        "summary": {
+            "candidate_count": len(normalized_candidates),
+            "matched_count": matched_count,
+            "row_count": matched_row_count,
+        },
+        "items": items,
     }

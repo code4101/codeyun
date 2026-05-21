@@ -410,7 +410,9 @@ def _is_env_candidate(name_lower: str) -> bool:
 
 
 def _match_clear_ignore_dir_part(path: Path) -> Optional[str]:
-    for part in (item.lower() for item in path.parts[:-1]):
+    for index, part in enumerate(item.lower() for item in path.parts[:-1]):
+        if part in {"log", "logs"} and index != 0:
+            continue
         if part in CLEAR_IGNORE_DIR_PARTS:
             return part
         if any(part.startswith(prefix) for prefix in CLEAR_IGNORE_DIR_PREFIXES):

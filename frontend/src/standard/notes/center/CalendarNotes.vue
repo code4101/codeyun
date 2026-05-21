@@ -1022,17 +1022,27 @@ const refreshCodexWorkloadStats = async () => {
   }
 };
 
+let scheduledCalendarRefreshToken = 0;
+
+const scheduleCalendarRefresh = () => {
+  const token = ++scheduledCalendarRefreshToken;
+  void nextTick(() => {
+    if (token !== scheduledCalendarRefreshToken) return;
+    void refreshData({ silent: true });
+  });
+};
+
 const onPeriodChange = (value: Date | string | number | undefined) => {
   const d = value instanceof Date ? value : value ? new Date(value) : new Date();
   if (Number.isNaN(d.getTime())) return;
   currentMonth.value = calendarScale.value !== 'month'
     ? new Date(d.getFullYear(), 0, 1)
     : new Date(d.getFullYear(), d.getMonth(), 1);
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const onScaleChange = () => {
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const onVolumeSelectChange = (value: string | number | boolean | undefined) => {
@@ -1040,7 +1050,7 @@ const onVolumeSelectChange = (value: string | number | boolean | undefined) => {
   const volume = calendarVolumeOptions.value.find(item => item.id === volumeId);
   if (!volume) return;
   currentMonth.value = dateFromTuple(volume.start);
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const openVolumeFromEra = (volumeId: string) => {
@@ -1048,7 +1058,7 @@ const openVolumeFromEra = (volumeId: string) => {
   if (!volume) return;
   currentMonth.value = dateFromTuple(volume.start);
   calendarScale.value = 'volume';
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const prevPeriod = () => {
@@ -1062,7 +1072,7 @@ const prevPeriod = () => {
       ? new Date(d.getFullYear() - 1, 0, 1)
       : new Date(d.getFullYear(), d.getMonth() - 1, 1);
   }
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const nextPeriod = () => {
@@ -1076,31 +1086,31 @@ const nextPeriod = () => {
       ? new Date(d.getFullYear() + 1, 0, 1)
       : new Date(d.getFullYear(), d.getMonth() + 1, 1);
   }
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const goToToday = () => {
   const d = new Date();
   currentMonth.value = new Date(d.getFullYear(), d.getMonth(), 1);
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const openMonthFromYear = (monthIndex: number) => {
   currentMonth.value = new Date(currentYear.value, monthIndex, 1);
   calendarScale.value = 'month';
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const openYearFromVolume = (year: number) => {
   currentMonth.value = new Date(year, 0, 1);
   calendarScale.value = 'year';
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const openMonthFromVolume = (year: number, monthIndex: number) => {
   currentMonth.value = new Date(year, monthIndex, 1);
   calendarScale.value = 'month';
-  refreshData({ silent: true });
+  scheduleCalendarRefresh();
 };
 
 const setYearMonthVisibleLimit = (value: number | undefined) => {
@@ -2283,6 +2293,10 @@ watch(calendarScale, (value) => {
   noteStore.updateTabViewState(props.tabId, {
     calendarScale: value
   });
+});
+
+watch([calendarScale, periodStartTs, periodEndTs], () => {
+  scheduleCalendarRefresh();
 });
 
 watch(yearMonthVisibleLimit, (value) => {

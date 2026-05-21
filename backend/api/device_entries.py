@@ -8,7 +8,7 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 import requests
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
@@ -80,7 +80,7 @@ from backend.api.git_tools import (
     GitToolReductionInputResponse,
 )
 from backend.api.task_manager import CreateTaskRequest, UpdateTaskRequest, task_manager
-from backend.api.runtime_management import RuntimeJobToggleRequest
+from backend.api.runtime_management import RuntimeJobScheduleRequest, RuntimeJobToggleRequest
 from backend.core.ai_git_commit import (
     AiGitCommitError,
     generate_ai_git_commit_draft,
@@ -120,13 +120,19 @@ from backend.core.device import BaseDevice, device_manager, get_device_id
 from backend.core.feature_access_guard import ensure_any_feature_access, ensure_feature_access
 from backend.core.runtime_management import (
     build_runtime_status,
+    configure_builtin_runtime_job_schedule,
     delete_builtin_runtime_job,
     delete_builtin_runtime_queue_task,
+    get_runtime_item_logs,
     reset_builtin_runtime_job_schedule,
+    stop_builtin_runtime_item,
+    stop_command_runtime_item,
     toggle_builtin_runtime_job,
+    trigger_builtin_runtime_item,
     trigger_builtin_runtime_job,
     trigger_command_runtime_item,
 )
+from backend.core.system_metrics import get_system_metric_history
 from backend.core.notebook_lab import (
     NotebookBindingUpdateRequest,
     NotebookLabError,
@@ -163,6 +169,9 @@ from backend.core.git_tools import (
 from backend.core.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
+    adjust_rime_context_weight_compare_candidate,
+    collect_rime_runtime_config,
+    collect_rime_context_weight_compare,
     collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
@@ -176,9 +185,13 @@ from backend.core.rime_context_prediction import (
     make_rime_context_prediction_history_unavailable,
     make_rime_context_prediction_lint_unavailable,
     make_rime_context_prediction_unavailable,
+    make_rime_context_weight_compare_unavailable,
+    make_rime_runtime_config_unavailable,
+    rebuild_rime_context_prediction_snapshot,
     refresh_rime_context_prediction_tree,
     save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
+    update_rime_runtime_config,
     update_rime_context_prediction_candidate,
     update_rime_context_prediction_article,
 )
@@ -247,6 +260,25 @@ class RimeCandidateUpdateRequest(BaseModel):
     prefix: str = Field(min_length=1)
     candidate: str = Field(min_length=1)
     weight: float = Field(gt=0)
+
+
+class RimeRuntimeConfigUpdateRequest(BaseModel):
+    config: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RimeWeightCompareRequest(BaseModel):
+    candidates: List[str] = Field(default_factory=list)
+    source: str = "snapshot"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class RimeWeightCompareAdjustRequest(BaseModel):
+    prefix: str = Field(min_length=1)
+    candidate: str = Field(min_length=1)
+    weight: float = Field(gt=0)
+    candidates: List[str] = Field(default_factory=list)
+    source: str = "snapshot"
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 def _get_entry_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
@@ -794,6 +826,7 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
         device_id=entry.device_id,
         runtime_kind=req.runtime_kind,
         schedule=req.schedule,
+        schedule_policy=req.schedule_policy,
         timeout=req.timeout,
         created_at=time.time(),
         order=next_order,
@@ -802,8 +835,8 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
     session.commit()
     session.refresh(new_task)
 
-    if req.schedule:
-        task_manager.update_schedule(new_task.id, req.schedule)
+    if req.schedule_policy or req.schedule:
+        task_manager.update_schedule(new_task.id, req.schedule, req.schedule_policy, reset_state=True)
 
     return new_task.model_dump()
 
@@ -811,7 +844,7 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
 def _delete_local_task(session: Session, entry: UserDevice, task_id: str) -> Dict[str, str]:
     device = _get_local_device(entry)
     task = _get_scoped_task(session, task_id, entry.device_id)
-    task_manager.update_schedule(task_id, None)
+    task_manager.clear_schedule(task_id)
     device.stop_task(task_id)
     session.delete(task)
     session.commit()
@@ -851,13 +884,22 @@ def _update_local_task(session: Session, entry: UserDevice, task_id: str, req: U
         task.runtime_kind = req.runtime_kind
     if req.schedule is not None:
         task.schedule = req.schedule
-        task_manager.update_schedule(task_id, req.schedule)
+    if "schedule_policy" in req.model_fields_set:
+        task.schedule_policy = req.schedule_policy
+        task.schedule_state = {}
     if req.timeout is not None:
         task.timeout = req.timeout
 
     session.add(task)
     session.commit()
     session.refresh(task)
+    if req.schedule is not None or "schedule_policy" in req.model_fields_set:
+        task_manager.update_schedule(
+            task_id,
+            task.schedule,
+            task.schedule_policy,
+            reset_state="schedule_policy" in req.model_fields_set,
+        )
     return task.model_dump()
 
 
@@ -1107,6 +1149,20 @@ def get_runtime_status_for_entry(
     return _proxy_request(entry, "GET", "/runtime/status")
 
 
+@router.get("/{entry_id}/runtime/system-metrics")
+def get_runtime_system_metrics_for_entry(
+    entry_id: str,
+    hours: int = Query(24, ge=1, le=72),
+    limit: int = Query(2000, ge=1, le=5000),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return get_system_metric_history(session, device_id=entry.device_id, hours=hours, limit=limit)
+    return _proxy_request(entry, "GET", "/runtime/system-metrics", params={"hours": hours, "limit": limit})
+
+
 @router.post("/{entry_id}/runtime/jobs/{job_key}/trigger")
 def trigger_runtime_job_for_entry(
     entry_id: str,
@@ -1131,11 +1187,44 @@ def trigger_runtime_item_for_entry(
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         if source == "builtin":
-            return trigger_builtin_runtime_job(item_key, session)
+            return trigger_builtin_runtime_item(item_key, session)
         if source == "command":
             return trigger_command_runtime_item(item_key, session)
         raise HTTPException(status_code=400, detail="不支持的运行单元来源")
     return _proxy_request(entry, "POST", f"/runtime/items/{source}/{item_key}/trigger")
+
+
+@router.post("/{entry_id}/runtime/items/{source}/{item_key}/stop")
+def stop_runtime_item_for_entry(
+    entry_id: str,
+    source: str,
+    item_key: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        if source == "builtin":
+            return stop_builtin_runtime_item(item_key)
+        if source == "command":
+            return stop_command_runtime_item(item_key, session)
+        raise HTTPException(status_code=400, detail="不支持的运行单元来源")
+    return _proxy_request(entry, "POST", f"/runtime/items/{source}/{item_key}/stop")
+
+
+@router.get("/{entry_id}/runtime/items/{source}/{item_key}/logs")
+def get_runtime_item_logs_for_entry(
+    entry_id: str,
+    source: str,
+    item_key: str,
+    n: int = 500,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return get_runtime_item_logs(source, item_key, session, n, device_id=entry.device_id)
+    return _proxy_request(entry, "GET", f"/runtime/items/{source}/{item_key}/logs", params={"n": n})
 
 
 @router.post("/{entry_id}/runtime/jobs/{job_key}/toggle")
@@ -1150,6 +1239,20 @@ def toggle_runtime_job_for_entry(
     if entry.mode == "local":
         return toggle_builtin_runtime_job(job_key, payload.enabled, session)
     return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/toggle", json_body=payload.model_dump())
+
+
+@router.post("/{entry_id}/runtime/jobs/{job_key}/schedule")
+def configure_runtime_job_schedule_for_entry(
+    entry_id: str,
+    job_key: str,
+    payload: RuntimeJobScheduleRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return configure_builtin_runtime_job_schedule(job_key, payload.schedule_policy, session)
+    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/schedule", json_body=payload.model_dump())
 
 
 @router.delete("/{entry_id}/runtime/jobs/queue/{task_id}")
@@ -2708,6 +2811,181 @@ def post_rime_context_prediction_tree_refresh_for_entry(
             message="远程设备返回了无效的小狼毫预测更新结果。",
         )
 
+    return payload
+
+
+@router.post("/{entry_id}/rime/context-prediction/weight-compare")
+def post_rime_context_weight_compare_for_entry(
+    entry_id: str,
+    req: RimeWeightCompareRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return collect_rime_context_weight_compare(
+            req.candidates,
+            source=req.source,
+            limit=req.limit,
+        )
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "POST",
+            "/rime/context-prediction/weight-compare",
+            json_body=req.model_dump(),
+            timeout=30,
+        )
+    except HTTPException as exc:
+        return make_rime_context_weight_compare_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫权重对比接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_context_weight_compare_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_context_weight_compare_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫权重对比数据。",
+        )
+
+    return payload
+
+
+@router.post("/{entry_id}/rime/context-prediction/weight-compare/adjust")
+def post_rime_context_weight_compare_adjust_for_entry(
+    entry_id: str,
+    req: RimeWeightCompareAdjustRequest,
+    background_tasks: BackgroundTasks,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            payload = adjust_rime_context_weight_compare_candidate(
+                prefix=req.prefix,
+                candidate=req.candidate,
+                weight=req.weight,
+                candidates=req.candidates,
+                source=req.source,
+                limit=req.limit,
+            )
+            background_tasks.add_task(rebuild_rime_context_prediction_snapshot, None, allow_snapshot_fallback=True)
+            return payload
+        except RimeContextPredictionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "POST",
+            "/rime/context-prediction/weight-compare/adjust",
+            json_body=req.model_dump(),
+            timeout=30,
+        )
+    except HTTPException as exc:
+        return make_rime_context_weight_compare_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫权重调整接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_context_weight_compare_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_context_weight_compare_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫权重调整结果。",
+        )
+
+    return payload
+
+
+@router.get("/{entry_id}/rime/context-prediction/runtime-config")
+def get_rime_runtime_config_for_entry(
+    entry_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return collect_rime_runtime_config()
+
+    try:
+        payload, error_response = _fetch_remote_json(
+            entry,
+            "GET",
+            "/rime/context-prediction/runtime-config",
+            timeout=20,
+        )
+    except HTTPException as exc:
+        return make_rime_runtime_config_unavailable(
+            status="remote_unreachable",
+            message=f"远程设备接口不可用：{exc.detail}",
+        )
+
+    if error_response is not None:
+        status = "remote_unsupported" if error_response.status_code == 404 else "remote_error"
+        message = (
+            "该设备尚未部署小狼毫运行配置接口。"
+            if error_response.status_code == 404
+            else f"远程设备返回 HTTP {error_response.status_code}：{_extract_remote_json_detail(error_response)}"
+        )
+        return make_rime_runtime_config_unavailable(status=status, message=message)
+
+    if not isinstance(payload, dict):
+        return make_rime_runtime_config_unavailable(
+            status="remote_error",
+            message="远程设备返回了无效的小狼毫运行配置数据。",
+        )
+
+    return payload
+
+
+@router.patch("/{entry_id}/rime/context-prediction/runtime-config")
+def patch_rime_runtime_config_for_entry(
+    entry_id: str,
+    req: RimeRuntimeConfigUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+):
+    entry = _get_entry_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        try:
+            return update_rime_runtime_config(req.config)
+        except RimeContextPredictionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    payload, error_response = _fetch_remote_json(
+        entry,
+        "PATCH",
+        "/rime/context-prediction/runtime-config",
+        json_body=req.model_dump(),
+        timeout=30,
+    )
+    if error_response is not None:
+        if error_response.status_code == 404:
+            return make_rime_runtime_config_unavailable(
+                status="remote_unsupported",
+                message="该设备尚未部署小狼毫运行配置保存接口。",
+            )
+        _raise_remote_json_error(error_response)
     return payload
 
 

@@ -376,6 +376,14 @@ class PaddleOcrServiceManager:
             gc.collect()
         return self.get_status()
 
+    def warmup(self, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        config = _build_runtime_config(options)
+        record = self._acquire(config)
+        self._release(record)
+        with self._condition:
+            self._last_used_at = time.time()
+        return self.get_status()
+
     def _reserve_or_wait(self, config: PaddleOcrRuntimeConfig) -> tuple[int, int, bool, _OcrInstanceRecord | None]:
         deadline = time.time() + self._settings_limits()[2]
         with self._condition:

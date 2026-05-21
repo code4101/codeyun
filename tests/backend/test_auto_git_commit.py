@@ -9,6 +9,7 @@ from backend.core.auto_git_commit import (
     AUTO_GIT_COMMIT_CRON,
     AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY,
     AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS,
+    AutoGitCommitCandidate,
     create_auto_git_commit_run,
     mark_stale_auto_git_commit_runs,
     maybe_create_due_auto_git_commit_run,
@@ -209,7 +210,7 @@ def test_auto_git_commit_marks_stale_running_run_failed(session):
     assert changed_count == 1
     session.expire_all()
     updated = session.get(AutoGitCommitRun, stale_run.id)
-    assert updated.status == "failed"
+    assert updated.status == "completed"
     assert updated.stage == "stale"
     assert updated.stage_label == "任务心跳超时"
     assert "当前执行队列中没有对应任务" in updated.error_message
@@ -270,7 +271,10 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
         lambda **_: ("ollama", None, None, ()),
     )
 
+    draft_calls = []
+
     def fake_draft_generator(**kwargs):
+        draft_calls.append(kwargs)
         return {
             "subject": "自动提交凌晨检查改动",
             "body": ["提交自动检查发现的仓库变更"],
@@ -301,7 +305,60 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     repo_result = next(item for item in updated.result_json["repos"] if item["name"] == "codeyun")
     assert repo_result["pre_commit_review"]["status"] == "skipped"
     assert "codeyun 自动提交只生成提交信息" in repo_result["pre_commit_review"]["summary"]
+    assert repo_result["commit_strategy"] == "lightweight_ai"
+    assert len(draft_calls) == 1
+    reduction_input = draft_calls[0]["reduction_input"]
+    assert reduction_input["lightweight"] is True
+    lightweight_content = reduction_input["source_units"][0]["content"]
+    assert "feature.txt" in lightweight_content
+    assert "new feature" not in lightweight_content
     assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "自动提交凌晨检查改动"
+    assert _run_git(dirty_repo, "status", "--short") == ""
+
+
+def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, auth_user, tmp_path, monkeypatch):
+    dirty_repo = tmp_path / "large-codeyun-repo"
+    _init_git_repo(dirty_repo)
+    for index in range(51):
+        (dirty_repo / f"feature_{index:02d}.txt").write_text(f"new feature {index}\n", encoding="utf-8")
+    _save_auto_commit_repos(
+        session,
+        auth_user.id,
+        [
+            {"id": "cy", "name": "codeyun", "cwd": dirty_repo},
+        ],
+    )
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    monkeypatch.setattr(
+        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        lambda **_: (_ for _ in ()).throw(AssertionError("checkpoint should not resolve AI config")),
+    )
+
+    def unexpected_draft_generator(**kwargs):
+        raise AssertionError("large codeyun checkpoint should not call AI draft generation")
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        pre_commit_optimizer=_noop_pre_commit_optimizer,
+        draft_generator=unexpected_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    assert updated.status == "completed"
+    assert updated.changed_repo_count == 1
+    assert updated.committed_repo_count == 1
+    assert updated.failed_repo_count == 0
+    repo_result = updated.result_json["repos"][0]
+    assert repo_result["status"] == "committed"
+    assert repo_result["commit_strategy"] == "checkpoint"
+    assert repo_result["provider"] == "local-policy"
+    assert repo_result["model"] == "local-checkpoint-policy"
+    assert repo_result["needs_split"] is True
+    assert "变更文件数 51 > 50" in repo_result["split_reason"]
+    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "chore: checkpoint codeyun changes"
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
@@ -350,7 +407,7 @@ def test_auto_git_commit_worker_runs_pre_commit_optimizer_before_draft(session, 
     session.expire_all()
     updated = session.get(AutoGitCommitRun, run.id)
     repo_result = updated.result_json["repos"][0]
-    assert updated.status == "completed"
+    assert updated.status == "failed"
     assert updated.committed_repo_count == 1
     assert repo_result["status"] == "committed"
     assert repo_result["pre_commit_review"]["summary"] == "补充 review 优化"
@@ -388,7 +445,9 @@ def test_auto_git_commit_worker_blocks_obvious_dot_tmp_directory(session, auth_u
 
     session.expire_all()
     updated = session.get(AutoGitCommitRun, run.id)
-    assert updated.status == "completed"
+    assert updated.status == "failed"
+    assert updated.stage == "failed"
+    assert updated.stage_label == "1 个仓库失败"
     assert updated.changed_repo_count == 1
     assert updated.committed_repo_count == 0
     assert updated.failed_repo_count == 1
@@ -398,6 +457,67 @@ def test_auto_git_commit_worker_blocks_obvious_dot_tmp_directory(session, auth_u
     assert ".tmp_pdf_check/page_1.png" in repo_result["changed_paths"]
     assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "init"
     assert "?? .tmp_pdf_check/" in _run_git(dirty_repo, "status", "--short")
+
+
+def test_auto_git_commit_worker_marks_run_failed_when_any_repo_fails(session, auth_user, tmp_path, monkeypatch):
+    committed_repo = tmp_path / "commit-repo"
+    failed_repo = tmp_path / "failed-repo"
+    _init_git_repo(committed_repo)
+    _init_git_repo(failed_repo)
+    (committed_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
+    tmp_dir = failed_repo / ".tmp_pdf_check"
+    tmp_dir.mkdir()
+    (tmp_dir / "page_1.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    run = create_auto_git_commit_run(session, trigger_reason="test", enqueue=False)
+
+    monkeypatch.setattr(
+        "backend.core.auto_git_commit.resolve_ai_runtime_config",
+        lambda **_: ("ollama", None, None, ()),
+    )
+
+    def fake_draft_generator(**kwargs):
+        return {
+            "subject": "提交部分仓库变更",
+            "body": ["提交正常仓库，保留失败仓库现场。"],
+            "model": "fake-model",
+            "needs_split": False,
+            "reason": "",
+        }
+
+    candidates = [
+        AutoGitCommitCandidate(
+            user_id=auth_user.id,
+            username=auth_user.username,
+            name="codeyun",
+            cwd=str(committed_repo),
+            entry_id="cy",
+        ),
+        AutoGitCommitCandidate(
+            user_id=auth_user.id,
+            username=auth_user.username,
+            name="xlproject",
+            cwd=str(failed_repo),
+            entry_id="xl",
+        ),
+    ]
+
+    run_auto_git_commit_worker(
+        session.get_bind(),
+        run.id,
+        candidate_selector=lambda _session: candidates,
+        pre_commit_optimizer=_noop_pre_commit_optimizer,
+        draft_generator=fake_draft_generator,
+    )
+
+    session.expire_all()
+    updated = session.get(AutoGitCommitRun, run.id)
+    assert updated.status == "failed"
+    assert updated.stage == "failed"
+    assert updated.stage_label == "已提交 1 个仓库，1 个仓库失败"
+    assert updated.committed_repo_count == 1
+    assert updated.failed_repo_count == 1
+    assert _run_git(committed_repo, "log", "-1", "--pretty=%s") == "提交部分仓库变更"
+    assert "?? .tmp_pdf_check/" in _run_git(failed_repo, "status", "--short")
 
 
 def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committing(session, auth_user, tmp_path, monkeypatch):
@@ -430,7 +550,9 @@ def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committin
 
     session.expire_all()
     updated = session.get(AutoGitCommitRun, run.id)
-    assert updated.status == "completed"
+    assert updated.status == "failed"
+    assert updated.stage == "failed"
+    assert updated.stage_label == "1 个仓库失败"
     assert updated.changed_repo_count == 1
     assert updated.committed_repo_count == 0
     assert updated.failed_repo_count == 1

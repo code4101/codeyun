@@ -102,6 +102,37 @@ export interface FanxiuProcessTerminateResponse {
   errors: Array<{ pid: number; error: string }>;
 }
 
+export interface FanxiuBehaviorTreeServiceStatus {
+  key: string;
+  title: string;
+  running: boolean;
+  state: string;
+  state_label: string;
+  pid: number | null;
+  process_count: number;
+  processes: FanxiuProcessItem[];
+  registry: Record<string, unknown>;
+  registry_pid_alive: boolean;
+  heartbeat_age_seconds: number | null;
+  started_at: string | null;
+  heartbeat_at: string | null;
+  last_error: string;
+  root: string;
+  registry_path: string;
+  status_path: string;
+  behavior_tree_log_path: string;
+  service_log_path: string;
+  script_path: string;
+  python_path: string;
+}
+
+export interface FanxiuBehaviorTreeServiceResponse {
+  status: string;
+  service: FanxiuBehaviorTreeServiceStatus;
+  pid?: number | null;
+  stop_result?: FanxiuProcessTerminateResponse | Record<string, unknown>;
+}
+
 export interface FanxiuSunloginRotateStatus {
   running: boolean;
   pids: number[];
@@ -156,10 +187,115 @@ export interface FanxiuMagicTreasureHallSnapshot {
   houtiangubao: FanxiuInventoryItem[];
 }
 
+export interface FanxiuSpiritArtifactPartRow {
+  order: number;
+  part_name: string;
+  rank: number;
+  realm: number;
+  artifact_peerless_1: number;
+  artifact_peerless_2: number;
+  aura_peerless?: number;
+  chaos_power: string;
+  attack: string;
+  stat_raw_values: Record<string, string>;
+  exclusive_stats: Record<string, string>;
+  exclusive_stat_raw_values: Record<string, string>;
+  spirit_power: string;
+  health: string;
+  defense: string;
+}
+
+export interface FanxiuSpiritArtifactItem {
+  order: number;
+  name: string;
+  rows: FanxiuSpiritArtifactPartRow[];
+}
+
+export interface FanxiuSpiritArtifactMarketItem {
+  order: number;
+  artifact_name: string;
+  part_name: string;
+  cost: number;
+}
+
+export interface FanxiuSpiritArtifactStorageBagChoice {
+  order: number;
+  raw_name: string;
+  artifact_name: string;
+  part_name: string;
+}
+
+export interface FanxiuSpiritArtifactStorageBagItem {
+  order: number;
+  title: string;
+  quantity: number;
+  choices: FanxiuSpiritArtifactStorageBagChoice[];
+}
+
+export interface FanxiuSpiritArtifactHallSnapshot {
+  artifacts: FanxiuSpiritArtifactItem[];
+  market_currency_count: number;
+  market_items: FanxiuSpiritArtifactMarketItem[];
+  storage_bag_items: FanxiuSpiritArtifactStorageBagItem[];
+}
+
 export interface FanxiuMagicTreasureOcrImportResponse {
   section_key: string;
   lines: string[];
   item: FanxiuInventoryItem;
+}
+
+export interface FanxiuSpiritArtifactRankPart {
+  part_name: string;
+  rank: number;
+  realm: number;
+  quality: string;
+  background_color: string;
+}
+
+export interface FanxiuSpiritArtifactRankRecognitionResponse {
+  matched: boolean;
+  reason: string;
+  artifact_name: string;
+  title_text: string;
+  lines: string[];
+  parts: FanxiuSpiritArtifactRankPart[];
+}
+
+export interface FanxiuSpiritArtifactAttributeRecognitionItem {
+  label: string;
+  percent: string;
+  raw_value: string;
+  source_text: string;
+}
+
+export interface FanxiuSpiritArtifactAttributeRecognitionResponse {
+  matched: boolean;
+  reason: string;
+  artifact_name: string;
+  part_name: string;
+  title_text: string;
+  lines: string[];
+  artifact_peerless_1: number;
+  artifact_peerless_2: number;
+  common_stats: Record<string, string>;
+  exclusive_stats: Record<string, string>;
+  attributes: FanxiuSpiritArtifactAttributeRecognitionItem[];
+}
+
+export interface FanxiuSpiritArtifactMarketRecognitionResponse {
+  matched: boolean;
+  reason: string;
+  market_currency_count: number;
+  lines: string[];
+  items: FanxiuSpiritArtifactMarketItem[];
+}
+
+export interface FanxiuSpiritArtifactStorageBagRecognitionResponse {
+  matched: boolean;
+  reason: string;
+  lines: string[];
+  items: FanxiuSpiritArtifactStorageBagItem[];
 }
 
 export interface FanxiuFormationRequirementImportItem {
@@ -437,6 +573,18 @@ export const getFanxiuProcesses = () => {
   return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
 };
 
+export const getFanxiuBehaviorTreeService = () => {
+  return api.get<FanxiuBehaviorTreeServiceStatus>('/fanxiu/behavior-tree-service').then(res => res.data);
+};
+
+export const startFanxiuBehaviorTreeService = () => {
+  return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/start').then(res => res.data);
+};
+
+export const stopFanxiuBehaviorTreeService = () => {
+  return api.post<FanxiuBehaviorTreeServiceResponse>('/fanxiu/behavior-tree-service/stop').then(res => res.data);
+};
+
 export const getLocalScriptProcesses = () => {
   return api.get<LocalScriptProcessListResponse>('/fanxiu/scripts').then(res => res.data);
 };
@@ -505,6 +653,34 @@ export const saveFanxiuMagicTreasureHall = (payload: FanxiuMagicTreasureHallSnap
   return api.put<FanxiuMagicTreasureHallSnapshot>('/fanxiu/inventory/magic-treasure-hall', payload).then(res => res.data);
 };
 
+export const getFanxiuSpiritArtifactHall = () => {
+  return api.get<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall').then(res => res.data);
+};
+
+export const saveFanxiuSpiritArtifactHall = (payload: FanxiuSpiritArtifactHallSnapshot) => {
+  return api.put<FanxiuSpiritArtifactHallSnapshot>('/fanxiu/inventory/spirit-artifact-hall', payload).then(res => res.data);
+};
+
+export const recognizeFanxiuSpiritArtifactMarket = () => {
+  return api
+    .post<FanxiuSpiritArtifactMarketRecognitionResponse>('/fanxiu/inventory/spirit-artifact-market/recognize', null, {
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const recognizeFanxiuSpiritArtifactStorageBag = () => {
+  return api
+    .post<FanxiuSpiritArtifactStorageBagRecognitionResponse>(
+      '/fanxiu/inventory/spirit-artifact-storage-bag/recognize',
+      null,
+      {
+        timeout: 120000,
+      },
+    )
+    .then(res => res.data);
+};
+
 export const getFanxiuMagicTreasureNote = (itemId: string) => {
   return api
     .get<NoteNode | null>(`/fanxiu/inventory/magic-treasure-notes/${encodeURIComponent(itemId)}`)
@@ -526,6 +702,22 @@ export const importFanxiuMagicTreasureFromOcr = (sectionKey: string, image: File
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const recognizeFanxiuSpiritArtifactRanks = () => {
+  return api
+    .post<FanxiuSpiritArtifactRankRecognitionResponse>('/fanxiu/inventory/spirit-artifact-ranks/recognize', null, {
+      timeout: 120000,
+    })
+    .then(res => res.data);
+};
+
+export const recognizeFanxiuSpiritArtifactAttributes = () => {
+  return api
+    .post<FanxiuSpiritArtifactAttributeRecognitionResponse>('/fanxiu/inventory/spirit-artifact-attributes/recognize', null, {
       timeout: 120000,
     })
     .then(res => res.data);

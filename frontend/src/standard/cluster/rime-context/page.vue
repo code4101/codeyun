@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Delete, Plus, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue';
+import { Delete, Minus, Plus, QuestionFilled, Refresh, Search } from '@element-plus/icons-vue';
 import {
+  adjustRimeContextWeightCompare,
+  compareRimeContextWeights,
   deleteRimeContextCandidate,
   deleteRimeContextArticle,
   fetchRimeContextArticleContent,
@@ -11,10 +13,12 @@ import {
   fetchRimeContextHistoryArticle,
   fetchRimeContextLint,
   fetchRimeContextPredictionTree,
+  fetchRimeRuntimeConfig,
   importRimeContextArticle,
   refreshRimeContextPredictionTree,
   saveRimeContextArticleContent,
   saveRimeContextHistoryArticle,
+  updateRimeRuntimeConfig,
   updateRimeContextCandidate,
   updateRimeContextArticle,
   type RimeContextArticle,
@@ -26,6 +30,11 @@ import {
   type RimeContextPredictionRow,
   type RimeContextPredictionSource,
   type RimeContextPredictionTree,
+  type RimeRuntimeConfigField,
+  type RimeRuntimeConfigResponse,
+  type RimeWeightCompareGroup,
+  type RimeWeightCompareItem,
+  type RimeWeightCompareResponse,
 } from '@/api/rimeContextPrediction';
 import { taskStore, type Device } from '@/store/taskStore';
 
@@ -50,9 +59,10 @@ interface ContextTailGroup {
   totalWeight: number;
 }
 
-type RimeView = 'index' | 'history' | 'articles' | 'lint';
+type RimeView = 'index' | 'weight' | 'history' | 'articles' | 'lint' | 'config';
 type IndexScope = 'summary' | 'detail';
 type PrefixScope = 'summary' | 'detail';
+type ArticleSourceType = 'imported_article' | 'lexicon' | 'negative_lexicon';
 type ArticleContentSaveStatus = 'idle' | 'dirty' | 'saving' | 'saved' | 'error';
 
 interface PendingArticleContentSave {
@@ -67,6 +77,7 @@ const HISTORY_PAGE_SIZE = 2000;
 const ARTICLE_CONTENT_PAGE_SIZE = 2000;
 const ARTICLE_CONTENT_LAST_PAGE = 2_147_483_647;
 const PREDICTION_TREE_LIMIT = 50000;
+const WEIGHT_COMPARE_STEP = 1;
 
 const indexSourceOptions: { value: RimeContextPredictionSource; label: string; title: string }[] = [
   { value: 'snapshot', label: '完整索引', title: '用于分析，包含前文片段、当前拼音和候选分布。' },
@@ -74,23 +85,120 @@ const indexSourceOptions: { value: RimeContextPredictionSource; label: string; t
   { value: 'seed', label: '手动规则', title: '人工固定的纠偏和置顶规则。' },
 ];
 
+const runtimeConfigGroups: { title: string; keys: string[] }[] = [
+  {
+    title: '候选生成',
+    keys: [
+      'max_candidates',
+      'max_source_candidates',
+      'min_input_length',
+      'max_context',
+      'prefix_completion_min_length',
+      'prefix_completion_weight_ratio',
+      'initials_completion_min_length',
+      'initials_completion_weight_ratio',
+    ],
+  },
+  {
+    title: '输入捕捉',
+    keys: [
+      'enable_commit_capture',
+      'commit_capture_mode',
+      'flush_batch_size',
+      'flush_interval_seconds',
+      'max_buffer_rows',
+    ],
+  },
+  {
+    title: '实时功能',
+    keys: [
+      'enable_context_keys',
+      'enable_realtime_learning',
+      'capture_to_disk',
+    ],
+  },
+];
+
+const runtimeConfigHints: Record<string, string> = {
+  max_candidates: '每次插入到候选栏里的智能推荐数量。',
+  max_source_candidates: '参与融合排序的来源候选数量。',
+  min_input_length: '拼音长度达到这个值后才启用预测。',
+  max_context: '最多使用多少个已输入词作为前文。',
+  prefix_completion_min_length: '拼音前缀补全的起效长度。',
+  prefix_completion_weight_ratio: '拼音补全候选相对完整拼音的折扣。',
+  initials_completion_min_length: '首字母缩写补全的起效长度。',
+  initials_completion_weight_ratio: '首字母补全候选相对完整拼音的折扣。',
+  enable_commit_capture: '是否捕捉已提交文本，用于后续周期性提炼语料。',
+  commit_capture_mode: '输入捕捉的轻重模式。',
+  flush_batch_size: '内存缓冲达到多少条后才允许落盘。',
+  flush_interval_seconds: '距离上次落盘多久后才允许落盘。',
+  max_buffer_rows: '内存里最多保留多少条待写入输入事件。',
+  enable_context_keys: '是否刷新运行时上下文键。',
+  enable_realtime_learning: '是否启用小狼毫侧实时学习。',
+  capture_to_disk: '是否在输入期间直接写入历史文件。',
+};
+
+const runtimeModeInfo: Record<string, { rank: number; label: string; detail: string }> = {
+  deferred_flush: {
+    rank: 7,
+    label: '完整 · 延迟批量',
+    detail: '读取提交文本、规范化、进入内存缓冲，并按批量或间隔落盘。',
+  },
+  flush_check: {
+    rank: 6,
+    label: '检查 · 写盘判断',
+    detail: '走到写盘判断这一步，但禁止真正落盘，用来排查写盘判断本身的开销。',
+  },
+  timestamp_buffer: {
+    rank: 5,
+    label: '缓存 · 时间缓冲',
+    detail: '读取、规范化，并带时间戳写入内存缓冲，不主动触发落盘。',
+  },
+  memory_only: {
+    rank: 4,
+    label: '缓存 · 仅内存',
+    detail: '读取、规范化，只暂存在内存里，不主动落盘。',
+  },
+  normalize_only: {
+    rank: 3,
+    label: '解析 · 只规范化',
+    detail: '只读取并规范化提交文本，不保存。',
+  },
+  read_only: {
+    rank: 2,
+    label: '读取 · 只读',
+    detail: '只读取提交文本，不解析、不保存。',
+  },
+  hook_only: {
+    rank: 1,
+    label: '挂钩 · 最轻',
+    detail: '只接入提交事件，不读取文本。',
+  },
+};
+
 const route = useRoute();
 const router = useRouter();
 
 const routeView = (value: unknown): RimeView => {
   if (value === 'index') return 'index';
+  if (value === 'weight') return 'weight';
+  if (value === 'config') return 'config';
   return 'articles';
 };
 
 const devices = computed(() => taskStore.devices);
 const loadingDevices = ref(false);
 const loadingTree = ref(false);
+const loadingWeightCompare = ref(false);
 const loadingArticles = ref(false);
 const loadingArticleContent = ref(false);
 const loadingHistory = ref(false);
 const loadingLint = ref(false);
+const loadingRuntimeConfig = ref(false);
 const savingHistory = ref(false);
 const savingArticleContent = ref(false);
+const savingRuntimeConfig = ref(false);
+const adjustingWeightKey = ref('');
 const selectedEntryId = ref(
   Array.isArray(route.query.entry_id)
     ? (route.query.entry_id[0] || '')
@@ -104,11 +212,16 @@ const selectedPrefixKey = ref('');
 const selectedIndexScope = ref<IndexScope>('summary');
 const selectedPrefixScope = ref<PrefixScope>('detail');
 const selectedIndexSource = ref<RimeContextPredictionSource>('snapshot');
+const selectedWeightSource = ref<RimeContextPredictionSource>('snapshot');
 const tree = ref<RimeContextPredictionTree | null>(null);
+const weightCompareState = ref<RimeWeightCompareResponse | null>(null);
+const weightCompareText = ref('采用\n才用');
 const articlesState = ref<RimeContextArticlesResponse | null>(null);
 const articleContentState = ref<RimeContextArticleContentResponse | null>(null);
 const historyState = ref<RimeContextHistoryArticleResponse | null>(null);
 const lintState = ref<RimeContextLintResponse | null>(null);
+const runtimeConfigState = ref<RimeRuntimeConfigResponse | null>(null);
+const runtimeConfigDraft = ref<Record<string, any>>({});
 const lintSource = ref<'all' | 'history' | 'articles'>('all');
 const lintMode = ref<'rules' | 'ai'>('rules');
 const lintLoadedSource = ref<'all' | 'history' | 'articles'>('all');
@@ -131,7 +244,7 @@ const articleForm = ref({
   title: '',
   content: '',
   enabled: true,
-  sourceType: 'imported_article' as 'imported_article' | 'lexicon',
+  sourceType: 'imported_article' as ArticleSourceType,
   weightMultiplier: 8,
 });
 const candidateForm = ref({
@@ -149,10 +262,16 @@ let articleContentDraftVersion = 0;
 const currentDevice = computed(() => devices.value.find((device) => device.id === selectedEntryId.value) || null);
 const hasDevices = computed(() => devices.value.length > 0);
 const normalizedSearch = computed(() => searchText.value.trim().toLowerCase());
-const articleDialogTitle = computed(() => (articleForm.value.sourceType === 'lexicon' ? '导入自定义短语' : '导入语料'));
-const articleContentLabel = computed(() => (articleForm.value.sourceType === 'lexicon' ? '短语' : '正文'));
+const articleDialogTitle = computed(() => {
+  if (articleForm.value.sourceType === 'negative_lexicon') return '导入负向短语';
+  if (articleForm.value.sourceType === 'lexicon') return '导入自定义短语';
+  return '导入语料';
+});
+const articleContentLabel = computed(() => (articleForm.value.sourceType === 'imported_article' ? '正文' : '短语'));
 const articleContentPlaceholder = computed(() => (
-  articleForm.value.sourceType === 'lexicon'
+  articleForm.value.sourceType === 'negative_lexicon'
+    ? '每行一个需要降权的短语；可写 涉及 或 涉及\tsheji\t8'
+    : articleForm.value.sourceType === 'lexicon'
     ? '每行一个短语；可写 冠豸(zhai)山；需要指定编码或权重时用 Tab 分隔：候选短语\t编码\t权重'
     : '粘贴要提炼的语料正文'
 ));
@@ -181,6 +300,36 @@ const canImportArticle = computed(() => Boolean(selectedEntryId.value && article
 const historyHasDraftChanges = computed(() => historyDraft.value !== (historyState.value?.content || ''));
 const currentIndexSource = computed(() => (
   indexSourceOptions.find((item) => item.value === selectedIndexSource.value) || indexSourceOptions[0]
+));
+const currentWeightSource = computed(() => (
+  indexSourceOptions.find((item) => item.value === selectedWeightSource.value) || indexSourceOptions[0]
+));
+const weightCompareCandidates = computed(() => {
+  const seen = new Set<string>();
+  return weightCompareText.value
+    .split(/[\s,，、;；]+/)
+    .map((item) => item.trim())
+    .filter((item) => {
+      if (!item || seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+});
+const weightCompareSummary = computed(() => weightCompareState.value?.summary || {
+  candidate_count: 0,
+  matched_count: 0,
+  row_count: 0,
+});
+const runtimeConfigDirty = computed(() => (
+  JSON.stringify(runtimeConfigDraft.value) !== JSON.stringify(runtimeConfigState.value?.config || {})
+));
+const visibleRuntimeConfigGroups = computed(() => (
+  runtimeConfigGroups
+    .map((group) => ({
+      ...group,
+      keys: group.keys.filter((key) => Boolean(runtimeConfigState.value?.fields?.[key])),
+    }))
+    .filter((group) => group.keys.length)
 ));
 
 function isGlobalContext(value: string) {
@@ -250,6 +399,7 @@ const unavailableArticles = (message: string, status = 'request_failed'): RimeCo
     article_count: 0,
     enabled_count: 0,
     lexicon_count: 0,
+    negative_lexicon_count: 0,
     contribution_count: 0,
   },
   articles: [],
@@ -310,6 +460,39 @@ const unavailableLint = (message: string, status = 'request_failed'): RimeContex
     ai_count: 0,
   },
   issues: [],
+});
+
+const unavailableRuntimeConfig = (message: string, status = 'request_failed'): RimeRuntimeConfigResponse => ({
+  available: false,
+  status,
+  message,
+  rime_dir: null,
+  source: null,
+  source_path: null,
+  updated_at: null,
+  files: [],
+  config: {},
+  fields: {},
+  missing_keys: [],
+  requires_reload: false,
+});
+
+const unavailableWeightCompare = (message: string, status = 'request_failed'): RimeWeightCompareResponse => ({
+  available: false,
+  status,
+  message,
+  rime_dir: null,
+  source_kind: 'snapshot',
+  source: null,
+  source_path: null,
+  updated_at: null,
+  files: [],
+  summary: {
+    candidate_count: 0,
+    matched_count: 0,
+    row_count: 0,
+  },
+  items: [],
 });
 
 const groupedContexts = computed<ContextGroup[]>(() => {
@@ -661,6 +844,18 @@ const formatDateTime = (value: number | null | undefined) => {
   return new Date(value * 1000).toLocaleString('zh-CN', { hour12: false });
 };
 
+const formatWeightCompareGroups = (
+  groups: RimeWeightCompareGroup[],
+  labeler: (value: string) => string = (value) => value,
+  limit = 3,
+) => {
+  if (!groups.length) return '-';
+  return groups
+    .slice(0, limit)
+    .map((group) => `${labeler(group.key)} ${formatNumber(group.weight)}`)
+    .join(' / ');
+};
+
 const formatHistoryRange = (firstSeen: string, lastSeen: string) => {
   if (!firstSeen && !lastSeen) return '无';
   if (firstSeen && lastSeen && firstSeen !== lastSeen) return `${firstSeen} 至 ${lastSeen}`;
@@ -668,13 +863,19 @@ const formatHistoryRange = (firstSeen: string, lastSeen: string) => {
 };
 
 const candidateRowKey = (row: RimeContextPredictionRow) => `${row.context}\t${row.prefix}\t${row.candidate}`;
+const weightCompareItemKey = (item: RimeWeightCompareItem) => `${item.default_pinyin || item.pinyin}\t${item.candidate}`;
 const articleHashShort = (value: string) => (value ? value.slice(0, 10) : '');
 const stripInputHistoryPrefix = (value: string) => value.replace(/^输入历史\s*[·:：-]\s*/, '').trim();
-const articleKindLabel = (article: RimeContextArticle) => {
-  if (article.source_type === 'lexicon' || article.source_type === 'manual_english_terms') return '自定义短语';
-  if (article.source_type === 'device_history' || article.source_type === 'input_history') return '输入历史';
+const articleSourceTypeLabel = (sourceType: string) => {
+  if (sourceType === 'negative_lexicon' || sourceType === 'negative_terms') return '负向短语';
+  if (sourceType === 'lexicon' || sourceType === 'manual_english_terms') return '自定义短语';
+  if (sourceType === 'device_history' || sourceType === 'input_history') return '输入历史';
   return '文章';
 };
+const articleKindLabel = (article: RimeContextArticle) => articleSourceTypeLabel(article.source_type);
+const defaultArticleTitle = (sourceType: ArticleSourceType) => (
+  sourceType === 'imported_article' ? undefined : articleSourceTypeLabel(sourceType)
+);
 const articleDisplayName = (article: RimeContextArticle) => {
   if (article.source_type === 'device_history' || article.source_type === 'input_history') {
     return stripInputHistoryPrefix(article.source_label || article.title) || stripInputHistoryPrefix(article.title) || '本机';
@@ -708,6 +909,39 @@ const lintSeverityType = (value: string) => {
   return 'info';
 };
 const lintConfidenceText = (value: number) => `${Math.round(Number(value || 0) * 100)}%`;
+const runtimeConfigLabel = (key: string, field: RimeRuntimeConfigField) => field.label || key;
+const runtimeModeDisplay = (value: string) => {
+  const info = runtimeModeInfo[value];
+  return info ? `${info.rank} ${info.label}` : value;
+};
+const runtimeModeDetail = (value: string) => runtimeModeInfo[value]?.detail || '';
+const runtimeConfigHint = (key: string) => {
+  if (key === 'commit_capture_mode') {
+    const value = String(runtimeConfigDraft.value.commit_capture_mode || '');
+    const info = runtimeModeInfo[value];
+    return info ? `强度 ${info.rank}/7：${info.detail}` : '从 7 到 1 逐级减轻捕捉链路。';
+  }
+  return runtimeConfigHints[key] || key;
+};
+const runtimeConfigStep = (field: RimeRuntimeConfigField) => (field.type === 'float' ? 0.05 : 1);
+const runtimeConfigMin = (field: RimeRuntimeConfigField) => (
+  typeof field.min === 'number' ? field.min : undefined
+);
+const runtimeConfigMax = (field: RimeRuntimeConfigField) => (
+  typeof field.max === 'number' ? field.max : undefined
+);
+const runtimeConfigEnumOptions = (key: string, field: RimeRuntimeConfigField) => {
+  const values = [...(field.values || [])];
+  if (key !== 'commit_capture_mode') return values;
+  return values.sort((left, right) => (
+    (runtimeModeInfo[right]?.rank || 0) - (runtimeModeInfo[left]?.rank || 0)
+  ));
+};
+const runtimeConfigOptionLabel = (value: string) => runtimeModeDisplay(value);
+
+function syncRuntimeConfigDraft() {
+  runtimeConfigDraft.value = { ...(runtimeConfigState.value?.config || {}) };
+}
 
 const loadDevices = async () => {
   loadingDevices.value = true;
@@ -746,6 +980,36 @@ const loadTree = async () => {
     tree.value = unavailableTree(err.response?.data?.detail || err.message || '读取小狼毫输入法索引失败。');
   } finally {
     loadingTree.value = false;
+  }
+};
+
+const loadWeightCompare = async (options: { silent?: boolean } = {}) => {
+  if (!selectedEntryId.value) {
+    weightCompareState.value = null;
+    return;
+  }
+  const candidates = weightCompareCandidates.value;
+  if (!candidates.length) {
+    weightCompareState.value = unavailableWeightCompare('请输入要对比的候选词。', 'empty_input');
+    return;
+  }
+  if (!options.silent) {
+    loadingWeightCompare.value = true;
+  }
+  try {
+    weightCompareState.value = await compareRimeContextWeights(selectedEntryId.value, {
+      candidates,
+      source: selectedWeightSource.value,
+      limit: 20,
+    });
+  } catch (err: any) {
+    weightCompareState.value = unavailableWeightCompare(
+      err.response?.data?.detail || err.message || '读取候选词权重失败。',
+    );
+  } finally {
+    if (!options.silent) {
+      loadingWeightCompare.value = false;
+    }
   }
 };
 
@@ -938,6 +1202,50 @@ const loadLint = async () => {
   }
 };
 
+const loadRuntimeConfig = async () => {
+  if (!selectedEntryId.value) {
+    runtimeConfigState.value = null;
+    runtimeConfigDraft.value = {};
+    return;
+  }
+  loadingRuntimeConfig.value = true;
+  try {
+    runtimeConfigState.value = await fetchRimeRuntimeConfig(selectedEntryId.value);
+    syncRuntimeConfigDraft();
+  } catch (err: any) {
+    runtimeConfigState.value = unavailableRuntimeConfig(
+      err.response?.data?.detail || err.message || '读取运行配置失败。',
+    );
+    runtimeConfigDraft.value = {};
+  } finally {
+    loadingRuntimeConfig.value = false;
+  }
+};
+
+const resetRuntimeConfigDraft = () => {
+  syncRuntimeConfigDraft();
+};
+
+const saveRuntimeConfig = async () => {
+  if (!selectedEntryId.value || savingRuntimeConfig.value || !runtimeConfigState.value?.available) return;
+  savingRuntimeConfig.value = true;
+  try {
+    runtimeConfigState.value = await updateRimeRuntimeConfig(selectedEntryId.value, {
+      config: runtimeConfigDraft.value,
+    });
+    syncRuntimeConfigDraft();
+    if (runtimeConfigState.value.deploy && !runtimeConfigState.value.deploy.ok) {
+      ElMessage.warning(runtimeConfigState.value.message || '运行配置已保存，但自动重新部署失败');
+    } else {
+      ElMessage.success(runtimeConfigState.value.message || '运行配置已保存并已重新部署');
+    }
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '保存运行配置失败');
+  } finally {
+    savingRuntimeConfig.value = false;
+  }
+};
+
 const changeHistoryPage = async (page: number) => {
   if (loadingHistory.value || historyEditing.value) return;
   await loadHistoryArticle(Math.max(1, page));
@@ -962,6 +1270,14 @@ const loadActiveView = async () => {
     await loadLint();
     return;
   }
+  if (activeView.value === 'config') {
+    await loadRuntimeConfig();
+    return;
+  }
+  if (activeView.value === 'weight') {
+    await loadWeightCompare();
+    return;
+  }
   if (activeView.value === 'articles') {
     await loadArticles();
     return;
@@ -977,6 +1293,9 @@ const handleDeviceChange = async () => {
   historyEditing.value = false;
   historyPage.value = 1;
   historyDraft.value = '';
+  runtimeConfigState.value = null;
+  runtimeConfigDraft.value = {};
+  weightCompareState.value = null;
   resetArticleContent();
   selectedTailKey.value = '';
   selectedContextKey.value = '';
@@ -995,6 +1314,14 @@ const handleIndexSourceChange = async () => {
 const handleRefresh = async () => {
   if (activeView.value === 'lint') {
     await loadLint();
+    return;
+  }
+  if (activeView.value === 'config') {
+    await loadRuntimeConfig();
+    return;
+  }
+  if (activeView.value === 'weight') {
+    await loadWeightCompare();
     return;
   }
   if (activeView.value === 'articles') {
@@ -1091,15 +1418,45 @@ const switchView = async (view: RimeView) => {
   await loadActiveView();
 };
 
-const openArticleDialog = (sourceType: 'imported_article' | 'lexicon' = 'imported_article') => {
+const openArticleDialog = (sourceType: ArticleSourceType = 'imported_article') => {
   articleForm.value = {
     title: '',
     content: '',
     enabled: true,
     sourceType,
-    weightMultiplier: sourceType === 'lexicon' ? 8 : 1,
+    weightMultiplier: sourceType === 'imported_article' ? 1 : 8,
   };
   articleDialogVisible.value = true;
+};
+
+const createNegativeLexicon = async () => {
+  if (!selectedEntryId.value || submittingArticle.value) return;
+  const existing = articles.value.find((item) => item.source_type === 'negative_lexicon' || item.source_type === 'negative_terms');
+  if (existing) {
+    await selectArticle(existing);
+    return;
+  }
+  submittingArticle.value = true;
+  try {
+    articlesState.value = await importRimeContextArticle(selectedEntryId.value, {
+      title: '负向短语',
+      content: '\n',
+      enabled: true,
+      source_type: 'negative_lexicon',
+      weight_multiplier: 8,
+    });
+    const article = articlesState.value.articles.find((item) => item.source_type === 'negative_lexicon');
+    if (article) {
+      selectedArticleId.value = article.id;
+      articleContentPage.value = ARTICLE_CONTENT_LAST_PAGE;
+      await loadArticleContent(ARTICLE_CONTENT_LAST_PAGE);
+    }
+    await loadTree();
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '新建负向短语失败');
+  } finally {
+    submittingArticle.value = false;
+  }
 };
 
 const openCandidateDialog = (row: RimeContextPredictionRow) => {
@@ -1113,24 +1470,56 @@ const openCandidateDialog = (row: RimeContextPredictionRow) => {
   candidateDialogVisible.value = true;
 };
 
+const adjustComparedWeight = async (item: RimeWeightCompareItem, direction: 1 | -1) => {
+  if (!selectedEntryId.value || adjustingWeightKey.value) return;
+  const prefix = item.default_pinyin || item.pinyin;
+  if (!prefix) {
+    ElMessage.warning('这个候选词没有可用拼音，暂时不能调整权重');
+    return;
+  }
+  const baseWeight = Number(item.total_weight || 0);
+  if (direction < 0 && baseWeight <= 0) return;
+  const nextWeight = Math.max(0.1, baseWeight + direction * WEIGHT_COMPARE_STEP);
+  adjustingWeightKey.value = `${direction}:${weightCompareItemKey(item)}`;
+  try {
+    weightCompareState.value = await adjustRimeContextWeightCompare(selectedEntryId.value, {
+      prefix,
+      candidate: item.candidate,
+      weight: nextWeight,
+      candidates: weightCompareCandidates.value,
+      source: selectedWeightSource.value,
+      limit: 20,
+    });
+    ElMessage.success(`${item.candidate} 已${direction > 0 ? '升权' : '降权'}到 ${formatNumber(nextWeight)}`);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '调整候选词权重失败');
+  } finally {
+    adjustingWeightKey.value = '';
+  }
+};
+
 const submitImportArticle = async () => {
   if (!selectedEntryId.value) return;
   if (!articleForm.value.content.trim()) {
-    ElMessage.warning(articleForm.value.sourceType === 'lexicon' ? '自定义短语不能为空' : '语料内容不能为空');
+    ElMessage.warning(
+      articleForm.value.sourceType === 'imported_article'
+        ? '语料内容不能为空'
+        : `${articleSourceTypeLabel(articleForm.value.sourceType)}不能为空`,
+    );
     return;
   }
   submittingArticle.value = true;
   try {
-    const isLexicon = articleForm.value.sourceType === 'lexicon';
+    const isPhraseSource = articleForm.value.sourceType !== 'imported_article';
     articlesState.value = await importRimeContextArticle(selectedEntryId.value, {
-      title: articleForm.value.title.trim() || (isLexicon ? '自定义短语' : undefined),
+      title: articleForm.value.title.trim() || defaultArticleTitle(articleForm.value.sourceType),
       content: articleForm.value.content,
       enabled: articleForm.value.enabled,
       source_type: articleForm.value.sourceType,
-      ...(isLexicon ? { weight_multiplier: articleForm.value.weightMultiplier } : {}),
+      ...(isPhraseSource ? { weight_multiplier: articleForm.value.weightMultiplier } : {}),
     });
     articleDialogVisible.value = false;
-    ElMessage.success(isLexicon ? '自定义短语已导入' : '语料已导入');
+    ElMessage.success(isPhraseSource ? `${articleSourceTypeLabel(articleForm.value.sourceType)}已导入` : '语料已导入');
     if (selectedArticleId.value && articlesState.value.articles.some((article) => article.id === selectedArticleId.value)) {
       await loadArticleContent(articleContentPage.value);
     }
@@ -1370,6 +1759,20 @@ onBeforeUnmount(() => {
         >
           预测索引
         </button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'weight' }"
+          @click="switchView('weight')"
+        >
+          权重对比
+        </button>
+        <button
+          type="button"
+          :class="{ 'is-active': activeView === 'config' }"
+          @click="switchView('config')"
+        >
+          运行配置
+        </button>
       </nav>
 
       <template v-if="activeView === 'index'">
@@ -1554,6 +1957,218 @@ onBeforeUnmount(() => {
         </template>
       </template>
 
+      <section v-else-if="activeView === 'weight'" class="rime-weight-compare" v-loading="loadingWeightCompare">
+        <section class="rime-section-head">
+          <div class="rime-section-title">
+            <strong>权重对比</strong>
+            <span v-if="weightCompareState?.rime_dir" class="rime-section-path" :title="weightCompareState.rime_dir">
+              目录 {{ weightCompareState.rime_dir }}
+            </span>
+          </div>
+          <div class="rime-section-actions">
+            <el-select
+              v-model="selectedWeightSource"
+              class="rime-select"
+              size="small"
+              :disabled="loadingWeightCompare"
+              :title="currentWeightSource.title"
+              @change="loadWeightCompare"
+            >
+              <el-option
+                v-for="item in indexSourceOptions"
+                :key="item.value"
+                :label="item.label"
+                :value="item.value"
+                :title="item.title"
+              />
+            </el-select>
+            <el-button
+              size="small"
+              :loading="loadingWeightCompare"
+              :disabled="!selectedEntryId || !weightCompareCandidates.length"
+              @click="loadWeightCompare"
+            >
+              对比
+            </el-button>
+          </div>
+        </section>
+
+        <section class="rime-weight-input">
+          <el-input
+            v-model="weightCompareText"
+            type="textarea"
+            resize="vertical"
+            :autosize="{ minRows: 3, maxRows: 8 }"
+            placeholder="采用&#10;才用"
+            @keydown.ctrl.enter.prevent="loadWeightCompare"
+          />
+        </section>
+
+        <section v-if="!weightCompareState?.available" class="rime-unavailable">
+          <p>{{ weightCompareState?.message || '输入候选词后查看权重对比。' }}</p>
+        </section>
+
+        <template v-else>
+          <section class="rime-summary">
+            <span><strong>候选词</strong>{{ formatNumber(weightCompareSummary.candidate_count) }}</span>
+            <span><strong>已命中</strong>{{ formatNumber(weightCompareSummary.matched_count) }}</span>
+            <span><strong>记录</strong>{{ formatNumber(weightCompareSummary.row_count) }}</span>
+            <span v-if="weightCompareState?.updated_at" class="summary-time">
+              <strong>索引更新</strong>{{ formatDateTime(weightCompareState.updated_at) }}
+            </span>
+          </section>
+
+          <div class="rime-weight-table-wrap">
+            <table class="rime-weight-table" aria-label="候选词权重对比">
+              <thead>
+                <tr>
+                  <th>候选词</th>
+                  <th>总权重</th>
+                  <th>完整拼音</th>
+                  <th>记录</th>
+                  <th>拼音分布</th>
+                  <th>前文分布</th>
+                  <th>来源</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="item in weightCompareState.items" :key="item.candidate">
+                  <td class="weight-candidate">
+                    <strong>{{ item.candidate }}</strong>
+                    <small v-if="item.input && item.input !== item.candidate">{{ item.input }}</small>
+                  </td>
+                  <td>{{ formatNumber(item.total_weight) }}</td>
+                  <td>
+                    <span>{{ item.default_pinyin || '-' }}</span>
+                    <small v-if="item.exact_prefix_weight">
+                      {{ formatNumber(item.exact_prefix_weight) }}
+                    </small>
+                  </td>
+                  <td>{{ formatNumber(item.row_count) }}</td>
+                  <td :title="formatWeightCompareGroups(item.prefixes, undefined, 20)">
+                    {{ formatWeightCompareGroups(item.prefixes) }}
+                  </td>
+                  <td :title="formatWeightCompareGroups(item.contexts, displayContext, 20)">
+                    {{ formatWeightCompareGroups(item.contexts, displayContext) }}
+                  </td>
+                  <td :title="formatWeightCompareGroups(item.comments, undefined, 20)">
+                    {{ formatWeightCompareGroups(item.comments) }}
+                  </td>
+                  <td class="weight-actions">
+                    <el-button
+                      link
+                      :icon="Minus"
+                      :loading="adjustingWeightKey === `-1:${weightCompareItemKey(item)}`"
+                      :disabled="Boolean(adjustingWeightKey) || Number(item.total_weight || 0) <= 0"
+                      title="降低全局手动权重"
+                      aria-label="降低全局手动权重"
+                      @click="adjustComparedWeight(item, -1)"
+                    />
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="Plus"
+                      :loading="adjustingWeightKey === `1:${weightCompareItemKey(item)}`"
+                      :disabled="Boolean(adjustingWeightKey)"
+                      title="提高全局手动权重"
+                      aria-label="提高全局手动权重"
+                      @click="adjustComparedWeight(item, 1)"
+                    />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </template>
+      </section>
+
+      <section v-else-if="activeView === 'config'" class="rime-runtime-config" v-loading="loadingRuntimeConfig">
+        <section class="rime-section-head">
+          <div class="rime-section-title">
+            <strong>运行配置</strong>
+            <span v-if="runtimeConfigState?.rime_dir" class="rime-section-path" :title="runtimeConfigState.rime_dir">
+              目录 {{ runtimeConfigState.rime_dir }}
+            </span>
+          </div>
+          <div class="rime-section-actions">
+            <el-button
+              size="small"
+              :disabled="!runtimeConfigDirty || savingRuntimeConfig"
+              @click="resetRuntimeConfigDraft"
+            >
+              恢复
+            </el-button>
+            <el-button
+              type="primary"
+              size="small"
+              :loading="savingRuntimeConfig"
+              :disabled="!runtimeConfigDirty || !runtimeConfigState?.available"
+              @click="saveRuntimeConfig"
+            >
+              保存配置
+            </el-button>
+          </div>
+        </section>
+
+        <section v-if="!runtimeConfigState?.available" class="rime-unavailable">
+          <p>{{ runtimeConfigState?.message || '请选择设备查看运行配置。' }}</p>
+        </section>
+
+        <template v-else>
+          <section v-if="runtimeConfigState.missing_keys.length" class="rime-runtime-note">
+            rime.lua 缺少 {{ runtimeConfigState.missing_keys.length }} 个可视化配置项。
+          </section>
+          <table class="rime-config-table" aria-label="小狼毫运行配置">
+            <tbody v-for="group in visibleRuntimeConfigGroups" :key="group.title">
+              <tr class="config-group-row">
+                <th colspan="3">{{ group.title }}</th>
+              </tr>
+              <tr v-for="key in group.keys" :key="key">
+                <td class="config-name">
+                  <span>{{ runtimeConfigLabel(key, runtimeConfigState.fields[key]) }}</span>
+                </td>
+                <td class="config-control">
+                  <el-switch
+                    v-if="runtimeConfigState.fields[key].type === 'bool'"
+                    v-model="runtimeConfigDraft[key]"
+                  />
+                  <el-select
+                    v-else-if="runtimeConfigState.fields[key].type === 'enum'"
+                    v-model="runtimeConfigDraft[key]"
+                    class="config-select"
+                    popper-class="rime-config-select-dropdown"
+                  >
+                    <el-option
+                      v-for="option in runtimeConfigEnumOptions(key, runtimeConfigState.fields[key])"
+                      :key="option"
+                      :label="runtimeConfigOptionLabel(option)"
+                      :value="option"
+                    >
+                      <div v-if="key === 'commit_capture_mode'" class="config-option-line">
+                        <span class="config-option-title">{{ runtimeConfigOptionLabel(option) }}</span>
+                        <small>{{ runtimeModeDetail(option) }}</small>
+                      </div>
+                      <span v-else>{{ option }}</span>
+                    </el-option>
+                  </el-select>
+                  <el-input-number
+                    v-else
+                    v-model="runtimeConfigDraft[key]"
+                    :min="runtimeConfigMin(runtimeConfigState.fields[key])"
+                    :max="runtimeConfigMax(runtimeConfigState.fields[key])"
+                    :step="runtimeConfigStep(runtimeConfigState.fields[key])"
+                    :precision="runtimeConfigState.fields[key].type === 'float' ? 2 : 0"
+                    controls-position="right"
+                  />
+                </td>
+                <td class="config-hint">{{ runtimeConfigHint(key) }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+      </section>
+
       <section v-else-if="activeView === 'history'" class="rime-history" v-loading="loadingHistory">
         <section class="rime-summary">
           <span><strong>事件</strong>{{ formatNumber(historySummary.entry_count) }}</span>
@@ -1725,6 +2340,14 @@ onBeforeUnmount(() => {
             >
               导入自定义短语
             </el-button>
+            <el-button
+              size="small"
+              :icon="Plus"
+              :disabled="!canImportArticle || submittingArticle"
+              @click="createNegativeLexicon"
+            >
+              新建负向短语
+            </el-button>
           </div>
         </section>
 
@@ -1891,8 +2514,8 @@ onBeforeUnmount(() => {
             :placeholder="articleContentPlaceholder"
           />
         </label>
-        <label v-if="articleForm.sourceType === 'lexicon'" class="article-dialog-field">
-          <span>权重</span>
+        <label v-if="articleForm.sourceType !== 'imported_article'" class="article-dialog-field">
+          <span>{{ articleForm.sourceType === 'negative_lexicon' ? '降权' : '权重' }}</span>
           <el-input-number v-model="articleForm.weightMultiplier" :min="1" :max="100" :step="1" />
         </label>
         <el-checkbox v-model="articleForm.enabled">导入后立即参与预测索引</el-checkbox>
@@ -2117,7 +2740,9 @@ onBeforeUnmount(() => {
 
 .rime-file-table,
 .rime-candidate-table,
-.rime-article-table {
+.rime-article-table,
+.rime-weight-table,
+.rime-config-table {
   border-collapse: collapse;
   table-layout: auto;
   width: auto;
@@ -2131,7 +2756,11 @@ onBeforeUnmount(() => {
 .rime-candidate-table th,
 .rime-candidate-table td,
 .rime-article-table th,
-.rime-article-table td {
+.rime-article-table td,
+.rime-weight-table th,
+.rime-weight-table td,
+.rime-config-table th,
+.rime-config-table td {
   padding: 7px 10px;
   border-bottom: 1px solid #e5e8ee;
   text-align: left;
@@ -2140,7 +2769,9 @@ onBeforeUnmount(() => {
 
 .rime-file-table th,
 .rime-candidate-table th,
-.rime-article-table th {
+.rime-article-table th,
+.rime-weight-table th,
+.rime-config-table th {
   color: #667085;
   font-weight: 500;
   background: #f1f4f8;
@@ -2206,6 +2837,138 @@ onBeforeUnmount(() => {
   flex-direction: column;
   overflow: hidden;
   padding: 12px 14px 24px;
+}
+
+.rime-runtime-config {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.rime-weight-compare {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.rime-weight-input {
+  max-width: 620px;
+  padding: 12px 14px;
+}
+
+.rime-weight-input :deep(.el-textarea__inner) {
+  line-height: 1.6;
+  font-family: inherit;
+}
+
+.rime-weight-table-wrap {
+  padding: 12px 14px 24px;
+  overflow: auto;
+}
+
+.rime-weight-table {
+  min-width: 900px;
+}
+
+.rime-weight-table td {
+  vertical-align: top;
+}
+
+.rime-weight-table td:nth-child(5),
+.rime-weight-table td:nth-child(6),
+.rime-weight-table td:nth-child(7) {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.weight-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.weight-candidate strong {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.weight-candidate small,
+.rime-weight-table td small {
+  color: #7b8794;
+}
+
+.weight-actions {
+  white-space: nowrap;
+}
+
+.weight-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
+.rime-runtime-note {
+  padding: 8px 14px;
+  color: #7b8794;
+  font-size: 13px;
+}
+
+.rime-config-table {
+  margin: 12px 14px 24px;
+}
+
+.config-group-row th {
+  padding-top: 10px;
+  color: #344054;
+  font-weight: 600;
+}
+
+.config-name {
+  min-width: 120px;
+  color: #1f2933;
+}
+
+.config-control {
+  min-width: 170px;
+}
+
+.config-select {
+  width: 190px;
+}
+
+.config-hint {
+  max-width: 460px;
+  color: #667085;
+  white-space: normal;
+  line-height: 1.45;
+}
+
+:deep(.rime-config-select-dropdown .el-select-dropdown__item) {
+  height: auto;
+  min-height: 34px;
+  padding: 5px 12px;
+  line-height: 1.35;
+}
+
+:deep(.rime-config-select-dropdown .config-option-line) {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 12px;
+}
+
+:deep(.rime-config-select-dropdown .config-option-title) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:deep(.rime-config-select-dropdown .config-option-line small) {
+  color: #7b8794;
+  font-size: 12px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .rime-detail-head {

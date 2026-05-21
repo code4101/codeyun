@@ -286,7 +286,12 @@
       destroy-on-close
       @closed="resetProfileForm"
     >
-      <el-form label-position="top" @submit.prevent>
+      <el-form
+        class="profile-form"
+        label-position="right"
+        label-width="72px"
+        @submit.prevent
+      >
         <el-form-item label="账号">
           <div class="dialog-account-name">{{ profileTarget?.username || '-' }}</div>
         </el-form-item>
@@ -335,13 +340,12 @@
           </div>
         </el-form-item>
         <el-form-item label="新密码">
-          <div style="display: flex; gap: 8px; width: 100%;">
+          <div class="profile-action-field">
             <el-input
               v-model="profileNewPasswordValue"
               type="text"
               placeholder="留空表示不修改"
               @keyup.enter="submitProfile"
-              style="flex: 1;"
             />
             <el-button type="primary" plain @click="generateProfileRandomPassword">
               生成随机密码
@@ -949,12 +953,40 @@ onMounted(() => {
   padding: 0 16px 16px;
 }
 
-.dialog-account-name {
+.profile-form {
+  padding-top: 2px;
+}
+
+.profile-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.profile-form :deep(.el-form-item:last-child) {
+  margin-bottom: 0;
+}
+
+.profile-form :deep(.el-form-item__label) {
   min-height: 32px;
+  line-height: 32px;
+  color: #606266;
+}
+
+.profile-form :deep(.el-form-item__content) {
+  min-width: 0;
+  align-items: center;
+}
+
+.dialog-account-name {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 92px;
+  min-height: 32px;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   padding: 0 11px;
   color: #303133;
+  word-break: break-all;
   background: #f5f7fa;
   border: 1px solid #e4e7ed;
   border-radius: 6px;
@@ -964,6 +996,14 @@ onMounted(() => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
+  width: 100%;
+}
+
+.profile-action-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
 }
 
 .profile-select {
@@ -988,6 +1028,20 @@ onMounted(() => {
 
   .summary-strip {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .profile-form :deep(.el-form-item) {
+    display: block;
+  }
+
+  .profile-form :deep(.el-form-item__label) {
+    width: auto !important;
+    min-height: 24px;
+    line-height: 24px;
+    padding: 0 0 6px;
+    text-align: left;
   }
 }
 </style>
