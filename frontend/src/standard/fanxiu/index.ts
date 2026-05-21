@@ -9,6 +9,7 @@ import drawCalculatorPage from './draw-calc'
 import fanxiuKunlunSecretPage from './kunlun-secret'
 import fanxiuLabelmePage from './labelme'
 import fanxiuGameWindowPage from './game-window'
+import fanxiuGameWindow2Page from './game-window2'
 import fanxiuLotteryModelPage from './lottery-model'
 import magicTreasureHallPage from './magic-treasure-hall'
 import magicTreasureFormationsPage from './magic-treasure-formations'
@@ -26,6 +27,7 @@ import xianzhouRacePage from './xianzhou-race'
 const pages: AppPageDefinition[] = [
   fanxiuTaskStatusPage,
   fanxiuGameWindowPage,
+  fanxiuGameWindow2Page,
   fanxiuActivityListPage,
   fanxiuKunlunSecretPage,
   fanxiuModaoInvasionPage,

@@ -9,8 +9,10 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from fastapi import HTTPException
 from PIL import Image
+from sqlalchemy.orm import object_session
 from sqlmodel import select
 
+from backend.api import device_entries as device_entries_api
 from backend.api.filesystem import DEVICE_ROOT_SENTINEL, FILESYSTEM_DELETE_TASKS_STATE_FILE, delete_scoped_entry
 from backend.models import DeviceFile, UserDevice
 from backend.core.settings import get_settings
@@ -100,6 +102,38 @@ def test_remote_entry_proxy_forwards_request(client, session, auth_user, monkeyp
     assert captured["headers"]["X-Device-Token"] == "remote-token"
     assert captured["proxies"] == {"http": "", "https": "", "all": "", "no_proxy": "*"}
     assert captured["timeout"] == 10
+
+
+def test_remote_proxy_releases_db_session_before_network_request(session, auth_user, monkeypatch):
+    entry = UserDevice(
+        user_id=auth_user.id,
+        device_id="remote-device-session-release",
+        mode="remote",
+        name="Remote Device",
+        server_url="http://remote-device:8000",
+        token="remote-token",
+    )
+    session.add(entry)
+    session.commit()
+    session.refresh(entry)
+
+    class FakeResponse:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = b"{}"
+
+        def json(self):
+            return {}
+
+    def fake_request(*args, **kwargs):
+        assert object_session(entry) is None
+        return FakeResponse()
+
+    monkeypatch.setattr("backend.api.device_entries.requests.request", fake_request)
+
+    response = device_entries_api._proxy_request(entry, "GET", "/runtime/status")
+
+    assert response.status_code == 200
 
 
 def test_local_entry_proxy_lists_and_deletes_device_images(client, auth_user, test_device):

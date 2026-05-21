@@ -15,6 +15,7 @@ import {
   saveAsWorkbook,
   updateNoteSheet,
   updateWorkbook,
+  type NoteSheetDetail,
   type NoteSheetResourceAccess,
   type WorkbookDetail,
   type WorkbookRefItem,
@@ -108,6 +109,7 @@ const userStore = useUserStore()
 const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
 const activeSheetId = ref<number | null>(null)
+const prefetchedSheetDetail = ref<NoteSheetDetail | null>(null)
 const sheetTabsRef = ref<HTMLElement | null>(null)
 const sheetWorkspaceRef = ref<InstanceType<typeof NoteSheetWorkspace> | null>(null)
 const standaloneSheetTitle = ref('')
@@ -138,6 +140,7 @@ const inlineLoginForm = reactive({
   password: '',
 })
 const inlineLoginError = ref('')
+let workbookLoadSeq = 0
 
 const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
 const workbookId = computed(() => normalizePositiveInt(route.params.workbookId))
@@ -146,6 +149,9 @@ const querySheetId = computed(() => normalizePositiveInt(route.query.sheet))
 const routeWorkspaceView = computed(() => normalizeWorkspaceViewQuery(route.query.view ?? route.query.mode ?? route.query.sheetView))
 const activeSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === activeSheetId.value) ?? null
+))
+const activeSheetPrefetchedDetail = computed(() => (
+  prefetchedSheetDetail.value?.id === activeSheetId.value ? prefetchedSheetDetail.value : null
 ))
 const sheetTabContextMenuSheet = computed(() => (
   workbook.value?.sheets.find((sheet) => sheet.id === sheetTabContextMenu.value.sheetId) ?? null
@@ -369,6 +375,25 @@ function resolveSheetId() {
     .find((id) => id != null && validIds.has(id)) ?? null
 }
 
+function syncActiveSheetFromWorkbookRoute() {
+  if (!isWorkbookMode.value || !workbook.value || workbook.value.id !== workbookId.value) {
+    return false
+  }
+
+  const nextSheetId = resolveSheetId()
+  activeSheetId.value = nextSheetId
+  if (prefetchedSheetDetail.value?.id !== nextSheetId) {
+    prefetchedSheetDetail.value = null
+  }
+  if (nextSheetId != null && nextSheetId !== querySheetId.value) {
+    void router.replace({
+      path: `/workbook/${workbook.value.id}`,
+      query: { ...route.query, sheet: String(nextSheetId) },
+    })
+  }
+  return true
+}
+
 async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
   const staleWorkbookId = workbookId.value
   const targetSheetId = querySheetId.value
@@ -406,29 +431,49 @@ async function loadWorkbookResource() {
   if (!isWorkbookMode.value) {
     return
   }
-  if (workbookId.value == null) {
+  const requestSeq = ++workbookLoadSeq
+  const targetWorkbookId = workbookId.value
+  const targetSheetId = querySheetId.value
+  if (targetWorkbookId == null) {
     errorText.value = '工作簿地址无效'
     workbook.value = null
     activeSheetId.value = null
+    prefetchedSheetDetail.value = null
     return
   }
 
   loading.value = true
   errorText.value = ''
   clearResourceAccessIssue()
+  prefetchedSheetDetail.value = null
   try {
-    const detail = await fetchWorkbook(workbookId.value)
+    const workbookRequest = fetchWorkbook(targetWorkbookId)
+    const sheetRequest = targetSheetId == null
+      ? Promise.resolve<NoteSheetDetail | null>(null)
+      : fetchNoteSheet(targetSheetId, { workbookId: targetWorkbookId }).catch((error) => {
+          console.warn('Failed to prefetch workbook sheet:', error)
+          return null
+        })
+    const [detail, prefetchedDetail] = await Promise.all([workbookRequest, sheetRequest])
+    if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
+      return
+    }
     if (!detail) {
       if (await redirectWorkbookRouteFromSheetQuery()) {
+        return
+      }
+      if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
         return
       }
       errorText.value = '工作簿不存在'
       workbook.value = null
       activeSheetId.value = null
+      prefetchedSheetDetail.value = null
       return
     }
     workbook.value = detail
     activeSheetId.value = resolveSheetId()
+    prefetchedSheetDetail.value = prefetchedDetail?.id === activeSheetId.value ? prefetchedDetail : null
     if (activeSheetId.value != null && activeSheetId.value !== querySheetId.value) {
       void router.replace({
         path: `/workbook/${detail.id}`,
@@ -436,9 +481,15 @@ async function loadWorkbookResource() {
       })
     }
   } catch (error) {
+    if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
+      return
+    }
     console.warn('Failed to load public workbook resource:', error)
     const status = getNoteSheetApiErrorStatus(error)
     if (!isAccessDeniedStatus(status) && await redirectWorkbookRouteFromSheetQuery()) {
+      return
+    }
+    if (requestSeq !== workbookLoadSeq || !isWorkbookMode.value || workbookId.value !== targetWorkbookId) {
       return
     }
     errorText.value = isAccessDeniedStatus(status) ? '没有权限访问该工作簿' : '工作簿加载失败'
@@ -447,8 +498,11 @@ async function loadWorkbookResource() {
     }
     workbook.value = null
     activeSheetId.value = null
+    prefetchedSheetDetail.value = null
   } finally {
-    loading.value = false
+    if (requestSeq === workbookLoadSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -460,6 +514,9 @@ function selectSheet(nextSheetId: number) {
     return
   }
   activeSheetId.value = nextSheetId
+  if (prefetchedSheetDetail.value?.id !== nextSheetId) {
+    prefetchedSheetDetail.value = null
+  }
   void router.push({
     path: `/workbook/${workbook.value.id}`,
     query: { ...route.query, sheet: String(nextSheetId) },
@@ -1198,9 +1255,21 @@ watch(
 )
 
 watch(
-  [workbookId, querySheetId, isWorkbookMode],
+  [workbookId, isWorkbookMode],
   () => {
     void loadWorkbookResource()
+  },
+)
+
+watch(
+  querySheetId,
+  () => {
+    if (!isWorkbookMode.value) {
+      return
+    }
+    if (!syncActiveSheetFromWorkbookRoute() && !loading.value) {
+      void loadWorkbookResource()
+    }
   },
 )
 
@@ -1413,9 +1482,10 @@ onBeforeUnmount(() => {
         v-if="activeSheetId && !resourceAccessIssue"
         ref="sheetWorkspaceRef"
         class="resource-sheet-workspace"
-        :key="`${workbookId}:${activeSheetId}:${sheetWorkspaceReloadKey}`"
+        :key="`workbook:${workbookId}:${sheetWorkspaceReloadKey}`"
         :workbook-id="workbookId"
         :sheet-id="activeSheetId"
+        :initial-detail="activeSheetPrefetchedDetail"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         :access-capabilities="activeSheet?.access?.capabilities ?? null"
@@ -1432,7 +1502,7 @@ onBeforeUnmount(() => {
       <NoteSheetWorkspace
         v-if="sheetId && !resourceAccessIssue"
         class="resource-sheet-workspace"
-        :key="`sheet:${sheetId}:${sheetWorkspaceReloadKey}`"
+        :key="`sheet:${sheetWorkspaceReloadKey}`"
         :sheet-id="sheetId"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"

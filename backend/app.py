@@ -21,13 +21,8 @@ from backend.core.bootstrap import ensure_bootstrap_admin
 from backend.core.auth import verify_api_token
 from backend.core.background_task_runner import init_background_task_runner, shutdown_background_task_runner
 from backend.core.codex_saver.mcp_server import codex_saver_mcp_lifespan
-from backend.core.ocr_preview import ocr_service_manager
 from backend.core.service_tokens import ensure_legacy_service_tokens
 from backend.core.system_metrics import shutdown_system_metrics_monitor, start_system_metrics_monitor
-from backend.core.weekly_note_scheduler import (
-    init_ruanyf_weekly_note_scheduler,
-    shutdown_ruanyf_weekly_note_scheduler,
-)
 from backend.plugins import register_plugin_modules
 from backend.core.settings import get_settings
 from backend.core.storage import (
@@ -51,21 +46,17 @@ async def lifespan(app: FastAPI):
     ensure_bootstrap_admin()
     with Session(engine) as session:
         ensure_legacy_service_tokens(session)
-    ocr_service_manager.start_idle_cleanup_thread()
     await start_task_manager_services()
     if not settings.is_test:
         start_system_metrics_monitor()
     init_background_task_runner()
-    init_ruanyf_weekly_note_scheduler()
     if not settings.is_test:
         start_enabled_codex_bridges()
     async with codex_saver_mcp_lifespan():
         yield
-    ocr_service_manager.stop_idle_cleanup_thread()
     if not settings.is_test:
         shutdown_system_metrics_monitor()
     shutdown_codex_bridges()
-    shutdown_ruanyf_weekly_note_scheduler()
     shutdown_background_task_runner()
     await stop_task_manager_services()
 

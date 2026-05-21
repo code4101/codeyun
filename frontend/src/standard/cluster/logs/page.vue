@@ -22,8 +22,8 @@ interface TaskStatus {
   id: string;
   running: boolean;
   pid?: number;
-  started_at?: number;
-  finished_at?: number;
+  started_at?: number | string | null;
+  finished_at?: number | string | null;
   cpu_percent?: number;
   memory_rss?: number;
   message?: string;
@@ -70,6 +70,7 @@ const {
   startResizing: startLogResize,
 } = useGlobalLogHeight();
 let pollInterval: number | null = null;
+let refreshAllInFlight = false;
 
 const tokens = ref<ServiceAccessToken[]>([]);
 const tokensLoading = ref(false);
@@ -280,9 +281,28 @@ const saveEditing = async () => {
   }
 };
 
-const formatTime = (timestamp: number | undefined) => {
-  if (!timestamp) return '-';
-  return new Date(timestamp * 1000).toLocaleString();
+const normalizeTimestampSeconds = (value: unknown): number | undefined => {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value) || value <= 0) return undefined;
+    return value > 100000000000 ? value / 1000 : value;
+  }
+
+  const text = String(value).trim();
+  if (!text) return undefined;
+  const numeric = Number(text);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    return numeric > 100000000000 ? numeric / 1000 : numeric;
+  }
+
+  const parsed = new Date(text.replace(' ', 'T')).getTime();
+  return Number.isFinite(parsed) ? parsed / 1000 : undefined;
+};
+
+const formatTime = (timestamp: unknown) => {
+  const seconds = normalizeTimestampSeconds(timestamp);
+  if (!seconds) return '-';
+  return new Date(seconds * 1000).toLocaleString();
 };
 
 const formatBytes = (bytes: number | undefined) => {
@@ -295,7 +315,7 @@ const formatBytes = (bytes: number | undefined) => {
 };
 
 const formatDuration = (seconds: number | undefined | null) => {
-  if (seconds === undefined || seconds === null || seconds < 0) return '不限制';
+  if (seconds === undefined || seconds === null || !Number.isFinite(seconds) || seconds < 0) return '不限制';
   if (seconds === 0) return '0秒';
   
   const h = Math.floor(seconds / 3600);
@@ -316,12 +336,13 @@ const useDuration = (taskRef: any) => {
   let timer: any = null;
 
   const update = () => {
-    if (!taskRef.value || !taskRef.value.status.running || !taskRef.value.status.started_at) {
+    const startedAt = normalizeTimestampSeconds(taskRef.value?.status?.started_at);
+    if (!taskRef.value || !taskRef.value.status.running || !startedAt) {
       duration.value = '-';
       return;
     }
     const now = Date.now() / 1000;
-    const elapsed = Math.floor(now - taskRef.value.status.started_at);
+    const elapsed = Math.floor(now - startedAt);
     duration.value = formatDuration(elapsed);
   };
 
@@ -342,6 +363,7 @@ const dynamicDuration = useDuration(task);
 const applyRuntimeLogPayload = (payload: any) => {
   const status = payload.status || {};
   const latestRun = status.latest_run || {};
+  const stateMessage = [status.state_label, status.last_error].filter(Boolean).join(' · ');
   task.value = {
     id: payload.key || taskId,
     name: payload.title || payload.key || taskId,
@@ -358,9 +380,12 @@ const applyRuntimeLogPayload = (payload: any) => {
     status: {
       id: payload.key || taskId,
       running: Boolean(status.running || payload.active),
-      started_at: status.started_at || latestRun.started_at || undefined,
-      finished_at: status.finished_at || latestRun.finished_at || undefined,
-      message: status.message || status.stage_label || latestRun.stage_label || '',
+      pid: status.pid || undefined,
+      started_at: normalizeTimestampSeconds(status.started_at ?? latestRun.started_at),
+      finished_at: normalizeTimestampSeconds(status.finished_at ?? latestRun.finished_at),
+      cpu_percent: status.cpu_percent,
+      memory_rss: status.memory_rss,
+      message: status.message || status.stage_label || latestRun.stage_label || stateMessage || '',
     },
   };
   logs.value = Array.isArray(payload.logs) ? payload.logs : [];
@@ -418,11 +443,19 @@ const fetchLogs = async () => {
 };
 
 const refreshAll = async () => {
-  if (isBuiltinRuntime) {
-    await fetchRuntimeLogs();
+  if (refreshAllInFlight) {
     return;
   }
-  await Promise.all([fetchTask(), fetchLogs()]);
+  refreshAllInFlight = true;
+  try {
+    if (isBuiltinRuntime) {
+      await fetchRuntimeLogs();
+      return;
+    }
+    await Promise.all([fetchTask(), fetchLogs()]);
+  } finally {
+    refreshAllInFlight = false;
+  }
 };
 
 const startPolling = () => {
@@ -430,7 +463,7 @@ const startPolling = () => {
     window.clearInterval(pollInterval);
   }
   pollInterval = window.setInterval(() => {
-    refreshAll();
+    void refreshAll();
   }, 3000);
 };
 
@@ -999,7 +1032,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: 220px;
-  max-height: 1200px;
   overflow: hidden;
 }
 

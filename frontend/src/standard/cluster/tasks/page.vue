@@ -247,6 +247,7 @@ const updateDeviceConfig = async () => {
 };
 
 let taskPollTimer: number | null = null;
+const taskFetchInFlight = new Set<string>();
 
 const stopTaskPolling = () => {
   if (taskPollTimer) {
@@ -374,6 +375,8 @@ const handleUpdateToken = async () => {
 
 const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     if (!deviceId) return;
+    if (isPolling && taskFetchInFlight.has(deviceId)) return;
+    taskFetchInFlight.add(deviceId);
     
     // Check if we have cached tasks
     const hasCache = taskStore.tasks[deviceId] && taskStore.tasks[deviceId].length > 0;
@@ -386,6 +389,7 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
     const device = devices.value.find(d => d.id === deviceId);
     if (!device) {
         loading.value = false;
+        taskFetchInFlight.delete(deviceId);
         return;
     }
     
@@ -424,6 +428,7 @@ const fetchTasks = async (deviceId: string, isPolling: boolean) => {
              }
         }
     } finally {
+        taskFetchInFlight.delete(deviceId);
         if (!isPolling) loading.value = false;
         if (!isPolling) nextTick(initRuntimeSortables);
     }

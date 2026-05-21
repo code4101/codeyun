@@ -99,6 +99,78 @@ def test_run_step2_data_on_remote_entry_posts_to_device_control(monkeypatch):
     ]
 
 
+def test_run_step2_on_remote_data_host_posts_whole_step(monkeypatch):
+    calls = []
+
+    class FakeSession:
+        trust_env = True
+
+        def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs, "trust_env": self.trust_env})
+            return _FakeResponse({"message": "mf 已执行 step2"})
+
+    monkeypatch.setattr(schedule.requests, "Session", FakeSession)
+
+    execution_snapshot = {
+        "entry_id": "exec-entry",
+        "mode": "remote",
+        "server_url": "http://mi15:8000/",
+        "token": "mi15-token",
+    }
+    result = schedule._run_step2_on_data_host(
+        {
+            "mode": "remote",
+            "server_url": "http://mf:8000/",
+            "token": "mf-token",
+        },
+        execution_entry_snapshot=execution_snapshot,
+    )
+
+    assert result == "mf 已执行 step2"
+    assert calls == [
+        {
+            "url": "http://mf:8000/api/device-control/attendance/fanbei/step2",
+            "json": {"execution_device": execution_snapshot},
+            "headers": {"Authorization": "Bearer mf-token", "X-Device-Token": "mf-token"},
+            "timeout": schedule.FANBEI_ATTENDANCE_REMOTE_TIMEOUT_SECONDS,
+            "trust_env": False,
+        }
+    ]
+
+
+def test_run_step3_on_remote_data_host_posts_to_device_control(monkeypatch):
+    calls = []
+
+    class FakeSession:
+        trust_env = True
+
+        def post(self, url, **kwargs):
+            calls.append({"url": url, **kwargs, "trust_env": self.trust_env})
+            return _FakeResponse({"message": "mf 已执行 step3"})
+
+    monkeypatch.setattr(schedule.requests, "Session", FakeSession)
+
+    result = schedule._run_step3_on_data_host(
+        {
+            "mode": "remote",
+            "server_url": "http://mf:8000/",
+            "token": "mf-token",
+        },
+        {"sheet_id": 6, "course_name": "d260509梵呗初阶"},
+    )
+
+    assert result == "mf 已执行 step3"
+    assert calls == [
+        {
+            "url": "http://mf:8000/api/device-control/attendance/fanbei/step3",
+            "json": {"sheet_id": 6, "course_name": "d260509梵呗初阶"},
+            "headers": {"Authorization": "Bearer mf-token", "X-Device-Token": "mf-token"},
+            "timeout": schedule.FANBEI_ATTENDANCE_REMOTE_TIMEOUT_SECONDS,
+            "trust_env": False,
+        }
+    ]
+
+
 def test_apply_step2_data_updates_only_attendance_data_columns(session):
     document = SheetDocument(
         numeric_id=606,

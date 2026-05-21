@@ -14,9 +14,32 @@ dependencies = [
 [tool.uv.workspace]
 members = ["backend"]
 
+[tool.uv]
+conflicts = [
+    [
+        { group = "ocr-cpu" },
+        { group = "ocr-cu118" },
+        { group = "ocr-cu129" },
+    ],
+]
+
 [tool.uv.sources]
 codeyun-backend = { workspace = true }
 pyxllib = { path = "../pyxllib", editable = true }
+paddlepaddle-gpu = [
+    { index = "paddle-cu118", group = "ocr-cu118" },
+    { index = "paddle-cu129", group = "ocr-cu129" },
+]
+
+[[tool.uv.index]]
+name = "paddle-cu118"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu118/"
+explicit = true
+
+[[tool.uv.index]]
+name = "paddle-cu129"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu129/"
+explicit = true
 
 [dependency-groups]
 dev = [
@@ -25,4 +48,21 @@ dev = [
     "python-dotenv>=1.0.0",
     "paramiko>=3.4.0",
     "watchfiles>=1.1.1",
+]
+ocr-cpu = [
+    "paddlepaddle>=3.3.0",
+]
+ocr-cu118 = [
+    "paddlepaddle-gpu>=3.3.0",
+]
+ocr-cu129 = [
+    "paddlepaddle-gpu>=3.3.0",
+    "nvidia-cudnn-cu12>=9.0.0",
+    "nvidia-cublas-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-curand-cu12",
+    "nvidia-cusolver-cu12",
+    "nvidia-cusparse-cu12",
+    "nvidia-nvjitlink-cu12",
 ]

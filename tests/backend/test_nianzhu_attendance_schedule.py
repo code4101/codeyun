@@ -14,6 +14,8 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
         "05:20 第12课",
         "第2届答疑",
         "追踪分组",
+        "追踪状态",
+        "冻结时间",
         "规则版本",
     ]
     rows = [
@@ -27,7 +29,9 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
             "学习中/89%",
             "3遍/250%",
             "学习中/63%",
-            "B组",
+            "历史组",
+            "追踪中",
+            "",
             schedule.CURRENT_RULE,
         ],
         [
@@ -40,7 +44,9 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
             "2遍/151%",
             "3遍/250%",
             "",
-            "A组",
+            "当前组",
+            "已冻结",
+            "2026-05-16 14:07:07",
             schedule.LEGACY_BEFORE_20250522_RULE,
         ],
     ]
@@ -191,4 +197,47 @@ def test_run_nianzhu_step1_endpoint_updates_course_sheets(client, test_device, m
             "clockin_pattern": "d250106念住闯关-*",
             "close_browser": False,
         }
+    ]
+
+
+def test_run_nianzhu_step2_endpoint_compacts_course_sheets(client, test_device, monkeypatch):
+    import backend.api.device_control as device_control
+
+    calls = []
+
+    def fake_compact_nianzhu_course_sheet_step2(session, **kwargs):
+        calls.append(("step2", kwargs))
+        return {
+            "attendance_sheet_id": kwargs["attendance_sheet_id"],
+            "video_data_rows_before": 4,
+            "video_data_rows_after": 2,
+            "changed": True,
+        }
+
+    def fake_rebuild_nianzhu_attendance_from_course_sheets(session, **kwargs):
+        calls.append(("rebuild", kwargs))
+        return {
+            "attendance_sheet_id": kwargs["attendance_sheet_id"],
+            "updated_rows": 1,
+        }
+
+    monkeypatch.setattr(device_control, "compact_nianzhu_course_sheet_step2", fake_compact_nianzhu_course_sheet_step2)
+    monkeypatch.setattr(
+        device_control,
+        "rebuild_nianzhu_attendance_from_course_sheets",
+        fake_rebuild_nianzhu_attendance_from_course_sheets,
+    )
+
+    response = client.post(
+        "/api/device-control/attendance/nianzhu/step2",
+        json={"attendance_sheet_id": 21, "rebuild": True, "include_frozen": True},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["step2"]["video_data_rows_after"] == 2
+    assert response.json()["rebuild"]["updated_rows"] == 1
+    assert calls == [
+        ("step2", {"attendance_sheet_id": 21}),
+        ("rebuild", {"attendance_sheet_id": 21, "active_only": False}),
     ]

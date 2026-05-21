@@ -3,23 +3,39 @@ import re
 import tempfile
 import time
 import uuid
-from datetime import date, datetime, time as dt_time
+from datetime import date, datetime, timedelta, time as dt_time
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, List, Optional
 
+import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+from jose import JWTError, jwt
 from pydantic import BaseModel, Field, model_validator
 from passlib.context import CryptContext
 from sqlmodel import Session, or_, select
+from starlette.background import BackgroundTask
 
-from backend.core.auth import get_current_active_user, get_optional_current_user_from_token
-from backend.core.feature_access_guard import require_feature_access_dependency
+from backend.api.device import REMOTE_DEVICE_DIRECT_PROXIES
+from backend.core.auth import (
+    ALGORITHM,
+    SECRET_KEY,
+    create_access_token,
+    get_current_active_user,
+    get_optional_current_user_from_token,
+    verify_api_token,
+)
+from backend.core.feature_access_guard import ensure_feature_access, require_feature_access_dependency
+from backend.core.game_window_service_runtime import (
+    GameWindowServiceError,
+    open_game_window_service_stream,
+    send_game_window_service_click,
+)
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import get_session
-from backend.models import NoteEdge, NoteNode, User
+from backend.models import NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.fanxiu_status import (
     derive_status_snapshot,
@@ -416,6 +432,50 @@ class FanxiuSunloginRotateStatus(BaseModel):
     stderr_log: str = ""
     last_error: str = ""
     errors: List[FanxiuSunloginRotateError] = Field(default_factory=list)
+
+
+FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE = "fanxiu.game-window2:stream"
+FANXIU_GAME_WINDOW2_STREAM_TOKEN_EXPIRE_HOURS = 2
+
+
+class FanxiuGameWindow2StreamTokenRequest(BaseModel):
+    entry_id: str
+
+
+class FanxiuGameWindow2StreamTokenResponse(BaseModel):
+    token: str
+    expires_in_seconds: int
+
+
+class FanxiuGameWindow2ClickRequest(BaseModel):
+    entry_id: str
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class FanxiuGameWindow2ServiceClickRequest(BaseModel):
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
 
 
 class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
@@ -3762,6 +3822,283 @@ def stream_fanxiu_live_annotation(
         fixed_width=fixed_width,
         fixed_height=fixed_height,
     )
+
+
+def _get_user_device_or_404(session: Session, current_user: User, entry_id: str) -> UserDevice:
+    entry = session.get(UserDevice, entry_id)
+    if not entry or entry.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="Device entry not found")
+    if not entry.is_active:
+        raise HTTPException(status_code=400, detail="Device entry is inactive")
+    return entry
+
+
+def _decode_game_window2_stream_token(session: Session, token: str) -> tuple[UserDevice, User]:
+    credentials_exception = HTTPException(status_code=401, detail="Invalid game window stream token")
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except JWTError as exc:
+        raise credentials_exception from exc
+
+    if payload.get("scope") != FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE:
+        raise credentials_exception
+    username = payload.get("username")
+    entry_id = payload.get("entry_id")
+    if not username or not entry_id:
+        raise credentials_exception
+
+    current_user = session.exec(select(User).where(User.username == username)).first()
+    if current_user is None:
+        raise credentials_exception
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    return _get_user_device_or_404(session, current_user, str(entry_id)), current_user
+
+
+def _remote_entry_base_url(entry: UserDevice) -> str:
+    if entry.mode != "remote" or not entry.server_url:
+        raise HTTPException(status_code=400, detail="远程设备入口未配置后端地址")
+    return entry.server_url.rstrip("/")
+
+
+def _remote_entry_headers(entry: UserDevice) -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {entry.token}",
+        "X-Device-Token": entry.token,
+    }
+
+
+def _game_window2_stream_params(
+    *,
+    title: Optional[str],
+    fps: float,
+    quality: int,
+    mode: str,
+    area: str,
+    crop: Optional[str],
+    trim_border: Optional[str],
+    rotate: str,
+    fixed_width: int,
+    fixed_height: int,
+    auto_dismiss_popup: bool,
+    popup_check_interval: float,
+) -> dict[str, Any]:
+    return {
+        "title": title or "",
+        "fps": fps,
+        "quality": quality,
+        "mode": mode,
+        "area": area,
+        "crop": crop or "",
+        "trim_border": trim_border or "",
+        "rotate": rotate,
+        "fixed_width": fixed_width,
+        "fixed_height": fixed_height,
+        "auto_dismiss_popup": "true" if auto_dismiss_popup else "false",
+        "popup_check_interval": popup_check_interval,
+    }
+
+
+def _extract_stream_error(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()
+    return response.text.strip() or f"画面流服务返回 HTTP {response.status_code}"
+
+
+def _stream_response_from_requests(response: requests.Response) -> StreamingResponse:
+    if response.status_code >= 400:
+        detail = _extract_stream_error(response)
+        response.close()
+        raise HTTPException(status_code=response.status_code, detail=detail)
+
+    return StreamingResponse(
+        response.iter_content(chunk_size=64 * 1024),
+        media_type=response.headers.get("content-type") or "multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+        background=BackgroundTask(response.close),
+    )
+
+
+def _open_remote_game_window2_stream(entry: UserDevice, params: dict[str, Any]) -> requests.Response:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-stream"
+    try:
+        return requests.get(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            params=params,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 60.0),
+            stream=True,
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏画面流不可达：{exc}") from exc
+
+
+def _stream_game_window2_service(params: dict[str, Any]) -> StreamingResponse:
+    try:
+        response = open_game_window_service_stream(params)
+    except GameWindowServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return _stream_response_from_requests(response)
+
+
+def _game_window2_click_payload(req: FanxiuGameWindow2ClickRequest | FanxiuGameWindow2ServiceClickRequest) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
+def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return send_game_window_service_click(payload)
+    except GameWindowServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/click"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 12.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏操作服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程游戏操作服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="远程游戏操作服务响应格式不支持")
+    return data
+
+
+@status_router.post("/game-window2/stream-token", response_model=FanxiuGameWindow2StreamTokenResponse)
+def create_fanxiu_game_window2_stream_token(
+    req: FanxiuGameWindow2StreamTokenRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    _get_user_device_or_404(session, current_user, req.entry_id)
+    expires = timedelta(hours=FANXIU_GAME_WINDOW2_STREAM_TOKEN_EXPIRE_HOURS)
+    token = create_access_token(
+        {
+            "sub": FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE,
+            "scope": FANXIU_GAME_WINDOW2_STREAM_TOKEN_SCOPE,
+            "username": current_user.username,
+            "entry_id": req.entry_id,
+        },
+        expires_delta=expires,
+    )
+    return {
+        "token": token,
+        "expires_in_seconds": int(expires.total_seconds()),
+    }
+
+
+@status_router.get("/game-window2/stream")
+def stream_fanxiu_game_window2(
+    token: str = Query(...),
+    title: Optional[str] = Query(None),
+    fps: float = Query(12.0, ge=1.0, le=30.0),
+    quality: int = Query(82, ge=1, le=100),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("client", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("0", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    auto_dismiss_popup: bool = Query(False),
+    popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
+    session: Session = Depends(get_session),
+):
+    entry, _current_user = _decode_game_window2_stream_token(session, token)
+    params = _game_window2_stream_params(
+        title=title,
+        fps=fps,
+        quality=quality,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+        auto_dismiss_popup=auto_dismiss_popup,
+        popup_check_interval=popup_check_interval,
+    )
+    if entry.mode == "local":
+        return _stream_game_window2_service(params)
+    return _stream_response_from_requests(_open_remote_game_window2_stream(entry, params))
+
+
+@status_router.get("/game-window2/service-stream")
+def stream_fanxiu_game_window2_service(
+    title: Optional[str] = Query(None),
+    fps: float = Query(12.0, ge=1.0, le=30.0),
+    quality: int = Query(82, ge=1, le=100),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("client", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("0", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    auto_dismiss_popup: bool = Query(False),
+    popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
+    _token_device: Any = Depends(verify_api_token),
+):
+    params = _game_window2_stream_params(
+        title=title,
+        fps=fps,
+        quality=quality,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+        auto_dismiss_popup=auto_dismiss_popup,
+        popup_check_interval=popup_check_interval,
+    )
+    return _stream_game_window2_service(params)
+
+
+@status_router.post("/game-window2/input/click")
+def click_fanxiu_game_window2(
+    req: FanxiuGameWindow2ClickRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_click_payload(req)
+    if entry.mode == "local":
+        return _click_game_window2_service(payload)
+    return _click_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-input/click")
+def click_fanxiu_game_window2_service(
+    req: FanxiuGameWindow2ServiceClickRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _click_game_window2_service(_game_window2_click_payload(req))
 
 
 @inventory_router.post("/inventory/spirit-artifact-ranks/recognize", response_model=FanxiuSpiritArtifactRankRecognitionResponse)

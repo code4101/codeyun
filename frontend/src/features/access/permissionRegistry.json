@@ -326,6 +326,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "fanxiu.game-window2",
+      "title": "游戏窗口",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 6,
+      "route_paths": ["/fanxiu/game-window2"],
+      "menu_paths": [],
+      "api_scopes": ["fanxiu.task-status"],
+      "default_anonymous_allow": false
+    },
+    {
       "key": "fanxiu.activity-list",
       "title": "活动列表",
       "node_type": "group",

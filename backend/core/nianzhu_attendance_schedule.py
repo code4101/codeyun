@@ -27,8 +27,9 @@ NIANZHU_CHUANGGUAN_COURSE_NAME = "d250106念住闯关"
 NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID = 21
 
 TRACKING_GROUP_COLUMN = "追踪分组"
+TRACKING_STATUS_COLUMN = "追踪状态"
+FREEZE_TIME_COLUMN = "冻结时间"
 RULE_VERSION_COLUMN = "规则版本"
-ACTIVE_TRACKING_GROUP = "B组"
 CURRENT_RULE = "当前规则"
 LEGACY_AFTER_20250522_RULE = "旧规则-20250522后"
 LEGACY_BEFORE_20250522_RULE = "旧规则-20250522前"
@@ -75,6 +76,23 @@ def _extract_play_count(value: Any) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _is_active_tracking_row(row: list[Any], columns: list[str]) -> bool:
+    mapping = dict(zip(columns, _normalize_row(row, len(columns))))
+    has_status = TRACKING_STATUS_COLUMN in mapping
+    has_freeze_time = FREEZE_TIME_COLUMN in mapping
+    status = sheet_text(mapping.get(TRACKING_STATUS_COLUMN))
+    freeze_time = sheet_text(mapping.get(FREEZE_TIME_COLUMN))
+
+    if has_status or has_freeze_time:
+        if freeze_time:
+            return False
+        if status:
+            return status == "追踪中"
+        return True
+
+    return True
+
+
 def _build_progress_columns(columns: list[str]) -> tuple[list[tuple[int, int]], list[int]]:
     progress_start = next(
         (index for index, header in enumerate(columns) if _extract_lesson_number(header) is not None),
@@ -83,9 +101,16 @@ def _build_progress_columns(columns: list[str]) -> tuple[list[tuple[int, int]], 
     if progress_start < 0:
         raise RuntimeError("考勤表缺少课次进度列")
 
-    progress_end = _find_column_index(columns, TRACKING_GROUP_COLUMN)
-    if progress_end is None:
-        progress_end = len(columns)
+    marker_indexes = [
+        index for index in (
+            _find_column_index(columns, TRACKING_GROUP_COLUMN),
+            _find_column_index(columns, TRACKING_STATUS_COLUMN),
+            _find_column_index(columns, FREEZE_TIME_COLUMN),
+            _find_column_index(columns, RULE_VERSION_COLUMN),
+        )
+        if index is not None and index >= progress_start
+    ]
+    progress_end = min(marker_indexes) if marker_indexes else len(columns)
 
     lesson_columns: list[tuple[int, int]] = []
     non_refund_columns: list[int] = []
@@ -115,7 +140,7 @@ def _apply_nianzhu_attendance_step3_to_sheet(
     if not columns:
         raise RuntimeError("考勤表缺少 columns")
 
-    required_headers = [TRACKING_GROUP_COLUMN, "优秀学员评分", "视频应返款"]
+    required_headers = ["优秀学员评分", "视频应返款"]
     indexes: dict[str, int] = {}
     for header in required_headers:
         index = _find_column_index(columns, header)
@@ -143,7 +168,7 @@ def _apply_nianzhu_attendance_step3_to_sheet(
         next_row = list(row)
         row_changed = False
         document_row = data_start_row + row_index
-        if sheet_text(next_row[indexes[TRACKING_GROUP_COLUMN]]) != ACTIVE_TRACKING_GROUP:
+        if not _is_active_tracking_row(next_row, columns):
             skipped_rows += 1
             next_rows.append(next_row)
             continue

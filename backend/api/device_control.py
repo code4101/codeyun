@@ -27,6 +27,7 @@ from backend.core.trusted_python_runs import get_trusted_python_run, start_trust
 from backend.core.fanbei_attendance_schedule import (
     FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
     FANBEI_ATTENDANCE_COURSE_NAME,
+    _run_fanbei_attendance_step2_local,
     run_fanbei_attendance_step3_for_sheet,
 )
 from backend.core.nianzhu_attendance_schedule import (
@@ -36,6 +37,7 @@ from backend.core.nianzhu_attendance_schedule import (
 )
 from backend.core.nianzhu_course_sheets import (
     NIANZHU_WORKBOOK_NUMERIC_ID,
+    compact_nianzhu_course_sheet_step2,
     materialize_nianzhu_course_sheets,
     rebuild_nianzhu_attendance_from_course_sheets,
     run_nianzhu_course_sheet_step1,
@@ -279,6 +281,10 @@ class AttendanceFanbeiStep2Request(BaseModel):
     clockin_titles: List[str] = Field(default_factory=list)
 
 
+class AttendanceFanbeiStep2RunRequest(BaseModel):
+    execution_device: Optional[Dict[str, Any]] = None
+
+
 class AttendanceFanbeiStep3Request(BaseModel):
     sheet_id: int = FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID
     course_name: str = FANBEI_ATTENDANCE_COURSE_NAME
@@ -299,6 +305,12 @@ class AttendanceNianzhuStep1Request(BaseModel):
     update_clockins: bool = True
     clockin_pattern: str = ""
     close_browser: bool = True
+
+
+class AttendanceNianzhuStep2Request(BaseModel):
+    attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    rebuild: bool = False
+    include_frozen: bool = False
 
 
 class AttendanceNianzhuCourseSheetsRequest(BaseModel):
@@ -373,6 +385,16 @@ def build_attendance_fanbei_step2_data(req: AttendanceFanbeiStep2Request):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/attendance/fanbei/step2")
+def run_attendance_fanbei_step2(req: AttendanceFanbeiStep2RunRequest | None = None):
+    req = req or AttendanceFanbeiStep2RunRequest()
+    try:
+        message = _run_fanbei_attendance_step2_local(req.execution_device)
+        return {"message": message}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/attendance/fanbei/step3")
 def run_attendance_fanbei_step3(req: AttendanceFanbeiStep3Request | None = None):
     req = req or AttendanceFanbeiStep3Request()
@@ -406,6 +428,33 @@ def run_attendance_nianzhu_step1(req: AttendanceNianzhuStep1Request | None = Non
                 )
                 session.commit()
                 return summary
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/nianzhu/step2")
+def run_attendance_nianzhu_step2(req: AttendanceNianzhuStep2Request | None = None):
+    req = req or AttendanceNianzhuStep2Request()
+    try:
+        from backend.db import engine
+
+        with Session(engine) as session:
+            step2_summary = compact_nianzhu_course_sheet_step2(
+                session,
+                attendance_sheet_id=req.attendance_sheet_id,
+            )
+            rebuild_summary = None
+            if req.rebuild:
+                rebuild_summary = rebuild_nianzhu_attendance_from_course_sheets(
+                    session,
+                    attendance_sheet_id=req.attendance_sheet_id,
+                    active_only=not req.include_frozen,
+                )
+            session.commit()
+            return {
+                "step2": step2_summary,
+                "rebuild": rebuild_summary,
+            }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -31,6 +31,7 @@ def test_admin_background_tasks_status_lists_managed_tasks(client):
         "auto_git_commit",
         "note_metadata_feedback_optimization",
         "codex_diary_yesterday_import",
+        "ruanyf_weekly_note",
         "attendance_summary_monthly_templates",
         "media_sync_home_discovery",
         "attendance_fanbei_evening_steps",

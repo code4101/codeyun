@@ -216,7 +216,9 @@ def build_ocr_labelme_document_from_payload(
 
 def _apply_ocr_runtime_environment(*, device: str) -> None:
     os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-    if device == "cpu" and sys.platform.startswith("win"):
+    if sys.platform.startswith("win"):
+        # PaddleOCR may silently fall back from GPU to CPU on Windows. Keep the
+        # CPU fallback on the safer non-MKLDNN path unless explicitly overridden.
         os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "False")
 
 
@@ -562,6 +564,19 @@ ocr_service_manager = PaddleOcrServiceManager()
 
 
 def run_paddle_ocr_preview(
+    image_path: Path,
+    *,
+    shape_type: OcrShapeType = "polygon",
+    options: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from backend.core.ocr_service_runtime import predict_via_ocr_service, should_use_inline_ocr
+
+    if not should_use_inline_ocr():
+        return predict_via_ocr_service(Path(image_path), shape_type=shape_type, options=options)
+    return run_local_paddle_ocr_preview(Path(image_path), shape_type=shape_type, options=options)
+
+
+def run_local_paddle_ocr_preview(
     image_path: Path,
     *,
     shape_type: OcrShapeType = "polygon",

@@ -28,7 +28,6 @@ import {
   setAttendanceRowCompleted,
   startNoteSheetRegistrationMatchRun,
   updateAttendanceLinkCounts,
-  updateNoteSheetRegistrationOrderMatch,
   type AttendanceLinkCountFieldKey,
   type AttendanceCourseScriptStatusItem,
   type NoteSheetAccessCapabilities,
@@ -127,6 +126,8 @@ const FORMULA_CELL_REFERENCE_RE = /(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(
 const MULTI_TEXT_ITEM_SEPARATOR_RE = /[,\uFF0C\u3001;\uFF1B\r\n]+/g
 const ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
 const ATTENDANCE_SUMMARY_SHEET_ID = 4
+const NIANZHU_CHUANGGUAN_WORKBOOK_ID = 7
+const NIANZHU_CHUANGGUAN_TITLE_KEYWORD = '念住闯关'
 const ATTENDANCE_WJX_DATA_TITLE = '问卷数据'
 const ATTENDANCE_WJX_SEQUENCE_HEADER = '序号'
 const ATTENDANCE_WJX_AI_HEADER = 'AI初判'
@@ -160,6 +161,7 @@ const SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = 'excel_import_reset'
 const SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT = 'registration_add_student'
 const SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = 'registration_order_match'
 const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
+const SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = 'registration_composite_update'
 const ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY = 'codeyun.noteSheet.rowDetailDialog.size.v1'
 const ROW_DETAIL_DIALOG_DEFAULT_WIDTH = 760
 const ROW_DETAIL_DIALOG_DEFAULT_HEIGHT = 760
@@ -171,9 +173,15 @@ const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT]: '新增学员',
   [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]: '更新订单匹配',
   [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]: '更新用户匹配',
+  [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]: '综合更新',
 } as const
 const EXCEL_IMPORT_ACTION_LABEL = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]
+const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据'
+const EXCEL_IMPORT_APPEND_BUTTON_LABEL = '添加新表数据'
+const SHEET_CELL_ACTION_BUTTON_TRIGGER_GUARD_MS = 700
 const REGISTRATION_MATCH_RUN_POLL_MS = 2000
+const REGISTRATION_ORDER_MATCH_HEADERS = ['订单日期', '商户订单号', '订单金额', '已返款']
+const REGISTRATION_USER_MATCH_HEADERS = ['用户ID', '匹配得分']
 const ATTENDANCE_FIELD_BINDINGS = {
   courseType: { header: '课程类型', fallbackIndex: 0 },
   onlineSheet: { header: '在线考勤表', fallbackIndex: 2 },
@@ -924,6 +932,7 @@ type SheetPagePatchState = {
   rowOffset: number
   loadedRowCount: number
   rowIndexes?: number[] | null
+  deletedRowIndexes?: number[] | null
 }
 
 type FormulaCellModel = {
@@ -986,6 +995,7 @@ interface Props {
   workbookId?: number | null
   inlineDocument?: Record<string, unknown> | null
   inlineTitle?: string
+  initialDetail?: NoteSheetDetail | null
   initialWorkspaceView?: SheetWorkspaceView | null
   accessCapabilities?: NoteSheetAccessCapabilities | null
   showBackButton?: boolean
@@ -999,10 +1009,17 @@ interface Props {
   defaultHeightMode?: SheetHeightMode | null
 }
 
+type RestoreInitialDocumentOptions = {
+  preserveContent?: boolean
+  clearOnError?: boolean
+  initialDetail?: NoteSheetDetail | null
+}
+
 const props = withDefaults(defineProps<Props>(), {
   workbookId: null,
   inlineDocument: null,
   inlineTitle: '未命名表格',
+  initialDetail: null,
   initialWorkspaceView: null,
   accessCapabilities: null,
   showBackButton: false,
@@ -1055,6 +1072,7 @@ const unfilteredTotalRowCount = ref(0)
 const pageRowOffset = ref(0)
 const pageLoadedRowCount = ref(0)
 const pageRowIndexes = ref<number[] | null>(null)
+const pendingDeletedPageRowIndexes = ref<number[]>([])
 
 const storageKey = computed(() => (
   `notes.sheet.${props.sheetId ?? 'empty'}.page.${currentPage.value}.size.${pageSize.value}.draft.v2`
@@ -1105,7 +1123,7 @@ const excelImportRunningMode = ref<NoteSheetExcelImportMode | null>(null)
 const excelImportRunning = computed(() => excelImportRunningMode.value !== null)
 const excelImportActionCell = ref<{ documentRow: number; column: number } | null>(null)
 const userMatchDialogVisible = ref(false)
-const userMatchUseBrowserFallback = ref(false)
+const userMatchUseBrowserFallback = ref(true)
 const userMatchStartPending = ref(false)
 const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(null)
 const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
@@ -1126,17 +1144,30 @@ function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunRespons
   return run?.status === 'pending' || run?.status === 'running'
 }
 
-const activeUserMatchRun = computed(() => isRegistrationMatchRunActive(userMatchRunStatus.value))
+function isRegistrationAsyncAction(type: SheetCellActionType) {
+  return (
+    type === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+    || type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+    || type === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
+  )
+}
+
+const activeRegistrationActionRun = computed(() => isRegistrationMatchRunActive(userMatchRunStatus.value))
+const activeUserMatchRun = computed(() => (
+  activeRegistrationActionRun.value
+  && userMatchRunStatus.value?.action === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+))
 const userMatchRunSummary = computed(() => {
   const run = userMatchRunStatus.value
   if (!run || run.status === 'idle') {
     return ''
   }
+  const actionLabel = SHEET_CELL_ACTION_LABELS[run.action as SheetCellActionType] || '任务'
   if (run.status === 'failed') {
-    return run.error_message || run.message || '上次用户匹配失败'
+    return run.error_message || run.message || `${actionLabel}失败`
   }
   if (run.status === 'cancelled') {
-    return run.message || '上次用户匹配已取消'
+    return run.message || `${actionLabel}已取消`
   }
   if (run.status === 'completed') {
     const errorSuffix = run.error_count ? `，${run.error_count} 行异常` : ''
@@ -1145,7 +1176,7 @@ const userMatchRunSummary = computed(() => {
   const total = run.total_count || 0
   const progress = total ? `${run.processed_count}/${total}` : `${run.processed_count}`
   const fallbackSuffix = run.use_browser_fallback ? '，含小鹅通兜底' : ''
-  return `后台匹配中：${progress}，已更新 ${run.updated_count} 行${fallbackSuffix}`
+  return `${actionLabel}中：${progress}，已更新 ${run.updated_count} 行${fallbackSuffix}`
 })
 const rowDetailDialogTitle = computed(() => (
   rowDetail.value?.rowLabel ? `第 ${rowDetail.value.rowLabel} 行` : '单独显示此条'
@@ -1302,6 +1333,7 @@ const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
 const sheetLoadSettled = ref(props.sheetId == null)
 const sheetLoadErrorText = ref('')
+let restoreInitialDocumentSeq = 0
 let columnFilterOptionRequestSeq = 0
 let readOnlyActionWarningSuppressTimer: number | null = null
 let readOnlyActionWarningsSuppressedForRender = false
@@ -2162,6 +2194,15 @@ const sheetWorkspaceViewOptions = computed<SheetWorkspaceViewOption[]>(() => {
   return options
 })
 const shouldShowSheetWorkspaceViewSelect = computed(() => sheetWorkspaceViewOptions.value.length > 1)
+const currentWorkbookTitle = computed(() => {
+  const matchedWorkbook = sheetWorkbookItems.value.find((item) => item.id === props.workbookId)
+  return normalizeCellValue(matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || '').trim()
+})
+const isNianzhuChuangguanWorkbook = computed(() => (
+  props.workbookId === NIANZHU_CHUANGGUAN_WORKBOOK_ID
+  || currentWorkbookTitle.value.includes(NIANZHU_CHUANGGUAN_TITLE_KEYWORD)
+))
+const shouldShowExcelImportResetButton = computed(() => !isNianzhuChuangguanWorkbook.value)
 const studentLookupPrimaryLabel = computed(() => (isStudentLookupQuestionnaireMode.value ? '序号' : '学员'))
 const studentLookupEmptyText = computed(() => (
   isStudentLookupQuestionnaireMode.value ? '选择序号后显示完整信息' : '选择学员后显示完整信息'
@@ -2200,8 +2241,7 @@ const selectedStudentLookupDetail = computed(() => {
   return option ? buildRowDetail(option.rowIndex) : null
 })
 const studentLookupFeedbackCourseName = computed(() => {
-  const matchedWorkbook = sheetWorkbookItems.value.find((item) => item.id === props.workbookId)
-  return normalizeCellValue(matchedWorkbook?.title || sheetWorkbookItems.value[0]?.title || sheetTitle.value || '').trim()
+  return normalizeCellValue(currentWorkbookTitle.value || sheetTitle.value || '').trim()
 })
 const studentLookupFeedbackStudentId = computed(() => (
   normalizeCellValue(selectedStudentLookupOption.value?.studentNumber).trim()
@@ -3756,6 +3796,7 @@ let changeSerial = 0
 let lastQueuedSerial = 0
 let savedChangeSerial = 0
 let saveInFlight = false
+let saveInFlightPromise: Promise<void> | null = null
 let sheetLayoutObserver: ResizeObserver | null = null
 let rowDetailDialogResizeObserver: ResizeObserver | null = null
 let rowDetailDialogResizeInitialized = false
@@ -4595,7 +4636,7 @@ function clearUserMatchRunPollTimer() {
 function scheduleUserMatchRunPolling() {
   clearUserMatchRunPollTimer()
   const runId = userMatchRunStatus.value?.run_id
-  if (!runId || !activeUserMatchRun.value || props.sheetId == null) {
+  if (!runId || !activeRegistrationActionRun.value || props.sheetId == null) {
     return
   }
   userMatchRunPollTimer = setTimeout(() => {
@@ -4612,14 +4653,21 @@ function notifyUserMatchRunTerminalStatus(run: NoteSheetRegistrationMatchRunResp
   }
   lastNotifiedUserMatchRunId = run.run_id
   lastNotifiedUserMatchRunStatus = run.status
+  const actionLabel = SHEET_CELL_ACTION_LABELS[run.action as SheetCellActionType] || '任务'
 
   if (run.status === 'completed') {
-    const errorSuffix = run.error_count ? `，${run.error_count} 行异常` : ''
-    ElMessage.success(`${run.message || '用户匹配已完成'}${errorSuffix}`)
+    const warningCount = Number(run.warning_count || 0)
+    const hasNoEffectiveUpdate = !run.updated_count && (run.total_count > 0 || run.skipped_count > 0)
+    const message = run.message || `${actionLabel}已完成`
+    if (run.error_count || warningCount || hasNoEffectiveUpdate) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message)
+    }
   } else if (run.status === 'failed') {
-    ElMessage.error(run.error_message || run.message || '用户匹配失败')
+    ElMessage.error(run.error_message || run.message || `${actionLabel}失败`)
   } else if (run.status === 'cancelled') {
-    ElMessage.warning(run.message || '用户匹配已取消')
+    ElMessage.warning(run.message || `${actionLabel}已取消`)
   }
 }
 
@@ -4632,7 +4680,7 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
       ? await fetchNoteSheetRegistrationMatchRun(props.sheetId, runId, { workbookId: props.workbookId })
       : await fetchNoteSheetActiveRegistrationMatchRun(
         props.sheetId,
-        SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+        undefined,
         { workbookId: props.workbookId },
       )
 
@@ -4640,9 +4688,8 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
     if (status.status !== 'idle') {
       userMatchUseBrowserFallback.value = status.use_browser_fallback
     }
-    if (status.sheet) {
-      applyUserMatchRunSheetDetail(status.sheet)
-    }
+    applyRegistrationActionRunSheetDetail(status)
+    getHotInstance()?.render()
     if (isRegistrationMatchRunActive(status)) {
       scheduleUserMatchRunPolling()
     } else {
@@ -4656,7 +4703,7 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
     clearUserMatchRunPollTimer()
     console.warn('Failed to refresh registration user match run', error)
     if (!options.silent) {
-      ElMessage.error(getSheetActionErrorMessage(error, '刷新用户匹配状态失败'))
+      ElMessage.error(getSheetActionErrorMessage(error, '刷新任务状态失败'))
     }
     return null
   }
@@ -4695,7 +4742,7 @@ function openUserMatchDialog() {
     return
   }
   if (!activeUserMatchRun.value) {
-    userMatchUseBrowserFallback.value = false
+    userMatchUseBrowserFallback.value = true
   }
   userMatchDialogVisible.value = true
   void refreshUserMatchRunStatus(undefined, { silent: true })
@@ -4704,7 +4751,7 @@ function openUserMatchDialog() {
 function closeUserMatchDialog() {
   userMatchDialogVisible.value = false
   if (!activeUserMatchRun.value) {
-    userMatchUseBrowserFallback.value = false
+    userMatchUseBrowserFallback.value = true
   }
 }
 
@@ -4737,14 +4784,15 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
       },
       { workbookId: props.workbookId },
     )
-    applyRemoteSheetDetail(result.sheet)
+    clearDraftStorage()
+    await restoreInitialDocument({ preserveContent: false })
     const extraColumnSuffix = result.extra_columns.length
       ? `，追加 ${result.extra_columns.length} 列`
       : ''
     const warningSuffix = result.warnings.length ? `，${result.warnings[0]}` : ''
     const modeText = mode === 'append'
-      ? `已在末尾插入 ${result.imported_count} 行文件数据`
-      : `已清空后导入 ${result.imported_count} 行`
+      ? `已添加 ${result.imported_count} 行新表数据`
+      : `已清空原表数据并导入 ${result.imported_count} 行新表数据`
     ElMessage.success(`${modeText}${extraColumnSuffix}${warningSuffix}`)
     closeExcelImportDialog(true)
   } catch (error) {
@@ -4762,10 +4810,15 @@ async function applyRegistrationMatchAction(
   if (
     type !== SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
     && type !== SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+    && type !== SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
   ) {
     return
   }
   if (props.sheetId == null) {
+    return
+  }
+  if (activeRegistrationActionRun.value) {
+    ElMessage.info(userMatchRunSummary.value || '已有报名表任务正在运行')
     return
   }
   if (type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
@@ -4784,10 +4837,23 @@ async function applyRegistrationMatchAction(
   try {
     commitPendingSheetGridEdit()
     await flushRemoteSave()
-    const result = await updateNoteSheetRegistrationOrderMatch(props.sheetId, { workbookId: props.workbookId })
-    applyRemoteSheetDetail(result.sheet)
-    const errorSuffix = result.error_count ? `，${result.error_count} 行异常` : ''
-    ElMessage.success(`${result.message || SHEET_CELL_ACTION_LABELS[type]}${errorSuffix}`)
+    const status = await startNoteSheetRegistrationMatchRun(
+      props.sheetId,
+      {
+        action: type,
+        useBrowserFallback: options.useBrowserFallback ?? true,
+      },
+      { workbookId: props.workbookId },
+    )
+    userMatchRunStatus.value = status
+    applyRegistrationActionRunSheetDetail(status)
+    getHotInstance()?.render()
+    ElMessage.success(status.already_running ? '已有报名表任务正在运行' : `已在后台开始${SHEET_CELL_ACTION_LABELS[type]}`)
+    if (isRegistrationMatchRunActive(status)) {
+      scheduleUserMatchRunPolling()
+    } else {
+      notifyUserMatchRunTerminalStatus(status)
+    }
   } catch (error) {
     console.warn('Failed to run note sheet action', error)
     ElMessage.error(getSheetActionErrorMessage(error, '执行动作失败'))
@@ -4807,6 +4873,10 @@ async function startUserMatchRun(forceRestart = false, useBrowserFallback = user
   if (userMatchStartPending.value) {
     return
   }
+  if (activeRegistrationActionRun.value && !forceRestart) {
+    ElMessage.info(userMatchRunSummary.value || '已有报名表任务正在运行')
+    return
+  }
 
   userMatchStartPending.value = true
   try {
@@ -4823,9 +4893,8 @@ async function startUserMatchRun(forceRestart = false, useBrowserFallback = user
     )
     userMatchRunStatus.value = status
     userMatchUseBrowserFallback.value = status.use_browser_fallback
-    if (status.sheet) {
-      applyUserMatchRunSheetDetail(status.sheet)
-    }
+    applyRegistrationActionRunSheetDetail(status)
+    getHotInstance()?.render()
     closeUserMatchDialog()
     ElMessage.success(status.already_running ? '已有用户匹配任务正在运行' : '已在后台开始用户匹配')
     if (isRegistrationMatchRunActive(status)) {
@@ -4850,11 +4919,43 @@ function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: 
     addRegistrationStudentRow()
     return
   }
+  if (isRegistrationAsyncAction(action.type) && activeRegistrationActionRun.value) {
+    ElMessage.info(userMatchRunSummary.value || '已有报名表任务正在运行')
+    return
+  }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
     openUserMatchDialog()
     return
   }
   void applyRegistrationMatchAction(action.type)
+}
+
+let sheetCellActionButtonTriggerGuardUntil = 0
+
+function stopSheetCellActionButtonEvent(event: Event) {
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+}
+
+function triggerSheetCellActionButtonFromEvent(
+  event: Event,
+  action: SheetCellAction,
+  actionCell: { documentRow: number; column: number },
+) {
+  if (event instanceof MouseEvent && event.button !== 0) {
+    return false
+  }
+
+  const now = Date.now()
+  stopSheetCellActionButtonEvent(event)
+  if (now < sheetCellActionButtonTriggerGuardUntil) {
+    return true
+  }
+
+  sheetCellActionButtonTriggerGuardUntil = now + SHEET_CELL_ACTION_BUTTON_TRIGGER_GUARD_MS
+  runSheetCellAction(action, actionCell)
+  return true
 }
 
 function createEmptyRow(columnCount = columnHeaders.value.length): SheetRow {
@@ -5364,6 +5465,7 @@ function resetWorkspaceState() {
   studentLookupGroup.value = ''
   studentLookupStudentKey.value = ''
   unfilteredTotalRowCount.value = 0
+  pendingDeletedPageRowIndexes.value = []
   sheetSettingsDialogVisible.value = false
   sheetSettingsDraft.value = createDefaultSheetViewSettings(getDefaultSheetHeightMode())
   sheetSettingsColumnFilterDraft.value = {}
@@ -5372,7 +5474,7 @@ function resetWorkspaceState() {
   closeExcelImportDialog()
   clearUserMatchRunPollTimer()
   userMatchDialogVisible.value = false
-  userMatchUseBrowserFallback.value = false
+  userMatchUseBrowserFallback.value = true
   userMatchStartPending.value = false
   userMatchRunStatus.value = null
   sheetCellActionRunning.value = null
@@ -6245,6 +6347,7 @@ function normalizeLegacySheetCellActionType(value: unknown): SheetCellActionType
     [SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT]],
     [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]],
     [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]],
+    [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]],
   ]
   const matched = legacyLabels.find(([, label]) => compactValue === label.replace(/\s+/g, '').toLowerCase())
   return matched?.[0] ?? null
@@ -6329,6 +6432,56 @@ function addDefaultRegistrationAddStudentAction(
       action: {
         type: SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT,
         label: SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT],
+      },
+    }
+    return normalizeCellMetaMap(nextMeta, headers.length)
+  }
+
+  return sourceMeta
+}
+
+function addDefaultRegistrationCompositeUpdateAction(
+  sourceMeta: SheetCellMetaMap,
+  normalizedGridRows: SheetRow[],
+  headers: string[],
+  dataStartRow: number,
+) {
+  const scoreColumn = headers.findIndex((header) => normalizeCellValue(header).trim() === '匹配得分')
+  if (
+    scoreColumn < 0
+    || !headers.some((header) => normalizeCellValue(header).trim() === '用户ID')
+    || !headers.some((header) => normalizeCellValue(header).trim() === '微信支付订单号')
+  ) {
+    return sourceMeta
+  }
+
+  const prefixRowCount = Math.min(Math.max(dataStartRow, 0), normalizedGridRows.length)
+  const nextMeta: SheetCellMetaMap = { ...sourceMeta }
+  for (let rowIndex = 0; rowIndex < prefixRowCount; rowIndex += 1) {
+    const row = normalizedGridRows[rowIndex]
+    const hasRegistrationAction = row.some((value, columnIndex) => {
+      const key = createCellMetaKey(rowIndex, columnIndex)
+      const actionType = nextMeta[key]?.action?.type || normalizeLegacySheetCellActionType(value)
+      return (
+        actionType === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+        || actionType === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+        || actionType === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET
+      )
+    })
+    if (!hasRegistrationAction) {
+      continue
+    }
+
+    const key = createCellMetaKey(rowIndex, scoreColumn)
+    const currentMeta = nextMeta[key]
+    if (currentMeta?.action || normalizeCellValue(row[scoreColumn]).trim()) {
+      return sourceMeta
+    }
+    nextMeta[key] = {
+      ...(currentMeta ?? {}),
+      action: {
+        type: SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
+        label: SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE],
       },
     }
     return normalizeCellMetaMap(nextMeta, headers.length)
@@ -7296,11 +7449,16 @@ function normalizeSheetDocument(
           : normalizeCellMetaMap(record.cell_meta, headers.length)
       )
     : shiftCellMetaRowKeys(record.cell_meta, dataStartRow, headers.length)
-  const normalizedCellMeta = addDefaultRegistrationAddStudentAction(
-    addLegacySheetCellActions(
-      sourceCellMeta,
+  const normalizedCellMeta = addDefaultRegistrationCompositeUpdateAction(
+    addDefaultRegistrationAddStudentAction(
+      addLegacySheetCellActions(
+        sourceCellMeta,
+        normalizedGridRows,
+        headers.length,
+      ),
       normalizedGridRows,
-      headers.length,
+      headers,
+      dataStartRow,
     ),
     normalizedGridRows,
     headers,
@@ -9884,27 +10042,77 @@ function getCellActionDisplayLabel(action: SheetCellAction, rawText: string) {
 
 function getCellActionTitle(action: SheetCellAction) {
   if (action.type === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
-    return '导入 Excel：可在末尾插入文件数据，也可清空后导入'
+    return '用 AI 识别新 Excel 的字段与格式，并按当前表格结构标准化导入'
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
-    return '新增学员：添加一条空白学员记录并打开详情编辑'
+    return '添加一条空白学员记录并打开详情编辑'
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH) {
-    return '更新订单匹配：按微信支付订单号补全订单日期、商户订单号、订单金额和已返款'
+    return '按微信支付订单号补全订单日期、商户订单号、订单金额和已返款'
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
-    return '更新用户匹配：默认查本地用户库，可选择 codepc_mi15 小鹅通兜底'
+    return '本地用户库优先，未命中时可用 codepc_mi15 小鹅通兜底'
+  }
+  if (action.type === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE) {
+    return '补齐订单信息和用户ID，本地未命中时用 codepc_mi15 实时回查，并把新学员同步到考勤表'
   }
   return ''
 }
 
-function renderCellActionButton(TD: HTMLTableCellElement, label: string) {
+function getActiveRegistrationRunForAction(actionType: SheetCellActionType) {
+  const run = userMatchRunStatus.value
+  if (!run || !isRegistrationMatchRunActive(run) || !isRegistrationAsyncAction(actionType)) {
+    return null
+  }
+  return run
+}
+
+function isCellActionBlockedByActiveRun(actionType: SheetCellActionType) {
+  return !!getActiveRegistrationRunForAction(actionType)
+}
+
+function getCellActionRunningLabel(action: SheetCellAction, label: string) {
+  const run = getActiveRegistrationRunForAction(action.type)
+  if (!run || run.action !== action.type) {
+    return label
+  }
+  return `${SHEET_CELL_ACTION_LABELS[action.type] || label}中`
+}
+
+function renderCellActionButton(
+  TD: HTMLTableCellElement,
+  label: string,
+  action: SheetCellAction,
+  actionCell: { documentRow: number; column: number },
+) {
   TD.textContent = ''
   const button = document.createElement('button')
   button.type = 'button'
   button.tabIndex = -1
   button.className = 'sheet-cell-action-button-inner'
-  button.textContent = label
+  button.title = getCellActionTitle(action)
+  const activeRun = getActiveRegistrationRunForAction(action.type)
+  const isRunningSelf = !!activeRun && activeRun.action === action.type
+  const isBlocked = isCellActionBlockedByActiveRun(action.type)
+  if (isRunningSelf) {
+    button.classList.add('is-running')
+  } else if (isBlocked) {
+    button.classList.add('is-disabled')
+    button.disabled = true
+  }
+  button.textContent = getCellActionRunningLabel(action, label)
+  const trigger = (event: Event) => {
+    triggerSheetCellActionButtonFromEvent(event, action, actionCell)
+  }
+  button.addEventListener('pointerdown', (event) => {
+    if (event.pointerType === 'mouse') {
+      return
+    }
+    trigger(event)
+  }, { capture: true })
+  button.addEventListener('touchstart', trigger, { capture: true })
+  button.addEventListener('mousedown', trigger, { capture: true })
+  button.addEventListener('click', trigger, { capture: true })
   TD.appendChild(button)
 }
 
@@ -9938,6 +10146,9 @@ function buildCurrentPagePatchState(): SheetPagePatchState {
     rowOffset: pageRowOffset.value,
     loadedRowCount: pageLoadedRowCount.value,
     rowIndexes: pageRowIndexes.value ? [...pageRowIndexes.value] : null,
+    deletedRowIndexes: pendingDeletedPageRowIndexes.value.length
+      ? [...pendingDeletedPageRowIndexes.value]
+      : null,
   }
 }
 
@@ -9954,6 +10165,7 @@ function normalizeDraftPageState(source: unknown): SheetPagePatchState | null {
     rowOffset: normalizeNonNegativeInt(record.rowOffset, pageRowOffset.value),
     loadedRowCount: normalizeNonNegativeInt(record.loadedRowCount, pageLoadedRowCount.value),
     rowIndexes: normalizePaginationRowIndexes(record.rowIndexes),
+    deletedRowIndexes: normalizePaginationDeletedRowIndexes(record.deletedRowIndexes),
   }
 }
 
@@ -9965,6 +10177,21 @@ function arePaginationRowIndexesEqual(left?: number[] | null, right?: number[] |
   }
   return normalizedLeft.length === normalizedRight.length
     && normalizedLeft.every((item, index) => item === normalizedRight[index])
+}
+
+function areDraftPaginationRowIndexesCompatible(pageState: SheetPagePatchState) {
+  if (arePaginationRowIndexesEqual(pageState.rowIndexes, pageRowIndexes.value)) {
+    return true
+  }
+  const deletedRowIndexes = pageState.deletedRowIndexes ?? []
+  if (!deletedRowIndexes.length || !pageState.rowIndexes || !pageRowIndexes.value) {
+    return false
+  }
+  const reconstructed = normalizePaginationDeletedRowIndexes([
+    ...pageState.rowIndexes,
+    ...deletedRowIndexes,
+  ])
+  return arePaginationRowIndexesEqual(reconstructed, pageRowIndexes.value)
 }
 
 function isSamePagePatchState(pageState: SheetPagePatchState | null) {
@@ -9979,7 +10206,7 @@ function isSamePagePatchState(pageState: SheetPagePatchState | null) {
       || (
     pageState.page === currentPage.value
     && pageState.pageSize === pageSize.value
-    && arePaginationRowIndexesEqual(pageState.rowIndexes, pageRowIndexes.value)
+    && areDraftPaginationRowIndexesCompatible(pageState)
       )
     )
   )
@@ -11925,6 +12152,10 @@ function isSheetCellActionButtonMouseTarget(event: MouseEvent) {
   return target instanceof Element && !!target.closest('.sheet-cell-action-button-inner')
 }
 
+function shouldTriggerSheetCellActionFromMouseEvent(event: MouseEvent) {
+  return isSheetCellActionButtonMouseTarget(event) || touchContextMenuFallbackEnabled.value
+}
+
 function normalizeHotSelectionRange(value: unknown): SheetSelectionRange | null {
   if (!Array.isArray(value) || value.length < 4) {
     return null
@@ -12258,10 +12489,9 @@ function handleBeforeCellMouseDown(
   const sheetCellAction = event.button === 0
     ? getSheetCellActionAtDocumentCell(anchor.documentRow, anchor.column)
     : null
-  if (sheetCellAction && isSheetCellActionButtonMouseTarget(event)) {
-    event.preventDefault()
-    event.stopPropagation()
-    runSheetCellAction(sheetCellAction, {
+  if (sheetCellAction && shouldTriggerSheetCellActionFromMouseEvent(event)) {
+    disableNativeCellSelection(controller)
+    triggerSheetCellActionButtonFromEvent(event, sheetCellAction, {
       documentRow: anchor.documentRow,
       column: anchor.column,
     })
@@ -12645,7 +12875,10 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
     TD.classList.add('sheet-cell-has-action')
     applyHeaderCellStyle(column, TD as unknown as HTMLTableHeaderCellElement, row)
     applyCellMetaStyle(TD, getCellStyleAt(documentRow, column))
-    renderCellActionButton(TD, getCellActionDisplayLabel(action, value))
+    renderCellActionButton(TD, getCellActionDisplayLabel(action, value), action, {
+      documentRow,
+      column,
+    })
     const actionTitle = getCellActionTitle(action)
     if (actionTitle) {
       TD.title = actionTitle
@@ -13049,6 +13282,32 @@ function normalizePaginationRowIndexes(value: unknown) {
     .filter((item) => Number.isInteger(item) && item >= 0)
 }
 
+function normalizePaginationDeletedRowIndexes(value: unknown) {
+  const indexes = normalizePaginationRowIndexes(value)
+  if (!indexes) {
+    return null
+  }
+  return Array.from(new Set(indexes)).sort((left, right) => left - right)
+}
+
+function addPendingDeletedPageRowIndexes(indexes: number[]) {
+  if (!indexes.length) {
+    return
+  }
+  pendingDeletedPageRowIndexes.value = normalizePaginationDeletedRowIndexes([
+    ...pendingDeletedPageRowIndexes.value,
+    ...indexes,
+  ]) ?? []
+}
+
+function removePendingDeletedPageRowIndexes(indexes: number[]) {
+  if (!indexes.length || !pendingDeletedPageRowIndexes.value.length) {
+    return
+  }
+  const removed = new Set(indexes)
+  pendingDeletedPageRowIndexes.value = pendingDeletedPageRowIndexes.value.filter((index) => !removed.has(index))
+}
+
 function applyPaginationState(pagination?: NoteSheetPaginationState | null) {
   if (!pagination) {
     currentPage.value = 1
@@ -13083,18 +13342,24 @@ function buildUpdatePagePatch() {
     return undefined
   }
 
+  const rowIndexes = pageRowIndexes.value !== null && pageRowIndexes.value.length === rows.value.length
+    ? [...pageRowIndexes.value]
+    : undefined
+  const deletedRowIndexes = pendingDeletedPageRowIndexes.value.length
+    ? [...pendingDeletedPageRowIndexes.value]
+    : undefined
+
   return {
     page: currentPage.value,
     page_size: pageSize.value,
     row_offset: pageRowOffset.value,
     loaded_row_count: pageLoadedRowCount.value,
-    row_indexes: pageRowIndexes.value && pageRowIndexes.value.length === rows.value.length
-      ? [...pageRowIndexes.value]
-      : undefined,
+    row_indexes: rowIndexes,
+    deleted_row_indexes: deletedRowIndexes,
   }
 }
 
-async function saveDocumentSnapshot(document: SheetDocument) {
+async function saveDocumentSnapshot(document: SheetDocument, pagePatch = buildUpdatePagePatch()) {
   if (props.sheetId == null || !canPersistSheet.value) {
     return null
   }
@@ -13102,7 +13367,8 @@ async function saveDocumentSnapshot(document: SheetDocument) {
   return updateNoteSheet(props.sheetId, {
     title: sheetTitle.value.trim() || '未命名表格',
     document_json: document,
-    page_patch: buildUpdatePagePatch(),
+    base_version: Number(sheetVersion.value || 1),
+    page_patch: pagePatch,
   }, {
     workbookId: props.workbookId,
   })
@@ -13128,6 +13394,7 @@ function applyRemoteSheetDetail(detail: NoteSheetDetail) {
     sheetTitle.value = detail.title || '未命名表格'
     sheetVersion.value = Number(detail.version || 1)
     applyPaginationState(detail.pagination)
+    pendingDeletedPageRowIndexes.value = []
     emitSheetSync(detail)
     loadSheetDocument(normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode()))
     sheetContentReady.value = true
@@ -13162,6 +13429,7 @@ function applyInlineSheetDocument() {
     sheetVersion.value = 0
     loadSheetDocument(normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()))
     applyPaginationState(null)
+    pendingDeletedPageRowIndexes.value = []
     sheetContentReady.value = true
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
@@ -13181,20 +13449,17 @@ function findHeaderIndex(headers: string[], target: string) {
   return headers.findIndex((header) => normalizeCellValue(header).trim() === target)
 }
 
-function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
+function applyRegistrationRunSheetColumns(detail: NoteSheetDetail, headersToSync: string[]) {
   const remoteDocument = normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode())
   const remoteColumns = normalizeHeaders(remoteDocument.columns)
-  const currentUserIdColumn = findHeaderIndex(columnHeaders.value, '用户ID')
-  const currentScoreColumn = findHeaderIndex(columnHeaders.value, '匹配得分')
-  const remoteUserIdColumn = findHeaderIndex(remoteColumns, '用户ID')
-  const remoteScoreColumn = findHeaderIndex(remoteColumns, '匹配得分')
+  const columnPairs = headersToSync
+    .map((header) => ({
+      current: findHeaderIndex(columnHeaders.value, header),
+      remote: findHeaderIndex(remoteColumns, header),
+    }))
+    .filter((pair) => pair.current >= 0 && pair.remote >= 0)
 
-  if (
-    currentUserIdColumn < 0
-    || currentScoreColumn < 0
-    || remoteUserIdColumn < 0
-    || remoteScoreColumn < 0
-  ) {
+  if (!columnPairs.length) {
     applyRemoteSheetDetail(detail)
     return
   }
@@ -13215,15 +13480,12 @@ function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
       continue
     }
 
-    const nextUserId = remoteRow[remoteUserIdColumn] ?? ''
-    const nextScore = remoteRow[remoteScoreColumn] ?? ''
-    if (
-      currentRows[rowIndex][currentUserIdColumn] !== nextUserId
-      || currentRows[rowIndex][currentScoreColumn] !== nextScore
-    ) {
-      currentRows[rowIndex][currentUserIdColumn] = nextUserId
-      currentRows[rowIndex][currentScoreColumn] = nextScore
-      changed = true
+    for (const pair of columnPairs) {
+      const nextValue = remoteRow[pair.remote] ?? ''
+      if (currentRows[rowIndex][pair.current] !== nextValue) {
+        currentRows[rowIndex][pair.current] = nextValue
+        changed = true
+      }
     }
   }
 
@@ -13246,8 +13508,34 @@ function applyUserMatchRunSheetDetail(detail: NoteSheetDetail) {
   }
 }
 
+function applyRegistrationActionRunSheetDetail(status: NoteSheetRegistrationMatchRunResponse) {
+  if (!status.sheet) {
+    return
+  }
+  if (status.action === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH) {
+    applyRegistrationRunSheetColumns(status.sheet, REGISTRATION_USER_MATCH_HEADERS)
+    return
+  }
+  if (status.action === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH) {
+    applyRegistrationRunSheetColumns(status.sheet, REGISTRATION_ORDER_MATCH_HEADERS)
+    return
+  }
+  if (status.action === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE) {
+    applyRegistrationRunSheetColumns(status.sheet, [
+      ...REGISTRATION_ORDER_MATCH_HEADERS,
+      ...REGISTRATION_USER_MATCH_HEADERS,
+    ])
+    return
+  }
+  applyRemoteSheetDetail(status.sheet)
+}
+
 async function flushRemoteSave() {
-  if (saveInFlight || suppressPersistence || props.sheetId == null) {
+  if (saveInFlight) {
+    await saveInFlightPromise
+    return
+  }
+  if (suppressPersistence || props.sheetId == null) {
     return
   }
   if (!canPersistSheet.value) {
@@ -13259,40 +13547,75 @@ async function flushRemoteSave() {
   clearSaveTimer()
   saveInFlight = true
   const serial = lastQueuedSerial
-  const document = buildCurrentDocument()
-  const savedRowIndexes = pageRowIndexes.value ? [...pageRowIndexes.value] : null
-  const shouldRestoreSavedRowIndexes = (
-    savedRowIndexes !== null
-    && buildActiveSheetQueryFilters().active
-    && savedRowIndexes.length === rows.value.length
-  )
+  const run = (async () => {
+    const document = buildCurrentDocument()
+    const pagePatch = buildUpdatePagePatch()
+    const savedDeletedRowIndexes = pagePatch?.deleted_row_indexes ? [...pagePatch.deleted_row_indexes] : []
+    const savedRowIndexes = pageRowIndexes.value ? [...pageRowIndexes.value] : null
+    const shouldRestoreSavedRowIndexes = (
+      savedRowIndexes !== null
+      && buildActiveSheetQueryFilters().active
+      && savedRowIndexes.length === rows.value.length
+    )
+    const savedFilteredPageState = shouldRestoreSavedRowIndexes
+      ? {
+        pageCount: pageCount.value,
+        totalRowCount: totalRowCount.value,
+        unfilteredTotalRowCount: unfilteredTotalRowCount.value,
+        pageRowOffset: pageRowOffset.value,
+        pageLoadedRowCount: pageLoadedRowCount.value,
+      }
+      : null
 
+    try {
+      const saved = await saveDocumentSnapshot(document, pagePatch)
+      if (!saved) {
+        return
+      }
+      removePendingDeletedPageRowIndexes(savedDeletedRowIndexes)
+      sheetTitle.value = saved.title || sheetTitle.value
+      sheetVersion.value = Number(saved.version || 1)
+      applyPaginationState(saved.pagination)
+      if (shouldRestoreSavedRowIndexes && saved.pagination && !Array.isArray(saved.pagination.row_indexes)) {
+        pageRowIndexes.value = savedRowIndexes
+        if (savedFilteredPageState) {
+          pageCount.value = savedFilteredPageState.pageCount
+          totalRowCount.value = savedFilteredPageState.totalRowCount
+          unfilteredTotalRowCount.value = savedFilteredPageState.unfilteredTotalRowCount
+          pageRowOffset.value = savedFilteredPageState.pageRowOffset
+          pageLoadedRowCount.value = savedFilteredPageState.pageLoadedRowCount
+        }
+      }
+      emitSheetSync(saved)
+      savedChangeSerial = Math.max(savedChangeSerial, serial)
+
+      if (serial === changeSerial) {
+        clearDraftStorage()
+      } else {
+        persistDraftDocument(buildCurrentDocument())
+      }
+    } catch (error) {
+      if (getNoteSheetApiErrorStatus(error) === 409) {
+        clearDraftStorage()
+        ElMessage.warning('工作表已更新，已重新加载最新数据')
+        await restoreInitialDocument({ preserveContent: false })
+        return
+      }
+      console.warn('Failed to save note sheet', error)
+      persistDraftDocument(document)
+    } finally {
+      saveInFlight = false
+      if (lastQueuedSerial > serial) {
+        void flushRemoteSave()
+      }
+    }
+  })()
+  saveInFlightPromise = run
   try {
-    const saved = await saveDocumentSnapshot(document)
-    if (!saved) {
-      return
-    }
-    sheetTitle.value = saved.title || sheetTitle.value
-    sheetVersion.value = Number(saved.version || 1)
-    applyPaginationState(saved.pagination)
-    if (shouldRestoreSavedRowIndexes && saved.pagination && !Array.isArray(saved.pagination.row_indexes)) {
-      pageRowIndexes.value = savedRowIndexes
-    }
-    emitSheetSync(saved)
-    savedChangeSerial = Math.max(savedChangeSerial, serial)
-
-    if (serial === changeSerial) {
-      clearDraftStorage()
-    } else {
-      persistDraftDocument(buildCurrentDocument())
-    }
-  } catch (error) {
-    console.warn('Failed to save note sheet', error)
-    persistDraftDocument(document)
+    await run
   } finally {
-    saveInFlight = false
-    if (lastQueuedSerial > serial) {
-      void flushRemoteSave()
+    if (saveInFlightPromise === run) {
+      saveInFlightPromise = null
     }
   }
 }
@@ -13848,6 +14171,18 @@ async function fetchNoteSheetForCurrentView(
   return fetchNoteSheet(props.sheetId, options)
 }
 
+function getUsableInitialSheetDetail(detail: NoteSheetDetail | null | undefined) {
+  return detail && props.sheetId != null && detail.id === props.sheetId ? detail : null
+}
+
+function isCurrentRestoreInitialDocumentRequest(seq: number, sheetId: number, workbookId: number | null) {
+  return (
+    seq === restoreInitialDocumentSeq
+    && props.sheetId === sheetId
+    && (props.workbookId ?? null) === workbookId
+  )
+}
+
 function scheduleFilteredPaginationReload() {
   if (props.sheetId == null || !paginationEnabled.value) {
     return
@@ -13901,12 +14236,24 @@ function runScheduledSheetFilterReload() {
   })
 }
 
-async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
+async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   if (props.sheetId == null) {
     return
   }
 
+  const requestSeq = ++restoreInitialDocumentSeq
+  const requestSheetId = props.sheetId
+  const requestWorkbookId = props.workbookId ?? null
   const shouldPreserveContent = options?.preserveContent === true && sheetContentReady.value
+  const shouldClearOnError = options?.clearOnError === true
+  const initialDetail = getUsableInitialSheetDetail(options?.initialDetail ?? props.initialDetail)
+  const traceDetail = {
+    requestSheetId,
+    requestWorkbookId,
+    preserveContent: shouldPreserveContent,
+    hasInitialDetail: !!initialDetail,
+  }
+  const trace = startSheetPerfTrace('sheet.load')
   workspaceLoading.value = true
   if (!shouldPreserveContent) {
     sheetContentReady.value = false
@@ -13916,22 +14263,31 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
   suppressPersistence = true
   try {
     let localDraft = readDraftPayload()
-    const paginationPreference = resolveFetchPaginationPreference(localDraft)
-    let remote = await fetchNoteSheetForCurrentView(paginationPreference
-      ? {
-        page: paginationPreference.paginate ? currentPage.value : undefined,
-        pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
-        paginate: paginationPreference.paginate,
-        workbookId: props.workbookId,
-      }
-      : {
-        workbookId: props.workbookId,
-      })
+    trace?.mark('draft')
+    const activeFilters = buildActiveSheetQueryFilters()
+    const shouldUseInitialDetail = !!initialDetail && sheetVersion.value <= 0 && !localDraft && !activeFilters.active
+    const paginationPreference = shouldUseInitialDetail ? null : resolveFetchPaginationPreference(localDraft)
+    let remote: NoteSheetDetail | null = shouldUseInitialDetail
+      ? initialDetail
+      : await fetchNoteSheetForCurrentView(paginationPreference
+          ? {
+            page: paginationPreference.paginate ? currentPage.value : undefined,
+            pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
+            paginate: paginationPreference.paginate,
+            workbookId: requestWorkbookId,
+          }
+          : {
+            workbookId: requestWorkbookId,
+          })
+    trace?.mark(shouldUseInitialDetail ? 'initial-detail' : 'fetch')
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
     if (!remote) {
-      if (!shouldPreserveContent) {
+      if (!shouldPreserveContent || shouldClearOnError) {
         sheetContentReady.value = false
       }
-      emit('missing', props.sheetId)
+      emit('missing', requestSheetId)
       return
     }
 
@@ -13943,6 +14299,7 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
 
     applyPaginationState(remote.pagination)
     let remoteDocument = normalizeSheetDocument(remote.document_json, {}, getDefaultSheetHeightMode())
+    trace?.mark('normalize')
     const remoteSettings = normalizeSheetViewSettings(remoteDocument.view_settings, remoteDocument.columns.length)
     if (
       paginationPreference
@@ -13953,17 +14310,21 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
           page: currentPage.value,
           pageSize: remoteSettings.pagination.page_size,
           paginate: true,
-          workbookId: props.workbookId,
+          workbookId: requestWorkbookId,
         }
         : {
           paginate: false,
-          workbookId: props.workbookId,
+          workbookId: requestWorkbookId,
         })
+      trace?.mark('refetch-pagination-mode')
+      if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+        return
+      }
       if (!remote) {
-        if (!shouldPreserveContent) {
+        if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
         }
-        emit('missing', props.sheetId)
+        emit('missing', requestSheetId)
         return
       }
       remoteAccessCapabilities.value = remote.access?.capabilities ?? null
@@ -13976,13 +14337,17 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
         page: currentPage.value,
         pageSize: remote.pagination.page_size,
         paginate: true,
-        workbookId: props.workbookId,
+        workbookId: requestWorkbookId,
       })
+      trace?.mark('refetch-filtered-page')
+      if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+        return
+      }
       if (!remote) {
-        if (!shouldPreserveContent) {
+        if (!shouldPreserveContent || shouldClearOnError) {
           sheetContentReady.value = false
         }
-        emit('missing', props.sheetId)
+        emit('missing', requestSheetId)
         return
       }
       remoteAccessCapabilities.value = remote.access?.capabilities ?? null
@@ -14023,14 +14388,19 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
           pageRowOffset.value = localDraft.pageState.rowOffset
           pageLoadedRowCount.value = localDraft.pageState.loadedRowCount
           pageRowIndexes.value = localDraft.pageState.rowIndexes ?? null
+          pendingDeletedPageRowIndexes.value = localDraft.pageState.deletedRowIndexes ?? []
         }
         shouldSyncLocalDraft = true
       } else {
         clearDraftStorage()
+        pendingDeletedPageRowIndexes.value = []
       }
+    } else {
+      pendingDeletedPageRowIndexes.value = []
     }
 
     loadSheetDocument(activeDocument)
+    trace?.mark('load-document')
     sheetContentReady.value = true
     sheetLoadErrorText.value = ''
     suppressReadOnlyActionWarningsForSheetRender()
@@ -14041,33 +14411,59 @@ async function restoreInitialDocument(options?: { preserveContent?: boolean }) {
     savedChangeSerial = 0
     invalidateColumnFilterGlobalOptionsCache()
     await nextTick()
+    trace?.mark('next-tick')
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
     suppressPersistence = false
 
     if (shouldSyncLocalDraft) {
       scheduleRemoteSave(0)
     }
     void refreshAttendanceCourseScriptStatuses()
+    void refreshUserMatchRunStatus(undefined, { silent: true })
   } catch (error) {
     const status = getNoteSheetApiErrorStatus(error)
     const message = status === 401 || status === 403
       ? '没有权限访问该工作表'
       : '工作表加载失败'
-    if (!shouldPreserveContent) {
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
+    if (!shouldPreserveContent || shouldClearOnError) {
       sheetContentReady.value = false
     }
     sheetLoadErrorText.value = message
     console.warn('Failed to load note sheet document:', error)
     emit('loadError', {
-      sheetId: props.sheetId,
+      sheetId: requestSheetId,
       status,
       message,
     })
   } finally {
-    suppressPersistence = false
-    if (!shouldPreserveContent) {
+    const isCurrentRequest = isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)
+    if (isCurrentRequest) {
+      suppressPersistence = false
+    }
+    if (isCurrentRequest && (!shouldPreserveContent || shouldClearOnError)) {
       sheetLoadSettled.value = true
     }
-    workspaceLoading.value = false
+    if (isCurrentRequest) {
+      workspaceLoading.value = false
+    }
+    trace?.finish({
+      detail: {
+        ...traceDetail,
+        stale: !isCurrentRequest,
+        rowCount: rows.value.length,
+        columnCount: columnHeaders.value.length,
+        currentPage: currentPage.value,
+        pageSize: pageSize.value,
+        pageRowOffset: pageRowOffset.value,
+        totalRowCount: totalRowCount.value,
+        filteredPage: pageRowIndexes.value !== null,
+      },
+    })
   }
 }
 
@@ -14989,16 +15385,50 @@ function handleAfterCreateRow(index = 0, amount = 1) {
 function handleAfterRemoveRow(index = 0, amount = 1) {
   const dataIndex = Math.max(0, getDataRowIndex(index))
   const documentDataIndex = getDocumentRowIndex(dataIndex)
+  const removedPageRowIndexes = pageRowIndexes.value
+    ? pageRowIndexes.value.slice(dataIndex, dataIndex + amount)
+    : []
   removeDataEntityRows(dataIndex, amount)
-  removeDocumentGridRows(sheetHeaderRowCount.value + documentDataIndex, amount)
+  if (removedPageRowIndexes.length) {
+    normalizePaginationDeletedRowIndexes(removedPageRowIndexes)?.slice().reverse().forEach((rowIndex) => {
+      removeDocumentGridRows(sheetHeaderRowCount.value + rowIndex, 1)
+    })
+  } else {
+    removeDocumentGridRows(sheetHeaderRowCount.value + documentDataIndex, amount)
+  }
   syncRowsFromGrid()
-  const endIndex = documentDataIndex + amount
-  remapFormulaReferencesInRows((rowIndex) => {
-    if (rowIndex >= documentDataIndex && rowIndex < endIndex) {
-      return null
+  if (pageRowIndexes.value !== null) {
+    const nextRowIndexes = [...pageRowIndexes.value]
+    nextRowIndexes.splice(dataIndex, amount)
+    pageRowIndexes.value = nextRowIndexes
+    addPendingDeletedPageRowIndexes(removedPageRowIndexes)
+    const removedCount = removedPageRowIndexes.length
+    if (removedCount > 0) {
+      pageLoadedRowCount.value = Math.max(0, pageLoadedRowCount.value - removedCount)
+      totalRowCount.value = Math.max(0, totalRowCount.value - removedCount)
+      unfilteredTotalRowCount.value = Math.max(totalRowCount.value, unfilteredTotalRowCount.value - removedCount)
+      pageCount.value = Math.max(1, Math.ceil(totalRowCount.value / pageSize.value))
     }
-    return rowIndex >= endIndex ? rowIndex - amount : rowIndex
-  })
+  }
+  const deletedDocumentRowIndexes = normalizePaginationDeletedRowIndexes(removedPageRowIndexes)
+  if (deletedDocumentRowIndexes?.length) {
+    const deletedRowIndexSet = new Set(deletedDocumentRowIndexes)
+    remapFormulaReferencesInRows((rowIndex) => {
+      if (deletedRowIndexSet.has(rowIndex)) {
+        return null
+      }
+      const shift = deletedDocumentRowIndexes.filter((deletedRowIndex) => deletedRowIndex < rowIndex).length
+      return rowIndex - shift
+    })
+  } else {
+    const endIndex = documentDataIndex + amount
+    remapFormulaReferencesInRows((rowIndex) => {
+      if (rowIndex >= documentDataIndex && rowIndex < endIndex) {
+        return null
+      }
+      return rowIndex >= endIndex ? rowIndex - amount : rowIndex
+    })
+  }
 }
 
 function handleAfterCreateCol(hotIndex: number, amount: number) {
@@ -18795,23 +19225,8 @@ function insertRowFromSelection(side: 'above' | 'below', amount = 1) {
 }
 
 function isArchivedRegistrationRowForInsert(row: SheetRow, now = new Date()) {
-  const groupColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_GROUP_HEADER)
-  const statusColumn = getHeaderColumnIndex(REGISTRATION_TRACKING_STATUS_HEADER)
   const submittedAtColumn = getHeaderColumnIndex(STUDENT_LOOKUP_SUBMITTED_AT_HEADER)
   const normalizedRow = normalizeRow(row, columnHeaders.value)
-
-  if (
-    groupColumn >= 0
-    && normalizeCellValue(normalizedRow[groupColumn]).trim() === REGISTRATION_FROZEN_GROUP
-  ) {
-    return true
-  }
-  if (
-    statusColumn >= 0
-    && normalizeCellValue(normalizedRow[statusColumn]).trim() === REGISTRATION_FROZEN_STATUS
-  ) {
-    return true
-  }
 
   if (submittedAtColumn < 0) {
     return false
@@ -19563,7 +19978,10 @@ function handleAfterRenderer(
   }
 
   if (action) {
-    renderCellActionButton(TD, renderedText)
+    renderCellActionButton(TD, renderedText, action, {
+      documentRow,
+      column: renderColumn,
+    })
   } else if (formulaText != null || renderedText !== rawText) {
     setRenderedCellText(TD, renderedText)
   }
@@ -19784,6 +20202,7 @@ watch(
     clearSaveTimer()
     resetSheetFilterReloadState()
     if (!nextSheetId) {
+      restoreInitialDocumentSeq += 1
       sheetLoadSettled.value = true
       if (hasInlineDocument.value) {
         applyInlineSheetDocument()
@@ -19797,6 +20216,7 @@ watch(
         pageRowOffset.value = 0
         pageLoadedRowCount.value = 0
         pageRowIndexes.value = null
+        pendingDeletedPageRowIndexes.value = []
         suppressPersistence = false
       }
       void updateSheetViewportHeight()
@@ -19812,10 +20232,16 @@ watch(
     pageCount.value = 1
     totalRowCount.value = 0
     unfilteredTotalRowCount.value = 0
+    sheetVersion.value = 0
     pageRowOffset.value = 0
     pageLoadedRowCount.value = 0
     pageRowIndexes.value = null
-    void restoreInitialDocument().finally(() => {
+    pendingDeletedPageRowIndexes.value = []
+    void restoreInitialDocument({
+      preserveContent: sheetContentReady.value,
+      clearOnError: true,
+      initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+    }).finally(() => {
       void updateSheetViewportHeight()
     })
   },
@@ -19846,7 +20272,11 @@ watch(
     clearSaveTimer()
     resetSheetFilterReloadState()
     sheetLoadSettled.value = false
-    void restoreInitialDocument().finally(() => {
+    void restoreInitialDocument({
+      preserveContent: sheetContentReady.value,
+      clearOnError: true,
+      initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+    }).finally(() => {
       void updateSheetViewportHeight()
     })
   },
@@ -20015,7 +20445,9 @@ onMounted(() => {
   window.addEventListener('mousedown', handleGlobalMouseDown)
   document.addEventListener('input', handleInlineEditorInput, true)
   if (props.sheetId != null) {
-    void restoreInitialDocument().finally(() => {
+    void restoreInitialDocument({
+      initialDetail: getUsableInitialSheetDetail(props.initialDetail),
+    }).finally(() => {
       void updateSheetViewportHeight()
     })
   } else if (hasInlineDocument.value) {
@@ -20332,6 +20764,7 @@ defineExpose({
     <div
       v-if="shouldShowOriginalSheetArea"
       ref="sheetFrameRef"
+      v-loading="workspaceLoading && shouldRenderSheetContent"
       class="sheet-frame"
       :class="{
         'is-empty': !shouldRenderSheetContent,
@@ -20414,7 +20847,7 @@ defineExpose({
       <div class="sheet-pagination-status">{{ pageStatusText }}</div>
       <el-pagination
         v-if="effectivePaginationEnabled"
-        small
+        size="small"
         background
         layout="prev, pager, next"
         :current-page="currentPage"
@@ -20489,7 +20922,6 @@ defineExpose({
             :disabled="excelImportRunning"
             @change="handleExcelImportFileChange"
           >
-          <div v-if="excelImportFile" class="sheet-excel-file-name">{{ excelImportFile.name }}</div>
         </div>
         <div class="sheet-settings-field">
           <div class="sheet-settings-label">补充说明</div>
@@ -20506,13 +20938,14 @@ defineExpose({
         <div class="sheet-settings-footer">
           <el-button :disabled="excelImportRunning" @click="() => closeExcelImportDialog()">取消</el-button>
           <el-button
+            v-if="shouldShowExcelImportResetButton"
             type="danger"
             plain
             :loading="excelImportRunningMode === 'reset'"
             :disabled="excelImportRunning || !excelImportFile"
             @click="applyExcelImport('reset')"
           >
-            清空后导入
+            {{ EXCEL_IMPORT_RESET_BUTTON_LABEL }}
           </el-button>
           <el-button
             type="primary"
@@ -20520,7 +20953,7 @@ defineExpose({
             :disabled="excelImportRunning || !excelImportFile"
             @click="applyExcelImport('append')"
           >
-            在末尾插入文件数据
+            {{ EXCEL_IMPORT_APPEND_BUTTON_LABEL }}
           </el-button>
         </div>
       </template>
@@ -20542,7 +20975,7 @@ defineExpose({
             未命中时回查小鹅通
           </el-checkbox>
           <div class="sheet-excel-import-hint">
-            默认只查本地用户库。勾选后会调用 codepc_mi15 打开小鹅通用户列表逐行兜底，耗时更长。
+            先查本地用户库；保持勾选时，未命中会调用 codepc_mi15 打开小鹅通用户列表逐行兜底。
           </div>
         </div>
         <div v-if="userMatchRunSummary" class="sheet-action-run-status">
@@ -21995,12 +22428,6 @@ defineExpose({
   color: #374151;
 }
 
-.sheet-excel-file-name {
-  font-size: 12px;
-  color: #6b7280;
-  word-break: break-all;
-}
-
 .sheet-excel-import-hint {
   font-size: 12px;
   line-height: 1.6;
@@ -22483,6 +22910,20 @@ defineExpose({
 .sheet-frame :deep(.handsontable td.sheet-cell-has-action:hover .sheet-cell-action-button-inner) {
   border-color: #7ea4e8;
   background: #e3efff;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-has-action .sheet-cell-action-button-inner.is-running) {
+  border-color: #409eff;
+  background: #dbeafe;
+  color: #1d4ed8;
+  cursor: progress;
+}
+
+.sheet-frame :deep(.handsontable td.sheet-cell-has-action .sheet-cell-action-button-inner.is-disabled) {
+  border-color: #d1d5db;
+  background: #f3f4f6;
+  color: #9ca3af;
+  cursor: not-allowed;
 }
 
 .sheet-frame :deep(.handsontable td.sheet-cell-formula-error) {

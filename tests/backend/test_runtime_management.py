@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 from backend.core import runtime_management as runtime_core
 from backend.core import system_metrics as system_metrics_core
@@ -328,16 +329,17 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
         "engine": "paddleocr",
         "device": "cpu",
         "lang": "ch",
+        "running": True,
         "loaded": True,
         "state": "idle",
         "instance_count": 1,
         "idle_instance_count": 1,
         "active_instance_count": 0,
-        "max_instances": 2,
         "idle_timeout_seconds": 600,
         "acquire_timeout_seconds": 30,
         "call_count": 3,
         "error_count": 0,
+        "url": "http://127.0.0.1:8765",
     })
 
     assert item["key"] == "ocr"
@@ -347,40 +349,37 @@ def test_ocr_service_serializes_as_builtin_runtime_service():
     assert item["status"]["running"] is True
     assert item["actions"] == ["trigger", "stop", "logs", "configure"]
     assert "空闲10分释放" in item["description"]
+    assert "独立进程" in item["description"]
 
 
-def test_trigger_builtin_ocr_runtime_item_warms_service(session, monkeypatch):
-    from backend.core import ocr_preview
-
+def test_trigger_builtin_ocr_runtime_item_starts_external_service(session, monkeypatch):
     captured = {}
 
-    def fake_warmup():
-        captured["called"] = True
-        return {"key": "ocr", "loaded": True}
+    def fake_start_ocr_service(*, replace_existing: bool = False):
+        captured["replace_existing"] = replace_existing
+        return {"status": "started", "service": {"key": "ocr", "running": True}}
 
-    monkeypatch.setattr(ocr_preview.ocr_service_manager, "warmup", fake_warmup)
+    monkeypatch.setattr(runtime_core, "start_ocr_service", fake_start_ocr_service)
 
     result = runtime_core.trigger_builtin_runtime_item("ocr", session)
 
-    assert captured == {"called": True}
-    assert result == {"status": "started", "service": {"key": "ocr", "loaded": True}}
+    assert captured == {"replace_existing": False}
+    assert result == {"status": "started", "service": {"key": "ocr", "running": True}}
 
 
-def test_stop_builtin_ocr_runtime_item_resets_service(monkeypatch):
-    from backend.core import ocr_preview
-
+def test_stop_builtin_ocr_runtime_item_stops_external_service(monkeypatch):
     captured = {}
 
-    def fake_reset():
+    def fake_stop_ocr_service():
         captured["called"] = True
-        return {"key": "ocr", "loaded": False}
+        return {"status": "stopped", "service": {"key": "ocr", "running": False}}
 
-    monkeypatch.setattr(ocr_preview.ocr_service_manager, "reset", fake_reset)
+    monkeypatch.setattr(runtime_core, "stop_ocr_service", fake_stop_ocr_service)
 
     result = runtime_core.stop_builtin_runtime_item("ocr")
 
     assert captured == {"called": True}
-    assert result == {"status": "stopped", "service": {"key": "ocr", "loaded": False}}
+    assert result == {"status": "stopped", "service": {"key": "ocr", "running": False}}
 
 
 def test_attendance_behavior_tree_serializes_as_builtin_runtime_service():
@@ -392,6 +391,8 @@ def test_attendance_behavior_tree_serializes_as_builtin_runtime_service():
         "state_label": "运行中",
         "pid": 2233,
         "process_count": 1,
+        "child_process_count": 2,
+        "total_process_count": 3,
         "started_at": "2026-05-20 07:10:00",
         "next_run_at": "2026-05-20 21:00:00",
         "script_path": r"C:\home\chenkunze\slns\xlproject\src\xlsln\kq5034\kqmain.py",
@@ -406,9 +407,13 @@ def test_attendance_behavior_tree_serializes_as_builtin_runtime_service():
     assert item["active"] is True
     assert item["status"]["running"] is True
     assert item["status"]["next_run_at"] == "2026-05-20 21:00:00"
+    assert item["status"]["process_count"] == 1
+    assert item["status"]["child_process_count"] == 2
+    assert item["status"]["total_process_count"] == 3
     assert item["next_run_at"] == "2026-05-20 21:00:00"
     assert item["actions"] == ["trigger", "stop", "logs", "configure"]
     assert "PID 2233" in item["description"]
+    assert "子进程 2" in item["description"]
 
 
 def test_trigger_builtin_attendance_behavior_tree_runtime_item_starts_service(session, monkeypatch):
@@ -487,9 +492,7 @@ def test_builtin_attendance_behavior_tree_logs_use_service_log_builder(session, 
 
 
 def test_attendance_behavior_tree_builtin_service_is_mi15_scoped(monkeypatch):
-    from backend.core import ocr_preview
-
-    monkeypatch.setattr(ocr_preview.ocr_service_manager, "get_status", lambda: {"title": "OCR"})
+    monkeypatch.setattr(runtime_core, "get_ocr_service_status", lambda: {"title": "OCR"})
     monkeypatch.setattr(runtime_core, "_serialize_ocr_service_item", lambda _status: {"key": "ocr"})
     monkeypatch.setattr(
         runtime_core,
@@ -562,6 +565,96 @@ def test_disabled_fanxiu_behavior_tree_runtime_item_cannot_start_on_non_executio
     else:
         raise AssertionError("expected HTTPException")
     assert captured == {}
+
+
+def test_fanxiu_behavior_tree_ocr_host_prefers_explicit_env(monkeypatch):
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+
+    monkeypatch.setenv("FX_CODEYUN_OCR_HOST", "http://192.168.31.15:8000")
+
+    result = fanxiu_service._resolve_codeyun_ocr_host(
+        SimpleNamespace(backend_host="127.0.0.1", backend_port=8000)
+    )
+
+    assert result == "http://192.168.31.15:8000"
+
+
+def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_local_child_process(monkeypatch):
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+
+    monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_HOST", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_PORT", raising=False)
+
+    result = fanxiu_service._resolve_codeyun_ocr_host(
+        SimpleNamespace(backend_host="192.168.31.15", backend_port=8000)
+    )
+
+    assert result == "http://127.0.0.1:8765"
+
+
+def test_fanxiu_behavior_tree_ocr_host_uses_loopback_for_wildcard_bind(monkeypatch):
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+
+    monkeypatch.delenv("FX_CODEYUN_OCR_HOST", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_URL", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_HOST", raising=False)
+    monkeypatch.delenv("CODEYUN_OCR_SERVICE_PORT", raising=False)
+    monkeypatch.setattr(fanxiu_service, "_get_primary_lan_address", lambda: "192.168.31.15")
+
+    result = fanxiu_service._resolve_codeyun_ocr_host(
+        SimpleNamespace(backend_host="0.0.0.0", backend_port=8000)
+    )
+
+    assert result == "http://127.0.0.1:8765"
+
+
+def test_fanxiu_behavior_tree_ocr_device_follows_global_setting(monkeypatch):
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+
+    monkeypatch.delenv("CODEYUN_OCR_DEVICE", raising=False)
+    monkeypatch.delenv("FX_CODEYUN_OCR_DEVICE", raising=False)
+
+    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="gpu")) == "gpu"
+
+    monkeypatch.setenv("FX_CODEYUN_OCR_DEVICE", "cpu")
+
+    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="gpu")) == "cpu"
+
+    monkeypatch.setenv("CODEYUN_OCR_DEVICE", "gpu")
+
+    assert fanxiu_service._resolve_fanxiu_ocr_device(SimpleNamespace(ocr_device="cpu")) == "gpu"
+
+
+def test_fanxiu_behavior_tree_lan_address_filters_reserved_virtual_networks(monkeypatch):
+    from backend.core import fanxiu_behavior_tree_service as fanxiu_service
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def connect(self, _target):
+            return None
+
+        def getsockname(self):
+            return ("198.18.0.1", 53210)
+
+    monkeypatch.setattr(fanxiu_service.socket, "socket", lambda *_args, **_kwargs: FakeSocket())
+    monkeypatch.setattr(fanxiu_service.socket, "gethostname", lambda: "codepc-mi15")
+    monkeypatch.setattr(
+        fanxiu_service.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (fanxiu_service.socket.AF_INET, 0, 0, "", ("198.18.0.2", 0)),
+            (fanxiu_service.socket.AF_INET, 0, 0, "", ("192.168.31.15", 0)),
+        ],
+    )
+
+    assert fanxiu_service._get_primary_lan_address() == "192.168.31.15"
 
 
 def test_futu_opend_service_serializes_as_builtin_runtime_service():

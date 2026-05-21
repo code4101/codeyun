@@ -137,12 +137,14 @@ export interface NoteSheetCreateRequest {
 export interface NoteSheetUpdateRequest {
   title?: string
   document_json?: Record<string, unknown>
+  base_version?: number
   page_patch?: {
     page: number
     page_size: number
     row_offset: number
     loaded_row_count: number
     row_indexes?: number[]
+    deleted_row_indexes?: number[]
   }
 }
 
@@ -179,6 +181,7 @@ export interface NoteSheetRegistrationMatchResponse {
   updated_count: number
   skipped_count: number
   error_count: number
+  warning_count?: number
   message: string
 }
 
@@ -196,6 +199,7 @@ export interface NoteSheetRegistrationMatchRunResponse {
   sheet_id: number
   workbook_id?: number | null
   status: NoteSheetRegistrationMatchRunStatus
+  phase: string
   use_browser_fallback: boolean
   already_running: boolean
   cancel_requested: boolean
@@ -207,6 +211,7 @@ export interface NoteSheetRegistrationMatchRunResponse {
   updated_count: number
   skipped_count: number
   error_count: number
+  warning_count: number
   message: string
   error_message?: string | null
   sheet?: NoteSheetDetail | null
@@ -539,7 +544,7 @@ export async function startNoteSheetRegistrationMatchRun(
 
 export async function fetchNoteSheetActiveRegistrationMatchRun(
   sheetId: number,
-  action: string,
+  action?: string,
   options?: NoteSheetResourceRequestOptions,
 ) {
   const response = await api.get<NoteSheetRegistrationMatchRunResponse>(
@@ -547,7 +552,7 @@ export async function fetchNoteSheetActiveRegistrationMatchRun(
     {
       params: {
         workbook_id: options?.workbookId ?? undefined,
-        action,
+        action: action || undefined,
       },
     },
   )

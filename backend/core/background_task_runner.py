@@ -29,6 +29,7 @@ from backend.core.fanxiu_slimming import (
     is_fanxiu_slimming_allowed_host,
 )
 from backend.core.settings import get_settings
+from backend.core.weekly_note_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
 
 
@@ -42,12 +43,15 @@ MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
 METADATA_FEEDBACK_RUN_TIME = "00:05"
 STORAGE_ANALYSIS_RUN_TIME = "00:35"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
+RUANYF_WEEKLY_FRIDAY_RUN_TIMES = tuple(f"{hour:02d}:00" for hour in range(0, 23, 2))
+RUANYF_WEEKLY_SATURDAY_RUN_TIME = "00:00"
 BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 5
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
     "note_metadata_feedback_optimization",
     "codex_diary_yesterday_import",
+    RUANYF_WEEKLY_TASK_NAME,
     "attendance_summary_monthly_templates",
     MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
     "storage_analysis",
@@ -68,11 +72,7 @@ class BackgroundTaskSpec:
     manual_warning: str = ""
 
 
-DEFAULT_ENABLED_TASK_KEYS = {
-    MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY,
-    MARKET_QUOTE_REFRESH_TASK_KEY,
-    FANXIU_SLIMMING_TASK_KEY,
-}
+DEFAULT_ENABLED_TASK_KEYS: set[str] = set()
 
 
 class _StoppableBehaviorTreeRunner(BehaviorTreeRunner):
@@ -138,6 +138,17 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": METADATA_FEEDBACK_RUN_TIME}, retry_minutes=10)
     if task_key == "codex_diary_yesterday_import":
         return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
+    if task_key == RUANYF_WEEKLY_TASK_NAME:
+        return _job_schedule_policy(
+            {
+                "type": "any",
+                "rules": [
+                    {"type": "weekly", "weekdays": [5], "times": list(RUANYF_WEEKLY_FRIDAY_RUN_TIMES)},
+                    {"type": "weekly", "weekdays": [6], "time": RUANYF_WEEKLY_SATURDAY_RUN_TIME},
+                ],
+            },
+            retry_minutes=10,
+        )
     if task_key == "attendance_summary_monthly_templates":
         return _job_schedule_policy({"type": "monthly", "day": 27, "time": ATTENDANCE_SUMMARY_RUN_TIME}, retry_minutes=10)
     if task_key == MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY:
@@ -309,6 +320,10 @@ def _enqueue_codex_diary() -> str | None:
     return maybe_enqueue_codex_diary_yesterday_import(trigger_reason="scheduled")
 
 
+def _enqueue_ruanyf_weekly_note() -> str | None:
+    return enqueue_ruanyf_weekly_note_job()
+
+
 def _enqueue_auto_git() -> str | None:
     from backend.core.auto_git_commit import create_auto_git_commit_run, mark_stale_auto_git_commit_runs
     from backend.db import engine
@@ -435,6 +450,16 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         manual_warning="会调用 AI 配置里的 Codex 星图日记模型生成昨日总结；已导入过的日期会自动跳过。",
     ),
     BackgroundTaskSpec(
+        key=RUANYF_WEEKLY_TASK_NAME,
+        title="阮一峰周刊笔记",
+        category="笔记",
+        description="周五发布窗口轮询阮一峰科技爱好者周刊，发现新一期后复用现有周刊笔记模板写入星图笔记。",
+        schedule_label="周五每 2 小时，周六 00:00 兜底",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_ruanyf_weekly_note,
+        manual_warning="会访问 GitHub 上的 ruanyf/weekly 仓库；已写入过当前发布窗口的新一期会自动跳过。",
+    ),
+    BackgroundTaskSpec(
         key="attendance_summary_monthly_templates",
         title="考勤汇总模板",
         category="表格",
@@ -457,11 +482,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
         title="梵呗考勤晚间流程",
         category="考勤",
-        description="梵呗课程每天晚间执行 step1-step3。step1 会调用执行设备下载小鹅通数据，step2 会从执行设备读取考勤数据并写回表格，step3 会在本机计算返款并渲染课程进度高亮。",
+        description="梵呗课程每天晚间执行 step1-step3。step1 默认调用执行设备下载小鹅通数据，step2/step3 默认在数据主机写表、计算返款并渲染高亮；每步运行位置可在考勤配置中覆盖。",
         schedule_label=f"每天 {FANBEI_ATTENDANCE_EVENING_RUN_TIME}",
         retry_label="无额外重试",
         action=enqueue_fanbei_attendance_evening_steps,
-        manual_warning="会调用考勤配置里的执行设备运行 step1，将 step2 结果写回当前梵呗考勤表，并在本机执行 step3 返款计算与进度高亮。",
+        manual_warning="会按考勤配置里的六步运行位置执行：step1 默认使用执行设备，step2/step3 默认使用数据主机。",
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
@@ -685,23 +710,27 @@ class BackgroundTaskRunner:
         _sync_runner_enabled_states(runner, enabled_by_key=enabled_by_key)
         next_wake = runner.next_wake()
         node_states = runner.state.get("nodes", {}) if isinstance(runner.state, dict) else {}
+        tasks: dict[str, dict[str, Any]] = {}
+        for spec in BACKGROUND_TASK_SPECS:
+            if _is_task_deleted(spec.key):
+                continue
+            enabled = bool(enabled_by_key.get(spec.key))
+            policy = _effective_background_task_schedule_policy(spec.key, enabled=enabled)
+            tasks[spec.key] = {
+                "next_run_at": _format_datetime(_find_task_next_run(node_states, spec.key)) if enabled else None,
+                "enabled": enabled,
+                "schedule_policy": policy,
+                "schedule_label": schedule_policy_label(policy) or spec.schedule_label,
+                "retry_label": spec.retry_label,
+            }
+
         return {
             "runner_running": self.is_running(),
             "next_wake_at": _format_datetime(next_wake),
             "state_path": str(self.state_path),
             "log_path": str(self.log_path),
             "last_error": self._last_error,
-            "tasks": {
-                spec.key: {
-                    "next_run_at": _format_datetime(_find_task_next_run(node_states, spec.key)),
-                    "enabled": bool(enabled_by_key.get(spec.key)),
-                    "schedule_policy": _effective_background_task_schedule_policy(spec.key, enabled=bool(enabled_by_key.get(spec.key))),
-                    "schedule_label": schedule_policy_label(_effective_background_task_schedule_policy(spec.key, enabled=bool(enabled_by_key.get(spec.key)))) or spec.schedule_label,
-                    "retry_label": spec.retry_label,
-                }
-                for spec in BACKGROUND_TASK_SPECS
-                if not _is_task_deleted(spec.key)
-            },
+            "tasks": tasks,
         }
 
     def reset_task(self, task_key: str) -> bool:

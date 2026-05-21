@@ -35,7 +35,10 @@ from backend.core.auth import (
     get_optional_current_user_from_token,
     validate_api_token_value,
 )
-from backend.core.attendance_service import get_or_create_attendance_service_config
+from backend.core.attendance_service import (
+    get_attendance_service_extra_config,
+    get_or_create_attendance_service_config,
+)
 from backend.core.background_task_queue import background_task_queue
 from backend.core.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
@@ -82,13 +85,30 @@ NOTE_SHEET_EXCEL_IMPORT_EXTRA_COLUMN_HEADER_TEXT = "#4B5563"
 NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = "excel_import_reset"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = "registration_order_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = "registration_user_match"
+NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = "registration_composite_update"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
 NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
+NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN = "序号"
+NOTE_SHEET_REGISTRATION_GROUP_COLUMN = "分组"
+NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN = "提交时间"
+NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN = "追踪分组"
+NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN = "追踪状态"
+NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN = "追踪截止日"
+NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN = "冻结时间"
+NOTE_SHEET_REGISTRATION_FROZEN_GROUP = "A组"
+NOTE_SHEET_REGISTRATION_FROZEN_STATUS = "已冻结"
+NOTE_SHEET_REGISTRATION_ACTIVE_GROUP = "B组"
+NOTE_SHEET_REGISTRATION_ACTIVE_STATUS = "追踪中"
 NOTE_SHEET_LEGACY_TEXT_PREFIX_STRIP_COLUMNS = {"微信支付订单号", "商户订单号", "手机号", "错误手机号", "微信号"}
 NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID = 1
 NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE = os.environ.get("CODEYUN_NOTE_SHEET_ORDER_LOOKUP_MODE", "db_only")
 NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT = False
+NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS = {
+    NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+    NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+    NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE,
+}
 NOTE_SHEET_REGISTRATION_USER_BROWSER_DEVICE_NAME = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_DEVICE_NAME",
     "codepc_mi15",
@@ -97,6 +117,43 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
     "900",
 )
+NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS = {
+    "禅客",
+    "优秀学员评分",
+    "完成视频数",
+    "视频应返款",
+    "打卡应返款",
+    "总应返款",
+    "已返款",
+    "当前应返款",
+}
+NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS = {
+    "报名日期",
+    "学号",
+    "分组",
+    "组号",
+    "姓名",
+    "昵称",
+    "微信昵称",
+    "手机号",
+    "微信支付订单号",
+    "订单日期",
+    "商户订单号",
+    "订单金额",
+    "用户ID",
+    "匹配得分",
+    "规则版本",
+    NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
+}
+NOTE_SHEET_ATTENDANCE_TRAILING_META_COLUMNS = {
+    "规则版本",
+    NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN,
+    NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN,
+    NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN,
+}
 NOTE_SHEET_PERF_LOG_MAX_ENTRIES_PER_BATCH = 200
 NOTE_SHEET_PERF_LOG_DIRNAME = "debug"
 NOTE_SHEET_PERF_LOG_FILENAME = "note-sheet-perf.jsonl"
@@ -320,6 +377,7 @@ class NoteSheetPagePatchRequest(BaseModel):
     row_offset: int = Field(default=0, ge=0)
     loaded_row_count: int = Field(default=0, ge=0)
     row_indexes: list[int] = Field(default_factory=list)
+    deleted_row_indexes: list[int] = Field(default_factory=list)
 
 
 class NoteSheetCreateRequest(BaseModel):
@@ -331,6 +389,7 @@ class NoteSheetCreateRequest(BaseModel):
 class NoteSheetUpdateRequest(BaseModel):
     title: Optional[str] = None
     document_json: Optional[dict[str, Any]] = None
+    base_version: int | None = Field(default=None, ge=1)
     page_patch: Optional[NoteSheetPagePatchRequest] = None
 
 
@@ -405,11 +464,12 @@ class NoteSheetRegistrationMatchResponse(BaseModel):
     updated_count: int = 0
     skipped_count: int = 0
     error_count: int = 0
+    warning_count: int = 0
     message: str = ""
 
 
 class NoteSheetRegistrationMatchRunRequest(BaseModel):
-    action: Literal["registration_order_match", "registration_user_match"]
+    action: Literal["registration_order_match", "registration_user_match", "registration_composite_update"]
     use_browser_fallback: bool = NOTE_SHEET_REGISTRATION_USER_BROWSER_FALLBACK_DEFAULT
     force_restart: bool = False
 
@@ -420,6 +480,7 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
     sheet_id: int
     workbook_id: int | None = None
     status: Literal["idle", "pending", "running", "completed", "failed", "cancelled"] = "idle"
+    phase: str = ""
     use_browser_fallback: bool = False
     already_running: bool = False
     cancel_requested: bool = False
@@ -431,6 +492,7 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
     updated_count: int = 0
     skipped_count: int = 0
     error_count: int = 0
+    warning_count: int = 0
     message: str = ""
     error_message: str | None = None
     sheet: NoteSheetDetailResponse | None = None
@@ -859,10 +921,11 @@ def _build_paged_document(
     safe_page = min(max(int(page or 1), 1), actual_page_count)
     row_offset = min((safe_page - 1) * safe_page_size, len(all_rows))
     page_rows = all_rows[row_offset: row_offset + safe_page_size]
-    page_document = {
-        **normalized,
-        "rows": page_rows,
-    }
+    page_document = _slice_paged_document_row_metadata(
+        normalized,
+        page_rows=page_rows,
+        page_data_indexes=list(range(row_offset, row_offset + len(page_rows))),
+    )
     grid_rows = _extract_document_grid_rows(normalized)
     if grid_rows:
         data_start_row = min(_normalize_document_data_start_row(normalized), len(grid_rows))
@@ -879,6 +942,73 @@ def _build_paged_document(
             loaded_row_count=len(page_rows),
         ),
     )
+
+
+def _slice_paged_document_row_metadata(
+    normalized: dict[str, Any],
+    *,
+    page_rows: list[Any],
+    page_data_indexes: list[int],
+) -> dict[str, Any]:
+    """裁剪分页文档里的行级元数据。
+
+    ``rows`` 本身只返回当前页，但历史实现会继续把整表的
+    ``cell_meta``、``entity_rows`` 和 ``entity_cells`` 一并带回前端。
+    这些字段在大表里可能远大于可见数据，所以分页响应只保留：
+
+    - 表头区，也就是 ``data_start_row`` 之前的文档行；
+    - 当前页实际包含的数据行，行号仍使用完整文档里的绝对行号；
+    - 当前页实体行引用到的实体单元格。
+
+    ``merged_cells`` 等结构字段暂时保持完整返回，因为分页保存合并仍依赖
+    客户端把结构配置原样带回，贸然裁剪会有丢失未加载结构的风险。
+    """
+    page_document = {
+        **normalized,
+        "rows": page_rows,
+    }
+    data_start_row = _normalize_document_data_start_row(normalized)
+    page_document_rows = {data_start_row + index for index in page_data_indexes if index >= 0}
+
+    cell_meta = normalized.get("cell_meta")
+    if isinstance(cell_meta, dict):
+        next_cell_meta: dict[str, Any] = {}
+        for key, value in cell_meta.items():
+            position = _parse_cell_meta_key(key)
+            if position is None:
+                next_cell_meta[str(key)] = value
+                continue
+            row_index, _column_index = position
+            if row_index < data_start_row or row_index in page_document_rows:
+                next_cell_meta[str(key)] = value
+        page_document["cell_meta"] = next_cell_meta
+
+    entity_rows = _extract_document_entity_rows(normalized)
+    if entity_rows:
+        next_entity_rows = [
+            entity_rows[index]
+            for index in range(min(data_start_row, len(entity_rows)))
+        ]
+        for data_index in page_data_indexes:
+            entity_index = data_start_row + data_index
+            if 0 <= entity_index < len(entity_rows):
+                next_entity_rows.append(entity_rows[entity_index])
+        page_document["entity_rows"] = next_entity_rows
+
+        entity_cells = normalized.get("entity_cells")
+        if isinstance(entity_cells, dict):
+            visible_row_ids = {
+                row_id
+                for row_id in (_get_document_entity_row_id(row) for row in next_entity_rows)
+                if row_id
+            }
+            page_document["entity_cells"] = {
+                row_id: cells
+                for row_id, cells in entity_cells.items()
+                if str(row_id) in visible_row_ids
+            }
+
+    return page_document
 
 
 def _normalize_filter_text(value: Any) -> str:
@@ -1298,10 +1428,11 @@ def _build_filtered_paged_document(
     row_offset = min((safe_page - 1) * safe_page_size, len(filtered_indexes))
     page_row_indexes = filtered_indexes[row_offset:row_offset + safe_page_size]
     page_rows = [all_rows[index] for index in page_row_indexes]
-    page_document = {
-        **normalized,
-        "rows": page_rows,
-    }
+    page_document = _slice_paged_document_row_metadata(
+        normalized,
+        page_rows=page_rows,
+        page_data_indexes=page_row_indexes,
+    )
     grid_rows = _extract_document_grid_rows(normalized)
     if grid_rows:
         prefix_count = min(data_start_row, len(grid_rows))
@@ -1360,6 +1491,29 @@ def _get_document_entity_row_id(row: Any) -> str:
     if not isinstance(row, dict):
         return ""
     return str(row.get("id") or "").strip()
+
+
+def _remove_orphan_document_entity_cells(document_json: dict[str, Any]) -> dict[str, Any]:
+    entity_cells = _extract_document_entity_cells(document_json)
+    if not entity_cells:
+        return document_json
+
+    row_ids = {
+        row_id
+        for row_id in (_get_document_entity_row_id(row) for row in _extract_document_entity_rows(document_json))
+        if row_id
+    }
+    next_entity_cells = {
+        row_id: cells
+        for row_id, cells in entity_cells.items()
+        if row_id in row_ids
+    }
+    if len(next_entity_cells) == len(entity_cells):
+        return document_json
+
+    next_document = dict(document_json)
+    next_document["entity_cells"] = next_entity_cells
+    return next_document
 
 
 def _get_document_entity_column_id(column: Any) -> str:
@@ -1469,6 +1623,107 @@ def _merge_paged_entity_model(
     next_document["entity_cells"] = next_entity_cells
 
 
+def _delete_document_entity_data_rows(
+    document_json: dict[str, Any],
+    deleted_data_indexes: set[int],
+) -> dict[str, Any]:
+    if not deleted_data_indexes:
+        return document_json
+
+    current_entity_rows = _extract_document_entity_rows(document_json)
+    current_entity_cells = _extract_document_entity_cells(document_json)
+    if not current_entity_rows and not current_entity_cells:
+        return document_json
+
+    data_start_row = _normalize_document_data_start_row(document_json)
+    next_entity_rows: list[Any] = []
+    removed_row_ids: set[str] = set()
+    for row_index, row in enumerate(current_entity_rows):
+        data_index = row_index - data_start_row
+        if data_index >= 0 and data_index in deleted_data_indexes:
+            row_id = _get_document_entity_row_id(row)
+            if row_id:
+                removed_row_ids.add(row_id)
+            continue
+        next_entity_rows.append(row)
+
+    next_document = dict(document_json)
+    if current_entity_rows:
+        next_document["entity_rows"] = next_entity_rows
+    if current_entity_cells:
+        next_entity_cells = dict(current_entity_cells)
+        for row_id in removed_row_ids:
+            next_entity_cells.pop(row_id, None)
+        next_document["entity_cells"] = next_entity_cells
+    return next_document
+
+
+def _extract_document_cell_meta(document_json: dict[str, Any]) -> dict[str, Any]:
+    cell_meta = document_json.get("cell_meta")
+    return dict(cell_meta) if isinstance(cell_meta, dict) else {}
+
+
+def _merge_paged_cell_meta_by_rows(
+    current_document: dict[str, Any],
+    incoming_document: dict[str, Any],
+    *,
+    target_data_indexes: list[int],
+    source_data_indexes: list[int],
+    deleted_data_indexes: list[int],
+) -> dict[str, Any] | None:
+    has_cell_meta = isinstance(current_document.get("cell_meta"), dict) or isinstance(incoming_document.get("cell_meta"), dict)
+    if not has_cell_meta:
+        return None
+
+    current_meta = _extract_document_cell_meta(current_document)
+    incoming_meta = _extract_document_cell_meta(incoming_document)
+
+    data_start_row = _normalize_document_data_start_row(current_document)
+    deleted_indexes = sorted({index for index in deleted_data_indexes if index >= 0})
+    replacement_pairs = [
+        (target_index, source_index)
+        for target_index, source_index in zip(target_data_indexes, source_data_indexes)
+        if target_index >= 0 and source_index >= 0
+    ]
+    replacement_target_rows = {data_start_row + target_index for target_index, _source_index in replacement_pairs}
+    replacement_source_rows = {data_start_row + source_index for _target_index, source_index in replacement_pairs}
+
+    next_meta: dict[str, Any] = {}
+    for key, value in current_meta.items():
+        position = _parse_cell_meta_key(key)
+        if position is None:
+            continue
+        row, column = position
+        if row < data_start_row:
+            next_meta[key] = value
+            continue
+        data_index = row - data_start_row
+        if data_index in deleted_indexes:
+            continue
+        shifted_data_index = data_index - sum(1 for deleted_index in deleted_indexes if deleted_index < data_index)
+        shifted_row = data_start_row + shifted_data_index
+        if shifted_row in replacement_target_rows:
+            continue
+        next_meta[f"{shifted_row}:{column}"] = value
+
+    for key, value in incoming_meta.items():
+        position = _parse_cell_meta_key(key)
+        if position is None:
+            continue
+        row, column = position
+        if row < data_start_row:
+            next_meta[key] = value
+            continue
+        if row not in replacement_source_rows:
+            continue
+        for target_index, source_index in replacement_pairs:
+            if row == data_start_row + source_index:
+                next_meta[f"{data_start_row + target_index}:{column}"] = value
+                break
+
+    return next_meta
+
+
 def _merge_paged_document(
     current_document: dict[str, Any],
     incoming_document: dict[str, Any],
@@ -1484,32 +1739,58 @@ def _merge_paged_document(
         for index in page_patch.row_indexes
         if isinstance(index, int) and 0 <= int(index) < len(current_rows)
     ]
-    if row_indexes:
+    deleted_row_indexes = sorted({
+        int(index)
+        for index in page_patch.deleted_row_indexes
+        if isinstance(index, int) and 0 <= int(index) < len(current_rows)
+    })
+    if row_indexes or deleted_row_indexes:
         if len(row_indexes) != len(incoming_rows) or len(set(row_indexes)) != len(row_indexes):
             raise HTTPException(status_code=409, detail="筛选分页保存需要保持行数一致")
+        if set(row_indexes).intersection(deleted_row_indexes):
+            raise HTTPException(status_code=409, detail="筛选分页保存的更新行和删除行不能重叠")
         merged_rows = list(current_rows)
         for source_index, incoming_row in zip(row_indexes, incoming_rows):
             merged_rows[source_index] = incoming_row
+        for deleted_index in sorted(deleted_row_indexes, reverse=True):
+            del merged_rows[deleted_index]
+        mapped_row_indexes = [
+            source_index - sum(1 for deleted_index in deleted_row_indexes if deleted_index < source_index)
+            for source_index in row_indexes
+        ]
         next_document = {
             **normalized_current,
             **{
                 key: value
                 for key, value in normalized_incoming.items()
-                if key not in {"rows", "grid_rows", "entity_rows", "entity_cells"}
+                if key not in {"rows", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
             },
             "rows": merged_rows,
         }
+        merged_cell_meta = _merge_paged_cell_meta_by_rows(
+            normalized_current,
+            normalized_incoming,
+            target_data_indexes=mapped_row_indexes,
+            source_data_indexes=row_indexes,
+            deleted_data_indexes=deleted_row_indexes,
+        )
+        if merged_cell_meta is not None:
+            next_document["cell_meta"] = merged_cell_meta
         current_grid_rows = _extract_document_grid_rows(normalized_current)
         incoming_grid_rows = _extract_document_grid_rows(normalized_incoming)
         if current_grid_rows or incoming_grid_rows:
             data_start_row = _normalize_document_data_start_row(next_document)
             source_grid_rows = incoming_grid_rows or current_grid_rows
             next_document["grid_rows"] = [*source_grid_rows[:data_start_row], *merged_rows]
+        entity_current_document = _delete_document_entity_data_rows(
+            normalized_current,
+            set(deleted_row_indexes),
+        )
         _merge_paged_entity_model(
             next_document,
-            normalized_current,
+            entity_current_document,
             normalized_incoming,
-            target_data_indexes=row_indexes,
+            target_data_indexes=mapped_row_indexes,
             merged_row_count=len(merged_rows),
         )
         return next_document
@@ -1528,10 +1809,21 @@ def _merge_paged_document(
         **{
             key: value
             for key, value in normalized_incoming.items()
-            if key not in {"rows", "grid_rows", "entity_rows", "entity_cells"}
+            if key not in {"rows", "grid_rows", "entity_rows", "entity_cells", "cell_meta"}
         },
         "rows": merged_rows,
     }
+    replacement_indexes = list(range(row_offset, row_offset + len(incoming_rows)))
+    deleted_indexes = list(range(row_offset + len(incoming_rows), tail_start))
+    merged_cell_meta = _merge_paged_cell_meta_by_rows(
+        normalized_current,
+        normalized_incoming,
+        target_data_indexes=replacement_indexes,
+        source_data_indexes=replacement_indexes,
+        deleted_data_indexes=deleted_indexes,
+    )
+    if merged_cell_meta is not None:
+        next_document["cell_meta"] = merged_cell_meta
     current_grid_rows = _extract_document_grid_rows(normalized_current)
     incoming_grid_rows = _extract_document_grid_rows(normalized_incoming)
     if current_grid_rows or incoming_grid_rows:
@@ -1542,7 +1834,7 @@ def _merge_paged_document(
         next_document,
         normalized_current,
         normalized_incoming,
-        target_data_indexes=list(range(row_offset, row_offset + len(incoming_rows))),
+        target_data_indexes=replacement_indexes,
         merged_row_count=len(merged_rows),
     )
     return next_document
@@ -2236,6 +2528,34 @@ def _filter_merged_cells_for_document_row_prefix(merged_cells: Any, *, max_docum
     return filtered
 
 
+def _filter_entity_model_for_document_row_prefix(
+    document_json: dict[str, Any],
+    *,
+    max_document_row: int,
+) -> dict[str, Any]:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_cells = _extract_document_entity_cells(document_json)
+    if not entity_rows and not entity_cells:
+        return document_json
+
+    next_document = dict(document_json)
+    kept_rows = entity_rows[:max(max_document_row, 0)]
+    kept_row_ids = {
+        row_id
+        for row_id in (_get_document_entity_row_id(row) for row in kept_rows)
+        if row_id
+    }
+    if entity_rows:
+        next_document["entity_rows"] = kept_rows
+    if entity_cells:
+        next_document["entity_cells"] = {
+            row_id: cells
+            for row_id, cells in entity_cells.items()
+            if row_id in kept_row_ids
+        }
+    return next_document
+
+
 def _get_excel_import_field_row_index(document_json: dict[str, Any], data_start_row: int) -> int:
     try:
         index = int(document_json.get("field_row_index") or 0)
@@ -2343,7 +2663,379 @@ def _replace_document_rows_for_excel_import(
         max_document_row=max_preserved_document_row,
         column_count=column_count,
     )
+    next_document = _filter_entity_model_for_document_row_prefix(
+        next_document,
+        max_document_row=max_preserved_document_row,
+    )
     return next_document, len(preserved_rows)
+
+
+def _get_column_index(columns: list[str], header: str) -> int:
+    try:
+        return columns.index(header)
+    except ValueError:
+        return -1
+
+
+def _registration_cutoff_date(now: date | None = None) -> date:
+    current = now or date.today()
+    month_index = current.year * 12 + (current.month - 1) - 2
+    year = month_index // 12
+    month = month_index % 12 + 1
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    last_day = (next_month - timedelta(days=1)).day
+    return date(year, month, min(current.day, last_day))
+
+
+def _add_registration_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + (value.month - 1) + months
+    year = month_index // 12
+    month = month_index % 12 + 1
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    last_day = (next_month - timedelta(days=1)).day
+    return date(year, month, min(value.day, last_day))
+
+
+def _parse_registration_submitted_at_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        parts = _serial_to_date_parts(float(value))
+        return datetime(parts[0], parts[1], parts[2]) if parts else None
+
+    text = _normalize_sheet_text(value)
+    if not text:
+        return None
+    normalized = text.replace("T", " ")
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", normalized):
+        parts = _serial_to_date_parts(float(normalized))
+        return datetime(parts[0], parts[1], parts[2]) if parts else None
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M",
+        "%Y年%m月%d日 %H:%M:%S",
+        "%Y年%m月%d日 %H:%M",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%Y年%m月%d日",
+        "%Y%m%d%H%M%S",
+        "%Y%m%d%H%M",
+        "%Y%m%d",
+    ):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _format_registration_tracking_date(value: date) -> str:
+    return value.isoformat()
+
+
+def _format_registration_tracking_datetime(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _apply_registration_tracking_values_to_row(
+    row: list[Any],
+    columns: list[str],
+    *,
+    now: date | None = None,
+) -> bool:
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN)
+    status_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN)
+    deadline_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_DEADLINE_COLUMN)
+    frozen_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN)
+    if group_index < 0 and status_index < 0 and deadline_index < 0 and frozen_at_index < 0:
+        return False
+
+    submitted_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN)
+    submitted_at = (
+        _parse_registration_submitted_at_datetime(row[submitted_at_index])
+        if submitted_at_index >= 0
+        else None
+    )
+    current_date = now or date.today()
+    current_datetime = datetime.combine(current_date, datetime.now().time()) if now is not None else datetime.now()
+    changed = False
+
+    def set_cell(column_index: int, value: str) -> None:
+        nonlocal changed
+        if column_index < 0 or column_index >= len(row):
+            return
+        if _normalize_sheet_text(row[column_index]) == value:
+            return
+        row[column_index] = value
+        changed = True
+
+    if submitted_at is None:
+        set_cell(group_index, "")
+        set_cell(status_index, "")
+        set_cell(deadline_index, "")
+        set_cell(frozen_at_index, "")
+        return changed
+
+    submitted_date = submitted_at.date()
+    archived = submitted_date < _registration_cutoff_date(current_date)
+    set_cell(group_index, NOTE_SHEET_REGISTRATION_FROZEN_GROUP if archived else NOTE_SHEET_REGISTRATION_ACTIVE_GROUP)
+    set_cell(status_index, NOTE_SHEET_REGISTRATION_FROZEN_STATUS if archived else NOTE_SHEET_REGISTRATION_ACTIVE_STATUS)
+    set_cell(deadline_index, _format_registration_tracking_date(_add_registration_months(submitted_date, 2)))
+    if archived:
+        if frozen_at_index >= 0 and not _normalize_sheet_text(row[frozen_at_index]):
+            set_cell(frozen_at_index, _format_registration_tracking_datetime(current_datetime))
+    else:
+        set_cell(frozen_at_index, "")
+    return changed
+
+
+def _is_registration_append_sheet(columns: list[str]) -> bool:
+    required = {
+        NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN,
+        NOTE_SHEET_REGISTRATION_GROUP_COLUMN,
+        NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN,
+        "姓名",
+    }
+    return required.issubset(set(columns))
+
+
+def _is_archived_registration_row(row: list[Any], columns: list[str], *, now: date | None = None) -> bool:
+    submitted_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN)
+    if submitted_at_index < 0:
+        return False
+    submitted_at = _parse_registration_submitted_at_datetime(row[submitted_at_index])
+    return submitted_at is not None and submitted_at.date() < _registration_cutoff_date(now)
+
+
+def _registration_submitted_at_sort_parts(value: Any) -> tuple[int, int] | None:
+    submitted_at = _parse_registration_submitted_at_datetime(value)
+    if submitted_at is None:
+        return None
+    return submitted_at.date().toordinal(), (
+        submitted_at.hour * 3600
+        + submitted_at.minute * 60
+        + submitted_at.second
+    )
+
+
+def _registration_dynamic_group_sort_key(
+    row: list[Any],
+    columns: list[str],
+    source_index: int,
+    *,
+    now: date | None = None,
+) -> tuple[Any, ...]:
+    submitted_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN)
+    submitted_parts = (
+        _registration_submitted_at_sort_parts(row[submitted_at_index])
+        if submitted_at_index >= 0
+        else None
+    )
+    if submitted_parts is None:
+        return 0, 1, source_index
+
+    day, second = submitted_parts
+    if day >= _registration_cutoff_date(now).toordinal():
+        return 0, 0, day, second, source_index
+    return 1, 0, -day, -second, source_index
+
+
+def _remap_document_entity_data_rows(
+    document_json: dict[str, Any],
+    source_document_json: dict[str, Any],
+    *,
+    row_index_map: dict[int, int],
+    data_row_count: int,
+) -> dict[str, Any]:
+    source_entity_rows = _extract_document_entity_rows(source_document_json)
+    if not source_entity_rows:
+        return document_json
+
+    data_start_row = _normalize_document_data_start_row(source_document_json)
+    source_data_entity_rows = source_entity_rows[data_start_row:data_start_row + data_row_count]
+    if not source_data_entity_rows:
+        return document_json
+
+    next_data_entity_rows: list[Any | None] = [None] * data_row_count
+    for source_index, target_index in row_index_map.items():
+        if (
+            0 <= source_index < len(source_data_entity_rows)
+            and 0 <= target_index < data_row_count
+        ):
+            next_data_entity_rows[target_index] = source_data_entity_rows[source_index]
+
+    if any(row is None for row in next_data_entity_rows):
+        return document_json
+
+    next_document = dict(document_json)
+    next_document["entity_rows"] = [
+        *source_entity_rows[:data_start_row],
+        *(row for row in next_data_entity_rows if row is not None),
+        *source_entity_rows[data_start_row + data_row_count:],
+    ]
+    if "entity_cells" in source_document_json:
+        next_document["entity_cells"] = source_document_json["entity_cells"]
+    if "entity_columns" in source_document_json:
+        next_document["entity_columns"] = source_document_json["entity_columns"]
+    return next_document
+
+
+def _order_registration_rows_by_dynamic_expiration(
+    document_json: dict[str, Any],
+    *,
+    now: date | None = None,
+) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    if not _is_registration_append_sheet(columns):
+        return normalized
+    if _get_column_index(columns, NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN) < 0:
+        return normalized
+
+    rows: list[list[Any]] = []
+    tracking_changed = False
+    for row in _extract_document_rows(normalized):
+        next_row = _normalize_sheet_row(row, len(columns))
+        tracking_changed = _apply_registration_tracking_values_to_row(next_row, columns, now=now) or tracking_changed
+        rows.append(next_row)
+    ordered_source_indexes = sorted(
+        range(len(rows)),
+        key=lambda index: _registration_dynamic_group_sort_key(rows[index], columns, index, now=now),
+    )
+    if ordered_source_indexes == list(range(len(rows))) and not tracking_changed:
+        return normalized
+
+    row_index_map = {
+        source_index: target_index
+        for target_index, source_index in enumerate(ordered_source_indexes)
+    }
+    formula_row_offset = _get_formula_reference_row_offset(normalized)
+    next_rows = [
+        _remap_row_formula_cell_references(
+            rows[source_index],
+            columns=columns,
+            row_index_map=row_index_map,
+            row_index_offset=formula_row_offset,
+        )
+        for source_index in ordered_source_indexes
+    ]
+    next_document = _replace_document_data_rows({
+        **normalized,
+        "columns": columns,
+    }, next_rows)
+    if isinstance(normalized.get("cell_meta"), dict):
+        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
+        next_document["cell_meta"] = _remap_cell_meta_rows(
+            normalized.get("cell_meta"),
+            row_index_map,
+            row_offset=row_offset,
+        )
+    next_document = _remap_document_entity_data_rows(
+        next_document,
+        normalized,
+        row_index_map=row_index_map,
+        data_row_count=len(rows),
+    )
+    return next_document
+
+
+def _get_registration_active_row_count(rows: list[list[Any]], columns: list[str]) -> int:
+    if not _is_registration_append_sheet(columns):
+        return len(rows)
+    return sum(1 for row in rows if not _is_archived_registration_row(row, columns))
+
+
+def _coerce_registration_import_rows(
+    existing_rows: list[list[Any]],
+    import_rows: list[list[Any]],
+    columns: list[str],
+) -> list[list[Any]]:
+    if not import_rows or not _is_registration_append_sheet(columns):
+        return import_rows
+
+    sequence_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    order_index = _get_column_index(columns, "微信支付订单号")
+    existing_order_ids: set[str] = set()
+    if order_index >= 0:
+        existing_order_ids = {
+            order_id
+            for order_id in (_strip_legacy_text_prefix(row[order_index]) for row in existing_rows)
+            if order_id and order_id != "/"
+        }
+    next_sequence = 1
+    if sequence_index >= 0:
+        for row in existing_rows:
+            text = _normalize_sheet_text(row[sequence_index])
+            if re.fullmatch(r"\d+", text):
+                next_sequence = max(next_sequence, int(text) + 1)
+
+    default_group = ""
+    if group_index >= 0:
+        for row in reversed(existing_rows):
+            if _is_archived_registration_row(row, columns):
+                continue
+            default_group = _normalize_sheet_text(row[group_index])
+            if default_group:
+                break
+
+    coerced_rows: list[list[Any]] = []
+    for row in import_rows:
+        if order_index >= 0:
+            order_id = _strip_legacy_text_prefix(row[order_index])
+            if order_id and order_id != "/":
+                if order_id in existing_order_ids:
+                    continue
+                existing_order_ids.add(order_id)
+        next_row = list(row)
+        if sequence_index >= 0:
+            next_row[sequence_index] = str(next_sequence + len(coerced_rows))
+        if group_index >= 0 and not _normalize_sheet_text(next_row[group_index]) and default_group:
+            next_row[group_index] = default_group
+        coerced_rows.append(next_row)
+    return coerced_rows
+
+
+def _insert_document_data_rows_for_excel_import(
+    document_json: dict[str, Any],
+    insert_index: int,
+    import_rows: list[list[Any]],
+) -> dict[str, Any]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    existing_rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    safe_insert_index = max(0, min(int(insert_index), len(existing_rows)))
+    normalized_import_rows = [_normalize_sheet_row(row, len(columns)) for row in import_rows]
+    next_rows = [
+        *existing_rows[:safe_insert_index],
+        *normalized_import_rows,
+        *existing_rows[safe_insert_index:],
+    ]
+    next_document = _replace_document_data_rows(normalized, next_rows)
+    if isinstance(normalized.get("cell_meta"), dict) and normalized_import_rows:
+        row_offset = _normalize_document_data_start_row(normalized) if _extract_document_grid_rows(normalized) else 0
+        next_document["cell_meta"] = _shift_cell_meta_rows_for_insert(
+            normalized.get("cell_meta"),
+            safe_insert_index,
+            len(normalized_import_rows),
+            row_offset=row_offset,
+        )
+    if safe_insert_index < len(existing_rows):
+        next_document = _filter_entity_model_for_document_row_prefix(
+            next_document,
+            max_document_row=_normalize_document_data_start_row(next_document),
+        )
+    return next_document
 
 
 def _append_document_rows_for_excel_import(
@@ -2358,7 +3050,20 @@ def _append_document_rows_for_excel_import(
     column_count = len(columns)
     existing_rows = [_normalize_sheet_row(row, column_count) for row in _extract_document_rows(normalized)]
     normalized_import_rows = [_normalize_sheet_row(row, column_count) for row in import_rows]
-    return _replace_document_data_rows(normalized, [*existing_rows, *normalized_import_rows]), len(existing_rows)
+    if _is_registration_append_sheet(columns):
+        preserved_row_count = _get_registration_active_row_count(existing_rows, columns)
+        coerced_rows = _coerce_registration_import_rows(existing_rows, normalized_import_rows, columns)
+        next_document = _replace_document_data_rows(normalized, [*existing_rows, *coerced_rows])
+        next_document = _filter_entity_model_for_document_row_prefix(
+            next_document,
+            max_document_row=_normalize_document_data_start_row(next_document),
+        )
+        return _order_registration_rows_by_dynamic_expiration(next_document), preserved_row_count
+
+    return (
+        _insert_document_data_rows_for_excel_import(normalized, len(existing_rows), normalized_import_rows),
+        len(existing_rows),
+    )
 
 
 def _load_attendance_order_lookup_provider():
@@ -2405,6 +3110,99 @@ def _find_required_registration_column_indexes(columns: list[str], required_colu
 def _normalize_registration_order_lookup_mode() -> str:
     value = str(NOTE_SHEET_REGISTRATION_ORDER_LOOKUP_MODE or "").strip().lower()
     return value if value in {"hybrid", "db_only", "browser_only"} else "db_only"
+
+
+def _build_registration_match_summary(**overrides: int) -> dict[str, int]:
+    summary = {
+        "target_count": 0,
+        "updated_count": 0,
+        "skipped_count": 0,
+        "error_count": 0,
+        "warning_count": 0,
+        "matched_count": 0,
+        "unmatched_count": 0,
+        "invalid_count": 0,
+        "already_complete_count": 0,
+    }
+    for key, value in overrides.items():
+        summary[key] = int(value or 0)
+    return summary
+
+
+def _format_registration_match_clause(
+    label: str,
+    action: str,
+    summary: dict[str, int],
+    *,
+    zero_text: str,
+    unmatched_text: str,
+) -> str:
+    target_count = int(summary.get("target_count") or 0)
+    matched_count = int(summary.get("matched_count") or 0)
+    updated_count = int(summary.get("updated_count") or 0)
+    if target_count <= 0:
+        return f"{label}：{zero_text}"
+
+    details: list[str] = []
+    unmatched_count = int(summary.get("unmatched_count") or 0)
+    error_count = int(summary.get("error_count") or 0)
+    if unmatched_count:
+        details.append(f"{unmatched_count} 条{unmatched_text}")
+    if error_count:
+        details.append(f"{error_count} 条异常")
+    suffix = f"（{'，'.join(details)}）" if details else ""
+    if matched_count:
+        return f"{label}：{action} {matched_count}/{target_count}{suffix}"
+    return f"{label}：{action} 0/{target_count}，更新 {updated_count} 行{suffix}"
+
+
+def _format_registration_order_match_message(summary: dict[str, int]) -> str:
+    return _format_registration_match_clause(
+        "订单匹配",
+        "补全",
+        summary,
+        zero_text="没有待补全订单",
+        unmatched_text="本地订单库未命中",
+    )
+
+
+def _format_registration_user_match_message(summary: dict[str, int]) -> str:
+    return _format_registration_match_clause(
+        "用户匹配",
+        "命中",
+        summary,
+        zero_text="没有待匹配用户",
+        unmatched_text="未命中用户",
+    )
+
+
+def _format_registration_attendance_sync_message(summary: dict[str, int]) -> str:
+    updated_count = int(summary.get("updated_count") or 0)
+    inserted_count = int(summary.get("inserted_count") if "inserted_count" in summary else updated_count)
+    repaired_count = int(summary.get("repaired_count") or 0)
+    skipped_count = int(summary.get("skipped_count") or 0)
+    error_count = int(summary.get("error_count") or 0)
+    details: list[str] = []
+    if skipped_count:
+        details.append(f"{skipped_count} 条已存在或缺少用户ID")
+    if error_count:
+        details.append(f"{error_count} 条异常")
+    suffix = f"（{'，'.join(details)}）" if details else ""
+    if repaired_count:
+        return f"考勤同步：新增 {inserted_count} 行，修复 {repaired_count} 行{suffix}"
+    return f"考勤新增 {inserted_count} 行{suffix}"
+
+
+def _format_registration_composite_update_message(
+    order_summary: dict[str, int],
+    user_summary: dict[str, int],
+    attendance_summary: dict[str, int],
+) -> str:
+    return "综合更新完成：" + "；".join([
+        _format_registration_order_match_message(order_summary),
+        _format_registration_user_match_message(user_summary),
+        _format_registration_attendance_sync_message(attendance_summary),
+    ])
 
 
 def _registration_user_browser_timeout_seconds() -> float:
@@ -2523,13 +3321,113 @@ def _lookup_registration_users_with_remote_browser(
     return result_map
 
 
-def _update_registration_order_match_document(document_json: dict[str, Any]) -> tuple[dict[str, Any], dict[str, int]]:
+def _lookup_registration_orders_with_remote_browser(
+    session: Session,
+    current_user: User,
+    *,
+    order_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not order_ids:
+        return []
+
+    entry = _resolve_registration_user_browser_device(session, current_user)
+    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
+    extra_config = get_attendance_service_extra_config(session)
+    payload = {
+        "action": "inspect",
+        "rows": [{"微信支付订单号": order_id} for order_id in order_ids],
+        "login_users": list(extra_config.get("scan_reminder_users") or []),
+        "lookup_mode": "browser_only",
+    }
+
+    try:
+        import requests
+
+        with requests.Session() as request_session:
+            request_session.trust_env = False
+            response = request_session.post(
+                f"{server_url}/api/device-control/attendance/order/execute",
+                json=payload,
+                headers=_build_remote_device_headers(entry),
+                timeout=600,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"调用 {entry.name} 实时查单失败：{exc}") from exc
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except Exception:
+            detail = response.text.strip()
+        raise HTTPException(status_code=502, detail=detail or f"{entry.name} 实时查单失败，HTTP {response.status_code}")
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{entry.name} 实时查单返回了无法解析的响应") from exc
+
+    rows = data.get("rows") if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    result_rows: list[dict[str, Any]] = []
+    for index in range(len(order_ids)):
+        row = rows[index] if index < len(rows) else {}
+        result_rows.append(dict(row) if isinstance(row, dict) else {})
+    return result_rows
+
+
+def _order_info_has_fill_values(order_info: Any) -> bool:
+    if not isinstance(order_info, dict):
+        return False
+    return any(
+        _normalize_sheet_text(order_info.get(column))
+        for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:]
+    )
+
+
+def _derive_registration_order_month(order_id: Any) -> str:
+    normalized = _strip_legacy_text_prefix(order_id)
+    if not normalized:
+        return ""
+    for match in re.finditer(r"(\d{6})", normalized):
+        value = match.group(1)
+        year = int(value[:2])
+        month = int(value[2:4])
+        day = int(value[4:6])
+        if 20 <= year <= 39 and 1 <= month <= 12 and 1 <= day <= 31:
+            return f"20{year:02d}{month:02d}"
+    return ""
+
+
+def _apply_registration_order_info_to_row(
+    row: list[Any],
+    indexes: dict[str, int],
+    order_info: dict[str, Any],
+) -> None:
+    for column in NOTE_SHEET_REGISTRATION_ORDER_COLUMNS:
+        value = order_info.get(column) if isinstance(order_info, dict) else ""
+        if value is not None and value != "":
+            formatted_value = _format_registration_match_cell(value)
+            if column == "微信支付订单号":
+                formatted_value = _strip_legacy_text_prefix(formatted_value)
+            row[indexes[column]] = formatted_value
+    if not _normalize_sheet_text(row[indexes["订单日期"]]):
+        row[indexes["订单日期"]] = _derive_registration_order_month(row[indexes["微信支付订单号"]])
+
+
+def _update_registration_order_match_document(
+    document_json: dict[str, Any],
+    *,
+    session: Session | None = None,
+    current_user: User | None = None,
+    use_browser_fallback: bool = False,
+) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
     columns = _normalize_document_columns(normalized)
     indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_ORDER_COLUMNS)
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     if not rows:
-        return normalized, {"updated_count": 0, "skipped_count": 0, "error_count": 0}
+        return normalized, _build_registration_match_summary()
 
     get_kqdb = _load_attendance_kqdb_provider()
     lookup_order = _load_attendance_order_lookup_provider()
@@ -2539,7 +3437,14 @@ def _update_registration_order_match_document(document_json: dict[str, Any]) -> 
     updated_count = 0
     skipped_count = 0
     error_count = 0
+    warning_count = 0
+    target_count = 0
+    matched_count = 0
+    unmatched_count = 0
+    invalid_count = 0
+    already_complete_count = 0
     next_rows: list[list[Any]] = []
+    browser_candidates: list[dict[str, Any]] = []
     fill_columns = NOTE_SHEET_REGISTRATION_ORDER_COLUMNS
     completeness_columns = fill_columns[1:]
 
@@ -2548,15 +3453,30 @@ def _update_registration_order_match_document(document_json: dict[str, Any]) -> 
         order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
         if len(order_id) < 19:
             skipped_count += 1
+            invalid_count += 1
             next_rows.append(row)
             continue
 
         if all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns):
             skipped_count += 1
+            already_complete_count += 1
             next_rows.append(row)
             continue
 
+        target_count += 1
         before = list(row)
+        if (
+            not _normalize_sheet_text(row[indexes["订单日期"]])
+            and all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns if column != "订单日期")
+        ):
+            derived_order_month = _derive_registration_order_month(order_id)
+            if derived_order_month:
+                row[indexes["订单日期"]] = derived_order_month
+                updated_count += 1
+                matched_count += 1
+                next_rows.append(row)
+                continue
+
         try:
             order_info = lookup_order(
                 order_id,
@@ -2574,7 +3494,15 @@ def _update_registration_order_match_document(document_json: dict[str, Any]) -> 
             continue
 
         if not order_info:
-            skipped_count += 1
+            if use_browser_fallback and session is not None and current_user is not None:
+                browser_candidates.append({
+                    "row_position": len(next_rows),
+                    "order_id": order_id,
+                })
+            else:
+                skipped_count += 1
+                unmatched_count += 1
+                warning_count += 1
             next_rows.append(row)
             continue
         if isinstance(order_info, dict) and "error" in order_info:
@@ -2586,22 +3514,79 @@ def _update_registration_order_match_document(document_json: dict[str, Any]) -> 
                 updated_count += 1
             continue
 
-        for column in fill_columns:
-            value = order_info.get(column) if isinstance(order_info, dict) else ""
-            if value is not None and value != "":
-                formatted_value = _format_registration_match_cell(value)
-                if column == "微信支付订单号":
-                    formatted_value = _strip_legacy_text_prefix(formatted_value)
-                row[indexes[column]] = formatted_value
+        _apply_registration_order_info_to_row(row, indexes, order_info)
+        matched_count += 1
         if row != before:
             updated_count += 1
         next_rows.append(row)
 
-    return _replace_document_data_rows(normalized, next_rows), {
-        "updated_count": updated_count,
-        "skipped_count": skipped_count,
-        "error_count": error_count,
-    }
+    if browser_candidates:
+        try:
+            browser_rows = _lookup_registration_orders_with_remote_browser(
+                session,
+                current_user,
+                order_ids=[str(candidate["order_id"]) for candidate in browser_candidates],
+            )
+        except Exception as exc:
+            error_text = str(exc.detail if isinstance(exc, HTTPException) else exc)
+            for candidate in browser_candidates:
+                row = next_rows[int(candidate["row_position"])]
+                before = list(row)
+                row[indexes["订单金额"]] = error_text
+                row[indexes["已返款"]] = ""
+                error_count += 1
+                if row != before:
+                    updated_count += 1
+        else:
+            for candidate, order_info in zip(browser_candidates, browser_rows, strict=False):
+                row = next_rows[int(candidate["row_position"])]
+                before = list(row)
+                if isinstance(order_info, dict) and _normalize_sheet_text(order_info.get("error")):
+                    row[indexes["订单金额"]] = _normalize_sheet_text(order_info.get("error"))
+                    row[indexes["已返款"]] = ""
+                    error_count += 1
+                    if row != before:
+                        updated_count += 1
+                    continue
+                if not _order_info_has_fill_values(order_info):
+                    skipped_count += 1
+                    unmatched_count += 1
+                    warning_count += 1
+                    continue
+
+                _apply_registration_order_info_to_row(row, indexes, order_info)
+                matched_count += 1
+                if row != before:
+                    updated_count += 1
+
+    return _replace_document_data_rows(normalized, next_rows), _build_registration_match_summary(
+        target_count=target_count,
+        updated_count=updated_count,
+        skipped_count=skipped_count,
+        error_count=error_count,
+        warning_count=warning_count,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+        invalid_count=invalid_count,
+        already_complete_count=already_complete_count,
+    )
+
+
+def _count_registration_order_match_targets(document_json: dict[str, Any]) -> int:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_ORDER_COLUMNS)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    count = 0
+    completeness_columns = NOTE_SHEET_REGISTRATION_ORDER_COLUMNS[1:]
+    for row in rows:
+        order_id = _strip_legacy_text_prefix(row[indexes["微信支付订单号"]])
+        if len(order_id) < 19:
+            continue
+        if all(_normalize_sheet_text(row[indexes[column]]) for column in completeness_columns):
+            continue
+        count += 1
+    return count
 
 
 def _get_registration_course_name(document: SheetDocument, workbook: WorkbookDocument | None) -> str:
@@ -2629,7 +3614,7 @@ def _update_registration_user_match_document(
     indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS)
     rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
     if not rows:
-        return normalized, {"updated_count": 0, "skipped_count": 0, "error_count": 0}
+        return normalized, _build_registration_match_summary()
 
     get_kqdb = _load_attendance_kqdb_provider()
     lookup_user = _load_attendance_user_lookup_provider()
@@ -2638,6 +3623,12 @@ def _update_registration_user_match_document(
     updated_count = 0
     skipped_count = 0
     error_count = 0
+    warning_count = 0
+    target_count = 0
+    matched_count = 0
+    unmatched_count = 0
+    already_complete_count = 0
+    invalid_count = 0
     next_rows: list[list[Any]] = []
     browser_candidates: list[dict[str, Any]] = []
     updated_row_positions: set[int] = set()
@@ -2653,6 +3644,7 @@ def _update_registration_user_match_document(
         row = list(source_row)
         if _normalize_sheet_text(row[indexes["用户ID"]]):
             skipped_count += 1
+            already_complete_count += 1
             next_rows.append(row)
             continue
 
@@ -2668,9 +3660,11 @@ def _update_registration_user_match_document(
         phones = [item for item in phones if item and item.lower() != "none"]
         if not names and not phones:
             skipped_count += 1
+            invalid_count += 1
             next_rows.append(row)
             continue
 
+        target_count += 1
         before = list(row)
         try:
             user_id, weight = lookup_user(
@@ -2696,6 +3690,11 @@ def _update_registration_user_match_document(
         initial_changed = row != before
         if initial_changed and (user_id or not use_browser_fallback):
             mark_updated(row_position)
+        if user_id:
+            matched_count += 1
+        elif not use_browser_fallback:
+            unmatched_count += 1
+            warning_count += 1
         next_rows.append(row)
         if not user_id and use_browser_fallback:
             browser_candidates.append(
@@ -2748,14 +3747,647 @@ def _update_registration_user_match_document(
                 elif remote_user_id:
                     row[indexes["用户ID"]] = remote_user_id
                     row[indexes["匹配得分"]] = "95"
+                    matched_count += 1
+                else:
+                    unmatched_count += 1
+                    warning_count += 1
                 if row != before or bool(candidate.get("initial_changed")):
                     mark_updated(int(candidate["row_position"]))
 
-    return _replace_document_data_rows(normalized, next_rows), {
-        "updated_count": updated_count,
-        "skipped_count": skipped_count,
-        "error_count": error_count,
+    return _replace_document_data_rows(normalized, next_rows), _build_registration_match_summary(
+        target_count=target_count,
+        updated_count=updated_count,
+        skipped_count=skipped_count,
+        error_count=error_count,
+        warning_count=warning_count,
+        matched_count=matched_count,
+        unmatched_count=unmatched_count,
+        invalid_count=invalid_count,
+        already_complete_count=already_complete_count,
+    )
+
+
+def _format_registration_attendance_submitted_at(value: Any) -> str:
+    parsed = _parse_registration_submitted_at_datetime(value)
+    if parsed is None:
+        return _normalize_sheet_text(value)
+    if parsed.hour or parsed.minute or parsed.second:
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    return parsed.strftime("%Y-%m-%d")
+
+
+def _get_workbook_sheet_by_key_or_title(
+    session: Session,
+    workbook: WorkbookDocument,
+    *,
+    sheet_key: str,
+    title: str,
+) -> SheetDocument | None:
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    if not links:
+        return None
+    sheet_map = load_sheets_by_refs(session, [link.sheet_id for link in links])
+    for link in links:
+        sheet = sheet_map.get(str(link.sheet_id))
+        if sheet is None or sheet.scope != "notes":
+            continue
+        if _normalize_sheet_text(sheet.sheet_key) == sheet_key or _normalize_sheet_text(sheet.title) == title:
+            return sheet
+    return None
+
+
+def _resolve_registration_attendance_sheet(
+    session: Session,
+    registration_document: SheetDocument,
+    workbook: WorkbookDocument | None,
+) -> tuple[SheetDocument | None, WorkbookDocument | None]:
+    target_workbook = workbook
+    if target_workbook is None:
+        workbooks = _get_workbooks_for_sheet(session, registration_document)
+        target_workbook = workbooks[0] if workbooks else None
+    if target_workbook is None:
+        return None, None
+    return (
+        _get_workbook_sheet_by_key_or_title(
+            session,
+            target_workbook,
+            sheet_key="attendance",
+            title="考勤表",
+        ),
+        target_workbook,
+    )
+
+
+def _is_archived_attendance_row(row: list[Any], columns: list[str]) -> bool:
+    tracking_group_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN)
+    tracking_status_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN)
+    frozen_at_index = _get_column_index(columns, NOTE_SHEET_REGISTRATION_FROZEN_AT_COLUMN)
+    if tracking_group_index >= 0 and _normalize_sheet_text(row[tracking_group_index]) == NOTE_SHEET_REGISTRATION_FROZEN_GROUP:
+        return True
+    if tracking_status_index >= 0 and _normalize_sheet_text(row[tracking_status_index]) == NOTE_SHEET_REGISTRATION_FROZEN_STATUS:
+        return True
+    if frozen_at_index >= 0 and _normalize_sheet_text(row[frozen_at_index]):
+        return True
+    return False
+
+
+def _get_attendance_append_insert_index(rows: list[list[Any]], columns: list[str]) -> int:
+    for index, row in enumerate(rows):
+        if _is_archived_attendance_row(row, columns):
+            return index
+    return len(rows)
+
+
+def _find_attendance_row_template_index(
+    rows: list[list[Any]],
+    columns: list[str],
+    target_index: int,
+) -> int | None:
+    before_limit = max(0, min(target_index, len(rows)))
+    for index in range(before_limit - 1, -1, -1):
+        if not _is_archived_attendance_row(rows[index], columns):
+            return index
+    for index, row in enumerate(rows):
+        if index == target_index:
+            continue
+        if not _is_archived_attendance_row(row, columns):
+            return index
+    return None
+
+
+def _build_attendance_row_from_template(
+    attendance_columns: list[str],
+    *,
+    template_row: list[Any] | None = None,
+    template_row_index: int | None = None,
+    target_row_index: int | None = None,
+) -> list[Any]:
+    next_row = [""] * len(attendance_columns)
+    if template_row is None:
+        for index, header in enumerate(attendance_columns):
+            if header in NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS:
+                next_row[index] = "0"
+        return next_row
+
+    normalized_template = _normalize_sheet_row(template_row, len(attendance_columns))
+    row_delta = (
+        target_row_index - template_row_index
+        if template_row_index is not None and target_row_index is not None
+        else 0
+    )
+    for index, header in enumerate(attendance_columns):
+        template_value = normalized_template[index]
+        if _is_formula_expression(template_value):
+            next_row[index] = _shift_formula_value_references(template_value, row_delta=row_delta)
+        elif header in NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS:
+            next_row[index] = "0"
+    return next_row
+
+
+def _build_attendance_row_from_registration(
+    registration_row: list[Any],
+    registration_columns: list[str],
+    attendance_columns: list[str],
+    *,
+    template_row: list[Any] | None = None,
+    template_row_index: int | None = None,
+    target_row_index: int | None = None,
+) -> list[Any]:
+    source = dict(zip(registration_columns, _normalize_sheet_row(registration_row, len(registration_columns))))
+
+    def source_value(*headers: str) -> str:
+        for header in headers:
+            text = _normalize_sheet_text(source.get(header))
+            if text:
+                return text
+        return ""
+
+    submitted_at = _format_registration_attendance_submitted_at(source.get(NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN))
+    next_row = _build_attendance_row_from_template(
+        attendance_columns,
+        template_row=template_row,
+        template_row_index=template_row_index,
+        target_row_index=target_row_index,
+    )
+    for index, header in enumerate(attendance_columns):
+        if header == "报名日期":
+            next_row[index] = submitted_at
+        elif header == "学号":
+            next_row[index] = source_value(NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+        elif header in {"分组", "组号"}:
+            next_row[index] = source_value(NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+        elif header == "姓名":
+            next_row[index] = source_value("姓名")
+        elif header in {"昵称", "微信昵称"}:
+            next_row[index] = source_value("微信昵称", "昵称")
+        elif header == "手机号":
+            next_row[index] = source_value("手机号")
+        elif header == "微信支付订单号":
+            next_row[index] = source_value("微信支付订单号")
+        elif header == "商户订单号":
+            next_row[index] = source_value("商户订单号")
+        elif header == "订单日期":
+            next_row[index] = source_value("订单日期")
+        elif header == "订单金额":
+            next_row[index] = source_value("订单金额")
+        elif header == "已返款" and not _is_formula_expression(next_row[index]):
+            next_row[index] = "0"
+        elif header == "用户ID":
+            next_row[index] = source_value("用户ID")
+        elif header == "匹配得分":
+            next_row[index] = source_value("匹配得分")
+        elif header == "规则版本":
+            next_row[index] = "当前规则"
+        elif header == NOTE_SHEET_REGISTRATION_TRACKING_STATUS_COLUMN:
+            next_row[index] = "追踪中"
+        elif header == NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN:
+            next_row[index] = source_value(NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
+    return next_row
+
+
+def _merge_attendance_registration_defaults(
+    current_row: list[Any],
+    candidate_row: list[Any],
+    attendance_columns: list[str],
+) -> tuple[list[Any], bool]:
+    next_row = _normalize_sheet_row(current_row, len(attendance_columns))
+    candidate = _normalize_sheet_row(candidate_row, len(attendance_columns))
+    changed = False
+    for index, header in enumerate(attendance_columns):
+        candidate_value = candidate[index]
+        if _normalize_sheet_text(candidate_value) == "":
+            continue
+        current_value = next_row[index]
+        current_text = _normalize_sheet_text(current_value)
+        should_fill = False
+        if _is_formula_expression(candidate_value):
+            should_fill = not current_text or not _is_formula_expression(current_value)
+        elif header in NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS:
+            should_fill = not current_text
+        elif header == "报名日期":
+            candidate_datetime = _parse_registration_submitted_at_datetime(candidate_value)
+            should_fill = candidate_datetime is not None and (
+                not current_text
+                or _parse_registration_submitted_at_datetime(current_value) is None
+                or _format_registration_attendance_submitted_at(current_value) != current_text
+            )
+        elif header in NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS:
+            should_fill = not current_text
+        if should_fill and current_value != candidate_value:
+            next_row[index] = candidate_value
+            changed = True
+    return next_row, changed
+
+
+def _attendance_cell_meta_template_column_limit(columns: list[str]) -> int:
+    clockin_count_index = _get_column_index(columns, "打卡数")
+    if clockin_count_index >= 0:
+        return clockin_count_index
+    return len(columns)
+
+
+def _attendance_progress_style_column_range(columns: list[str]) -> tuple[int, int]:
+    start_index = _get_column_index(columns, "打卡数")
+    if start_index < 0:
+        return len(columns), len(columns)
+    end_index = len(columns)
+    for column_index in range(start_index + 1, len(columns)):
+        if columns[column_index] in NOTE_SHEET_ATTENDANCE_TRAILING_META_COLUMNS:
+            end_index = column_index
+            break
+    return start_index, end_index
+
+
+def _cell_meta_has_style(meta: Any) -> bool:
+    return isinstance(meta, dict) and isinstance(meta.get("style"), dict) and bool(meta.get("style"))
+
+
+def _cell_meta_has_archived_attendance_style(meta: Any) -> bool:
+    if not isinstance(meta, dict):
+        return False
+    style = meta.get("style")
+    if not isinstance(style, dict):
+        return False
+    background_color = _normalize_sheet_text(style.get("background_color")).upper()
+    text_color = _normalize_sheet_text(style.get("text_color")).upper()
+    return background_color == "#F2F2F2" and text_color == "#6B7280"
+
+
+def _attendance_row_has_archived_cell_meta(
+    cell_meta: Any,
+    *,
+    document_row: int,
+    column_limit: int,
+) -> bool:
+    if not isinstance(cell_meta, dict):
+        return False
+    for column_index in range(max(column_limit, 0)):
+        if _cell_meta_has_archived_attendance_style(cell_meta.get(f"{document_row}:{column_index}")):
+            return True
+    return False
+
+
+def _attendance_row_has_empty_progress_cell_meta(
+    row: list[Any],
+    cell_meta: Any,
+    *,
+    document_row: int,
+    start_column: int,
+    end_column: int,
+) -> bool:
+    if not isinstance(cell_meta, dict) or start_column >= end_column:
+        return False
+    if any(_normalize_sheet_text(row[column_index]) for column_index in range(start_column, min(end_column, len(row)))):
+        return False
+    for column_index in range(start_column, end_column):
+        if _cell_meta_has_style(cell_meta.get(f"{document_row}:{column_index}")):
+            return True
+    return False
+
+
+def _apply_attendance_template_cell_meta(
+    cell_meta: Any,
+    *,
+    template_document_row: int | None,
+    target_document_row: int,
+    column_limit: int,
+) -> dict[str, Any]:
+    if not isinstance(cell_meta, dict):
+        return {}
+    next_meta: dict[str, Any] = {}
+    for key, meta in cell_meta.items():
+        parsed = _parse_cell_meta_key(key)
+        if parsed is None:
+            next_meta[str(key)] = meta
+            continue
+        row_index, _column_index = parsed
+        if row_index != target_document_row:
+            next_meta[str(key)] = meta
+
+    if template_document_row is None:
+        return next_meta
+    for column_index in range(max(column_limit, 0)):
+        meta = cell_meta.get(f"{template_document_row}:{column_index}")
+        if meta is not None:
+            next_meta[f"{target_document_row}:{column_index}"] = deepcopy(meta)
+    return next_meta
+
+
+def _entity_cell_has_archived_attendance_style(cells: Any, column_id: str) -> bool:
+    if not isinstance(cells, dict) or not column_id:
+        return False
+    return _cell_meta_has_archived_attendance_style(cells.get(column_id))
+
+
+def _attendance_row_has_archived_entity_cell_meta(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_limit: int,
+) -> bool:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows):
+        return False
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    row_cells = _extract_document_entity_cells(document_json).get(row_id)
+    if not isinstance(row_cells, dict):
+        return False
+    for column_index in range(min(max(column_limit, 0), len(entity_columns))):
+        column_id = _get_document_entity_column_id(entity_columns[column_index])
+        if _entity_cell_has_archived_attendance_style(row_cells, column_id):
+            return True
+    return False
+
+
+def _attendance_row_has_empty_progress_entity_cell_meta(
+    row: list[Any],
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    start_column: int,
+    end_column: int,
+) -> bool:
+    if start_column >= end_column:
+        return False
+    if any(_normalize_sheet_text(row[column_index]) for column_index in range(start_column, min(end_column, len(row)))):
+        return False
+
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if document_row < 0 or document_row >= len(entity_rows):
+        return False
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    row_cells = _extract_document_entity_cells(document_json).get(row_id)
+    if not isinstance(row_cells, dict):
+        return False
+    for column_index in range(start_column, min(end_column, len(entity_columns))):
+        column_id = _get_document_entity_column_id(entity_columns[column_index])
+        if column_id and _cell_meta_has_style(row_cells.get(column_id)):
+            return True
+    return False
+
+
+def _remove_attendance_row_entity_cell_styles(
+    document_json: dict[str, Any],
+    *,
+    target_document_row: int,
+) -> dict[str, Any]:
+    entity_rows = _extract_document_entity_rows(document_json)
+    if target_document_row < 0 or target_document_row >= len(entity_rows):
+        return document_json
+    target_row_id = _get_document_entity_row_id(entity_rows[target_document_row])
+    if not target_row_id:
+        return document_json
+    entity_cells = _extract_document_entity_cells(document_json)
+    target_cells = entity_cells.get(target_row_id)
+    if not isinstance(target_cells, dict):
+        return document_json
+
+    next_target_cells: dict[str, Any] = {}
+    changed = False
+    for column_id, cell in target_cells.items():
+        if not isinstance(cell, dict) or "style" not in cell:
+            next_target_cells[column_id] = cell
+            continue
+        next_cell = dict(cell)
+        next_cell.pop("style", None)
+        changed = True
+        if next_cell:
+            next_target_cells[column_id] = next_cell
+    if not changed:
+        return document_json
+
+    next_document = dict(document_json)
+    next_entity_cells = dict(entity_cells)
+    if next_target_cells:
+        next_entity_cells[target_row_id] = next_target_cells
+    else:
+        next_entity_cells.pop(target_row_id, None)
+    next_document["entity_cells"] = next_entity_cells
+    return next_document
+
+
+def _sync_registration_rows_to_attendance_document(
+    registration_json: dict[str, Any],
+    attendance_json: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    registration_document = _normalize_document_json(registration_json)
+    attendance_document = _normalize_document_json(attendance_json)
+    registration_columns = _normalize_document_columns(registration_document)
+    attendance_columns = _normalize_document_columns(attendance_document)
+    if "用户ID" not in registration_columns or "用户ID" not in attendance_columns:
+        return attendance_document, _build_registration_match_summary(error_count=1)
+
+    registration_rows = [
+        _normalize_sheet_row(row, len(registration_columns))
+        for row in _extract_document_rows(registration_document)
+    ]
+    attendance_rows = [
+        _normalize_sheet_row(row, len(attendance_columns))
+        for row in _extract_document_rows(attendance_document)
+    ]
+    user_id_index = _get_column_index(attendance_columns, "用户ID")
+    student_id_index = _get_column_index(attendance_columns, "学号")
+    merchant_order_index = _get_column_index(attendance_columns, "商户订单号")
+    existing_user_id_rows = {
+        _normalize_sheet_text(row[user_id_index]): index
+        for index, row in enumerate(attendance_rows)
+        if user_id_index >= 0 and _normalize_sheet_text(row[user_id_index])
     }
+    existing_student_id_rows = {
+        _normalize_sheet_text(row[student_id_index]): index
+        for index, row in enumerate(attendance_rows)
+        if student_id_index >= 0 and _normalize_sheet_text(row[student_id_index])
+    }
+    existing_merchant_order_id_rows = {
+        _strip_legacy_text_prefix(row[merchant_order_index]): index
+        for index, row in enumerate(attendance_rows)
+        if merchant_order_index >= 0 and _strip_legacy_text_prefix(row[merchant_order_index])
+    }
+    existing_user_ids = set(existing_user_id_rows)
+    existing_student_ids = set(existing_student_id_rows)
+    existing_merchant_order_ids = set(existing_merchant_order_id_rows)
+
+    registration_user_id_index = _get_column_index(registration_columns, "用户ID")
+    registration_student_id_index = _get_column_index(registration_columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    registration_merchant_order_index = _get_column_index(registration_columns, "商户订单号")
+    skipped_count = 0
+    repaired_count = 0
+    repair_meta_targets: list[tuple[int, int | None]] = []
+    pending_registration_rows: list[list[Any]] = []
+    cell_meta_row_offset = _normalize_document_data_start_row(attendance_document) if _extract_document_grid_rows(attendance_document) else 0
+    cell_meta_column_limit = _attendance_cell_meta_template_column_limit(attendance_columns)
+    progress_style_start_column, progress_style_end_column = _attendance_progress_style_column_range(attendance_columns)
+    for row in registration_rows:
+        if _is_archived_registration_row(row, registration_columns):
+            skipped_count += 1
+            continue
+        user_id = _normalize_sheet_text(row[registration_user_id_index]) if registration_user_id_index >= 0 else ""
+        if not user_id:
+            skipped_count += 1
+            continue
+        student_id = _normalize_sheet_text(row[registration_student_id_index]) if registration_student_id_index >= 0 else ""
+        merchant_order_id = (
+            _strip_legacy_text_prefix(row[registration_merchant_order_index])
+            if registration_merchant_order_index >= 0
+            else ""
+        )
+        existing_index = existing_user_id_rows.get(user_id)
+        if existing_index is None and student_id:
+            existing_index = existing_student_id_rows.get(student_id)
+        if existing_index is None and merchant_order_id:
+            existing_index = existing_merchant_order_id_rows.get(merchant_order_id)
+        if existing_index is not None:
+            if 0 <= existing_index < len(attendance_rows) and not _is_archived_attendance_row(
+                attendance_rows[existing_index],
+                attendance_columns,
+            ):
+                template_index = _find_attendance_row_template_index(attendance_rows, attendance_columns, existing_index)
+                candidate_row = _build_attendance_row_from_registration(
+                    row,
+                    registration_columns,
+                    attendance_columns,
+                    template_row=attendance_rows[template_index] if template_index is not None else None,
+                    template_row_index=template_index,
+                    target_row_index=existing_index,
+                )
+                repaired_row, changed = _merge_attendance_registration_defaults(
+                    attendance_rows[existing_index],
+                    candidate_row,
+                    attendance_columns,
+                )
+                needs_meta_repair = _attendance_row_has_archived_cell_meta(
+                    attendance_document.get("cell_meta"),
+                    document_row=cell_meta_row_offset + existing_index,
+                    column_limit=cell_meta_column_limit,
+                ) or _attendance_row_has_archived_entity_cell_meta(
+                    attendance_document,
+                    document_row=cell_meta_row_offset + existing_index,
+                    column_limit=cell_meta_column_limit,
+                ) or _attendance_row_has_empty_progress_cell_meta(
+                    attendance_rows[existing_index],
+                    attendance_document.get("cell_meta"),
+                    document_row=cell_meta_row_offset + existing_index,
+                    start_column=progress_style_start_column,
+                    end_column=progress_style_end_column,
+                ) or _attendance_row_has_empty_progress_entity_cell_meta(
+                    attendance_rows[existing_index],
+                    attendance_document,
+                    document_row=cell_meta_row_offset + existing_index,
+                    start_column=progress_style_start_column,
+                    end_column=progress_style_end_column,
+                )
+                if changed:
+                    attendance_rows[existing_index] = repaired_row
+                if changed or needs_meta_repair:
+                    repaired_count += 1
+                    repair_meta_targets.append((existing_index, template_index))
+            skipped_count += 1
+            continue
+        if student_id and student_id in existing_student_ids:
+            skipped_count += 1
+            continue
+        if merchant_order_id and merchant_order_id in existing_merchant_order_ids:
+            skipped_count += 1
+            continue
+
+        pending_registration_rows.append(row)
+        existing_user_ids.add(user_id)
+        existing_user_id_rows[user_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+        if student_id:
+            existing_student_ids.add(student_id)
+            existing_student_id_rows[student_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+        if merchant_order_id:
+            existing_merchant_order_ids.add(merchant_order_id)
+            existing_merchant_order_id_rows[merchant_order_id] = len(attendance_rows) + len(pending_registration_rows) - 1
+
+    insert_index = _get_attendance_append_insert_index(attendance_rows, attendance_columns)
+    template_index = _find_attendance_row_template_index(attendance_rows, attendance_columns, insert_index)
+    inserted_rows = [
+        _build_attendance_row_from_registration(
+            row,
+            registration_columns,
+            attendance_columns,
+            template_row=attendance_rows[template_index] if template_index is not None else None,
+            template_row_index=template_index,
+            target_row_index=insert_index + offset,
+        )
+        for offset, row in enumerate(pending_registration_rows)
+    ]
+
+    if not inserted_rows and repaired_count <= 0:
+        return attendance_document, _build_registration_match_summary(skipped_count=skipped_count)
+
+    if inserted_rows:
+        formula_row_offset = _get_formula_reference_row_offset(attendance_document)
+        existing_rows = _remap_existing_rows_for_insert(
+            attendance_rows,
+            columns=attendance_columns,
+            insert_index=insert_index,
+            amount=len(inserted_rows),
+            row_index_offset=formula_row_offset,
+        )
+    else:
+        existing_rows = attendance_rows
+    next_rows = [
+        *existing_rows[:insert_index],
+        *inserted_rows,
+        *existing_rows[insert_index:],
+    ]
+    next_document = _replace_document_data_rows(attendance_document, next_rows)
+    if inserted_rows:
+        next_document = _filter_entity_model_for_document_row_prefix(
+            next_document,
+            max_document_row=_normalize_document_data_start_row(next_document),
+        )
+    else:
+        for target_index, _source_template_index in repair_meta_targets:
+            next_document = _remove_attendance_row_entity_cell_styles(
+                next_document,
+                target_document_row=cell_meta_row_offset + target_index,
+            )
+    if isinstance(attendance_document.get("cell_meta"), dict):
+        row_offset = cell_meta_row_offset
+        column_limit = cell_meta_column_limit
+        next_cell_meta = attendance_document.get("cell_meta")
+        for target_index, source_template_index in repair_meta_targets:
+            next_cell_meta = _apply_attendance_template_cell_meta(
+                next_cell_meta,
+                template_document_row=row_offset + source_template_index if source_template_index is not None else None,
+                target_document_row=row_offset + target_index,
+                column_limit=column_limit,
+            )
+        if inserted_rows and insert_index < len(attendance_rows):
+            next_cell_meta = _shift_cell_meta_rows_for_insert(
+                next_cell_meta,
+                insert_index,
+                len(inserted_rows),
+                row_offset=row_offset,
+            )
+        for offset in range(len(inserted_rows)):
+            target_index = insert_index + offset
+            shifted_template_index = template_index
+            if shifted_template_index is not None and shifted_template_index >= insert_index:
+                shifted_template_index += len(inserted_rows)
+            next_cell_meta = _apply_attendance_template_cell_meta(
+                next_cell_meta,
+                template_document_row=row_offset + shifted_template_index if shifted_template_index is not None else None,
+                target_document_row=row_offset + target_index,
+                column_limit=column_limit,
+            )
+        next_document["cell_meta"] = next_cell_meta
+    return next_document, _build_registration_match_summary(
+        updated_count=len(inserted_rows) + repaired_count,
+        matched_count=len(inserted_rows) + repaired_count,
+        skipped_count=skipped_count,
+        inserted_count=len(inserted_rows),
+        repaired_count=repaired_count,
+    )
 
 
 def _serialize_note_sheet_action_detail(
@@ -2798,8 +4430,13 @@ def _run_registration_match_action(
 
     current_document = _normalize_document_json(dict(document.document_json or {}))
     if action == NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH:
-        next_document, summary = _update_registration_order_match_document(current_document)
-        message = f"已更新 {summary['updated_count']} 行订单匹配"
+        next_document, summary = _update_registration_order_match_document(
+            current_document,
+            session=session,
+            current_user=current_user,
+            use_browser_fallback=use_browser_fallback,
+        )
+        message = _format_registration_order_match_message(summary)
     elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
         next_document, summary = _update_registration_user_match_document(
             current_document,
@@ -2808,7 +4445,7 @@ def _run_registration_match_action(
             course_name=_get_registration_course_name(document, workbook),
             use_browser_fallback=use_browser_fallback,
         )
-        message = f"已更新 {summary['updated_count']} 行用户匹配"
+        message = _format_registration_user_match_message(summary)
     else:
         raise HTTPException(status_code=400, detail="不支持的报名表动作")
 
@@ -2827,6 +4464,7 @@ def _run_registration_match_action(
         updated_count=summary["updated_count"],
         skipped_count=summary["skipped_count"],
         error_count=summary["error_count"],
+        warning_count=summary["warning_count"],
         message=message,
     )
 
@@ -2868,6 +4506,7 @@ def _serialize_registration_match_run(
         sheet_id=int(run.get("sheet_id") or 0),
         workbook_id=run.get("workbook_id"),
         status=run.get("status") or "idle",
+        phase=str(run.get("phase") or ""),
         use_browser_fallback=bool(run.get("use_browser_fallback")),
         already_running=already_running,
         cancel_requested=bool(run.get("cancel_requested")),
@@ -2879,6 +4518,7 @@ def _serialize_registration_match_run(
         updated_count=int(run.get("updated_count") or 0),
         skipped_count=int(run.get("skipped_count") or 0),
         error_count=int(run.get("error_count") or 0),
+        warning_count=int(run.get("warning_count") or 0),
         message=str(run.get("message") or ""),
         error_message=run.get("error_message"),
         sheet=sheet,
@@ -2891,16 +4531,32 @@ def _get_registration_match_run_snapshot(run_id: str) -> dict[str, Any] | None:
         return dict(run) if run else None
 
 
-def _get_active_registration_match_run_snapshot(sheet_id: int, action: str) -> dict[str, Any] | None:
-    key = _registration_match_run_key(sheet_id, action)
+def _get_active_registration_match_run_snapshot(sheet_id: int, action: str | None = None) -> dict[str, Any] | None:
     with _REGISTRATION_MATCH_RUN_LOCK:
-        run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
-        run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
-        if _is_registration_match_run_active(run):
-            return dict(run)
-        if run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
-            _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+        actions = [action] if action else sorted(NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS)
+        for item in actions:
+            key = _registration_match_run_key(sheet_id, str(item))
+            run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
+            run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
+            if _is_registration_match_run_active(run):
+                return dict(run)
+            if run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
+                _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
         return None
+
+
+def _get_conflicting_registration_match_runs(sheet_id: int) -> list[dict[str, Any]]:
+    runs: list[dict[str, Any]] = []
+    with _REGISTRATION_MATCH_RUN_LOCK:
+        for action in sorted(NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS):
+            key = _registration_match_run_key(sheet_id, action)
+            run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
+            run = _REGISTRATION_MATCH_RUNS.get(run_id or "")
+            if _is_registration_match_run_active(run):
+                runs.append(dict(run))
+            elif run_id and run and run.get("status") in _REGISTRATION_MATCH_TERMINAL_STATUSES:
+                _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
+    return runs
 
 
 def _update_registration_match_run(run_id: str, **updates: Any) -> dict[str, Any] | None:
@@ -2922,6 +4578,9 @@ def _request_cancel_registration_match_run(run_id: str) -> None:
         run["status"] = "cancelled"
         run["finished_at"] = now
         run["message"] = "已请求停止并准备重新开始"
+        key = _registration_match_run_key(int(run.get("sheet_id") or 0), str(run.get("action") or ""))
+        if _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key) == run_id:
+            _REGISTRATION_MATCH_ACTIVE_BY_KEY.pop(key, None)
 
 
 def _is_registration_match_run_current(run_id: str) -> bool:
@@ -3004,6 +4663,83 @@ def _save_registration_match_row(
     return True
 
 
+def _run_registration_order_match_background(
+    *,
+    run_id: str,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user_snapshot: dict[str, Any],
+    use_browser_fallback: bool,
+) -> None:
+    _ = use_browser_fallback
+    try:
+        _update_registration_match_run(
+            run_id,
+            status="running",
+            phase=NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+            started_at=time.time(),
+            message="正在更新订单匹配",
+        )
+        with Session(engine) as session:
+            current_user = User(
+                id=int(current_user_snapshot.get("id") or 0),
+                username=str(current_user_snapshot.get("username") or ""),
+                hashed_password="",
+                is_active=True,
+                is_superuser=bool(current_user_snapshot.get("is_superuser")),
+            )
+            document, access, _workbook = _get_note_sheet_or_404(
+                session,
+                current_user,
+                sheet_id,
+                required_role="editor",
+                workbook_id=workbook_id,
+            )
+            if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+                raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+
+            current_document = _normalize_document_json(dict(document.document_json or {}))
+            total_count = _count_registration_order_match_targets(current_document)
+            _update_registration_match_run(run_id, total_count=total_count)
+            if not _is_registration_match_run_current(run_id):
+                _finish_registration_match_run(run_id, "cancelled", message="订单匹配已停止")
+                return
+
+            next_document, summary = _update_registration_order_match_document(
+                current_document,
+                session=session,
+                current_user=current_user,
+                use_browser_fallback=use_browser_fallback,
+            )
+            if current_document != next_document:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = current_user.id
+                document.updated_at = time.time()
+                session.add(document)
+                session.commit()
+            _update_registration_match_run(
+                run_id,
+                processed_count=total_count,
+                updated_count=summary["updated_count"],
+                skipped_count=summary["skipped_count"],
+                error_count=summary["error_count"],
+                warning_count=summary["warning_count"],
+            )
+            _finish_registration_match_run(
+                run_id,
+                "completed",
+                message=_format_registration_order_match_message(summary),
+            )
+    except Exception as exc:
+        _finish_registration_match_run(
+            run_id,
+            "failed",
+            message="订单匹配任务失败",
+            error_message=str(exc.detail if isinstance(exc, HTTPException) else exc),
+        )
+
+
 def _run_registration_user_match_background(
     *,
     run_id: str,
@@ -3014,7 +4750,13 @@ def _run_registration_user_match_background(
 ) -> None:
     updated_positions: set[int] = set()
     try:
-        _update_registration_match_run(run_id, status="running", started_at=time.time(), message="正在匹配用户")
+        _update_registration_match_run(
+            run_id,
+            status="running",
+            phase=NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+            started_at=time.time(),
+            message="正在匹配用户",
+        )
         with Session(engine) as session:
             current_user_id = int(current_user_snapshot.get("id") or 0)
             current_user = User(
@@ -3049,6 +4791,9 @@ def _run_registration_user_match_background(
             processed_count = 0
             skipped_count = 0
             error_count = 0
+            warning_count = 0
+            matched_count = 0
+            unmatched_count = 0
 
             def mark_updated(row_position: int) -> None:
                 updated_positions.add(row_position)
@@ -3093,6 +4838,11 @@ def _run_registration_user_match_background(
                     )
                     row[indexes["用户ID"]] = _format_registration_match_cell(user_id)
                     row[indexes["匹配得分"]] = _format_registration_match_cell(weight) if weight is not None else ""
+                    if user_id:
+                        matched_count += 1
+                    elif not use_browser_fallback:
+                        unmatched_count += 1
+                        warning_count += 1
                     if _save_registration_match_row(
                         session=session,
                         sheet_id=sheet_id,
@@ -3120,6 +4870,10 @@ def _run_registration_user_match_background(
                         elif remote_user_id:
                             row[indexes["用户ID"]] = remote_user_id
                             row[indexes["匹配得分"]] = "95"
+                            matched_count += 1
+                        else:
+                            unmatched_count += 1
+                            warning_count += 1
                         if _save_registration_match_row(
                             session=session,
                             sheet_id=sheet_id,
@@ -3148,19 +4902,207 @@ def _run_registration_user_match_background(
                         processed_count=processed_count,
                         skipped_count=skipped_count,
                         error_count=error_count,
+                        warning_count=warning_count,
                         message=f"已处理 {processed_count}/{total_count} 行用户匹配",
                     )
 
+            summary = _build_registration_match_summary(
+                target_count=total_count,
+                updated_count=len(updated_positions),
+                skipped_count=skipped_count,
+                error_count=error_count,
+                warning_count=warning_count,
+                matched_count=matched_count,
+                unmatched_count=unmatched_count,
+            )
             _finish_registration_match_run(
                 run_id,
                 "completed",
-                message=f"已更新 {len(updated_positions)} 行用户匹配",
+                message=_format_registration_user_match_message(summary),
             )
     except Exception as exc:
         _finish_registration_match_run(
             run_id,
             "failed",
             message="用户匹配任务失败",
+            error_message=str(exc.detail if isinstance(exc, HTTPException) else exc),
+        )
+
+
+def _run_registration_composite_update_background(
+    *,
+    run_id: str,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user_snapshot: dict[str, Any],
+    use_browser_fallback: bool,
+) -> None:
+    try:
+        _update_registration_match_run(
+            run_id,
+            status="running",
+            phase=NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH,
+            started_at=time.time(),
+            total_count=3,
+            processed_count=0,
+            message="正在更新订单匹配",
+        )
+        with Session(engine) as session:
+            current_user = User(
+                id=int(current_user_snapshot.get("id") or 0),
+                username=str(current_user_snapshot.get("username") or ""),
+                hashed_password="",
+                is_active=True,
+                is_superuser=bool(current_user_snapshot.get("is_superuser")),
+            )
+            document, access, workbook = _get_note_sheet_or_404(
+                session,
+                current_user,
+                sheet_id,
+                required_role="editor",
+                workbook_id=workbook_id,
+            )
+            if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+                raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
+
+            updated_count = 0
+            skipped_count = 0
+            error_count = 0
+            warning_count = 0
+            attendance_summary = _build_registration_match_summary()
+
+            if not _is_registration_match_run_current(run_id):
+                _finish_registration_match_run(run_id, "cancelled", message="综合更新已停止")
+                return
+            current_document = _normalize_document_json(dict(document.document_json or {}))
+            next_document, order_summary = _update_registration_order_match_document(
+                current_document,
+                session=session,
+                current_user=current_user,
+                use_browser_fallback=use_browser_fallback,
+            )
+            if current_document != next_document:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = current_user.id
+                document.updated_at = time.time()
+                session.add(document)
+                session.commit()
+                session.refresh(document)
+            updated_count += order_summary["updated_count"]
+            skipped_count += order_summary["skipped_count"]
+            error_count += order_summary["error_count"]
+            warning_count += order_summary.get("warning_count", 0)
+            _update_registration_match_run(
+                run_id,
+                processed_count=1,
+                updated_count=updated_count,
+                skipped_count=skipped_count,
+                error_count=error_count,
+                warning_count=warning_count,
+                phase=NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH,
+                message="正在更新用户匹配",
+            )
+
+            if not _is_registration_match_run_current(run_id):
+                _finish_registration_match_run(run_id, "cancelled", message="综合更新已停止")
+                return
+            current_document = _normalize_document_json(dict(document.document_json or {}))
+            next_document, user_summary = _update_registration_user_match_document(
+                current_document,
+                session=session,
+                current_user=current_user,
+                course_name=_get_registration_course_name(document, workbook),
+                use_browser_fallback=use_browser_fallback,
+            )
+            if current_document != next_document:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = current_user.id
+                document.updated_at = time.time()
+                session.add(document)
+                session.commit()
+                session.refresh(document)
+            updated_count += user_summary["updated_count"]
+            skipped_count += user_summary["skipped_count"]
+            error_count += user_summary["error_count"]
+            warning_count += user_summary.get("warning_count", 0)
+            _update_registration_match_run(
+                run_id,
+                processed_count=2,
+                updated_count=updated_count,
+                skipped_count=skipped_count,
+                error_count=error_count,
+                warning_count=warning_count,
+                phase="registration_attendance_sync",
+                message="正在同步考勤表",
+            )
+
+            if not _is_registration_match_run_current(run_id):
+                _finish_registration_match_run(run_id, "cancelled", message="综合更新已停止")
+                return
+            attendance, attendance_workbook = _resolve_registration_attendance_sheet(session, document, workbook)
+            if attendance is None:
+                skipped_count += 1
+                error_count += 1
+                attendance_summary = _build_registration_match_summary(
+                    skipped_count=1,
+                    error_count=1,
+                )
+                _update_registration_match_run(
+                    run_id,
+                    processed_count=3,
+                    updated_count=updated_count,
+                    skipped_count=skipped_count,
+                    error_count=error_count,
+                    warning_count=warning_count,
+                    message="未找到同工作簿的考勤表",
+                )
+            else:
+                attendance_access = _resolve_sheet_resource_access(
+                    session,
+                    attendance,
+                    current_user,
+                    workbook=attendance_workbook,
+                )
+                if not attendance_access.capabilities.can_edit_data:
+                    raise HTTPException(status_code=403, detail="没有编辑考勤表的权限")
+                registration_document = _normalize_document_json(dict(document.document_json or {}))
+                attendance_document = _normalize_document_json(dict(attendance.document_json or {}))
+                next_attendance_document, attendance_summary = _sync_registration_rows_to_attendance_document(
+                    registration_document,
+                    attendance_document,
+                )
+                if attendance_document != next_attendance_document:
+                    attendance.document_json = next_attendance_document
+                    attendance.version = max(int(attendance.version or 1), 1) + 1
+                    attendance.updated_by_user_id = current_user.id
+                    attendance.updated_at = time.time()
+                    session.add(attendance)
+                    session.commit()
+                updated_count += attendance_summary["updated_count"]
+                skipped_count += attendance_summary["skipped_count"]
+                error_count += attendance_summary["error_count"]
+                warning_count += attendance_summary.get("warning_count", 0)
+                _update_registration_match_run(
+                    run_id,
+                    processed_count=3,
+                    updated_count=updated_count,
+                    skipped_count=skipped_count,
+                    error_count=error_count,
+                    warning_count=warning_count,
+                )
+
+            _finish_registration_match_run(
+                run_id,
+                "completed",
+                message=_format_registration_composite_update_message(order_summary, user_summary, attendance_summary),
+            )
+    except Exception as exc:
+        _finish_registration_match_run(
+            run_id,
+            "failed",
+            message="综合更新任务失败",
             error_message=str(exc.detail if isinstance(exc, HTTPException) else exc),
         )
 
@@ -3174,14 +5116,15 @@ def _start_registration_match_run(
     use_browser_fallback: bool,
     force_restart: bool,
 ) -> NoteSheetRegistrationMatchRunResponse:
-    key = _registration_match_run_key(sheet_id, action)
+    if action not in NOTE_SHEET_REGISTRATION_BACKGROUND_ACTIONS:
+        raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
     with _REGISTRATION_MATCH_RUN_LOCK:
-        active_run_id = _REGISTRATION_MATCH_ACTIVE_BY_KEY.get(key)
-        active_run = _REGISTRATION_MATCH_RUNS.get(active_run_id or "")
-        if _is_registration_match_run_active(active_run):
+        conflicting_runs = _get_conflicting_registration_match_runs(sheet_id)
+        if conflicting_runs:
             if not force_restart:
-                return _serialize_registration_match_run(dict(active_run), already_running=True)
-            _request_cancel_registration_match_run(str(active_run_id))
+                return _serialize_registration_match_run(dict(conflicting_runs[0]), already_running=True)
+            for active_run in conflicting_runs:
+                _request_cancel_registration_match_run(str(active_run.get("run_id") or ""))
 
         run_id = uuid.uuid4().hex
         run = {
@@ -3190,6 +5133,7 @@ def _start_registration_match_run(
             "sheet_id": int(sheet_id),
             "workbook_id": workbook_id,
             "status": "pending",
+            "phase": "",
             "use_browser_fallback": bool(use_browser_fallback),
             "current_user_id": current_user.id,
             "cancel_requested": False,
@@ -3201,14 +5145,19 @@ def _start_registration_match_run(
             "updated_count": 0,
             "skipped_count": 0,
             "error_count": 0,
+            "warning_count": 0,
             "message": "任务已排队",
             "error_message": None,
         }
         _REGISTRATION_MATCH_RUNS[run_id] = run
-        _REGISTRATION_MATCH_ACTIVE_BY_KEY[key] = run_id
+        _REGISTRATION_MATCH_ACTIVE_BY_KEY[_registration_match_run_key(sheet_id, action)] = run_id
 
     if action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
         target = _run_registration_user_match_background
+    elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH:
+        target = _run_registration_order_match_background
+    elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE:
+        target = _run_registration_composite_update_background
     else:
         raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
 
@@ -7519,6 +9468,9 @@ def update_note_sheet(
         if payload.title is not None and access.capabilities.can_edit_config
         else document.title
     )
+    if payload.base_version is not None and int(payload.base_version) != int(document.version or 1):
+        raise HTTPException(status_code=409, detail="工作表已更新，请刷新后重试")
+
     current_document = dict(document.document_json or {})
     if payload.document_json is None:
         next_document = current_document
@@ -7536,6 +9488,8 @@ def update_note_sheet(
                 else _merge_paged_document(current_document, payload.document_json, payload.page_patch)
             )
             next_document = _apply_restricted_data_column_update(current_document, incoming_document, editable_columns)
+
+    next_document = _remove_orphan_document_entity_cells(next_document)
 
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
@@ -7619,6 +9573,7 @@ async def import_note_sheet_excel_reset(
             import_rows,
             extra_columns=extra_columns,
         )
+        imported_count = max(0, len(_extract_document_rows(next_document)) - len(_extract_document_rows(current_document)))
     else:
         next_document, preserved_row_count = _replace_document_rows_for_excel_import(
             current_document,
@@ -7627,9 +9582,12 @@ async def import_note_sheet_excel_reset(
             action_document_row=action_document_row,
             action_column=action_column,
         )
+        imported_count = len(import_rows)
 
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
+
+    next_document = _remove_orphan_document_entity_cells(next_document)
 
     if current_document != next_document:
         document.document_json = next_document
@@ -7653,7 +9611,7 @@ async def import_note_sheet_excel_reset(
     )
     return NoteSheetExcelImportResponse(
         sheet=detail,
-        imported_count=len(import_rows),
+        imported_count=imported_count,
         preserved_row_count=preserved_row_count,
         extra_columns=extra_columns,
         warnings=warnings,
@@ -7681,8 +9639,6 @@ def start_note_sheet_registration_match_run(
     )
     if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
         raise HTTPException(status_code=403, detail="没有执行报名表动作的权限")
-    if payload.action != NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
-        raise HTTPException(status_code=400, detail="该动作暂未接入后台任务")
     if current_user.id is None:
         raise HTTPException(status_code=403, detail="当前用户无效")
 
@@ -7703,7 +9659,7 @@ def start_note_sheet_registration_match_run(
 )
 def get_note_sheet_active_registration_match_run(
     sheet_id: int,
-    action: Literal["registration_order_match", "registration_user_match"] = Query(...),
+    action: Literal["registration_order_match", "registration_user_match", "registration_composite_update"] | None = Query(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
@@ -7721,7 +9677,7 @@ def get_note_sheet_active_registration_match_run(
         run,
         sheet=sheet,
         sheet_id=_require_sheet_numeric_id(document),
-        action=action,
+        action=action or "",
         workbook_id=workbook_id,
     )
 
@@ -7757,6 +9713,7 @@ def get_note_sheet_registration_match_run(
 )
 def update_note_sheet_registration_order_match(
     sheet_id: int,
+    use_browser_fallback: bool = Query(default=True),
     workbook_id: int | None = Query(default=None, ge=1),
     session: Session = Depends(get_session),
     current_user: User = Depends(get_current_active_user),
@@ -7767,6 +9724,7 @@ def update_note_sheet_registration_order_match(
         workbook_id=workbook_id,
         session=session,
         current_user=current_user,
+        use_browser_fallback=use_browser_fallback,
     )
 
 

@@ -9,6 +9,7 @@ from sqlmodel import Session, select
 from pyxllib.prog.schedule_policy import schedule_policy_label
 
 from backend.api.task_manager import task_manager
+from backend.db import engine
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import device_manager, get_device_id
 from backend.core.futu_opend_runtime import (
@@ -17,6 +18,19 @@ from backend.core.futu_opend_runtime import (
     get_futu_opend_status,
     start_futu_opend,
     stop_futu_opend,
+)
+from backend.core.game_window_service_runtime import (
+    GAME_WINDOW_SERVICE_KEY,
+    GameWindowServiceError,
+    get_game_window_service_status,
+    start_game_window_service,
+    stop_game_window_service,
+)
+from backend.core.ocr_preview import OcrPreviewError
+from backend.core.ocr_service_runtime import (
+    get_ocr_service_status,
+    start_ocr_service,
+    stop_ocr_service,
 )
 from backend.core.attendance_behavior_tree_service import (
     ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY,
@@ -329,18 +343,21 @@ def _ocr_state_label(state: str) -> str:
         "running": "运行中",
         "idle": "已加载",
         "cold": "冷启动",
+        "starting": "启动中",
+        "stopped": "已停止",
+        "unreachable": "不可达",
     }.get(state, state or "未知")
 
 
 def _serialize_ocr_service_item(status: dict[str, Any]) -> dict[str, Any]:
     state = str(status.get("state") or "cold")
+    running = bool(status.get("running"))
     loaded = bool(status.get("loaded"))
     idle_timeout = _seconds_label(status.get("idle_timeout_seconds"))
-    max_instances = status.get("max_instances")
     description_parts = [
-        "按需启动",
+        str(status.get("url") or ""),
+        "独立进程",
         f"空闲{idle_timeout}释放" if idle_timeout else "",
-        f"并发 {max_instances}" if max_instances else "",
     ]
     description = " · ".join(part for part in description_parts if part)
     return {
@@ -361,16 +378,15 @@ def _serialize_ocr_service_item(status: dict[str, Any]) -> dict[str, Any]:
         "timeout": None,
         "order": 0,
         "enabled": True,
-        "active": loaded,
+        "active": running,
         "status": {
-            "running": loaded,
+            "running": running,
             "state": state,
-            "state_label": _ocr_state_label(state),
+            "state_label": status.get("state_label") or _ocr_state_label(state),
             "loaded": loaded,
             "instance_count": status.get("instance_count"),
             "idle_instance_count": status.get("idle_instance_count"),
             "active_instance_count": status.get("active_instance_count"),
-            "max_instances": status.get("max_instances"),
             "idle_timeout_seconds": status.get("idle_timeout_seconds"),
             "idle_remaining_seconds": status.get("idle_remaining_seconds"),
             "acquire_timeout_seconds": status.get("acquire_timeout_seconds"),
@@ -379,6 +395,12 @@ def _serialize_ocr_service_item(status: dict[str, Any]) -> dict[str, Any]:
             "last_loaded_at": status.get("last_loaded_at"),
             "last_used_at": status.get("last_used_at"),
             "last_error": status.get("last_error"),
+            "url": status.get("url"),
+            "host": status.get("host"),
+            "port": status.get("port"),
+            "log_path": status.get("log_path"),
+            "process_count": status.get("process_count") or 0,
+            "pids": status.get("pids") or [],
         },
         "actions": ["trigger", "stop", "logs", "configure"],
         "raw": status,
@@ -463,7 +485,10 @@ def _behavior_tree_service_description(status: dict[str, Any]) -> str:
         parts.append(f"PID {status.get('pid')}")
     process_count = int(status.get("process_count") or 0)
     if process_count > 1:
-        parts.append(f"{process_count} 个进程")
+        parts.append(f"{process_count} 个行为树")
+    child_process_count = int(status.get("child_process_count") or 0)
+    if child_process_count:
+        parts.append(f"子进程 {child_process_count}")
     next_run_at = status.get("next_run_at")
     if next_run_at:
         parts.append(f"下次 {next_run_at}")
@@ -503,6 +528,8 @@ def _serialize_attendance_behavior_tree_service_item(status: dict[str, Any] | No
             "state_label": payload.get("state_label") or state,
             "pid": payload.get("pid"),
             "process_count": payload.get("process_count") or 0,
+            "child_process_count": payload.get("child_process_count") or 0,
+            "total_process_count": payload.get("total_process_count") or payload.get("process_count") or 0,
             "started_at": payload.get("started_at"),
             "next_run_at": next_run_at,
             "last_error": payload.get("last_error") or "",
@@ -567,11 +594,78 @@ def _serialize_fanxiu_behavior_tree_service_item(status: dict[str, Any] | None =
     }
 
 
+def _game_window_service_description(status: dict[str, Any]) -> str:
+    parts = [str(status.get("url") or "")]
+    target_title = str(status.get("target_title") or "")
+    if target_title:
+        parts.append(f"窗口 {target_title}")
+    if status.get("running"):
+        pids = ", ".join(str(pid) for pid in status.get("pids") or [])
+        parts.append(f"PID {pids}" if pids else "端口已连接")
+    elif status.get("process_count"):
+        parts.append("进程不可达")
+    else:
+        parts.append("独立进程未启动")
+    return " · ".join(part for part in parts if part)
+
+
+def _serialize_game_window_service_item(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(status or get_game_window_service_status())
+    running = bool(payload.get("running"))
+    state = str(payload.get("state") or ("running" if running else "stopped"))
+    state_label = str(payload.get("state_label") or ("运行中" if running else "已停止"))
+    return {
+        "id": f"builtin:{GAME_WINDOW_SERVICE_KEY}",
+        "key": GAME_WINDOW_SERVICE_KEY,
+        "kind": "service",
+        "source": "builtin",
+        "group_id": "service:game",
+        "group_title": "游戏服务",
+        "title": payload.get("title") or "凡修游戏画面流",
+        "description": _game_window_service_description(payload),
+        "command": "python -m backend.services.game_window_daemon",
+        "cwd": "",
+        "schedule": "",
+        "schedule_policy": None,
+        "schedule_label": "",
+        "next_run_at": None,
+        "timeout": None,
+        "order": 0,
+        "enabled": True,
+        "active": running,
+        "status": {
+            "running": running,
+            "state": state,
+            "state_label": state_label,
+            "target_title": payload.get("target_title") or "",
+            "url": payload.get("url") or "",
+            "host": payload.get("host") or "",
+            "port": payload.get("port"),
+            "process_count": payload.get("process_count") or 0,
+            "pids": payload.get("pids") or [],
+            "log_path": payload.get("log_path") or "",
+            "last_error": payload.get("last_error") or "",
+            "controllable": True,
+        },
+        "actions": ["trigger", "stop", "logs", "configure"],
+        "raw": payload,
+        "schedule_kind": "manual",
+        "timeout_policy": "none",
+        "timeout_seconds": None,
+        "concurrency_scope": "unit",
+        "concurrency_key": GAME_WINDOW_SERVICE_KEY,
+        "overlap_policy": "replace",
+        "queue_key": None,
+    }
+
+
 def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
     if item.get("key") == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         return build_attendance_behavior_tree_log_lines()
     if item.get("key") == FANXIU_BEHAVIOR_TREE_SERVICE_KEY:
         return build_behavior_tree_log_lines()
+    if item.get("key") == GAME_WINDOW_SERVICE_KEY:
+        return _build_game_window_service_log_lines(item)
     if item.get("key") == FUTU_OPEND_SERVICE_KEY:
         return _build_futu_opend_service_log_lines(item)
 
@@ -580,11 +674,17 @@ def _build_builtin_service_log_lines(item: dict[str, Any]) -> list[str]:
     lines = [
         f"名称：{item.get('title') or item.get('key')}",
         f"状态：{status.get('state_label') or _ocr_state_label(str(status.get('state') or ''))}",
+        f"地址：{status.get('url') or raw.get('url') or '-'}",
         f"引擎：{raw.get('engine') or 'paddleocr'}",
         f"运行设备：{raw.get('device') or '-'} · {raw.get('lang') or '-'}",
-        f"实例：{status.get('instance_count') or 0} / {status.get('max_instances') or 0}",
-        f"并发：{status.get('active_instance_count') or 0}",
+        f"实例：{status.get('instance_count') or 0}",
+        f"识别中：{status.get('active_instance_count') or 0}",
     ]
+    pids = status.get("pids") or []
+    if pids:
+        lines.append(f"PID：{', '.join(str(pid) for pid in pids)}")
+    if status.get("log_path"):
+        lines.append(f"日志：{status.get('log_path')}")
     idle_timeout = _seconds_label(status.get("idle_timeout_seconds"))
     if idle_timeout:
         lines.append(f"空闲释放：{idle_timeout}")
@@ -640,6 +740,40 @@ def _build_futu_opend_service_log_lines(item: dict[str, Any]) -> list[str]:
         lines.extend(["", f"提示：{last_error}"])
     lines.append("")
     lines.append("行情模块会通过这个运行单元连接富途官方 OpenD，本机页面打开时按分钟刷新，后台作业按小时刷新。")
+    return lines
+
+
+def _build_game_window_service_log_lines(item: dict[str, Any]) -> list[str]:
+    status = item.get("status") or {}
+    raw = item.get("raw") or {}
+    lines = [
+        f"名称：{item.get('title') or item.get('key')}",
+        f"状态：{status.get('state_label') or '-'}",
+        f"地址：{status.get('url') or raw.get('url') or '-'}",
+        f"窗口标题：{status.get('target_title') or raw.get('target_title') or '-'}",
+    ]
+    pids = status.get("pids") or []
+    if pids:
+        lines.append(f"PID：{', '.join(str(pid) for pid in pids)}")
+    if status.get("log_path"):
+        lines.append(f"日志：{status.get('log_path')}")
+    if status.get("last_error"):
+        lines.extend(["", f"最近错误：{status.get('last_error')}"])
+
+    processes = raw.get("processes") if isinstance(raw, dict) else None
+    if processes:
+        lines.append("")
+        lines.append("进程：")
+        for process in processes[:20]:
+            if not isinstance(process, dict):
+                continue
+            lines.append(
+                f"- PID {process.get('pid')} · {process.get('name') or '-'} · "
+                f"{process.get('cmdline') or '-'}"
+            )
+
+    lines.append("")
+    lines.append("这个运行单元只负责守护 mi15 本机的云手机窗口画面流；页面通过设备入口读取它，不依赖 mf 的远程桌面画面。")
     return lines
 
 
@@ -751,13 +885,12 @@ def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
 
 
 def _collect_builtin_services() -> dict[str, Any]:
-    from backend.core.ocr_preview import ocr_service_manager
-
-    items = [_serialize_ocr_service_item(ocr_service_manager.get_status())]
+    items = [_serialize_ocr_service_item(get_ocr_service_status())]
     if is_attendance_behavior_tree_service_enabled():
         items.append(_serialize_attendance_behavior_tree_service_item())
     if is_fanxiu_behavior_tree_service_enabled():
         items.append(_serialize_fanxiu_behavior_tree_service_item())
+    items.append(_serialize_game_window_service_item())
     items.append(_serialize_futu_opend_service_item())
     return {
         "items": items,
@@ -809,7 +942,7 @@ def build_runtime_status(session: Session, device_id: str | None = None) -> dict
 def get_runtime_item_logs(
     source: str,
     item_key: str,
-    session: Session,
+    session: Session | None,
     limit: int = 500,
     device_id: str | None = None,
 ) -> dict[str, Any]:
@@ -819,6 +952,15 @@ def get_runtime_item_logs(
         raise HTTPException(status_code=404, detail="运行单元不存在")
 
     if normalized_source == "command":
+        if session is None:
+            with Session(engine) as owned_session:
+                return get_runtime_item_logs(
+                    normalized_source,
+                    normalized_key,
+                    owned_session,
+                    limit,
+                    device_id=device_id,
+                )
         task = session.get(TaskModel, normalized_key)
         if task is None or (device_id and task.device_id != device_id):
             raise HTTPException(status_code=404, detail="运行单元不存在")
@@ -846,8 +988,38 @@ def get_runtime_item_logs(
     if normalized_source == "builtin":
         if device_id and device_id != get_device_id():
             raise HTTPException(status_code=404, detail="运行单元不存在")
-        builtin = _collect_builtin_jobs(session)
         builtin_services = _collect_builtin_services()
+        service_item = next(
+            (item for item in builtin_services.get("items", []) if item.get("key") == normalized_key),
+            None,
+        )
+        if service_item is not None:
+            return {
+                "source": "builtin",
+                "key": normalized_key,
+                "kind": service_item.get("kind"),
+                "title": service_item.get("title"),
+                "description": service_item.get("description") or "",
+                "command": service_item.get("command") or "",
+                "cwd": service_item.get("cwd") or "",
+                "schedule": service_item.get("schedule") or "",
+                "schedule_label": service_item.get("schedule_label") or "",
+                "next_run_at": service_item.get("next_run_at"),
+                "timeout": service_item.get("timeout"),
+                "status": service_item.get("status") or {},
+                "records": [],
+                "logs": _build_builtin_service_log_lines(service_item),
+            }
+        if session is None:
+            with Session(engine) as owned_session:
+                return get_runtime_item_logs(
+                    normalized_source,
+                    normalized_key,
+                    owned_session,
+                    limit,
+                    device_id=device_id,
+                )
+        builtin = _collect_builtin_jobs(session)
         items = (builtin_services.get("items") or []) + (builtin.get("items") or [])
         item = next((item for item in items if item.get("key") == normalized_key), None)
         if item is None:
@@ -888,19 +1060,19 @@ def trigger_builtin_runtime_job(task_key: str, session: Session) -> dict[str, An
 def trigger_builtin_runtime_item(task_key: str, session: Session) -> dict[str, Any]:
     normalized_key = str(task_key or "").strip()
     if normalized_key == BUILTIN_OCR_SERVICE_KEY:
-        from backend.core.ocr_preview import OcrPreviewError, ocr_service_manager
-
         try:
-            return {
-                "status": "started",
-                "service": ocr_service_manager.warmup(),
-            }
+            return start_ocr_service(replace_existing=False)
         except OcrPreviewError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == FUTU_OPEND_SERVICE_KEY:
         try:
             return start_futu_opend()
         except FutuOpenDError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if normalized_key == GAME_WINDOW_SERVICE_KEY:
+        try:
+            return start_game_window_service(replace_existing=False)
+        except GameWindowServiceError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
@@ -943,17 +1115,14 @@ def stop_command_runtime_item(task_key: str, session: Session) -> dict[str, Any]
 def stop_builtin_runtime_item(task_key: str) -> dict[str, Any]:
     normalized_key = str(task_key or "").strip()
     if normalized_key == BUILTIN_OCR_SERVICE_KEY:
-        from backend.core.ocr_preview import ocr_service_manager
-
-        return {
-            "status": "stopped",
-            "service": ocr_service_manager.reset(),
-        }
+        return stop_ocr_service()
     if normalized_key == FUTU_OPEND_SERVICE_KEY:
         try:
             return stop_futu_opend()
         except FutuOpenDError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if normalized_key == GAME_WINDOW_SERVICE_KEY:
+        return stop_game_window_service()
     if normalized_key == ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY:
         if not is_attendance_behavior_tree_service_enabled():
             raise HTTPException(status_code=404, detail="考勤行为树只在 mi15 执行主机上管理")

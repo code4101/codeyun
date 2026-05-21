@@ -27,6 +27,18 @@ def test_development_defaults(monkeypatch):
     assert "http://localhost:5173" in settings.cors_origins
     assert settings.cors_origin_regex == r"^https?://[^/]+:(5173|4173)$"
     assert settings.allow_all_cors is False
+    assert settings.ocr_device == "gpu"
+
+
+def test_ocr_device_global_default_and_override(monkeypatch):
+    monkeypatch.delenv("CODEYUN_OCR_DEVICE", raising=False)
+    monkeypatch.setenv("CODEYUN_LOAD_DOTENV", "0")
+
+    assert settings_module.load_settings().ocr_device == "gpu"
+
+    monkeypatch.setenv("CODEYUN_OCR_DEVICE", "cpu")
+
+    assert settings_module.load_settings().ocr_device == "cpu"
 
 
 def test_production_defaults(monkeypatch):

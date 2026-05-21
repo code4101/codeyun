@@ -1,7 +1,9 @@
 import json
 import datetime
 
+from backend.core import background_task_runner as background_tasks
 from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
+from backend.models import AppSetting
 from pyxllib.prog.behavior_tree import BehaviorTreeRunner, Status
 
 
@@ -45,6 +47,33 @@ def _write_schedule_state(path, values, *, schedule_version=5):
     )
 
 
+def test_background_task_runner_builtin_presets_are_disabled_until_user_enables(engine, session, monkeypatch):
+    monkeypatch.setattr("backend.db.engine", engine)
+    monkeypatch.setattr(background_tasks, "is_fanxiu_slimming_allowed_host", lambda: True)
+
+    assert background_tasks._is_task_enabled(background_tasks.MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY) is False
+    assert background_tasks._is_task_enabled(background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY) is False
+    assert background_tasks._is_task_enabled(background_tasks.FANXIU_SLIMMING_TASK_KEY) is False
+    assert background_tasks._is_task_enabled(background_tasks.RUANYF_WEEKLY_TASK_NAME) is False
+
+    session.add(
+        AppSetting(
+            key=f"background_task.{background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY}.enabled",
+            value={"enabled": True},
+        )
+    )
+    session.add(
+        AppSetting(
+            key="storage.schedule",
+            value={"schedule_enabled": True, "cron_expression": "35 0 * * *"},
+        )
+    )
+    session.commit()
+
+    assert background_tasks._is_task_enabled(background_tasks.MARKET_QUOTE_REFRESH_TASK_KEY) is True
+    assert background_tasks._is_task_enabled("storage_analysis") is True
+
+
 def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monkeypatch):
     _set_enabled(
         monkeypatch,
@@ -68,7 +97,7 @@ def test_background_task_runner_next_wake_ignores_disabled_tasks(tmp_path, monke
     assert snapshot["next_wake_at"] == "2099-05-10T00:05:00"
     tasks = snapshot["tasks"]
     assert tasks["note_metadata_feedback_optimization"]["enabled"] is False
-    assert tasks["note_metadata_feedback_optimization"]["next_run_at"] == "2099-05-09T10:41:49"
+    assert tasks["note_metadata_feedback_optimization"]["next_run_at"] is None
     assert tasks["attendance_summary_monthly_templates"]["enabled"] is True
 
 
