@@ -12,6 +12,16 @@ from typing import Any
 import psutil
 
 from backend.core.settings import ROOT_DIR, get_settings
+from backend.core.sunlogin_rotate_preview import (
+    WindowCapture,
+    ensure_windows_runtime,
+    find_window,
+    iter_mjpeg_frames,
+    normalize_rotate,
+    parse_crop,
+    process_frame,
+    set_dpi_awareness,
+)
 
 
 PROCESS_ENV_MARKER = "CODEYUN_FANXIU_SUNLOGIN_ROTATE"
@@ -20,7 +30,9 @@ PREVIEW_MODULE = "backend.core.sunlogin_rotate_preview"
 DEFAULT_TARGET_TITLE = "1249152866"
 DEFAULT_PREVIEW_TITLE = "codeyun-sunlogin-rotate"
 DEFAULT_FPS = "15"
-DEFAULT_CROP = "0,32,0,0"
+DEFAULT_CROP = "0,49,4,4"
+DEFAULT_TRIM_BORDER = "0,0,0,0"
+DEFAULT_ROTATE = "90"
 DEFAULT_FIXED_WIDTH = "0"
 DEFAULT_FIXED_HEIGHT = "0"
 
@@ -198,8 +210,10 @@ def _build_preview_command() -> list[str]:
         os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
         "--crop",
         os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP),
+        "--trim-border",
+        os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER),
         "--rotate",
-        os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", "cw"),
+        os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE),
         "--fixed-width",
         os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH),
         "--fixed-height",
@@ -294,3 +308,78 @@ def stop_sunlogin_rotate_preview(timeout: float = 3.0) -> dict[str, Any]:
     if errors:
         status["errors"] = errors
     return status
+
+
+def stream_sunlogin_rotate_mjpeg(
+    *,
+    title: str | None = None,
+    fps: float | None = None,
+    quality: int = 80,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+    auto_dismiss_popup: bool = False,
+    popup_check_interval: float = 3.0,
+):
+    return iter_mjpeg_frames(
+        title=(title or get_target_title()).strip() or get_target_title(),
+        fps=float(fps or os.getenv("CODEYUN_FANXIU_SUNLOGIN_FPS", DEFAULT_FPS)),
+        crop=parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP)),
+        trim_border=parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)),
+        rotate=normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE)),
+        area=area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer"),
+        mode=mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
+        max_width=0,
+        max_height=0,
+        scale=1.0,
+        fixed_width=int(fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)),
+        fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
+        refind_interval=1.0,
+        quality=quality,
+        auto_dismiss_popup=auto_dismiss_popup,
+        popup_check_interval=popup_check_interval,
+    )
+
+
+def capture_sunlogin_rotate_frame(
+    *,
+    title: str | None = None,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+):
+    ensure_windows_runtime()
+    set_dpi_awareness()
+
+    normalized_title = (title or get_target_title()).strip() or get_target_title()
+    target = find_window(normalized_title)
+    capturer = WindowCapture(
+        target.hwnd,
+        area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer"),
+        mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen"),
+        normalized_title,
+        refind_interval=1.0,
+    )
+    frame = capturer.capture()
+    if frame is None:
+        raise RuntimeError("截图失败")
+
+    return process_frame(
+        frame,
+        parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP)),
+        parse_crop(trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)),
+        normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE)),
+        max_width=0,
+        max_height=0,
+        scale=1.0,
+        fixed_width=int(fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)),
+        fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
+    )

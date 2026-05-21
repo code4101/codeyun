@@ -162,6 +162,38 @@ export interface EastmoneyPositionRecordPage {
   items: EastmoneyPositionRecord[]
 }
 
+export interface EastmoneyMarketQuote {
+  provider: string
+  market: string
+  symbol: string
+  provider_code: string
+  name: string
+  price: number | null
+  open_price: number | null
+  high_price: number | null
+  low_price: number | null
+  prev_close_price: number | null
+  volume: number | null
+  turnover: number | null
+  update_time: string
+  fetched_at: number
+  error: string
+}
+
+export interface EastmoneyMarketQuotePage {
+  items: EastmoneyMarketQuote[]
+}
+
+export interface EastmoneyMarketQuoteRefreshResult {
+  provider: string
+  database_path: string
+  target_count: number
+  refreshed_count: number
+  error_count: number
+  error: string
+  items: EastmoneyMarketQuote[]
+}
+
 export interface EastmoneyFundFlowFilterOptions {
   categories: string[]
   security_codes: string[]
@@ -318,5 +350,19 @@ export async function fetchLatestEastmoneyAssetSnapshot() {
 
 export async function fetchLatestEastmoneyPositions() {
   const response = await api.get<EastmoneyPositionRecordPage>('/eastmoney/positions/latest')
+  return response.data
+}
+
+export async function fetchLatestEastmoneyMarketQuotes() {
+  const response = await api.get<EastmoneyMarketQuotePage>('/eastmoney/market-quotes/latest')
+  return response.data
+}
+
+export async function refreshEastmoneyMarketQuotes() {
+  const response = await api.post<EastmoneyMarketQuoteRefreshResult>(
+    '/eastmoney/market-quotes/refresh',
+    {},
+    { timeout: 30000 },
+  )
   return response.data
 }

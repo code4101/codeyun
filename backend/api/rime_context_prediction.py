@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Any
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from backend.core.auth import verify_api_token
@@ -8,6 +10,9 @@ from backend.core.device import BaseDevice
 from backend.core.rime_context_prediction import (
     DEFAULT_HISTORY_ARTICLE_PAGE_SIZE,
     RimeContextPredictionError,
+    adjust_rime_context_weight_compare_candidate,
+    collect_rime_runtime_config,
+    collect_rime_context_weight_compare,
     collect_rime_context_prediction_article_content,
     collect_rime_context_prediction_articles,
     collect_rime_context_prediction_history_article,
@@ -16,9 +21,11 @@ from backend.core.rime_context_prediction import (
     delete_rime_context_prediction_article,
     delete_rime_context_prediction_candidate,
     import_rime_context_prediction_article,
+    rebuild_rime_context_prediction_snapshot,
     refresh_rime_context_prediction_tree,
     save_rime_context_prediction_article_content,
     save_rime_context_prediction_history_article,
+    update_rime_runtime_config,
     update_rime_context_prediction_candidate,
     update_rime_context_prediction_article,
 )
@@ -66,6 +73,25 @@ class RimeCandidateUpdateRequest(BaseModel):
     weight: float = Field(gt=0)
 
 
+class RimeRuntimeConfigUpdateRequest(BaseModel):
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class RimeWeightCompareRequest(BaseModel):
+    candidates: list[str] = Field(default_factory=list)
+    source: str = "snapshot"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
+class RimeWeightCompareAdjustRequest(BaseModel):
+    prefix: str = Field(min_length=1)
+    candidate: str = Field(min_length=1)
+    weight: float = Field(gt=0)
+    candidates: list[str] = Field(default_factory=list)
+    source: str = "snapshot"
+    limit: int = Field(default=20, ge=1, le=100)
+
+
 def _raise_rime_error(exc: RimeContextPredictionError) -> None:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -87,6 +113,57 @@ def post_rime_context_prediction_tree_refresh(
 ):
     try:
         return refresh_rime_context_prediction_tree(limit=limit, source=source)
+    except RimeContextPredictionError as exc:
+        _raise_rime_error(exc)
+
+
+@router.post("/context-prediction/weight-compare")
+def post_rime_context_weight_compare(
+    req: RimeWeightCompareRequest,
+    _: BaseDevice = Depends(verify_api_token),
+):
+    return collect_rime_context_weight_compare(
+        req.candidates,
+        source=req.source,
+        limit=req.limit,
+    )
+
+
+@router.post("/context-prediction/weight-compare/adjust")
+def post_rime_context_weight_compare_adjust(
+    req: RimeWeightCompareAdjustRequest,
+    background_tasks: BackgroundTasks,
+    _: BaseDevice = Depends(verify_api_token),
+):
+    try:
+        payload = adjust_rime_context_weight_compare_candidate(
+            prefix=req.prefix,
+            candidate=req.candidate,
+            weight=req.weight,
+            candidates=req.candidates,
+            source=req.source,
+            limit=req.limit,
+        )
+        background_tasks.add_task(rebuild_rime_context_prediction_snapshot, None, allow_snapshot_fallback=True)
+        return payload
+    except RimeContextPredictionError as exc:
+        _raise_rime_error(exc)
+
+
+@router.get("/context-prediction/runtime-config")
+def get_rime_runtime_config(
+    _: BaseDevice = Depends(verify_api_token),
+):
+    return collect_rime_runtime_config()
+
+
+@router.patch("/context-prediction/runtime-config")
+def patch_rime_runtime_config(
+    req: RimeRuntimeConfigUpdateRequest,
+    _: BaseDevice = Depends(verify_api_token),
+):
+    try:
+        return update_rime_runtime_config(req.config)
     except RimeContextPredictionError as exc:
         _raise_rime_error(exc)
 

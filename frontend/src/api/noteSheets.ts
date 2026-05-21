@@ -50,6 +50,16 @@ export interface NoteSheetResourceAccessResponse {
   grants: NoteSheetResourceAccessGrantItem[]
 }
 
+export interface NoteSheetAccessUserOption {
+  id: number
+  username: string
+  nickname: string
+}
+
+export interface NoteSheetAccessUserOptionsResponse {
+  users: NoteSheetAccessUserOption[]
+}
+
 export interface NoteSheetSummary {
   id: number
   title: string
@@ -60,6 +70,7 @@ export interface NoteSheetSummary {
   updated_by_user_id?: number | null
   created_at: number
   updated_at: number
+  parent_workbook_id?: number | null
   workbook_items: WorkbookRefItem[]
   access?: NoteSheetResourceAccess | null
 }
@@ -156,6 +167,8 @@ export interface NoteSheetExcelImportResponse {
   warnings: string[]
   mapping_notes: string[]
 }
+
+export type NoteSheetExcelImportMode = 'append' | 'reset'
 
 const NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_MS = 930_000
 const NOTE_SHEET_ACTION_TIMEOUT_MS = 180_000
@@ -327,6 +340,10 @@ async function retryAfterOptionalAuthRepair<T>(
   return request()
 }
 
+export function getNoteSheetApiErrorStatus(error: unknown) {
+  return axios.isAxiosError(error) ? error.response?.status ?? null : null
+}
+
 export async function fetchNoteSheets() {
   const response = await api.get<NoteSheetSummary[]>('/note-sheets/sheets')
   return response.data
@@ -394,12 +411,20 @@ export async function updateNoteSheet(
   payload: NoteSheetUpdateRequest,
   options?: NoteSheetResourceRequestOptions,
 ) {
-  const response = await api.put<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, payload, {
-    params: {
-      workbook_id: options?.workbookId ?? undefined,
-    },
-  })
-  return response.data
+  const request = async () => {
+    const response = await api.put<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, payload, {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    })
+    return response.data
+  }
+
+  try {
+    return await request()
+  } catch (error) {
+    return retryAfterOptionalAuthRepair(error, request)
+  }
 }
 
 export async function sortNoteSheet(
@@ -415,14 +440,20 @@ export async function sortNoteSheet(
   return response.data
 }
 
-export async function importNoteSheetFromExcelReset(
+export async function importNoteSheetFromExcel(
   sheetId: number,
-  payload: { file: File; instruction?: string; actionCell?: { documentRow: number; column: number } },
+  payload: {
+    file: File
+    instruction?: string
+    mode?: NoteSheetExcelImportMode
+    actionCell?: { documentRow: number; column: number }
+  },
   options?: NoteSheetResourceRequestOptions,
 ) {
   const formData = new FormData()
   formData.append('file', payload.file)
   formData.append('instruction', payload.instruction ?? '')
+  formData.append('mode', payload.mode ?? 'reset')
   if (payload.actionCell) {
     formData.append('action_document_row', String(payload.actionCell.documentRow))
     formData.append('action_column', String(payload.actionCell.column))
@@ -442,6 +473,8 @@ export async function importNoteSheetFromExcelReset(
   )
   return response.data
 }
+
+export const importNoteSheetFromExcelReset = importNoteSheetFromExcel
 
 export async function updateNoteSheetRegistrationOrderMatch(
   sheetId: number,
@@ -693,6 +726,13 @@ export async function fetchWorkbook(workbookId: number) {
     }
     return retryAfterOptionalAuthRepair(error, request)
   }
+}
+
+export async function fetchNoteSheetAccessUsers(query = '') {
+  const response = await api.get<NoteSheetAccessUserOptionsResponse>('/note-sheets/access-users', {
+    params: { q: query },
+  })
+  return response.data
 }
 
 export async function fetchWorkbookAccess(workbookId: number) {

@@ -1,9 +1,11 @@
+import os
 import sys
 import time
 import subprocess
 import psutil
 import uuid
 import pytest
+import backend.core.device as device_core
 from types import SimpleNamespace
 from backend.core.device import device_manager, LocalDevice
 from backend.models import Task
@@ -37,6 +39,7 @@ class FakeProcess:
         self.pid = pid
         self.info = {
             "pid": pid,
+            "name": os.path.basename(cmdline[0]),
             "cmdline": cmdline,
             "create_time": time.time(),
         }
@@ -49,6 +52,51 @@ class FakeProcess:
 
     def create_time(self):
         return self.info["create_time"]
+
+    def cmdline(self):
+        return self.info["cmdline"]
+
+    def cpu_percent(self, interval=None):
+        return 0
+
+    def memory_info(self):
+        return SimpleNamespace(rss=0)
+
+
+class VolatileInfoProcess:
+    def __init__(self, pid, cmdline):
+        self.pid = pid
+        self._cmdline = cmdline
+        self._create_time = time.time()
+        self._info_reads = 0
+
+    @property
+    def info(self):
+        self._info_reads += 1
+        if self._info_reads == 1:
+            return {
+                "pid": self.pid,
+                "name": os.path.basename(self._cmdline[0]),
+                "cmdline": self._cmdline,
+                "create_time": self._create_time,
+            }
+        return {
+            "pid": self.pid,
+            "name": os.path.basename(self._cmdline[0]),
+            "create_time": self._create_time,
+        }
+
+    def is_running(self):
+        return True
+
+    def status(self):
+        return psutil.STATUS_RUNNING
+
+    def create_time(self):
+        return self._create_time
+
+    def cmdline(self):
+        return list(self._cmdline)
 
     def cpu_percent(self, interval=None):
         return 0
@@ -86,7 +134,7 @@ def test_reassociation(test_device, running_process, monkeypatch):
         del device.saved_pids["test-reassoc-1"]
         
     fake_process = FakeProcess(proc_info["pid"], [sys.executable, "-c", code])
-    monkeypatch.setattr(psutil, "process_iter", lambda _attrs: iter([fake_process]))
+    monkeypatch.setattr(device_core, "process_candidates_by_name", lambda _names: [fake_process])
 
     # Run scan
     print("Scanning for tasks...")
@@ -119,12 +167,40 @@ def test_scan_running_tasks_can_skip_deep_reassociation(test_device, monkeypatch
     device.processes.pop(task.id, None)
     device.saved_pids.pop(task.id, None)
 
-    def fail_process_iter(_attrs):
+    def fail_process_scan(_names):
         raise AssertionError("deep process scan should be skipped")
 
-    monkeypatch.setattr(psutil, "process_iter", fail_process_iter)
+    monkeypatch.setattr(device_core, "process_candidates_by_name", fail_process_scan)
 
     device.scan_running_tasks([task], deep_scan=False)
 
     status = device.get_task_status(task.id)
     assert status.running is False
+
+
+def test_scan_running_tasks_snapshots_deep_scan_cmdline(test_device, monkeypatch):
+    device_id = test_device["id"]
+    device = device_manager.get_device(device_id)
+
+    if not isinstance(device, LocalDevice):
+        pytest.skip("Not running on LocalDevice")
+
+    code = "import time; time.sleep(10)"
+    task = Task(
+        id="test-deep-scan-snapshot",
+        name="Test Deep Scan Snapshot",
+        command=f'{sys.executable} -c "{code}"',
+        created_at=time.time(),
+        device_id=device_id,
+    )
+    device.processes.pop(task.id, None)
+    device.saved_pids.pop(task.id, None)
+
+    fake_process = VolatileInfoProcess(12345, [sys.executable, "-c", code])
+    monkeypatch.setattr(device_core, "process_candidates_by_name", lambda _names: [fake_process])
+
+    device.scan_running_tasks([task], deep_scan=True)
+
+    status = device.get_task_status(task.id)
+    assert status.running is True
+    assert status.pid == fake_process.pid

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 import psutil
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
+from sqlmodel import Session
 
 from backend.core.attendance_service import apply_attendance_order_operation_password_env
 from backend.core.auth import verify_api_token
@@ -32,6 +33,12 @@ from backend.core.nianzhu_attendance_schedule import (
     NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID,
     NIANZHU_CHUANGGUAN_COURSE_NAME,
     run_nianzhu_attendance_step3_for_sheet,
+)
+from backend.core.nianzhu_course_sheets import (
+    NIANZHU_WORKBOOK_NUMERIC_ID,
+    materialize_nianzhu_course_sheets,
+    rebuild_nianzhu_attendance_from_course_sheets,
+    run_nianzhu_course_sheet_step1,
 )
 from kq5034.attendance_api import (
     build_fanbei_attendance_step2_data,
@@ -280,6 +287,32 @@ class AttendanceFanbeiStep3Request(BaseModel):
 class AttendanceNianzhuStep3Request(BaseModel):
     sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
     course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
+    include_frozen: bool = False
+
+
+class AttendanceNianzhuStep1Request(BaseModel):
+    workbook_id: int = NIANZHU_WORKBOOK_NUMERIC_ID
+    attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
+    shop_id: int = 1
+    update_lessons: bool = True
+    update_clockins: bool = True
+    clockin_pattern: str = ""
+    close_browser: bool = True
+
+
+class AttendanceNianzhuCourseSheetsRequest(BaseModel):
+    workbook_id: int = NIANZHU_WORKBOOK_NUMERIC_ID
+    attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
+    replace: bool = False
+    rebuild: bool = False
+    include_frozen: bool = False
+
+
+class AttendanceNianzhuRebuildFromSheetsRequest(BaseModel):
+    attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    include_frozen: bool = False
 
 
 class AttendanceFanbeiStep2InspectRequest(BaseModel):
@@ -352,6 +385,31 @@ def run_attendance_fanbei_step3(req: AttendanceFanbeiStep3Request | None = None)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/attendance/nianzhu/step1")
+def run_attendance_nianzhu_step1(req: AttendanceNianzhuStep1Request | None = None):
+    req = req or AttendanceNianzhuStep1Request()
+    try:
+        from backend.db import engine
+
+        with ensure_ui_automation_thread_context():
+            with Session(engine) as session:
+                summary = run_nianzhu_course_sheet_step1(
+                    session,
+                    workbook_id=req.workbook_id,
+                    attendance_sheet_id=req.attendance_sheet_id,
+                    course_name=req.course_name,
+                    shop_id=req.shop_id,
+                    update_lessons=req.update_lessons,
+                    update_clockins=req.update_clockins,
+                    clockin_pattern=req.clockin_pattern,
+                    close_browser=req.close_browser,
+                )
+                session.commit()
+                return summary
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.post("/attendance/nianzhu/step3")
 def run_attendance_nianzhu_step3(req: AttendanceNianzhuStep3Request | None = None):
     req = req or AttendanceNianzhuStep3Request()
@@ -360,6 +418,54 @@ def run_attendance_nianzhu_step3(req: AttendanceNianzhuStep3Request | None = Non
             sheet_id=req.sheet_id,
             course_name=req.course_name,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/nianzhu/course-sheets")
+def materialize_attendance_nianzhu_course_sheets(req: AttendanceNianzhuCourseSheetsRequest | None = None):
+    req = req or AttendanceNianzhuCourseSheetsRequest()
+    try:
+        from backend.db import engine
+
+        with Session(engine) as session:
+            materialize_summary = materialize_nianzhu_course_sheets(
+                session,
+                workbook_id=req.workbook_id,
+                attendance_sheet_id=req.attendance_sheet_id,
+                course_name=req.course_name,
+                replace=req.replace,
+            )
+            rebuild_summary = None
+            if req.rebuild:
+                rebuild_summary = rebuild_nianzhu_attendance_from_course_sheets(
+                    session,
+                    attendance_sheet_id=req.attendance_sheet_id,
+                    active_only=not req.include_frozen,
+                )
+            session.commit()
+            return {
+                "materialize": materialize_summary,
+                "rebuild": rebuild_summary,
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/nianzhu/rebuild-from-sheets")
+def rebuild_attendance_nianzhu_from_course_sheets(req: AttendanceNianzhuRebuildFromSheetsRequest | None = None):
+    req = req or AttendanceNianzhuRebuildFromSheetsRequest()
+    try:
+        from backend.db import engine
+
+        with Session(engine) as session:
+            summary = rebuild_nianzhu_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=req.attendance_sheet_id,
+                active_only=not req.include_frozen,
+            )
+            session.commit()
+            return summary
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

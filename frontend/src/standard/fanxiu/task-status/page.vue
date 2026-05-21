@@ -3,17 +3,20 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { FolderOpened, Refresh, WarningFilled } from '@element-plus/icons-vue';
 import {
+  getFanxiuBehaviorTreeService,
   getFanxiuProcesses,
   getFanxiuSunloginRotateStatus,
   getFanxiuStatus,
   getLocalScriptProcesses,
   parseFanxiuStatus,
   saveFanxiuStatus,
+  startFanxiuBehaviorTreeService,
   startFanxiuSunloginRotate,
+  stopFanxiuBehaviorTreeService,
   stopFanxiuSunloginRotate,
-  terminateFanxiuProcesses,
   updateFanxiuStatusConfig,
   type FanxiuAccountStatusItem,
+  type FanxiuBehaviorTreeServiceStatus,
   type FanxiuProcessItem,
   type FanxiuStatusSnapshot,
   type FanxiuSunloginRotateStatus,
@@ -37,6 +40,8 @@ const savingStatusFile = ref(false);
 const isLoadingProcesses = ref(false);
 const isLoadingScriptProcesses = ref(false);
 const isTerminatingProcesses = ref(false);
+const isLoadingBehaviorTreeService = ref(false);
+const isTogglingBehaviorTreeService = ref(false);
 const isLoadingSunloginRotate = ref(false);
 const isTogglingSunloginRotate = ref(false);
 const isLoadingDevices = ref(false);
@@ -45,6 +50,7 @@ const isLoadingDeviceFile = ref(false);
 const snapshot = ref<FanxiuStatusSnapshot | null>(null);
 const fanxiuProcesses = ref<FanxiuProcessItem[]>([]);
 const localScriptProcesses = ref<LocalScriptProcessItem[]>([]);
+const behaviorTreeService = ref<FanxiuBehaviorTreeServiceStatus | null>(null);
 const sunloginRotateStatus = ref<FanxiuSunloginRotateStatus | null>(null);
 const loadError = ref('');
 const statusPathInput = ref('');
@@ -132,6 +138,9 @@ const jsonFileEntries = computed(() =>
 const accountCards = computed<FanxiuAccountStatusItem[]>(() => snapshot.value?.accounts ?? []);
 const fanxiuProcessCount = computed(() => fanxiuProcesses.value.length);
 const localScriptProcessCount = computed(() => localScriptProcesses.value.length);
+const behaviorTreeRunning = computed(() => Boolean(behaviorTreeService.value?.running));
+const behaviorTreeStateText = computed(() => behaviorTreeService.value?.state_label || '未知');
+const behaviorTreeButtonText = computed(() => behaviorTreeRunning.value ? '重启凡修服务' : '启动凡修服务');
 const sunloginRotateRunning = computed(() => Boolean(sunloginRotateStatus.value?.running));
 const sunloginRotateButtonText = computed(() => sunloginRotateRunning.value ? '关闭投屏旋转' : '开启投屏旋转');
 const pageStatusType = computed(() => {
@@ -344,6 +353,7 @@ const refreshNow = async () => {
   }
   void loadFanxiuProcesses();
   void loadLocalScriptProcesses();
+  void loadBehaviorTreeService();
   void loadSunloginRotateStatus();
 };
 
@@ -373,6 +383,86 @@ const loadFanxiuProcesses = async () => {
   }
 };
 
+const loadBehaviorTreeService = async () => {
+  if (!canConfigure.value || isLoadingBehaviorTreeService.value) return;
+  isLoadingBehaviorTreeService.value = true;
+  try {
+    behaviorTreeService.value = await getFanxiuBehaviorTreeService();
+  } catch {
+    behaviorTreeService.value = null;
+  } finally {
+    isLoadingBehaviorTreeService.value = false;
+  }
+};
+
+const startOrRestartBehaviorTreeService = async () => {
+  if (!canConfigure.value || isTogglingBehaviorTreeService.value) return;
+  const running = behaviorTreeRunning.value;
+  if (running) {
+    try {
+      await ElMessageBox.confirm(
+        '会先终止当前凡修行为树，再以 CodeYun 服务入口重新启动。',
+        '重启凡修服务',
+        {
+          type: 'warning',
+          confirmButtonText: '重启',
+          cancelButtonText: '取消',
+          distinguishCancelAndClose: true,
+        },
+      );
+    } catch {
+      return;
+    }
+  }
+
+  isTogglingBehaviorTreeService.value = true;
+  try {
+    const result = await startFanxiuBehaviorTreeService();
+    behaviorTreeService.value = result.service;
+    await loadFanxiuProcesses();
+    await loadLocalScriptProcesses();
+    ElMessage.success(running ? '已重启凡修服务' : '已启动凡修服务');
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '启动凡修服务失败');
+    await loadBehaviorTreeService();
+  } finally {
+    isTogglingBehaviorTreeService.value = false;
+  }
+};
+
+const stopBehaviorTreeService = async () => {
+  if (!canConfigure.value || isTerminatingProcesses.value) return;
+  try {
+    await ElMessageBox.confirm(
+      '会按凡修服务登记和进程扫描结果终止当前行为树，并标记登记文件为已停止。',
+      '停止凡修服务',
+      {
+        type: 'warning',
+        confirmButtonText: '停止',
+        cancelButtonText: '取消',
+        distinguishCancelAndClose: true,
+      },
+    );
+  } catch {
+    return;
+  }
+
+  isTerminatingProcesses.value = true;
+  try {
+    const result = await stopFanxiuBehaviorTreeService();
+    behaviorTreeService.value = result.service;
+    await loadFanxiuProcesses();
+    await loadLocalScriptProcesses();
+    ElMessage.success('已停止凡修服务');
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '停止凡修服务失败');
+    await loadBehaviorTreeService();
+    await loadFanxiuProcesses();
+  } finally {
+    isTerminatingProcesses.value = false;
+  }
+};
+
 const loadSunloginRotateStatus = async () => {
   if (!canConfigure.value || isLoadingSunloginRotate.value) return;
   isLoadingSunloginRotate.value = true;
@@ -399,43 +489,6 @@ const toggleSunloginRotate = async () => {
     await loadSunloginRotateStatus();
   } finally {
     isTogglingSunloginRotate.value = false;
-  }
-};
-
-const terminateAllFanxiuProcesses = async () => {
-  if (!canConfigure.value || isTerminatingProcesses.value) return;
-  try {
-    await ElMessageBox.confirm(
-      '会终止命令行命中 ckz2025\\fx 或 凡修*.py 的进程，并连同它们的子进程一起结束。',
-      '终止凡修脚本',
-      {
-        type: 'warning',
-        confirmButtonText: '终止',
-        cancelButtonText: '取消',
-        distinguishCancelAndClose: true,
-      },
-    );
-  } catch {
-    return;
-  }
-
-  isTerminatingProcesses.value = true;
-  try {
-    const result = await terminateFanxiuProcesses();
-    fanxiuProcesses.value = result.remaining ?? [];
-    await loadLocalScriptProcesses();
-    const killedCount = result.terminated?.length ?? 0;
-    const remainingCount = result.remaining?.length ?? 0;
-    if (remainingCount > 0) {
-      ElMessage.warning(`已终止 ${killedCount} 个进程，仍剩 ${remainingCount} 个匹配进程`);
-    } else {
-      ElMessage.success(killedCount ? `已终止 ${killedCount} 个凡修相关进程` : '没有发现凡修脚本进程');
-    }
-  } catch (error: any) {
-    ElMessage.error(error?.response?.data?.detail || error?.message || '终止凡修脚本失败');
-    await loadFanxiuProcesses();
-  } finally {
-    isTerminatingProcesses.value = false;
   }
 };
 
@@ -618,6 +671,7 @@ onMounted(async () => {
   await loadLocalSnapshot(false);
   void loadFanxiuProcesses();
   void loadLocalScriptProcesses();
+  void loadBehaviorTreeService();
   void loadSunloginRotateStatus();
   if (userStore.isAuthenticated) void ensureDevicesLoaded();
   refreshTimer = window.setInterval(() => {
@@ -630,6 +684,7 @@ onMounted(async () => {
     }
     void loadFanxiuProcesses();
     void loadLocalScriptProcesses();
+    void loadBehaviorTreeService();
     void loadSunloginRotateStatus();
   }, 30000);
 });
@@ -648,6 +703,9 @@ onUnmounted(() => {
         </div>
         <div class="header-actions">
           <el-tag :type="pageStatusType" effect="dark">{{ pageStatusText }}</el-tag>
+          <el-tag v-if="canConfigure" :type="behaviorTreeRunning ? 'success' : 'info'" effect="plain">
+            服务 {{ behaviorTreeStateText }}
+          </el-tag>
           <el-popover v-if="canConfigure" placement="bottom-end" trigger="click" :width="860">
             <template #reference>
               <el-button
@@ -710,13 +768,22 @@ onUnmounted(() => {
           </el-button>
           <el-button
             v-if="canConfigure"
+            :type="behaviorTreeRunning ? 'warning' : 'primary'"
+            plain
+            :loading="isTogglingBehaviorTreeService || isLoadingBehaviorTreeService"
+            @click="startOrRestartBehaviorTreeService"
+          >
+            {{ behaviorTreeButtonText }}
+          </el-button>
+          <el-button
+            v-if="canConfigure"
             type="danger"
             plain
             :loading="isTerminatingProcesses"
             :disabled="isLoadingProcesses"
-            @click="terminateAllFanxiuProcesses"
+            @click="stopBehaviorTreeService"
           >
-            终止凡修脚本
+            停止凡修服务
           </el-button>
           <el-button :icon="Refresh" :loading="loading" @click="refreshNow">刷新</el-button>
         </div>

@@ -286,6 +286,16 @@ export interface AttendanceWjxDataUpdateRequest {
   revision_result?: Record<string, unknown>
 }
 
+export interface AttendanceWjxAiPrecheckRequest {
+  persist?: boolean
+  use_codex_cli?: boolean
+}
+
+export interface AttendanceWjxAiPrecheckResponse {
+  item: AttendanceWjxDataItem
+  precheck: Record<string, unknown>
+}
+
 export interface AttendanceSheetDocument {
   id: number
   scope: string
@@ -507,6 +517,15 @@ export async function fetchAttendanceWjxDataSheetLocation() {
 
 export async function updateAttendanceWjxData(entryId: number, payload: AttendanceWjxDataUpdateRequest) {
   const response = await api.patch<AttendanceWjxDataItem>(`/attendance/wjx-data/${entryId}`, payload)
+  return response.data
+}
+
+export async function runAttendanceWjxDataAiPrecheck(entryId: number, payload?: AttendanceWjxAiPrecheckRequest) {
+  const response = await api.post<AttendanceWjxAiPrecheckResponse>(
+    `/attendance/wjx-data/${entryId}/ai-precheck`,
+    payload ?? {},
+    { timeout: 180_000 },
+  )
   return response.data
 }
 

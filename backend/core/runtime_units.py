@@ -9,7 +9,7 @@ RuntimeSource = Literal["command", "builtin"]
 RuntimeConcurrencyScope = Literal["unit", "group"]
 RuntimeOverlapPolicy = Literal["replace", "queue", "skip"]
 RuntimeTimeoutPolicy = Literal["none", "terminate"]
-RuntimeScheduleKind = Literal["manual", "cron", "dynamic"]
+RuntimeScheduleKind = Literal["manual", "once", "interval", "daily", "weekly", "monthly", "cron", "dynamic"]
 
 DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS = 12 * 60 * 60
 DEFAULT_JOB_CONCURRENCY_KEY = "job:default"
@@ -109,7 +109,13 @@ def command_runtime_group(task: Any, kind: RuntimeKind) -> tuple[str, str]:
 
 def resolve_command_runtime_policy(task: Any) -> RuntimeExecutionPolicy:
     kind = infer_command_runtime_kind(task)
-    schedule_kind: RuntimeScheduleKind = "cron" if _task_attr(task, "schedule", None) else "manual"
+    schedule_policy = _task_attr(task, "schedule_policy", None) or {}
+    trigger = schedule_policy.get("trigger") if isinstance(schedule_policy, dict) else None
+    trigger_kind = str((trigger or {}).get("type") or "").strip().lower() if isinstance(trigger, dict) else ""
+    schedule_kind: RuntimeScheduleKind = (
+        trigger_kind if trigger_kind in {"once", "interval", "daily", "weekly", "monthly", "cron"} else
+        ("cron" if _task_attr(task, "schedule", None) else "manual")
+    )
     task_id = str(_task_attr(task, "id", "") or "")
     timeout = _task_attr(task, "timeout", None)
     timeout_seconds = int(timeout) if isinstance(timeout, int) and timeout > 0 else None

@@ -79,6 +79,117 @@ def test_local_entry_reads_selected_rime_context_prediction_source(client, auth_
     assert payload["rows"][0]["prefix"] == "ss"
 
 
+def test_local_entry_compares_rime_candidate_weights(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction_snapshot.tsv").write_text(
+        "__global\tcaiyong\t采用\t10\t输入历史\n"
+        "方案\tcaiyong\t采用\t3\t自定义短语\n"
+        "__global\tcaiyong\t才用\t2\t输入历史\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/weight-compare",
+        json={"candidates": ["采用", "才用"], "source": "snapshot"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["source"] == "context_prediction_snapshot.tsv"
+    assert payload["summary"]["candidate_count"] == 2
+    assert payload["summary"]["matched_count"] == 2
+    assert payload["summary"]["row_count"] == 3
+    by_candidate = {item["candidate"]: item for item in payload["items"]}
+    assert by_candidate["采用"]["total_weight"] == 13
+    assert by_candidate["采用"]["exact_prefix_weight"] == 13
+    assert by_candidate["采用"]["row_count"] == 2
+    assert by_candidate["采用"]["prefixes"][0]["key"] == "caiyong"
+    assert by_candidate["才用"]["total_weight"] == 2
+
+    adjust_response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/weight-compare/adjust",
+        json={
+            "prefix": "caiyong",
+            "candidate": "才用",
+            "weight": 6,
+            "candidates": ["采用", "才用"],
+            "source": "snapshot",
+        },
+    )
+
+    assert adjust_response.status_code == 200
+    adjusted = adjust_response.json()
+    adjusted_by_candidate = {item["candidate"]: item for item in adjusted["items"]}
+    assert adjusted_by_candidate["才用"]["total_weight"] == 6
+    assert "__global\tcaiyong\t才用\t6\t手动规则" in (rime_dir / "context_prediction.tsv").read_text(encoding="utf-8")
+
+
+def test_local_entry_reads_and_updates_rime_runtime_config(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    rime_lua = rime_dir / "rime.lua"
+    rime_lua.write_text(
+        "local function context_prediction_new_state()\n"
+        "  return {\n"
+        "    max_candidates = 3,\n"
+        "    flush_batch_size = 100,\n"
+        "    flush_interval_seconds = 300,\n"
+        "    enable_commit_capture = true,\n"
+        "    commit_capture_mode = \"deferred_flush\",\n"
+        "  }\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    deploy_calls = []
+
+    def fake_deploy():
+        deploy_calls.append(True)
+        return {"ok": True, "status": "deployed", "message": "小狼毫已重新部署。"}
+
+    monkeypatch.setattr("backend.core.rime_context_prediction.deploy_rime_weasel", fake_deploy)
+    entry_id = _create_local_entry(client)
+
+    read_response = client.get(f"/api/device-entries/{entry_id}/rime/context-prediction/runtime-config")
+
+    assert read_response.status_code == 200
+    payload = read_response.json()
+    assert payload["available"] is True
+    assert payload["config"]["max_candidates"] == 3
+    assert payload["config"]["enable_commit_capture"] is True
+    assert payload["config"]["commit_capture_mode"] == "deferred_flush"
+
+    update_response = client.patch(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/runtime-config",
+        json={
+            "config": {
+                "max_candidates": 5,
+                "enable_commit_capture": False,
+                "commit_capture_mode": "memory_only",
+                "flush_interval_seconds": 60,
+            },
+        },
+    )
+
+    assert update_response.status_code == 200
+    updated = update_response.json()
+    assert updated["requires_reload"] is False
+    assert updated["deploy"]["status"] == "deployed"
+    assert deploy_calls == [True]
+    assert updated["config"]["max_candidates"] == 5
+    assert updated["config"]["enable_commit_capture"] is False
+    assert updated["config"]["commit_capture_mode"] == "memory_only"
+    lua_text = rime_lua.read_text(encoding="utf-8")
+    assert "max_candidates = 5," in lua_text
+    assert "enable_commit_capture = false," in lua_text
+    assert 'commit_capture_mode = "memory_only",' in lua_text
+    assert "flush_interval_seconds = 60," in lua_text
+
+
 def test_local_entry_hot_index_keeps_manual_single_char_only(client, auth_user, test_device, tmp_path, monkeypatch):
     rime_dir = tmp_path / "Rime"
     rime_dir.mkdir()
@@ -683,6 +794,67 @@ def test_local_entry_imports_lexicon_with_boosted_weight(client, auth_user, test
 
     learned_text = (rime_dir / "codeyun_english_learned.dict.yaml").read_text(encoding="utf-8")
     assert "codepc_mi15\tcodepcmi15\t260" in learned_text
+
+
+def test_local_entry_imports_negative_lexicon_as_penalty(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction.tsv").write_text(
+        "__global\tyue\t余额\t20\t手动规则\n"
+        "__global\tyue\t月\t12\t手动规则\n"
+        "支付\tyue\t余额\t10\t输入历史\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/articles",
+        json={
+            "title": "负向词",
+            "content": "余额\tyue\t8\n不存在\txxx\t99\n",
+            "enabled": True,
+            "source_type": "negative_lexicon",
+            "weight_multiplier": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["negative_lexicon_count"] == 1
+    assert payload["articles"][0]["source_type"] == "negative_lexicon"
+    assert payload["articles"][0]["title"] == "负向短语"
+    assert payload["articles"][0]["source_label"] == "负向短语"
+    assert payload["articles"][0]["row_count"] == 2
+
+    snapshot_text = (rime_dir / "context_prediction_snapshot.tsv").read_text(encoding="utf-8")
+    assert "__global\tyue\t余额\t12\t手动规则" in snapshot_text
+    assert "支付\tyue\t余额\t2\t输入历史" in snapshot_text
+    assert "__global\tyue\t月\t12\t手动规则" in snapshot_text
+    assert "不存在" not in snapshot_text
+
+
+def test_local_entry_creates_empty_negative_lexicon(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(
+        f"/api/device-entries/{entry_id}/rime/context-prediction/articles",
+        json={
+            "title": "负向短语",
+            "content": "\n",
+            "enabled": True,
+            "source_type": "negative_lexicon",
+            "weight_multiplier": 8,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["articles"][0]["source_type"] == "negative_lexicon"
+    assert payload["articles"][0]["row_count"] == 0
 
 
 def test_local_entry_saves_lexicon_article_content_page(client, auth_user, test_device, tmp_path, monkeypatch):

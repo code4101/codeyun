@@ -15,6 +15,7 @@ if sys.platform == "win32":
     import cv2
     import mss
     import numpy as np
+    import win32api
     import win32con
     import win32gui
     import win32ui
@@ -210,13 +211,30 @@ def crop_frame(frame: np.ndarray, crop: tuple[int, int, int, int]) -> np.ndarray
     return frame[y1:y2, x1:x2]
 
 
+def normalize_rotate(rotate: str) -> str:
+    value = str(rotate or "0").strip().lower()
+    aliases = {
+        "0": "0",
+        "none": "0",
+        "90": "90",
+        "cw": "90",
+        "180": "180",
+        "270": "270",
+        "ccw": "270",
+    }
+    if value not in aliases:
+        raise argparse.ArgumentTypeError("rotate 必须是顺时针角度 0/90/180/270")
+    return aliases[value]
+
+
 def rotate_frame(frame: np.ndarray, rotate: str) -> np.ndarray:
-    if rotate == "ccw":
-        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    if rotate == "cw":
+    rotate = normalize_rotate(rotate)
+    if rotate == "90":
         return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
     if rotate == "180":
         return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotate == "270":
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
     return frame
 
 
@@ -378,6 +396,186 @@ def process_frame(
     return fit_frame(frame, max_width, max_height, scale)
 
 
+def encode_jpeg(frame: np.ndarray, quality: int) -> bytes:
+    if frame.ndim == 3 and frame.shape[2] == 4:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+    quality = max(1, min(100, int(quality)))
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    if not ok:
+        raise RuntimeError("JPEG 编码失败")
+    return encoded.tobytes()
+
+
+def detect_sunlogin_promotion_cancel_point(frame: np.ndarray) -> tuple[int, int] | None:
+    height, width = frame.shape[:2]
+    if width <= 0 or height <= 0:
+        return None
+
+    if width <= height:
+        popup_region = (0.08, 0.58, 0.33, 0.99)
+        cancel_region = (0.13, 0.78, 0.19, 0.87)
+        member_region = (0.13, 0.86, 0.19, 0.96)
+    else:
+        popup_region = (0.61, 0.52, 0.99, 0.80)
+        cancel_region = (0.80, 0.64, 0.87, 0.72)
+        member_region = (0.88, 0.64, 0.98, 0.72)
+
+    def crop_relative(region: tuple[float, float, float, float]) -> np.ndarray:
+        x1, y1, x2, y2 = region
+        left = max(0, min(width, int(width * x1)))
+        top = max(0, min(height, int(height * y1)))
+        right = max(left + 1, min(width, int(width * x2)))
+        bottom = max(top + 1, min(height, int(height * y2)))
+        return frame[top:bottom, left:right, :3]
+
+    popup_patch = crop_relative(popup_region)
+    cancel_patch = crop_relative(cancel_region)
+    member_patch = crop_relative(member_region)
+    popup_luma = popup_patch.mean(axis=2)
+    cancel_luma = cancel_patch.mean(axis=2)
+    member_luma = member_patch.mean(axis=2)
+
+    popup_dark_ratio = float((popup_luma < 55).mean())
+    cancel_dark_ratio = float((cancel_luma < 65).mean())
+    member_bright_ratio = float((member_luma > 150).mean())
+    if popup_dark_ratio < 0.55 or cancel_dark_ratio < 0.55 or member_bright_ratio < 0.20:
+        return None
+
+    x1, y1, x2, y2 = cancel_region
+    return int(width * (x1 + x2) / 2), int(height * (y1 + y2) / 2)
+
+
+def map_processed_point_to_raw_point(
+    point: tuple[int, int],
+    *,
+    raw_shape: tuple[int, ...],
+    crop: tuple[int, int, int, int],
+    trim_border: tuple[int, int, int, int],
+    rotate: str,
+) -> tuple[int, int] | None:
+    raw_height, raw_width = raw_shape[:2]
+    crop_left, crop_top, crop_right, crop_bottom = crop
+    trim_left, trim_top, _trim_right, _trim_bottom = trim_border
+    cropped_width = raw_width - crop_left - crop_right
+    cropped_height = raw_height - crop_top - crop_bottom
+    if cropped_width <= 0 or cropped_height <= 0:
+        return None
+
+    x_rotated = int(point[0] + trim_left)
+    y_rotated = int(point[1] + trim_top)
+    rotate = normalize_rotate(rotate)
+    if rotate == "0":
+        x_cropped, y_cropped = x_rotated, y_rotated
+    elif rotate == "90":
+        x_cropped = y_rotated
+        y_cropped = cropped_height - 1 - x_rotated
+    elif rotate == "180":
+        x_cropped = cropped_width - 1 - x_rotated
+        y_cropped = cropped_height - 1 - y_rotated
+    else:
+        x_cropped = cropped_width - 1 - y_rotated
+        y_cropped = x_rotated
+
+    raw_x = int(x_cropped + crop_left)
+    raw_y = int(y_cropped + crop_top)
+    if not (0 <= raw_x < raw_width and 0 <= raw_y < raw_height):
+        return None
+    return raw_x, raw_y
+
+
+def click_window_raw_point(hwnd: int, area: str, raw_point: tuple[int, int]) -> None:
+    rect = get_capture_rect(hwnd, area)
+    screen_x = int(rect[0] + raw_point[0])
+    screen_y = int(rect[1] + raw_point[1])
+    activate_window(hwnd)
+    time.sleep(0.03)
+    win32api.SetCursorPos((screen_x, screen_y))
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.03)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
+def iter_mjpeg_frames(
+    title: str,
+    fps: float,
+    crop: tuple[int, int, int, int],
+    trim_border: tuple[int, int, int, int],
+    rotate: str,
+    area: str,
+    mode: str,
+    max_width: int,
+    max_height: int,
+    scale: float,
+    fixed_width: int,
+    fixed_height: int,
+    refind_interval: float,
+    quality: int,
+    auto_dismiss_popup: bool = False,
+    popup_check_interval: float = 3.0,
+):
+    ensure_windows_runtime()
+    set_dpi_awareness()
+    if fps <= 0:
+        raise ValueError("fps 必须大于 0")
+
+    target = find_window(title)
+    capturer = WindowCapture(target.hwnd, area, mode, title, refind_interval)
+    interval = 1.0 / fps
+    last_popup_check_at = 0.0
+    last_popup_click_at = 0.0
+
+    while True:
+        started = time.perf_counter()
+        raw_frame = capturer.capture()
+        if raw_frame is None:
+            time.sleep(min(0.2, interval))
+            continue
+
+        frame = process_frame(raw_frame, crop, trim_border, rotate, max_width, max_height, scale, fixed_width, fixed_height)
+        now = time.perf_counter()
+        can_auto_click = (
+            auto_dismiss_popup
+            and fixed_width <= 0
+            and fixed_height <= 0
+            and max_width <= 0
+            and max_height <= 0
+            and now - last_popup_check_at >= max(1.0, popup_check_interval)
+            and now - last_popup_click_at >= 5.0
+        )
+        if can_auto_click:
+            last_popup_check_at = now
+            cancel_point = detect_sunlogin_promotion_cancel_point(frame)
+            if cancel_point is not None:
+                raw_point = map_processed_point_to_raw_point(
+                    cancel_point,
+                    raw_shape=raw_frame.shape,
+                    crop=crop,
+                    trim_border=trim_border,
+                    rotate=rotate,
+                )
+                if raw_point is not None:
+                    try:
+                        click_window_raw_point(capturer.hwnd, area, raw_point)
+                        last_popup_click_at = now
+                        print(f"已自动点击向日葵弹窗取消按钮: frame={cancel_point} raw={raw_point}", flush=True)
+                    except Exception as exc:
+                        print(f"自动关闭向日葵弹窗失败: {exc}", file=sys.stderr, flush=True)
+
+        data = encode_jpeg(frame, quality)
+        yield (
+            b"--frame\r\n"
+            b"Content-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(data)}\r\n\r\n".encode("ascii")
+            + data
+            + b"\r\n"
+        )
+
+        elapsed = time.perf_counter() - started
+        if elapsed < interval:
+            time.sleep(interval - elapsed)
+
+
 def save_snapshot(
     capturer: WindowCapture,
     output: Path,
@@ -461,10 +659,10 @@ def preview_loop(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="捕捉指定 Windows 窗口，旋转 90 度后按目标 FPS 预览。")
+    parser = argparse.ArgumentParser(description="捕捉指定 Windows 窗口，按顺时针角度旋转后预览。")
     parser.add_argument("--title", default="1249152866", help="目标窗口标题包含的文字")
     parser.add_argument("--fps", type=float, default=15.0, help="目标刷新帧率")
-    parser.add_argument("--rotate", choices=["ccw", "cw", "180", "none"], default="cw", help="旋转方向")
+    parser.add_argument("--rotate", choices=["0", "90", "180", "270", "ccw", "cw", "none"], default="90", help="顺时针旋转角度")
     parser.add_argument("--area", choices=["outer", "client"], default="outer", help="捕捉外框或客户区")
     parser.add_argument("--mode", choices=["auto", "printwindow", "screen"], default="screen", help="窗口捕捉模式")
     parser.add_argument("--crop", type=parse_crop, default=(0, 0, 0, 0), help="旋转前裁边：left,top,right,bottom")

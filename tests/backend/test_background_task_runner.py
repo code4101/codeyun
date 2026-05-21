@@ -1,8 +1,8 @@
 import json
 import datetime
 
-from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner
-from pyxllib.prog.behavior_tree import BehaviorTreeRunner
+from backend.core.background_task_runner import BACKGROUND_TASK_SPECS, BackgroundTaskRunner, BackgroundTaskSpec
+from pyxllib.prog.behavior_tree import BehaviorTreeRunner, Status
 
 
 class FakeClock:
@@ -28,7 +28,7 @@ def _set_enabled(monkeypatch, enabled_by_key):
     )
 
 
-def _write_schedule_state(path, values, *, schedule_version=4):
+def _write_schedule_state(path, values, *, schedule_version=5):
     blackboard = {} if schedule_version is None else {"schedule_version": schedule_version}
     path.write_text(
         json.dumps(
@@ -114,6 +114,65 @@ def test_background_task_runner_attendance_summary_uses_monthly_schedule(tmp_pat
     assert tree_runner.next_wake().isoformat() == "2026-05-27T00:00:00"
 
 
+def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_path, monkeypatch):
+    spec = BackgroundTaskSpec(
+        key="rime_config_sync",
+        title="小狼毫自动同步",
+        category="输入法",
+        description="",
+        schedule_label="每小时检查",
+        retry_label="失败后 10 分钟重试",
+        action=lambda: "queue-1",
+    )
+    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    _set_enabled(monkeypatch, {"rime_config_sync": True})
+    monkeypatch.setattr(
+        "backend.core.background_task_runner._effective_background_task_schedule_policy",
+        lambda task_key, enabled=None: {
+            "enabled": True,
+            "trigger": {"type": "interval", "minutes": 60, "anchor": "last_finish"},
+            "action": {"type": "enqueue"},
+        },
+    )
+    queue_status = {"value": "running"}
+
+    def queue_snapshot():
+        if queue_status["value"] == "running":
+            return {
+                "running": {"id": "queue-1", "status": "running"},
+                "pending": [],
+                "recent": [],
+            }
+        return {
+            "running": None,
+            "pending": [],
+            "recent": [{"id": "queue-1", "status": "completed"}],
+        }
+
+    monkeypatch.setattr("backend.core.background_task_runner.background_task_queue.snapshot", queue_snapshot)
+
+    runner = _runner_for_test(tmp_path)
+    _write_schedule_state(
+        runner.state_path,
+        {"rime_config_sync": "2026-05-19 16:50:00"},
+    )
+    clock = FakeClock("2026-05-19 16:50:00")
+    tree_runner = BehaviorTreeRunner(
+        runner.build_tree(),
+        runner.state_path,
+        now_func=clock,
+    )
+    runner._ensure_schedule_state_version(tree_runner)
+
+    assert tree_runner.run_once() == Status.RUNNING
+    assert tree_runner.state["nodes"]["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2026-05-19 17:50:00"
+
+    queue_status["value"] = "completed"
+    clock.value += datetime.timedelta(minutes=2)
+    assert tree_runner.run_once() == Status.SUCCESS
+    assert tree_runner.state["nodes"]["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2026-05-19 17:52:00"
+
+
 def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkeypatch):
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     _set_enabled(monkeypatch, {key: False for key in task_keys})
@@ -135,4 +194,4 @@ def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkey
     assert nodes["Root/MemorySelector/auto_git_commit"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/storage_analysis"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2099-05-10 01:00:00"
-    assert tree_runner.state["blackboard"]["schedule_version"] == 4
+    assert tree_runner.state["blackboard"]["schedule_version"] == 5

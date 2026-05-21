@@ -11,6 +11,8 @@ export interface Task {
   entry_id?: string;
   runtime_kind?: 'service' | 'job';
   schedule?: string;
+  schedule_policy?: Record<string, any> | null;
+  schedule_state?: Record<string, any> | null;
   timeout?: number;
   status: {
     running: boolean;

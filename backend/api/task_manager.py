@@ -4,12 +4,20 @@ import time
 import uuid
 import shlex
 import socket
+import datetime as dt
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel, Field
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from sqlmodel import Session, select
+from pyxllib.prog.schedule_policy import (
+    RESULT_FAILURE,
+    RESULT_SUCCESS,
+    apply_schedule_result,
+    initialize_schedule_state,
+)
 
 from backend.api.websocket_manager import manager as ws_manager
 from backend.core.auth import verify_api_token
@@ -18,6 +26,7 @@ from backend.core.background_task_queue import background_task_queue
 from backend.core.runtime_units import (
     DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS,
     command_runtime_queue_name,
+    infer_command_runtime_kind,
     resolve_command_runtime_policy,
 )
 from backend.db import engine
@@ -85,6 +94,7 @@ class CreateTaskRequest(BaseModel):
     device_id: Optional[str] = Field(default_factory=socket.gethostname)
     runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
+    schedule_policy: Optional[Dict[str, Any]] = None
     timeout: Optional[int] = None
 
 class UpdateTaskRequest(BaseModel):
@@ -95,6 +105,7 @@ class UpdateTaskRequest(BaseModel):
     device_id: Optional[str] = None
     runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
+    schedule_policy: Optional[Dict[str, Any]] = None
     timeout: Optional[int] = None
 
 # --- Manager ---
@@ -120,8 +131,8 @@ class TaskManager:
         with Session(engine) as session:
             tasks = session.exec(select(TaskModel)).all()
             for task in tasks:
-                if task.schedule:
-                    self.update_schedule(task.id, task.schedule)
+                if task.schedule_policy or task.schedule:
+                    self.update_schedule(task.id, task.schedule, task.schedule_policy)
 
     def _get_stale_scheduled_runtime_seconds(self, task: TaskModel) -> int:
         if task.timeout and task.timeout > 0:
@@ -135,7 +146,7 @@ class TaskManager:
         *,
         reason: str,
     ) -> bool:
-        if not task.schedule:
+        if not (task.schedule or task.schedule_policy):
             return False
 
         status = device.get_task_status(task.id)
@@ -160,15 +171,74 @@ class TaskManager:
         print(f"Stale scheduled task {task.id} stop result: {result}")
         return result.get("status") in {"stopped", "not_running"}
 
+    def clear_schedule(self, task_id: str) -> None:
+        job = self.scheduler.get_job(task_id)
+        if job:
+            self.scheduler.remove_job(task_id)
+
+    def _parse_schedule_run_date(self, value: Any) -> dt.datetime:
+        if isinstance(value, dt.datetime):
+            return value
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1]
+        return dt.datetime.fromisoformat(text)
+
     def _reap_stale_scheduled_tasks(self, device: BaseDevice, tasks: List[TaskModel], *, reason: str):
         for task in tasks:
             self._stop_stale_scheduled_task(task, device, reason=reason)
 
-    def update_schedule(self, task_id: str, cron_expression: Optional[str]):
+    def _ensure_policy_schedule_state(self, session: Session, task: TaskModel, *, force: bool = False) -> Optional[str]:
+        if not task.schedule_policy:
+            return None
+        state = initialize_schedule_state(
+            task.schedule_policy,
+            task.schedule_state or {},
+            force=force,
+        )
+        task.schedule_state = state
+        session.add(task)
+        session.commit()
+        return state.get("next_trigger_at")
+
+    def update_schedule(
+        self,
+        task_id: str,
+        cron_expression: Optional[str] = None,
+        schedule_policy: Optional[Dict[str, Any]] = None,
+        *,
+        reset_state: bool = False,
+    ):
         # Remove existing job if any
-        if self.scheduler.get_job(task_id):
-            self.scheduler.remove_job(task_id)
-        
+        self.clear_schedule(task_id)
+
+        if schedule_policy is None:
+            with Session(engine) as session:
+                task = session.get(TaskModel, task_id)
+                if task:
+                    schedule_policy = task.schedule_policy
+                    cron_expression = task.schedule
+
+        if schedule_policy:
+            try:
+                with Session(engine) as session:
+                    task = session.get(TaskModel, task_id)
+                    if not task:
+                        return
+                    next_trigger_at = self._ensure_policy_schedule_state(session, task, force=reset_state)
+                if next_trigger_at:
+                    self.scheduler.add_job(
+                        self.trigger_scheduled_task,
+                        DateTrigger(run_date=self._parse_schedule_run_date(next_trigger_at)),
+                        id=task_id,
+                        args=[task_id],
+                        replace_existing=True,
+                    )
+                    print(f"Scheduled task {task_id} with policy next_trigger_at: {next_trigger_at}")
+            except Exception as e:
+                print(f"Failed to schedule task {task_id} with policy: {e}")
+            return
+
         if cron_expression:
             try:
                 self.scheduler.add_job(
@@ -182,20 +252,77 @@ class TaskManager:
             except Exception as e:
                 print(f"Failed to schedule task {task_id}: {e}")
 
+    def _scheduled_action_for_task(self, task: TaskModel) -> str:
+        configured = (task.schedule_policy or {}).get("action") or {}
+        action = str(configured.get("type") or "").strip().lower()
+        if action:
+            return action
+        policy = resolve_command_runtime_policy(task)
+        return "enqueue" if policy.kind == "job" else "restart"
+
+    def _mark_scheduled_task_triggered(self, task_id: str) -> None:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task or not task.schedule_policy:
+                return
+            state = dict(task.schedule_state or {})
+            now = time.time()
+            state["last_triggered_at"] = now
+            state["last_trigger_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+            state["next_trigger_at"] = None
+            task.schedule_state = state
+            session.add(task)
+            session.commit()
+
+    def _finish_scheduled_task(self, task_id: str, result: str) -> None:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task or not task.schedule_policy:
+                return
+            task.schedule_state = apply_schedule_result(
+                task.schedule_policy,
+                task.schedule_state or {},
+                result=result,
+            )
+            session.add(task)
+            session.commit()
+        self.update_schedule(task_id)
+
     def trigger_scheduled_task(self, task_id: str):
         with Session(engine) as session:
             task = session.get(TaskModel, task_id)
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             policy = resolve_command_runtime_policy(task)
+            has_schedule_policy = bool(task.schedule_policy)
+            action = self._scheduled_action_for_task(task)
 
-        if policy.kind == "job":
-            return self.enqueue_task_run(task_id, trigger_reason="scheduled")
-        return self.start_task(
-            task_id,
-            replace_running=policy.overlap_policy == "replace",
-            trigger_reason="scheduled",
-        )
+        if has_schedule_policy:
+            self._mark_scheduled_task_triggered(task_id)
+
+        try:
+            if action == "stop":
+                result = self.stop_task(task_id)
+            elif action == "ensure_running":
+                status = self.get_task_status(task_id)
+                result = {"status": "already_running", "pid": status.pid} if status.running else self.start_task(task_id, trigger_reason="scheduled")
+            elif action == "restart":
+                result = self.start_task(task_id, replace_running=True, trigger_reason="scheduled")
+            elif action == "start":
+                result = self.start_task(
+                    task_id,
+                    replace_running=policy.overlap_policy == "replace",
+                    trigger_reason="scheduled",
+                )
+            else:
+                result = self.enqueue_task_run(task_id, trigger_reason="scheduled")
+            if has_schedule_policy and action != "enqueue":
+                self._finish_scheduled_task(task_id, RESULT_SUCCESS)
+            return result
+        except Exception:
+            if has_schedule_policy:
+                self._finish_scheduled_task(task_id, RESULT_FAILURE)
+            raise
 
     def scan_running_tasks(self, restore_timeouts: bool = False):
         # Scan local tasks
@@ -211,6 +338,14 @@ class TaskManager:
         device = device_manager.get_device(local_id)
         if device:
             device.scan_running_tasks(local_tasks, deep_scan=False)
+            service_tasks = [
+                task
+                for task in local_tasks
+                if infer_command_runtime_kind(task) == "service"
+                and not device.get_task_status(task.id).running
+            ]
+            if service_tasks:
+                device.scan_running_tasks(service_tasks, deep_scan=True)
 
             if restore_timeouts:
                 self._reap_stale_scheduled_tasks(device, local_tasks, reason="startup scan")
@@ -377,31 +512,40 @@ class TaskManager:
             time.sleep(COMMAND_JOB_POLL_INTERVAL_SECONDS)
 
     def _run_command_job_blocking(self, task_id: str, trigger_reason: str) -> None:
-        with Session(engine) as session:
-            task = session.get(TaskModel, task_id)
-            if not task:
-                raise RuntimeError(f"Task {task_id} not found")
-            target_device_id = task.device_id
-            policy = resolve_command_runtime_policy(task)
+        scheduled = trigger_reason == "scheduled"
+        try:
+            with Session(engine) as session:
+                task = session.get(TaskModel, task_id)
+                if not task:
+                    raise RuntimeError(f"Task {task_id} not found")
+                target_device_id = task.device_id
+                policy = resolve_command_runtime_policy(task)
 
-        device = device_manager.get_device(target_device_id)
-        if not device:
-            raise RuntimeError(f"Device {target_device_id} unavailable")
+            device = device_manager.get_device(target_device_id)
+            if not device:
+                raise RuntimeError(f"Device {target_device_id} unavailable")
 
-        timeout_seconds = policy.timeout_seconds or DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS
-        self._wait_until_task_stops(
-            task,
-            device,
-            timeout_seconds=timeout_seconds,
-            reason="queued command job overlap",
-        )
-        self.start_task(task_id, trigger_reason=trigger_reason)
-        self._wait_until_task_stops(
-            task,
-            device,
-            timeout_seconds=timeout_seconds,
-            reason="queued command job run",
-        )
+            timeout_seconds = policy.timeout_seconds or DEFAULT_COMMAND_JOB_TIMEOUT_SECONDS
+            self._wait_until_task_stops(
+                task,
+                device,
+                timeout_seconds=timeout_seconds,
+                reason="queued command job overlap",
+            )
+            self.start_task(task_id, trigger_reason=trigger_reason)
+            self._wait_until_task_stops(
+                task,
+                device,
+                timeout_seconds=timeout_seconds,
+                reason="queued command job run",
+            )
+        except Exception:
+            if scheduled:
+                self._finish_scheduled_task(task_id, RESULT_FAILURE)
+            raise
+        else:
+            if scheduled:
+                self._finish_scheduled_task(task_id, RESULT_SUCCESS)
 
     def stop_task(self, task_id: str):
         with Session(engine) as session:
@@ -576,6 +720,7 @@ def create_task(
             device_id=target_device_id,
             runtime_kind=req.runtime_kind,
             schedule=req.schedule,
+            schedule_policy=req.schedule_policy,
             timeout=req.timeout,
             created_at=time.time(),
             order=next_order,
@@ -584,8 +729,8 @@ def create_task(
         session.commit()
         session.refresh(new_task)
         
-    if req.schedule:
-        task_manager.update_schedule(new_task.id, req.schedule)
+    if req.schedule_policy or req.schedule:
+        task_manager.update_schedule(new_task.id, req.schedule, req.schedule_policy, reset_state=True)
     
     task_manager.scan_running_tasks()
     return new_task
@@ -595,7 +740,7 @@ def delete_task(task_id: str, token_device: BaseDevice = Depends(verify_api_toke
     with Session(engine) as session:
         task = session.get(TaskModel, task_id)
         if task:
-            task_manager.update_schedule(task_id, None)
+            task_manager.clear_schedule(task_id)
             task_manager.stop_task(task_id)
             session.delete(task)
             session.commit()
@@ -632,13 +777,22 @@ def update_task_route(task_id: str, req: UpdateTaskRequest, token_device: BaseDe
             if req.runtime_kind is not None: task.runtime_kind = req.runtime_kind
             if req.schedule is not None:
                 task.schedule = req.schedule
-                task_manager.update_schedule(task_id, req.schedule)
+            if "schedule_policy" in req.model_fields_set:
+                task.schedule_policy = req.schedule_policy
+                task.schedule_state = {}
             if req.timeout is not None:
                 task.timeout = req.timeout
             
             session.add(task)
             session.commit()
             session.refresh(task)
+            if req.schedule is not None or "schedule_policy" in req.model_fields_set:
+                task_manager.update_schedule(
+                    task_id,
+                    task.schedule,
+                    task.schedule_policy,
+                    reset_state="schedule_policy" in req.model_fields_set,
+                )
             return task
     raise HTTPException(status_code=404, detail="Task not found")
 

@@ -3088,7 +3088,7 @@ onUnmounted(() => {
           class="sheet-tab-context-menu-item"
           @click="configureSheetFromTabContextMenu"
         >
-          配置工作表
+          设置表格
         </button>
         <button
           type="button"

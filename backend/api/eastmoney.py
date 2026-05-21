@@ -12,8 +12,10 @@ from backend.core.feature_access_guard import require_feature_access_dependency
 from backend.core.ocr_preview import OcrPreviewError, run_paddle_ocr_preview
 from backend.core.stock import (
     EastmoneyTradeError,
+    get_market_data_db_path,
     get_latest_asset_snapshot,
     import_mobile_trade_detail_record,
+    list_latest_market_quotes,
     list_fund_flow_categories,
     list_fund_flow_filter_options,
     list_fund_flow_records,
@@ -22,7 +24,10 @@ from backend.core.stock import (
     list_trade_records,
     open_trade_account_page,
     read_trade_snapshot,
+    refresh_market_quotes_from_eastmoney_public,
     refresh_eastmoney_sheet_workbook,
+    serialize_quote_item,
+    serialize_quote_refresh_result,
     snapshot_to_dict,
     sync_trade_data,
 )
@@ -237,3 +242,33 @@ def get_latest_eastmoney_positions(
     current_user: User = Depends(get_current_active_user),
 ):
     return list_latest_position_snapshots(session, user_id=int(current_user.id))
+
+
+@router.get("/market-quotes/latest")
+def get_latest_eastmoney_market_quotes(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    items = list_latest_market_quotes(session, user_id=int(current_user.id))
+    return {"items": [serialize_quote_item(item) for item in items]}
+
+
+@router.post("/market-quotes/refresh")
+def refresh_eastmoney_market_quotes(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        result = refresh_market_quotes_from_eastmoney_public(session, user_id=int(current_user.id))
+        return serialize_quote_refresh_result(result)
+    except Exception as exc:
+        items = list_latest_market_quotes(session, user_id=int(current_user.id))
+        return {
+            "provider": "eastmoney_public",
+            "database_path": str(get_market_data_db_path()),
+            "target_count": len(items),
+            "refreshed_count": 0,
+            "error_count": 1,
+            "error": f"刷新东财公共行情失败：{exc}",
+            "items": [serialize_quote_item(item) for item in items],
+        }

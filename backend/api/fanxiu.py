@@ -4,11 +4,13 @@ import tempfile
 import time
 import uuid
 from datetime import date, datetime, time as dt_time
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel, Field
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, model_validator
 from passlib.context import CryptContext
 from sqlmodel import Session, or_, select
 
@@ -27,11 +29,14 @@ from backend.core.fanxiu_status import (
     save_status_config,
 )
 from backend.core.fanxiu_sunlogin_rotate import (
+    capture_sunlogin_rotate_frame,
     get_sunlogin_rotate_status,
     start_sunlogin_rotate_preview,
     stop_sunlogin_rotate_preview,
+    stream_sunlogin_rotate_mjpeg,
 )
 from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
+from backend.core.fanxiu_inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
 from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
 from backend.core.fanxiu_inventory import load_spirit_beast_hall, save_spirit_beast_hall
 from backend.core.fanxiu_inventory import load_activity_list, save_activity_list
@@ -41,6 +46,11 @@ from backend.core.fanxiu_inventory import (
     save_shouyuan_exploration_exchange_list,
 )
 from backend.core.fanxiu_processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
+from backend.core.fanxiu_behavior_tree_service import (
+    get_behavior_tree_status,
+    start_behavior_tree_service,
+    stop_behavior_tree_service,
+)
 from backend.core.fanxiu_region_data import (
     build_region_character_history_snapshot,
     build_region_character_snapshot,
@@ -195,6 +205,75 @@ QUALITY_LABELS = [
     "神品九星",
     "神品十星",
 ]
+SPIRIT_ARTIFACT_PARTS = {
+    "血晶摩诃剑": ("柄", "刃", "穗", "鞘", "珠", "纹"),
+    "天月落星幡": ("镜", "幅", "带", "杆", "印", "纹"),
+    "弥罗宝光幢": ("焰", "柱", "环", "座", "珠", "纹"),
+    "鸿古干天戈": ("锋", "芒", "珠", "坠", "柄", "气"),
+    "青暝岁月灯": ("盏", "芯", "穗", "杆", "纹", "荧"),
+    "苍烟神火炉": ("饰", "盖", "身", "柄", "光", "座"),
+    "御海镇神图": ("卷", "瑚", "海", "轴", "灵", "山"),
+}
+SPIRIT_ARTIFACT_NAME_ALIASES = {
+    "青冥岁月灯": "青暝岁月灯",
+}
+SPIRIT_ARTIFACT_CARD_REGIONS = (
+    (0.16, 0.215, 0.38, 0.335),
+    (0.16, 0.335, 0.38, 0.455),
+    (0.16, 0.455, 0.38, 0.575),
+    (0.62, 0.215, 0.84, 0.335),
+    (0.62, 0.335, 0.84, 0.455),
+    (0.62, 0.455, 0.84, 0.575),
+)
+SPIRIT_ARTIFACT_RANKED_QUALITIES = {"red", "blue_purple"}
+SPIRIT_ARTIFACT_COMMON_ATTRIBUTE_BASES = {
+    "混沌道威": ("chaos_power", Decimal("5000")),
+    "攻击": ("attack", Decimal("10000")),
+    "灵力": ("spirit_power", Decimal("1200000")),
+    "气血": ("health", Decimal("1200000")),
+    "守御": ("defense", Decimal("10000")),
+}
+SPIRIT_ARTIFACT_ATTRIBUTE_ALIASES = {
+    "混沌灵威": "混沌道威",
+    "防御": "守御",
+}
+SPIRIT_ARTIFACT_EXCLUSIVE_ATTRIBUTE_BASES = {
+    "血晶摩诃剑": {
+        "暴击附伤": Decimal("10000"),
+        "暴击": Decimal("30000"),
+    },
+    "天月落星幡": {
+        "功法附伤": Decimal("60000"),
+        "招架": Decimal("30000"),
+        "神通吸血": Decimal("10000"),
+    },
+    "弥罗宝光幢": {
+        "法宝附伤": Decimal("60000"),
+        "炼体附伤": Decimal("60000"),
+        "闪避": Decimal("30000"),
+    },
+    "鸿古干天戈": {
+        "灵兽附伤": Decimal("60000"),
+        "仙语附伤": Decimal("60000"),
+        "全技能减伤": Decimal("10000"),
+    },
+    "青暝岁月灯": {
+        "灵宝抵御": Decimal("24000"),
+        "功法抵御": Decimal("24000"),
+        "全技能减伤": Decimal("8000"),
+    },
+    "苍烟神火炉": {
+        "招架": Decimal("24000"),
+        "灵兽附伤": Decimal("48000"),
+        "法宝附伤": Decimal("48000"),
+    },
+    "御海镇神图": {
+        "仙语附伤": Decimal("48000"),
+        "灵暴附伤": Decimal("8000"),
+        "灵暴": Decimal("24000"),
+    },
+}
+FULLWIDTH_DIGIT_TRANSLATION = str.maketrans("０１２３４５６７８９", "0123456789")
 
 
 class FanxiuTaskStatusItem(BaseModel):
@@ -288,6 +367,37 @@ class FanxiuProcessTerminateResponse(BaseModel):
     errors: List[FanxiuProcessTerminateError] = Field(default_factory=list)
 
 
+class FanxiuBehaviorTreeServiceStatus(BaseModel):
+    key: str
+    title: str
+    running: bool = False
+    state: str
+    state_label: str
+    pid: Optional[int] = None
+    process_count: int = 0
+    processes: List[FanxiuProcessItem] = Field(default_factory=list)
+    registry: dict[str, Any] = Field(default_factory=dict)
+    registry_pid_alive: bool = False
+    heartbeat_age_seconds: Optional[int] = None
+    started_at: Optional[str] = None
+    heartbeat_at: Optional[str] = None
+    last_error: str = ""
+    root: str
+    registry_path: str
+    status_path: str
+    behavior_tree_log_path: str
+    service_log_path: str
+    script_path: str
+    python_path: str
+
+
+class FanxiuBehaviorTreeServiceResponse(BaseModel):
+    status: str
+    service: FanxiuBehaviorTreeServiceStatus
+    pid: Optional[int] = None
+    stop_result: dict[str, Any] = Field(default_factory=dict)
+
+
 class FanxiuSunloginRotateError(BaseModel):
     pid: int
     error: str
@@ -355,6 +465,66 @@ class FanxiuMagicTreasureHallSnapshot(BaseModel):
     fabao: List[FanxiuWardrobeItem] = Field(default_factory=list)
     xiantiangubao: List[FanxiuWardrobeItem] = Field(default_factory=list)
     houtiangubao: List[FanxiuWardrobeItem] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactPartRow(BaseModel):
+    order: int = 0
+    part_name: str = ""
+    rank: int = 0
+    realm: int = 0
+    artifact_peerless_1: int = 0
+    artifact_peerless_2: int = 0
+    chaos_power: str = ""
+    attack: str = ""
+    stat_raw_values: dict[str, str] = Field(default_factory=dict)
+    exclusive_stats: dict[str, str] = Field(default_factory=dict)
+    exclusive_stat_raw_values: dict[str, str] = Field(default_factory=dict)
+    spirit_power: str = ""
+    health: str = ""
+    defense: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_peerless(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "artifact_peerless_1" not in data:
+            legacy_value = data.get("aura_peerless", data.get("auraPeerless"))
+            if legacy_value is not None:
+                return {**data, "artifact_peerless_1": legacy_value}
+        return data
+
+
+class FanxiuSpiritArtifactItem(BaseModel):
+    order: int = 0
+    name: str = ""
+    rows: List[FanxiuSpiritArtifactPartRow] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactMarketItem(BaseModel):
+    order: int = 0
+    artifact_name: str = ""
+    part_name: str = ""
+    cost: int = 80
+
+
+class FanxiuSpiritArtifactStorageBagChoice(BaseModel):
+    order: int = 0
+    raw_name: str = ""
+    artifact_name: str = ""
+    part_name: str = ""
+
+
+class FanxiuSpiritArtifactStorageBagItem(BaseModel):
+    order: int = 0
+    title: str = ""
+    quantity: int = 0
+    choices: List[FanxiuSpiritArtifactStorageBagChoice] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactHallSnapshot(BaseModel):
+    artifacts: List[FanxiuSpiritArtifactItem] = Field(default_factory=list)
+    market_currency_count: int = 0
+    market_items: List[FanxiuSpiritArtifactMarketItem] = Field(default_factory=list)
+    storage_bag_items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
 
 
 class FanxiuActivityItem(BaseModel):
@@ -507,6 +677,59 @@ class FanxiuMagicTreasureOcrImportResponse(BaseModel):
     section_key: str
     lines: List[str] = Field(default_factory=list)
     item: FanxiuWardrobeItem
+
+
+class FanxiuSpiritArtifactRankPart(BaseModel):
+    part_name: str
+    rank: int = 0
+    realm: int = 0
+    quality: str = ""
+    background_color: str = ""
+
+
+class FanxiuSpiritArtifactRankRecognitionResponse(BaseModel):
+    matched: bool = False
+    reason: str = ""
+    artifact_name: str = ""
+    title_text: str = ""
+    lines: List[str] = Field(default_factory=list)
+    parts: List[FanxiuSpiritArtifactRankPart] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactAttributeValue(BaseModel):
+    label: str = ""
+    percent: str = ""
+    raw_value: str = ""
+    source_text: str = ""
+
+
+class FanxiuSpiritArtifactAttributeRecognitionResponse(BaseModel):
+    matched: bool = False
+    reason: str = ""
+    artifact_name: str = ""
+    part_name: str = ""
+    title_text: str = ""
+    lines: List[str] = Field(default_factory=list)
+    artifact_peerless_1: int = 0
+    artifact_peerless_2: int = 0
+    common_stats: dict[str, str] = Field(default_factory=dict)
+    exclusive_stats: dict[str, str] = Field(default_factory=dict)
+    attributes: List[FanxiuSpiritArtifactAttributeValue] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactMarketRecognitionResponse(BaseModel):
+    matched: bool = False
+    reason: str = ""
+    market_currency_count: int = 0
+    lines: List[str] = Field(default_factory=list)
+    items: List[FanxiuSpiritArtifactMarketItem] = Field(default_factory=list)
+
+
+class FanxiuSpiritArtifactStorageBagRecognitionResponse(BaseModel):
+    matched: bool = False
+    reason: str = ""
+    lines: List[str] = Field(default_factory=list)
+    items: List[FanxiuSpiritArtifactStorageBagItem] = Field(default_factory=list)
 
 
 class FanxiuRegionCharacterOcrImportResponse(BaseModel):
@@ -1876,6 +2099,925 @@ def _build_magic_treasure_item_from_ocr_document(preview_document: dict[str, Any
     return payload, ["".join(line) for line in lines]
 
 
+def _normalize_spirit_artifact_rank_text(text: Any) -> str:
+    return _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+
+
+def _flatten_ocr_entries(line_entries: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    return [entry for group in line_entries for entry in group]
+
+
+def _relative_region_to_pixels(frame: Any, region: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    height, width = frame.shape[:2]
+    x1, y1, x2, y2 = region
+    return (
+        max(0, min(width, int(width * x1))),
+        max(0, min(height, int(height * y1))),
+        max(0, min(width, int(width * x2))),
+        max(0, min(height, int(height * y2))),
+    )
+
+
+def _entries_in_relative_region(
+    entries: list[dict[str, Any]],
+    frame: Any,
+    region: tuple[float, float, float, float],
+) -> list[dict[str, Any]]:
+    x1, y1, x2, y2 = _relative_region_to_pixels(frame, region)
+    region_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_center_x = (float(entry.get("x", 0)) + float(entry.get("x2", entry.get("x", 0)))) / 2
+        entry_center_y = float(entry.get("y", 0))
+        if x1 <= entry_center_x <= x2 and y1 <= entry_center_y <= y2:
+            region_entries.append(entry)
+    return region_entries
+
+
+def _extract_spirit_artifact_card_rank(entries: list[dict[str, Any]]) -> int:
+    fragments = [
+        _normalize_spirit_artifact_rank_text(entry.get("text"))
+        for entry in sorted(entries, key=lambda item: (float(item.get("y", 0)), float(item.get("x", 0))))
+    ]
+    joined = "".join(fragment for fragment in fragments if fragment)
+    for matched in re.findall(r"(\d{1,3})阶", joined):
+        value = int(matched)
+        if value >= 0:
+            return value
+    return 0
+
+
+def _extract_spirit_artifact_card_rank_from_crop(frame: Any, region: tuple[float, float, float, float]) -> int:
+    import cv2
+
+    x1, y1, x2, y2 = _relative_region_to_pixels(frame, region)
+    width = x2 - x1
+    height = y2 - y1
+    if width <= 0 or height <= 0:
+        return 0
+
+    crop_x1 = x1 + int(width * 0.18)
+    crop_x2 = x1 + int(width * 0.55)
+    crop_y1 = y1 + int(height * 0.06)
+    crop_y2 = y1 + int(height * 0.65)
+    crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+    if crop.size == 0:
+        return 0
+    if crop.ndim == 3 and crop.shape[2] == 4:
+        crop = cv2.cvtColor(crop, cv2.COLOR_BGRA2BGR)
+    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+        if not cv2.imwrite(str(temp_path), crop):
+            return 0
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        line_entries = _extract_ocr_line_entries(preview.get("document") or {})
+    except OcrPreviewError:
+        return 0
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    joined = "".join(_join_ocr_line_entries(group) for group in line_entries)
+    for matched in re.findall(r"\d{1,3}", _normalize_spirit_artifact_rank_text(joined)):
+        value = int(matched)
+        if value > 0:
+            return value
+    return 0
+
+
+def _fill_missing_spirit_artifact_ranks_from_card_crops(payload: dict[str, Any], frame: Any) -> dict[str, Any]:
+    if not payload.get("matched"):
+        return payload
+    parts = payload.get("parts")
+    if not isinstance(parts, list):
+        return payload
+
+    def normalized_rank(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    for part, region in zip(parts, SPIRIT_ARTIFACT_CARD_REGIONS):
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("quality") or "") not in SPIRIT_ARTIFACT_RANKED_QUALITIES:
+            continue
+        if normalized_rank(part.get("rank")) > 0:
+            continue
+        fallback_rank = _extract_spirit_artifact_card_rank_from_crop(frame, region)
+        if fallback_rank > 0:
+            part["rank"] = fallback_rank
+    return payload
+
+
+def _classify_spirit_artifact_card_color(frame: Any, region: tuple[float, float, float, float]) -> tuple[str, str]:
+    import cv2
+    import numpy as np
+
+    x1, y1, x2, y2 = _relative_region_to_pixels(frame, region)
+    if x2 <= x1 or y2 <= y1:
+        return "unknown", ""
+
+    width = x2 - x1
+    height = y2 - y1
+    sample_x1 = x1 + int(width * 0.30)
+    sample_x2 = x1 + int(width * 0.92)
+    sample_y1 = y1 + int(height * 0.10)
+    sample_y2 = y1 + int(height * 0.24)
+    patch = frame[sample_y1:sample_y2, sample_x1:sample_x2]
+    if patch.size == 0:
+        return "unknown", ""
+    if patch.ndim == 3 and patch.shape[2] == 4:
+        patch = cv2.cvtColor(patch, cv2.COLOR_BGRA2BGR)
+    if patch.ndim != 3 or patch.shape[2] < 3:
+        return "unknown", ""
+
+    hsv = cv2.cvtColor(patch[:, :, :3], cv2.COLOR_BGR2HSV)
+    hue = hsv[:, :, 0]
+    saturation = hsv[:, :, 1]
+    value = hsv[:, :, 2]
+    red_mask = (((hue <= 12) | (hue >= 170)) & (saturation >= 45) & (value >= 70))
+    yellow_mask = ((hue >= 15) & (hue <= 45) & (saturation >= 35) & (value >= 80))
+    blue_purple_mask = ((hue >= 95) & (hue <= 165) & (saturation >= 30) & (value >= 60))
+    red_ratio = float(np.count_nonzero(red_mask)) / float(red_mask.size)
+    yellow_ratio = float(np.count_nonzero(yellow_mask)) / float(yellow_mask.size)
+    blue_purple_ratio = float(np.count_nonzero(blue_purple_mask)) / float(blue_purple_mask.size)
+
+    mean_bgr = patch[:, :, :3].reshape(-1, 3).mean(axis=0)
+    background_color = f"#{int(mean_bgr[2]):02x}{int(mean_bgr[1]):02x}{int(mean_bgr[0]):02x}"
+    if red_ratio >= 0.08:
+        return "red", background_color
+    if yellow_ratio >= 0.55 and blue_purple_ratio < 0.25:
+        return "yellow", background_color
+    if blue_purple_ratio >= 0.18:
+        return "blue_purple", background_color
+    if yellow_ratio >= 0.08:
+        return "yellow", background_color
+    return "unknown", background_color
+
+
+def _spirit_artifact_lines_from_document(preview_document: dict[str, Any]) -> tuple[list[list[dict[str, Any]]], list[str]]:
+    line_entries = _extract_ocr_line_entries(preview_document)
+    lines = [_join_ocr_line_entries(group) for group in line_entries]
+    return line_entries, [line for line in lines if line]
+
+
+def _has_spirit_artifact_effect_line(line_entries: list[list[dict[str, Any]]], lines: list[str], frame: Any) -> bool:
+    height = frame.shape[0]
+    for group in line_entries:
+        joined = _join_ocr_line_entries(group)
+        if "灵器效果" not in joined:
+            continue
+        group_y = sum(float(entry.get("y", 0)) for entry in group) / max(len(group), 1)
+        if group_y >= height * 0.45:
+            return True
+    return any("灵器效果" in line for line in lines)
+
+
+def _spirit_artifact_name_edit_distance(left: str, right: str) -> int:
+    if left == right:
+        return 0
+    if not left:
+        return len(right)
+    if not right:
+        return len(left)
+
+    previous = list(range(len(right) + 1))
+    for left_index, left_char in enumerate(left, start=1):
+        current = [left_index]
+        for right_index, right_char in enumerate(right, start=1):
+            current.append(
+                min(
+                    previous[right_index] + 1,
+                    current[right_index - 1] + 1,
+                    previous[right_index - 1] + (0 if left_char == right_char else 1),
+                )
+            )
+        previous = current
+    return previous[-1]
+
+
+def _normalize_spirit_artifact_name_text(text: Any) -> str:
+    return re.sub(r"[^\u4e00-\u9fff]", "", _sanitize_ocr_text(text)).replace("部件", "")
+
+
+def _match_spirit_artifact_name_from_text(text: Any, *, allow_fuzzy: bool = False) -> str:
+    line = _sanitize_ocr_text(text)
+    if not line:
+        return ""
+
+    for artifact_name in SPIRIT_ARTIFACT_PARTS:
+        if artifact_name in line:
+            return artifact_name
+    for alias, artifact_name in SPIRIT_ARTIFACT_NAME_ALIASES.items():
+        if alias in line:
+            return artifact_name
+    if not allow_fuzzy:
+        return ""
+
+    normalized = _normalize_spirit_artifact_name_text(line)
+    if len(normalized) < 2:
+        return ""
+
+    substring_matches = [
+        artifact_name
+        for artifact_name in SPIRIT_ARTIFACT_PARTS
+        if normalized in artifact_name
+    ]
+    if len(substring_matches) == 1:
+        return substring_matches[0]
+
+    best_name = ""
+    best_distance = 999
+    best_score = -1.0
+    for artifact_name in SPIRIT_ARTIFACT_PARTS:
+        candidates = [normalized]
+        if len(normalized) > len(artifact_name):
+            candidates = [
+                normalized[index:index + len(artifact_name)]
+                for index in range(0, len(normalized) - len(artifact_name) + 1)
+            ]
+        for candidate in candidates:
+            distance = _spirit_artifact_name_edit_distance(candidate, artifact_name)
+            score = 1 - distance / max(len(candidate), len(artifact_name), 1)
+            if distance < best_distance or (distance == best_distance and score > best_score):
+                best_name = artifact_name
+                best_distance = distance
+                best_score = score
+
+    if best_name and best_distance <= 2 and best_score >= 0.6:
+        return best_name
+    return ""
+
+
+def _match_spirit_artifact_name(lines: list[str]) -> tuple[str, str]:
+    for line in lines:
+        if "部件" not in line:
+            continue
+        matched_name = _match_spirit_artifact_name_from_text(line, allow_fuzzy=True)
+        if matched_name:
+            return matched_name, line
+
+    for line in lines:
+        matched_name = _match_spirit_artifact_name_from_text(line)
+        if matched_name:
+            return matched_name, line
+    return "", ""
+
+
+def _match_spirit_artifact_part_title(lines: list[str]) -> tuple[str, str, str]:
+    for line in lines:
+        matched_name = _match_spirit_artifact_name_from_text(line, allow_fuzzy=True)
+        if not matched_name:
+            continue
+
+        line_text = _sanitize_ocr_text(line)
+        tails: list[str] = []
+        if matched_name in line_text:
+            tails.append(line_text.split(matched_name, 1)[1])
+        for alias, artifact_name in SPIRIT_ARTIFACT_NAME_ALIASES.items():
+            if artifact_name == matched_name and alias in line_text:
+                tails.append(line_text.split(alias, 1)[1])
+        if not tails:
+            tails.append(line_text)
+
+        for tail in tails:
+            for part_name in SPIRIT_ARTIFACT_PARTS[matched_name]:
+                if part_name in tail:
+                    return matched_name, part_name, line
+    return "", "", ""
+
+
+def _parse_spirit_artifact_attribute_text(text: Any) -> tuple[str, str, Decimal] | None:
+    normalized = _sanitize_ocr_text(text).translate(FULLWIDTH_DIGIT_TRANSLATION)
+    matched = re.match(r"^([\u4e00-\u9fff]+)[：:]?(\d+(?:\.\d+)?)(万|%)?", normalized)
+    if not matched:
+        return None
+
+    raw_label = re.sub(r"^[满巅]+", "", matched.group(1))
+    label = SPIRIT_ARTIFACT_ATTRIBUTE_ALIASES.get(raw_label, raw_label)
+    value_text = f"{matched.group(2)}{matched.group(3) or ''}"
+    try:
+        value = Decimal(matched.group(2))
+    except InvalidOperation:
+        return None
+    if matched.group(3) == "万":
+        value *= Decimal("10000")
+    return label, value_text, value
+
+
+def _format_spirit_artifact_attribute_percent(value: Decimal, base_value: Decimal) -> str:
+    if base_value <= 0:
+        return "0%"
+    percent = (value * Decimal("100") / base_value).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return f"{percent}%"
+
+
+def _extract_spirit_artifact_attribute_lines(
+    line_entries: list[list[dict[str, Any]]],
+    frame: Any,
+) -> list[str]:
+    height, width = frame.shape[:2]
+    marker_y: float | None = None
+    for group in line_entries:
+        joined = _join_ocr_line_entries(group)
+        if "当前附加属性" not in joined:
+            continue
+        group_y = sum(float(entry.get("y", 0)) for entry in group) / max(len(group), 1)
+        marker_y = group_y if marker_y is None else min(marker_y, group_y)
+    if marker_y is None:
+        return []
+
+    lines: list[str] = []
+    for group in line_entries:
+        group_y = sum(float(entry.get("y", 0)) for entry in group) / max(len(group), 1)
+        if group_y <= marker_y + 10 or group_y >= height * 0.76:
+            continue
+
+        left_entries = [
+            entry
+            for entry in group
+            if (float(entry.get("x", 0)) + float(entry.get("x2", entry.get("x", 0)))) / 2 <= width * 0.52
+        ]
+        if not left_entries:
+            continue
+        joined = _join_ocr_line_entries(left_entries)
+        if joined:
+            lines.append(joined)
+    return lines
+
+
+def _build_spirit_artifact_attribute_recognition(
+    preview_document: dict[str, Any],
+    frame: Any,
+) -> dict[str, Any]:
+    line_entries, lines = _spirit_artifact_lines_from_document(preview_document)
+    attribute_lines = _extract_spirit_artifact_attribute_lines(line_entries, frame)
+    if not attribute_lines:
+        return {
+            "matched": False,
+            "reason": "未识别到当前附加属性，已跳过",
+            "lines": lines,
+            "common_stats": {},
+            "exclusive_stats": {},
+            "attributes": [],
+        }
+
+    artifact_name, part_name, title_text = _match_spirit_artifact_part_title(lines)
+    if not artifact_name or not part_name:
+        return {
+            "matched": False,
+            "reason": "未识别到灵器部件标题",
+            "lines": lines,
+            "common_stats": {},
+            "exclusive_stats": {},
+            "attributes": [],
+        }
+
+    common_stats: dict[str, str] = {}
+    exclusive_stats: dict[str, str] = {}
+    attributes: list[dict[str, str]] = []
+    peerless_values: list[int] = []
+    exclusive_bases = SPIRIT_ARTIFACT_EXCLUSIVE_ATTRIBUTE_BASES.get(artifact_name, {})
+
+    for source_text in attribute_lines:
+        parsed = _parse_spirit_artifact_attribute_text(source_text)
+        if parsed is None:
+            continue
+        label, raw_value, value = parsed
+        if label == "灵器无双":
+            peerless_value = int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            if peerless_value >= 0:
+                peerless_values.append(peerless_value)
+                attributes.append(
+                    {
+                        "label": label,
+                        "percent": f"{peerless_value}%",
+                        "raw_value": raw_value,
+                        "source_text": source_text,
+                    }
+                )
+            continue
+        if label in SPIRIT_ARTIFACT_COMMON_ATTRIBUTE_BASES:
+            field_key, base_value = SPIRIT_ARTIFACT_COMMON_ATTRIBUTE_BASES[label]
+            percent = _format_spirit_artifact_attribute_percent(value, base_value)
+            common_stats[field_key] = percent
+        elif label in exclusive_bases:
+            percent = _format_spirit_artifact_attribute_percent(value, exclusive_bases[label])
+            exclusive_stats[label] = percent
+        else:
+            continue
+        attributes.append(
+            {
+                "label": label,
+                "percent": percent,
+                "raw_value": raw_value,
+                "source_text": source_text,
+            }
+        )
+
+    return {
+        "matched": True,
+        "artifact_name": artifact_name,
+        "part_name": part_name,
+        "title_text": title_text,
+        "lines": lines,
+        "artifact_peerless_1": peerless_values[0] if len(peerless_values) >= 1 else 0,
+        "artifact_peerless_2": peerless_values[1] if len(peerless_values) >= 2 else 0,
+        "common_stats": common_stats,
+        "exclusive_stats": exclusive_stats,
+        "attributes": attributes,
+    }
+
+
+def _extract_spirit_artifact_market_cost(lines: list[str], item_line_index: int) -> int:
+    candidate_lines = [lines[item_line_index]]
+    if item_line_index + 1 < len(lines):
+        candidate_lines.append(lines[item_line_index + 1])
+
+    for line in candidate_lines:
+        normalized = _normalize_spirit_artifact_rank_text(line)
+        if "兑换所需" not in normalized:
+            continue
+        matched = re.search(r"兑换所需[：:]?.*?(\d+)", normalized)
+        if matched:
+            return max(0, int(matched.group(1))) or 80
+    return 80
+
+
+def _extract_spirit_artifact_market_currency(line_entries: list[list[dict[str, Any]]], frame: Any) -> int:
+    height, width = frame.shape[:2]
+    candidates: list[tuple[float, int]] = []
+    for entry in _flatten_ocr_entries(line_entries):
+        center_x = (float(entry.get("x", 0)) + float(entry.get("x2", entry.get("x", 0)))) / 2
+        center_y = float(entry.get("y", 0))
+        if center_x < width * 0.55 or center_y > height * 0.18:
+            continue
+        normalized = _normalize_spirit_artifact_rank_text(entry.get("text"))
+        for matched in re.findall(r"\d{1,9}", normalized):
+            value = int(matched)
+            if value >= 0:
+                candidates.append((center_x, value))
+    if not candidates:
+        return 0
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _build_spirit_artifact_market_recognition(
+    preview_document: dict[str, Any],
+    frame: Any,
+) -> dict[str, Any]:
+    line_entries, lines = _spirit_artifact_lines_from_document(preview_document)
+    market_currency_count = _extract_spirit_artifact_market_currency(line_entries, frame)
+    if not any("珍宝阁" in line for line in lines):
+        return {
+            "matched": False,
+            "reason": "未识别到珍宝阁，已跳过",
+            "market_currency_count": 0,
+            "lines": lines,
+            "items": [],
+        }
+    if not any("兑换所需" in line for line in lines):
+        return {
+            "matched": False,
+            "reason": "未识别到兑换所需，已跳过",
+            "market_currency_count": market_currency_count,
+            "lines": lines,
+            "items": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for line_index, line in enumerate(lines):
+        artifact_name, part_name, _title_text = _match_spirit_artifact_part_title([line])
+        if not artifact_name or not part_name:
+            continue
+        item_key = (artifact_name, part_name)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        items.append(
+            {
+                "order": len(items) + 1,
+                "artifact_name": artifact_name,
+                "part_name": part_name,
+                "cost": _extract_spirit_artifact_market_cost(lines, line_index),
+            }
+        )
+
+    if not items:
+        return {
+            "matched": False,
+            "reason": "未识别到可兑换灵器部件",
+            "market_currency_count": market_currency_count,
+            "lines": lines,
+            "items": [],
+        }
+
+    return {
+        "matched": True,
+        "market_currency_count": market_currency_count,
+        "lines": lines,
+        "items": items,
+    }
+
+
+def _spirit_artifact_lcs_length(left: str, right: str) -> int:
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    for left_char in left:
+        current = [0]
+        for right_index, right_char in enumerate(right, start=1):
+            if left_char == right_char:
+                current.append(previous[right_index - 1] + 1)
+            else:
+                current.append(max(previous[right_index], current[right_index - 1]))
+        previous = current
+    return previous[-1]
+
+
+def _score_spirit_artifact_name_fragment(text: Any, artifact_name: str) -> float:
+    normalized = _normalize_spirit_artifact_name_text(text)
+    if not normalized:
+        return 0.0
+    if artifact_name in normalized:
+        return 1.0
+    for alias, canonical_name in SPIRIT_ARTIFACT_NAME_ALIASES.items():
+        if canonical_name == artifact_name and alias in normalized:
+            return 1.0
+
+    cleaned = re.sub(r"(灵器|部件|自选|任选|选择|可选|支持|礼包|宝箱|箱)", "", normalized)
+    if not cleaned:
+        return 0.0
+    if len(cleaned) >= 2 and cleaned in artifact_name:
+        return min(0.95, 0.5 + 0.1 * len(cleaned))
+    return _spirit_artifact_lcs_length(cleaned, artifact_name) / max(len(artifact_name), 1)
+
+
+def _match_spirit_artifact_part_choice_text(text: Any) -> tuple[str, str, str]:
+    source_text = _sanitize_ocr_text(text)
+    artifact_name, part_name, title_text = _match_spirit_artifact_part_title([source_text])
+    if artifact_name and part_name:
+        return artifact_name, part_name, title_text
+
+    normalized = _normalize_spirit_artifact_name_text(source_text)
+    if len(normalized) < 2:
+        return "", "", source_text
+
+    candidates: list[tuple[float, str, str]] = []
+    for candidate_artifact_name, part_names in SPIRIT_ARTIFACT_PARTS.items():
+        artifact_score = _score_spirit_artifact_name_fragment(normalized, candidate_artifact_name)
+        if artifact_score < 0.35:
+            continue
+        for candidate_part_name in part_names:
+            if candidate_part_name not in normalized:
+                continue
+            score = artifact_score + 0.15
+            if candidate_artifact_name in normalized:
+                tail = normalized.split(candidate_artifact_name, 1)[1]
+                if candidate_part_name in tail:
+                    score += 0.15
+                elif candidate_part_name in candidate_artifact_name:
+                    score -= 0.1
+            candidates.append((score, candidate_artifact_name, candidate_part_name))
+
+    if not candidates:
+        return "", "", source_text
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_artifact_name, best_part_name = candidates[0]
+    if best_score < 0.55:
+        return "", "", source_text
+    if len(candidates) >= 2:
+        second_score, second_artifact_name, second_part_name = candidates[1]
+        if (
+            best_score - second_score < 0.08
+            and (best_artifact_name, best_part_name) != (second_artifact_name, second_part_name)
+        ):
+            return "", "", source_text
+    return best_artifact_name, best_part_name, source_text
+
+
+def _spirit_artifact_name_fragments(artifact_name: str) -> list[str]:
+    fragments = [artifact_name]
+    fragments.extend(alias for alias, canonical_name in SPIRIT_ARTIFACT_NAME_ALIASES.items() if canonical_name == artifact_name)
+    if len(artifact_name) >= 4:
+        fragments.append(artifact_name[-3:])
+        fragments.append(artifact_name[:2])
+    return sorted({fragment for fragment in fragments if len(fragment) >= 2}, key=len, reverse=True)
+
+
+def _match_spirit_artifact_name_from_bag_title(text: Any) -> str:
+    normalized = _normalize_spirit_artifact_name_text(text)
+    normalized = re.sub(r"(升品|自选|宝匣|宝箱|礼包|灵器|部件|壹|贰|叁|肆|伍|陆|柒|捌|玖|拾)", "", normalized)
+    if len(normalized) < 2:
+        return ""
+
+    scored = [
+        (_score_spirit_artifact_name_fragment(normalized, artifact_name), artifact_name)
+        for artifact_name in SPIRIT_ARTIFACT_PARTS
+    ]
+    scored.sort(reverse=True)
+    best_score, best_name = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0
+    if best_score >= 0.6 and best_score - second_score >= 0.12:
+        return best_name
+    return ""
+
+
+def _match_spirit_artifact_part_choices_text(text: Any, *, artifact_hint: str = "") -> list[tuple[str, str, str]]:
+    source_text = _sanitize_ocr_text(text)
+    if not source_text:
+        return []
+
+    artifact_mentions: list[tuple[int, int, str, str]] = []
+    for artifact_name in SPIRIT_ARTIFACT_PARTS:
+        for matched in re.finditer(re.escape(artifact_name), source_text):
+            artifact_mentions.append((matched.start(), matched.end(), artifact_name, artifact_name))
+    for alias, artifact_name in SPIRIT_ARTIFACT_NAME_ALIASES.items():
+        for matched in re.finditer(re.escape(alias), source_text):
+            artifact_mentions.append((matched.start(), matched.end(), alias, artifact_name))
+
+    artifact_mentions.sort(key=lambda item: item[0])
+    choices: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, (start, end, matched_name, artifact_name) in enumerate(artifact_mentions):
+        next_start = artifact_mentions[index + 1][0] if index + 1 < len(artifact_mentions) else len(source_text)
+        tail = source_text[end:next_start]
+        for part_name in SPIRIT_ARTIFACT_PARTS[artifact_name]:
+            if part_name not in tail:
+                continue
+            choice_key = (artifact_name, part_name)
+            if choice_key in seen:
+                continue
+            seen.add(choice_key)
+            choices.append((artifact_name, part_name, f"{matched_name}·{part_name}"))
+            break
+
+    if choices:
+        return choices
+
+    if artifact_hint in SPIRIT_ARTIFACT_PARTS:
+        hint_choices: list[tuple[str, str, str]] = []
+        seen_parts: set[str] = set()
+        for fragment in _spirit_artifact_name_fragments(artifact_hint):
+            for matched in re.finditer(re.escape(fragment), source_text):
+                tail = source_text[matched.end():matched.end() + 8]
+                for part_name in SPIRIT_ARTIFACT_PARTS[artifact_hint]:
+                    part_index = tail.find(part_name)
+                    if part_index < 0 or part_index > 2 or part_name in seen_parts:
+                        continue
+                    seen_parts.add(part_name)
+                    part_tail = tail[part_index:]
+                    suffix = ""
+                    suffix_match = re.match(rf"{re.escape(part_name)}(曜仙[镜境])", part_tail)
+                    if suffix_match:
+                        suffix = suffix_match.group(1)
+                    hint_choices.append((artifact_hint, part_name, f"{fragment}·{part_name}{suffix}"))
+                    break
+        if hint_choices:
+            return hint_choices
+
+    artifact_name, part_name, source_text = _match_spirit_artifact_part_choice_text(source_text)
+    if not artifact_name or not part_name:
+        return []
+    return [(artifact_name, part_name, source_text)]
+
+
+def _normalize_spirit_artifact_storage_bag_title(text: Any) -> str:
+    normalized = _normalize_spirit_artifact_rank_text(text)
+    normalized = re.sub(r"^(?:[xX×*])?\d{1,6}(?!选)", "", normalized)
+    normalized = re.sub(r"^(?:数量|拥有|持有)[：:]?(?:[xX×*])?\d{1,6}", "", normalized)
+    return normalized
+
+
+def _looks_like_spirit_artifact_storage_bag_title(text: Any) -> bool:
+    normalized = _normalize_spirit_artifact_rank_text(text)
+    if not normalized:
+        return False
+    if any(keyword in normalized for keyword in ("境界要求", "选择奖励", "列表", "确定", "装有")):
+        return False
+    return "自选" in normalized or "宝匣" in normalized
+
+
+def _parse_spirit_artifact_storage_bag_quantity_text(text: Any) -> int | None:
+    normalized = _normalize_spirit_artifact_rank_text(text)
+    if re.fullmatch(r"(?:[xX×*])?\d{1,6}", normalized):
+        return int(re.search(r"\d{1,6}", normalized).group(0))
+    matched = re.match(r"^(?:[xX×*])?(\d{1,6})(?!选)", normalized)
+    if matched:
+        return int(matched.group(1))
+    return None
+
+
+def _extract_spirit_artifact_storage_bag_title(
+    group: list[dict[str, Any]],
+) -> tuple[str, int, float, str] | None:
+    joined = _join_ocr_line_entries(group)
+    if not _looks_like_spirit_artifact_storage_bag_title(joined):
+        return None
+
+    title_entries = [
+        entry
+        for entry in group
+        if _looks_like_spirit_artifact_storage_bag_title(entry.get("text"))
+    ]
+    title_entry = max(title_entries, key=lambda entry: len(_sanitize_ocr_text(entry.get("text"))), default=None)
+    title_text = _normalize_spirit_artifact_storage_bag_title(title_entry.get("text") if title_entry else joined)
+    if not _looks_like_spirit_artifact_storage_bag_title(title_text):
+        title_text = _normalize_spirit_artifact_storage_bag_title(joined)
+    if not _looks_like_spirit_artifact_storage_bag_title(title_text):
+        return None
+
+    quantity = _parse_spirit_artifact_storage_bag_quantity_text(joined) or 0
+    title_x = float(title_entry.get("x", 0)) if title_entry else min(float(entry.get("x", 0)) for entry in group)
+    left_quantity_candidates: list[tuple[float, int]] = []
+    for entry in group:
+        entry_x2 = float(entry.get("x2", entry.get("x", 0)))
+        if entry_x2 > title_x + 8:
+            continue
+        parsed_quantity = _parse_spirit_artifact_storage_bag_quantity_text(entry.get("text"))
+        if parsed_quantity is not None:
+            left_quantity_candidates.append((entry_x2, parsed_quantity))
+    if left_quantity_candidates:
+        quantity = max(left_quantity_candidates, key=lambda item: item[0])[1]
+
+    title_y = sum(float(entry.get("y", 0)) for entry in group) / max(len(group), 1)
+    return title_text, quantity, title_y, _match_spirit_artifact_name_from_bag_title(title_text)
+
+
+def _extract_spirit_artifact_storage_bag_choices(
+    line_entries: list[list[dict[str, Any]]],
+    *,
+    start_index: int,
+    stop_y: float | None,
+    artifact_hint: str = "",
+) -> list[dict[str, Any]]:
+    choices: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    for group in line_entries[start_index + 1:]:
+        group_y = sum(float(entry.get("y", 0)) for entry in group) / max(len(group), 1)
+        if stop_y is not None and group_y >= stop_y:
+            break
+        joined = _join_ocr_line_entries(group)
+        if not joined or "自选" in joined:
+            continue
+
+        matched_in_entries = False
+        for entry in group:
+            raw_text = _sanitize_ocr_text(entry.get("text"))
+            for artifact_name, part_name, source_text in _match_spirit_artifact_part_choices_text(
+                raw_text,
+                artifact_hint=artifact_hint,
+            ):
+                choice_key = (source_text, artifact_name, part_name)
+                if choice_key in seen:
+                    continue
+                seen.add(choice_key)
+                choices.append(
+                    {
+                        "order": len(choices) + 1,
+                        "raw_name": source_text,
+                        "artifact_name": artifact_name,
+                        "part_name": part_name,
+                    }
+                )
+                matched_in_entries = True
+
+        if matched_in_entries:
+            continue
+        for artifact_name, part_name, source_text in _match_spirit_artifact_part_choices_text(
+            joined,
+            artifact_hint=artifact_hint,
+        ):
+            choice_key = (source_text, artifact_name, part_name)
+            if choice_key in seen:
+                continue
+            seen.add(choice_key)
+            choices.append(
+                {
+                    "order": len(choices) + 1,
+                    "raw_name": source_text,
+                    "artifact_name": artifact_name,
+                    "part_name": part_name,
+                }
+            )
+    return choices
+
+
+def _build_spirit_artifact_storage_bag_recognition(
+    preview_document: dict[str, Any],
+    frame: Any,
+) -> dict[str, Any]:
+    line_entries, lines = _spirit_artifact_lines_from_document(preview_document)
+    title_rows: list[tuple[int, str, int, float, str]] = []
+    for line_index, group in enumerate(line_entries):
+        parsed_title = _extract_spirit_artifact_storage_bag_title(group)
+        if parsed_title is None:
+            continue
+        title, quantity, title_y, artifact_hint = parsed_title
+        title_rows.append((line_index, title, quantity, title_y, artifact_hint))
+
+    if not title_rows:
+        return {
+            "matched": False,
+            "reason": "未识别到自选箱标题",
+            "lines": lines,
+            "items": [],
+        }
+
+    items: list[dict[str, Any]] = []
+    for title_index, (line_index, title, quantity, _title_y, artifact_hint) in enumerate(title_rows):
+        stop_y = title_rows[title_index + 1][3] if title_index + 1 < len(title_rows) else None
+        choices = _extract_spirit_artifact_storage_bag_choices(
+            line_entries,
+            start_index=line_index,
+            stop_y=stop_y,
+            artifact_hint=artifact_hint,
+        )
+        if not choices:
+            continue
+        items.append(
+            {
+                "order": len(items) + 1,
+                "title": title,
+                "quantity": quantity,
+                "choices": choices,
+            }
+        )
+
+    if not items:
+        return {
+            "matched": False,
+            "reason": "未识别到自选支持类型",
+            "lines": lines,
+            "items": [],
+        }
+
+    return {
+        "matched": True,
+        "lines": lines,
+        "items": items,
+    }
+
+
+def _build_spirit_artifact_rank_recognition(
+    preview_document: dict[str, Any],
+    frame: Any,
+) -> dict[str, Any]:
+    line_entries, lines = _spirit_artifact_lines_from_document(preview_document)
+    if not _has_spirit_artifact_effect_line(line_entries, lines, frame):
+        return {
+            "matched": False,
+            "reason": "未识别到灵器效果，已跳过",
+            "lines": lines,
+            "parts": [],
+        }
+
+    artifact_name, title_text = _match_spirit_artifact_name(lines)
+    if not artifact_name:
+        return {
+            "matched": False,
+            "reason": "未识别到灵器名称",
+            "title_text": title_text,
+            "lines": lines,
+            "parts": [],
+        }
+
+    entries = _flatten_ocr_entries(line_entries)
+    parts: list[dict[str, Any]] = []
+    for part_name, region in zip(SPIRIT_ARTIFACT_PARTS[artifact_name], SPIRIT_ARTIFACT_CARD_REGIONS):
+        card_entries = _entries_in_relative_region(entries, frame, region)
+        quality, background_color = _classify_spirit_artifact_card_color(frame, region)
+        rank = (
+            _extract_spirit_artifact_card_rank(card_entries)
+            if quality in SPIRIT_ARTIFACT_RANKED_QUALITIES
+            else 0
+        )
+        parts.append(
+            {
+                "part_name": part_name,
+                "rank": rank,
+                "realm": 0,
+                "quality": quality,
+                "background_color": background_color,
+            }
+        )
+
+    return {
+        "matched": True,
+        "artifact_name": artifact_name,
+        "title_text": title_text,
+        "lines": lines,
+        "parts": parts,
+    }
+
+
 def get_fanxiu_user(session: Session) -> User:
     statement = select(User).where(User.username == FANXIU_USERNAME)
     user = session.exec(statement).first()
@@ -2452,7 +3594,47 @@ def terminate_fanxiu_scripts(
     session: Session = Depends(get_session),
 ):
     ensure_fanxiu_write_permission(current_user, session)
-    return FanxiuProcessTerminateResponse.model_validate(terminate_fanxiu_processes())
+    result = stop_behavior_tree_service()
+    service = result.get("service") or {}
+    stop_result = result.get("stop_result") or {}
+    if service.get("process_count"):
+        return FanxiuProcessTerminateResponse.model_validate(
+            {
+                **stop_result,
+                "remaining": service.get("processes") or stop_result.get("remaining") or [],
+            }
+        )
+    return FanxiuProcessTerminateResponse.model_validate(stop_result)
+
+
+@status_router.get("/behavior-tree-service", response_model=FanxiuBehaviorTreeServiceStatus)
+def get_fanxiu_behavior_tree_service(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuBehaviorTreeServiceStatus.model_validate(get_behavior_tree_status())
+
+
+@status_router.post("/behavior-tree-service/start", response_model=FanxiuBehaviorTreeServiceResponse)
+def start_fanxiu_behavior_tree(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return FanxiuBehaviorTreeServiceResponse.model_validate(start_behavior_tree_service(replace_existing=True))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@status_router.post("/behavior-tree-service/stop", response_model=FanxiuBehaviorTreeServiceResponse)
+def stop_fanxiu_behavior_tree(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuBehaviorTreeServiceResponse.model_validate(stop_behavior_tree_service())
 
 
 @status_router.get("/sunlogin-rotate", response_model=FanxiuSunloginRotateStatus)
@@ -2479,6 +3661,307 @@ def stop_fanxiu_sunlogin_rotate(
 ):
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuSunloginRotateStatus.model_validate(stop_sunlogin_rotate_preview())
+
+
+def _stream_fanxiu_game_window(
+    title: Optional[str] = None,
+    fps: float = 10.0,
+    quality: int = 80,
+    mode: str = "screen",
+    area: str = "outer",
+    crop: Optional[str] = None,
+    trim_border: Optional[str] = None,
+    rotate: str = "90",
+    fixed_width: int = 0,
+    fixed_height: int = 0,
+    auto_dismiss_popup: bool = False,
+    popup_check_interval: float = 3.0,
+):
+    try:
+        frames = stream_sunlogin_rotate_mjpeg(
+            title=title,
+            fps=fps,
+            quality=quality,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+            auto_dismiss_popup=auto_dismiss_popup,
+            popup_check_interval=popup_check_interval,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return StreamingResponse(
+        frames,
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@status_router.get("/game-window/stream")
+def stream_fanxiu_game_window(
+    title: Optional[str] = Query(None),
+    fps: float = Query(10.0, ge=1.0, le=30.0),
+    quality: int = Query(80, ge=1, le=100),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    auto_dismiss_popup: bool = Query(False),
+    popup_check_interval: float = Query(3.0, ge=1.0, le=30.0),
+):
+    return _stream_fanxiu_game_window(
+        title=title,
+        fps=fps,
+        quality=quality,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+        auto_dismiss_popup=auto_dismiss_popup,
+        popup_check_interval=popup_check_interval,
+    )
+
+
+@status_router.get("/live-annotation/stream")
+def stream_fanxiu_live_annotation(
+    title: Optional[str] = Query(None),
+    fps: float = Query(10.0, ge=1.0, le=30.0),
+    quality: int = Query(80, ge=1, le=100),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+):
+    return _stream_fanxiu_game_window(
+        title=title,
+        fps=fps,
+        quality=quality,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+    )
+
+
+@inventory_router.post("/inventory/spirit-artifact-ranks/recognize", response_model=FanxiuSpiritArtifactRankRecognitionResponse)
+def recognize_fanxiu_spirit_artifact_ranks(
+    title: Optional[str] = Query(None),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+
+    try:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temp_path: Path | None = None
+    try:
+        import cv2
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+        if not cv2.imwrite(str(temp_path), frame):
+            raise HTTPException(status_code=500, detail="保存游戏窗口截图失败")
+
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        payload = _build_spirit_artifact_rank_recognition(preview.get("document") or {}, frame)
+        payload = _fill_missing_spirit_artifact_ranks_from_card_crops(payload, frame)
+    except OcrPreviewError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    return FanxiuSpiritArtifactRankRecognitionResponse.model_validate(payload)
+
+
+@inventory_router.post("/inventory/spirit-artifact-attributes/recognize", response_model=FanxiuSpiritArtifactAttributeRecognitionResponse)
+def recognize_fanxiu_spirit_artifact_attributes(
+    title: Optional[str] = Query(None),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+
+    try:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temp_path: Path | None = None
+    try:
+        import cv2
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+        if not cv2.imwrite(str(temp_path), frame):
+            raise HTTPException(status_code=500, detail="保存游戏窗口截图失败")
+
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        payload = _build_spirit_artifact_attribute_recognition(preview.get("document") or {}, frame)
+    except OcrPreviewError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    return FanxiuSpiritArtifactAttributeRecognitionResponse.model_validate(payload)
+
+
+@inventory_router.post("/inventory/spirit-artifact-market/recognize", response_model=FanxiuSpiritArtifactMarketRecognitionResponse)
+def recognize_fanxiu_spirit_artifact_market(
+    title: Optional[str] = Query(None),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+
+    try:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temp_path: Path | None = None
+    try:
+        import cv2
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+        if not cv2.imwrite(str(temp_path), frame):
+            raise HTTPException(status_code=500, detail="保存游戏窗口截图失败")
+
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        payload = _build_spirit_artifact_market_recognition(preview.get("document") or {}, frame)
+    except OcrPreviewError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    return FanxiuSpiritArtifactMarketRecognitionResponse.model_validate(payload)
+
+
+@inventory_router.post(
+    "/inventory/spirit-artifact-storage-bag/recognize",
+    response_model=FanxiuSpiritArtifactStorageBagRecognitionResponse,
+)
+def recognize_fanxiu_spirit_artifact_storage_bag(
+    title: Optional[str] = Query(None),
+    mode: str = Query("screen", pattern="^(auto|printwindow|screen)$"),
+    area: str = Query("outer", pattern="^(outer|client)$"),
+    crop: Optional[str] = Query(None),
+    trim_border: Optional[str] = Query(None),
+    rotate: str = Query("90", pattern="^(0|90|180|270|ccw|cw|none)$"),
+    fixed_width: int = Query(0, ge=0, le=4096),
+    fixed_height: int = Query(0, ge=0, le=4096),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+
+    try:
+        frame = capture_sunlogin_rotate_frame(
+            title=title,
+            mode=mode,
+            area=area,
+            crop=crop,
+            trim_border=trim_border,
+            rotate=rotate,
+            fixed_width=fixed_width,
+            fixed_height=fixed_height,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temp_path: Path | None = None
+    try:
+        import cv2
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as temp_file:
+            temp_path = Path(temp_file.name)
+        if not cv2.imwrite(str(temp_path), frame):
+            raise HTTPException(status_code=500, detail="保存游戏窗口截图失败")
+
+        preview = run_paddle_ocr_preview(temp_path, shape_type="rectangle")
+        payload = _build_spirit_artifact_storage_bag_recognition(preview.get("document") or {}, frame)
+    except OcrPreviewError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if temp_path and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+    return FanxiuSpiritArtifactStorageBagRecognitionResponse.model_validate(payload)
 
 
 @inventory_router.get("/inventory/wardrobe-hall", response_model=FanxiuWardrobeHallSnapshot)
@@ -2620,6 +4103,31 @@ def update_fanxiu_magic_treasure_hall(
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"保存凡修法宝仓库失败：{exc}") from exc
     return FanxiuMagicTreasureHallSnapshot.model_validate(saved_payload)
+
+
+@inventory_router.get("/inventory/spirit-artifact-hall", response_model=FanxiuSpiritArtifactHallSnapshot)
+def get_fanxiu_spirit_artifact_hall():
+    try:
+        payload = load_spirit_artifact_hall()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return FanxiuSpiritArtifactHallSnapshot.model_validate(payload)
+
+
+@inventory_router.put("/inventory/spirit-artifact-hall", response_model=FanxiuSpiritArtifactHallSnapshot)
+def update_fanxiu_spirit_artifact_hall(
+    payload: FanxiuSpiritArtifactHallSnapshot,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        saved_payload = save_spirit_artifact_hall(payload.model_dump(mode="json"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"保存凡修灵器仓库失败：{exc}") from exc
+    return FanxiuSpiritArtifactHallSnapshot.model_validate(saved_payload)
 
 
 @inventory_router.post("/inventory/magic-treasure-import/ocr", response_model=FanxiuMagicTreasureOcrImportResponse)

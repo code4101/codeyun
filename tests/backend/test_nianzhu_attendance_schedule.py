@@ -114,3 +114,81 @@ def test_run_nianzhu_step3_endpoint_delegates_to_sheet_runner(client, test_devic
     assert response.status_code == 200
     assert response.json()["message"] == "ok"
     assert calls == [{"sheet_id": 721, "course_name": "d250106念住闯关"}]
+
+
+def test_run_nianzhu_step3_endpoint_keeps_legacy_runner(client, test_device, monkeypatch):
+    import backend.api.device_control as device_control
+
+    calls = []
+
+    def fake_run_nianzhu_attendance_step3_for_sheet(**kwargs):
+        calls.append(kwargs)
+        return {
+            "sheet_id": kwargs["sheet_id"],
+            "course_name": kwargs["course_name"],
+            "message": "legacy ok",
+        }
+
+    def sheet_rebuild_should_not_run(*args, **kwargs):
+        raise AssertionError("sheet rebuild should be triggered only by explicit sheet endpoints")
+
+    monkeypatch.setattr(device_control, "run_nianzhu_attendance_step3_for_sheet", fake_run_nianzhu_attendance_step3_for_sheet)
+    monkeypatch.setattr(device_control, "rebuild_nianzhu_attendance_from_course_sheets", sheet_rebuild_should_not_run)
+
+    response = client.post(
+        "/api/device-control/attendance/nianzhu/step3",
+        json={"sheet_id": 21, "course_name": "d250106念住闯关", "include_frozen": True},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "legacy ok"
+    assert calls == [{"sheet_id": 21, "course_name": "d250106念住闯关"}]
+
+
+def test_run_nianzhu_step1_endpoint_updates_course_sheets(client, test_device, monkeypatch):
+    calls = []
+
+    def fake_run_nianzhu_course_sheet_step1(session, **kwargs):
+        calls.append(kwargs)
+        return {
+            "workbook_id": kwargs["workbook_id"],
+            "course_name": kwargs["course_name"],
+            "lesson_data_insert_count": 2,
+            "clockin_data_insert_count": 3,
+        }
+
+    monkeypatch.setattr(
+        "backend.api.device_control.run_nianzhu_course_sheet_step1",
+        fake_run_nianzhu_course_sheet_step1,
+    )
+
+    response = client.post(
+        "/api/device-control/attendance/nianzhu/step1",
+        json={
+            "workbook_id": 7,
+            "attendance_sheet_id": 21,
+            "course_name": "d250106念住闯关",
+            "shop_id": 1,
+            "update_lessons": True,
+            "update_clockins": True,
+            "clockin_pattern": "d250106念住闯关-*",
+            "close_browser": False,
+        },
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["lesson_data_insert_count"] == 2
+    assert calls == [
+        {
+            "workbook_id": 7,
+            "attendance_sheet_id": 21,
+            "course_name": "d250106念住闯关",
+            "shop_id": 1,
+            "update_lessons": True,
+            "update_clockins": True,
+            "clockin_pattern": "d250106念住闯关-*",
+            "close_browser": False,
+        }
+    ]

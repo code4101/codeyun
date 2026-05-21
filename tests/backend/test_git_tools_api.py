@@ -264,6 +264,27 @@ def test_git_tools_inspect_blocks_dot_tmp_directory(client, test_device, tmp_pat
     assert issue["suggestion"] == ".tmp_pdf_check/"
 
 
+def test_git_tools_precheck_allows_nested_source_logs_route(client, test_device, tmp_path):
+    repo_path = tmp_path / "git-precheck-source-logs-repo"
+    _init_git_repo(repo_path)
+    route_dir = repo_path / "frontend" / "src" / "standard" / "cluster" / "logs"
+    route_dir.mkdir(parents=True)
+    (route_dir / "page.vue").write_text("<template>logs</template>\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/git-tools/inspect",
+        json={"cwd": str(repo_path)},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert not any(
+        item["path"] == "frontend/src/standard/cluster/logs/page.vue"
+        for item in payload["precheck"]["issues"]
+    )
+
+
 def test_git_tools_precheck_does_not_treat_route_password_path_as_secret_assignment(client, test_device, tmp_path):
     repo_path = tmp_path / "git-precheck-route-repo"
     _init_git_repo(repo_path)

@@ -2,17 +2,20 @@
 import { ref, onMounted, onUnmounted, nextTick, computed, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import DocPage from '@/components/DocPage.vue';
+import RuntimeSystemMetricsChart from '@/components/RuntimeSystemMetricsChart.vue';
 import SortableOrderHandle from '@/components/SortableOrderHandle.vue';
 import api, { getDeviceEntryPath } from '@/api';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, VideoPlay, VideoPause, Delete, Document, Connection, Setting, View, Hide } from '@element-plus/icons-vue';
 import { taskStore, type Task, type Device } from '@/store/taskStore';
 import {
+  configureRuntimeJobSchedule,
   deleteRuntimeJob,
   fetchRuntimeStatus,
-  toggleRuntimeJob,
+  stopRuntimeItem,
   triggerRuntimeItem,
   triggerRuntimeJob,
+  type SchedulePolicy,
   type RuntimeKind,
   type RuntimeItem,
   type RuntimeStatusResponse,
@@ -56,6 +59,8 @@ const isLoopbackHost = (host: string) => {
 };
 const loading = ref(false); // Initial loading
 const dialogVisible = ref(false);
+const scheduleDialogVisible = ref(false);
+const scheduleTarget = ref<RuntimeItem | null>(null);
 const deviceDialogVisible = ref(false);
 const currentDeviceId = ref<string>(
   Array.isArray(route.query.entry_id)
@@ -86,6 +91,17 @@ const form = ref({
   runtime_kind: 'service' as RuntimeKind,
   run_as_admin: false,
   schedule: '',
+  schedule_mode: 'manual',
+  schedule_once_at: '',
+  schedule_interval_value: 60,
+  schedule_interval_unit: 'minutes',
+  schedule_time: '00:00',
+  schedule_weekdays: [1] as number[],
+  schedule_month_day: 1,
+  schedule_cron: '',
+  scheduled_action: 'default',
+  retry_enabled: false,
+  retry_minutes: 10,
   timeout: null as number | null
 });
 
@@ -98,21 +114,26 @@ const parseNlp = () => {
     // Simple regex rules
     const minuteMatch = text.match(/每(\d+)分钟/);
     if (minuteMatch) {
-        form.value.schedule = `*/${minuteMatch[1]} * * * *`;
-        ElMessage.success('已解析为 Cron 表达式');
+        form.value.schedule_mode = 'interval';
+        form.value.schedule_interval_value = parseInt(minuteMatch[1]);
+        form.value.schedule_interval_unit = 'minutes';
+        ElMessage.success('已设置间隔触发');
         return;
     }
     
     if (text.includes('每小时')) {
-        form.value.schedule = '0 * * * *';
-        ElMessage.success('已解析为 Cron 表达式');
+        form.value.schedule_mode = 'interval';
+        form.value.schedule_interval_value = 1;
+        form.value.schedule_interval_unit = 'hours';
+        ElMessage.success('已设置每小时触发');
         return;
     }
 
     const dailyMatch = text.match(/每天(\d+)点/);
     if (dailyMatch) {
-        form.value.schedule = `0 ${dailyMatch[1]} * * *`;
-        ElMessage.success('已解析为 Cron 表达式');
+        form.value.schedule_mode = 'daily';
+        form.value.schedule_time = `${String(parseInt(dailyMatch[1])).padStart(2, '0')}:00`;
+        ElMessage.success('已设置每天触发');
         return;
     }
 
@@ -130,7 +151,7 @@ const parseNlp = () => {
         return;
     }
 
-    ElMessage.warning('无法解析该自然语言描述，请尝试标准格式或手动输入 Cron');
+    ElMessage.warning('无法解析该自然语言描述，请直接设置定时规则');
 };
 
 const deviceForm = ref({
@@ -481,6 +502,28 @@ const handleStatusClick = async (item: RuntimeItem) => {
     }
 };
 
+const handleServiceStatusClick = async (item: RuntimeItem) => {
+  if (item.kind !== 'service') return;
+  if (item.source === 'command') {
+    await handleStatusClick(item);
+    return;
+  }
+
+  item.actionLoading = true;
+  try {
+    if (isRuntimeItemRunning(item)) {
+      await stopRuntimeItem(currentDeviceId.value, item.source, item.key);
+    } else {
+      await triggerRuntimeItem(currentDeviceId.value, item.source, item.key);
+    }
+    await fetchTasks(currentDeviceId.value, true);
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '操作失败');
+  } finally {
+    item.actionLoading = false;
+  }
+};
+
 const handleTriggerRuntimeJob = async (item: RuntimeItem) => {
   if (item.source !== 'builtin') return;
   item.actionLoading = true;
@@ -505,25 +548,6 @@ const handleTriggerRuntimeItem = async (item: RuntimeItem) => {
     ElMessage.error(err.response?.data?.detail || '作业提交失败');
   } finally {
     item.actionLoading = false;
-  }
-};
-
-const handleToggleRuntimeJob = async (item: RuntimeItem, enabled: string | number | boolean) => {
-  if (item.source !== 'builtin') return;
-  item.toggleLoading = true;
-  const nextEnabled = Boolean(enabled);
-  try {
-    await toggleRuntimeJob(currentDeviceId.value, item.key, nextEnabled);
-    item.enabled = nextEnabled;
-    item.status = {
-      ...item.status,
-      enabled: nextEnabled,
-    };
-  } catch (err: any) {
-    item.enabled = !nextEnabled;
-    ElMessage.error(err.response?.data?.detail || '调度状态更新失败');
-  } finally {
-    item.toggleLoading = false;
   }
 };
 
@@ -582,7 +606,7 @@ const handleRuntimeContextDelete = async () => {
 const handleRuntimeContextLogs = () => {
   const target = runtimeContextMenu.value.target;
   closeRuntimeContextMenu();
-  if (!target || target.source !== 'command') return;
+  if (!target) return;
   viewLogs(target);
 };
 
@@ -593,14 +617,176 @@ const handleRuntimeContextExecute = async () => {
   await handleStatusClick(target);
 };
 
-const handleRuntimeContextToggleSchedule = async () => {
+const handleRuntimeContextConfigure = () => {
   const target = runtimeContextMenu.value.target;
   closeRuntimeContextMenu();
-  if (!target || target.kind !== 'job' || target.source !== 'builtin') return;
-  await handleToggleRuntimeJob(target, !target.enabled);
+  if (!target) return;
+  if (target.source === 'command') {
+    openEditDialog(target);
+  } else if (target.source === 'builtin' && target.kind === 'job') {
+    openBuiltinScheduleDialog(target);
+  } else if (target.source === 'builtin' && target.kind === 'service') {
+    viewLogs(target);
+  }
+};
+
+const canDeleteRuntimeItem = (item: RuntimeItem | null | undefined) => {
+  return Boolean(item && (item.source === 'command' || item.kind === 'job'));
 };
 
 const runtimeKindLabel = (kind: RuntimeKind | null | undefined) => kind === 'job' ? '作业' : '服务';
+
+const scheduleUnitSeconds = (unit: string) => {
+  if (unit === 'hours') return 3600;
+  if (unit === 'days') return 86400;
+  return 60;
+};
+
+const defaultScheduledAction = (kind: RuntimeKind) => kind === 'job' ? 'enqueue' : 'restart';
+
+const resetScheduleFields = () => {
+  form.value.schedule = '';
+  form.value.schedule_mode = 'manual';
+  form.value.schedule_once_at = '';
+  form.value.schedule_interval_value = 60;
+  form.value.schedule_interval_unit = 'minutes';
+  form.value.schedule_time = '00:00';
+  form.value.schedule_weekdays = [1];
+  form.value.schedule_month_day = 1;
+  form.value.schedule_cron = '';
+  form.value.scheduled_action = 'default';
+  form.value.retry_enabled = false;
+  form.value.retry_minutes = 10;
+};
+
+const scheduleTimeValue = (trigger: Record<string, any>, fallback = '00:00') => {
+  const value = trigger.times ?? trigger.time;
+  if (Array.isArray(value)) return String(value[0] || fallback);
+  return String(value || fallback);
+};
+
+const applySchedulePolicyToForm = (policy: SchedulePolicy | null | undefined) => {
+  resetScheduleFields();
+  if (!policy?.enabled || !policy.trigger) return;
+
+  const trigger = policy.trigger || {};
+  const mode = String(trigger.type || 'manual');
+  if (mode === 'once') {
+    form.value.schedule_mode = 'once';
+    form.value.schedule_once_at = String(trigger.at || trigger.time || '');
+  } else if (mode === 'interval') {
+    const seconds = Number(trigger.seconds || 0);
+    form.value.schedule_mode = 'interval';
+    if (seconds > 0 && seconds % 86400 === 0) {
+      form.value.schedule_interval_value = seconds / 86400;
+      form.value.schedule_interval_unit = 'days';
+    } else if (seconds > 0 && seconds % 3600 === 0) {
+      form.value.schedule_interval_value = seconds / 3600;
+      form.value.schedule_interval_unit = 'hours';
+    } else {
+      form.value.schedule_interval_value = Math.max(1, Math.round(seconds / 60));
+      form.value.schedule_interval_unit = 'minutes';
+    }
+  } else if (mode === 'daily') {
+    form.value.schedule_mode = 'daily';
+    form.value.schedule_time = scheduleTimeValue(trigger);
+  } else if (mode === 'weekly') {
+    form.value.schedule_mode = 'weekly';
+    const weekdays = trigger.weekdays || trigger.days || [1];
+    form.value.schedule_weekdays = Array.isArray(weekdays) ? weekdays.map(Number) : [Number(weekdays || 1)];
+    form.value.schedule_time = scheduleTimeValue(trigger);
+  } else if (mode === 'monthly') {
+    form.value.schedule_mode = 'monthly';
+    const dayValue = Array.isArray(trigger.days) ? trigger.days[0] : (trigger.day ?? 1);
+    form.value.schedule_month_day = Math.min(31, Math.max(1, Number(dayValue === 'last' ? 31 : dayValue || 1)));
+    form.value.schedule_time = scheduleTimeValue(trigger);
+  } else if (mode === 'cron') {
+    form.value.schedule_mode = 'cron';
+    form.value.schedule_cron = String(trigger.expression || trigger.cron || '');
+  }
+
+  const action = String(policy.action?.type || '');
+  form.value.scheduled_action = action && action !== defaultScheduledAction(form.value.runtime_kind)
+    ? action
+    : 'default';
+
+  const retry = policy.outcome?.on_failure || policy.outcome?.on_timeout;
+  if (retry?.type === 'retry_after') {
+    form.value.retry_enabled = true;
+    form.value.retry_minutes = Number(retry.minutes || Math.max(1, Math.round(Number(retry.seconds || 600) / 60)));
+  }
+};
+
+const buildSchedulePolicyFromForm = (): SchedulePolicy | null => {
+  const mode = form.value.schedule_mode;
+  if (!mode || mode === 'manual') return null;
+
+  let trigger: Record<string, any> | null = null;
+  if (mode === 'once') {
+    const at = form.value.schedule_once_at.trim();
+    if (!at) return null;
+    trigger = { type: 'once', at };
+  } else if (mode === 'interval') {
+    const value = Number(form.value.schedule_interval_value || 0);
+    if (value <= 0) return null;
+    trigger = {
+      type: 'interval',
+      seconds: value * scheduleUnitSeconds(form.value.schedule_interval_unit),
+      anchor: form.value.runtime_kind === 'job' ? 'last_finish' : 'last_trigger',
+    };
+  } else if (mode === 'daily') {
+    trigger = { type: 'daily', time: form.value.schedule_time || '00:00' };
+  } else if (mode === 'weekly') {
+    trigger = {
+      type: 'weekly',
+      weekdays: form.value.schedule_weekdays?.length ? form.value.schedule_weekdays : [1],
+      time: form.value.schedule_time || '00:00',
+    };
+  } else if (mode === 'monthly') {
+    trigger = {
+      type: 'monthly',
+      day: Number(form.value.schedule_month_day || 1),
+      time: form.value.schedule_time || '00:00',
+    };
+  } else if (mode === 'cron') {
+    const expression = form.value.schedule_cron.trim();
+    if (!expression) return null;
+    trigger = { type: 'cron', expression };
+  }
+
+  if (!trigger) return null;
+  const actionType = form.value.scheduled_action === 'default'
+    ? defaultScheduledAction(form.value.runtime_kind)
+    : form.value.scheduled_action;
+  const policy: SchedulePolicy = {
+    enabled: true,
+    trigger,
+    action: { type: actionType },
+    concurrency: form.value.runtime_kind === 'job'
+      ? { scope: 'group', policy: 'queue' }
+      : { scope: 'unit', policy: 'replace' },
+  };
+  if (form.value.retry_enabled) {
+    policy.outcome = {
+      on_failure: { type: 'retry_after', minutes: Number(form.value.retry_minutes || 10) },
+      on_timeout: { type: 'retry_after', minutes: Number(form.value.retry_minutes || 10) },
+    };
+  }
+  return policy;
+};
+
+const buildTaskPayloadFromForm = () => ({
+  name: form.value.name,
+  command: form.value.command,
+  cwd: form.value.cwd,
+  description: form.value.description,
+  device_id: form.value.device_id,
+  runtime_kind: form.value.runtime_kind,
+  run_as_admin: form.value.run_as_admin,
+  schedule: '',
+  schedule_policy: buildSchedulePolicyFromForm(),
+  timeout: form.value.timeout,
+});
 
 const openCreateDialog = (kind: RuntimeKind) => {
     if (!currentDeviceId.value) {
@@ -619,9 +805,69 @@ const openCreateDialog = (kind: RuntimeKind) => {
         runtime_kind: kind,
         run_as_admin: false,
         schedule: '',
+        schedule_mode: 'manual',
+        schedule_once_at: '',
+        schedule_interval_value: 60,
+        schedule_interval_unit: 'minutes',
+        schedule_time: '00:00',
+        schedule_weekdays: [1],
+        schedule_month_day: 1,
+        schedule_cron: '',
+        scheduled_action: 'default',
+        retry_enabled: false,
+        retry_minutes: 10,
         timeout: null
     };
     dialogVisible.value = true;
+};
+
+const openEditDialog = (item: RuntimeItem) => {
+    if (item.source !== 'command') return;
+
+    isEditingTask.value = true;
+    currentTaskId.value = item.key;
+    form.value = {
+        name: String(item.raw?.name || item.title || ''),
+        command: item.command || '',
+        cwd: item.cwd || '',
+        description: item.description || '',
+        device_id: currentDevice.value?.device_id || '',
+        runtime_kind: item.kind,
+        run_as_admin: Boolean(item.raw?.run_as_admin),
+        schedule: item.schedule || '',
+        schedule_mode: 'manual',
+        schedule_once_at: '',
+        schedule_interval_value: 60,
+        schedule_interval_unit: 'minutes',
+        schedule_time: '00:00',
+        schedule_weekdays: [1],
+        schedule_month_day: 1,
+        schedule_cron: '',
+        scheduled_action: 'default',
+        retry_enabled: false,
+        retry_minutes: 10,
+        timeout: item.timeout ?? null
+    };
+    applySchedulePolicyToForm(item.schedule_policy);
+    if (!item.schedule_policy && item.schedule) {
+        form.value.schedule_mode = 'cron';
+        form.value.schedule_cron = item.schedule;
+    }
+    dialogVisible.value = true;
+};
+
+const openBuiltinScheduleDialog = (item: RuntimeItem) => {
+    if (item.source !== 'builtin') return;
+
+    scheduleTarget.value = item;
+    form.value.runtime_kind = 'job';
+    resetScheduleFields();
+    applySchedulePolicyToForm(item.schedule_policy);
+    if (!item.schedule_policy && item.schedule) {
+        form.value.schedule_mode = 'cron';
+        form.value.schedule_cron = item.schedule;
+    }
+    scheduleDialogVisible.value = true;
 };
 
 const handleSubmitTask = async () => {
@@ -635,11 +881,12 @@ const handleSubmitTask = async () => {
     if (!device) return;
     
     try {
+        const payload = buildTaskPayloadFromForm();
         if (isEditingTask.value) {
-            // Update not implemented in UI yet, but API supports it
-            // For now, assume create only or re-create
+            await api.post(getDeviceEntryPath(entryId, `/task/${currentTaskId.value}/update`), payload);
+            ElMessage.success(`${runtimeKindLabel(form.value.runtime_kind)}已保存`);
         } else {
-            await api.post(getDeviceEntryPath(entryId, '/task/create'), form.value);
+            await api.post(getDeviceEntryPath(entryId, '/task/create'), payload);
             ElMessage.success(`${runtimeKindLabel(form.value.runtime_kind)}创建成功`);
         }
         
@@ -648,6 +895,22 @@ const handleSubmitTask = async () => {
         
     } catch (err: any) {
         ElMessage.error(err.response?.data?.detail || '创建失败');
+    }
+};
+
+const handleSubmitBuiltinSchedule = async () => {
+    const target = scheduleTarget.value;
+    if (!target) return;
+
+    try {
+        const policy = buildSchedulePolicyFromForm();
+        await configureRuntimeJobSchedule(currentDeviceId.value, target.key, policy);
+        ElMessage.success('定时已保存');
+        scheduleDialogVisible.value = false;
+        scheduleTarget.value = null;
+        await fetchTasks(currentDeviceId.value, false);
+    } catch (err: any) {
+        ElMessage.error(err.response?.data?.detail || '保存失败');
     }
 };
 
@@ -764,8 +1027,11 @@ const handleDelete = async (item: RuntimeItem) => {
 };
 
 const viewLogs = (item: RuntimeItem) => {
-  if (item.source !== 'command') return;
-  router.push({ name: 'TaskLogs', params: { id: item.key }, query: { entry_id: currentDeviceId.value } });
+  router.push({
+    name: 'TaskLogs',
+    params: { id: item.key },
+    query: { entry_id: currentDeviceId.value, source: item.source },
+  });
 };
 
 const jobRuntimeStatusType = (item: RuntimeItem): 'success' | 'info' | 'warning' => {
@@ -781,6 +1047,10 @@ const getJobStatusButtonTitle = (item: RuntimeItem) => {
   if (isRuntimeItemQueued(item)) return '排队中';
   if (!isRuntimeItemRunning(item)) return '点击执行';
   return item.source === 'command' ? '点击停止' : '作业正在运行';
+};
+
+const getServiceStatusButtonTitle = (item: RuntimeItem) => {
+  return isRuntimeItemRunning(item) ? '点击停止' : '点击启动';
 };
 
 function getRuntimeNextRunAt(item: RuntimeItem): string {
@@ -819,7 +1089,7 @@ function compareRuntimeJobs(a: RuntimeItem, b: RuntimeItem): number {
 
 const pad2 = (value: number) => String(value).padStart(2, '0');
 
-const formatJobNextRun = (item: RuntimeItem) => {
+const formatRuntimeNextTrigger = (item: RuntimeItem) => {
   const nextRunAt = getRuntimeNextRunAt(item);
   if (!nextRunAt) return '';
 
@@ -840,7 +1110,7 @@ const formatJobNextRun = (item: RuntimeItem) => {
   return `${date.getFullYear()}-${monthDayTime}`;
 };
 
-const getJobNextRunTitle = (item: RuntimeItem) => {
+const getRuntimeNextTriggerTitle = (item: RuntimeItem) => {
   const nextRunAt = getRuntimeNextRunAt(item);
   if (!nextRunAt) return '';
   const date = new Date(nextRunAt);
@@ -849,7 +1119,7 @@ const getJobNextRunTitle = (item: RuntimeItem) => {
 
 const runtimeQueueRecordName = (item: Record<string, any>) => {
   const metadata = item?.metadata || {};
-  return metadata.title || metadata.task_title || item?.name || item?.id;
+  return item?.display_name || metadata.title || metadata.task_title || item?.name || item?.id;
 };
 
 const formatQueueRecordTimestamp = (value: unknown) => {
@@ -1109,6 +1379,8 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <RuntimeSystemMetricsChart v-if="currentDeviceId" :entry-id="currentDeviceId" />
+
     <section class="runtime-section">
       <div class="runtime-section-title">
         <span>服务</span>
@@ -1162,28 +1434,32 @@ onUnmounted(() => {
 
         <el-table-column label="状态" width="84" align="center">
           <template #default="{ row }">
-            <div v-if="row.source === 'command'" class="status-action">
+            <div class="status-action">
               <el-button
                 circle
                 :type="row.actionLoading ? 'warning' : (row.active || row.status?.running ? 'success' : 'info')"
                 :loading="row.actionLoading"
-                @click="handleStatusClick(row)"
-                :title="row.active || row.status?.running ? '点击停止' : '点击启动'"
+                @click="handleServiceStatusClick(row)"
+                :title="getServiceStatusButtonTitle(row)"
               >
                 <template #icon>
                   <component :is="row.active || row.status?.running ? VideoPause : VideoPlay" v-if="!row.actionLoading" />
                 </template>
               </el-button>
             </div>
-            <div v-else class="job-state">
-              <el-switch
-                v-model="row.enabled"
-                :loading="row.toggleLoading"
-                inline-prompt
-                active-text="启用"
-                inactive-text="停用"
-                @change="handleToggleRuntimeJob(row, $event)"
-              />
+          </template>
+        </el-table-column>
+
+        <el-table-column label="下次触发" width="130" align="right">
+          <template #default="{ row }">
+            <div class="runtime-next-cell">
+              <span
+                class="runtime-next-trigger"
+                :class="{ running: row.active || row.status?.running }"
+                :title="getRuntimeNextTriggerTitle(row)"
+              >
+                {{ formatRuntimeNextTrigger(row) }}
+              </span>
             </div>
           </template>
         </el-table-column>
@@ -1251,18 +1527,18 @@ onUnmounted(() => {
           </template>
         </el-table-column>
 
-        <el-table-column label="下次运行" width="130" align="right">
+        <el-table-column label="下次触发" width="130" align="right">
           <template #default="{ row }">
-            <div class="job-next-cell">
+            <div class="runtime-next-cell">
               <span
-                class="job-next-run"
+                class="runtime-next-trigger"
                 :class="{
                   running: row.active || row.status?.running,
                   disabled: row.source === 'builtin' && !row.enabled
                 }"
-                :title="getJobNextRunTitle(row)"
+                :title="getRuntimeNextTriggerTitle(row)"
               >
-                {{ formatJobNextRun(row) }}
+                {{ formatRuntimeNextTrigger(row) }}
               </span>
             </div>
           </template>
@@ -1289,24 +1565,24 @@ onUnmounted(() => {
         <span>停止</span>
       </button>
       <button
-        v-if="runtimeContextMenu.target?.kind === 'job' && runtimeContextMenu.target?.source === 'builtin'"
+        v-if="runtimeContextMenu.target?.source === 'command' || runtimeContextMenu.target?.source === 'builtin'"
         type="button"
         class="context-menu-item"
-        @click="handleRuntimeContextToggleSchedule"
+        @click="handleRuntimeContextConfigure"
       >
         <el-icon><Setting /></el-icon>
-        <span>{{ runtimeContextMenu.target?.enabled ? '停用定时' : '启用定时' }}</span>
+        <span>配置</span>
       </button>
-      <button
-        v-if="runtimeContextMenu.target?.source === 'command'"
-        type="button"
-        class="context-menu-item"
-        @click="handleRuntimeContextLogs"
-      >
+      <button type="button" class="context-menu-item" @click="handleRuntimeContextLogs">
         <el-icon><Document /></el-icon>
         <span>日志</span>
       </button>
-      <button type="button" class="context-menu-item danger" @click="handleRuntimeContextDelete">
+      <button
+        v-if="canDeleteRuntimeItem(runtimeContextMenu.target)"
+        type="button"
+        class="context-menu-item danger"
+        @click="handleRuntimeContextDelete"
+      >
         <el-icon><Delete /></el-icon>
         <span>删除</span>
       </button>
@@ -1332,7 +1608,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Create Runtime Command Dialog -->
-    <el-dialog v-model="dialogVisible" :title="`新建${runtimeKindLabel(form.runtime_kind)}`" width="500px">
+    <el-dialog v-model="dialogVisible" :title="`${isEditingTask ? '配置' : '新建'}${runtimeKindLabel(form.runtime_kind)}`" width="560px">
       <el-form :model="form" label-width="80px">
         <el-form-item label="名称" required>
           <el-input v-model="form.name" placeholder="名称" />
@@ -1350,9 +1626,80 @@ onUnmounted(() => {
         <el-form-item label="描述">
           <el-input v-model="form.description" placeholder="可选: 任务描述" />
         </el-form-item>
-        <el-form-item label="定时调度">
-          <el-input v-model="form.schedule" placeholder="Cron 表达式 (例如: */5 * * * *)" />
-          <div class="form-tip">支持 Cron 表达式。留空表示仅手动执行。</div>
+        <el-form-item label="定时">
+          <div class="schedule-editor">
+            <el-select v-model="form.schedule_mode" class="schedule-mode-select">
+              <el-option label="手动" value="manual" />
+              <el-option label="一次" value="once" />
+              <el-option label="间隔" value="interval" />
+              <el-option label="每天" value="daily" />
+              <el-option label="每周" value="weekly" />
+              <el-option label="每月" value="monthly" />
+              <el-option label="Cron" value="cron" />
+            </el-select>
+            <template v-if="form.schedule_mode === 'once'">
+              <el-date-picker
+                v-model="form.schedule_once_at"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm:ss"
+                format="YYYY-MM-DD HH:mm"
+                class="schedule-once"
+              />
+            </template>
+            <template v-else-if="form.schedule_mode === 'interval'">
+              <el-input-number v-model="form.schedule_interval_value" :min="1" :controls="false" class="schedule-number" />
+              <el-select v-model="form.schedule_interval_unit" class="schedule-unit-select">
+                <el-option label="分钟" value="minutes" />
+                <el-option label="小时" value="hours" />
+                <el-option label="天" value="days" />
+              </el-select>
+            </template>
+            <template v-else-if="form.schedule_mode === 'daily'">
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'weekly'">
+              <el-select v-model="form.schedule_weekdays" multiple collapse-tags collapse-tags-tooltip class="schedule-weekdays">
+                <el-option label="周一" :value="1" />
+                <el-option label="周二" :value="2" />
+                <el-option label="周三" :value="3" />
+                <el-option label="周四" :value="4" />
+                <el-option label="周五" :value="5" />
+                <el-option label="周六" :value="6" />
+                <el-option label="周日" :value="7" />
+              </el-select>
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'monthly'">
+              <el-input-number v-model="form.schedule_month_day" :min="1" :max="31" :controls="false" class="schedule-number" />
+              <span class="schedule-text">日</span>
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'cron'">
+              <el-input v-model="form.schedule_cron" placeholder="*/5 * * * *" class="schedule-cron" />
+            </template>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="form.schedule_mode !== 'manual'" label="触发动作">
+          <div class="schedule-editor">
+            <el-select v-model="form.scheduled_action" class="schedule-action-select">
+              <el-option :label="form.runtime_kind === 'job' ? '默认：排队执行' : '默认：重启'" value="default" />
+              <el-option v-if="form.runtime_kind === 'service'" label="启动" value="start" />
+              <el-option v-if="form.runtime_kind === 'service'" label="重启" value="restart" />
+              <el-option v-if="form.runtime_kind === 'service'" label="确保运行" value="ensure_running" />
+              <el-option v-if="form.runtime_kind === 'service'" label="停止" value="stop" />
+              <el-option v-if="form.runtime_kind === 'job'" label="排队执行" value="enqueue" />
+              <el-option v-if="form.runtime_kind === 'job'" label="直接启动" value="start" />
+            </el-select>
+            <el-checkbox v-model="form.retry_enabled">失败重试</el-checkbox>
+            <el-input-number
+              v-if="form.retry_enabled"
+              v-model="form.retry_minutes"
+              :min="1"
+              :controls="false"
+              class="schedule-number"
+            />
+            <span v-if="form.retry_enabled" class="schedule-text">分钟后</span>
+          </div>
         </el-form-item>
         <el-form-item label="超时时间">
           <el-input v-model.number="form.timeout" placeholder="单位: 秒" type="number" />
@@ -1372,6 +1719,83 @@ onUnmounted(() => {
         <span class="dialog-footer">
           <el-button @click="dialogVisible = false">取消</el-button>
           <el-button type="primary" @click="handleSubmitTask">{{ isEditingTask ? '保存' : '创建' }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="scheduleDialogVisible" :title="`配置定时${scheduleTarget?.title ? ` · ${scheduleTarget.title}` : ''}`" width="560px">
+      <el-form label-width="80px">
+        <el-form-item label="定时">
+          <div class="schedule-editor">
+            <el-select v-model="form.schedule_mode" class="schedule-mode-select">
+              <el-option label="手动" value="manual" />
+              <el-option label="一次" value="once" />
+              <el-option label="间隔" value="interval" />
+              <el-option label="每天" value="daily" />
+              <el-option label="每周" value="weekly" />
+              <el-option label="每月" value="monthly" />
+              <el-option label="Cron" value="cron" />
+            </el-select>
+            <template v-if="form.schedule_mode === 'once'">
+              <el-date-picker
+                v-model="form.schedule_once_at"
+                type="datetime"
+                value-format="YYYY-MM-DDTHH:mm:ss"
+                format="YYYY-MM-DD HH:mm"
+                class="schedule-once"
+              />
+            </template>
+            <template v-else-if="form.schedule_mode === 'interval'">
+              <el-input-number v-model="form.schedule_interval_value" :min="1" :controls="false" class="schedule-number" />
+              <el-select v-model="form.schedule_interval_unit" class="schedule-unit-select">
+                <el-option label="分钟" value="minutes" />
+                <el-option label="小时" value="hours" />
+                <el-option label="天" value="days" />
+              </el-select>
+            </template>
+            <template v-else-if="form.schedule_mode === 'daily'">
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'weekly'">
+              <el-select v-model="form.schedule_weekdays" multiple collapse-tags collapse-tags-tooltip class="schedule-weekdays">
+                <el-option label="周一" :value="1" />
+                <el-option label="周二" :value="2" />
+                <el-option label="周三" :value="3" />
+                <el-option label="周四" :value="4" />
+                <el-option label="周五" :value="5" />
+                <el-option label="周六" :value="6" />
+                <el-option label="周日" :value="7" />
+              </el-select>
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'monthly'">
+              <el-input-number v-model="form.schedule_month_day" :min="1" :max="31" :controls="false" class="schedule-number" />
+              <span class="schedule-text">日</span>
+              <el-time-picker v-model="form.schedule_time" value-format="HH:mm" format="HH:mm" class="schedule-time" />
+            </template>
+            <template v-else-if="form.schedule_mode === 'cron'">
+              <el-input v-model="form.schedule_cron" placeholder="*/5 * * * *" class="schedule-cron" />
+            </template>
+          </div>
+        </el-form-item>
+        <el-form-item v-if="form.schedule_mode !== 'manual'" label="失败处理">
+          <div class="schedule-editor">
+            <el-checkbox v-model="form.retry_enabled">重试</el-checkbox>
+            <el-input-number
+              v-if="form.retry_enabled"
+              v-model="form.retry_minutes"
+              :min="1"
+              :controls="false"
+              class="schedule-number"
+            />
+            <span v-if="form.retry_enabled" class="schedule-text">分钟后</span>
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="scheduleDialogVisible = false">取消</el-button>
+          <el-button type="primary" @click="handleSubmitBuiltinSchedule">保存</el-button>
         </span>
       </template>
     </el-dialog>
@@ -1515,25 +1939,25 @@ onUnmounted(() => {
   gap: 8px;
 }
 
-.job-next-cell {
+.runtime-next-cell {
   display: flex;
   align-items: center;
   justify-content: flex-end;
 }
 
-.job-next-run {
+.runtime-next-trigger {
   color: #606266;
   font-size: 13px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
 
-.job-next-run.running {
+.runtime-next-trigger.running {
   color: #67c23a;
   font-weight: 600;
 }
 
-.job-next-run.disabled {
+.runtime-next-trigger.disabled {
   color: #a8abb2;
 }
 
@@ -1686,6 +2110,47 @@ onUnmounted(() => {
   color: #909399;
   line-height: 1.2;
   margin-top: 4px;
+}
+
+.schedule-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.schedule-mode-select,
+.schedule-unit-select {
+  width: 92px;
+}
+
+.schedule-number {
+  width: 82px;
+}
+
+.schedule-time {
+  width: 116px;
+}
+
+.schedule-once {
+  width: 190px;
+}
+
+.schedule-weekdays {
+  width: 170px;
+}
+
+.schedule-cron {
+  width: 220px;
+}
+
+.schedule-action-select {
+  width: 140px;
+}
+
+.schedule-text {
+  color: #606266;
+  font-size: 13px;
 }
 
 .add-device-btn {

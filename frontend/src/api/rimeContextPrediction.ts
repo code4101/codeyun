@@ -62,6 +62,7 @@ export interface RimeContextArticleSummary {
   article_count: number;
   enabled_count: number;
   lexicon_count?: number;
+  negative_lexicon_count?: number;
   contribution_count: number;
 }
 
@@ -167,11 +168,81 @@ export interface RimeContextLintResponse {
   issues: RimeContextLintIssue[];
 }
 
+export type RimeRuntimeConfigValue = string | number | boolean | null;
+
+export interface RimeRuntimeConfigField {
+  type: 'int' | 'float' | 'bool' | 'enum' | string;
+  label?: string;
+  min?: number;
+  max?: number;
+  values?: string[];
+}
+
+export interface RimeRuntimeConfigResponse {
+  available: boolean;
+  status: string;
+  message: string;
+  rime_dir: string | null;
+  source: string | null;
+  source_path: string | null;
+  updated_at: number | null;
+  files: RimeContextPredictionFileInfo[];
+  config: Record<string, RimeRuntimeConfigValue>;
+  fields: Record<string, RimeRuntimeConfigField>;
+  missing_keys: string[];
+  requires_reload: boolean;
+  deploy?: {
+    ok: boolean;
+    status: string;
+    message: string;
+    deployer?: string | null;
+    returncode?: number;
+  } | null;
+}
+
+export interface RimeWeightCompareGroup {
+  key: string;
+  weight: number;
+  row_count: number;
+}
+
+export interface RimeWeightCompareItem {
+  input: string;
+  candidate: string;
+  pinyin: string;
+  default_pinyin: string;
+  total_weight: number;
+  exact_prefix_weight: number;
+  row_count: number;
+  prefixes: RimeWeightCompareGroup[];
+  contexts: RimeWeightCompareGroup[];
+  comments: RimeWeightCompareGroup[];
+  rows: RimeContextPredictionRow[];
+}
+
+export interface RimeWeightCompareResponse {
+  available: boolean;
+  status: string;
+  message: string;
+  rime_dir: string | null;
+  source_kind?: string;
+  source: string | null;
+  source_path: string | null;
+  updated_at: number | null;
+  files: RimeContextPredictionFileInfo[];
+  summary: {
+    candidate_count: number;
+    matched_count: number;
+    row_count: number;
+  };
+  items: RimeWeightCompareItem[];
+}
+
 export interface RimeContextArticleImportPayload {
   title?: string;
   content: string;
   enabled: boolean;
-  source_type?: 'imported_article' | 'lexicon' | string;
+  source_type?: 'imported_article' | 'lexicon' | 'negative_lexicon' | string;
   weight_multiplier?: number;
 }
 
@@ -235,6 +306,25 @@ export interface RimeContextCandidateUpdatePayload {
   weight: number;
 }
 
+export interface RimeRuntimeConfigUpdatePayload {
+  config: Record<string, RimeRuntimeConfigValue>;
+}
+
+export interface RimeWeightComparePayload {
+  candidates: string[];
+  source?: RimeContextPredictionSource | string;
+  limit?: number;
+}
+
+export interface RimeWeightCompareAdjustPayload {
+  prefix: string;
+  candidate: string;
+  weight: number;
+  candidates: string[];
+  source?: RimeContextPredictionSource | string;
+  limit?: number;
+}
+
 export async function fetchRimeContextPredictionTree(
   entryId: string,
   query: RimeContextPredictionTreeQuery = {},
@@ -254,6 +344,48 @@ export async function refreshRimeContextPredictionTree(
     getDeviceEntryPath(entryId, '/rime/context-prediction/tree/refresh'),
     undefined,
     { params: { source: query.source || 'snapshot', limit: query.limit || 50000 } },
+  );
+  return response.data;
+}
+
+export async function fetchRimeRuntimeConfig(
+  entryId: string,
+): Promise<RimeRuntimeConfigResponse> {
+  const response = await api.get<RimeRuntimeConfigResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/runtime-config'),
+  );
+  return response.data;
+}
+
+export async function updateRimeRuntimeConfig(
+  entryId: string,
+  payload: RimeRuntimeConfigUpdatePayload,
+): Promise<RimeRuntimeConfigResponse> {
+  const response = await api.patch<RimeRuntimeConfigResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/runtime-config'),
+    payload,
+  );
+  return response.data;
+}
+
+export async function compareRimeContextWeights(
+  entryId: string,
+  payload: RimeWeightComparePayload,
+): Promise<RimeWeightCompareResponse> {
+  const response = await api.post<RimeWeightCompareResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/weight-compare'),
+    payload,
+  );
+  return response.data;
+}
+
+export async function adjustRimeContextWeightCompare(
+  entryId: string,
+  payload: RimeWeightCompareAdjustPayload,
+): Promise<RimeWeightCompareResponse> {
+  const response = await api.post<RimeWeightCompareResponse>(
+    getDeviceEntryPath(entryId, '/rime/context-prediction/weight-compare/adjust'),
+    payload,
   );
   return response.data;
 }

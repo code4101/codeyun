@@ -175,6 +175,10 @@ def test_ocr_service_manager_reuses_resets_and_cleans_idle_instances(
     monkeypatch.setattr(ocr_preview, "_get_ocr_instance", fake_get_instance)
     monkeypatch.setattr(manager, "_settings_limits", lambda: (1, 600, 0))
 
+    warmup = manager.warmup()
+    assert warmup["loaded"] is True
+    assert len(created) == 1
+
     first = manager.predict_file(image_path, shape_type="polygon")
     second = manager.predict_file(image_path, shape_type="polygon")
     assert first["shape_count"] == 0

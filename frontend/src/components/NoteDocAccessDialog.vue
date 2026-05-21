@@ -103,7 +103,7 @@ const dialogVisible = computed({
   set: (value: boolean) => emit('update:modelValue', value),
 });
 
-const accessDialogTitle = computed(() => `共享权限：${props.title || props.note?.title || '文档'}`);
+const accessDialogTitle = computed(() => `设置权限：${props.title || props.note?.title || '文档'}`);
 
 const userAccessRoleOptions = [
   { value: 'deny', label: '无权限' },
@@ -162,7 +162,7 @@ async function loadAccessDialog() {
   } catch (error) {
     console.warn('Failed to load doc access grants:', error);
     dialogVisible.value = false;
-    ElMessage.error('读取共享权限失败');
+    ElMessage.error('读取设置权限失败');
   } finally {
     accessDialogLoading.value = false;
   }
@@ -210,11 +210,11 @@ async function saveAccessDialog() {
     const detail = await updateNoteDocAccess(noteRef, buildAccessGrantUpdates());
     normalizeAccessDialogFromGrants(detail.grants);
     emit('update:access', detail.access);
-    ElMessage.success('共享权限已保存');
+    ElMessage.success('权限设置已保存');
     dialogVisible.value = false;
   } catch (error) {
     console.warn('Failed to save doc access grants:', error);
-    ElMessage.error('保存共享权限失败，请检查用户名');
+    ElMessage.error('保存权限设置失败，请检查用户名');
   } finally {
     accessDialogSaving.value = false;
   }

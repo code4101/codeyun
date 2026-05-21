@@ -29,9 +29,10 @@ def _clear_user_override() -> None:
     app.dependency_overrides.pop(get_optional_current_user_from_token, None)
 
 
-def _create_user(session: Session, *, username: str, is_superuser: bool = False) -> User:
+def _create_user(session: Session, *, username: str, nickname: str = "", is_superuser: bool = False) -> User:
     user = User(
         username=username,
+        nickname=nickname,
         email=f"{username}@example.com",
         hashed_password="pw",
         is_active=True,
@@ -50,6 +51,30 @@ def _grant_feature_access(session: Session, *, user_id: int, feature_key: str) -
         subject_user_id=user_id,
         overrides={feature_key: "allow"},
     )
+
+
+def test_note_sheet_access_user_options_searches_username_and_nickname(client, session):
+    manager = _create_user(session, username="sheet-manager", nickname="表格负责人")
+    alice = _create_user(session, username="alice", nickname="陈坤泽")
+    bob = _create_user(session, username="bob", nickname="momo酱")
+    inactive_user = _create_user(session, username="hidden-user", nickname="陈隐藏")
+    inactive_user.is_active = False
+    session.add(inactive_user)
+    session.commit()
+    _grant_feature_access(session, user_id=manager.id, feature_key="notes.sheets")
+    _override_user(manager)
+
+    try:
+        response = client.get("/api/note-sheets/access-users", params={"q": "陈"})
+        assert response.status_code == 200
+        users = response.json()["users"]
+        assert users == [{"id": alice.id, "username": "alice", "nickname": "陈坤泽"}]
+
+        username_response = client.get("/api/note-sheets/access-users", params={"q": "bob"})
+        assert username_response.status_code == 200
+        assert username_response.json()["users"] == [{"id": bob.id, "username": "bob", "nickname": "momo酱"}]
+    finally:
+        _clear_user_override()
 
 
 def test_note_sheet_workbook_mvp_flow(client, session):
@@ -576,6 +601,99 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         assert "1:2" in document["cell_meta"]
         assert document["cell_meta"]["1:2"]["action"]["type"] == "excel_import_reset"
         assert "2:4" not in document["cell_meta"]
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_excel_import_append_keeps_existing_rows(client, session, monkeypatch):
+    user = _create_user(session, username="note-sheet-excel-import-append-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "增量源表"
+    worksheet.append(["姓名", "手机", "来源备注"])
+    worksheet.append(["新姓名", "13900000000", "新报名"])
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+
+    def fake_chat_with_provider(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        assert "增量导入" in prompt
+        return {
+            "content": json.dumps(
+                {
+                    "extra_columns": ["来源备注"],
+                    "rows": [
+                        {
+                            "姓名": "新姓名",
+                            "手机号": "13900000000",
+                            "来源备注": "新报名",
+                        },
+                    ],
+                    "warnings": [],
+                    "mapping_notes": [],
+                },
+                ensure_ascii=False,
+            ),
+        }
+
+    monkeypatch.setattr(note_sheets_api, "chat_with_provider", fake_chat_with_provider)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "增量导入工作簿"})
+        workbook_id = workbook_response.json()["id"]
+        sheet_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "增量报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["姓名", "手机号"],
+                    "rows": [["旧姓名", "13800000000"]],
+                    "grid_rows": [["姓名", "手机号"], ["旧姓名", "13800000000"]],
+                    "data_start_row": 1,
+                    "field_row_index": 0,
+                    "cell_meta": {
+                        "1:0": {"style": {"background_color": "#ff0000"}},
+                    },
+                },
+            },
+        )
+        sheet_id = sheet_response.json()["id"]
+
+        response = client.post(
+            f"/api/note-sheets/sheets/{sheet_id}/import-excel-reset",
+            params={"workbook_id": workbook_id},
+            data={"instruction": "增量导入", "mode": "append"},
+            files={
+                "file": (
+                    "append.xlsx",
+                    buffer.getvalue(),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                ),
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["imported_count"] == 1
+        assert payload["preserved_row_count"] == 1
+        assert payload["extra_columns"] == ["来源备注"]
+        document = payload["sheet"]["document_json"]
+        assert document["columns"] == ["姓名", "手机号", "来源备注"]
+        assert document["rows"] == [
+            ["旧姓名", "13800000000", ""],
+            ["新姓名", "13900000000", "新报名"],
+        ]
+        assert document["grid_rows"] == [
+            ["姓名", "手机号", "来源备注"],
+            ["旧姓名", "13800000000", ""],
+            ["新姓名", "13900000000", "新报名"],
+        ]
+        assert document["cell_meta"]["1:0"]["style"]["background_color"] == "#ff0000"
     finally:
         _clear_user_override()
 
@@ -1130,6 +1248,69 @@ def test_note_sheet_resource_access_acl_flow(client, session):
         _clear_user_override()
 
 
+def test_sheet_detail_only_lists_accessible_parent_workbooks(client, session):
+    owner = _create_user(session, username="note-sheet-parent-owner")
+    workbook = WorkbookDocument(
+        numeric_id=2,
+        title="私有工作簿",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(owner.id),
+        sheet_key="4",
+        title="独立共享工作表",
+        owner_user_id=owner.id,
+        created_by_user_id=owner.id,
+        updated_by_user_id=owner.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名"],
+            "rows": [["时秋菊"]],
+        },
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.refresh(workbook)
+    session.refresh(sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+    session.add(ResourceAccessGrant(
+        resource_type="sheet",
+        resource_id=str(sheet.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    sheet_response = client.get("/api/note-sheets/sheets/4")
+    assert sheet_response.status_code == 200
+    sheet_payload = sheet_response.json()
+    assert sheet_payload["parent_workbook_id"] == 2
+    assert sheet_payload["workbook_items"] == []
+    assert client.get("/api/note-sheets/workbooks/2").status_code == 403
+
+    session.add(ResourceAccessGrant(
+        resource_type="workbook",
+        resource_id=str(workbook.numeric_id),
+        subject_key="anonymous",
+        subject_type="anonymous",
+        role="viewer",
+    ))
+    session.commit()
+
+    shared_parent_response = client.get("/api/note-sheets/sheets/4")
+    assert shared_parent_response.status_code == 200
+    shared_parent_payload = shared_parent_response.json()
+    assert shared_parent_payload["parent_workbook_id"] == 2
+    assert shared_parent_payload["workbook_items"] == [{"id": 2, "title": "私有工作簿"}]
+
+
 def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(client, session):
     owner = _create_user(session, username="note-sheet-public-status-owner")
     sheet = SheetDocument(
@@ -1203,6 +1384,21 @@ def test_attendance_questionnaire_sheet_allows_anonymous_status_column_edit(clie
     session.refresh(sheet)
     assert sheet.document_json["rows"][0][9] == "用户d问题，已修正"
     assert sheet.document_json["rows"][0][7] == "第一堂视频课"
+
+    forbidden_config_response = client.put(
+        "/api/note-sheets/sheets/5",
+        json={
+            "document_json": {
+                **detail["document_json"],
+                "column_configs": {
+                    **detail["document_json"].get("column_configs", {}),
+                    "AI初判": {"display_mode": "single_line"},
+                },
+            },
+            "page_patch": detail["pagination"],
+        },
+    )
+    assert forbidden_config_response.status_code == 403
 
     rows[0][7] = "越权修改"
     forbidden_response = client.put(
@@ -1327,6 +1523,9 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
             ],
             "data_start_row": 1,
             "field_row_index": 0,
+            "column_configs": {
+                "AI初判": {"display_mode": "single_line"},
+            },
             "cell_meta": {
                 "0:3": {"link": {"url": "https://example.com/legacy-data-row-coordinate"}},
                 "1:3": {"link": {"url": "https://example.com/stale-next-row-link"}},
@@ -1354,12 +1553,14 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
             "修正需求",
             "补充说明",
             "处理状态",
+            "AI初判",
         ]
         assert detail["document_json"]["rows"][0][4] == ""
         assert detail["document_json"]["rows"][0][5] == "5组6号"
         assert detail["document_json"]["grid_rows"][0] == detail["document_json"]["columns"]
         assert detail["document_json"]["grid_rows"][1][4] == ""
         assert detail["document_json"]["grid_rows"][1][5] == "5组6号"
+        assert detail["document_json"]["column_configs"]["AI初判"]["display_mode"] == "single_line"
         assert "0:3" not in detail["document_json"]["cell_meta"]
         assert detail["document_json"]["cell_meta"]["1:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
 
@@ -1367,9 +1568,53 @@ def test_attendance_questionnaire_sheet_get_backfills_course_links(client, sessi
         assert persisted is not None
         assert persisted.version == 2
         assert persisted.document_json["rows"][0][4] == ""
+        assert persisted.document_json["column_configs"]["AI初判"]["display_mode"] == "single_line"
         assert persisted.document_json["cell_meta"]["1:3"]["link"]["url"] == "https://www.kdocs.cn/l/nianzhu12"
     finally:
         _clear_user_override()
+
+
+def test_attendance_questionnaire_sheet_normalize_preserves_frontend_default_ai_display():
+    from backend.api.attendance import _normalize_attendance_wjx_sheet_document
+
+    normalized = _normalize_attendance_wjx_sheet_document({
+        "schema_version": 1,
+        "columns": [
+            "序号",
+            "提交时间",
+            "来源",
+            "课程",
+            "考勤负责人",
+            "学号",
+            "姓名",
+            "修正需求",
+            "补充说明",
+            "处理状态",
+            "AI初判",
+        ],
+        "rows": [],
+        "column_configs": {},
+    })
+    ai_config = normalized["column_configs"].get("AI初判") or {}
+    assert ai_config.get("display_mode") is None
+
+    legacy_normalized = _normalize_attendance_wjx_sheet_document({
+        "schema_version": 1,
+        "columns": [
+            "序号",
+            "提交时间",
+            "来源",
+            "课程",
+            "学号",
+            "姓名",
+            "修正需求",
+            "补充说明",
+            "处理状态",
+        ],
+        "rows": [],
+        "column_configs": {},
+    })
+    assert legacy_normalized["column_configs"]["AI初判"]["display_mode"] == "wrap"
 
 
 def test_note_sheet_rejects_default_blank_overwrite(client, session):

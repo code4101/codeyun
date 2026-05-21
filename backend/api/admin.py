@@ -23,6 +23,7 @@ from backend.core.background_task_runner import (
     is_background_task_deleted,
     refresh_background_task_schedule_states,
     reset_background_task_schedule,
+    set_background_task_schedule_policy,
     set_background_task_deleted,
     set_background_task_enabled,
 )
@@ -33,6 +34,7 @@ from backend.core.note_metadata_feedback import (
     create_note_metadata_feedback_optimization_run,
     get_note_metadata_feedback_status,
 )
+from backend.core.fanxiu_slimming import FANXIU_SLIMMING_TASK_KEY, get_fanxiu_slimming_status
 from backend.models import AppSetting, DeviceFile, User, NoteNode
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.storage import (
@@ -363,6 +365,7 @@ class BackgroundTaskRead(BaseModel):
     category: str
     description: str = ""
     cron_expression: str = ""
+    schedule_policy: Optional[Dict[str, Any]] = None
     schedule_label: str = ""
     enabled: bool = True
     scheduler_running: bool = False
@@ -688,9 +691,11 @@ def get_background_task_status(session: Session = Depends(get_session)):
     metadata_status = get_note_metadata_feedback_status(session)
     auto_git_status = get_auto_git_commit_status(session)
     codex_diary_status = get_codex_diary_auto_import_status(session)
+    fanxiu_slimming_status = get_fanxiu_slimming_status(session)
     metadata_latest = metadata_status.get("latest_run") if isinstance(metadata_status, dict) else None
     auto_git_latest = auto_git_status.get("latest_run") if isinstance(auto_git_status, dict) else None
     codex_diary_latest = codex_diary_status.get("latest_run") if isinstance(codex_diary_status, dict) else None
+    fanxiu_slimming_latest = fanxiu_slimming_status.get("latest_run") if isinstance(fanxiu_slimming_status, dict) else None
 
     def _is_task_enabled(task_key: str) -> bool:
         row = session.get(AppSetting, f"background_task.{task_key}.enabled")
@@ -708,6 +713,7 @@ def get_background_task_status(session: Session = Depends(get_session)):
         CODEX_DIARY_AUTO_IMPORT_TASK_NAME: codex_diary_latest if isinstance(codex_diary_latest, dict) else None,
         "attendance_summary_monthly_templates": _queue_run_payload(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_run_payload(queue, "storage_analysis"),
+        FANXIU_SLIMMING_TASK_KEY: fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else _queue_run_payload(queue, FANXIU_SLIMMING_TASK_KEY),
     })
     active_by_key = {
         spec.key: _queue_task_is_active(queue, spec.key)
@@ -722,6 +728,8 @@ def get_background_task_status(session: Session = Depends(get_session)):
         or _queue_task_is_active(queue, CODEX_DIARY_AUTO_IMPORT_TASK_NAME),
         "attendance_summary_monthly_templates": _queue_task_is_active(queue, "attendance_summary_monthly_templates"),
         "storage_analysis": _queue_task_is_active(queue, "storage_analysis"),
+        FANXIU_SLIMMING_TASK_KEY: _run_is_active(fanxiu_slimming_latest if isinstance(fanxiu_slimming_latest, dict) else None)
+        or _queue_task_is_active(queue, FANXIU_SLIMMING_TASK_KEY),
     })
 
     tasks = []
@@ -736,6 +744,7 @@ def get_background_task_status(session: Session = Depends(get_session)):
                 category=spec.category,
                 description=spec.description,
                 schedule_label=str(task_state.get("schedule_label") or spec.schedule_label),
+                schedule_policy=task_state.get("schedule_policy") if isinstance(task_state.get("schedule_policy"), dict) else None,
                 enabled=bool(task_state.get("enabled")),
                 runner_running=bool(runner.get("runner_running")),
                 next_run_at=task_state.get("next_run_at"),
@@ -827,6 +836,11 @@ def trigger_background_task(
 class BackgroundTaskToggleRequest(BaseModel):
     enabled: bool
 
+
+class BackgroundTaskScheduleRequest(BaseModel):
+    schedule_policy: Optional[Dict[str, Any]] = None
+
+
 @tasks_router.post("/background-tasks/{task_key}/toggle", response_model=dict)
 def toggle_background_task(
     task_key: str,
@@ -841,6 +855,24 @@ def toggle_background_task(
     set_background_task_enabled(normalized_key, enabled)
     refresh_background_task_schedule_states(normalized_key)
     return {"success": True, "enabled": enabled}
+
+
+@tasks_router.post("/background-tasks/{task_key}/schedule", response_model=dict)
+def configure_background_task_schedule(
+    task_key: str,
+    payload: BackgroundTaskScheduleRequest,
+    session: Session = Depends(get_session),
+):
+    normalized_key = task_key.strip()
+    if not any(spec.key == normalized_key for spec in BACKGROUND_TASK_SPECS):
+        raise HTTPException(status_code=404, detail="后台任务不存在")
+    policy = payload.schedule_policy if isinstance(payload.schedule_policy, dict) else None
+    enabled = bool(policy and policy.get("enabled", True))
+    set_background_task_schedule_policy(normalized_key, policy if enabled else None)
+    set_background_task_enabled(normalized_key, enabled)
+    reset_background_task_schedule(normalized_key)
+    refresh_background_task_schedule_states(normalized_key)
+    return {"success": True, "enabled": enabled, "schedule_policy": policy if enabled else None}
 
 
 @tasks_router.delete("/background-tasks/queue/{task_id}", response_model=dict)

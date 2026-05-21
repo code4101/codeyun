@@ -3,6 +3,14 @@ import api, { getDeviceEntryPath } from '@/api';
 export type RuntimeKind = 'service' | 'job';
 export type RuntimeSource = 'command' | 'builtin';
 
+export interface SchedulePolicy {
+  enabled?: boolean;
+  trigger?: Record<string, any>;
+  action?: Record<string, any>;
+  concurrency?: Record<string, any>;
+  outcome?: Record<string, any>;
+}
+
 export interface RuntimeGroup {
   id: string;
   kind: RuntimeKind;
@@ -24,6 +32,8 @@ export interface RuntimeItem {
   cwd?: string | null;
   runtime_kind?: RuntimeKind | null;
   schedule?: string | null;
+  schedule_policy?: SchedulePolicy | null;
+  schedule_state?: Record<string, any> | null;
   schedule_label?: string;
   next_run_at?: string | null;
   timeout?: number | null;
@@ -63,8 +73,51 @@ export interface RuntimeStatusResponse {
   runner_error?: string | null;
 }
 
+export interface RuntimeItemLogsResponse {
+  source: RuntimeSource;
+  key: string;
+  kind?: RuntimeKind | string;
+  title: string;
+  description?: string | null;
+  command?: string;
+  cwd?: string | null;
+  schedule?: string | null;
+  schedule_label?: string;
+  next_run_at?: string | null;
+  timeout?: number | null;
+  status: Record<string, any>;
+  records: Record<string, any>[];
+  logs: string[];
+}
+
+export interface RuntimeSystemMetricSample {
+  sampled_at: number;
+  cpu_percent: number;
+  memory_percent: number;
+  memory_used: number;
+  memory_available: number;
+  memory_total: number;
+}
+
+export interface RuntimeSystemMetricsResponse {
+  device_id: string;
+  interval_seconds: number;
+  retention_seconds: number;
+  history_hours: number;
+  latest: RuntimeSystemMetricSample | null;
+  samples: RuntimeSystemMetricSample[];
+}
+
 export const fetchRuntimeStatus = async (entryId: string): Promise<RuntimeStatusResponse> => {
   const response = await api.get(getDeviceEntryPath(entryId, '/runtime/status'));
+  return response.data;
+};
+
+export const fetchRuntimeSystemMetrics = async (
+  entryId: string,
+  params: { hours?: number; limit?: number } = {}
+): Promise<RuntimeSystemMetricsResponse> => {
+  const response = await api.get(getDeviceEntryPath(entryId, '/runtime/system-metrics'), { params });
   return response.data;
 };
 
@@ -80,8 +133,36 @@ export const triggerRuntimeItem = async (entryId: string, source: RuntimeSource,
   return response.data;
 };
 
+export const stopRuntimeItem = async (entryId: string, source: RuntimeSource, itemKey: string) => {
+  const response = await api.post(
+    getDeviceEntryPath(entryId, `/runtime/items/${encodeURIComponent(source)}/${encodeURIComponent(itemKey)}/stop`)
+  );
+  return response.data;
+};
+
+export const fetchRuntimeItemLogs = async (
+  entryId: string,
+  source: RuntimeSource,
+  itemKey: string,
+  lines = 500
+): Promise<RuntimeItemLogsResponse> => {
+  const response = await api.get(
+    getDeviceEntryPath(entryId, `/runtime/items/${encodeURIComponent(source)}/${encodeURIComponent(itemKey)}/logs`),
+    { params: { n: lines } }
+  );
+  return response.data;
+};
+
 export const toggleRuntimeJob = async (entryId: string, jobKey: string, enabled: boolean) => {
   const response = await api.post(getDeviceEntryPath(entryId, `/runtime/jobs/${encodeURIComponent(jobKey)}/toggle`), { enabled });
+  return response.data;
+};
+
+export const configureRuntimeJobSchedule = async (entryId: string, jobKey: string, schedulePolicy: SchedulePolicy | null) => {
+  const response = await api.post(
+    getDeviceEntryPath(entryId, `/runtime/jobs/${encodeURIComponent(jobKey)}/schedule`),
+    { schedule_policy: schedulePolicy }
+  );
   return response.data;
 };
 

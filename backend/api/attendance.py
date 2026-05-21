@@ -40,6 +40,7 @@ from backend.core.attendance_order import (
     execute_order_action,
     query_order_refund_details,
 )
+from backend.core.attendance_ai_precheck import build_attendance_wjx_ai_precheck
 from backend.core.auth import get_current_user_from_token
 from backend.core.device import get_device_id
 from backend.core.feature_access_guard import (
@@ -96,6 +97,8 @@ ATTENDANCE_WJX_DATA_SHEET_TITLE = "问卷数据"
 ATTENDANCE_WJX_DATA_OWNER_TYPE = "attendance_questionnaire"
 ATTENDANCE_WJX_DATA_OWNER_KEY = "wjx-data"
 ATTENDANCE_WJX_DATA_SHEET_KEY = "data"
+ATTENDANCE_WJX_AI_COLUMN = "AI初判"
+ATTENDANCE_WJX_DEPRECATED_DATA_COLUMNS = {"AI初判报告"}
 ATTENDANCE_WJX_DATA_COLUMNS = [
     "序号",
     "提交时间",
@@ -107,6 +110,7 @@ ATTENDANCE_WJX_DATA_COLUMNS = [
     "修正需求",
     "补充说明",
     "处理状态",
+    ATTENDANCE_WJX_AI_COLUMN,
 ]
 ATTENDANCE_WJX_OMITTED_COURSE_OWNER_NAMES = ("陈坤泽",)
 FEEDBACK_COURSE_SOURCE_SHEET_ID = 4
@@ -259,6 +263,11 @@ class AttendanceWjxDataUpdateRequest(BaseModel):
     revision_result: Optional[dict[str, Any]] = None
 
 
+class AttendanceWjxAiPrecheckRequest(BaseModel):
+    persist: bool = True
+    use_codex_cli: bool = True
+
+
 class AttendanceWjxDataForegroundColors(BaseModel):
     submitted: Optional[str] = None
     course: Optional[str] = None
@@ -288,6 +297,11 @@ class AttendanceWjxDataItem(BaseModel):
     synced_at: float
     created_at: float
     updated_at: float
+
+
+class AttendanceWjxAiPrecheckResponse(BaseModel):
+    item: AttendanceWjxDataItem
+    precheck: dict[str, Any] = Field(default_factory=dict)
 
 
 class AttendanceWjxDataSyncStateItem(BaseModel):
@@ -750,6 +764,7 @@ def _create_default_attendance_wjx_sheet_document() -> dict[str, Any]:
             "考勤负责人": {"display_mode": "single_line"},
             "学号": {"display_mode": "single_line"},
             "姓名": {"display_mode": "single_line"},
+            ATTENDANCE_WJX_AI_COLUMN: {"display_mode": "wrap"},
         },
         "view_settings": {
             "show_row_numbers": True,
@@ -804,6 +819,8 @@ def _normalize_attendance_wjx_sheet_columns(value: Any) -> list[str]:
             columns.append(header)
             seen.add(header)
     for header in source_columns:
+        if header in ATTENDANCE_WJX_DEPRECATED_DATA_COLUMNS:
+            continue
         if header not in seen:
             columns.append(header)
             seen.add(header)
@@ -817,7 +834,12 @@ def _normalize_attendance_wjx_sheet_row(
     source_columns: list[str] | None = None,
 ) -> list[str]:
     if isinstance(row, dict):
-        values = [_normalize_attendance_wjx_sheet_cell(row.get(column, "")) for column in columns]
+        values = []
+        for column in columns:
+            if column == ATTENDANCE_WJX_AI_COLUMN:
+                values.append(_normalize_attendance_wjx_sheet_cell(row.get(column) or row.get("AI初判报告", "")))
+            else:
+                values.append(_normalize_attendance_wjx_sheet_cell(row.get(column, "")))
     elif isinstance(row, list):
         source_values = [_normalize_attendance_wjx_sheet_cell(cell) for cell in row]
         if source_columns:
@@ -825,7 +847,12 @@ def _normalize_attendance_wjx_sheet_row(
                 header: source_values[index] if index < len(source_values) else ""
                 for index, header in enumerate(source_columns)
             }
-            values = [source_by_header.get(column, "") for column in columns]
+            values = []
+            for column in columns:
+                if column == ATTENDANCE_WJX_AI_COLUMN:
+                    values.append(source_by_header.get(column) or source_by_header.get("AI初判报告", ""))
+                else:
+                    values.append(source_by_header.get(column, ""))
         else:
             values = source_values
     else:
@@ -915,6 +942,7 @@ def _normalize_attendance_wjx_sheet_data_start_row(document_json: dict[str, Any]
 def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     source = dict(value) if isinstance(value, dict) else {}
     source_columns = _normalize_attendance_wjx_sheet_source_columns(source.get("columns"))
+    source_has_ai_column = ATTENDANCE_WJX_AI_COLUMN in source_columns
     columns = _normalize_attendance_wjx_sheet_columns(source.get("columns"))
     rows_source = source.get("rows")
     rows = [
@@ -926,12 +954,22 @@ def _normalize_attendance_wjx_sheet_document(value: Any) -> dict[str, Any]:
     source_column_configs = source.get("column_configs") if isinstance(source.get("column_configs"), dict) else {}
     column_configs = dict(source_column_configs)
     for header, config in default_document["column_configs"].items():
+        if header == ATTENDANCE_WJX_AI_COLUMN and source_has_ai_column:
+            if isinstance(column_configs.get(header), dict):
+                column_configs[header] = dict(column_configs[header])
+            continue
         if not isinstance(column_configs.get(header), dict):
             column_configs[header] = dict(config)
             continue
         merged_config = dict(config)
         merged_config.update(column_configs[header])
         column_configs[header] = merged_config
+    for header in ATTENDANCE_WJX_DEPRECATED_DATA_COLUMNS:
+        column_configs.pop(header, None)
+    if not source_has_ai_column:
+        ai_config = dict(column_configs.get(ATTENDANCE_WJX_AI_COLUMN) or {})
+        ai_config.setdefault("display_mode", "wrap")
+        column_configs[ATTENDANCE_WJX_AI_COLUMN] = ai_config
     if not isinstance(source_column_configs.get("考勤负责人"), dict) and isinstance(column_configs.get("课程"), dict):
         owner_config = dict(column_configs["课程"])
         owner_config.setdefault("display_mode", "single_line")
@@ -1230,6 +1268,9 @@ def _entry_to_attendance_wjx_sheet_values(
     *,
     process_status: str | None = None,
 ) -> dict[str, Any]:
+    revision_result = dict(entry.revision_result_json or {})
+    ai_precheck = revision_result.get("ai_precheck") if isinstance(revision_result.get("ai_precheck"), dict) else {}
+    ai_text = ai_precheck.get("report") or ai_precheck.get("summary", "")
     return {
         "序号": entry.seq,
         "提交时间": entry.submitted_at_text,
@@ -1240,6 +1281,7 @@ def _entry_to_attendance_wjx_sheet_values(
         "修正需求": entry.correction_request,
         "补充说明": entry.extra_note,
         "处理状态": process_status if process_status is not None else (entry.process_note or entry.process_status),
+        ATTENDANCE_WJX_AI_COLUMN: ai_text,
     }
 
 
@@ -1257,6 +1299,7 @@ def _wjx_raw_row_to_attendance_wjx_sheet_values(row: dict[str, Any]) -> dict[str
         "修正需求": _normalize_wjx_data_text(row.get("4、修正需求")),
         "补充说明": _normalize_wjx_data_text(row.get("5、其他补充说明")),
         "处理状态": "",
+        ATTENDANCE_WJX_AI_COLUMN: "",
     }
 
 
@@ -1578,6 +1621,13 @@ def _serialize_attendance_wjx_sheet_row(
 
     source = _get_attendance_wjx_sheet_cell(row, columns, "来源")
     process_status = _get_attendance_wjx_sheet_cell(row, columns, "处理状态")
+    ai_report = _get_attendance_wjx_sheet_cell(row, columns, ATTENDANCE_WJX_AI_COLUMN)
+    revision_result: dict[str, Any] = {}
+    if ai_report:
+        revision_result["ai_precheck"] = {
+            "summary": "",
+            "report": ai_report,
+        }
     item = {
         "id": seq,
         "activity_id": LOCAL_FEEDBACK_ACTIVITY_ID if source == LOCAL_FEEDBACK_SOURCE else FIXED_WJX_TEMPLATE_ACTIVITY_ID,
@@ -1595,7 +1645,7 @@ def _serialize_attendance_wjx_sheet_row(
         "process_status": process_status,
         "process_note": process_status,
         "match_result": {},
-        "revision_result": {},
+        "revision_result": revision_result,
         "raw_row": {},
         "synced_at": updated_at,
         "created_at": updated_at,
@@ -1649,8 +1699,10 @@ def _build_attendance_wjx_sheet_data_page(
                     "correction_request",
                     "extra_note",
                     "process_status",
+                    "revision_result",
                 )
             )
+            haystack = f"{haystack} {item.get('revision_result')}"
             if normalized_keyword not in haystack:
                 continue
         items.append(item)
@@ -3238,6 +3290,86 @@ def update_attendance_wjx_data(
     session.commit()
     session.refresh(entry)
     return AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry))
+
+
+def _resolve_attendance_wjx_precheck_entry(session: Session, entry_id: int) -> AttendanceWjxDataEntry:
+    entry = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
+        .where(AttendanceWjxDataEntry.seq == entry_id)
+        .order_by(AttendanceWjxDataEntry.id.desc())
+    ).first()
+    if entry is not None:
+        return entry
+    return get_attendance_wjx_data_entry_or_404(session, entry_id)
+
+
+@router.post("/wjx-data/{entry_id}/ai-precheck", response_model=AttendanceWjxAiPrecheckResponse)
+def run_attendance_wjx_data_ai_precheck(
+    entry_id: int,
+    payload: AttendanceWjxAiPrecheckRequest = AttendanceWjxAiPrecheckRequest(),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.wjx-data")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    entry = _resolve_attendance_wjx_precheck_entry(session, entry_id)
+    precheck = build_attendance_wjx_ai_precheck(
+        entry,
+        session,
+        use_codex_cli=payload.use_codex_cli,
+    )
+
+    if not payload.persist:
+        item = serialize_attendance_wjx_data_entry(entry)
+        revision_result = dict(item.get("revision_result") or {})
+        revision_result["ai_precheck"] = precheck
+        item["revision_result"] = revision_result
+        return AttendanceWjxAiPrecheckResponse(
+            item=AttendanceWjxDataItem.model_validate(item),
+            precheck=precheck,
+        )
+
+    now = time.time()
+    legacy_entries = session.exec(
+        select(AttendanceWjxDataEntry)
+        .where(AttendanceWjxDataEntry.activity_id.in_([FIXED_WJX_TEMPLATE_ACTIVITY_ID, LOCAL_FEEDBACK_ACTIVITY_ID]))
+        .where(AttendanceWjxDataEntry.seq == entry.seq)
+    ).all()
+    if not legacy_entries:
+        legacy_entries = [entry]
+
+    for legacy_entry in legacy_entries:
+        revision_result = dict(legacy_entry.revision_result_json or {})
+        revision_result["ai_precheck"] = precheck
+        legacy_entry.revision_result_json = revision_result
+        legacy_entry.updated_at = now
+        session.add(legacy_entry)
+    session.commit()
+
+    sheet_document = _ensure_attendance_wjx_sheet_document(session, create=True)
+    if sheet_document is not None:
+        next_document, _inserted, changed = _upsert_attendance_wjx_sheet_values(
+            dict(sheet_document.document_json or {}),
+            {
+                "序号": entry.seq,
+                ATTENDANCE_WJX_AI_COLUMN: precheck.get("report") or precheck.get("summary", ""),
+            },
+            preserve_process_status=True,
+        )
+        if changed:
+            _persist_attendance_wjx_sheet_document(
+                session,
+                sheet_document,
+                next_document,
+                actor=current_user,
+            )
+
+    session.refresh(entry)
+    return AttendanceWjxAiPrecheckResponse(
+        item=AttendanceWjxDataItem.model_validate(serialize_attendance_wjx_data_entry(entry)),
+        precheck=precheck,
+    )
 
 
 @router.delete("/wjx-data/{entry_id}")

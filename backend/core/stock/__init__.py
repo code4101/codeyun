@@ -39,6 +39,17 @@ from .eastmoney_sync import (
     sync_trade_data,
 )
 from .eastmoney_sheet import refresh_eastmoney_sheet_workbook
+from .market_data import (
+    collect_market_history_targets,
+    get_market_data_db_path,
+    list_latest_market_quotes,
+    refresh_market_quotes_from_eastmoney_public,
+    refresh_market_quotes_from_futu,
+    serialize_quote_item,
+    serialize_quote_refresh_result,
+    serialize_sync_result,
+    sync_market_history_from_futu,
+)
 
 __all__ = [
     "EASTMONEY_HOME_URL",
@@ -76,4 +87,13 @@ __all__ = [
     "serialize_trade_record",
     "sync_trade_data",
     "refresh_eastmoney_sheet_workbook",
+    "collect_market_history_targets",
+    "get_market_data_db_path",
+    "list_latest_market_quotes",
+    "refresh_market_quotes_from_eastmoney_public",
+    "refresh_market_quotes_from_futu",
+    "serialize_quote_item",
+    "serialize_quote_refresh_result",
+    "serialize_sync_result",
+    "sync_market_history_from_futu",
 ]

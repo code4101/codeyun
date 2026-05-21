@@ -1,3 +1,6 @@
+import time
+from types import SimpleNamespace
+
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, create_engine, text
 
@@ -6,6 +9,7 @@ from backend.migrations.manager import (
     run_startup_schema_repairs,
     v55_migrate_documentasset_primary_key_to_numeric,
 )
+from backend.models import Task
 
 
 def test_task_manager_constructor_defers_database_work(monkeypatch):
@@ -33,7 +37,7 @@ def test_task_manager_constructor_defers_database_work(monkeypatch):
         manager.scheduler.shutdown(wait=False)
 
 
-def test_startup_schema_repairs_add_task_runtime_kind_to_legacy_task_table():
+def test_startup_schema_repairs_add_runtime_columns_to_legacy_task_table():
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -65,8 +69,60 @@ def test_startup_schema_repairs_add_task_runtime_kind_to_legacy_task_table():
         columns = {row[1] for row in session.exec(text("PRAGMA table_info(task)")).all()}
         indexes = {row[1] for row in session.exec(text("PRAGMA index_list(task)")).all()}
 
-    assert "runtime_kind" in columns
+    assert {"runtime_kind", "schedule_policy", "schedule_state"} <= columns
     assert "ix_task_runtime_kind" in indexes
+
+
+def test_task_manager_deep_scans_missing_services_only(engine, session, monkeypatch):
+    service = Task(
+        id="service-codeyun",
+        name="codeyun",
+        command="python dev.py",
+        device_id="local-device",
+        runtime_kind="service",
+        created_at=time.time(),
+    )
+    job = Task(
+        id="job-weekly",
+        name="weekly",
+        command="python weekly.py",
+        device_id="local-device",
+        runtime_kind="job",
+        created_at=time.time(),
+    )
+    session.add(service)
+    session.add(job)
+    session.commit()
+
+    class FakeDevice:
+        def __init__(self):
+            self.calls = []
+            self.running = set()
+
+        def scan_running_tasks(self, tasks, *, deep_scan=False):
+            ids = [task.id for task in tasks]
+            self.calls.append((ids, deep_scan))
+            if deep_scan:
+                self.running.update(ids)
+
+        def get_task_status(self, task_id):
+            return SimpleNamespace(running=task_id in self.running)
+
+    fake_device = FakeDevice()
+    manager = task_manager_module.TaskManager()
+    try:
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+        monkeypatch.setattr(manager, "_get_local_device_id", lambda: "local-device")
+        monkeypatch.setattr(task_manager_module.device_manager, "get_device", lambda device_id: fake_device)
+
+        manager.scan_running_tasks()
+
+        assert fake_device.calls == [
+            (["service-codeyun", "job-weekly"], False),
+            (["service-codeyun"], True),
+        ]
+    finally:
+        manager.scheduler.shutdown(wait=False)
 
 
 def test_documentasset_numeric_migration_drops_stale_readable_views():

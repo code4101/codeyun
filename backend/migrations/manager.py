@@ -4435,6 +4435,21 @@ def _ensure_task_runtime_kind_column(session: Session) -> bool:
     return changed
 
 
+def _ensure_task_schedule_policy_columns(session: Session) -> bool:
+    if not _table_exists(session, "task"):
+        return False
+    columns = _get_table_columns(session, "task")
+    changed = False
+    if "schedule_policy" not in columns:
+        session.exec(text('ALTER TABLE "task" ADD COLUMN schedule_policy JSON'))
+        changed = True
+    if "schedule_state" not in columns:
+        session.exec(text("ALTER TABLE \"task\" ADD COLUMN schedule_state JSON NOT NULL DEFAULT '{}'"))
+        changed = True
+    session.commit()
+    return changed
+
+
 def v61_add_task_runtime_kind(session: Session):
     """
     Migration V61: Add explicit command runtime kind for service/job grouping.
@@ -4447,6 +4462,18 @@ def v61_add_task_runtime_kind(session: Session):
         print("  Column 'runtime_kind' already exists, skipping.")
 
 
+def v62_add_task_schedule_policy(session: Session):
+    """
+    Migration V62: Add generic schedule policy/state columns for runtime units.
+    """
+    print("Running System Upgrade V62: Add task schedule policy...")
+    if not _table_exists(session, "task"):
+        print("  Task table missing, skipping.")
+        return
+    if not _ensure_task_schedule_policy_columns(session):
+        print("  Columns 'schedule_policy' and 'schedule_state' already exist, skipping.")
+
+
 def run_startup_schema_repairs(engine):
     """
     Apply small idempotent repairs required before the full migration chain can
@@ -4457,6 +4484,7 @@ def run_startup_schema_repairs(engine):
         return
     with Session(engine) as session:
         _ensure_task_runtime_kind_column(session)
+        _ensure_task_schedule_policy_columns(session)
 
 
 # --- Migration Registry ---
@@ -4523,6 +4551,7 @@ MIGRATIONS = [
     (59, "Migrate note node primary keys to numeric ids", v59_migrate_notenode_primary_key_to_numeric),
     (60, "Migrate sheet/workbook primary keys to numeric route ids", v60_migrate_sheet_workbook_primary_keys_to_numeric),
     (61, "Add task runtime kind", v61_add_task_runtime_kind),
+    (62, "Add task schedule policy", v62_add_task_schedule_policy),
 ]
 
 def get_current_version(session: Session) -> int:

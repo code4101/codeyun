@@ -19,6 +19,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
+from sqlalchemy import or_
 from sqlmodel import Session, delete, func, select
 
 from backend.core.ai_chat import (
@@ -96,6 +97,9 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
     "900",
 )
+NOTE_SHEET_PERF_LOG_MAX_ENTRIES_PER_BATCH = 200
+NOTE_SHEET_PERF_LOG_DIRNAME = "debug"
+NOTE_SHEET_PERF_LOG_FILENAME = "note-sheet-perf.jsonl"
 RESOURCE_ACCESS_ROLES = ("deny", "viewer", "editor", "manager")
 RESOURCE_ACCESS_ROLE_RANK = {"deny": 0, "viewer": 1, "editor": 2, "manager": 3}
 RESOURCE_ACCESS_SUBJECT_ANONYMOUS = "anonymous"
@@ -117,6 +121,7 @@ ATTENDANCE_TEMPLATE_FANBEI_SOURCE_COURSES = (
     *ATTENDANCE_TEMPLATE_EVEN_MONTH_SOURCE_COURSES,
 )
 ATTENDANCE_TEMPLATE_FANBEI_START_DAY = 9
+_note_sheet_perf_log_lock = threading.Lock()
 ATTENDANCE_FIELD_BINDINGS: dict[str, tuple[str, int]] = {
     "course_type": ("课程类型", 0),
     "course_name": ("课程名称", 1),
@@ -259,6 +264,7 @@ class NoteSheetSummaryResponse(BaseModel):
     updated_by_user_id: Optional[int] = None
     created_at: float
     updated_at: float
+    parent_workbook_id: Optional[int] = None
     workbook_items: list[WorkbookRefItem] = Field(default_factory=list)
     access: Optional[NoteSheetResourceAccess] = None
 
@@ -292,6 +298,20 @@ class NoteSheetColumnOptionsResponse(BaseModel):
     header: str
     total_rows: int = 0
     options: list[NoteSheetColumnOptionItemResponse] = Field(default_factory=list)
+
+
+class NoteSheetPerfLogRequest(BaseModel):
+    session_id: str = ""
+    url: str = ""
+    user_agent: str = ""
+    workbook_id: Optional[int] = None
+    sheet_id: Optional[int] = None
+    entries: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class NoteSheetPerfLogResponse(BaseModel):
+    stored_count: int = 0
+    path: str = ""
 
 
 class NoteSheetPagePatchRequest(BaseModel):
@@ -560,6 +580,16 @@ class NoteSheetResourceAccessResponse(BaseModel):
     grants: list[NoteSheetResourceAccessGrantItem] = Field(default_factory=list)
 
 
+class NoteSheetAccessUserOption(BaseModel):
+    id: int
+    username: str
+    nickname: str = ""
+
+
+class NoteSheetAccessUserOptionsResponse(BaseModel):
+    users: list[NoteSheetAccessUserOption] = Field(default_factory=list)
+
+
 class WorkbookCreateRequest(BaseModel):
     title: str = ""
 
@@ -616,6 +646,38 @@ def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return _create_default_sheet_document()
     return dict(value)
+
+
+def _get_note_sheet_perf_log_path() -> Path:
+    return get_settings().data_dir / NOTE_SHEET_PERF_LOG_DIRNAME / NOTE_SHEET_PERF_LOG_FILENAME
+
+
+def _write_note_sheet_perf_log_batch(
+    payload: NoteSheetPerfLogRequest,
+    current_user: User | None,
+) -> NoteSheetPerfLogResponse:
+    entries = payload.entries[:NOTE_SHEET_PERF_LOG_MAX_ENTRIES_PER_BATCH]
+    log_path = _get_note_sheet_perf_log_path()
+    if not entries:
+        return NoteSheetPerfLogResponse(stored_count=0, path=os.fspath(log_path))
+
+    record = {
+        "received_at": time.time(),
+        "session_id": payload.session_id,
+        "url": payload.url,
+        "user_agent": payload.user_agent,
+        "workbook_id": payload.workbook_id,
+        "sheet_id": payload.sheet_id,
+        "user_id": current_user.id if current_user else None,
+        "entries": entries,
+    }
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(record, ensure_ascii=False, default=str)
+    with _note_sheet_perf_log_lock:
+        with log_path.open("a", encoding="utf-8") as file:
+            file.write(line)
+            file.write("\n")
+    return NoteSheetPerfLogResponse(stored_count=len(entries), path=os.fspath(log_path))
 
 
 def _normalize_document_data_start_row(document_json: dict[str, Any]) -> int:
@@ -1490,6 +1552,23 @@ def _normalize_restricted_cell_value(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+RESTRICTED_DATA_UPDATE_STRUCTURAL_KEYS = (
+    "schema_version",
+    "data_start_row",
+    "field_row_index",
+    "merged_cells",
+    "formula_reference_origin",
+    "header_groups",
+    "cell_meta",
+    "entity_columns",
+    "entity_rows",
+    "entity_cells",
+    "column_configs",
+    "column_widths",
+    "view_settings",
+)
+
+
 def _apply_restricted_data_column_update(
     current_document: dict[str, Any],
     incoming_document: dict[str, Any],
@@ -1501,6 +1580,10 @@ def _apply_restricted_data_column_update(
     incoming_columns = _normalize_document_columns(incoming_normalized)
     if incoming_columns != current_columns:
         raise HTTPException(status_code=403, detail="游客只能编辑开放列，不能修改表格结构")
+
+    for key in RESTRICTED_DATA_UPDATE_STRUCTURAL_KEYS:
+        if current_normalized.get(key) != incoming_normalized.get(key):
+            raise HTTPException(status_code=403, detail="游客只能编辑开放列，不能修改表格结构")
 
     allowed_columns = {
         int(index)
@@ -2263,6 +2346,21 @@ def _replace_document_rows_for_excel_import(
     return next_document, len(preserved_rows)
 
 
+def _append_document_rows_for_excel_import(
+    document_json: dict[str, Any],
+    import_rows: list[list[Any]],
+    *,
+    extra_columns: list[str] | None = None,
+) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    normalized, _appended_columns = _append_document_extra_columns_for_excel_import(normalized, extra_columns or [])
+    columns = _normalize_document_columns(normalized)
+    column_count = len(columns)
+    existing_rows = [_normalize_sheet_row(row, column_count) for row in _extract_document_rows(normalized)]
+    normalized_import_rows = [_normalize_sheet_row(row, column_count) for row in import_rows]
+    return _replace_document_data_rows(normalized, [*existing_rows, *normalized_import_rows]), len(existing_rows)
+
+
 def _load_attendance_order_lookup_provider():
     _load_attendance_kqdb_provider()
     try:
@@ -2664,12 +2762,15 @@ def _serialize_note_sheet_action_detail(
     session: Session,
     document: SheetDocument,
     access: NoteSheetResourceAccess,
+    current_user: User | None,
 ) -> NoteSheetDetailResponse:
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     return NoteSheetDetailResponse.model_validate(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=dict(document.document_json or {}),
             access=access,
         ),
@@ -2721,7 +2822,7 @@ def _run_registration_match_action(
         session.refresh(document)
 
     return NoteSheetRegistrationMatchResponse(
-        sheet=_serialize_note_sheet_action_detail(session, document, access),
+        sheet=_serialize_note_sheet_action_detail(session, document, access, current_user),
         action=action,
         updated_count=summary["updated_count"],
         skipped_count=summary["skipped_count"],
@@ -4304,8 +4405,10 @@ def _build_attendance_template_detail_response(
     response_document: dict[str, Any],
     *,
     access: NoteSheetResourceAccess | None = None,
+    current_user: User | None = None,
 ) -> NoteSheetDetailResponse:
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     paginate_enabled, page_size = _get_document_pagination_settings(response_document)
     if paginate_enabled:
         page_document, pagination = _build_paged_document(response_document, page=1, page_size=page_size)
@@ -4317,6 +4420,7 @@ def _build_attendance_template_detail_response(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=page_document,
             pagination=pagination,
             access=access,
@@ -5828,7 +5932,11 @@ def _get_workbook_or_404(
     return workbook, access
 
 
-def _list_workbook_refs_for_sheet_ids(session: Session, sheet_ids: list[str]) -> dict[str, list[WorkbookRefItem]]:
+def _list_workbook_refs_for_sheet_ids(
+    session: Session,
+    sheet_ids: list[str],
+    current_user: User | None,
+) -> dict[str, list[WorkbookRefItem]]:
     if not sheet_ids:
         return {}
 
@@ -5847,6 +5955,7 @@ def _list_workbook_refs_for_sheet_ids(session: Session, sheet_ids: list[str]) ->
 
     workbook_ids = sorted({link.workbook_id for link in links})
     workbook_map = load_workbooks_by_refs(session, workbook_ids)
+    workbook_readable_cache: dict[str, bool] = {}
 
     result: dict[str, list[WorkbookRefItem]] = {sheet_id: [] for sheet_id in sheet_ids}
     for link in links:
@@ -5854,16 +5963,60 @@ def _list_workbook_refs_for_sheet_ids(session: Session, sheet_ids: list[str]) ->
         sheet = sheet_map.get(str(link.sheet_id))
         if workbook is None or sheet is None:
             continue
+        workbook_key = str(workbook.id)
+        can_read_workbook = workbook_readable_cache.get(workbook_key)
+        if can_read_workbook is None:
+            can_read_workbook = _resolve_workbook_resource_access(
+                session,
+                workbook,
+                current_user,
+            ).capabilities.can_read
+            workbook_readable_cache[workbook_key] = can_read_workbook
+        if not can_read_workbook:
+            continue
         result.setdefault(str(sheet.id), []).append(
             WorkbookRefItem(id=_require_workbook_numeric_id(workbook), title=workbook.title),
         )
     return result
 
 
+def _list_parent_workbook_ids_for_sheet_ids(session: Session, sheet_ids: list[str]) -> dict[str, int]:
+    if not sheet_ids:
+        return {}
+
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    unique_sheets = {str(sheet.id): sheet for sheet in sheet_map.values()}.values()
+    sheet_refs = sorted({ref for sheet in unique_sheets for ref in sheet_ref_aliases(sheet)})
+    if not sheet_refs:
+        return {}
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.sheet_id.in_(sheet_refs))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    if not links:
+        return {}
+
+    workbook_map = load_workbooks_by_refs(session, sorted({link.workbook_id for link in links}))
+    result: dict[str, int] = {}
+    for link in links:
+        sheet = sheet_map.get(str(link.sheet_id))
+        workbook = workbook_map.get(str(link.workbook_id))
+        if sheet is None or workbook is None:
+            continue
+        result.setdefault(str(sheet.id), _require_workbook_numeric_id(workbook))
+    return result
+
+
+def _get_parent_workbook_id_for_sheet(session: Session, document: SheetDocument) -> int | None:
+    return _list_parent_workbook_ids_for_sheet_ids(session, [document.id]).get(str(document.id))
+
+
 def _serialize_sheet_summary(
     document: SheetDocument,
     *,
     workbook_items: list[WorkbookRefItem] | None = None,
+    parent_workbook_id: int | None = None,
     access: NoteSheetResourceAccess | None = None,
 ) -> dict[str, Any]:
     return {
@@ -5876,6 +6029,7 @@ def _serialize_sheet_summary(
         "updated_by_user_id": document.updated_by_user_id,
         "created_at": float(document.created_at or 0.0),
         "updated_at": float(document.updated_at or 0.0),
+        "parent_workbook_id": parent_workbook_id,
         "workbook_items": workbook_items or [],
         "access": access,
     }
@@ -5885,12 +6039,18 @@ def _serialize_sheet_detail(
     document: SheetDocument,
     *,
     workbook_items: list[WorkbookRefItem] | None = None,
+    parent_workbook_id: int | None = None,
     document_json: dict[str, Any] | None = None,
     pagination: NoteSheetPaginationResponse | None = None,
     access: NoteSheetResourceAccess | None = None,
 ) -> dict[str, Any]:
     return {
-        **_serialize_sheet_summary(document, workbook_items=workbook_items, access=access),
+        **_serialize_sheet_summary(
+            document,
+            workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
+            access=access,
+        ),
         "owner_type": document.owner_type,
         "owner_key": document.owner_key,
         "sheet_key": document.sheet_key,
@@ -6792,7 +6952,8 @@ def _serialize_workbook_detail(
     sheet_ids = [link.sheet_id for link in links]
     sheet_map = load_sheets_by_refs(session, sheet_ids)
     sheets = list({str(sheet.id): sheet for sheet in sheet_map.values()}.values())
-    sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(session, sheet_ids)
+    sheet_workbook_refs = _list_workbook_refs_for_sheet_ids(session, sheet_ids, current_user)
+    parent_workbook_id = _require_workbook_numeric_id(workbook)
     ordered_sheets: list[dict[str, Any]] = []
     for link in links:
         sheet = sheet_map.get(str(link.sheet_id))
@@ -6804,6 +6965,7 @@ def _serialize_workbook_detail(
         ordered_sheets.append(_serialize_sheet_summary(
             sheet,
             workbook_items=sheet_workbook_refs.get(str(sheet.id), []),
+            parent_workbook_id=parent_workbook_id,
             access=sheet_access,
         ))
     return {
@@ -6960,6 +7122,35 @@ def _get_next_workbook_link_order(session: Session, workbook_id: str) -> int:
     return max(int(links[0].order_index or 0), 0) + 10
 
 
+@router.get("/access-users", response_model=NoteSheetAccessUserOptionsResponse)
+def list_note_sheet_access_users(
+    q: str = Query(default="", max_length=100),
+    limit: int = Query(default=50, ge=1, le=100),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    _require_note_sheets_feature(session, current_user)
+    query_text = q.strip()
+    statement = select(User).where(User.is_active == True)  # noqa: E712
+    if query_text:
+        pattern = f"%{query_text}%"
+        statement = statement.where(or_(User.username.like(pattern), User.nickname.like(pattern)))
+    statement = statement.order_by(User.username.asc(), User.id.asc()).limit(limit)
+
+    users = session.exec(statement).all()
+    return NoteSheetAccessUserOptionsResponse(
+        users=[
+            NoteSheetAccessUserOption(
+                id=user.id or 0,
+                username=user.username,
+                nickname=user.nickname or "",
+            )
+            for user in users
+            if user.id is not None
+        ],
+    )
+
+
 @router.get("/sheets", response_model=list[NoteSheetSummaryResponse])
 def list_note_sheets(
     session: Session = Depends(get_session),
@@ -6972,17 +7163,27 @@ def list_note_sheets(
         .where(SheetDocument.owner_user_id == current_user.id)
         .order_by(SheetDocument.updated_at.desc(), SheetDocument.created_at.desc())
     ).all()
-    workbook_refs = _list_workbook_refs_for_sheet_ids(session, [document.id for document in documents])
+    workbook_refs = _list_workbook_refs_for_sheet_ids(session, [document.id for document in documents], current_user)
+    parent_workbook_ids = _list_parent_workbook_ids_for_sheet_ids(session, [document.id for document in documents])
     return [
         NoteSheetSummaryResponse.model_validate(
             _serialize_sheet_summary(
                 document,
                 workbook_items=workbook_refs.get(document.id, []),
+                parent_workbook_id=parent_workbook_ids.get(str(document.id)),
                 access=_resolve_sheet_resource_access(session, document, current_user),
             ),
         )
         for document in documents
     ]
+
+
+@router.post("/perf-logs", response_model=NoteSheetPerfLogResponse)
+def append_note_sheet_perf_logs(
+    payload: NoteSheetPerfLogRequest,
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    return _write_note_sheet_perf_log_batch(payload, current_user)
 
 
 @router.post("/sheets", response_model=NoteSheetDetailResponse)
@@ -7041,11 +7242,13 @@ def create_note_sheet(
         session.add(workbook)
     session.commit()
     session.refresh(document)
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     return NoteSheetDetailResponse.model_validate(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             access=_resolve_sheet_resource_access(session, document, current_user, workbook=workbook),
         ),
     )
@@ -7069,7 +7272,8 @@ def get_note_sheet(
         workbook_id=workbook_id,
     )
     _sync_attendance_questionnaire_sheet_document(session, document)
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     full_document = dict(document.document_json or {})
     document_paginate_enabled, document_page_size = _get_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if paginate is None else paginate
@@ -7088,6 +7292,7 @@ def get_note_sheet(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=page_document,
             pagination=pagination,
             access=access,
@@ -7111,7 +7316,8 @@ def query_note_sheet(
         workbook_id=workbook_id,
     )
     _sync_attendance_questionnaire_sheet_document(session, document)
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     full_document = dict(document.document_json or {})
     document_paginate_enabled, document_page_size = _get_document_pagination_settings(full_document)
     effective_paginate = document_paginate_enabled if payload.paginate is None else payload.paginate
@@ -7131,6 +7337,7 @@ def query_note_sheet(
     return _serialize_sheet_detail(
         document,
         workbook_items=workbook_items,
+        parent_workbook_id=parent_workbook_id,
         document_json=page_document,
         pagination=pagination,
         access=access,
@@ -7222,11 +7429,13 @@ def patch_note_sheet_table(
         session.commit()
         session.refresh(document)
 
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     sheet = NoteSheetDetailResponse.model_validate(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             access=access,
         ),
     )
@@ -7341,7 +7550,8 @@ def update_note_sheet(
         session.commit()
         session.refresh(document)
 
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     response_document = dict(document.document_json or {})
     response_pagination: NoteSheetPaginationResponse | None = None
     response_paginate_enabled, _response_page_size = _get_document_pagination_settings(response_document)
@@ -7358,6 +7568,7 @@ def update_note_sheet(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=response_document,
             pagination=response_pagination,
             access=access,
@@ -7370,6 +7581,7 @@ async def import_note_sheet_excel_reset(
     sheet_id: int,
     file: UploadFile = File(...),
     instruction: str = Form(default=""),
+    mode: Literal["append", "reset"] = Form(default="reset"),
     action_document_row: int | None = Form(default=None),
     action_column: int | None = Form(default=None),
     workbook_id: int | None = Query(default=None, ge=1),
@@ -7384,7 +7596,7 @@ async def import_note_sheet_excel_reset(
         workbook_id=workbook_id,
     )
     if not access.capabilities.can_edit_data:
-        raise HTTPException(status_code=403, detail="导入重置需要完整编辑权限")
+        raise HTTPException(status_code=403, detail="导入 Excel 需要完整编辑权限")
 
     filename = str(file.filename or "").strip()
     suffix = Path(filename).suffix.lower()
@@ -7401,13 +7613,20 @@ async def import_note_sheet_excel_reset(
         action_document_row=action_document_row,
         action_column=action_column,
     )
-    next_document, preserved_row_count = _replace_document_rows_for_excel_import(
-        current_document,
-        import_rows,
-        extra_columns=extra_columns,
-        action_document_row=action_document_row,
-        action_column=action_column,
-    )
+    if mode == "append":
+        next_document, preserved_row_count = _append_document_rows_for_excel_import(
+            current_document,
+            import_rows,
+            extra_columns=extra_columns,
+        )
+    else:
+        next_document, preserved_row_count = _replace_document_rows_for_excel_import(
+            current_document,
+            import_rows,
+            extra_columns=extra_columns,
+            action_document_row=action_document_row,
+            action_column=action_column,
+        )
 
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
@@ -7421,11 +7640,13 @@ async def import_note_sheet_excel_reset(
         session.commit()
         session.refresh(document)
 
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     detail = NoteSheetDetailResponse.model_validate(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=dict(document.document_json or {}),
             access=access,
         ),
@@ -7495,7 +7716,7 @@ def get_note_sheet_active_registration_match_run(
         workbook_id=workbook_id,
     )
     run = _get_active_registration_match_run_snapshot(_require_sheet_numeric_id(document), action)
-    sheet = _serialize_note_sheet_action_detail(session, document, access)
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
     return _serialize_registration_match_run(
         run,
         sheet=sheet,
@@ -7526,7 +7747,7 @@ def get_note_sheet_registration_match_run(
     run = _get_registration_match_run_snapshot(run_id)
     if run is None or int(run.get("sheet_id") or 0) != _require_sheet_numeric_id(document):
         raise HTTPException(status_code=404, detail="匹配任务不存在")
-    sheet = _serialize_note_sheet_action_detail(session, document, access)
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
     return _serialize_registration_match_run(run, sheet=sheet)
 
 
@@ -7607,7 +7828,8 @@ def sort_note_sheet(
         session.commit()
         session.refresh(document)
 
-    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id]).get(document.id, [])
+    workbook_items = _list_workbook_refs_for_sheet_ids(session, [document.id], current_user).get(document.id, [])
+    parent_workbook_id = _get_parent_workbook_id_for_sheet(session, document)
     paginate_enabled, page_size = _get_document_pagination_settings(next_document)
     if paginate_enabled:
         response_document, pagination = _build_paged_document(next_document, page=1, page_size=page_size)
@@ -7619,6 +7841,7 @@ def sort_note_sheet(
         _serialize_sheet_detail(
             document,
             workbook_items=workbook_items,
+            parent_workbook_id=parent_workbook_id,
             document_json=response_document,
             pagination=pagination,
             access=access,
@@ -7668,7 +7891,13 @@ def generate_attendance_summary_next_month_templates(
         next_document = current_document
 
     return NoteSheetAttendanceTemplateGenerationResponse(
-        sheet=_build_attendance_template_detail_response(session, document, next_document, access=access),
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
         generated=generated,
         skipped=skipped,
     )
@@ -7721,7 +7950,13 @@ def generate_attendance_summary_course_template(
         next_document = current_document
 
     return NoteSheetAttendanceTemplateGenerationResponse(
-        sheet=_build_attendance_template_detail_response(session, document, next_document, access=access),
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
         generated=generated,
         skipped=skipped,
     )
@@ -7850,7 +8085,13 @@ def update_attendance_summary_link_counts(
         next_document = current_document
 
     return NoteSheetAttendanceLinkCountUpdateResponse(
-        sheet=_build_attendance_template_detail_response(session, document, next_document, access=access),
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
         updated=updated,
         skipped=skipped,
     )
@@ -7902,7 +8143,13 @@ def set_attendance_summary_row_completed(
         next_document = current_document
 
     return NoteSheetAttendanceCompletionResponse(
-        sheet=_build_attendance_template_detail_response(session, document, next_document, access=access),
+        sheet=_build_attendance_template_detail_response(
+            session,
+            document,
+            next_document,
+            access=access,
+            current_user=current_user,
+        ),
         row_index=next_row_index,
     )
 

@@ -1,35 +1,63 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import {
   createNoteSheet,
+  deleteWorkbook,
   deleteNoteSheet,
   fetchNoteSheet,
   fetchWorkbook,
+  getNoteSheetApiErrorStatus,
   removeSheetFromWorkbook,
   reorderWorkbookSheets,
+  saveAsWorkbook,
   updateNoteSheet,
+  updateWorkbook,
   type NoteSheetResourceAccess,
   type WorkbookDetail,
   type WorkbookRefItem,
 } from '@/api/noteSheets'
+import { useUserStore } from '@/store/userStore'
 import { useSortableList } from '@/utils/useSortableList'
+import {
+  CODEYUN_PUBLIC_HOST,
+  buildCodeyunUrlVariant,
+  copyTextToClipboard,
+  openUrlInNewWindow,
+  resolveCodeyunUrl,
+  type CodeyunLinkVariant,
+} from '@/utils/codeyunLinks'
 import NoteSheetAccessDialog from '../components/NoteSheetAccessDialog.vue'
 import NoteSheetWorkspace from '../components/NoteSheetWorkspace.vue'
 
 const APP_TITLE = 'CodeYun'
 const SHEET_TAB_CONTEXT_MENU_WIDTH = 148
-const SHEET_TAB_CONTEXT_MENU_HEIGHT = 320
+const SHEET_TAB_CONTEXT_MENU_HEIGHT = 280
+const RESOURCE_LINK_SUBMENU_WIDTH = 176
+const SHEET_ADVANCED_SUBMENU_WIDTH = 196
+const WORKBOOK_CONTEXT_MENU_WIDTH = 148
+const WORKBOOK_CONTEXT_MENU_HEIGHT = 300
+
+type ResourceLinkMenuCommand = 'copy' | CodeyunLinkVariant
+
+const resourceLinkMenuItems: Array<{ command: ResourceLinkMenuCommand; label: string }> = [
+  { command: 'copy', label: '复制' },
+  { command: 'local', label: '在本地打开' },
+  { command: 'public', label: `在 ${CODEYUN_PUBLIC_HOST} 打开` },
+]
 
 type SheetTabContextMenuCommand =
   | 'create'
   | 'rename'
   | 'duplicate'
   | 'configure'
+  | 'advanced'
+  | 'hide_empty_columns'
+  | 'detect_option_filters'
   | 'access'
-  | 'share'
+  | 'link'
   | 'remove'
   | 'delete'
 
@@ -38,12 +66,44 @@ type SheetTabContextMenuItem = {
   label: string
   danger?: boolean
   divided?: boolean
+  linkSubmenu?: boolean
+  advancedSubmenu?: boolean
+  deleteSubmenu?: boolean
+}
+
+type WorkbookContextMenuCommand =
+  | 'link'
+  | 'rename'
+  | 'access'
+  | 'template'
+  | 'duplicate'
+  | 'delete'
+
+type WorkbookContextMenuItem = {
+  command: WorkbookContextMenuCommand
+  label: string
+  danger?: boolean
+  divided?: boolean
+  linkSubmenu?: boolean
 }
 
 type SheetWorkspaceRouteView = 'lookup' | 'sheet'
 
+type ResourceAccessIssue = {
+  resourceType: 'sheet' | 'workbook'
+  status: number | null
+  message: string
+}
+
+type SheetWorkspaceLoadErrorPayload = {
+  sheetId: number
+  status: number | null
+  message: string
+}
+
 const route = useRoute()
 const router = useRouter()
+const userStore = useUserStore()
 
 const loading = ref(false)
 const workbook = ref<WorkbookDetail | null>(null)
@@ -52,6 +112,8 @@ const sheetTabsRef = ref<HTMLElement | null>(null)
 const sheetWorkspaceRef = ref<InstanceType<typeof NoteSheetWorkspace> | null>(null)
 const standaloneSheetTitle = ref('')
 const standaloneWorkbookTitle = ref('')
+const standaloneParentWorkbookId = ref<number | null>(null)
+const standaloneWorkbookItems = ref<WorkbookRefItem[]>([])
 const errorText = ref('')
 const sheetTabReorderSaving = ref(false)
 let sheetTabClickSuppressedUntil = 0
@@ -61,8 +123,21 @@ const sheetTabContextMenu = ref({
   left: 0,
   top: 0,
 })
+const workbookContextMenu = ref({
+  visible: false,
+  left: 0,
+  top: 0,
+})
 const sheetAccessDialogVisible = ref(false)
 const sheetAccessDialogSheet = ref<WorkbookDetail['sheets'][number] | null>(null)
+const workbookAccessDialogVisible = ref(false)
+const resourceAccessIssue = ref<ResourceAccessIssue | null>(null)
+const sheetWorkspaceReloadKey = ref(0)
+const inlineLoginForm = reactive({
+  username: '',
+  password: '',
+})
+const inlineLoginError = ref('')
 
 const isWorkbookMode = computed(() => String(route.name ?? '') === 'PublicWorkbookResource')
 const workbookId = computed(() => normalizePositiveInt(route.params.workbookId))
@@ -90,9 +165,17 @@ const canEditSheetTabContextMenuSheet = computed(() => (
 const canManageSheetTabContextMenuSheet = computed(() => (
   sheetTabContextMenuSheet.value?.access?.capabilities.can_manage_access !== false
 ))
+const canRemoveSheetTabContextMenuSheet = computed(() => (
+  !!sheetTabContextMenuSheet.value
+  && canManageWorkbookSheets.value
+  && canManageSheetTabContextMenuSheet.value
+  && (workbook.value?.sheets.length ?? 0) > 1
+))
+const canDeleteSheetTabContextMenuSheet = computed(() => (
+  !!sheetTabContextMenuSheet.value && canManageSheetTabContextMenuSheet.value
+))
 const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
   const sheet = sheetTabContextMenuSheet.value
-  const sheetCount = workbook.value?.sheets.length ?? 0
   const items: Array<SheetTabContextMenuItem & { enabled: boolean }> = [
     { command: 'create', label: '新建工作表', enabled: canEditWorkbookSheets.value },
     { command: 'rename', label: '重命名', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
@@ -101,20 +184,22 @@ const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
       label: '复制工作表',
       enabled: !!sheet && canEditWorkbookSheets.value && canEditSheetTabContextMenuSheet.value,
     },
-    { command: 'configure', label: '配置', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
-    { command: 'access', label: '共享权限', enabled: !!sheet && canManageSheetTabContextMenuSheet.value },
-    { command: 'share', label: '分享链接', enabled: !!sheet },
+    { command: 'configure', label: '设置表格', enabled: !!sheet && canEditSheetTabContextMenuSheet.value },
     {
-      command: 'remove',
-      label: '移出工作簿',
-      divided: true,
-      enabled: !!sheet && canManageWorkbookSheets.value && canManageSheetTabContextMenuSheet.value && sheetCount > 1,
+      command: 'advanced',
+      label: '高级功能',
+      advancedSubmenu: true,
+      enabled: !!sheet && canEditSheetTabContextMenuSheet.value,
     },
+    { command: 'access', label: '设置权限', enabled: !!sheet && canManageSheetTabContextMenuSheet.value },
+    { command: 'link', label: '打开链接', linkSubmenu: true, enabled: !!sheet },
     {
       command: 'delete',
-      label: '删除工作表',
+      label: '删除',
       danger: true,
-      enabled: !!sheet && canManageSheetTabContextMenuSheet.value,
+      divided: true,
+      deleteSubmenu: canRemoveSheetTabContextMenuSheet.value,
+      enabled: canDeleteSheetTabContextMenuSheet.value,
     },
   ]
   return items
@@ -124,7 +209,51 @@ const sheetTabContextMenuItems = computed<SheetTabContextMenuItem[]>(() => {
       label: item.label,
       danger: item.danger,
       divided: item.divided,
+      linkSubmenu: item.linkSubmenu,
+      advancedSubmenu: item.advancedSubmenu,
+      deleteSubmenu: item.deleteSubmenu,
     }))
+})
+const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
+  if (!workbook.value) {
+    return []
+  }
+  const items: Array<WorkbookContextMenuItem & { enabled: boolean }> = [
+    { command: 'link', label: '打开链接', linkSubmenu: true, enabled: true },
+    { command: 'rename', label: '重命名', enabled: canManageWorkbookSheets.value },
+    { command: 'access', label: '设置权限', enabled: canManageWorkbookSheets.value },
+    { command: 'template', label: '另存为模版', enabled: true },
+    { command: 'duplicate', label: '另存为副本', enabled: true },
+    { command: 'delete', label: '删除工作簿', danger: true, divided: true, enabled: canManageWorkbookSheets.value },
+  ]
+  return items
+    .filter((item) => item.enabled)
+    .map((item) => ({
+      command: item.command,
+      label: item.label,
+      danger: item.danger,
+      divided: item.divided,
+      linkSubmenu: item.linkSubmenu,
+    }))
+})
+const standaloneBackWorkbook = computed(() => {
+  if (isWorkbookMode.value || standaloneWorkbookItems.value.length !== 1) {
+    return null
+  }
+  return standaloneWorkbookItems.value[0] ?? null
+})
+const standaloneWorkbookBackTo = computed(() => {
+  const parentWorkbookId = standaloneParentWorkbookId.value ?? standaloneBackWorkbook.value?.id ?? null
+  const currentSheetId = sheetId.value
+  if (parentWorkbookId == null || currentSheetId == null) {
+    return ''
+  }
+
+  const query = new URLSearchParams({ sheet: String(currentSheetId) })
+  if (routeWorkspaceView.value) {
+    query.set('view', routeWorkspaceView.value)
+  }
+  return `/workbook/${parentWorkbookId}?${query.toString()}`
 })
 const pageDocumentTitle = computed(() => {
   if (isWorkbookMode.value) {
@@ -140,6 +269,31 @@ const pageDocumentTitle = computed(() => {
     ? `${workbookTitle}/${sheetTitle}`
     : sheetTitle || workbookTitle
   return resourceTitle ? `${resourceTitle} - ${APP_TITLE}` : APP_TITLE
+})
+const resourceAccessTitle = computed(() => {
+  const issue = resourceAccessIssue.value
+  if (!issue) {
+    return ''
+  }
+  return issue.resourceType === 'workbook'
+    ? '没有权限访问该工作簿'
+    : '没有权限访问该工作表'
+})
+const resourceAccessDescription = computed(() => (
+  userStore.isAuthenticated
+    ? '当前账号没有这个资源的访问权限，可以换账号后重试。'
+    : '登录有权限的账号后，会自动重新打开当前链接。'
+))
+const currentAccountLabel = computed(() => {
+  const user = userStore.user
+  if (!user) {
+    return ''
+  }
+  const nickname = String(user.nickname || '').trim()
+  const username = String(user.username || '').trim()
+  return nickname && username && nickname !== username
+    ? `${nickname}（${username}）`
+    : nickname || username
 })
 
 function normalizePositiveInt(value: unknown): number | null {
@@ -160,6 +314,54 @@ function normalizeWorkspaceViewQuery(value: unknown): SheetWorkspaceRouteView | 
   return null
 }
 
+function isAccessDeniedStatus(status: number | null) {
+  return status === 401 || status === 403
+}
+
+function setResourceAccessIssue(resourceType: ResourceAccessIssue['resourceType'], status: number | null, message?: string) {
+  resourceAccessIssue.value = {
+    resourceType,
+    status,
+    message: message || (resourceType === 'workbook' ? '没有权限访问该工作簿' : '没有权限访问该工作表'),
+  }
+}
+
+function clearResourceAccessIssue() {
+  resourceAccessIssue.value = null
+  inlineLoginError.value = ''
+}
+
+function refreshCurrentResourceAfterAuth() {
+  clearResourceAccessIssue()
+  sheetWorkspaceReloadKey.value += 1
+  if (isWorkbookMode.value) {
+    void loadWorkbookResource()
+  }
+}
+
+async function submitInlineLogin() {
+  const username = inlineLoginForm.username.trim()
+  const password = inlineLoginForm.password
+  inlineLoginError.value = ''
+  if (!username || !password) {
+    inlineLoginError.value = '请输入用户名和密码'
+    return
+  }
+
+  const success = await userStore.login(username, password)
+  if (!success) {
+    inlineLoginError.value = userStore.error || '登录失败'
+    return
+  }
+  inlineLoginForm.password = ''
+  refreshCurrentResourceAfterAuth()
+}
+
+function switchInlineLoginAccount() {
+  userStore.logout()
+  inlineLoginError.value = ''
+}
+
 function resolveSheetId() {
   const sheets = workbook.value?.sheets ?? []
   const validIds = new Set(sheets.map((sheet) => sheet.id))
@@ -174,14 +376,27 @@ async function redirectWorkbookRouteFromSheetQuery(): Promise<boolean> {
     return false
   }
 
-  const detail = await fetchNoteSheet(targetSheetId, { paginate: false })
-  const targetWorkbook = detail?.workbook_items.find((item) => item.id !== staleWorkbookId) ?? detail?.workbook_items[0]
-  if (!targetWorkbook || targetWorkbook.id === staleWorkbookId) {
+  let detail = null
+  try {
+    detail = await fetchNoteSheet(targetSheetId, { paginate: false })
+  } catch (error) {
+    if (isAccessDeniedStatus(getNoteSheetApiErrorStatus(error))) {
+      return false
+    }
+    throw error
+  }
+  const targetWorkbookId = (
+    detail?.workbook_items.find((item) => item.id !== staleWorkbookId)?.id
+    ?? detail?.workbook_items[0]?.id
+    ?? detail?.parent_workbook_id
+    ?? null
+  )
+  if (!targetWorkbookId || targetWorkbookId === staleWorkbookId) {
     return false
   }
 
   void router.replace({
-    path: `/workbook/${targetWorkbook.id}`,
+    path: `/workbook/${targetWorkbookId}`,
     query: { ...route.query, sheet: String(targetSheetId) },
   })
   return true
@@ -200,13 +415,14 @@ async function loadWorkbookResource() {
 
   loading.value = true
   errorText.value = ''
+  clearResourceAccessIssue()
   try {
     const detail = await fetchWorkbook(workbookId.value)
     if (!detail) {
       if (await redirectWorkbookRouteFromSheetQuery()) {
         return
       }
-      errorText.value = '工作簿不存在或不可访问'
+      errorText.value = '工作簿不存在'
       workbook.value = null
       activeSheetId.value = null
       return
@@ -221,10 +437,14 @@ async function loadWorkbookResource() {
     }
   } catch (error) {
     console.warn('Failed to load public workbook resource:', error)
-    if (await redirectWorkbookRouteFromSheetQuery()) {
+    const status = getNoteSheetApiErrorStatus(error)
+    if (!isAccessDeniedStatus(status) && await redirectWorkbookRouteFromSheetQuery()) {
       return
     }
-    errorText.value = '没有权限访问该工作簿'
+    errorText.value = isAccessDeniedStatus(status) ? '没有权限访问该工作簿' : '工作簿加载失败'
+    if (isAccessDeniedStatus(status)) {
+      setResourceAccessIssue('workbook', status, errorText.value)
+    }
     workbook.value = null
     activeSheetId.value = null
   } finally {
@@ -234,6 +454,8 @@ async function loadWorkbookResource() {
 
 function selectSheet(nextSheetId: number) {
   closeSheetTabContextMenu()
+  closeWorkbookContextMenu()
+  clearResourceAccessIssue()
   if (!workbook.value || nextSheetId === activeSheetId.value) {
     return
   }
@@ -316,7 +538,7 @@ async function refreshWorkbookAfterSheetMutation(preferredSheetId?: number | nul
   if (!detail) {
     workbook.value = null
     activeSheetId.value = null
-    errorText.value = '工作簿不存在或不可访问'
+    errorText.value = '工作簿不存在'
     return
   }
 
@@ -344,25 +566,51 @@ function closeSheetTabContextMenu() {
   sheetTabContextMenu.value.visible = false
 }
 
-function positionSheetTabContextMenu(event: MouseEvent) {
+function closeWorkbookContextMenu() {
+  workbookContextMenu.value.visible = false
+}
+
+function positionSheetTabContextMenu(event: MouseEvent, submenuWidth = 0) {
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight
-  sheetTabContextMenu.value.left = Math.max(8, Math.min(event.clientX, viewportWidth - SHEET_TAB_CONTEXT_MENU_WIDTH - 8))
+  const occupiedWidth = SHEET_TAB_CONTEXT_MENU_WIDTH + Math.max(0, submenuWidth - 2)
+  sheetTabContextMenu.value.left = Math.max(8, Math.min(event.clientX, viewportWidth - occupiedWidth - 8))
   sheetTabContextMenu.value.top = Math.max(8, Math.min(event.clientY, viewportHeight - SHEET_TAB_CONTEXT_MENU_HEIGHT - 8))
+}
+
+function positionWorkbookContextMenu(event: MouseEvent, submenuWidth = 0) {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight
+  const occupiedWidth = WORKBOOK_CONTEXT_MENU_WIDTH + Math.max(0, submenuWidth - 2)
+  workbookContextMenu.value.left = Math.max(8, Math.min(event.clientX, viewportWidth - occupiedWidth - 8))
+  workbookContextMenu.value.top = Math.max(8, Math.min(event.clientY, viewportHeight - WORKBOOK_CONTEXT_MENU_HEIGHT - 8))
 }
 
 function openSheetTabContextMenu(event: MouseEvent, sheet: WorkbookDetail['sheets'][number]) {
   event.preventDefault()
   event.stopPropagation()
   event.stopImmediatePropagation()
+  closeWorkbookContextMenu()
 
   if (sheet.id !== activeSheetId.value) {
     selectSheet(sheet.id)
   }
 
-  positionSheetTabContextMenu(event)
+  positionSheetTabContextMenu(event, Math.max(RESOURCE_LINK_SUBMENU_WIDTH, SHEET_ADVANCED_SUBMENU_WIDTH))
   sheetTabContextMenu.value.sheetId = sheet.id
   sheetTabContextMenu.value.visible = true
+}
+
+function openWorkbookContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+  if (!workbook.value) {
+    return
+  }
+  closeSheetTabContextMenu()
+  positionWorkbookContextMenu(event, RESOURCE_LINK_SUBMENU_WIDTH)
+  workbookContextMenu.value.visible = true
 }
 
 async function waitForSheetWorkspaceRef() {
@@ -389,13 +637,127 @@ async function configureSheetFromTabContextMenu() {
   workspace?.openSheetSettings?.()
 }
 
-function openSheetShareLinkFromTabContextMenu() {
+async function runSheetAdvancedActionFromTabContextMenu(command: 'hide_empty_columns' | 'detect_option_filters') {
   const sheet = sheetTabContextMenuSheet.value
   closeSheetTabContextMenu()
-  if (!sheet) {
+  if (!sheet || !canEditSheetTabContextMenuSheet.value) {
+    ElMessage.warning('没有权限修改该工作表')
     return
   }
-  void router.push(`/sheet/${sheet.id}`)
+  if (sheet.id !== activeSheetId.value) {
+    selectSheet(sheet.id)
+  }
+  const workspace = await waitForSheetWorkspaceRef()
+  if (command === 'hide_empty_columns') {
+    workspace?.hideEmptyColumns?.()
+    return
+  }
+  workspace?.detectAndSetOptionFilters?.()
+}
+
+function resolveSheetResourceHref(targetSheetId: number) {
+  return router.resolve({
+    path: `/sheet/${targetSheetId}`,
+    query: routeWorkspaceView.value ? { view: routeWorkspaceView.value } : undefined,
+  }).href
+}
+
+function resolveWorkbookResourceHref(targetWorkbookId: number, targetSheetId?: number | null) {
+  const query: Record<string, string> = {}
+  if (targetSheetId != null) {
+    query.sheet = String(targetSheetId)
+  }
+  if (routeWorkspaceView.value) {
+    query.view = routeWorkspaceView.value
+  }
+
+  return router.resolve({
+    path: `/workbook/${targetWorkbookId}`,
+    query: Object.keys(query).length ? query : undefined,
+  }).href
+}
+
+function resolveAbsoluteResourceHref(href: string) {
+  return resolveCodeyunUrl(href)?.toString() ?? href
+}
+
+function openResourceHref(href: string, variant?: CodeyunLinkVariant) {
+  const targetUrl = variant
+    ? buildCodeyunUrlVariant(href, variant)
+    : resolveAbsoluteResourceHref(href)
+  if (!targetUrl) {
+    ElMessage.warning('链接无法打开')
+    return
+  }
+  openUrlInNewWindow(targetUrl)
+}
+
+async function copyResourceHref(href: string) {
+  try {
+    await copyTextToClipboard(resolveAbsoluteResourceHref(href))
+    ElMessage.success('已复制链接')
+  } catch (error) {
+    console.warn('Failed to copy resource link:', error)
+    ElMessage.error('复制链接失败')
+  }
+}
+
+function getSheetTabResourceHref() {
+  const sheet = sheetTabContextMenuSheet.value
+  if (!sheet) {
+    return ''
+  }
+  return resolveSheetResourceHref(sheet.id)
+}
+
+function getWorkbookResourceHref() {
+  const currentWorkbook = workbook.value
+  if (!currentWorkbook) {
+    return ''
+  }
+  return resolveWorkbookResourceHref(currentWorkbook.id, activeSheetId.value)
+}
+
+function openSheetTabLinkFromContextMenu() {
+  const href = getSheetTabResourceHref()
+  closeSheetTabContextMenu()
+  if (href) {
+    openResourceHref(href)
+  }
+}
+
+async function handleSheetTabLinkMenuCommand(command: ResourceLinkMenuCommand) {
+  const href = getSheetTabResourceHref()
+  closeSheetTabContextMenu()
+  if (!href) {
+    return
+  }
+  if (command === 'copy') {
+    await copyResourceHref(href)
+    return
+  }
+  openResourceHref(href, command)
+}
+
+function openWorkbookLinkFromContextMenu() {
+  const href = getWorkbookResourceHref()
+  closeWorkbookContextMenu()
+  if (href) {
+    openResourceHref(href)
+  }
+}
+
+async function handleWorkbookLinkMenuCommand(command: ResourceLinkMenuCommand) {
+  const href = getWorkbookResourceHref()
+  closeWorkbookContextMenu()
+  if (!href) {
+    return
+  }
+  if (command === 'copy') {
+    await copyResourceHref(href)
+    return
+  }
+  openResourceHref(href, command)
 }
 
 function openSheetAccessFromTabContextMenu() {
@@ -425,6 +787,134 @@ function handleSheetAccessSaved(access: NoteSheetResourceAccess) {
   }
 }
 
+function handleWorkbookAccessSaved(access: NoteSheetResourceAccess) {
+  if (!workbook.value) {
+    return
+  }
+  workbook.value = { ...workbook.value, access }
+}
+
+function resolveWorkbookHref(targetWorkbookId: number, targetSheetId?: number | null) {
+  return router.resolve({
+    path: `/workbook/${targetWorkbookId}`,
+    query: targetSheetId != null ? { sheet: String(targetSheetId) } : undefined,
+  }).href
+}
+
+function openWorkbook(targetWorkbook: WorkbookDetail, targetSheetId?: number | null) {
+  const href = resolveWorkbookHref(targetWorkbook.id, targetSheetId)
+  window.open(href, '_blank', 'noopener,noreferrer')
+}
+
+function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
+  switch (command) {
+    case 'link':
+      openWorkbookLinkFromContextMenu()
+      break
+    case 'rename':
+      void renameWorkbookFromContextMenu()
+      break
+    case 'access':
+      openWorkbookAccessFromContextMenu()
+      break
+    case 'template':
+      void saveAsWorkbookFromContextMenu('template')
+      break
+    case 'duplicate':
+      void saveAsWorkbookFromContextMenu('duplicate')
+      break
+    case 'delete':
+      void deleteWorkbookFromContextMenu()
+      break
+  }
+}
+
+async function renameWorkbookFromContextMenu() {
+  const currentWorkbook = workbook.value
+  closeWorkbookContextMenu()
+  if (!currentWorkbook || !canManageWorkbookSheets.value) {
+    ElMessage.warning('没有权限重命名该工作簿')
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入工作簿名称', '重命名工作簿', {
+      inputValue: currentWorkbook.title,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const nextTitle = value.trim()
+    if (nextTitle === currentWorkbook.title) {
+      return
+    }
+    const detail = await updateWorkbook(currentWorkbook.id, { title: nextTitle })
+    workbook.value = detail
+  } catch {
+    return
+  }
+}
+
+function openWorkbookAccessFromContextMenu() {
+  closeWorkbookContextMenu()
+  if (!workbook.value || !canManageWorkbookSheets.value) {
+    ElMessage.warning('没有权限管理该工作簿')
+    return
+  }
+  workbookAccessDialogVisible.value = true
+}
+
+async function saveAsWorkbookFromContextMenu(mode: 'template' | 'duplicate') {
+  const currentWorkbook = workbook.value
+  closeWorkbookContextMenu()
+  if (!currentWorkbook) {
+    return
+  }
+
+  const modeLabel = mode === 'template' ? '模版' : '副本'
+  const defaultTitle = `${currentWorkbook.title} ${modeLabel}`
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新工作簿名称', `另存为${modeLabel}`, {
+      inputValue: defaultTitle,
+      confirmButtonText: '创建',
+      cancelButtonText: '取消',
+      inputValidator: (inputValue) => inputValue.trim() ? true : '工作簿名称不能为空',
+    })
+    const nextWorkbook = await saveAsWorkbook(currentWorkbook.id, {
+      mode,
+      title: value.trim(),
+    })
+    openWorkbook(nextWorkbook, nextWorkbook.sheets[0]?.id ?? null)
+  } catch {
+    return
+  }
+}
+
+async function deleteWorkbookFromContextMenu() {
+  const currentWorkbook = workbook.value
+  closeWorkbookContextMenu()
+  if (!currentWorkbook || !canManageWorkbookSheets.value) {
+    ElMessage.warning('没有权限删除该工作簿')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `删除工作簿“${currentWorkbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其权限设置。此操作不可恢复。`,
+      '删除工作簿',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+    await deleteWorkbook(currentWorkbook.id)
+    void router.push('/notes/sheets')
+  } catch {
+    return
+  }
+}
+
 function handleSheetTabContextMenuCommand(command: SheetTabContextMenuCommand) {
   switch (command) {
     case 'create':
@@ -439,11 +929,19 @@ function handleSheetTabContextMenuCommand(command: SheetTabContextMenuCommand) {
     case 'configure':
       void configureSheetFromTabContextMenu()
       break
+    case 'advanced':
+      break
+    case 'hide_empty_columns':
+      void runSheetAdvancedActionFromTabContextMenu('hide_empty_columns')
+      break
+    case 'detect_option_filters':
+      void runSheetAdvancedActionFromTabContextMenu('detect_option_filters')
+      break
     case 'access':
       openSheetAccessFromTabContextMenu()
       break
-    case 'share':
-      openSheetShareLinkFromTabContextMenu()
+    case 'link':
+      openSheetTabLinkFromContextMenu()
       break
     case 'remove':
       void removeSheetFromTabContextMenu()
@@ -577,7 +1075,7 @@ async function deleteSheetFromTabContextMenu() {
 
   try {
     await ElMessageBox.confirm(
-      `删除工作表“${sheet.title}”后，会从所有工作簿中移除并删除其共享权限。此操作不可恢复。`,
+      `删除工作表“${sheet.title}”后，会从所有工作簿中移除并删除其权限设置。此操作不可恢复。`,
       '删除工作表',
       {
         confirmButtonText: '确认删除',
@@ -593,24 +1091,56 @@ async function deleteSheetFromTabContextMenu() {
 }
 
 function handleGlobalMouseDown(event: MouseEvent) {
-  if (!sheetTabContextMenu.value.visible) {
-    return
-  }
   const target = event.target
-  if (target instanceof HTMLElement && target.closest('.sheet-tab-context-menu')) {
+  if (
+    target instanceof HTMLElement
+    && (target.closest('.sheet-tab-context-menu') || target.closest('.workbook-context-menu'))
+  ) {
     return
   }
-  closeSheetTabContextMenu()
+  if (sheetTabContextMenu.value.visible) {
+    closeSheetTabContextMenu()
+  }
+  if (workbookContextMenu.value.visible) {
+    closeWorkbookContextMenu()
+  }
 }
 
 function handleGlobalKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape') {
     closeSheetTabContextMenu()
+    closeWorkbookContextMenu()
   }
 }
 
 function handleSheetMissing() {
-  errorText.value = '工作表不存在或不可访问'
+  errorText.value = '工作表不存在'
+  clearResourceAccessIssue()
+  if (!isWorkbookMode.value) {
+    standaloneSheetTitle.value = ''
+    standaloneWorkbookTitle.value = ''
+    standaloneParentWorkbookId.value = null
+    standaloneWorkbookItems.value = []
+  }
+}
+
+function handleSheetLoadError(payload: SheetWorkspaceLoadErrorPayload) {
+  const currentSheetId = isWorkbookMode.value ? activeSheetId.value : sheetId.value
+  if (payload.sheetId !== currentSheetId) {
+    return
+  }
+  if (isAccessDeniedStatus(payload.status)) {
+    errorText.value = payload.message || '没有权限访问该工作表'
+    setResourceAccessIssue('sheet', payload.status, errorText.value)
+    if (!isWorkbookMode.value) {
+      standaloneSheetTitle.value = ''
+      standaloneWorkbookTitle.value = ''
+      standaloneParentWorkbookId.value = null
+      standaloneWorkbookItems.value = []
+    }
+    return
+  }
+  errorText.value = payload.message || '工作表加载失败'
 }
 
 function handleSheetSync(payload: {
@@ -618,11 +1148,15 @@ function handleSheetSync(payload: {
   title: string
   version: number
   updatedAt: number
+  parentWorkbookId?: number | null
   workbookItems?: WorkbookRefItem[]
 }) {
+  clearResourceAccessIssue()
   if (!isWorkbookMode.value) {
+    standaloneParentWorkbookId.value = payload.parentWorkbookId ?? null
+    standaloneWorkbookItems.value = payload.workbookItems ?? []
     standaloneSheetTitle.value = payload.title || ''
-    standaloneWorkbookTitle.value = payload.workbookItems?.[0]?.title || ''
+    standaloneWorkbookTitle.value = standaloneWorkbookItems.value[0]?.title || ''
     return
   }
   if (!workbook.value) {
@@ -649,6 +1183,8 @@ watch(
     if (nextSheetId !== previousSheetId && !isWorkbookMode.value) {
       standaloneSheetTitle.value = ''
       standaloneWorkbookTitle.value = ''
+      standaloneParentWorkbookId.value = null
+      standaloneWorkbookItems.value = []
     }
   },
 )
@@ -656,6 +1192,7 @@ watch(
 watch(
   () => route.fullPath,
   () => {
+    clearResourceAccessIssue()
     document.title = pageDocumentTitle.value
   },
 )
@@ -687,7 +1224,13 @@ onBeforeUnmount(() => {
   <div class="sheet-resource-page" v-loading="loading">
     <template v-if="isWorkbookMode">
       <div v-if="workbook" class="resource-tabs-bar">
-        <div class="resource-workbook-title" :title="workbook.title">{{ workbook.title }}</div>
+        <div
+          class="resource-workbook-title"
+          :title="workbook.title"
+          @contextmenu="openWorkbookContextMenu"
+        >
+          {{ workbook.title }}
+        </div>
         <div
           ref="sheetTabsRef"
           class="resource-sheet-tabs"
@@ -716,11 +1259,135 @@ onBeforeUnmount(() => {
       >
         <template v-for="item in sheetTabContextMenuItems" :key="item.command">
           <div v-if="item.divided" class="sheet-tab-context-menu-separator"></div>
+          <div
+            v-if="item.linkSubmenu"
+            class="sheet-tab-context-menu-branch"
+          >
+            <button
+              type="button"
+              class="sheet-tab-context-menu-item has-submenu"
+              @click="handleSheetTabContextMenuCommand(item.command)"
+            >
+              {{ item.label }}
+            </button>
+            <div class="sheet-tab-context-submenu resource-link-submenu">
+              <button
+                v-for="linkItem in resourceLinkMenuItems"
+                :key="linkItem.command"
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleSheetTabLinkMenuCommand(linkItem.command)"
+              >
+                {{ linkItem.label }}
+              </button>
+            </div>
+          </div>
+          <div
+            v-else-if="item.deleteSubmenu"
+            class="sheet-tab-context-menu-branch"
+          >
+            <button
+              type="button"
+              class="sheet-tab-context-menu-item has-submenu"
+              :class="{ danger: item.danger }"
+              @click="handleSheetTabContextMenuCommand(item.command)"
+            >
+              {{ item.label }}
+            </button>
+            <div class="sheet-tab-context-submenu">
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleSheetTabContextMenuCommand('remove')"
+              >
+                移出工作簿
+              </button>
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item danger"
+                @click="handleSheetTabContextMenuCommand('delete')"
+              >
+                删除工作表
+              </button>
+            </div>
+          </div>
+          <div
+            v-else-if="item.advancedSubmenu"
+            class="sheet-tab-context-menu-branch"
+          >
+            <button
+              type="button"
+              class="sheet-tab-context-menu-item has-submenu"
+              @click="handleSheetTabContextMenuCommand(item.command)"
+            >
+              {{ item.label }}
+            </button>
+            <div class="sheet-tab-context-submenu sheet-advanced-submenu">
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleSheetTabContextMenuCommand('hide_empty_columns')"
+              >
+                隐藏空列
+              </button>
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleSheetTabContextMenuCommand('detect_option_filters')"
+              >
+                检测并设置选项筛选
+              </button>
+            </div>
+          </div>
           <button
+            v-else
             type="button"
             class="sheet-tab-context-menu-item"
             :class="{ danger: item.danger }"
             @click="handleSheetTabContextMenuCommand(item.command)"
+          >
+            {{ item.label }}
+          </button>
+        </template>
+      </div>
+      <div
+        v-if="workbookContextMenu.visible"
+        class="sheet-tab-context-menu workbook-context-menu"
+        :style="{ left: `${workbookContextMenu.left}px`, top: `${workbookContextMenu.top}px` }"
+        @contextmenu.prevent.stop
+        @mousedown.stop
+      >
+        <template v-for="item in workbookContextMenuItems" :key="item.command">
+          <div v-if="item.divided" class="sheet-tab-context-menu-separator"></div>
+          <div
+            v-if="item.linkSubmenu"
+            class="sheet-tab-context-menu-branch"
+          >
+            <button
+              type="button"
+              class="sheet-tab-context-menu-item has-submenu"
+              @click="handleWorkbookContextMenuCommand(item.command)"
+            >
+              {{ item.label }}
+            </button>
+            <div class="sheet-tab-context-submenu resource-link-submenu">
+              <button
+                v-for="linkItem in resourceLinkMenuItems"
+                :key="linkItem.command"
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleWorkbookLinkMenuCommand(linkItem.command)"
+              >
+                {{ linkItem.label }}
+              </button>
+            </div>
+          </div>
+          <button
+            v-else
+            type="button"
+            class="sheet-tab-context-menu-item"
+            :class="{ danger: item.danger }"
+            @click="handleWorkbookContextMenuCommand(item.command)"
           >
             {{ item.label }}
           </button>
@@ -734,12 +1401,19 @@ onBeforeUnmount(() => {
         :title="sheetAccessDialogSheet?.title ?? ''"
         @saved="handleSheetAccessSaved"
       />
+      <NoteSheetAccessDialog
+        v-model="workbookAccessDialogVisible"
+        resource-type="workbook"
+        :resource-id="workbook?.id ?? null"
+        :title="workbook?.title ?? ''"
+        @saved="handleWorkbookAccessSaved"
+      />
 
       <NoteSheetWorkspace
-        v-if="activeSheetId"
+        v-if="activeSheetId && !resourceAccessIssue"
         ref="sheetWorkspaceRef"
         class="resource-sheet-workspace"
-        :key="`${workbookId}:${activeSheetId}`"
+        :key="`${workbookId}:${activeSheetId}:${sheetWorkspaceReloadKey}`"
         :workbook-id="workbookId"
         :sheet-id="activeSheetId"
         :initial-workspace-view="routeWorkspaceView"
@@ -748,28 +1422,87 @@ onBeforeUnmount(() => {
         :show-title-input="false"
         empty-text="请选择工作表"
         @missing="handleSheetMissing"
+        @load-error="handleSheetLoadError"
         @sheet-sync="handleSheetSync"
       />
-      <el-empty v-else-if="workbook" :description="errorText || '没有可访问的工作表'" />
+      <el-empty v-else-if="workbook && !resourceAccessIssue" :description="errorText || '没有可访问的工作表'" />
     </template>
 
     <template v-else>
       <NoteSheetWorkspace
-        v-if="sheetId"
+        v-if="sheetId && !resourceAccessIssue"
         class="resource-sheet-workspace"
-        :key="`sheet:${sheetId}`"
+        :key="`sheet:${sheetId}:${sheetWorkspaceReloadKey}`"
         :sheet-id="sheetId"
         :initial-workspace-view="routeWorkspaceView"
         default-height-mode="fill"
         :show-title-input="false"
-        empty-text="工作表不存在或不可访问"
+        :show-back-button="standaloneWorkbookBackTo !== ''"
+        :back-to="standaloneWorkbookBackTo || '/notes/sheets'"
+        back-label="回到工作簿"
+        empty-text="工作表不存在"
         @missing="handleSheetMissing"
+        @load-error="handleSheetLoadError"
         @sheet-sync="handleSheetSync"
       />
-      <el-empty v-else :description="errorText || '工作表地址无效'" />
+      <el-empty v-else-if="!resourceAccessIssue" :description="errorText || '工作表地址无效'" />
     </template>
 
-    <el-empty v-if="errorText && !loading && isWorkbookMode && !workbook" :description="errorText" />
+    <div v-if="resourceAccessIssue" class="resource-access-panel">
+      <div class="resource-access-content">
+        <div class="resource-access-title">{{ resourceAccessTitle }}</div>
+        <div class="resource-access-description">{{ resourceAccessDescription }}</div>
+
+        <form
+          v-if="!userStore.isAuthenticated"
+          class="resource-login-form"
+          @submit.prevent="submitInlineLogin"
+        >
+          <el-input
+            v-model.trim="inlineLoginForm.username"
+            placeholder="用户名"
+            autocomplete="username"
+          />
+          <el-input
+            v-model="inlineLoginForm.password"
+            type="password"
+            placeholder="密码"
+            autocomplete="current-password"
+            show-password
+          />
+          <el-alert
+            v-if="inlineLoginError || userStore.error"
+            :title="inlineLoginError || userStore.error || ''"
+            type="error"
+            :closable="false"
+            show-icon
+          />
+          <div class="resource-access-actions">
+            <el-button type="primary" native-type="submit" :loading="userStore.loading">
+              登录后重试
+            </el-button>
+            <el-button
+              text
+              @click="router.push({ name: 'Login', query: { redirect: route.fullPath } })"
+            >
+              去登录页
+            </el-button>
+          </div>
+        </form>
+
+        <div v-else class="resource-account-panel">
+          <div v-if="currentAccountLabel" class="resource-current-account">
+            当前账号：{{ currentAccountLabel }}
+          </div>
+          <div class="resource-access-actions">
+            <el-button type="primary" @click="refreshCurrentResourceAfterAuth">重试</el-button>
+            <el-button plain @click="switchInlineLoginAccount">换账号登录</el-button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <el-empty v-if="errorText && !loading && isWorkbookMode && !workbook && !resourceAccessIssue" :description="errorText" />
   </div>
 </template>
 
@@ -866,7 +1599,12 @@ onBeforeUnmount(() => {
   box-shadow: 0 8px 20px rgb(15 23 42 / 16%);
 }
 
+.sheet-tab-context-menu-branch {
+  position: relative;
+}
+
 .sheet-tab-context-menu-item {
+  position: relative;
   display: block;
   width: 100%;
   border: 0;
@@ -876,11 +1614,52 @@ onBeforeUnmount(() => {
   font-size: 14px;
   line-height: 20px;
   text-align: left;
+  white-space: nowrap;
   cursor: pointer;
+}
+
+.sheet-tab-context-menu-item.has-submenu {
+  padding-right: 30px;
+}
+
+.sheet-tab-context-menu-item.has-submenu::after {
+  content: '>';
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  color: #9ca3af;
 }
 
 .sheet-tab-context-menu-item:hover:not(:disabled) {
   background: #f5f7fa;
+}
+
+.sheet-tab-context-submenu {
+  position: absolute;
+  top: -5px;
+  left: calc(100% - 2px);
+  display: none;
+  box-sizing: border-box;
+  min-width: 132px;
+  padding: 4px 0;
+  border: 1px solid #d8dce5;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 16%);
+}
+
+.resource-link-submenu {
+  min-width: 176px;
+}
+
+.sheet-advanced-submenu {
+  min-width: 196px;
+}
+
+.sheet-tab-context-menu-branch:hover .sheet-tab-context-submenu,
+.sheet-tab-context-menu-branch:focus-within .sheet-tab-context-submenu {
+  display: block;
 }
 
 .sheet-tab-context-menu-item.danger {
@@ -901,5 +1680,60 @@ onBeforeUnmount(() => {
 .resource-sheet-workspace {
   flex: 1 1 auto;
   min-height: 0;
+}
+
+.resource-access-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 20px;
+  box-sizing: border-box;
+}
+
+.resource-access-content {
+  width: min(360px, 100%);
+  display: grid;
+  gap: 14px;
+}
+
+.resource-access-title {
+  color: #1f2937;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 26px;
+  text-align: center;
+}
+
+.resource-access-description {
+  color: #6b7280;
+  font-size: 14px;
+  line-height: 22px;
+  text-align: center;
+}
+
+.resource-login-form {
+  display: grid;
+  gap: 10px;
+}
+
+.resource-account-panel {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+
+.resource-current-account {
+  color: #4b5563;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.resource-access-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 </style>
