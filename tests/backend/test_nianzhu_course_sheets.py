@@ -16,6 +16,7 @@ from backend.core.nianzhu_course_sheets import (
     VIDEO_CONFIG_SHEET_KEY,
     VIDEO_DATA_COLUMNS,
     VIDEO_DATA_SHEET_KEY,
+    compact_nianzhu_course_sheet_step2,
     materialize_nianzhu_course_sheets,
     normalize_nianzhu_course_sheet_names,
     rebuild_nianzhu_attendance_from_course_sheets,
@@ -79,11 +80,13 @@ def _create_nianzhu_workbook(session: Session) -> None:
         "第12课",
         "第2届答疑",
         "追踪分组",
+        "追踪状态",
+        "冻结时间",
         "规则版本",
     ]
     rows = [
-        ["101", "甲", "u1", 0, 0, 0, 0, 5, "1遍/100%", "3遍/200%", "参加/100%", "B组", "当前规则"],
-        ["102", "乙", "u2", 0, 0, 0, 0, 10, "1遍/100%", "", "", "A组", "当前规则"],
+        ["101", "甲", "u1", 0, 0, 0, 0, 5, "1遍/100%", "3遍/200%", "参加/100%", "历史组", "追踪中", "", "当前规则"],
+        ["102", "乙", "u2", 0, 0, 0, 0, 10, "1遍/100%", "", "", "当前组", "已冻结", "2026-05-16 14:07:07", "当前规则"],
     ]
     attendance = SheetDocument(
         id="21",
@@ -106,6 +109,10 @@ def _find_sheet(session: Session, sheet_key: str) -> SheetDocument:
     sheet = session.exec(select(SheetDocument).where(SheetDocument.sheet_key == sheet_key)).first()
     assert sheet is not None
     return sheet
+
+
+def _row_from_dict(columns: list[str], row: dict[str, object]) -> list[object]:
+    return [row.get(column, "") for column in columns]
 
 
 def test_parse_lesson_data_export_rows_converts_duration_text(tmp_path) -> None:
@@ -133,6 +140,301 @@ def test_parse_lesson_data_export_rows_converts_duration_text(tmp_path) -> None:
             "finish_time": "",
         }
     ]
+
+
+def test_nianzhu_video_aggregation_matches_legacy_challenge_semantics() -> None:
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {"lesson_id": 1, "lesson_name": "第01课 测试课程", "video_duration": 100},
+            ),
+        ],
+    )
+    video_config_document["source_meta"] = {"course_name": "d250106念住闯关"}
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+    video_data_document = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 180,
+                    "progress": 1,
+                    "update_time": "2026-05-20 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "cum_seconds": 1,
+                    "progress": 999,
+                    "update_time": "2026-05-21 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {"lesson_data_id": 3, "user_id2": "u2", "cum_seconds": 89, "lesson_id": 1},
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {"lesson_data_id": 4, "user_id2": "u3", "cum_seconds": 250, "lesson_id": 1},
+            ),
+        ],
+    )
+
+    video_data = nianzhu_course_sheets._load_video_data(video_data_document, video_config)
+
+    assert video_data[("user:u1", "1")] == "2遍/180%"
+    assert video_data[("user:u2", "1")] == "学习中/89%"
+    assert video_data[("user:u3", "1")] == "3遍/250%"
+
+
+def test_video_aggregation_matches_legacy_regular_course_semantics() -> None:
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "start_date": "2026-05-20 08:00:00",
+                    "lesson_name": "第01课 普通课程",
+                    "video_duration": 100,
+                },
+            ),
+        ],
+    )
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+    video_data_document = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "studio_seconds": 10,
+                    "playback_seconds": 40,
+                    "update_time": "2026-05-20 08:10:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "studio_seconds": 60,
+                    "playback_seconds": 40,
+                    "update_time": "2026-05-20 08:20:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 3,
+                    "user_id2": "u2",
+                    "studio_seconds": 10,
+                    "playback_seconds": 20,
+                    "update_time": "2026-05-20 08:10:00",
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+
+    video_data = nianzhu_course_sheets._load_video_data(video_data_document, video_config)
+    compacted_document, summary = nianzhu_course_sheets._compact_nianzhu_video_data_document(
+        video_data_document,
+        video_config,
+    )
+
+    assert video_data[("user:u1", "1")] == "当堂完成/100%"
+    assert video_data[("user:u2", "1")] == "学习中/30%"
+    assert summary["video_data_rows_before"] == 3
+    assert summary["video_data_rows_after"] == 2
+    rows = [dict(zip(VIDEO_DATA_COLUMNS, row)) for row in compacted_document["rows"]]
+    assert [row["lesson_data_id"] for row in rows] == [1, 3]
+    assert rows[0]["cum_seconds"] == 100
+    assert rows[0]["studio_seconds"] == 60
+    assert rows[0]["playback_seconds"] == 40
+    assert rows[0]["progress"] == 100
+
+
+def test_video_aggregation_matches_legacy_zen_course_semantics() -> None:
+    video_config_document = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "start_date": "2026-05-01 00:00:00",
+                    "lesson_name": "禅宗第01课",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config = nianzhu_course_sheets._load_video_config(video_config_document)
+    video_data_document = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 600,
+                    "progress": 50,
+                    "update_time": "2026-05-02 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "cum_seconds": 1800,
+                    "progress": 20,
+                    "update_time": "2026-05-09 13:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 3,
+                    "user_id2": "u2",
+                    "cum_seconds": 600,
+                    "progress": 50,
+                    "update_time": "2026-05-02 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+
+    video_data = nianzhu_course_sheets._load_video_data(video_data_document, video_config)
+    compacted_document, summary = nianzhu_course_sheets._compact_nianzhu_video_data_document(
+        video_data_document,
+        video_config,
+    )
+
+    assert video_data[("user:u1", "1")] == "延1周完成"
+    assert video_data[("user:u2", "1")] == "进度50%"
+    assert summary["video_data_rows_before"] == 3
+    assert summary["video_data_rows_after"] == 2
+    rows = [dict(zip(VIDEO_DATA_COLUMNS, row)) for row in compacted_document["rows"]]
+    assert [row["lesson_data_id"] for row in rows] == [2, 3]
+    assert rows[0]["progress"] == 20
+    assert rows[0]["cum_seconds"] == 1800
+
+
+def test_nianzhu_step2_compacts_video_data_source_rows(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {"lesson_id": 1, "lesson_name": "第01课 测试课程", "video_duration": 100},
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {"course_name": "d250106念住闯关"}
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 180,
+                    "progress": 1,
+                    "update_time": "2026-05-20 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 2,
+                    "user_id2": "u1",
+                    "cum_seconds": 1,
+                    "progress": 999,
+                    "update_time": "2026-05-21 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {"lesson_data_id": 3, "user_id2": "u2", "cum_seconds": 89, "lesson_id": 1},
+            ),
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {"lesson_data_id": 4, "cum_seconds": 300, "lesson_id": 1},
+            ),
+        ],
+    )
+    session.add(video_config)
+    session.add(video_data)
+    session.commit()
+
+    summary = compact_nianzhu_course_sheet_step2(session)
+    session.commit()
+
+    assert summary["changed"] is True
+    assert summary["video_data_rows_before"] == 4
+    assert summary["video_data_rows_after"] == 3
+    assert summary["video_data_removed_rows"] == 1
+    assert summary["video_data_preserved_unusable_rows"] == 1
+    assert summary["video_data_user_lesson_pairs"] == 2
+
+    session.refresh(video_data)
+    rows = [dict(zip(VIDEO_DATA_COLUMNS, row)) for row in video_data.document_json["rows"]]
+    assert [row["lesson_data_id"] for row in rows] == [1, 3, 4]
+    assert rows[0]["user_id2"] == "u1"
+    assert rows[0]["cum_seconds"] == 180
+    assert rows[0]["progress"] == 1
+    assert rows[1]["user_id2"] == "u2"
+    assert rows[1]["progress"] == ""
+    assert rows[2]["user_id2"] == ""
+    assert rows[2]["cum_seconds"] == 300
+
+
+def test_nianzhu_clockin_aggregation_matches_legacy_dedup_semantics() -> None:
+    rows = [
+        {"clockin_data_id": 1, "user_id2": "u1", "clockin_name": "打卡数", "task_date": "2026-05-20", "update_title": "第1天"},
+        {"clockin_data_id": 2, "user_id2": "u1", "clockin_name": "打卡数", "task_date": "2026-05-20", "update_title": "第1天"},
+        {"clockin_data_id": 3, "user_id2": "u1", "clockin_name": "打卡数", "publish_time": "2026-05-21 08:00:00", "update_title": "第2天"},
+        {"clockin_data_id": 4, "user_id2": "u1", "clockin_name": "打卡数", "publish_time": "2026-05-21 12:00:00", "update_title": "第2天"},
+        {"clockin_data_id": 5, "user_id2": "u1", "clockin_name": "打卡数", "task_date": "2026-05-22", "update_title": "测试-忽略"},
+        {"clockin_data_id": 6, "user_id2": "u1", "clockin_name": "打卡数", "update_title": "自由"},
+        {"clockin_data_id": 7, "user_id2": "u1", "clockin_name": "打卡数", "update_title": "自由"},
+        {"clockin_data_id": 8, "user_id2": "u2", "clockin_name": "打卡数", "task_date": "2026-05-20", "update_title": "第1天"},
+    ]
+    document = _sheet_document(CLOCKIN_DATA_COLUMNS, [_row_from_dict(CLOCKIN_DATA_COLUMNS, row) for row in rows])
+
+    clockin_data = nianzhu_course_sheets._load_clockin_data(document)
+
+    assert clockin_data[("user:u1", "打卡数")] == 4
+    assert clockin_data[("user:u2", "打卡数")] == 1
 
 
 def test_materialize_nianzhu_course_sheets_splits_attendance_storage(session: Session) -> None:
@@ -202,7 +504,7 @@ def test_rebuild_nianzhu_attendance_uses_course_sheets_as_source(session: Sessio
     attendance = _find_sheet(session, "attendance")
     rows = attendance.document_json["rows"]
     assert rows[0][8] == ""
-    assert rows[0][3] == 1
+    assert rows[0][3] == 2
     assert rows[0][4] == 1
     assert rows[0][5] == 20
     assert rows[0][6] == 150

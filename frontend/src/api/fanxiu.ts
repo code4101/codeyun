@@ -148,6 +148,27 @@ export interface FanxiuSunloginRotateStatus {
   errors?: Array<{ pid: number; error: string }>;
 }
 
+export interface FanxiuGameWindow2StreamToken {
+  token: string;
+  expires_in_seconds: number;
+}
+
+export interface FanxiuGameWindow2ClickPayload {
+  entry_id: string;
+  x: number;
+  y: number;
+  title?: string;
+  mode?: 'auto' | 'printwindow' | 'screen';
+  area?: 'outer' | 'client';
+  crop?: string;
+  trim_border?: string;
+  rotate?: '0' | '90' | '180' | '270' | 'ccw' | 'cw' | 'none';
+  fixed_width?: number;
+  fixed_height?: number;
+  frame_width?: number;
+  frame_height?: number;
+}
+
 export type FanxiuInventoryType = '' | '攻击' | '防御' | '灵力' | '辅助';
 export type FanxiuMagicTreasureCategory = '法宝' | '先天古宝' | '后天古宝';
 
@@ -603,6 +624,16 @@ export const startFanxiuSunloginRotate = () => {
 
 export const stopFanxiuSunloginRotate = () => {
   return api.post<FanxiuSunloginRotateStatus>('/fanxiu/sunlogin-rotate/stop').then(res => res.data);
+};
+
+export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
+  return api
+    .post<FanxiuGameWindow2StreamToken>('/fanxiu/game-window2/stream-token', { entry_id: entryId })
+    .then(res => res.data);
+};
+
+export const clickFanxiuGameWindow2 = (payload: FanxiuGameWindow2ClickPayload) => {
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/click', payload).then(res => res.data);
 };
 
 export const getFanxiuWardrobeHall = () => {

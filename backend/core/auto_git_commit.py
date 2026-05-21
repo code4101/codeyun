@@ -37,7 +37,7 @@ AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID = "auto-git-pre-commit-codex"
 AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS = 1800
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS + 900
 AUTO_GIT_PRE_COMMIT_RESULT_LIMIT = 3000
-AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS = ("codeyun",)
+AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS = AUTO_GIT_COMMIT_REPO_KEYS
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
 AUTO_GIT_CHECKPOINT_FILE_THRESHOLD = 50
 AUTO_GIT_CHECKPOINT_LINE_THRESHOLD = 3000
@@ -775,6 +775,106 @@ def _format_auto_git_completed_stage_label(run: AutoGitCommitRun) -> str:
     return "，".join(parts)
 
 
+def _normalize_auto_gitignore_pattern(value: Any) -> str:
+    pattern = str(value or "").strip().replace("\\", "/")
+    if not pattern or "\n" in pattern or "\r" in pattern:
+        return ""
+    if pattern in {".", "..", "/"} or pattern.startswith("!"):
+        return ""
+    return pattern
+
+
+def _auto_gitignore_compare_key(pattern: str) -> str:
+    return pattern.strip().replace("\\", "/").lstrip("/").casefold()
+
+
+def _collect_auto_gitignore_patterns(precheck: dict[str, Any]) -> list[str]:
+    patterns: list[str] = []
+    seen: set[str] = set()
+    for issue in precheck.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if issue.get("issue_type") != "ignore_candidate" or not bool(issue.get("blocking")):
+            continue
+        pattern = _normalize_auto_gitignore_pattern(issue.get("suggestion"))
+        key = _auto_gitignore_compare_key(pattern)
+        if not pattern or key in seen:
+            continue
+        seen.add(key)
+        patterns.append(pattern)
+    return patterns
+
+
+def _append_auto_gitignore_patterns(repo_root: Path, patterns: list[str]) -> list[str]:
+    if not patterns:
+        return []
+
+    gitignore_path = repo_root / ".gitignore"
+    try:
+        existing_text = gitignore_path.read_text(encoding="utf-8") if gitignore_path.exists() else ""
+    except OSError as exc:
+        raise GitToolError(f"自动更新 .gitignore 失败：{exc}") from exc
+
+    existing_keys = {
+        _auto_gitignore_compare_key(line.split("#", 1)[0])
+        for line in existing_text.splitlines()
+        if line.split("#", 1)[0].strip()
+    }
+    additions = [
+        pattern
+        for pattern in patterns
+        if _auto_gitignore_compare_key(pattern) not in existing_keys
+    ]
+    if not additions:
+        return []
+
+    next_text = existing_text
+    if next_text and not next_text.endswith("\n"):
+        next_text += "\n"
+    if next_text and not next_text.endswith("\n\n"):
+        next_text += "\n"
+    next_text += "# Auto Git ignored local artifacts\n"
+    next_text += "\n".join(additions)
+    next_text += "\n"
+    try:
+        gitignore_path.write_text(next_text, encoding="utf-8", newline="\n")
+    except OSError as exc:
+        raise GitToolError(f"自动更新 .gitignore 失败：{exc}") from exc
+    return additions
+
+
+def _apply_auto_gitignore_suggestions(inspect_payload: dict[str, Any]) -> dict[str, Any] | None:
+    precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+    patterns = _collect_auto_gitignore_patterns(precheck)
+    if not patterns:
+        return None
+
+    repo_root = Path(str(inspect_payload.get("repo_root") or ""))
+    if not repo_root.exists():
+        return None
+    additions = _append_auto_gitignore_patterns(repo_root, patterns)
+    return {
+        "status": "updated" if additions else "already_ignored",
+        "patterns": additions or patterns,
+    }
+
+
+def _refresh_after_auto_gitignore(
+    candidate: AutoGitCommitCandidate,
+    result: dict[str, Any],
+    inspect_payload: dict[str, Any],
+    inspect_func: Callable[[str], dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+    gitignore_update = _apply_auto_gitignore_suggestions(inspect_payload)
+    if gitignore_update:
+        result["auto_gitignore"] = gitignore_update
+        inspect_payload = inspect_func(candidate.cwd)
+        _update_result_from_inspect(result, inspect_payload)
+        precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+    return inspect_payload, precheck
+
+
 def _run_one_repo(
     session: Session,
     candidate: AutoGitCommitCandidate,
@@ -803,7 +903,7 @@ def _run_one_repo(
         result["status"] = "clean"
         return result
 
-    precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+    inspect_payload, precheck = _refresh_after_auto_gitignore(candidate, result, inspect_payload, inspect_func)
     if bool(precheck.get("has_blocking_issues")):
         result.update(
             {
@@ -825,7 +925,7 @@ def _run_one_repo(
         result["status"] = "clean"
         return result
 
-    precheck = inspect_payload.get("precheck") if isinstance(inspect_payload.get("precheck"), dict) else {}
+    inspect_payload, precheck = _refresh_after_auto_gitignore(candidate, result, inspect_payload, inspect_func)
     if bool(precheck.get("has_blocking_issues")):
         result.update(
             {

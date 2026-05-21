@@ -189,6 +189,11 @@ def test_attendance_config_and_account_crud(client: TestClient, session, test_de
         config = config_resp.json()
         assert config["service"]["current_wjx_account_id"] == account["id"]
         assert config["service"]["execution_device_entry_id"] == entry_id
+        assert config["service"]["data_device_entry_id"] is None
+        assert config["service"]["step_device_entry_ids"] == {}
+        assert [item["step"] for item in config["service"]["step_runners"]] == [1, 2, 3, 4, 5, 6]
+        assert config["service"]["step_runners"][0]["effective_device_entry_id"] == entry_id
+        assert config["service"]["step_runners"][1]["effective_device_entry_id"] is None
         assert config["service"]["scan_reminder_users"] == ["考勤后台", "文件传输助手"]
         assert config["service"]["order_lookup_mode"] == "db_only"
         assert config["service"]["order_operation_password_configured"] is True
@@ -199,6 +204,118 @@ def test_attendance_config_and_account_crud(client: TestClient, session, test_de
         assert get_attendance_service_extra_config(session)["order_lookup_mode"] == "db_only"
         assert get_attendance_service_extra_config(session)["order_operation_password_configured"] is True
         assert get_attendance_service_order_operation_password(session) == "refund-pass"
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_config_supports_data_host_and_step_runners(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _override_user(admin_user)
+
+    execution_device = UserDevice(
+        user_id=admin_user.id,
+        device_id="codepc-mi15",
+        name="mi15 浏览器执行",
+        mode="remote",
+        server_url="http://mi15.local",
+        token="mi15-token",
+        is_active=True,
+    )
+    data_device = UserDevice(
+        user_id=admin_user.id,
+        device_id="codepc-mf",
+        name="mf 数据主机",
+        mode="remote",
+        server_url="http://mf.local",
+        token="mf-token",
+        is_active=True,
+    )
+    custom_device = UserDevice(
+        user_id=admin_user.id,
+        device_id="codepc-worker",
+        name="独立运行设备",
+        mode="remote",
+        server_url="http://worker.local",
+        token="worker-token",
+        is_active=True,
+    )
+    session.add_all([execution_device, data_device, custom_device])
+    session.commit()
+    session.refresh(execution_device)
+    session.refresh(data_device)
+    session.refresh(custom_device)
+
+    try:
+        response = client.put(
+            "/api/attendance/config",
+            json={
+                "execution_device_entry_id": execution_device.entry_id,
+                "data_device_entry_id": data_device.entry_id,
+                "step_device_entry_ids": {
+                    "1": "",
+                    "2": custom_device.entry_id,
+                    "6": execution_device.entry_id,
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["service"]["execution_device_entry_id"] == execution_device.entry_id
+        assert payload["service"]["data_device_entry_id"] == data_device.entry_id
+        assert payload["current_execution_device"]["entry_id"] == execution_device.entry_id
+        assert payload["current_data_device"]["entry_id"] == data_device.entry_id
+        assert payload["service"]["step_device_entry_ids"] == {
+            "2": custom_device.entry_id,
+            "6": execution_device.entry_id,
+        }
+
+        step_runners = {item["step"]: item for item in payload["service"]["step_runners"]}
+        assert step_runners[1]["default_role"] == "execution_device"
+        assert step_runners[1]["effective_role"] == "execution_device"
+        assert step_runners[1]["effective_device_entry_id"] == execution_device.entry_id
+        assert step_runners[2]["default_role"] == "data_host"
+        assert step_runners[2]["effective_role"] == "custom_device"
+        assert step_runners[2]["effective_device_entry_id"] == custom_device.entry_id
+        assert step_runners[3]["effective_role"] == "data_host"
+        assert step_runners[3]["effective_device_entry_id"] == data_device.entry_id
+        assert step_runners[6]["effective_role"] == "custom_device"
+        assert step_runners[6]["effective_device_entry_id"] == execution_device.entry_id
+
+        extra_config = get_attendance_service_extra_config(session)
+        assert extra_config["data_device_entry_id"] == data_device.entry_id
+        assert extra_config["step_device_entry_ids"] == {
+            "2": custom_device.entry_id,
+            "6": execution_device.entry_id,
+        }
+    finally:
+        _clear_user_override()
+
+
+def test_attendance_config_rejects_invalid_step_runner_key(client: TestClient, session):
+    admin_user = _create_admin_user(session)
+    _override_user(admin_user)
+    device = UserDevice(
+        user_id=admin_user.id,
+        device_id="codepc-worker",
+        name="独立运行设备",
+        mode="remote",
+        server_url="http://worker.local",
+        token="worker-token",
+        is_active=True,
+    )
+    session.add(device)
+    session.commit()
+    session.refresh(device)
+
+    try:
+        response = client.put(
+            "/api/attendance/config",
+            json={"step_device_entry_ids": {"7": device.entry_id}},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "step_device_entry_ids 只支持 step1-step6"
     finally:
         _clear_user_override()
 

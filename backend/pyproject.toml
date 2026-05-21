@@ -21,7 +21,6 @@ dependencies = [
     "opencv-python>=4.11.0.86 ; sys_platform == 'win32'",
     "opencv-python-headless>=4.11.0.86 ; sys_platform == 'linux'",
     "paddleocr>=3.4.0",
-    "paddlepaddle>=3.2.0",
     "nbformat>=5.10.4",
     "jupyter-client>=8.8.0",
     "ipykernel>=7.2.0",
@@ -37,6 +36,9 @@ dev = [
     "pytest",
     "black",
     "isort"
+]
+ocr-cpu = [
+    "paddlepaddle>=3.3.0",
 ]
 
 [build-system]

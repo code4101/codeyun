@@ -5,6 +5,7 @@ import uuid
 import shlex
 import socket
 import datetime as dt
+import os
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from pydantic import BaseModel, Field
@@ -39,6 +40,21 @@ router = APIRouter()
 _status_broadcaster_task: Optional[asyncio.Task] = None
 DEFAULT_STALE_SCHEDULED_TASK_SECONDS = 12 * 60 * 60
 COMMAND_JOB_POLL_INTERVAL_SECONDS = 1.0
+
+
+def _get_scheduled_task_misfire_grace_seconds() -> int:
+    try:
+        return max(1, int(os.environ.get("CODEYUN_TASK_SCHEDULE_MISFIRE_GRACE_SECONDS", "60")))
+    except ValueError:
+        return 60
+
+
+SCHEDULED_TASK_MISFIRE_GRACE_SECONDS = _get_scheduled_task_misfire_grace_seconds()
+SCHEDULED_TASK_JOB_KWARGS = {
+    "misfire_grace_time": SCHEDULED_TASK_MISFIRE_GRACE_SECONDS,
+    "coalesce": True,
+    "max_instances": 1,
+}
 
 async def start_task_manager_services():
     global _status_broadcaster_task
@@ -233,6 +249,7 @@ class TaskManager:
                         id=task_id,
                         args=[task_id],
                         replace_existing=True,
+                        **SCHEDULED_TASK_JOB_KWARGS,
                     )
                     print(f"Scheduled task {task_id} with policy next_trigger_at: {next_trigger_at}")
             except Exception as e:
@@ -246,7 +263,8 @@ class TaskManager:
                     CronTrigger.from_crontab(cron_expression), 
                     id=task_id, 
                     args=[task_id],
-                    replace_existing=True
+                    replace_existing=True,
+                    **SCHEDULED_TASK_JOB_KWARGS,
                 )
                 print(f"Scheduled task {task_id} with cron: {cron_expression}")
             except Exception as e:

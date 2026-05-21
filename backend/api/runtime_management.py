@@ -96,9 +96,8 @@ def get_runtime_item_logs_route(
     item_key: str,
     n: int = 500,
     token_device: BaseDevice = Depends(verify_api_token),
-    session: Session = Depends(get_session),
 ):
-    return get_runtime_item_logs(source, item_key, session, n, device_id=token_device.id)
+    return get_runtime_item_logs(source, item_key, None, n, device_id=token_device.id)
 
 
 @router.post("/jobs/{job_key}/toggle")

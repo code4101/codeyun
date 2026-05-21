@@ -28,6 +28,21 @@ export interface AttendanceExecutionDeviceSummary {
   updated_at: number
 }
 
+export type AttendanceStepDefaultRole = 'execution_device' | 'data_host'
+export type AttendanceStepEffectiveRole = AttendanceStepDefaultRole | 'custom_device'
+
+export interface AttendanceStepRunnerConfig {
+  step: number
+  title: string
+  default_role: AttendanceStepDefaultRole
+  effective_role: AttendanceStepEffectiveRole
+  configured_device_entry_id?: string | null
+  effective_device_entry_id?: string | null
+  device?: AttendanceExecutionDeviceSummary | null
+  device_missing?: boolean
+  device_inactive?: boolean
+}
+
 export interface AttendanceAccount {
   id: string
   provider: string
@@ -43,6 +58,9 @@ export interface AttendanceAccount {
 export interface AttendanceServicePayload {
   current_wjx_account_id?: string | null
   execution_device_entry_id?: string | null
+  data_device_entry_id?: string | null
+  step_device_entry_ids?: Record<string, string | null>
+  step_runners?: AttendanceStepRunnerConfig[]
   scan_reminder_users: string[]
   order_lookup_mode: AttendanceOrderLookupMode
   order_operation_password_configured: boolean
@@ -57,6 +75,7 @@ export interface AttendanceConfigResponse {
   service: AttendanceServicePayload
   current_account?: AttendanceAccount | null
   current_execution_device?: AttendanceExecutionDeviceSummary | null
+  current_data_device?: AttendanceExecutionDeviceSummary | null
 }
 
 export interface AttendanceFeedbackCourseOption {
@@ -74,6 +93,8 @@ export interface AttendanceFeedbackFormMeta {
 export interface AttendanceConfigUpdateRequest {
   current_wjx_account_id?: string | null
   execution_device_entry_id?: string | null
+  data_device_entry_id?: string | null
+  step_device_entry_ids?: Record<string, string | null>
   scan_reminder_users?: string[]
   order_lookup_mode?: AttendanceOrderLookupMode
   order_operation_password?: string | null

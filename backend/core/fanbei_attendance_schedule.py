@@ -16,7 +16,13 @@ from backend.core.attendance_progress_style import (
     set_cell_background as _set_cell_background,
     sheet_text as _shared_sheet_text,
 )
-from backend.core.attendance_service import get_current_execution_device, get_or_create_attendance_service_config
+from backend.core.attendance_service import (
+    AttendanceServiceError,
+    get_attendance_step_runner_device,
+    get_current_execution_device,
+    get_or_create_attendance_service_config,
+    serialize_user_device,
+)
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
 from backend.core.ui_automation import ensure_ui_automation_thread_context
@@ -48,6 +54,13 @@ def _empty_step() -> str:
     return "空实现"
 
 
+def _snapshot_device(entry) -> dict[str, Any]:
+    return {
+        **(serialize_user_device(entry) or {}),
+        "token": entry.token,
+    }
+
+
 def _snapshot_execution_device() -> dict[str, Any]:
     from backend.db import engine
 
@@ -58,19 +71,21 @@ def _snapshot_execution_device() -> dict[str, Any]:
             raise RuntimeError("请先在考勤配置中选择执行设备")
         if not entry.is_active:
             raise RuntimeError("当前考勤执行设备已停用")
-        return {
-            "entry_id": entry.entry_id,
-            "user_id": entry.user_id,
-            "device_id": entry.device_id,
-            "name": entry.name,
-            "mode": entry.mode,
-            "server_url": entry.server_url,
-            "token": entry.token,
-            "is_active": entry.is_active,
-            "order_index": entry.order_index,
-            "created_at": entry.created_at,
-            "updated_at": entry.updated_at,
-        }
+        return _snapshot_device(entry)
+
+
+def _snapshot_step_runner_device(step_number: int) -> dict[str, Any] | None:
+    from backend.db import engine
+
+    with Session(engine) as session:
+        config = get_or_create_attendance_service_config(session)
+        try:
+            entry = get_attendance_step_runner_device(session, config, step_number=step_number)
+        except AttendanceServiceError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if entry is None:
+            return None
+        return _snapshot_device(entry)
 
 
 def _remote_headers(entry_snapshot: dict[str, Any]) -> dict[str, str]:
@@ -89,14 +104,12 @@ def _remote_error_detail(response: requests.Response) -> str:
     return str(detail or f"远程执行失败，HTTP {response.status_code}")
 
 
-def _run_step1_on_entry(entry_snapshot: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
-    mode = str(entry_snapshot.get("mode") or "")
-    if mode == "local":
-        if str(entry_snapshot.get("device_id") or "") != get_device_id():
-            raise RuntimeError("所选本地执行设备不属于当前节点")
-        with ensure_ui_automation_thread_context():
-            return sync_fanbei_attendance_step1(**payload)
+def _ensure_local_entry_matches_current_node(entry_snapshot: dict[str, Any]) -> None:
+    if str(entry_snapshot.get("device_id") or "") != get_device_id():
+        raise RuntimeError("所选本地执行设备不属于当前节点")
 
+
+def _post_remote_attendance(entry_snapshot: dict[str, Any], path: str, payload: dict[str, Any]) -> dict[str, Any]:
     server_url = str(entry_snapshot.get("server_url") or "").rstrip("/")
     token = str(entry_snapshot.get("token") or "")
     if not server_url or not token:
@@ -105,7 +118,7 @@ def _run_step1_on_entry(entry_snapshot: dict[str, Any], payload: dict[str, Any])
     session = requests.Session()
     session.trust_env = False
     response = session.post(
-        f"{server_url}/api/device-control/attendance/fanbei/step1",
+        f"{server_url}{path}",
         json=payload,
         headers=_remote_headers(entry_snapshot),
         timeout=FANBEI_ATTENDANCE_REMOTE_TIMEOUT_SECONDS,
@@ -113,31 +126,25 @@ def _run_step1_on_entry(entry_snapshot: dict[str, Any], payload: dict[str, Any])
     if response.status_code >= 400:
         raise RuntimeError(_remote_error_detail(response))
     return response.json()
+
+
+def _run_step1_on_entry(entry_snapshot: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
+    mode = str(entry_snapshot.get("mode") or "")
+    if mode == "local":
+        _ensure_local_entry_matches_current_node(entry_snapshot)
+        with ensure_ui_automation_thread_context():
+            return sync_fanbei_attendance_step1(**payload)
+
+    return _post_remote_attendance(entry_snapshot, "/api/device-control/attendance/fanbei/step1", payload)
 
 
 def _run_step2_data_on_entry(entry_snapshot: dict[str, Any], payload: dict[str, Any]) -> dict[str, Any]:
     mode = str(entry_snapshot.get("mode") or "")
     if mode == "local":
-        if str(entry_snapshot.get("device_id") or "") != get_device_id():
-            raise RuntimeError("所选本地执行设备不属于当前节点")
+        _ensure_local_entry_matches_current_node(entry_snapshot)
         return build_fanbei_attendance_step2_data(**payload)
 
-    server_url = str(entry_snapshot.get("server_url") or "").rstrip("/")
-    token = str(entry_snapshot.get("token") or "")
-    if not server_url or not token:
-        raise RuntimeError("远程执行设备缺少后端地址或访问令牌")
-
-    session = requests.Session()
-    session.trust_env = False
-    response = session.post(
-        f"{server_url}/api/device-control/attendance/fanbei/step2-data",
-        json=payload,
-        headers=_remote_headers(entry_snapshot),
-        timeout=FANBEI_ATTENDANCE_REMOTE_TIMEOUT_SECONDS,
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(_remote_error_detail(response))
-    return response.json()
+    return _post_remote_attendance(entry_snapshot, "/api/device-control/attendance/fanbei/step2-data", payload)
 
 
 def run_fanbei_attendance_step1() -> str:
@@ -149,7 +156,9 @@ def run_fanbei_attendance_step1() -> str:
         "clockin_pattern": f"{FANBEI_ATTENDANCE_COURSE_NAME}-*",
         "close_browser": True,
     }
-    entry_snapshot = _snapshot_execution_device()
+    entry_snapshot = _snapshot_step_runner_device(1)
+    if entry_snapshot is None:
+        raise RuntimeError("step1 需要浏览器执行设备，请在考勤配置页选择默认执行设备或 step1 运行设备")
     result = _run_step1_on_entry(entry_snapshot, payload)
     lesson_count = result.get("lesson_update_count")
     clockin_count = result.get("clockin_update_count")
@@ -276,7 +285,7 @@ def _apply_step2_data_to_attendance_sheet(
     }
 
 
-def run_fanbei_attendance_step2() -> str:
+def _run_fanbei_attendance_step2_local(execution_entry_snapshot: dict[str, Any] | None = None) -> str:
     from backend.db import engine
 
     with Session(engine) as session:
@@ -301,7 +310,7 @@ def run_fanbei_attendance_step2() -> str:
         "clockin_names": FANBEI_ATTENDANCE_STEP2_CLOCKIN_NAMES,
         "clockin_titles": FANBEI_ATTENDANCE_STEP2_CLOCKIN_TITLES,
     }
-    entry_snapshot = _snapshot_execution_device()
+    entry_snapshot = execution_entry_snapshot or _snapshot_execution_device()
     result = _run_step2_data_on_entry(entry_snapshot, payload)
 
     with Session(engine) as session:
@@ -315,6 +324,36 @@ def run_fanbei_attendance_step2() -> str:
     return (
         f"{device_name} 已执行 step2：映射 {summary['mapped_columns']} 列，"
         f"更新 {summary['updated_rows']} 行/{summary['updated_cells']} 格"
+    )
+
+
+def _run_step2_on_data_host(
+    data_host_snapshot: dict[str, Any] | None,
+    *,
+    execution_entry_snapshot: dict[str, Any],
+) -> str:
+    if data_host_snapshot is None:
+        return _run_fanbei_attendance_step2_local(execution_entry_snapshot)
+
+    mode = str(data_host_snapshot.get("mode") or "")
+    if mode == "local":
+        _ensure_local_entry_matches_current_node(data_host_snapshot)
+        return _run_fanbei_attendance_step2_local(execution_entry_snapshot)
+
+    result = _post_remote_attendance(
+        data_host_snapshot,
+        "/api/device-control/attendance/fanbei/step2",
+        {"execution_device": execution_entry_snapshot},
+    )
+    return str(result.get("message") or "远程数据主机已执行 step2")
+
+
+def run_fanbei_attendance_step2() -> str:
+    data_host_snapshot = _snapshot_step_runner_device(2)
+    execution_entry_snapshot = _snapshot_execution_device()
+    return _run_step2_on_data_host(
+        data_host_snapshot,
+        execution_entry_snapshot=execution_entry_snapshot,
     )
 
 
@@ -490,8 +529,32 @@ def run_fanbei_attendance_step3_for_sheet(
     }
 
 
+def _run_step3_on_data_host(data_host_snapshot: dict[str, Any] | None, payload: dict[str, Any]) -> str:
+    if data_host_snapshot is None:
+        return run_fanbei_attendance_step3_for_sheet(**payload)["message"]
+
+    mode = str(data_host_snapshot.get("mode") or "")
+    if mode == "local":
+        _ensure_local_entry_matches_current_node(data_host_snapshot)
+        return run_fanbei_attendance_step3_for_sheet(**payload)["message"]
+
+    result = _post_remote_attendance(
+        data_host_snapshot,
+        "/api/device-control/attendance/fanbei/step3",
+        payload,
+    )
+    return str(result.get("message") or "远程数据主机已执行 step3")
+
+
 def run_fanbei_attendance_step3() -> str:
-    return run_fanbei_attendance_step3_for_sheet()["message"]
+    data_host_snapshot = _snapshot_step_runner_device(3)
+    return _run_step3_on_data_host(
+        data_host_snapshot,
+        {
+            "sheet_id": FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
+            "course_name": FANBEI_ATTENDANCE_COURSE_NAME,
+        },
+    )
 
 
 FANBEI_ATTENDANCE_STEPS: dict[int, FanbeiAttendanceStep] = {

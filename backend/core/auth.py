@@ -92,7 +92,6 @@ async def verify_api_token(
     x_device_token: Optional[str] = Header(None),
     token: Optional[str] = Query(None),
     sec_websocket_protocol: Optional[str] = Header(None),
-    session: Session = Depends(get_session)
 ):
     """
     Verify the token provided in the header or query parameter.

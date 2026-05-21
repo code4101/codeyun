@@ -272,6 +272,12 @@ def _collect_attendance_process_targets() -> tuple[
 
 def list_attendance_behavior_tree_processes() -> list[dict[str, Any]]:
     _direct, targets = _collect_attendance_process_targets()
+    return _process_records_from_targets(targets)
+
+
+def _process_records_from_targets(
+    targets: dict[int, tuple[psutil.Process, str]],
+) -> list[dict[str, Any]]:
     items: list[AttendanceBehaviorTreeProcess] = []
     for proc, reason in targets.values():
         info = _process_info(proc, reason)
@@ -376,12 +382,16 @@ def _next_run_at_from_state(state: dict[str, Any]) -> str | None:
 def get_attendance_behavior_tree_status() -> dict[str, Any]:
     paths = _status_paths()
     state = _read_json_file(Path(paths["state_path"]))
-    processes = list_attendance_behavior_tree_processes()
-    process_count = len(processes)
+    direct_targets, all_targets = _collect_attendance_process_targets()
+    root_processes = _process_records_from_targets(direct_targets)
+    processes = _process_records_from_targets(all_targets)
+    process_count = len(root_processes)
+    total_process_count = len(processes)
+    child_process_count = max(0, total_process_count - process_count)
 
     if process_count:
         status = "running"
-        state_label = "运行中" if process_count == 1 else f"运行中，{process_count} 个进程"
+        state_label = "运行中" if process_count == 1 else f"运行中，{process_count} 个行为树"
         next_run_at = _next_run_at_from_state(state)
     else:
         status = "stopped"
@@ -390,7 +400,7 @@ def get_attendance_behavior_tree_status() -> dict[str, Any]:
 
     last_error = ""
     if process_count > 1:
-        last_error = "检测到多个考勤行为树进程；下一次启动会先终止旧进程。"
+        last_error = "检测到多个考勤行为树根进程；下一次启动会先终止旧进程。"
     elif not Path(paths["python_path"]).exists():
         last_error = f"考勤 Python 不存在：{paths['python_path']}"
     elif not Path(paths["script_path"]).exists():
@@ -402,10 +412,13 @@ def get_attendance_behavior_tree_status() -> dict[str, Any]:
         "running": bool(processes),
         "state": status,
         "state_label": state_label,
-        "pid": processes[0]["pid"] if processes else None,
+        "pid": root_processes[0]["pid"] if root_processes else None,
         "process_count": process_count,
+        "child_process_count": child_process_count,
+        "total_process_count": total_process_count,
+        "root_processes": root_processes,
         "processes": processes,
-        "started_at": processes[0].get("created_at") if processes else None,
+        "started_at": root_processes[0].get("created_at") if root_processes else None,
         "next_run_at": next_run_at,
         "state_data": state,
         "last_error": last_error,
@@ -495,7 +508,9 @@ def build_attendance_behavior_tree_log_lines(limit: int = 500) -> list[str]:
         f"名称：{status['title']}",
         f"状态：{status['state_label']}",
         f"PID：{status.get('pid') or '-'}",
-        f"进程数：{status.get('process_count') or 0}",
+        f"行为树进程数：{status.get('process_count') or 0}",
+        f"子进程数：{status.get('child_process_count') or 0}",
+        f"总进程数：{status.get('total_process_count') or status.get('process_count') or 0}",
         f"启动时间：{status.get('started_at') or '-'}",
         f"下次触发：{status.get('next_run_at') or '-'}",
         f"状态文件：{status.get('state_path')}",

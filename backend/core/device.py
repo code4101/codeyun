@@ -17,6 +17,7 @@ from abc import ABC, abstractmethod
 from pydantic import BaseModel
 import asyncio
 from sqlalchemy import text
+from pyxllib.prog import process_runtime
 
 import uuid
 
@@ -56,20 +57,7 @@ class WindowsProcessEntry32(ctypes.Structure):
 
 
 def build_background_popen_kwargs(independent: bool = False) -> Dict[str, Any]:
-    kwargs: Dict[str, Any] = {
-        "stdin": subprocess.DEVNULL,
-        "close_fds": True,
-    }
-
-    if sys.platform == "win32":
-        creationflags = WINDOWS_CREATE_NO_WINDOW
-        if independent:
-            creationflags |= WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_BREAKAWAY_FROM_JOB
-        kwargs["creationflags"] = creationflags
-    elif independent:
-        kwargs["start_new_session"] = True
-
-    return kwargs
+    return process_runtime.build_background_popen_kwargs(independent=independent)
 
 
 def _get_machine_state_dir() -> str:
@@ -299,6 +287,39 @@ def _table_exists(session, table_name: str) -> bool:
     return bool(row)
 
 
+def _copy_migration_backup_file(source_path: str, backup_root: str) -> None:
+    try:
+        shutil.copy2(source_path, os.path.join(backup_root, os.path.basename(source_path)))
+    except Exception as exc:
+        print(f"Warning: failed to backup {source_path}: {exc}")
+
+
+def _backup_sqlite_database(engine: Any, destination_path: str) -> bool:
+    try:
+        import sqlite3
+
+        raw_connection = engine.raw_connection()
+    except Exception as exc:
+        print(f"Warning: failed to open SQLite database for backup: {exc}")
+        return False
+
+    try:
+        source_connection = getattr(raw_connection, "driver_connection", None)
+        if source_connection is None:
+            source_connection = getattr(raw_connection, "connection", None)
+        if source_connection is None or not hasattr(source_connection, "backup"):
+            return False
+
+        with sqlite3.connect(destination_path) as backup_connection:
+            source_connection.backup(backup_connection)
+        return True
+    except Exception as exc:
+        print(f"Warning: failed to create SQLite online backup: {exc}")
+        return False
+    finally:
+        raw_connection.close()
+
+
 def _backup_device_id_migration(old_id: str, new_id: str) -> None:
     from backend.db import engine
 
@@ -317,11 +338,16 @@ def _backup_device_id_migration(old_id: str, new_id: str) -> None:
         MACHINE_IDENTITY_FILE,
     ):
         if os.path.exists(path):
-            shutil.copy2(path, os.path.join(backup_root, os.path.basename(path)))
+            _copy_migration_backup_file(path, backup_root)
 
     db_path = getattr(engine.url, "database", None)
     if db_path and os.path.exists(db_path):
-        shutil.copy2(db_path, os.path.join(backup_root, os.path.basename(db_path)))
+        destination_path = os.path.join(backup_root, os.path.basename(db_path))
+        backed_up = False
+        if getattr(engine.url, "get_backend_name", lambda: "")() == "sqlite":
+            backed_up = _backup_sqlite_database(engine, destination_path)
+        if not backed_up:
+            _copy_migration_backup_file(db_path, backup_root)
 
 
 def _merge_directory(src: str, dst: str) -> None:
@@ -402,6 +428,33 @@ def _persist_device_identity(
     )
 
 
+def _mark_legacy_identity_migrated(
+    *,
+    device_id: str,
+    source: str,
+    created_at_hint: Optional[float],
+) -> None:
+    for path in (LEGACY_DEVICE_STATE_FILE, LEGACY_NODE_STATE_FILE, LEGACY_CONFIG_FILE):
+        if not os.path.exists(path):
+            continue
+
+        payload = _load_json_file(path)
+        if not payload:
+            payload = {}
+        payload["device_id"] = device_id
+        payload["device_identity_version"] = DEVICE_IDENTITY_VERSION
+        payload["device_identity_source"] = source
+        payload["created_at"] = payload.get("created_at") or created_at_hint or time.time()
+        payload["updated_at"] = time.time()
+        payload.pop("system_id", None)
+        payload.pop("api_token", None)
+
+        try:
+            _save_json_file(path, payload)
+        except Exception as exc:
+            print(f"Warning: failed to mark legacy device identity migrated in {path}: {exc}")
+
+
 def get_device_token() -> Optional[str]:
     token = get_settings().device_token.strip()
     return token or None
@@ -454,6 +507,12 @@ def get_device_id():
         seed_value=seed_value,
         created_at_hint=config.get("created_at"),
     )
+    if current_id != target_id or current_version < DEVICE_IDENTITY_VERSION:
+        _mark_legacy_identity_migrated(
+            device_id=target_id,
+            source=source,
+            created_at_hint=config.get("created_at"),
+        )
 
     if os.path.exists(SYSTEM_ID_FILE):
         try:
@@ -478,149 +537,19 @@ class TaskStatus(BaseModel):
 
 def match_cmdline(target_cmd: str, proc_cmdline: List[str]) -> bool:
     """Logic to match a target command string against a process cmdline list"""
-    try:
-        try:
-            target_args = shlex.split(target_cmd, posix=(sys.platform != 'win32'))
-        except:
-            target_args = target_cmd.split()
-        
-        # Windows/non-posix shlex keeps quotes, so we strip them
-        if sys.platform == 'win32':
-             target_args = [arg.strip('"') for arg in target_args]
-        
-        if not target_args:
-            return False
-
-        n = len(target_args)
-        if len(proc_cmdline) < n:
-            return False
-            
-        for i in range(len(proc_cmdline) - n + 1):
-            sub = proc_cmdline[i:i+n]
-            if sub == target_args:
-                return True
-        
-        if target_args[0].startswith('python') or target_args[0].endswith('python.exe') or target_args[0].endswith('python'):
-             rest_target = target_args[1:]
-             if not rest_target:
-                 return False 
-             
-             n_rest = len(rest_target)
-             for i in range(len(proc_cmdline) - n_rest + 1):
-                 if proc_cmdline[i:i+n_rest] == rest_target:
-                     return True
-
-        return False
-    except Exception:
-        return False
+    return process_runtime.match_cmdline(target_cmd, proc_cmdline)
 
 def parse_cmdline(cmdline: str) -> List[str]:
-    if sys.platform != 'win32':
-        return shlex.split(cmdline, posix=True)
-    
-    # Windows: Use CommandLineToArgvW for correct parsing of quotes and backslashes
-    try:
-        ctypes.windll.shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
-        ctypes.windll.shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
-        
-        nargs = ctypes.c_int()
-        res = ctypes.windll.shell32.CommandLineToArgvW(cmdline, ctypes.byref(nargs))
-        
-        if not res:
-             return shlex.split(cmdline, posix=False)
-             
-        try:
-            return [res[i] for i in range(nargs.value)]
-        finally:
-            ctypes.windll.kernel32.LocalFree(res)
-    except Exception:
-        return shlex.split(cmdline, posix=False)
+    return process_runtime.parse_cmdline(cmdline)
 
 def candidate_process_names_for_command(command: str) -> set[str]:
-    try:
-        args = parse_cmdline(command)
-    except Exception:
-        args = command.split()
-
-    if not args:
-        return set()
-
-    exe_name = os.path.basename(str(args[0]).strip('"')).lower()
-    if not exe_name:
-        return set()
-
-    names = {exe_name}
-    root, ext = os.path.splitext(exe_name)
-    if sys.platform == 'win32':
-        if not ext:
-            names.add(f"{exe_name}.exe")
-            names.add(f"{exe_name}.cmd")
-            names.add(f"{exe_name}.bat")
-        if ext in {".cmd", ".bat"}:
-            names.add("cmd.exe")
-        if root in {"python", "python3", "py"} or exe_name.startswith("python"):
-            names.update({"python.exe", "py.exe"})
-
-    return names
+    return process_runtime.candidate_process_names_for_command(command)
 
 def windows_process_ids_by_name(process_names: set[str]) -> List[int]:
-    wanted = {name.lower() for name in process_names if name}
-    if not wanted:
-        return []
-
-    kernel32 = ctypes.windll.kernel32
-    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
-    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(WindowsProcessEntry32)]
-    kernel32.Process32FirstW.restype = wintypes.BOOL
-    kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(WindowsProcessEntry32)]
-    kernel32.Process32NextW.restype = wintypes.BOOL
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel32.CloseHandle.restype = wintypes.BOOL
-    snapshot = kernel32.CreateToolhelp32Snapshot(WINDOWS_TH32CS_SNAPPROCESS, 0)
-    if snapshot == ctypes.c_void_p(-1).value:
-        return []
-
-    pids: List[int] = []
-    entry = WindowsProcessEntry32()
-    entry.dwSize = ctypes.sizeof(WindowsProcessEntry32)
-    try:
-        has_entry = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
-        while has_entry:
-            if entry.szExeFile.lower() in wanted:
-                pids.append(int(entry.th32ProcessID))
-            has_entry = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
-    finally:
-        kernel32.CloseHandle(snapshot)
-    return pids
+    return [proc.pid for proc in process_runtime.process_candidates_by_name(process_names)]
 
 def process_candidates_by_name(process_names: set[str]) -> List[psutil.Process]:
-    if not process_names:
-        return []
-
-    if sys.platform == 'win32':
-        processes: List[psutil.Process] = []
-        seen_pids = set()
-        for pid in windows_process_ids_by_name(process_names):
-            if pid in seen_pids:
-                continue
-            seen_pids.add(pid)
-            try:
-                processes.append(psutil.Process(pid))
-            except psutil.NoSuchProcess:
-                continue
-        return processes
-
-    processes = []
-    for proc in psutil.process_iter(['pid', 'name', 'create_time']):
-        try:
-            info = getattr(proc, "info", {}) or {}
-            proc_name = str(info.get("name") or "").lower()
-            if proc_name in process_names:
-                processes.append(proc)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            continue
-    return processes
+    return process_runtime.process_candidates_by_name(process_names)
 
 class BaseDevice(ABC):
     def __init__(self, device_id: str, name: str, python_exec: Optional[str] = None, api_token: Optional[str] = None, order_index: int = 0):

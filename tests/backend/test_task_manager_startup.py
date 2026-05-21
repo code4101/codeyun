@@ -37,6 +37,32 @@ def test_task_manager_constructor_defers_database_work(monkeypatch):
         manager.scheduler.shutdown(wait=False)
 
 
+def test_task_manager_schedule_jobs_allow_startup_misfire_grace():
+    calls = []
+
+    class FakeScheduler:
+        def get_job(self, task_id):
+            return None
+
+        def add_job(self, func, trigger, **kwargs):
+            calls.append(kwargs)
+
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = FakeScheduler()
+
+        manager.update_schedule("task-1", "20,50 * * * *")
+
+        assert calls
+        assert calls[0]["misfire_grace_time"] == task_manager_module.SCHEDULED_TASK_MISFIRE_GRACE_SECONDS
+        assert calls[0]["coalesce"] is True
+        assert calls[0]["max_instances"] == 1
+    finally:
+        if hasattr(manager.scheduler, "shutdown"):
+            manager.scheduler.shutdown(wait=False)
+
+
 def test_startup_schema_repairs_add_runtime_columns_to_legacy_task_table():
     engine = create_engine(
         "sqlite://",

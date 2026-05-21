@@ -246,7 +246,7 @@ def load_settings() -> Settings:
         "deepseek-chat",
         "deepseek-reasoner",
     )
-    ocr_device = (os.getenv("CODEYUN_OCR_DEVICE") or "cpu").strip().lower() or "cpu"
+    ocr_device = (os.getenv("CODEYUN_OCR_DEVICE") or "gpu").strip().lower() or "gpu"
     ocr_lang = (os.getenv("CODEYUN_OCR_LANG") or "ch").strip() or "ch"
     ocr_use_doc_orientation_classify = _env_flag("CODEYUN_OCR_USE_DOC_ORIENTATION_CLASSIFY", False)
     ocr_use_doc_unwarping = _env_flag("CODEYUN_OCR_USE_DOC_UNWARPING", False)

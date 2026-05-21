@@ -14,9 +14,11 @@ import psutil
 from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.sunlogin_rotate_preview import (
     WindowCapture,
+    click_window_raw_point,
     ensure_windows_runtime,
     find_window,
     iter_mjpeg_frames,
+    map_processed_point_to_raw_point,
     normalize_rotate,
     parse_crop,
     process_frame,
@@ -383,3 +385,87 @@ def capture_sunlogin_rotate_frame(
         fixed_width=int(fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)),
         fixed_height=int(fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)),
     )
+
+
+def click_sunlogin_rotate_processed_point(
+    *,
+    x: float,
+    y: float,
+    title: str | None = None,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+) -> dict[str, Any]:
+    ensure_windows_runtime()
+    set_dpi_awareness()
+
+    resolved_fixed_width = int(
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+    )
+    resolved_fixed_height = int(
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+    )
+    if resolved_fixed_width > 0 or resolved_fixed_height > 0:
+        raise RuntimeError("固定画布模式暂不支持反向点击坐标映射")
+
+    normalized_title = (title or get_target_title()).strip() or get_target_title()
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(
+        trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)
+    )
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+
+    target = find_window(normalized_title)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, refind_interval=1.0)
+    raw_frame = capturer.capture()
+    if raw_frame is None:
+        raise RuntimeError("点击前截图失败，无法确认窗口坐标")
+
+    frame = process_frame(
+        raw_frame,
+        resolved_crop,
+        resolved_trim_border,
+        resolved_rotate,
+        max_width=0,
+        max_height=0,
+        scale=1.0,
+        fixed_width=0,
+        fixed_height=0,
+    )
+    frame_height, frame_width = frame.shape[:2]
+    frame_x = int(round(x))
+    frame_y = int(round(y))
+    if not (0 <= frame_x < frame_width and 0 <= frame_y < frame_height):
+        raise RuntimeError(f"点击坐标超出画面范围：({frame_x}, {frame_y}) / {frame_width}x{frame_height}")
+
+    raw_point = map_processed_point_to_raw_point(
+        (frame_x, frame_y),
+        raw_shape=raw_frame.shape,
+        crop=resolved_crop,
+        trim_border=resolved_trim_border,
+        rotate=resolved_rotate,
+    )
+    if raw_point is None:
+        raise RuntimeError("点击坐标无法映射到原始窗口坐标")
+
+    click_window_raw_point(capturer.hwnd, resolved_area, raw_point)
+    return {
+        "ok": True,
+        "title": normalized_title,
+        "hwnd": capturer.hwnd,
+        "frame_x": frame_x,
+        "frame_y": frame_y,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "raw_x": raw_point[0],
+        "raw_y": raw_point[1],
+        "area": resolved_area,
+        "mode": resolved_mode,
+        "rotate": resolved_rotate,
+    }

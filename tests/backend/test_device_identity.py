@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from pathlib import Path
 
 from sqlmodel import SQLModel, Session, create_engine, select
@@ -47,6 +48,50 @@ def test_device_id_reuses_machine_identity_file(monkeypatch, tmp_path):
     second_id = device_module.get_device_id()
 
     assert second_id == first_id
+
+
+def test_device_id_marks_stale_legacy_config_when_machine_identity_exists(monkeypatch, tmp_path):
+    _patch_identity_paths(monkeypatch, tmp_path)
+    new_id = device_module._stable_device_id_from_seed(
+        "windows_machine_guid",
+        "machine-guid-existing",
+    )
+    Path(device_module.MACHINE_IDENTITY_FILE).parent.mkdir(parents=True, exist_ok=True)
+    Path(device_module.MACHINE_IDENTITY_FILE).write_text(
+        json.dumps(
+            {
+                "device_id": new_id,
+                "device_identity_version": 2,
+                "device_identity_source": "windows_machine_guid",
+            }
+        ),
+        encoding="utf-8",
+    )
+    Path(device_module.LEGACY_CONFIG_FILE).write_text(
+        json.dumps(
+            {
+                "system_id": "legacy-device-id",
+                "api_token": "legacy-token",
+                "created_at": 123.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        device_module,
+        "_backup_device_id_migration",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("migration backup should not run")),
+    )
+
+    assert device_module.get_device_id() == new_id
+
+    legacy_config = json.loads(Path(device_module.LEGACY_CONFIG_FILE).read_text(encoding="utf-8"))
+    assert legacy_config["device_id"] == new_id
+    assert legacy_config["device_identity_version"] == 2
+    assert legacy_config["device_identity_source"] == "windows_machine_guid"
+    assert "system_id" not in legacy_config
+    assert "api_token" not in legacy_config
 
 
 def test_device_id_migrates_local_records_and_clears_legacy_dir(monkeypatch, tmp_path):
@@ -117,3 +162,59 @@ def test_device_id_migrates_local_records_and_clears_legacy_dir(monkeypatch, tmp
     assert legacy_tasks == []
     assert not (data_dir / old_id).exists()
     assert list((data_dir / "backups").glob("device-id-migration-*"))
+
+
+def test_device_id_migration_uses_sqlite_backup_when_file_copy_is_locked(monkeypatch, tmp_path):
+    data_dir = _patch_identity_paths(monkeypatch, tmp_path)
+    old_id = "legacy-device-id"
+    new_id = device_module._stable_device_id_from_seed(
+        "windows_machine_guid",
+        "machine-guid-locked-db",
+    )
+
+    Path(device_module.LEGACY_DEVICE_STATE_FILE).write_text(
+        json.dumps({"device_id": old_id, "created_at": 123.0}),
+        encoding="utf-8",
+    )
+
+    db_path = tmp_path / "codeyun.db"
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+    SQLModel.metadata.create_all(engine)
+    monkeypatch.setattr(db_module, "engine", engine)
+
+    with Session(engine) as session:
+        session.add(
+            Task(
+                id="task-locked-db",
+                name="Locked DB Task",
+                command="python -V",
+                device_id=old_id,
+            )
+        )
+        session.commit()
+
+    original_copy2 = device_module.shutil.copy2
+
+    def locked_db_copy(source, destination, *args, **kwargs):
+        if Path(source) == db_path:
+            raise PermissionError("database is locked")
+        return original_copy2(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(device_module.shutil, "copy2", locked_db_copy)
+    monkeypatch.setattr(
+        device_module,
+        "_machine_identity_seed",
+        lambda: ("windows_machine_guid", "machine-guid-locked-db"),
+    )
+
+    assert device_module.get_device_id() == new_id
+
+    backup_db_paths = list((data_dir / "backups").glob("device-id-migration-*/*.db"))
+    assert len(backup_db_paths) == 1
+    with sqlite3.connect(backup_db_paths[0]) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM task WHERE device_id = ?",
+            (old_id,),
+        ).fetchone()[0]
+
+    assert count == 1

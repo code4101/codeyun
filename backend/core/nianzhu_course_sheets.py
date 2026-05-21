@@ -53,7 +53,8 @@ CLOCKIN_CONFIG_SHEET_KEY = "clockin_config"
 CLOCKIN_DATA_SHEET_KEY = "clockin_data"
 
 TRACKING_GROUP_COLUMN = "追踪分组"
-ACTIVE_TRACKING_GROUP = "B组"
+TRACKING_STATUS_COLUMN = "追踪状态"
+FREEZE_TIME_COLUMN = "冻结时间"
 RULE_VERSION_COLUMN = "规则版本"
 CURRENT_RULE = "当前规则"
 LEGACY_AFTER_20250522_RULE = "旧规则-20250522后"
@@ -152,6 +153,16 @@ class VideoConfigItem:
     participates_refund: bool
     participates_score: bool
     rules_by_version: dict[str, list[PercentageRefundRule]]
+    video_duration: float = 0.0
+    start_date: datetime | None = None
+    course_name: str = ""
+
+
+@dataclass(frozen=True)
+class LegacyVideoStudyResult:
+    text: str
+    keep_sequence: int
+    updated_fields: dict[str, Any]
 
 
 COURSE_SHEET_SPECS = [
@@ -498,9 +509,16 @@ def _progress_column_range(columns: list[str]) -> range:
     if start < 0 or start >= len(columns):
         return range(0)
 
-    end = _find_column_index(columns, TRACKING_GROUP_COLUMN)
-    if end is None:
-        end = len(columns)
+    marker_indexes = [
+        index for index in (
+            _find_column_index(columns, TRACKING_GROUP_COLUMN),
+            _find_column_index(columns, TRACKING_STATUS_COLUMN),
+            _find_column_index(columns, FREEZE_TIME_COLUMN),
+            _find_column_index(columns, RULE_VERSION_COLUMN),
+        )
+        if index is not None and index >= start
+    ]
+    end = min(marker_indexes) if marker_indexes else len(columns)
     return range(start, max(start, end))
 
 
@@ -621,6 +639,39 @@ def _row_identity_key(row: dict[str, Any] | list[Any], columns: list[str] | None
     if student_id:
         return f"student:{student_id}"
     return ""
+
+
+def _row_mapping(row: dict[str, Any] | list[Any], columns: list[str] | None = None) -> dict[str, Any]:
+    if isinstance(row, list):
+        if columns is None:
+            return {}
+        return dict(zip(columns, _normalize_row(row, len(columns))))
+    return row
+
+
+def _is_active_tracking_row(
+    row: dict[str, Any] | list[Any],
+    columns: list[str] | None = None,
+    *,
+    active_only: bool = True,
+) -> bool:
+    if not active_only:
+        return True
+
+    mapping = _row_mapping(row, columns)
+    has_status = TRACKING_STATUS_COLUMN in mapping
+    has_freeze_time = FREEZE_TIME_COLUMN in mapping
+    status = _normalize_text(mapping.get(TRACKING_STATUS_COLUMN))
+    freeze_time = _normalize_text(mapping.get(FREEZE_TIME_COLUMN))
+
+    if has_status or has_freeze_time:
+        if freeze_time:
+            return False
+        if status:
+            return status == "追踪中"
+        return True
+
+    return True
 
 
 def _build_video_config_document(
@@ -1399,7 +1450,11 @@ def run_nianzhu_course_sheet_step1(
                     file = kqtools.xe2.export_lesson_data(config_row)
                     imported_rows: list[dict[str, Any]] = []
                     if file is not None:
-                        imported_rows = _parse_lesson_data_export_rows(file, lesson_id=local_lesson_id, update_time=now)
+                        imported_rows = _parse_lesson_data_export_rows(
+                            file,
+                            lesson_id=local_lesson_id,
+                            update_time=now,
+                        )
                         video_data_rows.extend(imported_rows)
                     rule_text = f"{_normalize_text(course_name)} {_normalize_text(config_row.get('lesson_name'))}"
                     if imported_rows or "闯关" in rule_text:
@@ -1737,6 +1792,8 @@ def normalize_nianzhu_course_sheet_names(
 
 def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
     items: list[VideoConfigItem] = []
+    source_meta = dict(document.get("source_meta") or {})
+    course_name = _normalize_text(source_meta.get("course_name"))
     for row in _sheet_rows_as_dicts(document):
         lesson_id = _normalize_text(row.get("lesson_id"))
         lesson_name = _normalize_text(row.get("lesson_name"))
@@ -1769,32 +1826,387 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
             participates_refund=participates_refund,
             participates_score=bool(lesson_number is not None and lesson_number >= 12),
             rules_by_version=rules_by_version,
+            video_duration=_to_float(row.get("video_duration")),
+            start_date=_parse_datetime_cell(row.get("start_date")),
+            course_name=course_name,
         ))
     return sorted(items, key=lambda item: item.order_index)
 
 
-def _progress_text_from_lesson_data_row(row: dict[str, Any]) -> str:
-    old_text = _normalize_text(row.get("进度文本"))
-    if old_text:
-        return old_text
-    progress = int(_to_float(row.get("progress")))
+LEGACY_VIDEO_UPDATE_COLUMNS = [
+    "stay_seconds",
+    "cum_seconds",
+    "studio_seconds",
+    "playback_seconds",
+    "study_state",
+    "progress",
+]
+
+
+def _challenge_progress_text_from_percent(progress: int | float) -> str:
     if progress <= 0:
         return ""
-    study_state = _normalize_text(row.get("study_state"))
-    if study_state and "完成" not in study_state:
-        return f"{study_state}/{progress}%"
-    return f"{max((progress + 99) // 100, 1)}遍/{progress}%"
+    if progress < 90:
+        return f"学习中/{progress}%"
+    if progress >= 200:
+        times = 3
+    elif progress >= 150:
+        times = 2
+    else:
+        times = 1
+    return f"{times}遍/{progress}%"
 
 
-def _load_video_data(document: dict[str, Any]) -> dict[tuple[str, str], str]:
-    result: dict[tuple[str, str], str] = {}
-    for row in _sheet_rows_as_dicts(document):
+def _legacy_video_algorithm_kind(lesson: VideoConfigItem) -> str:
+    text = f"{lesson.course_name} {lesson.lesson_name}"
+    if "禅宗" in text:
+        return "b"
+    if "念住闯关" in text:
+        return "c"
+    return "a"
+
+
+def _custom_fillna_like_kq5034(df: Any, default_fill_value: Any = 0, numeric_fill_value: Any = 0) -> None:
+    import pandas as pd
+
+    for column in df.columns:
+        if numeric_fill_value is not None and pd.api.types.is_numeric_dtype(df[column]):
+            df[column] = df[column].fillna(numeric_fill_value)
+        elif pd.api.types.is_object_dtype(df[column]) or pd.api.types.is_string_dtype(df[column]):
+            df[column] = df[column].fillna(default_fill_value)
+
+
+def _legacy_video_items_frame(indexed_rows: list[tuple[int, dict[str, Any]]]):
+    import pandas as pd
+
+    records: list[dict[str, Any]] = []
+    indexes: list[int] = []
+    for sequence, row in indexed_rows:
+        record = dict(row)
+        for column in [
+            "lesson_data_id",
+            "stay_seconds",
+            "cum_seconds",
+            "studio_seconds",
+            "playback_seconds",
+            "progress",
+        ]:
+            record[column] = _format_numeric_cell(_to_float(record.get(column)))
+        record["update_time"] = _parse_datetime_cell(record.get("update_time"))
+        record["study_state"] = _normalize_text(record.get("study_state"))
+        records.append(record)
+        indexes.append(sequence)
+
+    items = pd.DataFrame.from_records(records, index=indexes)
+    for column in LEGACY_VIDEO_UPDATE_COLUMNS:
+        if column not in items:
+            items[column] = 0 if column != "study_state" else ""
+    return items
+
+
+def _legacy_video_updated_fields(item: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for column in LEGACY_VIDEO_UPDATE_COLUMNS:
+        if column == "study_state":
+            result[column] = _format_legacy_value(item[column])
+        else:
+            result[column] = _format_numeric_cell(_to_float(item[column]))
+    return result
+
+
+def _legacy_video_existing_progress_result(indexed_rows: list[tuple[int, dict[str, Any]]]) -> LegacyVideoStudyResult:
+    best_sequence, best_row = max(
+        indexed_rows,
+        key=lambda item: (_to_float(item[1].get("progress")), -item[0]),
+    )
+    progress = int(_to_float(best_row.get("progress")))
+    return LegacyVideoStudyResult(
+        text=_challenge_progress_text_from_percent(progress),
+        keep_sequence=best_sequence,
+        updated_fields={},
+    )
+
+
+def _legacy_video_study_result_a(
+    lesson: VideoConfigItem,
+    indexed_rows: list[tuple[int, dict[str, Any]]],
+) -> LegacyVideoStudyResult:
+    items = _legacy_video_items_frame(indexed_rows)
+    items.sort_values("update_time", inplace=True)
+    _custom_fillna_like_kq5034(items, 0, numeric_fill_value=0)
+
+    last_studio_seconds = 0
+    last_playback_seconds = 0
+    for idx in items.index:
+        curr_studio = items.at[idx, "studio_seconds"]
+        curr_playback = items.at[idx, "playback_seconds"]
+
+        if curr_studio < last_studio_seconds:
+            items.at[idx, "studio_seconds"] = last_studio_seconds
+        else:
+            last_studio_seconds = curr_studio
+
+        if curr_playback < last_playback_seconds:
+            items.at[idx, "playback_seconds"] = last_playback_seconds
+        else:
+            last_playback_seconds = curr_playback
+
+        items.at[idx, "cum_seconds"] = items.at[idx, "studio_seconds"] + items.at[idx, "playback_seconds"]
+
+    total_seconds = lesson.video_duration
+    if total_seconds <= 0:
+        return _legacy_video_existing_progress_result(indexed_rows)
+
+    items["progress"] = items["cum_seconds"].apply(lambda x: int(x / total_seconds * 100))
+    max_progress_item = items.loc[items["progress"].idxmax()]
+
+    if max_progress_item["progress"] < 50:
+        return LegacyVideoStudyResult(
+            text=f'学习中/{max_progress_item["progress"]}%',
+            keep_sequence=int(max_progress_item.name),
+            updated_fields=_legacy_video_updated_fields(max_progress_item),
+        )
+
+    first_finished_item = items[items["progress"] >= 50].iloc[0].copy()
+    if first_finished_item["lesson_data_id"] != max_progress_item["lesson_data_id"]:
+        for column in LEGACY_VIDEO_UPDATE_COLUMNS:
+            first_finished_item[column] = max_progress_item[column]
+
+    if first_finished_item["studio_seconds"] / total_seconds >= 0.5:
+        text = f'当堂完成/{max_progress_item["progress"]}%'
+    else:
+        start_date = lesson.start_date or _parse_datetime_cell("")
+        update_time = first_finished_item["update_time"]
+        if start_date is None or update_time is None:
+            delta_d = 1
+        else:
+            dt1 = start_date + timedelta(seconds=lesson.video_duration)
+            delta_d = max(int((update_time - dt1).total_seconds() / (3600 * 24)), 1)
+        text = f'第{int(delta_d)}天回放/{max_progress_item["progress"]}%'
+
+    return LegacyVideoStudyResult(
+        text=text,
+        keep_sequence=int(first_finished_item.name),
+        updated_fields=_legacy_video_updated_fields(first_finished_item),
+    )
+
+
+def _legacy_video_study_result_b(
+    lesson: VideoConfigItem,
+    indexed_rows: list[tuple[int, dict[str, Any]]],
+) -> LegacyVideoStudyResult:
+    import pandas as pd
+
+    items = _legacy_video_items_frame(indexed_rows)
+    items.sort_values("update_time", inplace=True)
+    _custom_fillna_like_kq5034(items, 0, numeric_fill_value=0)
+
+    def update_single_progress(item):
+        if pd.isna(item["cum_seconds"]):
+            item["cum_seconds"] = 0
+        if pd.isna(item["progress"]):
+            item["progress"] = 0
+
+        if item["progress"] < 100 and (item["cum_seconds"] >= 1800 or "已完成" in str(item["study_state"])):
+            item["progress"] = 100
+
+        return item
+
+    items = items.apply(update_single_progress, axis=1)
+    x = items.loc[items["progress"].idxmax()]
+
+    if x["progress"] >= 100:
+        start_date = pd.to_datetime(lesson.start_date)
+        update_time = pd.to_datetime(x["update_time"])
+        target_complete_date = start_date + pd.Timedelta(days=0.5 + 7)
+        diff = update_time - target_complete_date
+        if diff.days < 1:
+            text = "准时完成"
+        else:
+            delay_days = diff.days - 0.5
+            delay_weeks = int(delay_days // 7) + 1
+            text = f"延{delay_weeks}周完成"
+    else:
+        progress, cum_seconds = x["progress"], x["cum_seconds"]
+        if progress:
+            text = f"进度{progress}%"
+        elif cum_seconds:
+            text = f"观看{cum_seconds // 60}分钟"
+        else:
+            text = ""
+
+    return LegacyVideoStudyResult(text=text, keep_sequence=int(x.name), updated_fields={})
+
+
+def _legacy_video_study_result_c(
+    lesson: VideoConfigItem,
+    indexed_rows: list[tuple[int, dict[str, Any]]],
+) -> LegacyVideoStudyResult:
+    items = _legacy_video_items_frame(indexed_rows)
+    items.sort_values("update_time", inplace=True)
+    _custom_fillna_like_kq5034(items, 0, numeric_fill_value=0)
+
+    total_seconds = lesson.video_duration
+    if total_seconds <= 0:
+        return _legacy_video_existing_progress_result(indexed_rows)
+
+    items["progress"] = items["cum_seconds"].apply(lambda x: int(x / total_seconds * 100))
+    item = items.loc[items["progress"].idxmax()]
+    return LegacyVideoStudyResult(
+        text=_challenge_progress_text_from_percent(item["progress"]),
+        keep_sequence=int(item.name),
+        updated_fields={},
+    )
+
+
+def _legacy_video_study_result(
+    lesson: VideoConfigItem,
+    indexed_rows: list[tuple[int, dict[str, Any]]],
+) -> LegacyVideoStudyResult:
+    algorithm_kind = _legacy_video_algorithm_kind(lesson)
+    if algorithm_kind == "b":
+        return _legacy_video_study_result_b(lesson, indexed_rows)
+    if algorithm_kind == "c":
+        return _legacy_video_study_result_c(lesson, indexed_rows)
+    return _legacy_video_study_result_a(lesson, indexed_rows)
+
+
+def _has_legacy_video_rows_to_remove(
+    indexed_rows: list[tuple[int, dict[str, Any]]],
+    keep_sequence: int,
+) -> bool:
+    keep_row = next((row for sequence, row in indexed_rows if sequence == keep_sequence), None)
+    keep_lesson_data_id = _normalize_text(keep_row.get("lesson_data_id")) if keep_row else ""
+    if not keep_lesson_data_id:
+        return len(indexed_rows) > 1
+    return bool({
+        _normalize_text(row.get("lesson_data_id"))
+        for _sequence, row in indexed_rows
+        if _normalize_text(row.get("lesson_data_id"))
+    } - {keep_lesson_data_id})
+
+
+def _compute_legacy_video_study_results(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem] | None = None,
+) -> tuple[dict[tuple[str, str], LegacyVideoStudyResult], int]:
+    video_config_by_lesson_id = {
+        item.lesson_id: item
+        for item in video_config or []
+    }
+    grouped_rows: dict[tuple[str, str], list[tuple[int, dict[str, Any]]]] = {}
+    preserved_unusable_rows = 0
+    for sequence, row in enumerate(_sheet_rows_as_dicts(document)):
         key = _row_identity_key(row)
         lesson_id = _normalize_text(row.get("lesson_id"))
-        if not key or not lesson_id:
+        if not key or not lesson_id or lesson_id not in video_config_by_lesson_id:
+            preserved_unusable_rows += 1
             continue
-        result[(key, lesson_id)] = _progress_text_from_lesson_data_row(row)
-    return result
+        grouped_rows.setdefault((key, lesson_id), []).append((sequence, row))
+
+    results: dict[tuple[str, str], LegacyVideoStudyResult] = {}
+    for group_key, indexed_rows in grouped_rows.items():
+        lesson = video_config_by_lesson_id[group_key[1]]
+        result = _legacy_video_study_result(lesson, indexed_rows)
+        if result.updated_fields and not _has_legacy_video_rows_to_remove(indexed_rows, result.keep_sequence):
+            result = LegacyVideoStudyResult(
+                text=result.text,
+                keep_sequence=result.keep_sequence,
+                updated_fields={},
+            )
+        results[group_key] = result
+    return results, preserved_unusable_rows
+
+
+def _load_video_data(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem] | None = None,
+) -> dict[tuple[str, str], str]:
+    results, _preserved_unusable_rows = _compute_legacy_video_study_results(document, video_config)
+    return {
+        key: result.text
+        for key, result in results.items()
+    }
+
+
+def _compact_nianzhu_video_data_document(
+    document: dict[str, Any],
+    video_config: list[VideoConfigItem] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_rows = _sheet_rows_as_dicts(document)
+    results, preserved_unusable_rows = _compute_legacy_video_study_results(document, video_config)
+    selected_sequences = {result.keep_sequence for result in results.values()}
+    updated_fields_by_sequence: dict[int, dict[str, Any]] = {}
+    for result in results.values():
+        if result.updated_fields:
+            updated_fields_by_sequence[result.keep_sequence] = result.updated_fields
+    compacted_rows: list[dict[str, Any]] = []
+    for sequence, row in enumerate(source_rows):
+        key = _row_identity_key(row)
+        lesson_id = _normalize_text(row.get("lesson_id"))
+        group_key = (key, lesson_id)
+        if not key or not lesson_id or group_key not in results:
+            compacted_rows.append(dict(row))
+            continue
+        if sequence in selected_sequences:
+            next_row = dict(row)
+            next_row.update(updated_fields_by_sequence.get(sequence, {}))
+            compacted_rows.append(next_row)
+
+    columns = _normalize_document_columns(document) or VIDEO_DATA_COLUMNS
+    next_document = _make_table_document_from_dicts(
+        columns=columns,
+        rows=compacted_rows,
+        numeric_columns={
+            "lesson_data_id",
+            "stay_seconds",
+            "cum_seconds",
+            "studio_seconds",
+            "playback_seconds",
+            "num_of_comments",
+            "studio_amount",
+            "progress",
+            "shop_id",
+            "lesson_id",
+            "comment_times",
+            "money",
+        },
+        page_size=200,
+        source_meta=dict(document.get("source_meta") or {}),
+    )
+    changed = next_document != document
+    summary = {
+        "video_data_rows_before": len(source_rows),
+        "video_data_rows_after": len(compacted_rows),
+        "video_data_removed_rows": max(len(source_rows) - len(compacted_rows), 0),
+        "video_data_preserved_unusable_rows": preserved_unusable_rows,
+        "video_data_user_lesson_pairs": len(results),
+        "changed": changed,
+    }
+    return next_document, summary
+
+
+def compact_nianzhu_course_sheet_step2(
+    session: Session,
+    *,
+    attendance_sheet_id: int = NIANZHU_ATTENDANCE_SHEET_NUMERIC_ID,
+) -> dict[str, Any]:
+    attendance = _get_sheet(session, attendance_sheet_id)
+    bundle = _load_course_sheet_bundle(session, attendance=attendance)
+    video_config_document = dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {})
+    video_data_sheet = bundle[VIDEO_DATA_SHEET_KEY]
+    current_document = dict(video_data_sheet.document_json or {})
+    video_config = _load_video_config(video_config_document)
+    next_document, summary = _compact_nianzhu_video_data_document(current_document, video_config)
+    if summary["changed"]:
+        _update_course_sheet_document(video_data_sheet, next_document)
+        session.add(video_data_sheet)
+    return {
+        "attendance_sheet_id": int(attendance.numeric_id or 0),
+        "video_data_sheet_id": int(video_data_sheet.numeric_id or 0),
+        "video_config_rows": len(video_config),
+        **summary,
+    }
 
 
 def _load_clockin_rules(document: dict[str, Any]) -> dict[str, dict[str, list[ThresholdRefundRule]]]:
@@ -1810,16 +2222,31 @@ def _load_clockin_rules(document: dict[str, Any]) -> dict[str, dict[str, list[Th
 
 
 def _load_clockin_data(document: dict[str, Any]) -> dict[tuple[str, str], float]:
+    grouped_keys: dict[tuple[str, str], set[str]] = {}
     result: dict[tuple[str, str], float] = {}
-    for row in _sheet_rows_as_dicts(document):
+    for sequence, row in enumerate(_sheet_rows_as_dicts(document)):
         key = _row_identity_key(row)
         if not key:
             continue
         if "clockin_data_id" in row:
-            result[(key, "打卡数")] = result.get((key, "打卡数"), 0.0) + 1
-        else:
-            field_name = _normalize_text(row.get("字段名")) or "打卡数"
-            result[(key, field_name)] = result.get((key, field_name), 0.0) + _to_float(row.get("打卡数"))
+            title = _normalize_text(row.get("update_title"))
+            if title.startswith("测试-"):
+                continue
+            task_date = _normalize_text(row.get("task_date"))
+            publish_time = _parse_datetime_cell(row.get("publish_time"))
+            if task_date:
+                clockin_key = f"task:{task_date}|{title}"
+            elif publish_time is not None:
+                clockin_key = f"publish:{publish_time.date()}|{title}"
+            else:
+                clockin_key = f"row:{sequence}|{title}"
+            grouped_keys.setdefault((key, "打卡数"), set()).add(clockin_key)
+            continue
+
+        field_name = _normalize_text(row.get("字段名")) or "打卡数"
+        result[(key, field_name)] = result.get((key, field_name), 0.0) + _to_float(row.get("打卡数"))
+    for key, clockin_keys in grouped_keys.items():
+        result[key] = result.get(key, 0.0) + len(clockin_keys)
     return result
 
 
@@ -1853,11 +2280,10 @@ def rebuild_nianzhu_attendance_from_course_sheets(
         "打卡应返款": _require_column_index(columns, "打卡应返款"),
         "打卡数": _require_column_index(columns, "打卡数"),
     }
-    tracking_group_index = _find_column_index(columns, TRACKING_GROUP_COLUMN)
     rule_version_index = _find_column_index(columns, RULE_VERSION_COLUMN)
 
     video_config = _load_video_config(dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {}))
-    video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}))
+    video_data = _load_video_data(dict(bundle[VIDEO_DATA_SHEET_KEY].document_json or {}), video_config)
     clockin_rules = _load_clockin_rules(dict(bundle[CLOCKIN_CONFIG_SHEET_KEY].document_json or {}))
     clockin_data = _load_clockin_data(dict(bundle[CLOCKIN_DATA_SHEET_KEY].document_json or {}))
     progress_column_by_key = {
@@ -1882,11 +2308,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
 
     for row_index, row in enumerate(rows):
         next_row = list(row)
-        if (
-            active_only
-            and tracking_group_index is not None
-            and _normalize_text(next_row[tracking_group_index]) != ACTIVE_TRACKING_GROUP
-        ):
+        if not _is_active_tracking_row(next_row, columns, active_only=active_only):
             skipped_rows += 1
             next_rows.append(next_row)
             continue

@@ -14,7 +14,15 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 DATABASE_URL = settings.database_url
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+pool_args = {}
+if ":memory:" not in DATABASE_URL:
+    pool_args = {
+        "pool_pre_ping": True,
+        "pool_size": int(os.getenv("CODEYUN_DB_POOL_SIZE", "20")),
+        "max_overflow": int(os.getenv("CODEYUN_DB_MAX_OVERFLOW", "20")),
+        "pool_timeout": int(os.getenv("CODEYUN_DB_POOL_TIMEOUT", "10")),
+    }
+engine = create_engine(DATABASE_URL, connect_args=connect_args, **pool_args)
 
 from backend.migrations.manager import (
     run_migrations as migrate_db_manager,

@@ -15,7 +15,9 @@ from sqlmodel import Session, select
 
 from backend.core.auth import verify_api_token
 from backend.core.device import get_device_id
-from backend.core.ocr_preview import OcrPreviewError, OcrShapeType, ocr_service_manager, run_paddle_ocr_preview
+from backend.core.game_window_service_runtime import get_game_window_service_status
+from backend.core.ocr_preview import OcrPreviewError, OcrShapeType, run_paddle_ocr_preview
+from backend.core.ocr_service_runtime import get_ocr_service_status, reset_ocr_service
 from backend.core.service_tokens import (
     SERVICE_SCOPE_OCR_PREDICT,
     SERVICE_SCOPE_OCR_STATUS,
@@ -260,7 +262,7 @@ def build_service_summary_response(session: Session) -> dict[str, Any]:
             "id": get_device_id(),
             "hostname": socket.gethostname(),
         },
-        "services": [ocr_service_manager.get_status()],
+        "services": [get_ocr_service_status(), get_game_window_service_status()],
         "token_count": len(token_count),
         "enabled_token_count": len(enabled_token_count),
     }
@@ -283,7 +285,7 @@ def predict_ocr(req: OcrPredictRequest):
     dependencies=[Depends(require_service_scope(SERVICE_SCOPE_OCR_STATUS))],
 )
 def get_ocr_status():
-    return {"ok": True, "service": ocr_service_manager.get_status()}
+    return {"ok": True, "service": get_ocr_service_status()}
 
 
 @control_router.get("/summary")
@@ -293,7 +295,7 @@ def control_get_service_summary(session: Session = Depends(get_session)):
 
 @control_router.post("/ocr/reset")
 def control_reset_ocr_service():
-    return {"ok": True, "service": ocr_service_manager.reset()}
+    return {"ok": True, "service": reset_ocr_service()}
 
 
 @control_router.get("/docs")

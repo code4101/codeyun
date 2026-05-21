@@ -15,10 +15,12 @@ from sqlmodel import Session, select
 from backend.core.attendance_service import (
     AttendanceServiceError,
     apply_attendance_order_operation_password_env,
+    build_attendance_step_runner_configs,
     encrypt_attendance_secret,
     ensure_can_manage_attendance_service,
     ensure_can_use_attendance_service,
     get_attendance_account_or_404,
+    get_attendance_step_default_role,
     get_attendance_wjx_data_entry_or_404,
     get_attendance_service_order_operation_password,
     get_current_account,
@@ -28,6 +30,8 @@ from backend.core.attendance_service import (
     get_attendance_service_extra_config,
     get_user_device_or_404,
     list_attendance_accounts,
+    normalize_attendance_device_entry_id,
+    normalize_attendance_step_device_entry_ids,
     serialize_attendance_order_refund_history,
     serialize_attendance_account,
     serialize_attendance_wjx_data_entry,
@@ -153,6 +157,8 @@ ATTENDANCE_HEADER_TOOL_WEEK_COLORS = (
 class AttendanceConfigUpdateRequest(BaseModel):
     current_wjx_account_id: Optional[str] = None
     execution_device_entry_id: Optional[str] = None
+    data_device_entry_id: Optional[str] = None
+    step_device_entry_ids: Optional[dict[str, Optional[str]]] = None
     scan_reminder_users: Optional[list[str]] = None
     order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = None
     order_operation_password: Optional[str] = None
@@ -2694,10 +2700,16 @@ def _resolve_config_payload(session: Session) -> dict[str, Any]:
     extra_config = get_attendance_service_extra_config(session)
     current_account = get_current_account(session, config)
     current_device = get_current_execution_device(session, config)
+    data_device_entry_id = normalize_attendance_device_entry_id(extra_config.get("data_device_entry_id"))
+    current_data_device = session.get(UserDevice, data_device_entry_id) if data_device_entry_id else None
+    step_device_entry_ids = normalize_attendance_step_device_entry_ids(extra_config.get("step_device_entry_ids"))
     return {
         "service": {
             "current_wjx_account_id": config.current_wjx_account_id,
             "execution_device_entry_id": config.execution_device_entry_id,
+            "data_device_entry_id": data_device_entry_id or None,
+            "step_device_entry_ids": step_device_entry_ids,
+            "step_runners": build_attendance_step_runner_configs(session, config, extra_config),
             "scan_reminder_users": list(extra_config.get("scan_reminder_users") or []),
             "order_lookup_mode": str(extra_config.get("order_lookup_mode") or "browser_only"),
             "order_operation_password_configured": bool(extra_config.get("order_operation_password_configured")),
@@ -2709,6 +2721,7 @@ def _resolve_config_payload(session: Session) -> dict[str, Any]:
         },
         "current_account": serialize_attendance_account(current_account, include_password=False) if current_account else None,
         "current_execution_device": serialize_user_device(current_device),
+        "current_data_device": serialize_user_device(current_data_device),
     }
 
 
@@ -2717,6 +2730,36 @@ def _ensure_owned_device_for_selection(entry: UserDevice, current_user: User) ->
         raise HTTPException(status_code=403, detail="只能从你自己的设备资产中选择执行设备")
     if not entry.is_active:
         raise HTTPException(status_code=400, detail="当前执行设备已停用")
+
+
+def _ensure_owned_attendance_device_for_config(
+    session: Session,
+    entry_id: str,
+    current_user: User,
+    *,
+    role_label: str,
+) -> UserDevice:
+    entry = get_user_device_or_404(session, entry_id)
+    if entry.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail=f"只能从你自己的设备资产中选择{role_label}")
+    if not entry.is_active:
+        raise HTTPException(status_code=400, detail=f"当前{role_label}已停用")
+    return entry
+
+
+def _normalize_step_device_entry_ids_for_update(value: dict[str, Optional[str]]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_step, raw_entry_id in value.items():
+        try:
+            step_number = int(raw_step)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="step_device_entry_ids 只支持 step1-step6") from exc
+        if step_number < 1 or step_number > 6:
+            raise HTTPException(status_code=400, detail="step_device_entry_ids 只支持 step1-step6")
+        entry_id = _normalize_optional_id(raw_entry_id)
+        if entry_id:
+            result[str(step_number)] = entry_id
+    return result
 
 
 def _resolve_run_device(
@@ -2995,6 +3038,8 @@ def update_attendance_config(
 
     account_id = _normalize_optional_id(payload.current_wjx_account_id)
     device_entry_id = _normalize_optional_id(payload.execution_device_entry_id)
+    data_device_entry_id = _normalize_optional_id(payload.data_device_entry_id)
+    step_device_entry_ids: dict[str, str] | None = None
 
     if payload.current_wjx_account_id is not None:
         if account_id is None:
@@ -3014,11 +3059,33 @@ def update_attendance_config(
                 raise HTTPException(status_code=400, detail="当前执行设备已停用")
             config.execution_device_entry_id = entry.entry_id
 
+    if payload.data_device_entry_id is not None and data_device_entry_id is not None:
+        _ensure_owned_attendance_device_for_config(
+            session,
+            data_device_entry_id,
+            current_user,
+            role_label="数据主机",
+        )
+
+    if payload.step_device_entry_ids is not None:
+        step_device_entry_ids = _normalize_step_device_entry_ids_for_update(payload.step_device_entry_ids)
+        for step_key, step_entry_id in step_device_entry_ids.items():
+            default_role = get_attendance_step_default_role(int(step_key))
+            role_label = "浏览器执行设备" if default_role == "execution_device" else "数据运行设备"
+            _ensure_owned_attendance_device_for_config(
+                session,
+                step_entry_id,
+                current_user,
+                role_label=f"step{step_key}{role_label}",
+            )
+
     if (
         payload.scan_reminder_users is not None
         or payload.order_lookup_mode is not None
         or payload.order_operation_password is not None
         or payload.clear_order_operation_password
+        or payload.data_device_entry_id is not None
+        or step_device_entry_ids is not None
     ):
         update_attendance_service_extra_config(
             session,
@@ -3026,6 +3093,8 @@ def update_attendance_config(
             order_lookup_mode=payload.order_lookup_mode,
             order_operation_password=payload.order_operation_password,
             clear_order_operation_password=bool(payload.clear_order_operation_password),
+            data_device_entry_id=payload.data_device_entry_id if payload.data_device_entry_id is not None else None,
+            step_device_entry_ids=step_device_entry_ids,
         )
 
     config.updated_by_user_id = current_user.id

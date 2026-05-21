@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPExcepti
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import object_session
 from starlette.background import BackgroundTask
 from sqlmodel import Session, select
 
@@ -337,6 +338,13 @@ def _proxy_headers(entry: UserDevice) -> Dict[str, str]:
     }
 
 
+def _release_entry_session(entry: UserDevice) -> None:
+    session = object_session(entry)
+    if session is not None:
+        session.expunge(entry)
+        session.close()
+
+
 def _copy_proxy_response_headers(resp: requests.Response) -> Dict[str, str]:
     allowed_headers = {
         "accept-ranges",
@@ -514,11 +522,13 @@ def _get_cached_cover_response(
 
 def _fetch_remote_thumbnail(entry: UserDevice, params: Dict[str, Any]) -> requests.Response:
     target_url = f"{_remote_base_url(entry)}/api/fs/thumbnail"
+    headers = _proxy_headers(entry)
+    _release_entry_session(entry)
     try:
         return requests.request(
             method="GET",
             url=target_url,
-            headers=_proxy_headers(entry),
+            headers=headers,
             params=params,
             proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
             timeout=20,
@@ -537,11 +547,13 @@ def _fetch_remote_json(
     timeout: int = 10,
 ) -> tuple[Dict[str, Any] | List[Any], requests.Response | None]:
     target_url = f"{_remote_base_url(entry)}/api{path}"
+    headers = _proxy_headers(entry)
+    _release_entry_session(entry)
     try:
         resp = requests.request(
             method=method,
             url=target_url,
-            headers=_proxy_headers(entry),
+            headers=headers,
             params=params,
             json=json_body,
             proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
@@ -598,6 +610,7 @@ def _proxy_request(
     headers = _proxy_headers(entry)
     if forwarded_headers:
         headers.update({key: value for key, value in forwarded_headers.items() if value})
+    _release_entry_session(entry)
     try:
         resp = requests.request(
             method=method,

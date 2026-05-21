@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -13,6 +14,7 @@ from typing import Any
 import psutil
 
 from backend.core.device import build_background_popen_kwargs, process_candidates_by_name
+from backend.core.ocr_service_runtime import get_ocr_service_base_url, get_ocr_service_status, start_ocr_service
 from backend.core.service_tokens import discover_legacy_service_tokens
 from backend.core.settings import ROOT_DIR, get_settings
 
@@ -20,8 +22,16 @@ from backend.core.settings import ROOT_DIR, get_settings
 FANXIU_BEHAVIOR_TREE_SERVICE_KEY = "fanxiu-behavior-tree"
 REGISTRY_FILENAME = "behavior_tree_service.json"
 DEFAULT_LEGACY_OCR_TOKEN = "log@a#zJy4&"
+DEFAULT_OCR_CLIENT_TIMEOUT_SECONDS = "60"
+DEFAULT_OCR_CLIENT_RETRIES = "2"
+DEFAULT_OCR_CLIENT_RETRY_INTERVAL_SECONDS = "1"
 DEFAULT_FANXIU_SERVICE_HOSTS = {"codepc_mi15", "mi15"}
 PYTHON_RUNNER_NAMES = {"py.exe", "python.exe", "pythonw.exe", "uv.exe"}
+_RFC1918_LAN_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
 
 
 def _home_root() -> Path:
@@ -38,6 +48,70 @@ def _current_hostname() -> str:
         return str(get_xl_hostname() or "").strip() or socket.gethostname().replace("-", "_")
     except Exception:
         return socket.gethostname().replace("-", "_").split(".", 1)[0]
+
+
+def _host_with_port(host: str, port: int) -> str:
+    value = str(host or "").strip()
+    if not value:
+        return f"127.0.0.1:{port}"
+    if value.startswith(("http://", "https://")):
+        return value.rstrip("/")
+    if ":" in value and not value.startswith("["):
+        try:
+            ipaddress.ip_address(value)
+        except ValueError:
+            return value
+        return f"[{value}]:{port}"
+    return f"{value}:{port}"
+
+
+def _is_lan_ipv4_address(value: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if not isinstance(ip, ipaddress.IPv4Address):
+        return False
+    return any(ip in network for network in _RFC1918_LAN_NETWORKS)
+
+
+def _get_primary_lan_address() -> str | None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            address = str(sock.getsockname()[0])
+            if _is_lan_ipv4_address(address):
+                return address
+    except OSError:
+        pass
+
+    try:
+        hostname = socket.gethostname()
+        for item in socket.getaddrinfo(hostname, None, family=socket.AF_INET):
+            address = str(item[4][0])
+            if _is_lan_ipv4_address(address):
+                return address
+    except OSError:
+        pass
+    return None
+
+
+def _resolve_codeyun_ocr_host(settings: Any) -> str:
+    configured = (os.getenv("FX_CODEYUN_OCR_HOST") or "").strip()
+    if configured:
+        return configured
+
+    return get_ocr_service_base_url()
+
+
+def _resolve_fanxiu_ocr_device(settings: Any | None = None) -> str:
+    value = (
+        os.getenv("CODEYUN_OCR_DEVICE")
+        or os.getenv("FX_CODEYUN_OCR_DEVICE")
+    )
+    if value is None:
+        value = getattr(settings or get_settings(), "ocr_device", "gpu")
+    return str(value or "gpu").strip().lower() or "gpu"
 
 
 def is_fanxiu_behavior_tree_service_enabled() -> bool:
@@ -348,14 +422,42 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
     service_log_path.parent.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     settings = get_settings()
+    fanxiu_ocr_device = _resolve_fanxiu_ocr_device(settings)
+    if (os.getenv("FX_CODEYUN_OCR_HOST") or "").strip():
+        codeyun_ocr_host = _resolve_codeyun_ocr_host(settings)
+        ocr_start_status: dict[str, Any] | None = None
+    else:
+        current_ocr_status = get_ocr_service_status()
+        current_ocr_device = str(current_ocr_status.get("device") or "").strip().lower()
+        replace_ocr_service = bool(current_ocr_status.get("running") and current_ocr_device != fanxiu_ocr_device)
+        ocr_start = start_ocr_service(
+            replace_existing=replace_ocr_service,
+            env_overrides={
+                "CODEYUN_OCR_DEVICE": fanxiu_ocr_device,
+                "CODEYUN_OCR_IDLE_TIMEOUT_SECONDS": os.getenv("CODEYUN_OCR_IDLE_TIMEOUT_SECONDS", "3600"),
+            },
+        )
+        ocr_start_status = ocr_start.get("service") if isinstance(ocr_start, dict) else None
+        codeyun_ocr_host = str((ocr_start_status or {}).get("url") or _resolve_codeyun_ocr_host(settings))
     env.update(
         {
             "FX_BEHAVIOR_TREE_REGISTRY": os.fspath(get_registry_path()),
             "FX_BEHAVIOR_TREE_SERVICE_SOURCE": "codeyun",
             "FX_FORCE_CODEYUN_OCR": "1",
-            "FX_CODEYUN_OCR_HOST": f"127.0.0.1:{settings.backend_port}",
+            "FX_CODEYUN_OCR_HOST": codeyun_ocr_host,
+            "FX_CODEYUN_OCR_PROBE_MODE": os.getenv("FX_CODEYUN_OCR_PROBE_MODE", "predict"),
+            "FX_CODEYUN_OCR_PROBE_TIMEOUT": os.getenv("FX_CODEYUN_OCR_PROBE_TIMEOUT", "300"),
             "FX_MAINWIN_ROOT": os.fspath(mainwin),
-            "MAIN_WEBSITE": f"127.0.0.1:{settings.backend_port}",
+            "MAIN_WEBSITE": codeyun_ocr_host,
+            "CODEYUN_OCR_DEVICE": fanxiu_ocr_device,
+            "XL_API_PRIU_TIMEOUT": os.getenv("XL_API_PRIU_TIMEOUT", DEFAULT_OCR_CLIENT_TIMEOUT_SECONDS),
+            "XL_API_PRIU_RETRIES": os.getenv("XL_API_PRIU_RETRIES", DEFAULT_OCR_CLIENT_RETRIES),
+            "XL_API_PRIU_RETRY_INTERVAL": os.getenv(
+                "XL_API_PRIU_RETRY_INTERVAL",
+                DEFAULT_OCR_CLIENT_RETRY_INTERVAL_SECONDS,
+            ),
+            "NO_PROXY": "*",
+            "no_proxy": "*",
             "XL_API_PRIU_TOKEN": _resolve_ocr_token(),
             "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
             "PYTHONIOENCODING": "utf-8",
@@ -386,6 +488,13 @@ def start_behavior_tree_service(*, replace_existing: bool = True) -> dict[str, A
             "script": os.fspath(script_path),
             "cwd": os.fspath(fx_root),
             "root": os.fspath(mainwin),
+            "ocr_host": codeyun_ocr_host,
+            "ocr_device": fanxiu_ocr_device,
+            "ocr_probe_mode": env["FX_CODEYUN_OCR_PROBE_MODE"],
+            "ocr_probe_timeout_seconds": env["FX_CODEYUN_OCR_PROBE_TIMEOUT"],
+            "ocr_request_timeout_seconds": env["XL_API_PRIU_TIMEOUT"],
+            "ocr_request_retries": env["XL_API_PRIU_RETRIES"],
+            "ocr_service": ocr_start_status,
             "started_at": _now_text(),
             "updated_at": _now_text(),
             "stop_result": stop_result,
@@ -417,6 +526,7 @@ def _tail_text(path: Path, *, lines: int = 80, max_bytes: int = 512 * 1024) -> l
 
 def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
     status = get_behavior_tree_status()
+    registry = status.get("registry") if isinstance(status.get("registry"), dict) else {}
     lines = [
         f"名称：{status['title']}",
         f"状态：{status['state_label']}",
@@ -428,6 +538,15 @@ def build_behavior_tree_log_lines(limit: int = 500) -> list[str]:
         f"状态文件：{status.get('status_path')}",
         f"行为树日志：{status.get('behavior_tree_log_path')}",
     ]
+    if registry.get("ocr_host") or registry.get("ocr_device"):
+        lines.append(
+            "OCR："
+            f"host={registry.get('ocr_host') or '-'}，"
+            f"device={registry.get('ocr_device') or '-'}，"
+            f"probe={registry.get('ocr_probe_mode') or '-'}，"
+            f"timeout={registry.get('ocr_request_timeout_seconds') or '-'}s，"
+            f"retries={registry.get('ocr_request_retries') or '-'}"
+        )
     if status.get("last_error"):
         lines.extend(["", f"提示：{status['last_error']}"])
     if status.get("processes"):

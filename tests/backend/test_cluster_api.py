@@ -201,6 +201,37 @@ def test_attendance_fanbei_step2_data_uses_shared_api(client: TestClient, test_d
     ]
 
 
+def test_attendance_fanbei_step2_runs_on_local_data_host(client: TestClient, test_device, monkeypatch):
+    """Device-control Fanbei step2 should run the sheet-writing step on the receiving CodeYun instance."""
+
+    from backend.api import device_control
+
+    calls = []
+
+    def fake_run_fanbei_attendance_step2_local(execution_device=None):
+        calls.append(execution_device)
+        return "当前 CodeYun 实例已执行 step2"
+
+    monkeypatch.setattr(
+        device_control,
+        "_run_fanbei_attendance_step2_local",
+        fake_run_fanbei_attendance_step2_local,
+    )
+
+    token = test_device["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    execution_device = {"entry_id": "exec-entry", "server_url": "http://mi15", "token": "mi15-token"}
+    response = client.post(
+        "/api/device-control/attendance/fanbei/step2",
+        headers=headers,
+        json={"execution_device": execution_device},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "当前 CodeYun 实例已执行 step2"}
+    assert calls == [execution_device]
+
+
 def test_attendance_fanbei_step3_uses_local_sheet_api(client: TestClient, test_device, monkeypatch):
     """Device-control Fanbei step3 should refresh the target CodeYun sheet instance."""
 

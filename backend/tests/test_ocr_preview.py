@@ -180,14 +180,14 @@ def test_run_paddle_ocr_preview_accepts_json_string_payload(
     ocr_preview.ocr_service_manager.reset()
 
 
-def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows_cpu(
+def test_apply_ocr_runtime_environment_disables_mkldnn_by_default_on_windows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", raising=False)
     monkeypatch.delenv("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", raising=False)
     monkeypatch.setattr(ocr_preview.sys, "platform", "win32")
 
-    ocr_preview._apply_ocr_runtime_environment(device="cpu")
+    ocr_preview._apply_ocr_runtime_environment(device="gpu")
 
     assert os.environ["PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"] == "True"
     assert os.environ["PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT"] == "False"
