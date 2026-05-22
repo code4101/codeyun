@@ -90,6 +90,8 @@ def _runtime_group(kind: str, group_id: str, title: str) -> dict[str, Any]:
 
 
 def _command_next_run_at(task: TaskModel) -> str | None:
+    if task.next_run_at:
+        return str(task.next_run_at)
     state = task.schedule_state or {}
     next_trigger_at = state.get("next_trigger_at") if isinstance(state, dict) else None
     if next_trigger_at:
@@ -1148,12 +1150,18 @@ def configure_builtin_runtime_job_schedule(
     task_key: str,
     schedule_policy: dict[str, Any] | None,
     session: Session,
+    *,
+    next_run_at: str | None = None,
+    next_run_at_provided: bool = False,
 ) -> dict[str, Any]:
     from backend.api.admin import BackgroundTaskScheduleRequest, configure_background_task_schedule
 
+    payload: dict[str, Any] = {"schedule_policy": schedule_policy}
+    if next_run_at_provided:
+        payload["next_run_at"] = next_run_at
     return configure_background_task_schedule(
         task_key,
-        BackgroundTaskScheduleRequest(schedule_policy=schedule_policy),
+        BackgroundTaskScheduleRequest(**payload),
         session=session,
     )
 

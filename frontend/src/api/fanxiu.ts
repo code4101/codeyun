@@ -76,6 +76,49 @@ export interface FanxiuProcessListResponse {
   items: FanxiuProcessItem[];
 }
 
+export interface FanxiuPacketCaptureAddress {
+  ip: string;
+  port: number;
+  label: string;
+}
+
+export interface FanxiuPacketCaptureDnsMapping {
+  host: string;
+  ips: string[];
+  error: string | null;
+}
+
+export interface FanxiuPacketCaptureProcess {
+  pid: number;
+  name: string;
+  exe: string | null;
+  command_line: string;
+  group: string;
+}
+
+export interface FanxiuPacketCaptureConnection {
+  pid: number;
+  process_name: string;
+  process_group: string;
+  protocol: string;
+  status: string;
+  local: FanxiuPacketCaptureAddress | null;
+  remote: FanxiuPacketCaptureAddress | null;
+  mapped_hosts: string[];
+  is_fake_ip: boolean;
+}
+
+export interface FanxiuPacketCaptureSnapshot {
+  captured_at: string;
+  dns_server: string;
+  dns_mappings: FanxiuPacketCaptureDnsMapping[];
+  processes: FanxiuPacketCaptureProcess[];
+  connections: FanxiuPacketCaptureConnection[];
+  listeners: FanxiuPacketCaptureConnection[];
+  warnings: string[];
+  summary: Record<string, number>;
+}
+
 export interface LocalScriptProcessItem {
   pid: number;
   parent_pid: number | null;
@@ -167,6 +210,187 @@ export interface FanxiuGameWindow2ClickPayload {
   fixed_height?: number;
   frame_width?: number;
   frame_height?: number;
+}
+
+export interface FanxiuGameWindow2DragPayload {
+  entry_id: string;
+  start_x: number;
+  start_y: number;
+  end_x: number;
+  end_y: number;
+  duration_ms?: number;
+  title?: string;
+  mode?: 'auto' | 'printwindow' | 'screen';
+  area?: 'outer' | 'client';
+  crop?: string;
+  trim_border?: string;
+  rotate?: '0' | '90' | '180' | '270' | 'ccw' | 'cw' | 'none';
+  fixed_width?: number;
+  fixed_height?: number;
+  frame_width?: number;
+  frame_height?: number;
+}
+
+export interface FanxiuGameWindow2SaveFramePayload {
+  entry_id: string;
+  title?: string;
+  mode?: 'auto' | 'printwindow' | 'screen';
+  area?: 'outer' | 'client';
+  crop?: string;
+  trim_border?: string;
+  rotate?: '0' | '90' | '180' | '270' | 'ccw' | 'cw' | 'none';
+  fixed_width?: number;
+  fixed_height?: number;
+  quality?: number;
+}
+
+export interface FanxiuGameWindow2SaveFrameResponse {
+  ok: boolean;
+  index: number;
+  filename: string;
+  path: string;
+  directory: string;
+  width: number;
+  height: number;
+}
+
+export interface FanxiuGameWindow2MatchBox {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface FanxiuGameWindow2MatchPayload extends FanxiuGameWindow2SaveFramePayload {
+  filename: string;
+  box: FanxiuGameWindow2MatchBox;
+}
+
+export interface FanxiuGameWindow2MatchResponse {
+  ok: boolean;
+  index: number;
+  source_filename: string;
+  match_filename: string;
+  path: string;
+  directory: string;
+  similarity: number;
+  score: number;
+  fixed_similarity?: number;
+  fixed_score?: number;
+  template_similarity?: number;
+  template_score?: number;
+  template_crop_similarity?: number;
+  template_crop_score?: number;
+  box: FanxiuGameWindow2MatchBox;
+  current_box: FanxiuGameWindow2MatchBox;
+  template_box?: FanxiuGameWindow2MatchBox;
+  source_width: number;
+  source_height: number;
+  width: number;
+  height: number;
+}
+
+export type FanxiuPseudoCodeCardScope = 'guard' | 'action';
+
+export interface FanxiuPseudoCodeCard {
+  id: string;
+  scope: FanxiuPseudoCodeCardScope;
+  title: string;
+  body: string;
+  enabled: boolean;
+  order_index: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FanxiuPseudoCodeCardListResponse {
+  items: FanxiuPseudoCodeCard[];
+}
+
+export interface FanxiuPseudoCodeCardCreatePayload {
+  scope: FanxiuPseudoCodeCardScope;
+  title?: string;
+  body?: string;
+  enabled?: boolean;
+  order_index?: number;
+}
+
+export interface FanxiuPseudoCodeCardUpdatePayload {
+  scope?: FanxiuPseudoCodeCardScope;
+  title?: string;
+  body?: string;
+  enabled?: boolean;
+  order_index?: number;
+}
+
+export interface FanxiuPseudoCodeCompilePayload {
+  entry_id?: string;
+  model?: string;
+  timeout?: number;
+}
+
+export interface FanxiuPseudoCodeStartPayload {
+  timeout?: number;
+}
+
+export interface FanxiuPseudoCodeRunResponse {
+  ok: boolean;
+  status: string;
+  script_path: string;
+  cache_hits: number;
+  cache_misses: number;
+  compiled_cards: number;
+  log: string;
+  result: string;
+  updated_at: number;
+}
+
+export interface FanxiuGameWindow2ScreenshotItem {
+  filename: string;
+  stem: string;
+  pre_label_filename: string;
+  pre_label_exists: boolean;
+  label_filename: string;
+  label_exists: boolean;
+  size: number;
+  modified_at: string;
+  width: number;
+  height: number;
+}
+
+export interface FanxiuGameWindow2ScreenshotListResponse {
+  directory: string;
+  items: FanxiuGameWindow2ScreenshotItem[];
+}
+
+export interface FanxiuGameWindow2PreLabelBox {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface FanxiuGameWindow2PreLabelPayload {
+  version: number;
+  image: string;
+  size: {
+    width: number;
+    height: number;
+  };
+  boxes: FanxiuGameWindow2PreLabelBox[];
+}
+
+export interface FanxiuGameWindow2PreLabelResponse {
+  exists: boolean;
+  filename: string;
+  payload: FanxiuGameWindow2PreLabelPayload;
+}
+
+export interface FanxiuGameWindow2ScreenshotDeleteResponse {
+  filename: string;
+  deleted: string[];
 }
 
 export type FanxiuInventoryType = '' | '攻击' | '防御' | '灵力' | '辅助';
@@ -594,6 +818,12 @@ export const getFanxiuProcesses = () => {
   return api.get<FanxiuProcessListResponse>('/fanxiu/processes').then(res => res.data);
 };
 
+export const getFanxiuPacketCaptureSnapshot = (dnsHosts: string[]) => {
+  return api
+    .post<FanxiuPacketCaptureSnapshot>('/fanxiu/packet-capture/snapshot', { dns_hosts: dnsHosts })
+    .then(res => res.data);
+};
+
 export const getFanxiuBehaviorTreeService = () => {
   return api.get<FanxiuBehaviorTreeServiceStatus>('/fanxiu/behavior-tree-service').then(res => res.data);
 };
@@ -634,6 +864,88 @@ export const createFanxiuGameWindow2StreamToken = (entryId: string) => {
 
 export const clickFanxiuGameWindow2 = (payload: FanxiuGameWindow2ClickPayload) => {
   return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/click', payload).then(res => res.data);
+};
+
+export const dragFanxiuGameWindow2 = (payload: FanxiuGameWindow2DragPayload) => {
+  return api.post<Record<string, unknown>>('/fanxiu/game-window2/input/drag', payload).then(res => res.data);
+};
+
+export const saveFanxiuGameWindow2Frame = (payload: FanxiuGameWindow2SaveFramePayload) => {
+  return api.post<FanxiuGameWindow2SaveFrameResponse>('/fanxiu/game-window2/save-frame', payload).then(res => res.data);
+};
+
+export const matchFanxiuGameWindow2Screenshot = (payload: FanxiuGameWindow2MatchPayload) => {
+  return api.post<FanxiuGameWindow2MatchResponse>('/fanxiu/game-window2/match', payload).then(res => res.data);
+};
+
+export const getFanxiuGameWindow2MatchImage = (entryId: string, filename: string) => {
+  return api
+    .get<Blob>('/fanxiu/game-window2/match/image', {
+      params: { entry_id: entryId, filename },
+      responseType: 'blob',
+    })
+    .then(res => res.data);
+};
+
+export const listFanxiuPseudoCodeCards = () => {
+  return api.get<FanxiuPseudoCodeCardListResponse>('/fanxiu/game-window2/pseudocode-cards').then(res => res.data);
+};
+
+export const createFanxiuPseudoCodeCard = (payload: FanxiuPseudoCodeCardCreatePayload) => {
+  return api.post<FanxiuPseudoCodeCard>('/fanxiu/game-window2/pseudocode-cards', payload).then(res => res.data);
+};
+
+export const updateFanxiuPseudoCodeCard = (cardId: string, payload: FanxiuPseudoCodeCardUpdatePayload) => {
+  return api.patch<FanxiuPseudoCodeCard>(`/fanxiu/game-window2/pseudocode-cards/${encodeURIComponent(cardId)}`, payload).then(res => res.data);
+};
+
+export const deleteFanxiuPseudoCodeCard = (cardId: string) => {
+  return api.delete<{ ok: boolean; id: string }>(`/fanxiu/game-window2/pseudocode-cards/${encodeURIComponent(cardId)}`).then(res => res.data);
+};
+
+export const compileFanxiuPseudoCode = (payload: FanxiuPseudoCodeCompilePayload) => {
+  return api.post<FanxiuPseudoCodeRunResponse>('/fanxiu/game-window2/pseudocode/compile', payload).then(res => res.data);
+};
+
+export const startFanxiuPseudoCode = (payload: FanxiuPseudoCodeStartPayload = {}) => {
+  return api.post<FanxiuPseudoCodeRunResponse>('/fanxiu/game-window2/pseudocode/start', payload).then(res => res.data);
+};
+
+export const listFanxiuGameWindow2Screenshots = (entryId: string) => {
+  return api
+    .post<FanxiuGameWindow2ScreenshotListResponse>('/fanxiu/game-window2/screenshot/list', { entry_id: entryId })
+    .then(res => res.data);
+};
+
+export const deleteFanxiuGameWindow2Screenshot = (entryId: string, filename: string) => {
+  return api
+    .post<FanxiuGameWindow2ScreenshotDeleteResponse>('/fanxiu/game-window2/screenshot/delete', { entry_id: entryId, filename })
+    .then(res => res.data);
+};
+
+export const getFanxiuGameWindow2Screenshot = (entryId: string, filename: string) => {
+  return api
+    .get<Blob>('/fanxiu/game-window2/screenshot/image', {
+      params: { entry_id: entryId, filename },
+      responseType: 'blob',
+    })
+    .then(res => res.data);
+};
+
+export const getFanxiuGameWindow2PreLabel = (entryId: string, filename: string) => {
+  return api
+    .post<FanxiuGameWindow2PreLabelResponse>('/fanxiu/game-window2/screenshot/pre-label', { entry_id: entryId, filename })
+    .then(res => res.data);
+};
+
+export const saveFanxiuGameWindow2PreLabel = (
+  entryId: string,
+  filename: string,
+  payload: FanxiuGameWindow2PreLabelPayload,
+) => {
+  return api
+    .put<FanxiuGameWindow2PreLabelResponse>('/fanxiu/game-window2/screenshot/pre-label', { entry_id: entryId, filename, payload })
+    .then(res => res.data);
 };
 
 export const getFanxiuWardrobeHall = () => {

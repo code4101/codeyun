@@ -56,7 +56,20 @@ def build_workbook_ref_map(workbooks: Iterable[WorkbookDocument]) -> dict[str, W
     return result
 
 
-def load_sheets_by_refs(session: Session, refs: Iterable[str]) -> dict[str, SheetDocument]:
+def _active_sheet_condition():
+    return or_(SheetDocument.deleted_at.is_(None), SheetDocument.deleted_at <= 0)
+
+
+def _active_workbook_condition():
+    return or_(WorkbookDocument.deleted_at.is_(None), WorkbookDocument.deleted_at <= 0)
+
+
+def load_sheets_by_refs(
+    session: Session,
+    refs: Iterable[str],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, SheetDocument]:
     normalized_refs = {str(ref or "").strip() for ref in refs}
     normalized_refs.discard("")
     if not normalized_refs:
@@ -72,11 +85,18 @@ def load_sheets_by_refs(session: Session, refs: Iterable[str]) -> dict[str, Shee
     if not conditions:
         return {}
     query = select(SheetDocument)
+    if not include_deleted:
+        query = query.where(_active_sheet_condition())
     query = query.where(or_(*conditions) if len(conditions) > 1 else conditions[0])
     return build_sheet_ref_map(session.exec(query).all())
 
 
-def load_workbooks_by_refs(session: Session, refs: Iterable[str]) -> dict[str, WorkbookDocument]:
+def load_workbooks_by_refs(
+    session: Session,
+    refs: Iterable[str],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, WorkbookDocument]:
     normalized_refs = {str(ref or "").strip() for ref in refs}
     normalized_refs.discard("")
     if not normalized_refs:
@@ -92,5 +112,7 @@ def load_workbooks_by_refs(session: Session, refs: Iterable[str]) -> dict[str, W
     if not conditions:
         return {}
     query = select(WorkbookDocument)
+    if not include_deleted:
+        query = query.where(_active_workbook_condition())
     query = query.where(or_(*conditions) if len(conditions) > 1 else conditions[0])
     return build_workbook_ref_map(session.exec(query).all())

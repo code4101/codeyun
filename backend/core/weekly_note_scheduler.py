@@ -94,6 +94,7 @@ class RuanyfWeeklyJobResult:
     created_note_id: str | None = None
     issue_number: int | None = None
     message: str = ""
+    next_run_at: str | None = None
 
 
 def parse_ruanyf_weekly_readme(text: str) -> RuanyfWeeklyIssue | None:
@@ -394,11 +395,23 @@ def create_ruanyf_weekly_note(
 def run_ruanyf_weekly_note_job() -> RuanyfWeeklyJobResult:
     from backend.db import engine
 
+    current_time = datetime.now(RUANYF_WEEKLY_TIMEZONE)
     with Session(engine) as session:
-        result = maybe_create_ruanyf_weekly_note(session)
+        result = maybe_create_ruanyf_weekly_note(session, now=current_time)
+        if result.next_run_at is None and _ruanyf_weekly_should_retry(result.status):
+            next_run_at = _next_ruanyf_weekly_retry_at(current_time)
+            if next_run_at is not None:
+                result = RuanyfWeeklyJobResult(
+                    status=result.status,
+                    created_note_id=result.created_note_id,
+                    issue_number=result.issue_number,
+                    message=result.message,
+                    next_run_at=next_run_at.isoformat(),
+                )
         print(
             "Ruanyf weekly note job finished: "
-            f"status={result.status} issue={result.issue_number} note={result.created_note_id}"
+            f"status={result.status} issue={result.issue_number} "
+            f"note={result.created_note_id} next_run_at={result.next_run_at}"
         )
         return result
 
@@ -424,6 +437,28 @@ def enqueue_ruanyf_weekly_note_job(*, now: datetime | None = None) -> str | None
         RUANYF_WEEKLY_TASK_NAME,
         run_ruanyf_weekly_note_job,
     )
+
+
+def _ruanyf_weekly_should_retry(status: str) -> bool:
+    return status not in {
+        "created",
+        "already_exists",
+        "already_completed_window",
+        "outside_schedule_window",
+    }
+
+
+def _next_ruanyf_weekly_retry_at(now: datetime, *, interval: timedelta = timedelta(hours=2)) -> datetime | None:
+    local_now = _ensure_aware_datetime(now).astimezone(RUANYF_WEEKLY_TIMEZONE)
+    if local_now.weekday() != 4:
+        return None
+    saturday = datetime.combine(
+        local_now.date() + timedelta(days=1),
+        datetime_time.min,
+        tzinfo=RUANYF_WEEKLY_TIMEZONE,
+    )
+    candidate = local_now + interval
+    return candidate if candidate < saturday else None
 
 
 def init_ruanyf_weekly_note_scheduler() -> None:

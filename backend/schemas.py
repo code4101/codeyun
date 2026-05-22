@@ -164,6 +164,8 @@ class NoteRead(BaseModel):
     start_at: float
     created_at: float
     updated_at: float
+    deleted_at: Optional[float] = None
+    deleted_by_user_id: Optional[int] = None
     node_type: Optional[str] = None
     note_types: List[Dict[str, Any]] = Field(default_factory=list)
     note_categories: List[Dict[str, Any]] = Field(default_factory=list)
@@ -212,6 +214,8 @@ class NoteListRead(BaseModel):
     created_at: float
     updated_at: float
     start_at: float
+    deleted_at: Optional[float] = None
+    deleted_by_user_id: Optional[int] = None
     history: List[dict] = []
 
 

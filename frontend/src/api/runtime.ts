@@ -158,10 +158,17 @@ export const toggleRuntimeJob = async (entryId: string, jobKey: string, enabled:
   return response.data;
 };
 
-export const configureRuntimeJobSchedule = async (entryId: string, jobKey: string, schedulePolicy: SchedulePolicy | null) => {
+export const configureRuntimeJobSchedule = async (
+  entryId: string,
+  jobKey: string,
+  schedulePolicy: SchedulePolicy | null,
+  nextRunAt?: string | null
+) => {
+  const payload: Record<string, any> = { schedule_policy: schedulePolicy };
+  if (nextRunAt !== undefined) payload.next_run_at = nextRunAt;
   const response = await api.post(
     getDeviceEntryPath(entryId, `/runtime/jobs/${encodeURIComponent(jobKey)}/schedule`),
-    { schedule_policy: schedulePolicy }
+    payload
   );
   return response.data;
 };

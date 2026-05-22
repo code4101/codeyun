@@ -10,7 +10,7 @@ from typing import Any, List, Optional
 
 import requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from jose import JWTError, jwt
 from pydantic import BaseModel, Field, model_validator
 from passlib.context import CryptContext
@@ -31,11 +31,12 @@ from backend.core.game_window_service_runtime import (
     GameWindowServiceError,
     open_game_window_service_stream,
     send_game_window_service_click,
+    send_game_window_service_drag,
 )
 from backend.core.note_identity import allocate_new_note_identity
 from backend.core.note_refs import note_edge_ref, note_public_id, note_ref_aliases
 from backend.db import get_session
-from backend.models import NoteEdge, NoteNode, User, UserDevice
+from backend.models import FanxiuPseudoCodeCard, NoteEdge, NoteNode, User, UserDevice
 from backend.schemas import NoteRead, NoteUpdate
 from backend.core.fanxiu_status import (
     derive_status_snapshot,
@@ -46,11 +47,20 @@ from backend.core.fanxiu_status import (
 )
 from backend.core.fanxiu_sunlogin_rotate import (
     capture_sunlogin_rotate_frame,
+    delete_fanxiu_screenshot,
+    get_fanxiu_match_frame_path,
+    get_fanxiu_screenshot_path,
     get_sunlogin_rotate_status,
+    list_fanxiu_screenshots,
+    match_fanxiu_screenshot_box_frame,
+    read_fanxiu_screenshot_pre_label,
+    save_fanxiu_screenshot_frame,
     start_sunlogin_rotate_preview,
     stop_sunlogin_rotate_preview,
     stream_sunlogin_rotate_mjpeg,
+    write_fanxiu_screenshot_pre_label,
 )
+from backend.core.fanxiu_pseudocode_runtime import compile_fanxiu_pseudocode, start_fanxiu_pseudocode_script
 from backend.core.fanxiu_inventory import load_magic_treasure_hall, save_magic_treasure_hall
 from backend.core.fanxiu_inventory import load_spirit_artifact_hall, save_spirit_artifact_hall
 from backend.core.fanxiu_inventory import load_wardrobe_hall, save_wardrobe_hall
@@ -62,6 +72,7 @@ from backend.core.fanxiu_inventory import (
     save_shouyuan_exploration_exchange_list,
 )
 from backend.core.fanxiu_processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
+from backend.core.fanxiu_packet_capture import build_fanxiu_packet_capture_snapshot
 from backend.core.fanxiu_behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
@@ -352,6 +363,53 @@ class FanxiuProcessListResponse(BaseModel):
     items: List[FanxiuProcessItem] = Field(default_factory=list)
 
 
+class FanxiuPacketCaptureSnapshotRequest(BaseModel):
+    dns_hosts: List[str] = Field(default_factory=list)
+
+
+class FanxiuPacketCaptureDnsMapping(BaseModel):
+    host: str
+    ips: List[str] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class FanxiuPacketCaptureAddress(BaseModel):
+    ip: str
+    port: int
+    label: str
+
+
+class FanxiuPacketCaptureProcess(BaseModel):
+    pid: int
+    name: str
+    exe: Optional[str] = None
+    command_line: str = ""
+    group: str
+
+
+class FanxiuPacketCaptureConnection(BaseModel):
+    pid: int
+    process_name: str
+    process_group: str
+    protocol: str
+    status: str
+    local: Optional[FanxiuPacketCaptureAddress] = None
+    remote: Optional[FanxiuPacketCaptureAddress] = None
+    mapped_hosts: List[str] = Field(default_factory=list)
+    is_fake_ip: bool = False
+
+
+class FanxiuPacketCaptureSnapshot(BaseModel):
+    captured_at: str
+    dns_server: str
+    dns_mappings: List[FanxiuPacketCaptureDnsMapping] = Field(default_factory=list)
+    processes: List[FanxiuPacketCaptureProcess] = Field(default_factory=list)
+    connections: List[FanxiuPacketCaptureConnection] = Field(default_factory=list)
+    listeners: List[FanxiuPacketCaptureConnection] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    summary: dict[str, int] = Field(default_factory=dict)
+
+
 class LocalScriptProcessItem(BaseModel):
     pid: int
     parent_pid: Optional[int] = None
@@ -476,6 +534,191 @@ class FanxiuGameWindow2ServiceClickRequest(BaseModel):
     fixed_height: int = Field(0, ge=0, le=4096)
     frame_width: Optional[int] = Field(None, ge=1, le=8192)
     frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class FanxiuGameWindow2DragRequest(BaseModel):
+    entry_id: str
+    start_x: float = Field(ge=0)
+    start_y: float = Field(ge=0)
+    end_x: float = Field(ge=0)
+    end_y: float = Field(ge=0)
+    duration_ms: int = Field(300, ge=50, le=3000)
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class FanxiuGameWindow2ServiceDragRequest(BaseModel):
+    start_x: float = Field(ge=0)
+    start_y: float = Field(ge=0)
+    end_x: float = Field(ge=0)
+    end_y: float = Field(ge=0)
+    duration_ms: int = Field(300, ge=50, le=3000)
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class FanxiuGameWindow2SaveFrameRequest(BaseModel):
+    entry_id: str
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    quality: int = Field(82, ge=1, le=100)
+
+
+class FanxiuGameWindow2ServiceSaveFrameRequest(BaseModel):
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    quality: int = Field(82, ge=1, le=100)
+
+
+class FanxiuGameWindow2MatchBox(BaseModel):
+    name: str = ""
+    x: float = Field(ge=0)
+    y: float = Field(ge=0)
+    w: float = Field(gt=0)
+    h: float = Field(gt=0)
+
+
+class FanxiuGameWindow2MatchRequest(BaseModel):
+    entry_id: str
+    filename: str
+    box: FanxiuGameWindow2MatchBox
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    quality: int = Field(82, ge=1, le=100)
+
+
+class FanxiuGameWindow2ServiceMatchRequest(BaseModel):
+    filename: str
+    box: FanxiuGameWindow2MatchBox
+    title: Optional[str] = None
+    mode: str = Field("screen", pattern="^(auto|printwindow|screen)$")
+    area: str = Field("client", pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field("0", pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    quality: int = Field(82, ge=1, le=100)
+
+
+class FanxiuPseudoCodeCardRead(BaseModel):
+    id: str
+    scope: str
+    title: str
+    body: str
+    enabled: bool
+    order_index: int
+    created_at: float
+    updated_at: float
+
+
+class FanxiuPseudoCodeCardListResponse(BaseModel):
+    items: List[FanxiuPseudoCodeCardRead] = Field(default_factory=list)
+
+
+class FanxiuPseudoCodeCardCreateRequest(BaseModel):
+    scope: str = Field("action", pattern="^(guard|action)$")
+    title: str = ""
+    body: str = ""
+    enabled: bool = True
+    order_index: Optional[int] = Field(None, ge=0)
+
+
+class FanxiuPseudoCodeCardUpdateRequest(BaseModel):
+    scope: Optional[str] = Field(None, pattern="^(guard|action)$")
+    title: Optional[str] = None
+    body: Optional[str] = None
+    enabled: Optional[bool] = None
+    order_index: Optional[int] = Field(None, ge=0)
+
+
+class FanxiuPseudoCodeCompileRequest(BaseModel):
+    entry_id: str = ""
+    model: str = ""
+    timeout: int = Field(300, ge=30, le=1200)
+
+
+class FanxiuPseudoCodeStartRequest(BaseModel):
+    timeout: int = Field(120, ge=5, le=1200)
+
+
+class FanxiuPseudoCodeRunResponse(BaseModel):
+    ok: bool
+    status: str
+    script_path: str = ""
+    cache_hits: int = 0
+    cache_misses: int = 0
+    compiled_cards: int = 0
+    log: str = ""
+    result: str = ""
+    updated_at: float = 0
+
+
+class FanxiuGameWindow2ScreenshotListRequest(BaseModel):
+    entry_id: str
+
+
+class FanxiuGameWindow2ScreenshotPreLabelRequest(BaseModel):
+    entry_id: str
+    filename: str
+
+
+class FanxiuGameWindow2ScreenshotDeleteRequest(BaseModel):
+    entry_id: str
+    filename: str
+
+
+class FanxiuGameWindow2ServiceScreenshotPreLabelRequest(BaseModel):
+    filename: str
+
+
+class FanxiuGameWindow2ServiceScreenshotDeleteRequest(BaseModel):
+    filename: str
+
+
+class FanxiuGameWindow2ScreenshotPreLabelSaveRequest(BaseModel):
+    entry_id: str
+    filename: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuGameWindow2ServiceScreenshotPreLabelSaveRequest(BaseModel):
+    filename: str
+    payload: dict[str, Any] = Field(default_factory=dict)
 
 
 class FanxiuStatusSnapshot(FanxiuStatusConfigRead):
@@ -3648,6 +3891,18 @@ def get_fanxiu_processes(
     return FanxiuProcessListResponse(items=list_fanxiu_processes())
 
 
+@status_router.post("/packet-capture/snapshot", response_model=FanxiuPacketCaptureSnapshot)
+def get_fanxiu_packet_capture_snapshot(
+    payload: FanxiuPacketCaptureSnapshotRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketCaptureSnapshot.model_validate(
+        build_fanxiu_packet_capture_snapshot(payload.dns_hosts)
+    )
+
+
 @status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse)
 def terminate_fanxiu_scripts(
     current_user: User = Depends(get_current_active_user),
@@ -3955,11 +4210,70 @@ def _game_window2_click_payload(req: FanxiuGameWindow2ClickRequest | FanxiuGameW
     return req.model_dump(exclude_none=True, exclude={"entry_id"})
 
 
+def _game_window2_drag_payload(req: FanxiuGameWindow2DragRequest | FanxiuGameWindow2ServiceDragRequest) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
+def _game_window2_save_frame_payload(
+    req: FanxiuGameWindow2SaveFrameRequest | FanxiuGameWindow2ServiceSaveFrameRequest,
+) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
+def _game_window2_match_payload(
+    req: FanxiuGameWindow2MatchRequest | FanxiuGameWindow2ServiceMatchRequest,
+) -> dict[str, Any]:
+    return req.model_dump(exclude_none=True, exclude={"entry_id"})
+
+
 def _click_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         return send_game_window_service_click(payload)
     except GameWindowServiceError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _drag_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return send_game_window_service_drag(payload)
+    except GameWindowServiceError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+def _save_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return save_fanxiu_screenshot_frame(
+            title=payload.get("title"),
+            mode=payload.get("mode"),
+            area=payload.get("area"),
+            crop=payload.get("crop"),
+            trim_border=payload.get("trim_border"),
+            rotate=payload.get("rotate"),
+            fixed_width=int(payload.get("fixed_width") or 0),
+            fixed_height=int(payload.get("fixed_height") or 0),
+            quality=int(payload.get("quality") or 82),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _match_game_window2_service(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return match_fanxiu_screenshot_box_frame(
+            filename=payload["filename"],
+            box=payload["box"],
+            title=payload.get("title"),
+            mode=payload.get("mode"),
+            area=payload.get("area"),
+            crop=payload.get("crop"),
+            trim_border=payload.get("trim_border"),
+            rotate=payload.get("rotate"),
+            fixed_width=int(payload.get("fixed_width") or 0),
+            fixed_height=int(payload.get("fixed_height") or 0),
+            quality=int(payload.get("quality") or 82),
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
@@ -3983,6 +4297,496 @@ def _click_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> di
     if not isinstance(data, dict):
         raise HTTPException(status_code=502, detail="远程游戏操作服务响应格式不支持")
     return data
+
+
+def _drag_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-input/drag"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 12.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏拖拽服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        if response.status_code == 404:
+            raise HTTPException(
+                status_code=502,
+                detail="远程 codeyun 缺少拖拽接口，请更新并重启 mi15 的 codeyun；如果已更新，请停止并重启“凡修游戏画面流”服务。",
+            )
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程游戏拖拽服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="远程游戏拖拽服务响应格式不支持")
+    return data
+
+
+def _save_remote_game_window2_frame(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-save-frame"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 20.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏保存帧服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程游戏保存帧服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="远程游戏保存帧服务响应格式不支持")
+    return data
+
+
+def _match_remote_game_window2(entry: UserDevice, payload: dict[str, Any]) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-match"
+    try:
+        response = requests.post(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 30.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏匹配服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail="远程游戏匹配服务响应格式不支持")
+    return data
+
+
+def _screenshot_game_window2_service_list() -> dict[str, Any]:
+    try:
+        return list_fanxiu_screenshots()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _screenshot_game_window2_service_pre_label(filename: str) -> dict[str, Any]:
+    try:
+        return read_fanxiu_screenshot_pre_label(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _save_screenshot_game_window2_service_pre_label(filename: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return write_fanxiu_screenshot_pre_label(filename, payload)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _delete_screenshot_game_window2_service_image(filename: str) -> dict[str, Any]:
+    try:
+        return delete_fanxiu_screenshot(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _screenshot_game_window2_service_image(filename: str) -> FileResponse:
+    try:
+        path = get_fanxiu_screenshot_path(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        filename=path.name,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _match_game_window2_service_image(filename: str) -> FileResponse:
+    try:
+        path = get_fanxiu_match_frame_path(filename)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        filename=path.name,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _remote_game_window2_screenshot_json(
+    entry: UserDevice,
+    path: str,
+    *,
+    method: str = "post",
+    payload: dict[str, Any] | None = None,
+    action: str,
+) -> dict[str, Any]:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/{path.lstrip('/')}"
+    try:
+        response = requests.request(
+            method,
+            target_url,
+            headers=_remote_entry_headers(entry),
+            json=payload,
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 20.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应不是 JSON") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=502, detail=f"远程游戏{action}服务响应格式不支持")
+    return data
+
+
+def _remote_game_window2_screenshot_image(entry: UserDevice, filename: str) -> Response:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-screenshot/image"
+    try:
+        response = requests.get(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            params={"filename": filename},
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 30.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏截图服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    return Response(
+        content=response.content,
+        media_type=response.headers.get("content-type") or "image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _remote_game_window2_match_image(entry: UserDevice, filename: str) -> Response:
+    target_url = f"{_remote_entry_base_url(entry)}/api/fanxiu/game-window2/service-match/image"
+    try:
+        response = requests.get(
+            target_url,
+            headers=_remote_entry_headers(entry),
+            params={"filename": filename},
+            proxies=REMOTE_DEVICE_DIRECT_PROXIES.copy(),
+            timeout=(5.0, 30.0),
+        )
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"远程游戏匹配帧服务不可达：{exc}") from exc
+    if response.status_code >= 400:
+        raise HTTPException(status_code=response.status_code, detail=_extract_stream_error(response))
+    return Response(
+        content=response.content,
+        media_type=response.headers.get("content-type") or "image/jpeg",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _serialize_fanxiu_pseudocode_card(card: FanxiuPseudoCodeCard) -> dict[str, Any]:
+    return {
+        "id": card.id,
+        "scope": card.scope,
+        "title": card.title or "",
+        "body": card.body or "",
+        "enabled": bool(card.enabled),
+        "order_index": int(card.order_index or 0),
+        "created_at": float(card.created_at or 0),
+        "updated_at": float(card.updated_at or 0),
+    }
+
+
+def _list_fanxiu_pseudocode_card_rows(session: Session, user_id: int) -> list[FanxiuPseudoCodeCard]:
+    return session.exec(
+        select(FanxiuPseudoCodeCard)
+        .where(FanxiuPseudoCodeCard.user_id == user_id)
+        .order_by(FanxiuPseudoCodeCard.scope.asc(), FanxiuPseudoCodeCard.order_index.asc(), FanxiuPseudoCodeCard.created_at.asc())
+    ).all()
+
+
+def _next_fanxiu_pseudocode_card_order(session: Session, user_id: int, scope: str) -> int:
+    rows = session.exec(
+        select(FanxiuPseudoCodeCard.order_index)
+        .where(FanxiuPseudoCodeCard.user_id == user_id)
+        .where(FanxiuPseudoCodeCard.scope == scope)
+    ).all()
+    return max((int(value or 0) for value in rows), default=-1) + 1
+
+
+FANXIU_PSEUDOCODE_REF_RE = re.compile(r"(?<!\d)(\d{1,4})#([A-Za-z0-9_\-\u4e00-\u9fff（）()《》【】「」]+)?")
+
+
+def _extract_fanxiu_pseudocode_refs(*segments: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[int, str]] = set()
+    for segment in segments:
+        for match in FANXIU_PSEUDOCODE_REF_RE.finditer(segment or ""):
+            image_no = int(match.group(1))
+            label = (match.group(2) or "").strip()
+            key = (image_no, label)
+            if key in seen:
+                continue
+            seen.add(key)
+            refs.append(
+                {
+                    "ref": f"{image_no}#{label}" if label else f"{image_no}#",
+                    "image_no": image_no,
+                    "filename": f"{image_no:04d}.jpg",
+                    "label": label,
+                }
+            )
+    return refs
+
+
+def _read_game_window2_pre_label_for_entry(entry: UserDevice, filename: str) -> dict[str, Any]:
+    if entry.mode == "local":
+        return _screenshot_game_window2_service_pre_label(filename)
+    return _remote_game_window2_screenshot_json(
+        entry,
+        "service-screenshot/pre-label",
+        payload={"filename": filename},
+        action="截图预标注",
+    )
+
+
+def _normalize_fanxiu_pseudocode_image_context(data: dict[str, Any], filename: str, image_no: int) -> dict[str, Any]:
+    payload = data.get("payload") if isinstance(data, dict) else None
+    if not isinstance(payload, dict):
+        payload = {}
+    size = payload.get("size") if isinstance(payload.get("size"), dict) else {}
+    boxes: list[dict[str, Any]] = []
+    raw_boxes = payload.get("boxes")
+    if isinstance(raw_boxes, list):
+        for index, raw_box in enumerate(raw_boxes, start=1):
+            if not isinstance(raw_box, dict):
+                continue
+            try:
+                x = int(raw_box.get("x", 0))
+                y = int(raw_box.get("y", 0))
+                w = int(raw_box.get("w", 0))
+                h = int(raw_box.get("h", 0))
+            except (TypeError, ValueError):
+                continue
+            boxes.append(
+                {
+                    "index": index,
+                    "name": str(raw_box.get("name") or "").strip(),
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                    "xywh": [x, y, w, h],
+                }
+            )
+    return {
+        "image_no": image_no,
+        "filename": filename,
+        "pre_label_filename": str(data.get("filename") or f"{Path(filename).stem}_pre.json") if isinstance(data, dict) else f"{Path(filename).stem}_pre.json",
+        "exists": bool(data.get("exists")) if isinstance(data, dict) else False,
+        "size": {
+            "width": int(size.get("width") or 0),
+            "height": int(size.get("height") or 0),
+        },
+        "boxes": boxes,
+    }
+
+
+def _build_fanxiu_pseudocode_annotation_context(entry: UserDevice | None, card: FanxiuPseudoCodeCard) -> dict[str, Any]:
+    refs = _extract_fanxiu_pseudocode_refs(card.title or "", card.body or "")
+    image_map: dict[str, dict[str, Any]] = {}
+    errors: list[str] = []
+    for ref in refs:
+        filename = str(ref["filename"])
+        image_no = int(ref["image_no"])
+        if filename not in image_map:
+            if entry is None:
+                image_map[filename] = {
+                    "image_no": image_no,
+                    "filename": filename,
+                    "exists": False,
+                    "size": {"width": 0, "height": 0},
+                    "boxes": [],
+                    "error": "未选择设备，无法读取截图标注",
+                }
+                errors.append(f"{filename}: 未选择设备")
+            else:
+                try:
+                    data = _read_game_window2_pre_label_for_entry(entry, filename)
+                    image_map[filename] = _normalize_fanxiu_pseudocode_image_context(data, filename, image_no)
+                except Exception as exc:
+                    image_map[filename] = {
+                        "image_no": image_no,
+                        "filename": filename,
+                        "exists": False,
+                        "size": {"width": 0, "height": 0},
+                        "boxes": [],
+                        "error": str(exc),
+                    }
+                    errors.append(f"{filename}: {exc}")
+        label = str(ref.get("label") or "").strip()
+        if label:
+            image_context = image_map[filename]
+            matched_box = next((box for box in image_context.get("boxes", []) if box.get("name") == label), None)
+            ref["matched_box"] = matched_box
+            if matched_box is None:
+                ref["error"] = f"{filename} 中没有标注框：{label}"
+
+    return {
+        "refs": refs,
+        "images": list(image_map.values()),
+        "errors": errors,
+    }
+
+
+def _serialize_fanxiu_pseudocode_card_for_compile(card: FanxiuPseudoCodeCard, entry: UserDevice | None) -> dict[str, Any]:
+    payload = _serialize_fanxiu_pseudocode_card(card)
+    payload["annotation_context"] = _build_fanxiu_pseudocode_annotation_context(entry, card)
+    return payload
+
+
+def _run_fanxiu_pseudocode_operation(action: str, operation) -> dict[str, Any]:
+    try:
+        return operation()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@status_router.get("/game-window2/pseudocode-cards", response_model=FanxiuPseudoCodeCardListResponse)
+def list_fanxiu_game_window2_pseudocode_cards(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    rows = _list_fanxiu_pseudocode_card_rows(session, current_user.id)
+    return {"items": [_serialize_fanxiu_pseudocode_card(row) for row in rows]}
+
+
+@status_router.post("/game-window2/pseudocode-cards", response_model=FanxiuPseudoCodeCardRead)
+def create_fanxiu_game_window2_pseudocode_card(
+    req: FanxiuPseudoCodeCardCreateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    now = time.time()
+    card = FanxiuPseudoCodeCard(
+        user_id=current_user.id,
+        scope=req.scope,
+        title=req.title,
+        body=req.body,
+        enabled=req.enabled,
+        order_index=req.order_index if req.order_index is not None else _next_fanxiu_pseudocode_card_order(session, current_user.id, req.scope),
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(card)
+    session.commit()
+    session.refresh(card)
+    return _serialize_fanxiu_pseudocode_card(card)
+
+
+@status_router.patch("/game-window2/pseudocode-cards/{card_id}", response_model=FanxiuPseudoCodeCardRead)
+def update_fanxiu_game_window2_pseudocode_card(
+    card_id: str,
+    req: FanxiuPseudoCodeCardUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    card = session.get(FanxiuPseudoCodeCard, card_id)
+    if not card or card.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="伪代码卡片不存在")
+    updates = req.model_dump(exclude_unset=True)
+    for key, value in updates.items():
+        setattr(card, key, value)
+    card.updated_at = time.time()
+    session.add(card)
+    session.commit()
+    session.refresh(card)
+    return _serialize_fanxiu_pseudocode_card(card)
+
+
+@status_router.delete("/game-window2/pseudocode-cards/{card_id}")
+def delete_fanxiu_game_window2_pseudocode_card(
+    card_id: str,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    card = session.get(FanxiuPseudoCodeCard, card_id)
+    if not card or card.user_id != current_user.id:
+        raise HTTPException(status_code=404, detail="伪代码卡片不存在")
+    session.delete(card)
+    session.commit()
+    return {"ok": True, "id": card_id}
+
+
+@status_router.post("/game-window2/pseudocode/compile", response_model=FanxiuPseudoCodeRunResponse)
+def compile_fanxiu_game_window2_pseudocode(
+    req: FanxiuPseudoCodeCompileRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    entry = _get_user_device_or_404(session, current_user, req.entry_id) if req.entry_id.strip() else None
+    rows = _list_fanxiu_pseudocode_card_rows(session, current_user.id)
+    cards = [_serialize_fanxiu_pseudocode_card_for_compile(row, entry) for row in rows]
+    return _run_fanxiu_pseudocode_operation(
+        "编译",
+        lambda: compile_fanxiu_pseudocode(cards, model=req.model, timeout=req.timeout),
+    )
+
+
+@status_router.post("/game-window2/pseudocode/start", response_model=FanxiuPseudoCodeRunResponse)
+def start_fanxiu_game_window2_pseudocode(
+    req: FanxiuPseudoCodeStartRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    if current_user.id is None:
+        raise HTTPException(status_code=401, detail="用户未登录")
+    return _run_fanxiu_pseudocode_operation(
+        "启动",
+        lambda: start_fanxiu_pseudocode_script(timeout=req.timeout),
+    )
 
 
 @status_router.post("/game-window2/stream-token", response_model=FanxiuGameWindow2StreamTokenResponse)
@@ -4099,6 +4903,215 @@ def click_fanxiu_game_window2_service(
     _token_device: Any = Depends(verify_api_token),
 ):
     return _click_game_window2_service(_game_window2_click_payload(req))
+
+
+@status_router.post("/game-window2/input/drag")
+def drag_fanxiu_game_window2(
+    req: FanxiuGameWindow2DragRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_drag_payload(req)
+    if entry.mode == "local":
+        return _drag_game_window2_service(payload)
+    return _drag_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-input/drag")
+def drag_fanxiu_game_window2_service(
+    req: FanxiuGameWindow2ServiceDragRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _drag_game_window2_service(_game_window2_drag_payload(req))
+
+
+@status_router.post("/game-window2/save-frame")
+def save_fanxiu_game_window2_frame(
+    req: FanxiuGameWindow2SaveFrameRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_save_frame_payload(req)
+    if entry.mode == "local":
+        return _save_game_window2_service(payload)
+    return _save_remote_game_window2_frame(entry, payload)
+
+
+@status_router.post("/game-window2/service-save-frame")
+def save_fanxiu_game_window2_frame_service(
+    req: FanxiuGameWindow2ServiceSaveFrameRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _save_game_window2_service(_game_window2_save_frame_payload(req))
+
+
+@status_router.post("/game-window2/match")
+def match_fanxiu_game_window2_screenshot_box(
+    req: FanxiuGameWindow2MatchRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    payload = _game_window2_match_payload(req)
+    if entry.mode == "local":
+        return _match_game_window2_service(payload)
+    return _match_remote_game_window2(entry, payload)
+
+
+@status_router.post("/game-window2/service-match")
+def match_fanxiu_game_window2_screenshot_box_service(
+    req: FanxiuGameWindow2ServiceMatchRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _match_game_window2_service(_game_window2_match_payload(req))
+
+
+@status_router.get("/game-window2/match/image")
+def get_fanxiu_game_window2_match_image(
+    entry_id: str = Query(...),
+    filename: str = Query(...),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return _match_game_window2_service_image(filename)
+    return _remote_game_window2_match_image(entry, filename)
+
+
+@status_router.get("/game-window2/service-match/image")
+def get_fanxiu_game_window2_match_image_service(
+    filename: str = Query(...),
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _match_game_window2_service_image(filename)
+
+
+@status_router.post("/game-window2/screenshot/list")
+def list_fanxiu_game_window2_screenshot(
+    req: FanxiuGameWindow2ScreenshotListRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode == "local":
+        return _screenshot_game_window2_service_list()
+    return _remote_game_window2_screenshot_json(entry, "service-screenshot/list", action="截图列表")
+
+
+@status_router.post("/game-window2/service-screenshot/list")
+def list_fanxiu_game_window2_screenshot_service(
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _screenshot_game_window2_service_list()
+
+
+@status_router.post("/game-window2/screenshot/delete")
+def delete_fanxiu_game_window2_screenshot(
+    req: FanxiuGameWindow2ScreenshotDeleteRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode == "local":
+        return _delete_screenshot_game_window2_service_image(req.filename)
+    return _remote_game_window2_screenshot_json(
+        entry,
+        "service-screenshot/delete",
+        payload={"filename": req.filename},
+        action="截图删除",
+    )
+
+
+@status_router.post("/game-window2/service-screenshot/delete")
+def delete_fanxiu_game_window2_screenshot_service(
+    req: FanxiuGameWindow2ServiceScreenshotDeleteRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _delete_screenshot_game_window2_service_image(req.filename)
+
+
+@status_router.get("/game-window2/screenshot/image")
+def get_fanxiu_game_window2_screenshot_image(
+    entry_id: str = Query(...),
+    filename: str = Query(...),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, entry_id)
+    if entry.mode == "local":
+        return _screenshot_game_window2_service_image(filename)
+    return _remote_game_window2_screenshot_image(entry, filename)
+
+
+@status_router.get("/game-window2/service-screenshot/image")
+def get_fanxiu_game_window2_screenshot_image_service(
+    filename: str = Query(...),
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _screenshot_game_window2_service_image(filename)
+
+
+@status_router.post("/game-window2/screenshot/pre-label")
+def get_fanxiu_game_window2_screenshot_pre_label(
+    req: FanxiuGameWindow2ScreenshotPreLabelRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode == "local":
+        return _screenshot_game_window2_service_pre_label(req.filename)
+    return _remote_game_window2_screenshot_json(
+        entry,
+        "service-screenshot/pre-label",
+        payload={"filename": req.filename},
+        action="截图预标注",
+    )
+
+
+@status_router.post("/game-window2/service-screenshot/pre-label")
+def get_fanxiu_game_window2_screenshot_pre_label_service(
+    req: FanxiuGameWindow2ServiceScreenshotPreLabelRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _screenshot_game_window2_service_pre_label(req.filename)
+
+
+@status_router.put("/game-window2/screenshot/pre-label")
+def save_fanxiu_game_window2_screenshot_pre_label(
+    req: FanxiuGameWindow2ScreenshotPreLabelSaveRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_feature_access(session, feature_key="fanxiu", current_user=current_user)
+    entry = _get_user_device_or_404(session, current_user, req.entry_id)
+    if entry.mode == "local":
+        return _save_screenshot_game_window2_service_pre_label(req.filename, req.payload)
+    return _remote_game_window2_screenshot_json(
+        entry,
+        "service-screenshot/pre-label",
+        method="put",
+        payload={"filename": req.filename, "payload": req.payload},
+        action="截图预标注保存",
+    )
+
+
+@status_router.put("/game-window2/service-screenshot/pre-label")
+def save_fanxiu_game_window2_screenshot_pre_label_service(
+    req: FanxiuGameWindow2ServiceScreenshotPreLabelSaveRequest,
+    _token_device: Any = Depends(verify_api_token),
+):
+    return _save_screenshot_game_window2_service_pre_label(req.filename, req.payload)
 
 
 @inventory_router.post("/inventory/spirit-artifact-ranks/recognize", response_model=FanxiuSpiritArtifactRankRecognitionResponse)

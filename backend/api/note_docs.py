@@ -100,7 +100,11 @@ def _get_note_by_ref_or_404(session: Session, note_ref: str) -> NoteNode:
     if not _is_numeric_note_ref(normalized_ref):
         raise HTTPException(status_code=404, detail="文档不存在")
 
-    query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_ref))
+    query = (
+        select(NoteNode)
+        .where(NoteNode.numeric_id == int(normalized_ref))
+        .where(or_(NoteNode.deleted_at.is_(None), NoteNode.deleted_at <= 0))
+    )
     note = session.exec(query).first()
     if note is None:
         raise HTTPException(status_code=404, detail="文档不存在")

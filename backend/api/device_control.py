@@ -30,6 +30,11 @@ from backend.core.fanbei_attendance_schedule import (
     _run_fanbei_attendance_step2_local,
     run_fanbei_attendance_step3_for_sheet,
 )
+from backend.core.fanbei_course_sheets import (
+    FANBEI_WORKBOOK_NUMERIC_ID,
+    materialize_fanbei_course_sheets,
+    rebuild_fanbei_attendance_from_course_sheets,
+)
 from backend.core.nianzhu_attendance_schedule import (
     NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID,
     NIANZHU_CHUANGGUAN_COURSE_NAME,
@@ -290,6 +295,19 @@ class AttendanceFanbeiStep3Request(BaseModel):
     course_name: str = FANBEI_ATTENDANCE_COURSE_NAME
 
 
+class AttendanceFanbeiCourseSheetsRequest(BaseModel):
+    workbook_id: int = FANBEI_WORKBOOK_NUMERIC_ID
+    attendance_sheet_id: int = FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID
+    course_name: str = FANBEI_ATTENDANCE_COURSE_NAME
+    replace: bool = False
+    rebuild: bool = False
+
+
+class AttendanceFanbeiRebuildFromSheetsRequest(BaseModel):
+    attendance_sheet_id: int = FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID
+    user_alias_map: Dict[str, str] = Field(default_factory=dict)
+
+
 class AttendanceNianzhuStep3Request(BaseModel):
     sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
     course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
@@ -403,6 +421,54 @@ def run_attendance_fanbei_step3(req: AttendanceFanbeiStep3Request | None = None)
             sheet_id=req.sheet_id,
             course_name=req.course_name,
         )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/course-sheets")
+def materialize_attendance_fanbei_course_sheets(req: AttendanceFanbeiCourseSheetsRequest | None = None):
+    req = req or AttendanceFanbeiCourseSheetsRequest()
+    try:
+        from backend.db import engine
+
+        with Session(engine) as session:
+            materialize_summary = materialize_fanbei_course_sheets(
+                session,
+                workbook_id=req.workbook_id,
+                attendance_sheet_id=req.attendance_sheet_id,
+                course_name=req.course_name,
+                replace=req.replace,
+            )
+            rebuild_summary = None
+            if req.rebuild:
+                rebuild_summary = rebuild_fanbei_attendance_from_course_sheets(
+                    session,
+                    attendance_sheet_id=req.attendance_sheet_id,
+                    user_alias_map={},
+                )
+            session.commit()
+            return {
+                "materialize": materialize_summary,
+                "rebuild": rebuild_summary,
+            }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/fanbei/rebuild-from-sheets")
+def rebuild_attendance_fanbei_from_course_sheets(req: AttendanceFanbeiRebuildFromSheetsRequest | None = None):
+    req = req or AttendanceFanbeiRebuildFromSheetsRequest()
+    try:
+        from backend.db import engine
+
+        with Session(engine) as session:
+            summary = rebuild_fanbei_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=req.attendance_sheet_id,
+                user_alias_map=req.user_alias_map,
+            )
+            session.commit()
+            return summary
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

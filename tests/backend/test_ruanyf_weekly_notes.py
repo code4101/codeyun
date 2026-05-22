@@ -274,6 +274,17 @@ def test_enqueue_weekly_note_job_skips_completed_current_window(monkeypatch):
     assert queue_task_id is None
 
 
+def test_weekly_retry_time_stays_inside_friday_window():
+    retry_at = weekly._next_ruanyf_weekly_retry_at(
+        datetime(2026, 5, 22, 6, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE)
+    )
+
+    assert retry_at == datetime(2026, 5, 22, 8, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE)
+    assert weekly._next_ruanyf_weekly_retry_at(
+        datetime(2026, 5, 22, 23, 0, tzinfo=weekly.RUANYF_WEEKLY_TIMEZONE)
+    ) is None
+
+
 def test_maybe_create_weekly_note_skips_without_existing_target_user(
     session,
     monkeypatch,

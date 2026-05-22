@@ -243,12 +243,41 @@
                   <el-switch v-model="scheduleConfig.enabled" />
                 </el-form-item>
                 <el-form-item label="执行计划 (Cron)">
-                  <el-input v-model="scheduleConfig.cron_expression" placeholder="35 0 * * *" style="width: 150px" />
+                  <el-input v-model="scheduleConfig.cron_expression" placeholder="0 1 * * *" style="width: 150px" />
+                </el-form-item>
+                <el-form-item label="自动清理回收站">
+                  <el-switch v-model="scheduleConfig.cleanup_enabled" />
+                </el-form-item>
+                <el-form-item label="空间上限 (GB)">
+                  <el-input-number
+                    v-model="maxStorageGb"
+                    :min="0"
+                    :step="1"
+                    :precision="2"
+                    style="width: 120px"
+                  />
+                </el-form-item>
+                <el-form-item label="宽限 (天)">
+                  <el-input-number
+                    v-model="scheduleConfig.trash_grace_days"
+                    :min="0"
+                    :step="1"
+                    :precision="1"
+                    style="width: 100px"
+                  />
+                </el-form-item>
+                <el-form-item label="VACUUM">
+                  <el-switch v-model="scheduleConfig.vacuum_sqlite" />
                 </el-form-item>
                 <el-form-item>
-                   <el-tooltip content="Cron 格式: 分 时 日 月 周 (例如: 35 0 * * * 表示每天 00:35)" placement="top">
+                   <el-tooltip content="Cron 格式: 分 时 日 月 周；空间超过上限时，优先永久清理超过宽限期的旧回收站资源。" placement="top">
                     <el-icon><QuestionFilled /></el-icon>
                    </el-tooltip>
+                </el-form-item>
+                <el-form-item>
+                  <el-button size="small" @click="handleRunStorageCleanup" :loading="cleanupRunning">
+                    立即检查
+                  </el-button>
                 </el-form-item>
               </el-form>
             </div>
@@ -330,6 +359,7 @@ import {
   deleteOrphanImages,
   fetchScheduleConfig,
   updateScheduleConfig,
+  runStorageCleanup,
   fixBrokenLinks,
   StorageDashboardStats,
   StorageUsageScope,
@@ -378,10 +408,28 @@ const orphans = ref<OrphanImage[]>([]);
 const maintenanceLoading = ref(false);
 const deleting = ref(false);
 const fixing = ref(false);
+const cleanupRunning = ref(false);
 
 // Schedule Config
-const scheduleConfig = ref<ScheduleConfig>({ enabled: false, cron_expression: '35 0 * * *' });
+const GiB = 1024 * 1024 * 1024;
+const scheduleConfig = ref<ScheduleConfig>({
+  enabled: false,
+  cron_expression: '0 1 * * *',
+  cleanup_enabled: true,
+  max_storage_bytes: 10 * GiB,
+  trash_grace_days: 1,
+  vacuum_sqlite: true,
+});
 const savingSchedule = ref(false);
+const maxStorageGb = computed({
+  get: () => Number(((scheduleConfig.value.max_storage_bytes || 0) / GiB).toFixed(2)),
+  set: value => {
+    const numericValue = Number(value);
+    scheduleConfig.value.max_storage_bytes = Number.isFinite(numericValue)
+      ? Math.max(0, Math.round(numericValue * GiB))
+      : 0;
+  },
+});
 
 // Formatters
 const formatSize = (bytes: number) => {
@@ -542,6 +590,40 @@ const saveSchedule = async () => {
     ElMessage.error('保存配置失败，请检查 Cron 格式');
   } finally {
     savingSchedule.value = false;
+  }
+};
+
+const handleRunStorageCleanup = async () => {
+  try {
+    await ElMessageBox.confirm(
+      '如果当前空间超过上限，将永久清理超过宽限期的旧回收站资源。',
+      '执行存储清理检查',
+      { confirmButtonText: '执行', cancelButtonText: '取消', type: 'warning' },
+    );
+  } catch {
+    return;
+  }
+  cleanupRunning.value = true;
+  try {
+    scheduleConfig.value = await updateScheduleConfig(scheduleConfig.value);
+    const result = await runStorageCleanup({ dry_run: false, force: false });
+    if (result.purged_count > 0) {
+      ElMessage.success(`已清理 ${result.purged_count} 个旧回收站资源`);
+    } else if (result.skipped_reason === 'under_limit') {
+      ElMessage.success('当前未超过空间上限');
+    } else if (result.skipped_reason === 'no_eligible_trash') {
+      ElMessage.info('没有符合宽限期的旧回收站资源');
+    } else if (result.skipped_reason === 'cleanup_disabled') {
+      ElMessage.info('自动清理未启用');
+    } else {
+      ElMessage.info('检查完成');
+    }
+    await loadDashboard(false);
+    await loadMaintenance();
+  } catch (error) {
+    ElMessage.error('执行清理检查失败');
+  } finally {
+    cleanupRunning.value = false;
   }
 };
 

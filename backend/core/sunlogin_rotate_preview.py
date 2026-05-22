@@ -496,6 +496,37 @@ def click_window_raw_point(hwnd: int, area: str, raw_point: tuple[int, int]) -> 
     win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
 
 
+def drag_window_raw_points(
+    hwnd: int,
+    area: str,
+    start_raw_point: tuple[int, int],
+    end_raw_point: tuple[int, int],
+    duration_ms: int = 300,
+) -> None:
+    rect = get_capture_rect(hwnd, area)
+    start_x = int(rect[0] + start_raw_point[0])
+    start_y = int(rect[1] + start_raw_point[1])
+    end_x = int(rect[0] + end_raw_point[0])
+    end_y = int(rect[1] + end_raw_point[1])
+    duration = max(0.08, min(2.0, duration_ms / 1000))
+    steps = max(4, min(60, int(duration * 60)))
+
+    activate_window(hwnd)
+    time.sleep(0.03)
+    win32api.SetCursorPos((start_x, start_y))
+    time.sleep(0.03)
+    win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    try:
+        for step in range(1, steps + 1):
+            t = step / steps
+            x = int(round(start_x + (end_x - start_x) * t))
+            y = int(round(start_y + (end_y - start_y) * t))
+            win32api.SetCursorPos((x, y))
+            time.sleep(duration / steps)
+    finally:
+        win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
 def iter_mjpeg_frames(
     title: str,
     fps: float,

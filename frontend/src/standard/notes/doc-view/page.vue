@@ -342,8 +342,8 @@ async function deleteCurrentNote() {
   if (!currentNote.value) return
 
   try {
-    await ElMessageBox.confirm('确定要删除这个节点吗？', '警告', {
-      confirmButtonText: '删除',
+    await ElMessageBox.confirm('确定要将这个文档移入回收站吗？', '删除文档', {
+      confirmButtonText: '移入回收站',
       cancelButtonText: '取消',
       type: 'warning',
     })

@@ -63,6 +63,100 @@ def test_task_manager_schedule_jobs_allow_startup_misfire_grace():
             manager.scheduler.shutdown(wait=False)
 
 
+def test_task_manager_preserves_explicit_next_run_at(engine, session, monkeypatch):
+    task = Task(
+        id="task-next-run",
+        name="next-run",
+        command="python job.py",
+        device_id="local-device",
+        runtime_kind="job",
+        schedule_policy={
+            "enabled": True,
+            "trigger": {"type": "daily", "time": "00:00"},
+            "action": {"type": "enqueue"},
+        },
+        next_run_at="2099-05-10T06:00:00",
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    calls = []
+
+    class FakeScheduler:
+        def get_job(self, task_id):
+            return None
+
+        def add_job(self, func, trigger, **kwargs):
+            calls.append({"trigger": trigger, "kwargs": kwargs})
+
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = FakeScheduler()
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+
+        manager.update_schedule(task.id)
+
+        session.expire_all()
+        refreshed = session.get(Task, task.id)
+        assert refreshed.next_run_at == "2099-05-10T06:00:00"
+        assert calls
+        assert calls[0]["kwargs"]["id"] == task.id
+    finally:
+        if hasattr(manager.scheduler, "shutdown"):
+            manager.scheduler.shutdown(wait=False)
+
+
+def test_task_manager_scheduled_result_can_override_next_run_at(engine, session, monkeypatch):
+    task = Task(
+        id="task-result-next-run",
+        name="result-next-run",
+        command="python job.py",
+        device_id="local-device",
+        runtime_kind="job",
+        schedule_policy={
+            "enabled": True,
+            "trigger": {"type": "weekly", "weekdays": [5], "time": "06:00"},
+            "action": {"type": "enqueue"},
+        },
+        next_run_at="2026-05-22T06:00:00",
+        created_at=time.time(),
+    )
+    session.add(task)
+    session.commit()
+
+    calls = []
+
+    class FakeScheduler:
+        def get_job(self, task_id):
+            return None
+
+        def add_job(self, func, trigger, **kwargs):
+            calls.append(kwargs)
+
+    manager = task_manager_module.TaskManager()
+    try:
+        manager.scheduler.shutdown(wait=False)
+        manager.scheduler = FakeScheduler()
+        monkeypatch.setattr(task_manager_module, "engine", engine)
+
+        manager._finish_scheduled_task(
+            task.id,
+            task_manager_module.RESULT_SUCCESS,
+            next_run_at="2026-05-22T08:00:00",
+        )
+
+        session.expire_all()
+        refreshed = session.get(Task, task.id)
+        assert refreshed.next_run_at == "2026-05-22T08:00:00"
+        assert refreshed.schedule_state["next_trigger_at"] == "2026-05-22T08:00:00"
+        assert calls and calls[0]["id"] == task.id
+    finally:
+        if hasattr(manager.scheduler, "shutdown"):
+            manager.scheduler.shutdown(wait=False)
+
+
 def test_startup_schema_repairs_add_runtime_columns_to_legacy_task_table():
     engine = create_engine(
         "sqlite://",
@@ -95,8 +189,9 @@ def test_startup_schema_repairs_add_runtime_columns_to_legacy_task_table():
         columns = {row[1] for row in session.exec(text("PRAGMA table_info(task)")).all()}
         indexes = {row[1] for row in session.exec(text("PRAGMA index_list(task)")).all()}
 
-    assert {"runtime_kind", "schedule_policy", "schedule_state"} <= columns
+    assert {"runtime_kind", "schedule_policy", "schedule_state", "next_run_at"} <= columns
     assert "ix_task_runtime_kind" in indexes
+    assert "ix_task_next_run_at" in indexes
 
 
 def test_task_manager_deep_scans_missing_services_only(engine, session, monkeypatch):

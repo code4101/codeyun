@@ -11,6 +11,7 @@ from backend.api import attendance as attendance_api
 from backend.core.auth import get_current_user_from_token, get_optional_current_user_from_token
 from backend.core.attendance_service import (
     encrypt_attendance_secret,
+    get_attendance_course_data_flow_config,
     get_attendance_service_extra_config,
     get_attendance_service_order_operation_password,
     get_or_create_attendance_service_config,
@@ -189,11 +190,8 @@ def test_attendance_config_and_account_crud(client: TestClient, session, test_de
         config = config_resp.json()
         assert config["service"]["current_wjx_account_id"] == account["id"]
         assert config["service"]["execution_device_entry_id"] == entry_id
-        assert config["service"]["data_device_entry_id"] is None
-        assert config["service"]["step_device_entry_ids"] == {}
-        assert [item["step"] for item in config["service"]["step_runners"]] == [1, 2, 3, 4, 5, 6]
-        assert config["service"]["step_runners"][0]["effective_device_entry_id"] == entry_id
-        assert config["service"]["step_runners"][1]["effective_device_entry_id"] is None
+        assert "data_device_entry_id" not in config["service"]
+        assert "step_runners" not in config["service"]
         assert config["service"]["scan_reminder_users"] == ["考勤后台", "文件传输助手"]
         assert config["service"]["order_lookup_mode"] == "db_only"
         assert config["service"]["order_operation_password_configured"] is True
@@ -208,7 +206,7 @@ def test_attendance_config_and_account_crud(client: TestClient, session, test_de
         _clear_user_override()
 
 
-def test_attendance_config_supports_data_host_and_step_runners(client: TestClient, session):
+def test_attendance_course_data_flow_config_supports_course_devices_and_step_runners(client: TestClient, session):
     admin_user = _create_admin_user(session)
     _override_user(admin_user)
 
@@ -247,9 +245,9 @@ def test_attendance_config_supports_data_host_and_step_runners(client: TestClien
 
     try:
         response = client.put(
-            "/api/attendance/config",
+            "/api/attendance/course-data-flow/config",
             json={
-                "execution_device_entry_id": execution_device.entry_id,
+                "browser_device_entry_id": execution_device.entry_id,
                 "data_device_entry_id": data_device.entry_id,
                 "step_device_entry_ids": {
                     "1": "",
@@ -261,18 +259,19 @@ def test_attendance_config_supports_data_host_and_step_runners(client: TestClien
 
         assert response.status_code == 200
         payload = response.json()
-        assert payload["service"]["execution_device_entry_id"] == execution_device.entry_id
-        assert payload["service"]["data_device_entry_id"] == data_device.entry_id
-        assert payload["current_execution_device"]["entry_id"] == execution_device.entry_id
+        assert payload["course_data_flow"]["browser_device_entry_id"] == execution_device.entry_id
+        assert payload["course_data_flow"]["effective_browser_device_entry_id"] == execution_device.entry_id
+        assert payload["course_data_flow"]["data_device_entry_id"] == data_device.entry_id
+        assert payload["current_browser_device"]["entry_id"] == execution_device.entry_id
         assert payload["current_data_device"]["entry_id"] == data_device.entry_id
-        assert payload["service"]["step_device_entry_ids"] == {
+        assert payload["course_data_flow"]["step_device_entry_ids"] == {
             "2": custom_device.entry_id,
             "6": execution_device.entry_id,
         }
 
-        step_runners = {item["step"]: item for item in payload["service"]["step_runners"]}
-        assert step_runners[1]["default_role"] == "execution_device"
-        assert step_runners[1]["effective_role"] == "execution_device"
+        step_runners = {item["step"]: item for item in payload["course_data_flow"]["step_runners"]}
+        assert step_runners[1]["default_role"] == "browser_device"
+        assert step_runners[1]["effective_role"] == "browser_device"
         assert step_runners[1]["effective_device_entry_id"] == execution_device.entry_id
         assert step_runners[2]["default_role"] == "data_host"
         assert step_runners[2]["effective_role"] == "custom_device"
@@ -282,9 +281,14 @@ def test_attendance_config_supports_data_host_and_step_runners(client: TestClien
         assert step_runners[6]["effective_role"] == "custom_device"
         assert step_runners[6]["effective_device_entry_id"] == execution_device.entry_id
 
-        extra_config = get_attendance_service_extra_config(session)
-        assert extra_config["data_device_entry_id"] == data_device.entry_id
-        assert extra_config["step_device_entry_ids"] == {
+        service_config_response = client.get("/api/attendance/config")
+        assert service_config_response.status_code == 200
+        assert "step_runners" not in service_config_response.json()["service"]
+
+        data_flow_config = get_attendance_course_data_flow_config(session)
+        assert data_flow_config["browser_device_entry_id"] == execution_device.entry_id
+        assert data_flow_config["data_device_entry_id"] == data_device.entry_id
+        assert data_flow_config["step_device_entry_ids"] == {
             "2": custom_device.entry_id,
             "6": execution_device.entry_id,
         }
@@ -292,7 +296,7 @@ def test_attendance_config_supports_data_host_and_step_runners(client: TestClien
         _clear_user_override()
 
 
-def test_attendance_config_rejects_invalid_step_runner_key(client: TestClient, session):
+def test_attendance_course_data_flow_config_rejects_invalid_step_runner_key(client: TestClient, session):
     admin_user = _create_admin_user(session)
     _override_user(admin_user)
     device = UserDevice(
@@ -310,12 +314,12 @@ def test_attendance_config_rejects_invalid_step_runner_key(client: TestClient, s
 
     try:
         response = client.put(
-            "/api/attendance/config",
+            "/api/attendance/course-data-flow/config",
             json={"step_device_entry_ids": {"7": device.entry_id}},
         )
 
         assert response.status_code == 400
-        assert response.json()["detail"] == "step_device_entry_ids 只支持 step1-step6"
+        assert response.json()["detail"] == "课程数据 step_device_entry_ids 只支持 step1-step6"
     finally:
         _clear_user_override()
 

@@ -15,12 +15,13 @@ from sqlmodel import Session, select
 from backend.core.attendance_service import (
     AttendanceServiceError,
     apply_attendance_order_operation_password_env,
-    build_attendance_step_runner_configs,
+    build_attendance_course_data_step_runner_configs,
     encrypt_attendance_secret,
     ensure_can_manage_attendance_service,
     ensure_can_use_attendance_service,
     get_attendance_account_or_404,
-    get_attendance_step_default_role,
+    get_attendance_course_data_flow_config,
+    get_attendance_course_data_step_default_role,
     get_attendance_wjx_data_entry_or_404,
     get_attendance_service_order_operation_password,
     get_current_account,
@@ -37,6 +38,7 @@ from backend.core.attendance_service import (
     serialize_attendance_wjx_data_entry,
     serialize_attendance_wjx_data_sync_state,
     serialize_user_device,
+    update_attendance_course_data_flow_config,
     update_attendance_service_extra_config,
 )
 from backend.core.attendance_order import (
@@ -157,12 +159,16 @@ ATTENDANCE_HEADER_TOOL_WEEK_COLORS = (
 class AttendanceConfigUpdateRequest(BaseModel):
     current_wjx_account_id: Optional[str] = None
     execution_device_entry_id: Optional[str] = None
-    data_device_entry_id: Optional[str] = None
-    step_device_entry_ids: Optional[dict[str, Optional[str]]] = None
     scan_reminder_users: Optional[list[str]] = None
     order_lookup_mode: Optional[Literal["hybrid", "db_only", "browser_only"]] = None
     order_operation_password: Optional[str] = None
     clear_order_operation_password: Optional[bool] = None
+
+
+class AttendanceCourseDataFlowConfigUpdateRequest(BaseModel):
+    browser_device_entry_id: Optional[str] = None
+    data_device_entry_id: Optional[str] = None
+    step_device_entry_ids: Optional[dict[str, Optional[str]]] = None
 
 
 class AttendanceAccountCreateRequest(BaseModel):
@@ -2700,16 +2706,10 @@ def _resolve_config_payload(session: Session) -> dict[str, Any]:
     extra_config = get_attendance_service_extra_config(session)
     current_account = get_current_account(session, config)
     current_device = get_current_execution_device(session, config)
-    data_device_entry_id = normalize_attendance_device_entry_id(extra_config.get("data_device_entry_id"))
-    current_data_device = session.get(UserDevice, data_device_entry_id) if data_device_entry_id else None
-    step_device_entry_ids = normalize_attendance_step_device_entry_ids(extra_config.get("step_device_entry_ids"))
     return {
         "service": {
             "current_wjx_account_id": config.current_wjx_account_id,
             "execution_device_entry_id": config.execution_device_entry_id,
-            "data_device_entry_id": data_device_entry_id or None,
-            "step_device_entry_ids": step_device_entry_ids,
-            "step_runners": build_attendance_step_runner_configs(session, config, extra_config),
             "scan_reminder_users": list(extra_config.get("scan_reminder_users") or []),
             "order_lookup_mode": str(extra_config.get("order_lookup_mode") or "browser_only"),
             "order_operation_password_configured": bool(extra_config.get("order_operation_password_configured")),
@@ -2721,7 +2721,30 @@ def _resolve_config_payload(session: Session) -> dict[str, Any]:
         },
         "current_account": serialize_attendance_account(current_account, include_password=False) if current_account else None,
         "current_execution_device": serialize_user_device(current_device),
-        "current_data_device": serialize_user_device(current_data_device),
+    }
+
+
+def _resolve_course_data_flow_config_payload(session: Session) -> dict[str, Any]:
+    service_config = get_or_create_attendance_service_config(session)
+    data_flow_config = get_attendance_course_data_flow_config(session)
+    browser_device_entry_id = normalize_attendance_device_entry_id(data_flow_config.get("browser_device_entry_id"))
+    fallback_browser_device_entry_id = normalize_attendance_device_entry_id(service_config.execution_device_entry_id)
+    effective_browser_device_entry_id = browser_device_entry_id or fallback_browser_device_entry_id
+    data_device_entry_id = normalize_attendance_device_entry_id(data_flow_config.get("data_device_entry_id"))
+    step_device_entry_ids = normalize_attendance_step_device_entry_ids(data_flow_config.get("step_device_entry_ids"))
+    browser_device = session.get(UserDevice, effective_browser_device_entry_id) if effective_browser_device_entry_id else None
+    data_device = session.get(UserDevice, data_device_entry_id) if data_device_entry_id else None
+    return {
+        "course_data_flow": {
+            "browser_device_entry_id": browser_device_entry_id or None,
+            "fallback_browser_device_entry_id": fallback_browser_device_entry_id or None,
+            "effective_browser_device_entry_id": effective_browser_device_entry_id or None,
+            "data_device_entry_id": data_device_entry_id or None,
+            "step_device_entry_ids": step_device_entry_ids,
+            "step_runners": build_attendance_course_data_step_runner_configs(session, service_config, data_flow_config),
+        },
+        "current_browser_device": serialize_user_device(browser_device),
+        "current_data_device": serialize_user_device(data_device),
     }
 
 
@@ -2753,9 +2776,9 @@ def _normalize_step_device_entry_ids_for_update(value: dict[str, Optional[str]])
         try:
             step_number = int(raw_step)
         except (TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="step_device_entry_ids 只支持 step1-step6") from exc
+            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step1-step6") from exc
         if step_number < 1 or step_number > 6:
-            raise HTTPException(status_code=400, detail="step_device_entry_ids 只支持 step1-step6")
+            raise HTTPException(status_code=400, detail="课程数据 step_device_entry_ids 只支持 step1-step6")
         entry_id = _normalize_optional_id(raw_entry_id)
         if entry_id:
             result[str(step_number)] = entry_id
@@ -3019,6 +3042,16 @@ def get_attendance_config(
     return _resolve_config_payload(session)
 
 
+@router.get("/course-data-flow/config")
+def get_attendance_course_data_flow_config_route(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
+):
+    ensure_can_use_attendance_service(current_user, session)
+    return _resolve_course_data_flow_config_payload(session)
+
+
 @public_router.get("/wjx-feedback-form", response_model=AttendanceFeedbackFormMeta)
 def get_attendance_feedback_form_meta(
     session: Session = Depends(get_session),
@@ -3038,8 +3071,6 @@ def update_attendance_config(
 
     account_id = _normalize_optional_id(payload.current_wjx_account_id)
     device_entry_id = _normalize_optional_id(payload.execution_device_entry_id)
-    data_device_entry_id = _normalize_optional_id(payload.data_device_entry_id)
-    step_device_entry_ids: dict[str, str] | None = None
 
     if payload.current_wjx_account_id is not None:
         if account_id is None:
@@ -3059,33 +3090,11 @@ def update_attendance_config(
                 raise HTTPException(status_code=400, detail="当前执行设备已停用")
             config.execution_device_entry_id = entry.entry_id
 
-    if payload.data_device_entry_id is not None and data_device_entry_id is not None:
-        _ensure_owned_attendance_device_for_config(
-            session,
-            data_device_entry_id,
-            current_user,
-            role_label="数据主机",
-        )
-
-    if payload.step_device_entry_ids is not None:
-        step_device_entry_ids = _normalize_step_device_entry_ids_for_update(payload.step_device_entry_ids)
-        for step_key, step_entry_id in step_device_entry_ids.items():
-            default_role = get_attendance_step_default_role(int(step_key))
-            role_label = "浏览器执行设备" if default_role == "execution_device" else "数据运行设备"
-            _ensure_owned_attendance_device_for_config(
-                session,
-                step_entry_id,
-                current_user,
-                role_label=f"step{step_key}{role_label}",
-            )
-
     if (
         payload.scan_reminder_users is not None
         or payload.order_lookup_mode is not None
         or payload.order_operation_password is not None
         or payload.clear_order_operation_password
-        or payload.data_device_entry_id is not None
-        or step_device_entry_ids is not None
     ):
         update_attendance_service_extra_config(
             session,
@@ -3093,8 +3102,6 @@ def update_attendance_config(
             order_lookup_mode=payload.order_lookup_mode,
             order_operation_password=payload.order_operation_password,
             clear_order_operation_password=bool(payload.clear_order_operation_password),
-            data_device_entry_id=payload.data_device_entry_id if payload.data_device_entry_id is not None else None,
-            step_device_entry_ids=step_device_entry_ids,
         )
 
     config.updated_by_user_id = current_user.id
@@ -3102,6 +3109,54 @@ def update_attendance_config(
     session.add(config)
     session.commit()
     return _resolve_config_payload(session)
+
+
+@router.put("/course-data-flow/config")
+def update_attendance_course_data_flow_config_route(
+    payload: AttendanceCourseDataFlowConfigUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user_from_token),
+    _: User | None = Depends(require_feature_access_dependency("attendance.configs")),
+):
+    current_user = ensure_can_manage_attendance_service(current_user)
+    browser_device_entry_id = _normalize_optional_id(payload.browser_device_entry_id)
+    data_device_entry_id = _normalize_optional_id(payload.data_device_entry_id)
+    step_device_entry_ids: dict[str, str] | None = None
+
+    if payload.browser_device_entry_id is not None and browser_device_entry_id is not None:
+        _ensure_owned_attendance_device_for_config(
+            session,
+            browser_device_entry_id,
+            current_user,
+            role_label="课程数据浏览器设备",
+        )
+    if payload.data_device_entry_id is not None and data_device_entry_id is not None:
+        _ensure_owned_attendance_device_for_config(
+            session,
+            data_device_entry_id,
+            current_user,
+            role_label="课程数据主机",
+        )
+
+    if payload.step_device_entry_ids is not None:
+        step_device_entry_ids = _normalize_step_device_entry_ids_for_update(payload.step_device_entry_ids)
+        for step_key, step_entry_id in step_device_entry_ids.items():
+            default_role = get_attendance_course_data_step_default_role(int(step_key))
+            role_label = "课程数据浏览器设备" if default_role == "browser_device" else "课程数据主机"
+            _ensure_owned_attendance_device_for_config(
+                session,
+                step_entry_id,
+                current_user,
+                role_label=f"step{step_key}{role_label}",
+            )
+
+    update_attendance_course_data_flow_config(
+        session,
+        browser_device_entry_id=payload.browser_device_entry_id if payload.browser_device_entry_id is not None else None,
+        data_device_entry_id=payload.data_device_entry_id if payload.data_device_entry_id is not None else None,
+        step_device_entry_ids=step_device_entry_ids,
+    )
+    return _resolve_course_data_flow_config_payload(session)
 
 
 @router.get("/accounts")

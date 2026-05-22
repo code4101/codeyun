@@ -36,21 +36,24 @@ class AttendanceServiceError(RuntimeError):
 
 SERVICE_CONFIG_ID = 1
 ATTENDANCE_SERVICE_EXTRA_SETTING_KEY = "attendance.service.extra"
+ATTENDANCE_COURSE_DATA_FLOW_SETTING_KEY = "attendance.course.data_flow"
+ATTENDANCE_LEGACY_COURSE_WORKFLOW_SETTING_KEY = "attendance.course.workflow"
 DEFAULT_ORDER_LOOKUP_MODE = "browser_only"
 ORDER_LOOKUP_MODES = {"hybrid", "db_only", "browser_only"}
 ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY = "order_operation_password_encrypted"
 ATTENDANCE_ORDER_OPERATION_PASSWORD_ENV = "XL_KQ_PAY_PASSWORD"
-ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY = "data_device_entry_id"
-ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY = "step_device_entry_ids"
+ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY = "browser_device_entry_id"
+ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY = "data_device_entry_id"
+ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY = "step_device_entry_ids"
 ATTENDANCE_STEP_NUMBERS = (1, 2, 3, 4, 5, 6)
 ATTENDANCE_BROWSER_STEP_NUMBERS = {1, 4, 6}
 ATTENDANCE_STEP_TITLES = {
-    1: "step1 浏览器导入原始数据",
-    2: "step2 数据聚合与写回",
-    3: "step3 返款计算与高亮",
-    4: "step4 上午浏览器检查",
-    5: "step5 上午数据处理",
-    6: "step6 上午收尾执行",
+    1: "step1 课程数据浏览器导入原始数据",
+    2: "step2 课程数据聚合与写回",
+    3: "step3 课程数据返款计算与高亮",
+    4: "step4 课程数据上午浏览器检查",
+    5: "step5 课程数据上午处理",
+    6: "step6 课程数据上午收尾",
 }
 SUBMITTED_DAY_PATTERN = re.compile(r"^\s*(\d{4}[/-]\d{1,2}[/-]\d{1,2})")
 
@@ -144,9 +147,9 @@ def normalize_attendance_step_number(value: Any) -> int:
     try:
         step_number = int(value)
     except (TypeError, ValueError) as exc:
-        raise AttendanceServiceError("考勤步骤编号必须是 1-6") from exc
+        raise AttendanceServiceError("课程数据步骤编号必须是 1-6") from exc
     if step_number not in ATTENDANCE_STEP_NUMBERS:
-        raise AttendanceServiceError("考勤步骤编号必须是 1-6")
+        raise AttendanceServiceError("课程数据步骤编号必须是 1-6")
     return step_number
 
 
@@ -169,10 +172,10 @@ def normalize_attendance_step_device_entry_ids(value: Any) -> dict[str, str]:
     return result
 
 
-def get_attendance_step_default_role(step_number: int) -> str:
+def get_attendance_course_data_step_default_role(step_number: int) -> str:
     normalized_step = normalize_attendance_step_number(step_number)
     if normalized_step in ATTENDANCE_BROWSER_STEP_NUMBERS:
-        return "execution_device"
+        return "browser_device"
     return "data_host"
 
 
@@ -183,12 +186,6 @@ def get_attendance_service_extra_config(session: Session) -> dict[str, Any]:
         "scan_reminder_users": _normalize_string_list(payload.get("scan_reminder_users")),
         "order_lookup_mode": _normalize_order_lookup_mode(payload.get("order_lookup_mode")),
         "order_operation_password_configured": bool(str(payload.get(ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY) or "").strip()),
-        ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY: normalize_attendance_device_entry_id(
-            payload.get(ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY)
-        ) or None,
-        ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY: normalize_attendance_step_device_entry_ids(
-            payload.get(ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY)
-        ),
     }
 
 
@@ -211,8 +208,6 @@ def update_attendance_service_extra_config(
     order_lookup_mode: str | None = None,
     order_operation_password: str | None = None,
     clear_order_operation_password: bool = False,
-    data_device_entry_id: str | None = None,
-    step_device_entry_ids: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     row = session.get(AppSetting, ATTENDANCE_SERVICE_EXTRA_SETTING_KEY)
     payload = row.value.copy() if row and isinstance(row.value, dict) else {}
@@ -225,10 +220,6 @@ def update_attendance_service_extra_config(
         payload[ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY] = ""
     elif order_operation_password is not None:
         payload[ATTENDANCE_ORDER_OPERATION_PASSWORD_KEY] = encrypt_attendance_secret(order_operation_password)
-    if data_device_entry_id is not None:
-        payload[ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY] = normalize_attendance_device_entry_id(data_device_entry_id)
-    if step_device_entry_ids is not None:
-        payload[ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY] = normalize_attendance_step_device_entry_ids(step_device_entry_ids)
 
     now = time.time()
     if row is None:
@@ -243,48 +234,111 @@ def update_attendance_service_extra_config(
     return get_attendance_service_extra_config(session)
 
 
-def get_attendance_step_effective_device_entry_id(
+def get_attendance_course_data_flow_config(session: Session) -> dict[str, Any]:
+    row = session.get(AppSetting, ATTENDANCE_COURSE_DATA_FLOW_SETTING_KEY)
+    if row is None:
+        row = session.get(AppSetting, ATTENDANCE_LEGACY_COURSE_WORKFLOW_SETTING_KEY)
+    payload = row.value if row and isinstance(row.value, dict) else {}
+    return {
+        ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY: normalize_attendance_device_entry_id(
+            payload.get(ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY)
+        ) or None,
+        ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY: normalize_attendance_device_entry_id(
+            payload.get(ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY)
+        ) or None,
+        ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY: normalize_attendance_step_device_entry_ids(
+            payload.get(ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY)
+        ),
+    }
+
+
+def update_attendance_course_data_flow_config(
+    session: Session,
+    *,
+    browser_device_entry_id: str | None = None,
+    data_device_entry_id: str | None = None,
+    step_device_entry_ids: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    row = session.get(AppSetting, ATTENDANCE_COURSE_DATA_FLOW_SETTING_KEY)
+    payload = row.value.copy() if row and isinstance(row.value, dict) else {}
+
+    if browser_device_entry_id is not None:
+        payload[ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY] = normalize_attendance_device_entry_id(
+            browser_device_entry_id
+        )
+    if data_device_entry_id is not None:
+        payload[ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY] = normalize_attendance_device_entry_id(data_device_entry_id)
+    if step_device_entry_ids is not None:
+        payload[ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY] = normalize_attendance_step_device_entry_ids(
+            step_device_entry_ids
+        )
+
+    now = time.time()
+    if row is None:
+        row = AppSetting(key=ATTENDANCE_COURSE_DATA_FLOW_SETTING_KEY, value=payload, updated_at=now)
+    else:
+        row.value = payload
+        row.updated_at = now
+
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return get_attendance_course_data_flow_config(session)
+
+
+def get_attendance_course_data_step_effective_device_entry_id(
     config: AttendanceServiceConfig,
-    extra_config: dict[str, Any],
+    data_flow_config: dict[str, Any],
     step_number: int,
 ) -> str | None:
     normalized_step = normalize_attendance_step_number(step_number)
     step_device_entry_ids = normalize_attendance_step_device_entry_ids(
-        extra_config.get(ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY)
+        data_flow_config.get(ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY)
     )
     explicit_entry_id = step_device_entry_ids.get(str(normalized_step))
     if explicit_entry_id:
         return explicit_entry_id
 
-    default_role = get_attendance_step_default_role(normalized_step)
-    if default_role == "execution_device":
-        return normalize_attendance_device_entry_id(config.execution_device_entry_id) or None
-    return normalize_attendance_device_entry_id(extra_config.get(ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY)) or None
+    default_role = get_attendance_course_data_step_default_role(normalized_step)
+    if default_role == "browser_device":
+        return (
+            normalize_attendance_device_entry_id(
+                data_flow_config.get(ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY)
+            )
+            or normalize_attendance_device_entry_id(config.execution_device_entry_id)
+            or None
+        )
+    return normalize_attendance_device_entry_id(data_flow_config.get(ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY)) or None
 
 
-def build_attendance_step_runner_configs(
+def build_attendance_course_data_step_runner_configs(
     session: Session,
     config: AttendanceServiceConfig,
-    extra_config: dict[str, Any] | None = None,
+    data_flow_config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    extra = extra_config or get_attendance_service_extra_config(session)
+    data_flow = data_flow_config or get_attendance_course_data_flow_config(session)
     step_device_entry_ids = normalize_attendance_step_device_entry_ids(
-        extra.get(ATTENDANCE_STEP_DEVICE_ENTRY_IDS_KEY)
+        data_flow.get(ATTENDANCE_COURSE_DATA_STEP_DEVICE_ENTRY_IDS_KEY)
+    )
+    browser_device_entry_id = normalize_attendance_device_entry_id(
+        data_flow.get(ATTENDANCE_COURSE_DATA_BROWSER_DEVICE_ENTRY_ID_KEY)
     )
     data_device_entry_id = normalize_attendance_device_entry_id(
-        extra.get(ATTENDANCE_DATA_DEVICE_ENTRY_ID_KEY)
+        data_flow.get(ATTENDANCE_COURSE_DATA_DEVICE_ENTRY_ID_KEY)
     )
 
     items: list[dict[str, Any]] = []
     for step_number in ATTENDANCE_STEP_NUMBERS:
         step_key = str(step_number)
         configured_entry_id = step_device_entry_ids.get(step_key)
-        default_role = get_attendance_step_default_role(step_number)
+        default_role = get_attendance_course_data_step_default_role(step_number)
         effective_role = "custom_device" if configured_entry_id else default_role
         if configured_entry_id:
             effective_entry_id = configured_entry_id
-        elif default_role == "execution_device":
-            effective_entry_id = normalize_attendance_device_entry_id(config.execution_device_entry_id)
+        elif default_role == "browser_device":
+            effective_entry_id = browser_device_entry_id or normalize_attendance_device_entry_id(
+                config.execution_device_entry_id
+            )
         else:
             effective_entry_id = data_device_entry_id
 
@@ -303,22 +357,22 @@ def build_attendance_step_runner_configs(
     return items
 
 
-def get_attendance_step_runner_device(
+def get_attendance_course_data_step_runner_device(
     session: Session,
     config: AttendanceServiceConfig,
     *,
     step_number: int,
-    extra_config: dict[str, Any] | None = None,
+    data_flow_config: dict[str, Any] | None = None,
 ) -> UserDevice | None:
-    extra = extra_config or get_attendance_service_extra_config(session)
-    entry_id = get_attendance_step_effective_device_entry_id(config, extra, step_number)
+    data_flow = data_flow_config or get_attendance_course_data_flow_config(session)
+    entry_id = get_attendance_course_data_step_effective_device_entry_id(config, data_flow, step_number)
     if not entry_id:
         return None
     entry = session.get(UserDevice, entry_id)
     if entry is None:
-        raise AttendanceServiceError(f"step{step_number} 运行设备不存在，请在考勤配置页重新选择")
+        raise AttendanceServiceError(f"课程数据 step{step_number} 运行设备不存在，请在考勤配置页重新选择")
     if not entry.is_active:
-        raise AttendanceServiceError(f"step{step_number} 运行设备已停用，请在考勤配置页重新选择")
+        raise AttendanceServiceError(f"课程数据 step{step_number} 运行设备已停用，请在考勤配置页重新选择")
     return entry
 
 

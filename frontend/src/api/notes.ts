@@ -92,6 +92,8 @@ export interface NoteNode {
   created_at: number;
   updated_at: number;
   start_at: number;
+  deleted_at?: number | null;
+  deleted_by_user_id?: number | null;
   history?: { ts: number; f: string; v: any }[];
   edge_count?: number;
   out_degree?: number;
@@ -381,6 +383,8 @@ export const normalizeNote = (raw: any): NoteNode => ({
       created_at: raw.created_at * 1000,
       updated_at: raw.updated_at * 1000,
       start_at: raw.start_at * 1000,
+      deleted_at: raw.deleted_at ? raw.deleted_at * 1000 : null,
+      deleted_by_user_id: raw.deleted_by_user_id ?? null,
       note_types: createEffectiveNoteTypes(taxonomy.note_types ?? raw.note_types, taxonomy.node_type ?? raw.node_type ?? 'note', raw.color ?? null),
       note_categories: taxonomy.note_categories,
       primary_category: taxonomy.primary_category,
@@ -421,6 +425,11 @@ export async function fetchNoteDoc(noteRef: string): Promise<NoteNode | null> {
     }
     throw error;
   }
+}
+
+export async function fetchDeletedNotes(): Promise<NoteNode[]> {
+  const response = await api.get('/notes/trash');
+  return (Array.isArray(response.data) ? response.data : []).map((note: any) => normalizeNote(note));
 }
 
 export type NoteDocUpdatePayload = Partial<Pick<
@@ -2102,6 +2111,21 @@ export const useNoteStore = defineStore('notes', () => {
     }
   };
 
+  const restoreNote = async (id: NoteRef) => {
+    bumpPending(1);
+    try {
+      const response = await api.post(`/notes/${encodeURIComponent(noteKey(id))}/restore`);
+      const restoredNote = normalizeNote(response.data);
+      return mergeNoteDetailAndPrune(restoredNote);
+    } catch (error) {
+      console.error('Failed to restore note:', error);
+      ElMessage.error('恢复节点失败');
+      return null;
+    } finally {
+      bumpPending(-1);
+    }
+  };
+
   const createEdge = async (
     sourceId: NoteRef,
     targetId: NoteRef,
@@ -2291,6 +2315,7 @@ export const useNoteStore = defineStore('notes', () => {
     aiCategorizeNote,
     batchUpdateNotes,
     deleteNote,
+    restoreNote,
     createEdge,
     deleteEdge,
     addNoteToTab,

@@ -17,6 +17,7 @@ from pyxllib.prog.schedule_policy import (
     RESULT_FAILURE,
     RESULT_SUCCESS,
     apply_schedule_result,
+    compute_next_trigger_at,
     initialize_schedule_state,
 )
 
@@ -111,6 +112,7 @@ class CreateTaskRequest(BaseModel):
     runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
     schedule_policy: Optional[Dict[str, Any]] = None
+    next_run_at: Optional[str] = None
     timeout: Optional[int] = None
 
 class UpdateTaskRequest(BaseModel):
@@ -122,6 +124,7 @@ class UpdateTaskRequest(BaseModel):
     runtime_kind: Optional[str] = None
     schedule: Optional[str] = None
     schedule_policy: Optional[Dict[str, Any]] = None
+    next_run_at: Optional[str] = None
     timeout: Optional[int] = None
 
 # --- Manager ---
@@ -147,7 +150,7 @@ class TaskManager:
         with Session(engine) as session:
             tasks = session.exec(select(TaskModel)).all()
             for task in tasks:
-                if task.schedule_policy or task.schedule:
+                if task.next_run_at or task.schedule_policy or task.schedule:
                     self.update_schedule(task.id, task.schedule, task.schedule_policy)
 
     def _get_stale_scheduled_runtime_seconds(self, task: TaskModel) -> int:
@@ -200,6 +203,30 @@ class TaskManager:
             text = text[:-1]
         return dt.datetime.fromisoformat(text)
 
+    def _format_next_run_at(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        try:
+            parsed = self._parse_schedule_run_date(value)
+        except Exception as exc:
+            raise ValueError(f"Invalid next_run_at: {value}") from exc
+        return parsed.replace(microsecond=0).isoformat()
+
+    def _install_next_run_job(self, task_id: str, next_run_at: Optional[str]) -> None:
+        self.clear_schedule(task_id)
+        if not next_run_at:
+            return
+        self.scheduler.add_job(
+            self.trigger_scheduled_task,
+            DateTrigger(run_date=self._parse_schedule_run_date(next_run_at)),
+            id=task_id,
+            args=[task_id],
+            replace_existing=True,
+            **SCHEDULED_TASK_JOB_KWARGS,
+        )
+
     def _reap_stale_scheduled_tasks(self, device: BaseDevice, tasks: List[TaskModel], *, reason: str):
         for task in tasks:
             self._stop_stale_scheduled_task(task, device, reason=reason)
@@ -217,6 +244,65 @@ class TaskManager:
         session.commit()
         return state.get("next_trigger_at")
 
+    def _compute_cron_next_run_at(self, cron_expression: str) -> Optional[str]:
+        timezone = getattr(self.scheduler, "timezone", None)
+        trigger = CronTrigger.from_crontab(cron_expression, timezone=timezone)
+        now = dt.datetime.now(timezone) if timezone else dt.datetime.now()
+        next_run_at = trigger.get_next_fire_time(None, now)
+        return self._format_next_run_at(next_run_at) if next_run_at else None
+
+    def _compute_rule_next_run_at(
+        self,
+        session: Session,
+        task: TaskModel,
+        *,
+        result: Optional[str] = None,
+        force: bool = False,
+    ) -> Optional[str]:
+        if task.schedule_policy:
+            if result is None:
+                next_run_at = self._ensure_policy_schedule_state(session, task, force=force)
+            else:
+                task.schedule_state = apply_schedule_result(
+                    task.schedule_policy,
+                    task.schedule_state or {},
+                    result=result,
+                )
+                session.add(task)
+                session.commit()
+                next_run_at = (task.schedule_state or {}).get("next_trigger_at")
+            return self._format_next_run_at(next_run_at) if next_run_at else None
+        if task.schedule:
+            return self._compute_cron_next_run_at(task.schedule)
+        return None
+
+    def _set_task_next_run_at(
+        self,
+        session: Session,
+        task: TaskModel,
+        next_run_at: Any,
+        *,
+        sync_schedule_state: bool = True,
+    ) -> Optional[str]:
+        formatted = self._format_next_run_at(next_run_at)
+        task.next_run_at = formatted
+        if sync_schedule_state and isinstance(task.schedule_state, dict):
+            state = dict(task.schedule_state or {})
+            state["next_trigger_at"] = formatted
+            task.schedule_state = state
+        session.add(task)
+        session.commit()
+        return formatted
+
+    def set_next_run_at(self, task_id: str, next_run_at: Any) -> Optional[str]:
+        with Session(engine) as session:
+            task = session.get(TaskModel, task_id)
+            if not task:
+                raise HTTPException(status_code=404, detail="Task not found")
+            formatted = self._set_task_next_run_at(session, task, next_run_at)
+        self._install_next_run_job(task_id, formatted)
+        return formatted
+
     def update_schedule(
         self,
         task_id: str,
@@ -225,50 +311,42 @@ class TaskManager:
         *,
         reset_state: bool = False,
     ):
-        # Remove existing job if any
-        self.clear_schedule(task_id)
-
-        if schedule_policy is None:
+        try:
             with Session(engine) as session:
                 task = session.get(TaskModel, task_id)
-                if task:
-                    schedule_policy = task.schedule_policy
-                    cron_expression = task.schedule
-
-        if schedule_policy:
-            try:
-                with Session(engine) as session:
-                    task = session.get(TaskModel, task_id)
-                    if not task:
+                if not task:
+                    if schedule_policy:
+                        computed = compute_next_trigger_at(schedule_policy)
+                        next_run_at = self._format_next_run_at(computed) if computed else None
+                        self._install_next_run_job(task_id, next_run_at)
                         return
-                    next_trigger_at = self._ensure_policy_schedule_state(session, task, force=reset_state)
-                if next_trigger_at:
-                    self.scheduler.add_job(
-                        self.trigger_scheduled_task,
-                        DateTrigger(run_date=self._parse_schedule_run_date(next_trigger_at)),
-                        id=task_id,
-                        args=[task_id],
-                        replace_existing=True,
-                        **SCHEDULED_TASK_JOB_KWARGS,
-                    )
-                    print(f"Scheduled task {task_id} with policy next_trigger_at: {next_trigger_at}")
-            except Exception as e:
-                print(f"Failed to schedule task {task_id} with policy: {e}")
-            return
+                    if cron_expression:
+                        next_run_at = self._compute_cron_next_run_at(cron_expression)
+                        self._install_next_run_job(task_id, next_run_at)
+                        return
+                    self.clear_schedule(task_id)
+                    return
+                if schedule_policy is not None:
+                    task.schedule_policy = schedule_policy
+                if cron_expression is not None:
+                    task.schedule = cron_expression
 
-        if cron_expression:
-            try:
-                self.scheduler.add_job(
-                    self.trigger_scheduled_task,
-                    CronTrigger.from_crontab(cron_expression), 
-                    id=task_id, 
-                    args=[task_id],
-                    replace_existing=True,
-                    **SCHEDULED_TASK_JOB_KWARGS,
-                )
-                print(f"Scheduled task {task_id} with cron: {cron_expression}")
-            except Exception as e:
-                print(f"Failed to schedule task {task_id}: {e}")
+                if reset_state:
+                    task.schedule_state = {}
+                    next_run_at = self._compute_rule_next_run_at(session, task, force=True)
+                    self._set_task_next_run_at(session, task, next_run_at)
+                elif task.next_run_at:
+                    next_run_at = self._format_next_run_at(task.next_run_at)
+                else:
+                    next_run_at = self._compute_rule_next_run_at(session, task)
+                    self._set_task_next_run_at(session, task, next_run_at)
+
+            self._install_next_run_job(task_id, next_run_at)
+            if next_run_at:
+                print(f"Scheduled task {task_id} next_run_at: {next_run_at}")
+        except Exception as e:
+            self.clear_schedule(task_id)
+            print(f"Failed to schedule task {task_id}: {e}")
 
     def _scheduled_action_for_task(self, task: TaskModel) -> str:
         configured = (task.schedule_policy or {}).get("action") or {}
@@ -281,30 +359,35 @@ class TaskManager:
     def _mark_scheduled_task_triggered(self, task_id: str) -> None:
         with Session(engine) as session:
             task = session.get(TaskModel, task_id)
-            if not task or not task.schedule_policy:
+            if not task:
                 return
-            state = dict(task.schedule_state or {})
             now = time.time()
-            state["last_triggered_at"] = now
-            state["last_trigger_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
-            state["next_trigger_at"] = None
-            task.schedule_state = state
+            if task.schedule_policy:
+                state = dict(task.schedule_state or {})
+                state["last_triggered_at"] = now
+                state["last_trigger_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+                state["next_trigger_at"] = None
+                task.schedule_state = state
+            task.next_run_at = None
             session.add(task)
             session.commit()
 
-    def _finish_scheduled_task(self, task_id: str, result: str) -> None:
+    def _result_next_run_at(self, result: Any) -> Any:
+        if isinstance(result, dict):
+            return result.get("next_run_at") or result.get("next_trigger_at")
+        return getattr(result, "next_run_at", None)
+
+    def _finish_scheduled_task(self, task_id: str, result: str, *, next_run_at: Any = None) -> None:
         with Session(engine) as session:
             task = session.get(TaskModel, task_id)
-            if not task or not task.schedule_policy:
+            if not task:
                 return
-            task.schedule_state = apply_schedule_result(
-                task.schedule_policy,
-                task.schedule_state or {},
-                result=result,
-            )
-            session.add(task)
-            session.commit()
-        self.update_schedule(task_id)
+            if next_run_at is not None:
+                formatted = self._set_task_next_run_at(session, task, next_run_at)
+            else:
+                formatted = self._compute_rule_next_run_at(session, task, result=result)
+                self._set_task_next_run_at(session, task, formatted)
+        self._install_next_run_job(task_id, formatted)
 
     def trigger_scheduled_task(self, task_id: str):
         with Session(engine) as session:
@@ -312,11 +395,9 @@ class TaskManager:
             if not task:
                 raise HTTPException(status_code=404, detail="Task not found")
             policy = resolve_command_runtime_policy(task)
-            has_schedule_policy = bool(task.schedule_policy)
             action = self._scheduled_action_for_task(task)
 
-        if has_schedule_policy:
-            self._mark_scheduled_task_triggered(task_id)
+        self._mark_scheduled_task_triggered(task_id)
 
         try:
             if action == "stop":
@@ -334,12 +415,15 @@ class TaskManager:
                 )
             else:
                 result = self.enqueue_task_run(task_id, trigger_reason="scheduled")
-            if has_schedule_policy and action != "enqueue":
-                self._finish_scheduled_task(task_id, RESULT_SUCCESS)
+            if action != "enqueue":
+                self._finish_scheduled_task(
+                    task_id,
+                    RESULT_SUCCESS,
+                    next_run_at=self._result_next_run_at(result),
+                )
             return result
         except Exception:
-            if has_schedule_policy:
-                self._finish_scheduled_task(task_id, RESULT_FAILURE)
+            self._finish_scheduled_task(task_id, RESULT_FAILURE)
             raise
 
     def scan_running_tasks(self, restore_timeouts: bool = False):
@@ -739,6 +823,7 @@ def create_task(
             runtime_kind=req.runtime_kind,
             schedule=req.schedule,
             schedule_policy=req.schedule_policy,
+            next_run_at=task_manager._format_next_run_at(req.next_run_at),
             timeout=req.timeout,
             created_at=time.time(),
             order=next_order,
@@ -747,7 +832,9 @@ def create_task(
         session.commit()
         session.refresh(new_task)
         
-    if req.schedule_policy or req.schedule:
+    if req.next_run_at:
+        task_manager.set_next_run_at(new_task.id, req.next_run_at)
+    elif req.schedule_policy or req.schedule:
         task_manager.update_schedule(new_task.id, req.schedule, req.schedule_policy, reset_state=True)
     
     task_manager.scan_running_tasks()
@@ -798,13 +885,17 @@ def update_task_route(task_id: str, req: UpdateTaskRequest, token_device: BaseDe
             if "schedule_policy" in req.model_fields_set:
                 task.schedule_policy = req.schedule_policy
                 task.schedule_state = {}
+            if "next_run_at" in req.model_fields_set:
+                task.next_run_at = task_manager._format_next_run_at(req.next_run_at)
             if req.timeout is not None:
                 task.timeout = req.timeout
             
             session.add(task)
             session.commit()
             session.refresh(task)
-            if req.schedule is not None or "schedule_policy" in req.model_fields_set:
+            if "next_run_at" in req.model_fields_set:
+                task_manager.set_next_run_at(task_id, req.next_run_at)
+            elif req.schedule is not None or "schedule_policy" in req.model_fields_set:
                 task_manager.update_schedule(
                     task_id,
                     task.schedule,
