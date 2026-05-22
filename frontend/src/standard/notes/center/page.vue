@@ -3,7 +3,7 @@
     <div class="header">
       <h2>星图笔记</h2>
       <div class="header-actions">
-        <!-- Placeholder for global actions if any -->
+        <el-button size="small" text :icon="Delete" @click="router.push('/notes/trash')">回收站</el-button>
       </div>
     </div>
 
@@ -33,8 +33,9 @@
 
 <script setup lang="ts">
 import { defineAsyncComponent, onMounted } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { storeToRefs } from 'pinia';
+import { Delete } from '@element-plus/icons-vue';
 import { useNoteStore, type TabState } from '@/api/notes';
 
 const StarNotes = defineAsyncComponent(() => import('./StarNotes.vue'));
@@ -42,6 +43,7 @@ const CalendarNotes = defineAsyncComponent(() => import('./CalendarNotes.vue'));
 const ListNotes = defineAsyncComponent(() => import('./ListNotes.vue'));
 
 const route = useRoute();
+const router = useRouter();
 const noteStore = useNoteStore();
 const { tabs, activeTabId } = storeToRefs(noteStore);
 

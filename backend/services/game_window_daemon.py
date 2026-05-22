@@ -10,7 +10,11 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from backend.core.fanxiu_sunlogin_rotate import click_sunlogin_rotate_processed_point, stream_sunlogin_rotate_mjpeg
+from backend.core.fanxiu_sunlogin_rotate import (
+    click_sunlogin_rotate_processed_point,
+    drag_sunlogin_rotate_processed_points,
+    stream_sunlogin_rotate_mjpeg,
+)
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -30,6 +34,24 @@ router = APIRouter()
 class GameWindowClickRequest(BaseModel):
     x: float = Field(ge=0)
     y: float = Field(ge=0)
+    title: Optional[str] = None
+    mode: str = Field(DEFAULT_MODE, pattern="^(auto|printwindow|screen)$")
+    area: str = Field(DEFAULT_AREA, pattern="^(outer|client)$")
+    crop: Optional[str] = None
+    trim_border: Optional[str] = None
+    rotate: str = Field(DEFAULT_ROTATE, pattern="^(0|90|180|270|ccw|cw|none)$")
+    fixed_width: int = Field(0, ge=0, le=4096)
+    fixed_height: int = Field(0, ge=0, le=4096)
+    frame_width: Optional[int] = Field(None, ge=1, le=8192)
+    frame_height: Optional[int] = Field(None, ge=1, le=8192)
+
+
+class GameWindowDragRequest(BaseModel):
+    start_x: float = Field(ge=0)
+    start_y: float = Field(ge=0)
+    end_x: float = Field(ge=0)
+    end_y: float = Field(ge=0)
+    duration_ms: int = Field(300, ge=50, le=3000)
     title: Optional[str] = None
     mode: str = Field(DEFAULT_MODE, pattern="^(auto|printwindow|screen)$")
     area: str = Field(DEFAULT_AREA, pattern="^(outer|client)$")
@@ -138,6 +160,34 @@ def click_game_window(req: GameWindowClickRequest):
         result = click_sunlogin_rotate_processed_point(
             x=req.x,
             y=req.y,
+            title=(req.title or _default_target_title()).strip() or _default_target_title(),
+            mode=req.mode,
+            area=req.area,
+            crop=req.crop or _env_text("CODEYUN_GAME_WINDOW_CROP", DEFAULT_CROP),
+            trim_border=req.trim_border or _env_text("CODEYUN_GAME_WINDOW_TRIM_BORDER", DEFAULT_TRIM_BORDER),
+            rotate=req.rotate or _env_text("CODEYUN_GAME_WINDOW_ROTATE", DEFAULT_ROTATE),
+            fixed_width=req.fixed_width,
+            fixed_height=req.fixed_height,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if req.frame_width is not None:
+        result["client_frame_width"] = req.frame_width
+    if req.frame_height is not None:
+        result["client_frame_height"] = req.frame_height
+    return result
+
+
+@router.post("/input/drag")
+def drag_game_window(req: GameWindowDragRequest):
+    try:
+        result = drag_sunlogin_rotate_processed_points(
+            start_x=req.start_x,
+            start_y=req.start_y,
+            end_x=req.end_x,
+            end_y=req.end_y,
+            duration_ms=req.duration_ms,
             title=(req.title or _default_target_title()).strip() or _default_target_title(),
             mode=req.mode,
             area=req.area,

@@ -65,6 +65,7 @@ registerCodeyunHandsontableModules()
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'
 const REMOTE_SAVE_DEBOUNCE_MS = 1200
+const LOCAL_UNDO_STACK_LIMIT = 40
 const DEFAULT_PAGE_SIZE = 50
 const TABLE_FONT_FAMILY = 'Inter, "Segoe UI", sans-serif'
 const TABLE_FONT = `400 14px ${TABLE_FONT_FAMILY}`
@@ -122,6 +123,8 @@ const HASH_COLOR_MIN_USED_HUE_DISTANCE = 22
 const HASH_COLOR_SEED_COLLATOR = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' })
 const DEFAULT_CELL_TEXT_COLOR = '#111827'
 const DEFAULT_CELL_BACKGROUND_COLOR = '#FEF3C7'
+const DEFAULT_RICH_TEXT_INLINE_TEXT_COLOR = '#FF0000'
+const RICH_TEXT_INLINE_TOOLBAR_COLORS_STORAGE_KEY = 'codeyun.noteSheet.richTextInlineToolbarColors.v1'
 const FORMULA_CELL_REFERENCE_RE = /(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(!])/g
 const MULTI_TEXT_ITEM_SEPARATOR_RE = /[,\uFF0C\u3001;\uFF1B\r\n]+/g
 const ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
@@ -343,6 +346,8 @@ type ColumnFontFamily = 'default' | 'monospace'
 type CellFontFamily = ColumnFontFamily
 type CellTextAlign = Exclude<ColumnTextAlign, 'auto'>
 type CellVerticalAlign = 'top' | 'middle' | 'bottom'
+type CellFormatType = 'normal' | 'rich_text'
+type StoredCellFormatType = Exclude<CellFormatType, 'normal'>
 
 type SheetHeaderCellStyle = {
   background_color?: string
@@ -382,8 +387,32 @@ type SheetCellStyle = {
   background_color?: string
   text_color?: string
   font_family?: CellFontFamily
+  font_size?: number
   text_align?: CellTextAlign
   vertical_align?: CellVerticalAlign
+}
+
+type SheetRichTextStyle = {
+  text_color?: string
+  background_color?: string
+  bold?: boolean
+  italic?: boolean
+  underline?: boolean
+}
+
+type SheetRichTextSpan = {
+  start: number
+  end: number
+  style: SheetRichTextStyle
+}
+
+type SheetRichText = {
+  spans?: SheetRichTextSpan[]
+}
+
+type SheetRichTextSegment = {
+  text: string
+  style: SheetRichTextStyle | null
 }
 
 type SheetResolvedCellValueStyle = {
@@ -401,9 +430,11 @@ type HashColorStyle = {
 }
 
 type SheetCellMeta = {
+  cell_type?: StoredCellFormatType
   link?: SheetCellLink
   action?: SheetCellAction
   style?: SheetCellStyle
+  rich_text?: SheetRichText
 }
 
 type SheetCellMetaMap = Record<string, SheetCellMeta>
@@ -428,17 +459,21 @@ type SheetEntityCell = SheetCellMeta & {
 type SheetEntityCellMap = Record<string, Record<string, SheetEntityCell>>
 
 type SheetCellStyleDraft = {
+  cell_type: CellFormatType | ''
   background_color: string
   text_color: string
   font_family: CellFontFamily | ''
+  font_size: number | null
   text_align: CellTextAlign | ''
   vertical_align: CellVerticalAlign | ''
 }
 
-type SheetCellStyleField = keyof SheetCellStyleDraft
+type SheetCellStyleField = keyof SheetCellStyle
+type SheetCellFormatDraftField = keyof SheetCellStyleDraft
 type SheetCellColorField = 'background_color' | 'text_color'
+type SheetRichTextColorField = 'text_color' | 'background_color'
 
-type SheetCellStyleDraftTouched = Record<SheetCellStyleField, boolean>
+type SheetCellStyleDraftTouched = Record<SheetCellFormatDraftField, boolean>
 
 type SelectedDataCell = {
   row: number
@@ -530,6 +565,31 @@ type SheetPerfPatchedHandsontable = Handsontable & {
   updateSettings: (...args: unknown[]) => unknown
 }
 
+type SheetHotInternalOverlays = {
+  syncScrollPositions?: () => void
+  syncScrollWithMaster?: () => void
+  adjustElementsSize?: () => void
+  refresh?: (fastDraw?: boolean) => void
+  refreshAll?: () => void
+}
+
+type SheetHotInternalWalkontable = {
+  wtOverlays?: SheetHotInternalOverlays
+  draw?: (fastDraw?: boolean) => void
+  selectionManager?: {
+    refreshAllBorderHandleStyles?: () => void
+  }
+}
+
+type SheetHotInternalView = {
+  adjustElementsSize?: () => void
+  _wt?: SheetHotInternalWalkontable
+}
+
+type SheetHotWithInternalView = Handsontable & {
+  view?: SheetHotInternalView
+}
+
 type SheetPerfInputMarker = {
   kind: 'mouse' | 'keyboard'
   at: number
@@ -584,7 +644,9 @@ type FormulaBarInputExpose = {
 type SheetActiveEditor = {
   row?: number
   col?: number
+  TD?: HTMLElement
   TEXTAREA?: HTMLElement
+  TEXTAREA_PARENT?: HTMLElement
   isOpened?: () => boolean
   finishEditing?: (restoreOriginalValue?: boolean) => void
   getValue?: () => unknown
@@ -640,6 +702,33 @@ type FormulaReferenceReplacementSpan = {
   start: number
   end: number
   text: string
+}
+
+type RichTextInlineToolbarTarget = {
+  cell: SelectedSheetCell
+  text: string
+  selectionStart: number
+  selectionEnd: number
+  scope: 'selection' | 'cell'
+}
+
+type RichTextContentEditorState = {
+  visible: boolean
+  cell: SelectedSheetCell | null
+  text: string
+  spans: SheetRichTextSpan[]
+  left: number
+  top: number
+  width: number
+  height: number
+  style: Record<string, string>
+}
+
+type RichTextInlineToolbarState = {
+  visible: boolean
+  x: number
+  y: number
+  target: RichTextInlineToolbarTarget | null
 }
 
 type FormulaReferenceArrowDirection = {
@@ -767,6 +856,11 @@ const CELL_VERTICAL_ALIGN_OPTIONS = [
   { label: '居中', value: 'middle' },
   { label: '底部', value: 'bottom' },
 ] as const satisfies readonly { label: string; value: CellVerticalAlign | '' }[]
+
+const CELL_FORMAT_TYPE_OPTIONS = [
+  { label: '普通', value: 'normal' },
+  { label: '富文本', value: 'rich_text' },
+] as const satisfies readonly { label: string; value: CellFormatType }[]
 
 type SheetMobileDefaultView = 'sheet' | 'lookup'
 
@@ -933,6 +1027,24 @@ type SheetPagePatchState = {
   loadedRowCount: number
   rowIndexes?: number[] | null
   deletedRowIndexes?: number[] | null
+}
+
+type SheetLocalHistoryPageState = SheetPagePatchState & {
+  pageCount: number
+  totalRowCount: number
+  unfilteredTotalRowCount: number
+}
+
+type SheetLocalHistorySnapshot = {
+  title: string
+  document: SheetDocument
+  pageState: SheetLocalHistoryPageState
+}
+
+type SheetLocalHistoryEntry = SheetLocalHistorySnapshot & {
+  key: string
+  reason: string
+  createdAt: number
 }
 
 type FormulaCellModel = {
@@ -1241,20 +1353,58 @@ const cellStyleDialogVisible = ref(false)
 const cellStyleDialogCells = ref<SelectedSheetCell[]>([])
 const activeCellStyleColorField = ref<SheetCellColorField | null>(null)
 const cellStyleDraft = ref<SheetCellStyleDraft>({
+  cell_type: '',
   background_color: '',
   text_color: '',
   font_family: '',
+  font_size: null,
   text_align: '',
   vertical_align: '',
 })
 const cellStyleDraftTouched = ref<SheetCellStyleDraftTouched>({
+  cell_type: false,
   background_color: false,
   text_color: false,
   font_family: false,
+  font_size: false,
   text_align: false,
   vertical_align: false,
 })
-const copiedCellFormat = ref<{ style: SheetCellStyle | null } | null>(null)
+const copiedCellFormat = ref<{ cell_type: CellFormatType; style: SheetCellStyle | null } | null>(null)
+const cellRichTextDialogVisible = ref(false)
+const cellRichTextDialogCell = ref<SelectedSheetCell | null>(null)
+const cellRichTextTextareaRef = ref<HTMLTextAreaElement | null>(null)
+const cellRichTextDraftText = ref('')
+const cellRichTextDraftSpans = ref<SheetRichTextSpan[]>([])
+const cellRichTextSelection = ref({ start: 0, end: 0 })
+const activeCellRichTextColorField = ref<SheetRichTextColorField | null>(null)
+const cellRichTextDraftColors = ref<Record<SheetRichTextColorField, string>>({
+  text_color: DEFAULT_CELL_TEXT_COLOR,
+  background_color: DEFAULT_CELL_BACKGROUND_COLOR,
+})
+const richTextInlineToolbar = ref<RichTextInlineToolbarState>({
+  visible: false,
+  x: 0,
+  y: 0,
+  target: null,
+})
+const richTextContentEditorRef = ref<HTMLElement | null>(null)
+const richTextContentEditor = ref<RichTextContentEditorState>({
+  visible: false,
+  cell: null,
+  text: '',
+  spans: [],
+  left: 0,
+  top: 0,
+  width: 0,
+  height: 0,
+  style: {},
+})
+const activeRichTextInlineToolbarColorField = ref<SheetRichTextColorField | null>(null)
+const richTextInlineToolbarColors = ref<Record<SheetRichTextColorField, string>>(readRichTextInlineToolbarColorsPreference())
+const richTextContentEditorSegments = computed(() => (
+  buildRichTextSegments(richTextContentEditor.value.text, { spans: richTextContentEditor.value.spans })
+))
 const formulaBarCell = ref<FormulaBarCell | null>(null)
 const formulaBarDraft = ref('')
 const formulaBarFocused = ref(false)
@@ -1266,6 +1416,7 @@ const SHEET_PERF_LOG_FLUSH_DELAY_MS = 800
 const SHEET_PERF_LOG_FLUSH_BATCH_SIZE = 40
 const SHEET_PERF_LOG_FLUSH_MAX_BATCH_SIZE = 160
 const SHEET_PERF_FRAME_GAP_THRESHOLD_MS = 80
+const SHEET_VISIBILITY_FRAME_SIZE_TOLERANCE_PX = 2
 const sheetPerfLoggingEnabled = ref(readSheetPerfLoggingEnabledPreference())
 const sheetPerfLogEntries: SheetPerfLogEntry[] = []
 const touchContextMenuFallbackEnabled = ref(false)
@@ -1333,6 +1484,9 @@ const workspaceLoading = ref(false)
 const sheetContentReady = ref(false)
 const sheetLoadSettled = ref(props.sheetId == null)
 const sheetLoadErrorText = ref('')
+type SheetRenderPhase = 'core' | 'enhancing' | 'ready'
+type SheetFrameSize = { width: number; height: number }
+const sheetRenderPhase = ref<SheetRenderPhase>('ready')
 let restoreInitialDocumentSeq = 0
 let columnFilterOptionRequestSeq = 0
 let readOnlyActionWarningSuppressTimer: number | null = null
@@ -1367,6 +1521,10 @@ let restoringStudentLookupSelection = false
 let deferredCellSelectionState: DeferredCellSelectionState | null = null
 const formulaReferencePreviewRange = ref<FormulaReferenceRangeBounds | null>(null)
 let sheetInternalClipboard: SheetInternalClipboard | null = null
+let sheetRenderEnhancementFrame: number | null = null
+let sheetHiddenFrameSize: SheetFrameSize | null = null
+let sheetOverlayAlignmentFrame: number | null = null
+let sheetOverlayAlignmentPending = false
 
 function readSheetPerfLoggingEnabledPreference() {
   if (typeof window === 'undefined') {
@@ -1392,6 +1550,48 @@ function readSheetPerfLoggingEnabledPreference() {
     return false
   } catch {
     return false
+  }
+}
+
+function getDefaultRichTextInlineToolbarColors(): Record<SheetRichTextColorField, string> {
+  return {
+    text_color: DEFAULT_RICH_TEXT_INLINE_TEXT_COLOR,
+    background_color: DEFAULT_CELL_BACKGROUND_COLOR,
+  }
+}
+
+function readRichTextInlineToolbarColorsPreference(): Record<SheetRichTextColorField, string> {
+  const defaults = getDefaultRichTextInlineToolbarColors()
+  if (typeof window === 'undefined') {
+    return defaults
+  }
+
+  try {
+    const raw = window.localStorage.getItem(RICH_TEXT_INLINE_TOOLBAR_COLORS_STORAGE_KEY)
+    if (!raw) {
+      return defaults
+    }
+    const payload = JSON.parse(raw) as Partial<Record<SheetRichTextColorField, unknown>>
+    const textColor = normalizeCssColor(payload.text_color)
+    const backgroundColor = normalizeCssColor(payload.background_color)
+    return {
+      text_color: textColor || defaults.text_color,
+      background_color: backgroundColor || defaults.background_color,
+    }
+  } catch {
+    return defaults
+  }
+}
+
+function saveRichTextInlineToolbarColorsPreference(colors: Record<SheetRichTextColorField, string>) {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(RICH_TEXT_INLINE_TOOLBAR_COLORS_STORAGE_KEY, JSON.stringify(colors))
+  } catch {
+    // Local storage is only a convenience for the last-used toolbar colors.
   }
 }
 
@@ -2673,6 +2873,7 @@ const showContextMenuFallbackButton = computed(() => (
   touchContextMenuFallbackEnabled.value
   && shouldRenderSheetContent.value
   && isOriginalSheetViewActive.value
+  && shouldUseEnhancedSheetRenderSettings.value
   && (
     hasContextMenuFallbackSelection.value
     || !!formulaBarCell.value
@@ -2715,6 +2916,16 @@ const cellStyleDialogTitle = computed(() => {
   const count = cellStyleDialogCells.value.length
   return count > 1 ? `设置 ${count} 个单元格格式` : '设置单元格格式'
 })
+
+const cellRichTextSelectionText = computed(() => {
+  const start = Math.min(cellRichTextSelection.value.start, cellRichTextSelection.value.end)
+  const end = Math.max(cellRichTextSelection.value.start, cellRichTextSelection.value.end)
+  return start === end ? '未选择文字' : `${end - start} 字`
+})
+
+const cellRichTextPreviewSegments = computed(() => (
+  buildRichTextSegments(cellRichTextDraftText.value, { spans: cellRichTextDraftSpans.value })
+))
 
 const formulaBarAddress = computed(() => {
   const cell = formulaBarCell.value
@@ -3363,6 +3574,40 @@ const sheetHotMergeCells = computed(() => (
     : sheetMergeCells.value
 ))
 
+const shouldUseEnhancedSheetRenderSettings = computed(() => sheetRenderPhase.value !== 'core')
+
+const sheetHotRenderMergeCells = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value ? sheetHotMergeCells.value : []
+))
+
+const sheetHotRenderManualColumnResize = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value && canEditConfig.value
+))
+
+const sheetHotRenderManualColumnMove = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value && canEditConfig.value
+))
+
+const sheetHotRenderManualRowResize = computed(() => shouldUseEnhancedSheetRenderSettings.value)
+
+const sheetHotRenderManualRowMove = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value && canEditData.value
+))
+
+const sheetHotRenderReadOnly = computed(() => !shouldUseEnhancedSheetRenderSettings.value)
+
+const sheetHotRenderCellMetaResolver = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value ? resolveCellMeta : resolveCoreCellMeta
+))
+
+const sheetHotRenderRowHeightResolver = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value ? resolveRowHeight : resolveCoreRowHeight
+))
+
+const sheetHotRenderAfterRenderer = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value ? handleAfterRenderer : handleCoreAfterRenderer
+))
+
 function getDocumentGridRowIndex(gridRowIndex: number) {
   if (gridRowIndex < sheetHeaderRowCount.value) {
     return gridRowIndex
@@ -3812,6 +4057,10 @@ let pendingColumnInsertionTemplate: ColumnInsertionTemplate | null = null
 let pendingRowInsertionTemplate: RowInsertionTemplate | null = null
 let contextMenuRowInsertAmount = 1
 let contextMenuColumnInsertAmount = 1
+let suppressLocalHistory = false
+
+const localUndoStack = ref<SheetLocalHistoryEntry[]>([])
+const localRedoStack = ref<SheetLocalHistoryEntry[]>([])
 
 const ROW_INSERT_AMOUNT_MIN = 1
 const ROW_INSERT_AMOUNT_MAX = 1000
@@ -4108,6 +4357,23 @@ function createColumnInsertMenuRenderer() {
 
 const contextMenu = {
   items: {
+    undo_change: {
+      name: '撤销',
+      disabled: () => !canUndoSheetChange(),
+      callback: () => {
+        undoSheetChange()
+      },
+    },
+    redo_change: {
+      name: '重做',
+      disabled: () => !canRedoSheetChange(),
+      callback: () => {
+        redoSheetChange()
+      },
+    },
+    hsep_undo: {
+      name: '---------',
+    },
     row_detail: {
       name: '单独显示此条',
       hidden: () => !canOpenSelectedRowDetailDialog(),
@@ -4357,39 +4623,55 @@ const contextMenu = {
       name: '---------',
       hidden: () => !shouldShowStyleContextMenuGroup(),
     },
-    set_cell_style: {
-      name: () => (getSelectedSheetCells().length > 1 ? '设置选区格式' : '设置单元格格式'),
-      hidden: () => !hasSheetCellSelection() || !canEditConfig.value,
+    cell_format: {
+      name: '单元格格式',
+      hidden: () => !shouldShowStyleContextMenuGroup(),
       callback: () => {
         openSelectedCellStyleDialog()
       },
-    },
-    copy_cell_format: {
-      name: '复制格式',
-      hidden: () => !hasSingleSheetCellSelection(),
-      callback: () => {
-        copySelectedCellFormat()
-      },
-    },
-    paste_cell_format: {
-      name: () => (getSelectedSheetCells().length > 1 ? '粘贴格式到选区' : '粘贴格式'),
-      hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !hasCopiedCellFormat(),
-      callback: () => {
-        pasteCellFormatToSelectedCells()
-      },
-    },
-    merge_cells: {
-      name: '合并单元格',
-      hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !canMergeSelectedCells(),
-      callback: () => {
-        mergeSelectedCells()
-      },
-    },
-    unmerge_cells: {
-      name: '取消合并',
-      hidden: () => !hasSelectedMergedCell() || !canEditConfig.value,
-      callback: () => {
-        unmergeSelectedCells()
+      submenu: {
+        items: [
+          {
+            key: 'cell_format:set',
+            name: () => (getSelectedSheetCells().length > 1 ? '设置选区格式' : '设置'),
+            hidden: () => !hasSheetCellSelection() || !canEditConfig.value,
+            callback: () => {
+              openSelectedCellStyleDialog()
+            },
+          },
+          {
+            key: 'cell_format:copy',
+            name: '复制',
+            hidden: () => !hasSingleSheetCellSelection(),
+            callback: () => {
+              copySelectedCellFormat()
+            },
+          },
+          {
+            key: 'cell_format:paste',
+            name: () => (getSelectedSheetCells().length > 1 ? '粘贴到选区' : '粘贴'),
+            hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !hasCopiedCellFormat(),
+            callback: () => {
+              pasteCellFormatToSelectedCells()
+            },
+          },
+          {
+            key: 'cell_format:merge',
+            name: '合并单元格',
+            hidden: () => !hasSheetCellSelection() || !canEditConfig.value || !canMergeSelectedCells(),
+            callback: () => {
+              mergeSelectedCells()
+            },
+          },
+          {
+            key: 'cell_format:unmerge',
+            name: '取消合并单元格',
+            hidden: () => !hasSelectedMergedCell() || !canEditConfig.value,
+            callback: () => {
+              unmergeSelectedCells()
+            },
+          },
+        ],
       },
     },
     hsep_link: {
@@ -4437,6 +4719,154 @@ const contextMenu = {
       },
     },
   },
+}
+
+const sheetHotRenderContextMenu = computed(() => (
+  shouldUseEnhancedSheetRenderSettings.value ? contextMenu : false
+))
+
+function getCurrentSheetHotRenderSettings() {
+  return {
+    mergeCells: sheetHotRenderMergeCells.value,
+    manualColumnResize: sheetHotRenderManualColumnResize.value,
+    manualColumnMove: sheetHotRenderManualColumnMove.value,
+    manualRowResize: sheetHotRenderManualRowResize.value,
+    manualRowMove: sheetHotRenderManualRowMove.value,
+    readOnly: sheetHotRenderReadOnly.value,
+    contextMenu: sheetHotRenderContextMenu.value,
+    cells: sheetHotRenderCellMetaResolver.value,
+    rowHeights: sheetHotRenderRowHeightResolver.value,
+  }
+}
+
+function isSheetDocumentHidden() {
+  return typeof document !== 'undefined' && document.hidden
+}
+
+function measureSheetFrameSize(): SheetFrameSize | null {
+  const sheetFrame = sheetFrameRef.value
+  if (!sheetFrame) {
+    return null
+  }
+  const frameRect = sheetFrame.getBoundingClientRect()
+  const width = Math.floor(sheetFrame.clientWidth || frameRect.width)
+  const height = Math.floor(sheetFrame.clientHeight || frameRect.height)
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return null
+  }
+  return { width, height }
+}
+
+function isSameSheetFrameSize(left: SheetFrameSize | null, right: SheetFrameSize | null) {
+  return (
+    !!left
+    && !!right
+    && Math.abs(left.width - right.width) <= SHEET_VISIBILITY_FRAME_SIZE_TOLERANCE_PX
+    && Math.abs(left.height - right.height) <= SHEET_VISIBILITY_FRAME_SIZE_TOLERANCE_PX
+  )
+}
+
+function clearSheetRenderEnhancementFrame() {
+  if (sheetRenderEnhancementFrame == null || typeof window === 'undefined') {
+    sheetRenderEnhancementFrame = null
+    return
+  }
+  window.cancelAnimationFrame(sheetRenderEnhancementFrame)
+  sheetRenderEnhancementFrame = null
+}
+
+function beginSheetCoreRenderPhase() {
+  clearSheetRenderEnhancementFrame()
+  sheetRenderPhase.value = 'core'
+}
+
+function finishSheetRenderEnhancement() {
+  clearSheetRenderEnhancementFrame()
+  sheetRenderPhase.value = 'ready'
+}
+
+function scheduleSheetRenderEnhancement(isCurrent?: () => boolean) {
+  clearSheetRenderEnhancementFrame()
+  if (!sheetContentReady.value) {
+    sheetRenderPhase.value = 'ready'
+    return
+  }
+  if (typeof window === 'undefined') {
+    sheetRenderPhase.value = 'ready'
+    return
+  }
+  if (isSheetDocumentHidden()) {
+    sheetRenderPhase.value = 'ready'
+    return
+  }
+
+  sheetRenderEnhancementFrame = window.requestAnimationFrame(() => {
+    sheetRenderEnhancementFrame = window.requestAnimationFrame(() => {
+      sheetRenderEnhancementFrame = null
+      void applySheetRenderEnhancement(isCurrent)
+    })
+  })
+}
+
+async function applySheetRenderEnhancement(isCurrent?: () => boolean) {
+  if (isCurrent && !isCurrent()) {
+    return
+  }
+  if (!sheetContentReady.value) {
+    sheetRenderPhase.value = 'ready'
+    return
+  }
+
+  const trace = startSheetPerfTrace('sheet.enhance', {
+    detail: {
+      fromPhase: sheetRenderPhase.value,
+    },
+  })
+  sheetRenderPhase.value = 'enhancing'
+  try {
+    await nextTick()
+    trace?.mark('enable-settings')
+    if (isCurrent && !isCurrent()) {
+      if (sheetRenderPhase.value === 'enhancing') {
+        sheetRenderPhase.value = 'ready'
+      }
+      trace?.finish({ detail: { stale: true } })
+      return
+    }
+
+    const hot = getHotInstance()
+    if (hot) {
+      hot.render()
+      trace?.mark('render')
+      void updateSheetViewportHeight('renderEnhancement')
+    }
+    if (isCurrent && !isCurrent()) {
+      if (sheetRenderPhase.value === 'enhancing') {
+        sheetRenderPhase.value = 'ready'
+      }
+      trace?.finish({ detail: { stale: true } })
+      return
+    }
+    sheetRenderPhase.value = 'ready'
+    trace?.finish({
+      detail: {
+        stale: false,
+        rowCount: rows.value.length,
+        columnCount: columnHeaders.value.length,
+      },
+    })
+  } catch (error) {
+    if (!isCurrent || isCurrent()) {
+      sheetRenderPhase.value = 'ready'
+    }
+    trace?.finish({
+      detail: {
+        stale: !!isCurrent && !isCurrent(),
+        error: error instanceof Error ? error.message : String(error),
+      },
+    })
+    console.warn('Failed to enhance note sheet render:', error)
+  }
 }
 
 type SheetContextMenuItem = {
@@ -5417,6 +5847,28 @@ function handleGlobalMouseDown(event: MouseEvent) {
     closeSheetWorkspaceViewLinkMenu()
   }
 
+  const targetElement = target instanceof HTMLElement
+    ? target
+    : target?.parentElement instanceof HTMLElement
+      ? target.parentElement
+      : null
+  const insideRichTextInlineToolbar = !!targetElement?.closest('.sheet-rich-text-inline-toolbar, .standard-color-picker-popover')
+  const insideRichTextContentEditor = !!targetElement?.closest('.sheet-rich-text-cell-editor')
+  if (
+    richTextContentEditor.value.visible
+    && !insideRichTextContentEditor
+    && !insideRichTextInlineToolbar
+  ) {
+    closeRichTextContentEditor({ save: true })
+  }
+  if (
+    richTextInlineToolbar.value.visible
+    && !insideRichTextInlineToolbar
+    && !activeRichTextInlineToolbarColorField.value
+  ) {
+    hideRichTextInlineToolbar({ force: true })
+  }
+
   if (columnFilterPopover.value.visible) {
     if (target && columnFilterPopoverRef.value?.contains(target)) {
       return
@@ -5435,6 +5887,8 @@ function handleGlobalMouseDown(event: MouseEvent) {
 }
 
 function resetWorkspaceState() {
+  finishSheetRenderEnhancement()
+  resetLocalUndoHistory()
   clearEditingColumnState()
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
@@ -5490,14 +5944,22 @@ function resetWorkspaceState() {
   cellStyleDialogCells.value = []
   activeCellStyleColorField.value = null
   cellStyleDraft.value = {
+    cell_type: '',
     background_color: '',
     text_color: '',
     font_family: '',
+    font_size: null,
+    text_align: '',
+    vertical_align: '',
   }
   cellStyleDraftTouched.value = {
+    cell_type: false,
     background_color: false,
     text_color: false,
     font_family: false,
+    font_size: false,
+    text_align: false,
+    vertical_align: false,
   }
   columnSettingsDraft.value = {
     value_type: 'text',
@@ -5710,7 +6172,7 @@ function inferAttendanceHeaderGroupLabel(fieldLabels: string[]) {
   const hasAll = (...labels: string[]) => labels.every((label) => labelSet.has(label))
 
   if (
-    hasAll('分组', '学号', '用户ID')
+    hasAll('分组', '学号')
     && hasAny('禅客', '商户订单号', '昵称', '姓名')
   ) {
     return '用户信息'
@@ -6079,11 +6541,31 @@ function normalizeCellVerticalAlign(value: unknown): CellVerticalAlign | '' {
   return ''
 }
 
+function normalizeCellFontSize(value: unknown): number | null {
+  const numeric = Number(value)
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return null
+  }
+  return Math.min(Math.round(numeric), MAX_COLUMN_FONT_SIZE)
+}
+
+function normalizeCellFormatType(value: unknown): CellFormatType | '' {
+  if (value === 'normal' || value === 'rich_text') {
+    return value
+  }
+  return ''
+}
+
+function normalizeStoredCellFormatType(value: unknown): StoredCellFormatType | null {
+  return value === 'rich_text' ? 'rich_text' : null
+}
+
 function hasCellStyleValue(style: SheetCellStyle) {
   return Boolean(
     style.background_color
     || style.text_color
     || style.font_family
+    || style.font_size
     || style.text_align
     || style.vertical_align,
   )
@@ -6098,9 +6580,10 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   const backgroundColor = normalizeCssColor(record.background_color)
   const textColor = normalizeCssColor(record.text_color)
   const fontFamily = normalizeCellFontFamily(record.font_family)
+  const fontSize = normalizeCellFontSize(record.font_size)
   const textAlign = normalizeCellTextAlign(record.text_align)
   const verticalAlign = normalizeCellVerticalAlign(record.vertical_align)
-  if (!backgroundColor && !textColor && !fontFamily && !textAlign && !verticalAlign) {
+  if (!backgroundColor && !textColor && !fontFamily && !fontSize && !textAlign && !verticalAlign) {
     return null
   }
 
@@ -6114,6 +6597,9 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   if (fontFamily) {
     style.font_family = fontFamily
   }
+  if (fontSize) {
+    style.font_size = fontSize
+  }
   if (textAlign) {
     style.text_align = textAlign
   }
@@ -6123,20 +6609,109 @@ function normalizeCellStyle(source: unknown): SheetCellStyle | null {
   return style
 }
 
+function hasRichTextStyleValue(style: SheetRichTextStyle) {
+  return Boolean(
+    style.text_color
+    || style.background_color
+    || style.bold
+    || style.italic
+    || style.underline,
+  )
+}
+
+function normalizeRichTextStyle(source: unknown): SheetRichTextStyle | null {
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+
+  const record = source as Record<string, unknown>
+  const textColor = normalizeCssColor(record.text_color)
+  const backgroundColor = normalizeCssColor(record.background_color)
+  const style: SheetRichTextStyle = {}
+  if (textColor) {
+    style.text_color = textColor
+  }
+  if (backgroundColor) {
+    style.background_color = backgroundColor
+  }
+  if (record.bold === true) {
+    style.bold = true
+  }
+  if (record.italic === true) {
+    style.italic = true
+  }
+  if (record.underline === true) {
+    style.underline = true
+  }
+  return hasRichTextStyleValue(style) ? style : null
+}
+
+function normalizeRichTextSpans(source: unknown, textLength?: number): SheetRichTextSpan[] {
+  const sourceSpans = Array.isArray(source) ? source : []
+  const hasLimit = Number.isFinite(textLength)
+  const limit = hasLimit ? Math.max(0, Math.trunc(Number(textLength))) : 0
+  const spans: SheetRichTextSpan[] = []
+
+  sourceSpans.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return
+    }
+    const record = item as Record<string, unknown>
+    let start = Math.trunc(Number(record.start))
+    let end = Math.trunc(Number(record.end))
+    if (!Number.isInteger(start) || !Number.isInteger(end)) {
+      return
+    }
+    start = Math.max(0, start)
+    end = Math.max(0, end)
+    if (hasLimit) {
+      start = Math.min(start, limit)
+      end = Math.min(end, limit)
+    }
+    if (end <= start) {
+      return
+    }
+    const style = normalizeRichTextStyle(record.style)
+    if (!style) {
+      return
+    }
+    spans.push({ start, end, style })
+  })
+
+  return spans.sort((left, right) => left.start - right.start || left.end - right.end)
+}
+
+function normalizeRichText(source: unknown, textLength?: number): SheetRichText | null {
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+  const spans = normalizeRichTextSpans((source as Record<string, unknown>).spans, textLength)
+  return spans.length ? { spans } : null
+}
+
+function normalizeRichTextForText(source: unknown, text: string) {
+  return normalizeRichText(source, text.length)
+}
+
 function normalizeCellMetaEntry(source: unknown): SheetCellMeta | null {
   if (!source || typeof source !== 'object') {
     return null
   }
 
   const record = source as Record<string, unknown>
+  const cellType = normalizeStoredCellFormatType(record.cell_type)
   const link = normalizeCellLink(record.link)
   const action = normalizeCellAction(record.action)
   const style = normalizeCellStyle(record.style)
-  if (!link && !action && !style) {
+  const richText = normalizeRichText(record.rich_text)
+  if (!cellType && !link && !action && !style && !richText) {
     return null
   }
 
   const meta: SheetCellMeta = {}
+  if (cellType || richText) {
+    meta.cell_type = cellType ?? 'rich_text'
+  }
   if (link) {
     meta.link = link
   }
@@ -6145,6 +6720,9 @@ function normalizeCellMetaEntry(source: unknown): SheetCellMeta | null {
   }
   if (style) {
     meta.style = style
+  }
+  if (richText) {
+    meta.rich_text = richText
   }
   return meta
 }
@@ -6230,6 +6808,10 @@ function normalizeEntityCellEntry(source: unknown): SheetEntityCell | null {
   const value = normalizeCellValue(record.value)
   const meta = normalizeCellMetaEntry(record)
   const cell: SheetEntityCell = { ...(meta ?? {}) }
+  if (isFormulaExpression(value)) {
+    delete cell.cell_type
+    delete cell.rich_text
+  }
   if (value) {
     cell.value = value
   }
@@ -6275,6 +6857,11 @@ function replaceEntityCellMeta(entry: SheetEntityCell, meta: SheetCellMeta | nul
   delete nextEntry.link
   delete nextEntry.action
   delete nextEntry.style
+  delete nextEntry.cell_type
+  delete nextEntry.rich_text
+  if (meta?.cell_type) {
+    nextEntry.cell_type = meta.cell_type
+  }
   if (meta?.link) {
     nextEntry.link = meta.link
   }
@@ -6283,6 +6870,9 @@ function replaceEntityCellMeta(entry: SheetEntityCell, meta: SheetCellMeta | nul
   }
   if (meta?.style) {
     nextEntry.style = meta.style
+  }
+  if (meta?.rich_text) {
+    nextEntry.rich_text = meta.rich_text
   }
   return nextEntry
 }
@@ -6334,6 +6924,17 @@ function extractEntityCellForSave(value: unknown, meta: SheetCellMeta | null | u
   const normalizedValue = normalizeCellValue(value)
   const normalizedMeta = normalizeCellMetaEntry(meta ?? null)
   const cell: SheetEntityCell = { ...(normalizedMeta ?? {}) }
+  if (isFormulaExpression(normalizedValue)) {
+    delete cell.cell_type
+    delete cell.rich_text
+  } else if (cell.rich_text) {
+    const normalizedRichText = normalizeRichTextForText(cell.rich_text, normalizedValue)
+    if (normalizedRichText) {
+      cell.rich_text = normalizedRichText
+    } else {
+      delete cell.rich_text
+    }
+  }
   if (normalizedValue) {
     cell.value = normalizedValue
   }
@@ -10036,6 +10637,171 @@ function setRenderedCellText(TD: HTMLTableCellElement, text: string) {
   }
 }
 
+function areRichTextStylesEqual(left: SheetRichTextStyle | null | undefined, right: SheetRichTextStyle | null | undefined) {
+  return (left?.text_color ?? '') === (right?.text_color ?? '')
+    && (left?.background_color ?? '') === (right?.background_color ?? '')
+    && !!left?.bold === !!right?.bold
+    && !!left?.italic === !!right?.italic
+    && !!left?.underline === !!right?.underline
+}
+
+function mergeRichTextStyles(
+  base: SheetRichTextStyle | null | undefined,
+  patch: SheetRichTextStyle | null | undefined,
+) {
+  const next: SheetRichTextStyle = { ...(base ?? {}) }
+  if (!patch) {
+    return hasRichTextStyleValue(next) ? next : null
+  }
+  if (patch.text_color !== undefined) {
+    if (patch.text_color) {
+      next.text_color = patch.text_color
+    } else {
+      delete next.text_color
+    }
+  }
+  if (patch.background_color !== undefined) {
+    if (patch.background_color) {
+      next.background_color = patch.background_color
+    } else {
+      delete next.background_color
+    }
+  }
+  if (patch.bold !== undefined) {
+    if (patch.bold) {
+      next.bold = true
+    } else {
+      delete next.bold
+    }
+  }
+  if (patch.italic !== undefined) {
+    if (patch.italic) {
+      next.italic = true
+    } else {
+      delete next.italic
+    }
+  }
+  if (patch.underline !== undefined) {
+    if (patch.underline) {
+      next.underline = true
+    } else {
+      delete next.underline
+    }
+  }
+  return hasRichTextStyleValue(next) ? next : null
+}
+
+function cloneRichTextStyle(style: SheetRichTextStyle | null | undefined) {
+  return style && hasRichTextStyleValue(style) ? { ...style } : null
+}
+
+function buildRichTextStyleSlots(textLength: number, spans: SheetRichTextSpan[]) {
+  const slots: Array<SheetRichTextStyle | null> = Array.from({ length: textLength }, () => null)
+  normalizeRichTextSpans(spans, textLength).forEach((span) => {
+    for (let index = span.start; index < span.end; index += 1) {
+      slots[index] = mergeRichTextStyles(slots[index], span.style)
+    }
+  })
+  return slots
+}
+
+function compressRichTextStyleSlots(slots: Array<SheetRichTextStyle | null>): SheetRichTextSpan[] {
+  const spans: SheetRichTextSpan[] = []
+  let start = 0
+  while (start < slots.length) {
+    const style = slots[start]
+    let end = start + 1
+    while (end < slots.length && areRichTextStylesEqual(style, slots[end])) {
+      end += 1
+    }
+    if (style && hasRichTextStyleValue(style)) {
+      spans.push({ start, end, style })
+    }
+    start = end
+  }
+  return spans
+}
+
+function buildRichTextSegments(text: string, richText: SheetRichText | null | undefined): SheetRichTextSegment[] {
+  if (!text) {
+    return []
+  }
+  const spans = normalizeRichTextSpans(richText?.spans, text.length)
+  if (!spans.length) {
+    return [{ text, style: null }]
+  }
+  const slots = buildRichTextStyleSlots(text.length, spans)
+  const segments: SheetRichTextSegment[] = []
+  let start = 0
+  while (start < text.length) {
+    const style = slots[start]
+    let end = start + 1
+    while (end < text.length && areRichTextStylesEqual(style, slots[end])) {
+      end += 1
+    }
+    segments.push({ text: text.slice(start, end), style })
+    start = end
+  }
+  return segments
+}
+
+function getRichTextSegmentStyle(style: SheetRichTextStyle | null | undefined) {
+  if (!style) {
+    return {}
+  }
+  const css: Record<string, string> = {}
+  if (style.text_color) {
+    css.color = style.text_color
+  }
+  if (style.background_color) {
+    css.backgroundColor = style.background_color
+  }
+  if (style.bold) {
+    css.fontWeight = '700'
+  }
+  if (style.italic) {
+    css.fontStyle = 'italic'
+  }
+  if (style.underline) {
+    css.textDecoration = 'underline'
+    css.textUnderlineOffset = '2px'
+  }
+  return css
+}
+
+function applyRichTextSegmentDomStyle(element: HTMLElement, style: SheetRichTextStyle | null | undefined) {
+  if (!style) {
+    return
+  }
+  if (style.text_color) {
+    element.style.color = style.text_color
+  }
+  if (style.background_color) {
+    element.style.backgroundColor = style.background_color
+  }
+  if (style.bold) {
+    element.style.fontWeight = '700'
+  }
+  if (style.italic) {
+    element.style.fontStyle = 'italic'
+  }
+  if (style.underline) {
+    element.style.textDecoration = 'underline'
+    element.style.textUnderlineOffset = '2px'
+  }
+}
+
+function renderRichTextCell(TD: HTMLTableCellElement, text: string, richText: SheetRichText) {
+  TD.textContent = ''
+  buildRichTextSegments(text, richText).forEach((segment) => {
+    const span = document.createElement('span')
+    span.className = 'sheet-rich-text-segment'
+    span.textContent = segment.text
+    applyRichTextSegmentDomStyle(span, segment.style)
+    TD.appendChild(span)
+  })
+}
+
 function getCellActionDisplayLabel(action: SheetCellAction, rawText: string) {
   return rawText.trim() || action.label?.trim() || SHEET_CELL_ACTION_LABELS[action.type]
 }
@@ -10152,6 +10918,197 @@ function buildCurrentPagePatchState(): SheetPagePatchState {
   }
 }
 
+function cloneSheetDocumentSnapshot(document: SheetDocument): SheetDocument {
+  return JSON.parse(JSON.stringify(document)) as SheetDocument
+}
+
+function buildLocalHistoryPageState(): SheetLocalHistoryPageState {
+  return {
+    ...buildCurrentPagePatchState(),
+    pageCount: pageCount.value,
+    totalRowCount: totalRowCount.value,
+    unfilteredTotalRowCount: unfilteredTotalRowCount.value,
+  }
+}
+
+function buildLocalHistorySnapshot(): SheetLocalHistorySnapshot {
+  return {
+    title: sheetTitle.value.trim() || '未命名表格',
+    document: cloneSheetDocumentSnapshot(buildCurrentDocument()),
+    pageState: buildLocalHistoryPageState(),
+  }
+}
+
+function getLocalHistorySnapshotKey(snapshot: SheetLocalHistorySnapshot) {
+  return JSON.stringify({
+    title: snapshot.title,
+    document: snapshot.document,
+    pageState: snapshot.pageState,
+  })
+}
+
+function buildLocalHistoryEntry(reason: string): SheetLocalHistoryEntry {
+  const snapshot = buildLocalHistorySnapshot()
+  return {
+    ...snapshot,
+    key: getLocalHistorySnapshotKey(snapshot),
+    reason,
+    createdAt: Date.now(),
+  }
+}
+
+function trimLocalHistoryStack(stack: SheetLocalHistoryEntry[]) {
+  while (stack.length > LOCAL_UNDO_STACK_LIMIT) {
+    stack.shift()
+  }
+}
+
+function clearNativeUndoRedoHistory() {
+  getUndoRedoPlugin()?.clear?.()
+}
+
+function resetLocalUndoHistory() {
+  localUndoStack.value = []
+  localRedoStack.value = []
+  clearNativeUndoRedoHistory()
+}
+
+function createLocalUndoEntry(reason = 'edit') {
+  if (
+    suppressPersistence
+    || suppressLocalHistory
+    || !sheetContentReady.value
+    || !canPersistSheet.value
+  ) {
+    return null
+  }
+
+  return buildLocalHistoryEntry(reason)
+}
+
+function pushLocalUndoEntry(
+  entry: SheetLocalHistoryEntry | null | undefined,
+  options: { skipCurrentCompare?: boolean } = {},
+) {
+  if (!entry || suppressLocalHistory) {
+    return
+  }
+
+  const lastEntry = localUndoStack.value[localUndoStack.value.length - 1]
+  if (lastEntry?.key === entry.key) {
+    return
+  }
+  if (!options.skipCurrentCompare && getLocalHistorySnapshotKey(buildLocalHistorySnapshot()) === entry.key) {
+    return
+  }
+
+  localUndoStack.value.push(entry)
+  trimLocalHistoryStack(localUndoStack.value)
+  localRedoStack.value = []
+  clearNativeUndoRedoHistory()
+}
+
+function pushLocalUndoSnapshot(reason = 'edit') {
+  pushLocalUndoEntry(createLocalUndoEntry(reason), { skipCurrentCompare: true })
+}
+
+function restoreLocalHistorySnapshot(snapshot: SheetLocalHistorySnapshot) {
+  suppressLocalHistory = true
+  suppressPersistence = true
+  try {
+    sheetTitle.value = snapshot.title || '未命名表格'
+    currentPage.value = normalizePositivePageNumber(snapshot.pageState.page, 1)
+    pageSize.value = normalizePositivePageNumber(snapshot.pageState.pageSize, pageSize.value)
+    pageCount.value = normalizePositivePageNumber(snapshot.pageState.pageCount, 1)
+    totalRowCount.value = normalizeNonNegativeInt(snapshot.pageState.totalRowCount)
+    unfilteredTotalRowCount.value = Math.max(
+      totalRowCount.value,
+      normalizeNonNegativeInt(snapshot.pageState.unfilteredTotalRowCount),
+    )
+    pageRowOffset.value = normalizeNonNegativeInt(snapshot.pageState.rowOffset)
+    pageLoadedRowCount.value = normalizeNonNegativeInt(snapshot.pageState.loadedRowCount)
+    pageRowIndexes.value = normalizePaginationRowIndexes(snapshot.pageState.rowIndexes)
+    pendingDeletedPageRowIndexes.value = normalizePaginationDeletedRowIndexes(snapshot.pageState.deletedRowIndexes) ?? []
+
+    beginSheetCoreRenderPhase()
+    loadSheetDocument(normalizeSheetDocument(
+      cloneSheetDocumentSnapshot(snapshot.document),
+      {},
+      getDefaultSheetHeightMode(),
+    ))
+    sheetContentReady.value = true
+    scheduleSheetRenderEnhancement()
+    invalidateColumnFilterGlobalOptionsCache()
+    clearNativeUndoRedoHistory()
+  } finally {
+    suppressPersistence = false
+    suppressLocalHistory = false
+  }
+
+  scheduleRemoteSave(0)
+  void refreshComputedRowHeights()
+}
+
+function undoLocalSheetChange() {
+  const entry = localUndoStack.value.pop()
+  if (!entry) {
+    return false
+  }
+
+  const currentEntry = buildLocalHistoryEntry('redo')
+  localRedoStack.value.push(currentEntry)
+  trimLocalHistoryStack(localRedoStack.value)
+  restoreLocalHistorySnapshot(entry)
+  return true
+}
+
+function redoLocalSheetChange() {
+  const entry = localRedoStack.value.pop()
+  if (!entry) {
+    return false
+  }
+
+  const currentEntry = buildLocalHistoryEntry('undo')
+  localUndoStack.value.push(currentEntry)
+  trimLocalHistoryStack(localUndoStack.value)
+  restoreLocalHistorySnapshot(entry)
+  return true
+}
+
+function undoSheetChange() {
+  if (undoLocalSheetChange()) {
+    return true
+  }
+
+  const undoRedoPlugin = getUndoRedoPlugin()
+  if (!undoRedoPlugin?.isUndoAvailable?.() || !undoRedoPlugin.undo) {
+    return false
+  }
+  undoRedoPlugin.undo()
+  return true
+}
+
+function redoSheetChange() {
+  if (redoLocalSheetChange()) {
+    return true
+  }
+
+  const undoRedoPlugin = getUndoRedoPlugin()
+  if (!undoRedoPlugin?.isRedoAvailable?.() || !undoRedoPlugin.redo) {
+    return false
+  }
+  undoRedoPlugin.redo()
+  return true
+}
+
+function canUndoSheetChange() {
+  return localUndoStack.value.length > 0 || !!getUndoRedoPlugin()?.isUndoAvailable?.()
+}
+
+function canRedoSheetChange() {
+  return localRedoStack.value.length > 0 || !!getUndoRedoPlugin()?.isRedoAvailable?.()
+}
+
 function normalizeDraftPageState(source: unknown): SheetPagePatchState | null {
   if (!source || typeof source !== 'object') {
     return null
@@ -10194,21 +11151,46 @@ function areDraftPaginationRowIndexesCompatible(pageState: SheetPagePatchState) 
   return arePaginationRowIndexesEqual(reconstructed, pageRowIndexes.value)
 }
 
+function isDraftLoadedRowCountCompatible(pageState: SheetPagePatchState) {
+  if (pageState.loadedRowCount === pageLoadedRowCount.value) {
+    return true
+  }
+  const deletedCount = pageState.deletedRowIndexes?.length ?? 0
+  return deletedCount > 0 && pageState.loadedRowCount + deletedCount === pageLoadedRowCount.value
+}
+
+function isDraftDocumentRowCountCompatibleWithPage(document: SheetDocument, pageState: SheetPagePatchState | null) {
+  if (!pageState?.paginationEnabled) {
+    return true
+  }
+
+  const headers = normalizeHeaders(document.columns)
+  const rowCount = trimTrailingBlankRows(document.rows.map((row) => normalizeRow(row, headers))).length
+  if (rowCount <= pageState.loadedRowCount) {
+    return true
+  }
+
+  return pageState.page >= pageCount.value
+}
+
 function isSamePagePatchState(pageState: SheetPagePatchState | null) {
   if (!pageState) {
     return false
   }
 
+  if (pageState.paginationEnabled !== paginationEnabled.value) {
+    return false
+  }
+  if (!paginationEnabled.value) {
+    return true
+  }
+
   return (
-    pageState.paginationEnabled === paginationEnabled.value
-    && (
-      !paginationEnabled.value
-      || (
     pageState.page === currentPage.value
     && pageState.pageSize === pageSize.value
+    && pageState.rowOffset === pageRowOffset.value
+    && isDraftLoadedRowCountCompatible(pageState)
     && areDraftPaginationRowIndexesCompatible(pageState)
-      )
-    )
   )
 }
 
@@ -10288,6 +11270,7 @@ function getUndoRedoPlugin() {
     isRedoAvailable?: () => boolean
     undo?: () => void
     redo?: () => void
+    clear?: () => void
   } | null
 }
 
@@ -10464,6 +11447,9 @@ function syncContextMenuSelectionFromEvent(event: MouseEvent) {
     hot.selectCell(anchor.row, toHotColumnIndex(anchor.column), anchor.row, toHotColumnIndex(anchor.column), true, false)
     hot.listen()
   }
+  if (shouldRealignOverlayForSelection(anchor.row, anchor.column)) {
+    scheduleSheetOverlayAlignment()
+  }
 }
 
 function openSheetContextMenuAt(event: MouseEvent) {
@@ -10471,6 +11457,7 @@ function openSheetContextMenuAt(event: MouseEvent) {
   event.stopPropagation()
   event.stopImmediatePropagation()
   syncContextMenuSelectionFromEvent(event)
+  showRichTextInlineToolbarFromContextMenu(event)
 
   const hot = getHotInstance()
   const plugin = getContextMenuPlugin()
@@ -10491,15 +11478,18 @@ function openSheetContextMenuAt(event: MouseEvent) {
   })
 }
 
-async function refreshComputedRowHeights() {
+async function refreshComputedRowHeights(options: { force?: boolean } = {}) {
   const hot = getHotInstance()
   if (!hot) {
     return
   }
+  if (!options.force && !shouldUseEnhancedSheetRenderSettings.value) {
+    return
+  }
 
   hot.updateSettings({
-    cells: resolveCellMeta,
-    rowHeights: resolveRowHeight,
+    cells: sheetHotRenderCellMetaResolver.value,
+    rowHeights: sheetHotRenderRowHeightResolver.value,
   })
   await nextTick()
   hot.render()
@@ -10919,6 +11909,7 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
   const nextWidth = normalizeColumnWidthValue(width)
   const currentWidth = normalizeColumnWidthValue(columnWidths.value[columnIndex] ?? getEffectiveColumnWidth(columnIndex))
   let changed = false
+  const undoEntry = options.save ? createLocalUndoEntry('column-width') : null
 
   if (nextWidth !== currentWidth) {
     const nextWidths = [...columnWidths.value]
@@ -10949,6 +11940,7 @@ function setColumnWidth(columnIndex: number, width: number, options: ColumnWidth
     void refreshComputedRowHeights()
   }
   if (options.save) {
+    pushLocalUndoEntry(undoEntry)
     scheduleRemoteSave(0)
   }
 }
@@ -11074,7 +12066,28 @@ function resolveRowHeight(rowIndex: number) {
   }
 }
 
+function resolveCoreRowHeight(rowIndex: number) {
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (isSheetHeaderGridRow(rowIndex)) {
+      if (rowIndex < normalizedHeaderGroups.value.length) {
+        return 32
+      }
+      if (rowIndex === columnHeaderLevel.value) {
+        return 36
+      }
+      return 40
+    }
+    return rowHeightLayoutState.value.singleLineHeight
+  } finally {
+    recordSheetPerfRenderCallback('rowHeight', perfStart)
+  }
+}
+
 async function updateSheetViewportHeight(reason = 'unknown') {
+  if (isSheetDocumentHidden()) {
+    return
+  }
   const perfStart = sheetPerfLoggingEnabled.value ? getSheetPerfNow() : 0
   const previousHeight = sheetViewportHeight.value
   const finishPerfLog = (
@@ -11142,8 +12155,35 @@ async function updateSheetViewportHeight(reason = 'unknown') {
 }
 
 function handleWindowResize() {
+  if (isSheetDocumentHidden()) {
+    return
+  }
   closeColumnNotePopover()
+  scheduleRichTextInlineToolbarSync()
+  updateRichTextContentEditorPosition()
   void updateSheetViewportHeight('windowResize')
+}
+
+function handleWindowScroll() {
+  updateRichTextContentEditorPosition()
+  scheduleRichTextInlineToolbarSync()
+}
+
+function handleSheetVisibilityChange() {
+  if (isSheetDocumentHidden()) {
+    sheetHiddenFrameSize = measureSheetFrameSize()
+    if (sheetRenderEnhancementFrame != null || sheetRenderPhase.value !== 'ready') {
+      finishSheetRenderEnhancement()
+    }
+    return
+  }
+
+  const previousFrameSize = sheetHiddenFrameSize
+  sheetHiddenFrameSize = null
+  const currentFrameSize = measureSheetFrameSize()
+  if (previousFrameSize && currentFrameSize && !isSameSheetFrameSize(previousFrameSize, currentFrameSize)) {
+    void updateSheetViewportHeight('visibilityRestore')
+  }
 }
 
 function captureSheetScrollPosition() {
@@ -11172,6 +12212,90 @@ function restoreSheetScrollPosition(position: ReturnType<typeof captureSheetScro
   })
 }
 
+function clearSheetOverlayAlignmentFrame() {
+  if (sheetOverlayAlignmentFrame != null && typeof window !== 'undefined') {
+    window.cancelAnimationFrame(sheetOverlayAlignmentFrame)
+  }
+  sheetOverlayAlignmentFrame = null
+  sheetOverlayAlignmentPending = false
+}
+
+function syncSheetOverlayScrollFromMaster() {
+  const sheetFrame = sheetFrameRef.value
+  const masterHolder = sheetFrame?.querySelector('.ht_master .wtHolder') as HTMLElement | null
+  if (!sheetFrame || !masterHolder) {
+    return
+  }
+
+  const { scrollLeft, scrollTop } = masterHolder
+  sheetFrame.querySelectorAll<HTMLElement>('.ht_clone_top .wtHolder, .ht_clone_bottom .wtHolder')
+    .forEach((holder) => {
+      if (holder.scrollLeft !== scrollLeft) {
+        holder.scrollLeft = scrollLeft
+      }
+    })
+  sheetFrame.querySelectorAll<HTMLElement>('.ht_clone_inline_start .wtHolder, .ht_clone_left .wtHolder')
+    .forEach((holder) => {
+      if (holder.scrollTop !== scrollTop) {
+        holder.scrollTop = scrollTop
+      }
+    })
+}
+
+function refreshSheetOverlayAlignment() {
+  const hot = getHotInstance() as SheetHotWithInternalView | null
+  if (!hot) {
+    return
+  }
+
+  const view = hot.view
+  const walkontable = view?._wt
+  const overlays = walkontable?.wtOverlays
+  try {
+    syncSheetOverlayScrollFromMaster()
+    view?.adjustElementsSize?.()
+    overlays?.syncScrollPositions?.()
+    overlays?.syncScrollWithMaster?.()
+    overlays?.adjustElementsSize?.()
+    overlays?.refresh?.(true)
+    overlays?.refreshAll?.()
+    walkontable?.draw?.(true)
+    walkontable?.selectionManager?.refreshAllBorderHandleStyles?.()
+    syncSheetOverlayScrollFromMaster()
+  } catch (error) {
+    console.warn('Failed to align note sheet overlays:', error)
+  }
+}
+
+function scheduleSheetOverlayAlignment() {
+  if (sheetOverlayAlignmentPending) {
+    return
+  }
+  sheetOverlayAlignmentPending = true
+  void nextTick(() => {
+    if (typeof window === 'undefined') {
+      sheetOverlayAlignmentPending = false
+      refreshSheetOverlayAlignment()
+      return
+    }
+    sheetOverlayAlignmentFrame = window.requestAnimationFrame(() => {
+      sheetOverlayAlignmentFrame = null
+      sheetOverlayAlignmentPending = false
+      refreshSheetOverlayAlignment()
+      updateRichTextContentEditorPosition()
+    })
+  })
+}
+
+function shouldRealignOverlayForSelection(row: number, column: number) {
+  if (row < 0 || column < 0) {
+    return false
+  }
+
+  const merge = findMergedCellAtGridCell(row, column)
+  return !!merge && (merge.rowspan > 1 || merge.colspan > 1)
+}
+
 function bindSheetLayoutObserver() {
   sheetLayoutObserver?.disconnect()
   sheetLayoutObserver = null
@@ -11186,6 +12310,9 @@ function bindSheetLayoutObserver() {
   }
 
   sheetLayoutObserver = new ResizeObserver(() => {
+    if (isSheetDocumentHidden()) {
+      return
+    }
     void updateSheetViewportHeight('layoutResizeObserver')
   })
   sheetLayoutObserver.observe(scrollContainer)
@@ -11198,6 +12325,15 @@ function syncRowsFromGrid() {
   }
 
   const sourceRows = hot.getSourceData() as unknown[]
+  const currentHotGridRows = sheetHotGridRows.value
+  if (
+    sourceRows.length > currentHotGridRows.length
+    && (workspaceLoading.value || suppressPersistence || sheetRenderPhase.value !== 'ready')
+  ) {
+    hot.loadData(currentHotGridRows)
+    hot.render()
+    return rows.value
+  }
   rows.value = sourceRows
     .slice(sheetHeaderRowCount.value)
     .map((row) => normalizeRow(Array.isArray(row) ? row.slice(rowMarkerColumnCount.value) : row, columnHeaders.value))
@@ -11225,9 +12361,7 @@ function refreshGridStructure() {
       rows: [...sheetFilterHiddenRows.value],
       indicators: false,
     },
-  })
-  hot.updateSettings({
-    mergeCells: sheetHotMergeCells.value,
+    ...getCurrentSheetHotRenderSettings(),
   })
   hot.render()
 }
@@ -11854,6 +12988,7 @@ function handleBeforeColumnMove(
     return false
   }
 
+  pushLocalUndoSnapshot('column-move')
   clearEditingColumnState()
   moveColumnEntityIds(effectiveMovedColumns, effectiveFinalIndex)
   moveCellMetaColumns(effectiveMovedColumns, effectiveFinalIndex)
@@ -11872,7 +13007,7 @@ function handleBeforeColumnMove(
       colWidths: [...sheetHotColumnWidths.value],
       fixedRowsTop: sheetHeaderRowCount.value,
       fixedColumnsStart: fixedHotColumnsStart.value,
-      mergeCells: sheetHotMergeCells.value,
+      mergeCells: sheetHotRenderMergeCells.value,
     })
     hot.render()
     void nextTick(() => {
@@ -11919,6 +13054,7 @@ function handleBeforeRowMove(
     return false
   }
 
+  pushLocalUndoSnapshot('row-move')
   clearEditingColumnState()
   moveDataEntityRows(effectiveMovedRows, effectiveFinalIndex)
   moveCellMetaRows(effectiveMovedRows, effectiveFinalIndex)
@@ -12125,14 +13261,25 @@ function applySheetHeaderGridChange(gridRowIndex: number, columnIndex: number, n
   }
 
   const textValue = normalizeCellValue(nextValue)
+  const clearRichTextAfterChange = (changed: boolean) => {
+    if (changed) {
+      const documentRow = getDocumentGridRowIndex(gridRowIndex)
+      if (isFormulaExpression(textValue)) {
+        clearCellRichTextFormat(documentRow, columnIndex)
+      } else {
+        clearCellRichText(documentRow, columnIndex)
+      }
+    }
+    return changed
+  }
   if (gridRowIndex < normalizedHeaderGroups.value.length) {
-    return setHeaderGroupLabelAtGridCell(gridRowIndex, columnIndex, textValue)
+    return clearRichTextAfterChange(setHeaderGroupLabelAtGridCell(gridRowIndex, columnIndex, textValue))
   }
   if (gridRowIndex === columnHeaderLevel.value) {
-    return renameColumnHeaderAtIndex(columnIndex, textValue)
+    return clearRichTextAfterChange(renameColumnHeaderAtIndex(columnIndex, textValue))
   }
   if (gridRowIndex === columnNoteHeaderLevel.value) {
-    return setColumnNoteAtIndex(columnIndex, textValue)
+    return clearRichTextAfterChange(setColumnNoteAtIndex(columnIndex, textValue))
   }
   return false
 }
@@ -12672,6 +13819,10 @@ function applyCellMetaStyle(TD: HTMLTableCellElement, style: SheetCellStyle | nu
   if (style?.font_family) {
     TD.style.setProperty('font-family', getCellFontFamilyStyle(style.font_family), 'important')
   }
+  if (style?.font_size) {
+    TD.style.setProperty('font-size', `${style.font_size}px`, 'important')
+    TD.style.setProperty('line-height', `${getColumnLineHeightFromFontSize(style.font_size)}px`, 'important')
+  }
   if (style?.text_align) {
     TD.style.setProperty('text-align', style.text_align, 'important')
   }
@@ -12698,7 +13849,6 @@ function resetRenderedCellState(TD: HTMLTableCellElement) {
     'sheet-grid-field-header-cell',
     'sheet-grid-field-header-cell-filtered',
     'sheet-grid-note-header-cell',
-    'sheet-grid-header-cell-selected',
   )
   TD.style.removeProperty('background-color')
   TD.style.removeProperty('color')
@@ -12853,7 +14003,6 @@ function renderRowMarkerCell(TD: HTMLTableCellElement, row: number) {
 function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column: number, value: string) {
   resetRenderedCellState(TD)
   TD.classList.add('sheet-grid-header-cell')
-  TD.classList.toggle('sheet-grid-header-cell-selected', isSheetHeaderCellSelected(column, row))
   applyFreezePaneBoundaryClasses(TD, row, column)
   TD.dataset.sheetHeaderLevel = String(row)
   TD.dataset.sheetHeaderColumn = String(column)
@@ -12896,7 +14045,12 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
       TD.dataset.hyperlinkUrl = link.url
       TD.title = link.url
     }
-    setRenderedCellText(TD, formulaText ?? value)
+    const richText = formulaText == null ? getCellRichTextAt(documentRow, column, value) : null
+    if (richText) {
+      renderRichTextCell(TD, value, richText)
+    } else {
+      setRenderedCellText(TD, formulaText ?? value)
+    }
     TD.classList.toggle('sheet-cell-formula', formulaText != null)
     TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
     if (formulaText != null) {
@@ -12923,7 +14077,12 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
     TD.classList.add('sheet-cell-has-link')
     TD.dataset.hyperlinkUrl = link.url
   }
-  setRenderedCellText(TD, renderedNote)
+  const richText = formulaText == null ? getCellRichTextAt(documentRow, column, note) : null
+  if (richText) {
+    renderRichTextCell(TD, note, richText)
+  } else {
+    setRenderedCellText(TD, renderedNote)
+  }
   TD.classList.toggle('sheet-cell-formula', formulaText != null)
   TD.classList.toggle('sheet-cell-formula-error', formulaText != null && (isFormulaErrorValue(formulaCell?.value) || formulaCell.text.startsWith('#')))
   if (formulaText != null) {
@@ -12934,6 +14093,22 @@ function renderSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column
   } else if (link) {
     TD.title = link.url
   }
+}
+
+function renderCoreSheetHeaderGridCell(TD: HTMLTableCellElement, row: number, column: number, value: string) {
+  resetRenderedCellState(TD)
+  TD.classList.add('sheet-grid-header-cell')
+  if (row < normalizedHeaderGroups.value.length) {
+    TD.classList.add('sheet-grid-group-header-cell')
+  } else if (row === columnHeaderLevel.value) {
+    TD.classList.add('sheet-grid-field-header-cell')
+  } else {
+    TD.classList.add('sheet-grid-note-header-cell')
+  }
+  applyFreezePaneBoundaryClasses(TD, row, column)
+  TD.dataset.sheetHeaderLevel = String(row)
+  TD.dataset.sheetHeaderColumn = String(column)
+  setRenderedCellText(TD, value)
 }
 
 function handleAfterGetColHeader(hotColumn: number, th: HTMLTableHeaderCellElement, headerLevel: number) {
@@ -13080,6 +14255,7 @@ async function applySheetSettings() {
   const previousEntityCells = entityCells.value
   const previousMergedCells = mergedCells.value
   const previousSheetHeaderPrefixRows = sheetHeaderPrefixRows.value
+  const undoEntry = createLocalUndoEntry('sheet-settings')
 
   const paginationChanged = (
     sheetViewSettings.value.pagination.enabled !== nextSettings.pagination.enabled
@@ -13139,10 +14315,12 @@ async function applySheetSettings() {
     currentPage.value = 1
     pageSize.value = nextSettings.pagination.page_size
     await restoreInitialDocument()
+    pushLocalUndoEntry(undoEntry)
     void updateSheetViewportHeight()
     return
   }
 
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave()
 }
 
@@ -13160,6 +14338,8 @@ function loadSheetDocument(document: SheetDocument) {
   columnSettingsSelectionBounds.value = null
   closeCellLinkDialog()
   closeCellStyleDialog()
+  closeCellRichTextDialog()
+  cancelRichTextContentEditor()
   const normalizedHeaders = normalizeHeaders(document.columns)
   const initialRows = document.rows.length
     ? document.rows.map((row) => normalizeRow(row, normalizedHeaders))
@@ -13213,7 +14393,7 @@ function loadSheetDocument(document: SheetDocument) {
       normalizedRows,
       columnConfigs.value,
       formulaDisplayForWidths,
-    ))
+  ))
   rows.value = normalizedRows
   initializeSheetEntitiesFromDocument(
     document,
@@ -13227,14 +14407,14 @@ function loadSheetDocument(document: SheetDocument) {
 
   const hot = getHotInstance()
   if (hot) {
+    const nextHotGridRows = sheetHotGridRows.value
     hot.updateSettings({
-      data: sheetHotGridRows.value,
+      data: nextHotGridRows,
       colHeaders: sheetColumnHeaders.value,
       colWidths: [...sheetHotColumnWidths.value],
       rowHeaders: false,
       fixedRowsTop: sheetHeaderRowCount.value,
       fixedColumnsStart: fixedHotColumnsStart.value,
-      mergeCells: sheetHotMergeCells.value,
       hiddenColumns: {
         columns: [...hotHiddenColumnIndexes.value],
         indicators: false,
@@ -13243,9 +14423,9 @@ function loadSheetDocument(document: SheetDocument) {
         rows: [...sheetFilterHiddenRows.value],
         indicators: false,
       },
-      cells: resolveCellMeta,
-      rowHeights: resolveRowHeight,
+      ...getCurrentSheetHotRenderSettings(),
     })
+    hot.loadData(nextHotGridRows)
     hot.render()
     void refreshComputedRowHeights()
   }
@@ -13387,23 +14567,68 @@ function emitSheetSync(detail: NoteSheetDetail) {
   })
 }
 
+function buildClientPagedSheetDetail(detail: NoteSheetDetail): NoteSheetDetail {
+  if (detail.pagination) {
+    return detail
+  }
+
+  const fullDocument = normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode())
+  const settings = normalizeSheetViewSettings(fullDocument.view_settings, fullDocument.columns.length)
+  if (!settings.pagination.enabled) {
+    return detail
+  }
+
+  const pageSize = settings.pagination.page_size
+  const allRows = fullDocument.rows.map((row) => normalizeRow(row, fullDocument.columns))
+  const pageCount = Math.max(1, allRows.length ? Math.ceil(allRows.length / pageSize) : 1)
+  const page = Math.min(Math.max(currentPage.value || 1, 1), pageCount)
+  const rowOffset = Math.min((page - 1) * pageSize, allRows.length)
+  const pageRows = allRows.slice(rowOffset, rowOffset + pageSize)
+  const dataStartRow = normalizeNonNegativeInt(fullDocument.data_start_row, 0)
+  const headerRows = Array.isArray(fullDocument.grid_rows)
+    ? fullDocument.grid_rows.slice(0, dataStartRow).map((row) => normalizeRow(row, fullDocument.columns))
+    : []
+  const pageDocument: SheetDocument = {
+    ...fullDocument,
+    rows: pageRows,
+    grid_rows: [...headerRows, ...pageRows],
+  }
+
+  return {
+    ...detail,
+    document_json: pageDocument as unknown as Record<string, unknown>,
+    pagination: {
+      page,
+      page_size: pageSize,
+      total_rows: allRows.length,
+      page_count: pageCount,
+      row_offset: rowOffset,
+      loaded_row_count: pageRows.length,
+    },
+  }
+}
+
 function applyRemoteSheetDetail(detail: NoteSheetDetail) {
+  const effectiveDetail = buildClientPagedSheetDetail(detail)
   suppressPersistence = true
   try {
-    remoteAccessCapabilities.value = detail.access?.capabilities ?? null
-    sheetTitle.value = detail.title || '未命名表格'
-    sheetVersion.value = Number(detail.version || 1)
-    applyPaginationState(detail.pagination)
+    remoteAccessCapabilities.value = effectiveDetail.access?.capabilities ?? null
+    sheetTitle.value = effectiveDetail.title || '未命名表格'
+    sheetVersion.value = Number(effectiveDetail.version || 1)
+    applyPaginationState(effectiveDetail.pagination)
     pendingDeletedPageRowIndexes.value = []
-    emitSheetSync(detail)
-    loadSheetDocument(normalizeSheetDocument(detail.document_json, {}, getDefaultSheetHeightMode()))
+    emitSheetSync(effectiveDetail)
+    beginSheetCoreRenderPhase()
+    loadSheetDocument(normalizeSheetDocument(effectiveDetail.document_json, {}, getDefaultSheetHeightMode()))
     sheetContentReady.value = true
+    scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
     restoreSheetWorkspaceViewFromLocalStorage()
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
+    resetLocalUndoHistory()
     invalidateColumnFilterGlobalOptionsCache()
     clearDraftStorage()
     void refreshAttendanceCourseScriptStatuses()
@@ -13427,16 +14652,19 @@ function applyInlineSheetDocument() {
     remoteAccessCapabilities.value = INLINE_READONLY_ACCESS_CAPABILITIES
     sheetTitle.value = props.inlineTitle || '未命名表格'
     sheetVersion.value = 0
+    beginSheetCoreRenderPhase()
     loadSheetDocument(normalizeSheetDocument(props.inlineDocument, {}, getDefaultSheetHeightMode()))
     applyPaginationState(null)
     pendingDeletedPageRowIndexes.value = []
     sheetContentReady.value = true
+    scheduleSheetRenderEnhancement()
     suppressReadOnlyActionWarningsForSheetRender()
     restoreStudentLookupSelectionFromLocalStorage()
     restoreSheetWorkspaceViewFromLocalStorage()
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
+    resetLocalUndoHistory()
     invalidateColumnFilterGlobalOptionsCache()
     clearSaveTimer()
     void refreshAttendanceCourseScriptStatuses()
@@ -13682,6 +14910,7 @@ function compareLocalSortValues(left: unknown, right: unknown) {
 }
 
 function sortColumnLocally(columnIndex: number, direction: SortDirection) {
+  const undoEntry = createLocalUndoEntry('column-sort')
   const decoratedRows = rows.value.map((row, rowIndex) => ({
     row: normalizeRow(row, columnHeaders.value),
     rowIndex,
@@ -13712,6 +14941,7 @@ function sortColumnLocally(columnIndex: number, direction: SortDirection) {
   refreshFormulaDisplayState()
   syncFormulaBarDraftFromSelectedCell()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
 }
 
 async function sortColumn(columnIndex: number, direction: SortDirection) {
@@ -13728,6 +14958,7 @@ async function sortColumn(columnIndex: number, direction: SortDirection) {
     return
   }
 
+  const undoEntry = createLocalUndoEntry('column-sort')
   workspaceLoading.value = true
   try {
     await flushRemoteSave()
@@ -13738,6 +14969,7 @@ async function sortColumn(columnIndex: number, direction: SortDirection) {
       workbookId: props.workbookId,
     })
     applyRemoteSheetDetail(detail)
+    pushLocalUndoEntry(undoEntry)
     void updateSheetViewportHeight()
   } catch (error) {
     console.warn('Failed to sort note sheet', error)
@@ -14078,13 +15310,7 @@ async function handleUpdateAttendanceLinkCountsFromSelection(fieldKey: Attendanc
 }
 
 function resolveFetchPaginationPreference(localDraft: SheetDraftPayload | null) {
-  if (localDraft) {
-    const localSettings = normalizeSheetViewSettings(localDraft.document.view_settings, localDraft.document.columns.length)
-    return {
-      paginate: localSettings.pagination.enabled,
-      pageSize: localSettings.pagination.page_size,
-    }
-  }
+  void localDraft
 
   if (sheetVersion.value > 0) {
     return {
@@ -14149,7 +15375,13 @@ function isCurrentSheetFilterPaginationReady(filters = buildActiveSheetQueryFilt
 }
 
 async function fetchNoteSheetForCurrentView(
-  options?: { page?: number; pageSize?: number; paginate?: boolean; workbookId?: number | null },
+  options?: {
+    page?: number
+    pageSize?: number
+    paginate?: boolean
+    workbookId?: number | null
+    includeWorkbookContext?: boolean
+  },
 ) {
   if (props.sheetId == null) {
     return null
@@ -14165,6 +15397,7 @@ async function fetchNoteSheetForCurrentView(
       row_filter_programs: activeFilters.rowFilterPrograms,
     }, {
       workbookId: options.workbookId,
+      includeWorkbookContext: options.includeWorkbookContext,
     })
   }
 
@@ -14244,6 +15477,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
   const requestSeq = ++restoreInitialDocumentSeq
   const requestSheetId = props.sheetId
   const requestWorkbookId = props.workbookId ?? null
+  const includeWorkbookContext = requestWorkbookId == null
   const shouldPreserveContent = options?.preserveContent === true && sheetContentReady.value
   const shouldClearOnError = options?.clearOnError === true
   const initialDetail = getUsableInitialSheetDetail(options?.initialDetail ?? props.initialDetail)
@@ -14275,9 +15509,11 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
             pageSize: paginationPreference.paginate ? paginationPreference.pageSize : undefined,
             paginate: paginationPreference.paginate,
             workbookId: requestWorkbookId,
+            includeWorkbookContext,
           }
           : {
             workbookId: requestWorkbookId,
+            includeWorkbookContext,
           })
     trace?.mark(shouldUseInitialDetail ? 'initial-detail' : 'fetch')
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
@@ -14311,10 +15547,12 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
           pageSize: remoteSettings.pagination.page_size,
           paginate: true,
           workbookId: requestWorkbookId,
+          includeWorkbookContext,
         }
         : {
           paginate: false,
           workbookId: requestWorkbookId,
+          includeWorkbookContext,
         })
       trace?.mark('refetch-pagination-mode')
       if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
@@ -14338,6 +15576,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
         pageSize: remote.pagination.page_size,
         paginate: true,
         workbookId: requestWorkbookId,
+        includeWorkbookContext,
       })
       trace?.mark('refetch-filtered-page')
       if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
@@ -14361,7 +15600,11 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
 
     let activeDocument = remoteDocument
     let shouldSyncLocalDraft = false
-    if (localDraft?.document && isSamePagePatchState(localDraft.pageState)) {
+    if (
+      localDraft?.document
+      && isSamePagePatchState(localDraft.pageState)
+      && isDraftDocumentRowCountCompatibleWithPage(localDraft.document, localDraft.pageState)
+    ) {
       const remoteUpdatedAt = normalizeTimestampMs(remote.updated_at)
       const remoteSheetVersion = Number(remote.version || 1)
       const localDraftSheetVersion = Number(localDraft.sheetVersion)
@@ -14399,6 +15642,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       pendingDeletedPageRowIndexes.value = []
     }
 
+    beginSheetCoreRenderPhase()
     loadSheetDocument(activeDocument)
     trace?.mark('load-document')
     sheetContentReady.value = true
@@ -14409,12 +15653,18 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     changeSerial = 0
     lastQueuedSerial = 0
     savedChangeSerial = 0
+    resetLocalUndoHistory()
     invalidateColumnFilterGlobalOptionsCache()
     await nextTick()
     trace?.mark('next-tick')
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
+    scheduleSheetRenderEnhancement(() => isCurrentRestoreInitialDocumentRequest(
+      requestSeq,
+      requestSheetId,
+      requestWorkbookId,
+    ))
     suppressPersistence = false
 
     if (shouldSyncLocalDraft) {
@@ -14447,6 +15697,9 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     }
     if (isCurrentRequest && (!shouldPreserveContent || shouldClearOnError)) {
       sheetLoadSettled.value = true
+    }
+    if (isCurrentRequest && !sheetContentReady.value) {
+      finishSheetRenderEnhancement()
     }
     if (isCurrentRequest) {
       workspaceLoading.value = false
@@ -14513,6 +15766,12 @@ function normalizeSheetGridChanges(changes: unknown): SheetGridChangeRecord[] {
       } satisfies SheetGridChangeRecord
     })
     .filter((record): record is SheetGridChangeRecord => !!record)
+}
+
+function hasEffectiveSheetGridChanges(changes: unknown) {
+  return normalizeSheetGridChanges(changes).some((record) => (
+    normalizeCellValue(record.previousValue) !== normalizeCellValue(record.nextValue)
+  ))
 }
 
 function clearCoveredMergedCellValuesInRows(nextRows: SheetRow[], merge: SheetMergedCell) {
@@ -14587,12 +15846,39 @@ function syncCoveredMergedCellChangesToAnchors(changes: unknown) {
   return changed
 }
 
+function clearRichTextForGridChanges(changes: unknown, source?: string) {
+  if (
+    source === 'loadData'
+    || source === 'external-update'
+    || source === 'MergeCells'
+    || source === 'rich-text-dialog'
+    || source === 'rich-text-inline'
+  ) {
+    return
+  }
+
+  const records = normalizeSheetGridChanges(changes)
+  records.forEach((record) => {
+    const previousValue = normalizeCellValue(record.previousValue)
+    const nextValue = normalizeCellValue(record.nextValue)
+    if (previousValue === nextValue && !isFormulaExpression(nextValue)) {
+      return
+    }
+    if (isFormulaExpression(nextValue)) {
+      clearCellRichTextFormat(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+    } else {
+      clearCellRichText(getDocumentGridRowIndex(record.rowIndex), record.columnIndex)
+    }
+  })
+}
+
 function handleAfterChange(_changes: unknown, source?: string) {
   if (source === 'loadData' || source === 'external-update' || source === 'MergeCells') {
     return
   }
   finishFormulaReferenceRange()
   clearFormulaReferencePreviewRange()
+  clearRichTextForGridChanges(_changes, source)
   syncRowsFromGrid()
   const mergedAnchorSynced = syncCoveredMergedCellChangesToAnchors(_changes)
   const registrationDefaultsUpdated = handleRegistrationSubmittedAtUserChanges(_changes, source)
@@ -15075,6 +16361,7 @@ function isAutoRegistrationSubmittedAtStyle(style: SheetCellStyle | null | undef
     normalizeCssColor(style?.text_color) === REGISTRATION_AUTO_SUBMITTED_AT_TEXT_COLOR
     && !normalizeCssColor(style?.background_color)
     && !style?.font_family
+    && !style?.font_size
     && !style?.text_align
     && !style?.vertical_align
   )
@@ -15243,6 +16530,9 @@ function handleBeforeChange(changes: unknown, source?: string) {
     }
 
     let changed = false
+    if (hasEffectiveSheetGridChanges(headerChanges)) {
+      pushLocalUndoSnapshot('header-edit')
+    }
     headerChanges.forEach((change) => {
       const rowIndex = Number(change[0])
       const hotColumnIndex = Number(change[1])
@@ -15298,6 +16588,10 @@ function handleBeforeChange(changes: unknown, source?: string) {
     if (typeof nextValue === 'string') {
       change[3] = normalizeCellInputValueForColumn(nextValue, columnIndex)
     }
+  }
+
+  if (hasEffectiveSheetGridChanges(changes)) {
+    pushLocalUndoSnapshot('cell-edit')
   }
 }
 
@@ -15364,6 +16658,7 @@ function handleBeforeCreateRow(index = 0, amount = 1, source?: string) {
   if (!ensurePagedRowExpansionAllowed(requiredEndRow, PAGED_AUTO_ROW_INSERT_MESSAGE)) {
     return false
   }
+  pushLocalUndoSnapshot('row-insert')
 }
 
 function handleAfterCreateRow(index = 0, amount = 1) {
@@ -15600,11 +16895,13 @@ function setFrozenColumnCount(columnCount: number) {
     return
   }
 
+  const undoEntry = createLocalUndoEntry('freeze-pane')
   sheetViewSettings.value = normalizeSheetViewSettings({
     ...sheetViewSettings.value,
     frozen_column_count: nextCount,
   }, columnHeaders.value.length)
   refreshGridStructure()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
 
   if (nextCount > 0) {
@@ -15652,7 +16949,6 @@ function clearSheetHeaderSelection() {
     return
   }
   selectedSheetHeaderCell.value = null
-  getHotInstance()?.render()
 }
 
 function isSheetHeaderCellSelected(column: number, headerLevel: number) {
@@ -15981,7 +17277,486 @@ function getActiveEditorDraft(editor: SheetActiveEditor) {
   return normalizeCellValue(input?.value ?? editor.getValue?.() ?? '')
 }
 
+function getEditorCellElement(editor: SheetActiveEditor) {
+  if (editor.TD instanceof HTMLElement && editor.TD.isConnected) {
+    return editor.TD
+  }
+  if (typeof editor.row !== 'number' || typeof editor.col !== 'number') {
+    return null
+  }
+  const column = toSheetColumnIndex(editor.col)
+  if (column < 0) {
+    return null
+  }
+  const anchor = getMergeAnchorForGridCell(editor.row, column)
+  return getHotInstance()?.getCell(anchor.row, toHotColumnIndex(anchor.column), true) ?? null
+}
+
+function getEditorInputHolder(editor: SheetActiveEditor, input: HTMLInputElement | HTMLTextAreaElement) {
+  if (editor.TEXTAREA_PARENT instanceof HTMLElement) {
+    return editor.TEXTAREA_PARENT
+  }
+  return input.closest('.handsontableInputHolder') as HTMLElement | null
+}
+
+function normalizeEditorBackgroundColor(color: string) {
+  return color && color !== 'rgba(0, 0, 0, 0)' && color !== 'transparent' ? color : '#fff'
+}
+
+function styleInlineEditorAsCell(editor: SheetActiveEditor) {
+  const input = getEditorTextInput(editor)
+  const cell = getEditorCellElement(editor)
+  if (!input || !cell) {
+    return
+  }
+
+  const rect = cell.getBoundingClientRect()
+  const rootElement = getHotInstance()?.rootElement
+  const rootRect = rootElement instanceof HTMLElement ? rootElement.getBoundingClientRect() : null
+  const style = window.getComputedStyle(cell)
+  const holder = getEditorInputHolder(editor, input)
+  if (holder && rootRect) {
+    holder.classList.add('sheet-inline-cell-editor-holder')
+    holder.style.position = 'absolute'
+    holder.style.left = `${Math.round(rect.left - rootRect.left)}px`
+    holder.style.top = `${Math.round(rect.top - rootRect.top)}px`
+    holder.style.right = 'auto'
+    holder.style.bottom = 'auto'
+    holder.style.width = `${Math.max(1, Math.round(rect.width))}px`
+    holder.style.height = `${Math.max(1, Math.round(rect.height))}px`
+    holder.style.margin = '0'
+    holder.style.overflow = 'hidden'
+    holder.style.transform = 'none'
+    holder.style.opacity = '1'
+    holder.style.zIndex = '3600'
+  }
+
+  input.classList.add('sheet-inline-cell-editor')
+  input.style.boxSizing = 'border-box'
+  input.style.position = 'relative'
+  input.style.left = '0'
+  input.style.top = '0'
+  input.style.width = '100%'
+  input.style.height = '100%'
+  input.style.minWidth = `${Math.max(1, Math.round(rect.width))}px`
+  input.style.minHeight = `${Math.max(1, Math.round(rect.height))}px`
+  input.style.maxWidth = `${Math.max(1, Math.round(rect.width))}px`
+  input.style.maxHeight = `${Math.max(1, Math.round(rect.height))}px`
+  input.style.margin = '0'
+  input.style.padding = `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`
+  input.style.border = '0'
+  input.style.borderRadius = '0'
+  input.style.outline = '0'
+  input.style.boxShadow = 'inset 0 0 0 2px #2563eb'
+  input.style.backgroundColor = normalizeEditorBackgroundColor(style.backgroundColor)
+  input.style.color = style.color
+  input.style.fontFamily = style.fontFamily
+  input.style.fontSize = style.fontSize
+  input.style.fontWeight = style.fontWeight
+  input.style.fontStyle = style.fontStyle
+  input.style.lineHeight = style.lineHeight === 'normal' ? `${TABLE_LINE_HEIGHT}px` : style.lineHeight
+  input.style.textAlign = style.textAlign
+  input.style.whiteSpace = style.whiteSpace === 'nowrap' ? 'pre' : 'pre-wrap'
+  input.style.overflowWrap = style.overflowWrap
+  input.style.wordBreak = style.wordBreak
+  input.style.resize = 'none'
+  input.style.overflow = 'auto'
+}
+
+function scheduleInlineEditorCellStyleSync() {
+  void nextTick(() => {
+    const editor = getActiveOpenedEditor()
+    if (!editor) {
+      return
+    }
+    styleInlineEditorAsCell(editor)
+    window.requestAnimationFrame(() => {
+      const latestEditor = getActiveOpenedEditor()
+      if (latestEditor) {
+        styleInlineEditorAsCell(latestEditor)
+      }
+    })
+  })
+}
+
+function areSheetCellsSame(left: SelectedSheetCell | null | undefined, right: SelectedSheetCell | null | undefined) {
+  return !!left
+    && !!right
+    && left.row === right.row
+    && left.column === right.column
+    && left.documentRow === right.documentRow
+}
+
+function getRichTextContentEditorText() {
+  const editor = richTextContentEditorRef.value
+  if (!editor) {
+    return richTextContentEditor.value.text
+  }
+  return normalizeCellValue(editor.innerText.replace(/\r\n/g, '\n'))
+}
+
+function getTextOffsetFromRangeBoundary(root: HTMLElement, node: Node, offset: number) {
+  const range = document.createRange()
+  range.selectNodeContents(root)
+  try {
+    range.setEnd(node, offset)
+    return range.toString().length
+  } catch {
+    return root.innerText.length
+  } finally {
+    range.detach()
+  }
+}
+
+function getRichTextContentEditorSelectionOffsets() {
+  const editor = richTextContentEditorRef.value
+  const selection = window.getSelection()
+  if (!editor || !selection || selection.rangeCount <= 0) {
+    return null
+  }
+
+  const range = selection.getRangeAt(0)
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    return null
+  }
+
+  const textLength = richTextContentEditor.value.text.length
+  const start = getTextOffsetFromRangeBoundary(editor, range.startContainer, range.startOffset)
+  const end = getTextOffsetFromRangeBoundary(editor, range.endContainer, range.endOffset)
+  return {
+    selectionStart: Math.max(0, Math.min(Math.min(start, end), textLength)),
+    selectionEnd: Math.max(0, Math.min(Math.max(start, end), textLength)),
+  }
+}
+
+function getTextNodeAndOffsetForContentEditor(root: HTMLElement, offset: number) {
+  const targetOffset = Math.max(0, offset)
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT)
+  let currentOffset = 0
+  let node = walker.nextNode()
+  while (node) {
+    const text = node.textContent ?? ''
+    const nextOffset = currentOffset + text.length
+    if (targetOffset <= nextOffset) {
+      return {
+        node,
+        offset: Math.max(0, Math.min(targetOffset - currentOffset, text.length)),
+      }
+    }
+    currentOffset = nextOffset
+    node = walker.nextNode()
+  }
+  return { node: root, offset: root.childNodes.length }
+}
+
+function setRichTextContentEditorSelection(start: number, end = start) {
+  const editor = richTextContentEditorRef.value
+  if (!editor) {
+    return
+  }
+  const textLength = richTextContentEditor.value.text.length
+  const rangeStart = Math.max(0, Math.min(start, textLength))
+  const rangeEnd = Math.max(0, Math.min(end, textLength))
+  const startPoint = getTextNodeAndOffsetForContentEditor(editor, rangeStart)
+  const endPoint = getTextNodeAndOffsetForContentEditor(editor, rangeEnd)
+  const range = document.createRange()
+  range.setStart(startPoint.node, startPoint.offset)
+  range.setEnd(endPoint.node, endPoint.offset)
+  const selection = window.getSelection()
+  selection?.removeAllRanges()
+  selection?.addRange(range)
+}
+
+function transformRichTextSpansForTextChange(
+  previousText: string,
+  nextText: string,
+  previousSpans: SheetRichTextSpan[],
+) {
+  if (previousText === nextText) {
+    return normalizeRichTextSpans(previousSpans, nextText.length)
+  }
+
+  let prefix = 0
+  while (
+    prefix < previousText.length
+    && prefix < nextText.length
+    && previousText[prefix] === nextText[prefix]
+  ) {
+    prefix += 1
+  }
+
+  let suffix = 0
+  while (
+    suffix < previousText.length - prefix
+    && suffix < nextText.length - prefix
+    && previousText[previousText.length - 1 - suffix] === nextText[nextText.length - 1 - suffix]
+  ) {
+    suffix += 1
+  }
+
+  const previousSlots = buildRichTextStyleSlots(previousText.length, previousSpans)
+  const insertedLength = nextText.length - prefix - suffix
+  const oldSuffixStart = previousText.length - suffix
+  const inheritedStyle = cloneRichTextStyle(previousSlots[prefix - 1] ?? previousSlots[prefix] ?? null)
+  const nextSlots: Array<SheetRichTextStyle | null> = []
+
+  for (let index = 0; index < prefix; index += 1) {
+    nextSlots.push(cloneRichTextStyle(previousSlots[index]))
+  }
+  for (let index = 0; index < insertedLength; index += 1) {
+    nextSlots.push(cloneRichTextStyle(inheritedStyle))
+  }
+  for (let index = 0; index < suffix; index += 1) {
+    nextSlots.push(cloneRichTextStyle(previousSlots[oldSuffixStart + index]))
+  }
+
+  return compressRichTextStyleSlots(nextSlots.slice(0, nextText.length))
+}
+
+function isActiveRichTextContentEditorForCell(cell: SelectedSheetCell | null | undefined) {
+  return richTextContentEditor.value.visible && areSheetCellsSame(richTextContentEditor.value.cell, cell)
+}
+
+function updateRichTextContentEditorPosition() {
+  const state = richTextContentEditor.value
+  const cell = state.cell
+  if (!state.visible || !cell) {
+    return
+  }
+  const TD = getHotInstance()?.getCell(cell.row, toHotColumnIndex(cell.column), true)
+  if (!TD) {
+    closeRichTextContentEditor({ save: true })
+    return
+  }
+
+  const rect = TD.getBoundingClientRect()
+  richTextContentEditor.value = {
+    ...state,
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+  }
+}
+
+function syncFormulaBarFromRichTextContentEditor(text: string) {
+  const editorCell = richTextContentEditor.value.cell
+  const cell = formulaBarCell.value
+  if (
+    !editorCell
+    || !cell
+    || cell.gridRow !== editorCell.row
+    || cell.column !== editorCell.column
+    || cell.documentGridRow !== editorCell.documentRow
+  ) {
+    return
+  }
+  formulaBarDraft.value = text
+}
+
+function commitRichTextContentEditor(options: { close?: boolean; save?: boolean } = {}) {
+  const state = richTextContentEditor.value
+  const cell = state.cell
+  if (!state.visible || !cell) {
+    return null
+  }
+
+  const finalText = cell.row < sheetHeaderRowCount.value
+    ? getRichTextContentEditorText()
+    : normalizeCellInputValueForColumn(getRichTextContentEditorText(), cell.column)
+  const hot = getHotInstance()
+  if (getGridCellRawValue(cell.row, cell.column) !== finalText) {
+    if (hot) {
+      hot.setDataAtCell(cell.row, toHotColumnIndex(cell.column), finalText, 'rich-text-inline')
+    } else {
+      setSheetCellRawValueAtDocumentCell(cell.documentRow, cell.column, finalText)
+    }
+  }
+
+  if (isFormulaExpression(finalText)) {
+    clearCellRichTextFormat(cell.documentRow, cell.column)
+  } else {
+    setCellRichText(cell.documentRow, cell.column, { spans: state.spans }, finalText)
+  }
+  syncFormulaBarFromRichTextContentEditor(finalText)
+  refreshFormulaDisplayState()
+  if (options.save !== false) {
+    scheduleRemoteSave(0)
+  }
+  if (options.close) {
+    richTextContentEditor.value = {
+      ...state,
+      visible: false,
+      cell: null,
+      text: '',
+      spans: [],
+    }
+    hideRichTextInlineToolbar({ force: true })
+  }
+  return finalText
+}
+
+function closeRichTextContentEditor(options: { save?: boolean } = {}) {
+  commitRichTextContentEditor({ close: true, save: options.save })
+}
+
+function cancelRichTextContentEditor() {
+  const state = richTextContentEditor.value
+  richTextContentEditor.value = {
+    ...state,
+    visible: false,
+    cell: null,
+    text: '',
+    spans: [],
+  }
+  hideRichTextInlineToolbar({ force: true })
+  syncFormulaBarDraftFromSelectedCell(true)
+  getHotInstance()?.render()
+}
+
+function focusRichTextContentEditor(selectionStart: number, selectionEnd = selectionStart) {
+  void nextTick(() => {
+    const editor = richTextContentEditorRef.value
+    if (!editor || !richTextContentEditor.value.visible) {
+      return
+    }
+    editor.focus()
+    setRichTextContentEditorSelection(selectionStart, selectionEnd)
+    scheduleRichTextInlineToolbarSync()
+  })
+}
+
+function startRichTextContentEditorFromActiveEditor(editor: SheetActiveEditor) {
+  if (typeof editor.row !== 'number' || typeof editor.col !== 'number') {
+    return false
+  }
+  const column = toSheetColumnIndex(editor.col)
+  if (column < 0) {
+    return false
+  }
+  const anchor = getMergeAnchorForGridCell(editor.row, column)
+  const cell: SelectedSheetCell = {
+    row: anchor.row,
+    column: anchor.column,
+    documentRow: anchor.documentRow,
+  }
+  if (!canEditCellRichTextTarget(cell)) {
+    return false
+  }
+
+  const input = getEditorTextInput(editor)
+  const text = getActiveEditorDraft(editor)
+  if (isFormulaExpression(text)) {
+    return false
+  }
+  const TD = getEditorCellElement(editor)
+  if (!TD) {
+    return false
+  }
+
+  const rect = TD.getBoundingClientRect()
+  const style = window.getComputedStyle(TD)
+  const selection = normalizeTextSelection(input, text)
+  const richText = getCellRichTextAt(cell.documentRow, cell.column, text)
+  const editorStyle: Record<string, string> = {
+    backgroundColor: normalizeEditorBackgroundColor(style.backgroundColor),
+    color: style.color,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    fontStyle: style.fontStyle,
+    lineHeight: style.lineHeight === 'normal' ? `${TABLE_LINE_HEIGHT}px` : style.lineHeight,
+    textAlign: style.textAlign,
+    padding: `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`,
+    whiteSpace: style.whiteSpace === 'nowrap' ? 'pre' : 'pre-wrap',
+    overflowWrap: style.overflowWrap,
+    wordBreak: style.wordBreak,
+  }
+
+  editor.finishEditing?.(true)
+  richTextContentEditor.value = {
+    visible: true,
+    cell,
+    text,
+    spans: richText?.spans ?? [],
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    width: Math.max(1, Math.round(rect.width)),
+    height: Math.max(1, Math.round(rect.height)),
+    style: editorStyle,
+  }
+  syncFormulaBarFromRichTextContentEditor(text)
+  focusRichTextContentEditor(selection.selectionStart, selection.selectionEnd)
+  return true
+}
+
+function handleRichTextContentEditorInput() {
+  const state = richTextContentEditor.value
+  if (!state.visible || !state.cell) {
+    return
+  }
+  const selection = getRichTextContentEditorSelectionOffsets()
+  const previousText = state.text
+  const nextText = getRichTextContentEditorText()
+  const nextSpans = transformRichTextSpansForTextChange(previousText, nextText, state.spans)
+  richTextContentEditor.value = {
+    ...state,
+    text: nextText,
+    spans: nextSpans,
+  }
+  syncFormulaBarFromRichTextContentEditor(nextText)
+  if (selection) {
+    focusRichTextContentEditor(selection.selectionStart, selection.selectionEnd)
+  }
+}
+
+function handleRichTextContentEditorKeyDown(event: KeyboardEvent) {
+  event.stopPropagation()
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    cancelRichTextContentEditor()
+    return
+  }
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    const shortcutKey = event.key.toLowerCase()
+    if (shortcutKey === 'b' || shortcutKey === 'i' || shortcutKey === 'u') {
+      event.preventDefault()
+      if (shortcutKey === 'b') {
+        applyRichTextInlineToolbarPatch({ bold: true })
+      } else if (shortcutKey === 'i') {
+        applyRichTextInlineToolbarPatch({ italic: true })
+      } else {
+        applyRichTextInlineToolbarPatch({ underline: true })
+      }
+      return
+    }
+  }
+  if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+    event.preventDefault()
+    closeRichTextContentEditor({ save: true })
+    getHotInstance()?.listen?.()
+    return
+  }
+  if (event.key === 'Tab') {
+    event.preventDefault()
+    closeRichTextContentEditor({ save: true })
+    getHotInstance()?.listen?.()
+  }
+}
+
+function handleRichTextContentEditorPaste(event: ClipboardEvent) {
+  const text = event.clipboardData?.getData('text/plain') ?? ''
+  if (!text) {
+    return
+  }
+  event.preventDefault()
+  document.execCommand('insertText', false, text)
+}
+
 function commitPendingSheetGridEdit() {
+  if (richTextContentEditor.value.visible) {
+    closeRichTextContentEditor({ save: true })
+  }
   if (formulaBarFocused.value) {
     commitFormulaBarDraft()
   }
@@ -16619,6 +18394,26 @@ function scheduleInlineEditorFormulaBarSync() {
 }
 
 function syncActiveInlineEditorFromFormulaBarDraft(value: string) {
+  const richTextEditorCell = richTextContentEditor.value.cell
+  const formulaCell = formulaBarCell.value
+  if (
+    richTextContentEditor.value.visible
+    && richTextEditorCell
+    && formulaCell
+    && formulaCell.gridRow === richTextEditorCell.row
+    && formulaCell.column === richTextEditorCell.column
+    && formulaCell.documentGridRow === richTextEditorCell.documentRow
+  ) {
+    const previousText = richTextContentEditor.value.text
+    richTextContentEditor.value = {
+      ...richTextContentEditor.value,
+      text: value,
+      spans: transformRichTextSpansForTextChange(previousText, value, richTextContentEditor.value.spans),
+    }
+    focusRichTextContentEditor(Math.min(value.length, value.length))
+    return
+  }
+
   const editor = getActiveOpenedEditor()
   if (!editor || !isEditorForFormulaBarCell(editor)) {
     return
@@ -16640,14 +18435,23 @@ function handleInlineEditorInput(event: Event) {
 
   clearFormulaReferenceReplacementSpan()
   syncFormulaBarFromInlineEditor(editor, input.value)
+  scheduleRichTextInlineToolbarSync()
 }
 
 function handleAfterBeginEditing() {
   const editor = getActiveOpenedEditor()
   if (editor) {
+    closeRichTextContentEditor({ save: true })
     syncInlineEditorToCellEditText(editor)
+    if (startRichTextContentEditorFromActiveEditor(editor)) {
+      scheduleInlineEditorFormulaBarSync()
+      scheduleRichTextInlineToolbarSync()
+      return
+    }
   }
+  scheduleInlineEditorCellStyleSync()
   scheduleInlineEditorFormulaBarSync()
+  scheduleRichTextInlineToolbarSync()
 }
 
 function isUndoShortcut(event: KeyboardEvent) {
@@ -16702,21 +18506,18 @@ function handleUndoRedoShortcut(event: KeyboardEvent, options: { allowSyncedForm
     return false
   }
 
-  const undoRedoPlugin = getUndoRedoPlugin()
   if (wantsUndo) {
-    if (!undoRedoPlugin?.isUndoAvailable?.() || !undoRedoPlugin.undo) {
+    if (!undoSheetChange()) {
       return false
     }
     event.preventDefault()
-    undoRedoPlugin.undo()
     return true
   }
 
-  if (!undoRedoPlugin?.isRedoAvailable?.() || !undoRedoPlugin.redo) {
+  if (!redoSheetChange()) {
     return false
   }
   event.preventDefault()
-  undoRedoPlugin.redo()
   return true
 }
 
@@ -16748,6 +18549,7 @@ function handleAfterDocumentKeyDown(event: KeyboardEvent) {
     clearFormulaReferenceReplacementSpan()
   }
   scheduleInlineEditorFormulaBarSync()
+  scheduleRichTextInlineToolbarSync()
 }
 
 function handleFormulaBarKeyDown(event: KeyboardEvent) {
@@ -16788,6 +18590,7 @@ function commitFormulaBarDraft() {
       return
     }
 
+    pushLocalUndoSnapshot('header-edit')
     if (applySheetHeaderGridChange(cell.gridRow, cell.column, nextValue)) {
       clearEditingColumnState()
       refreshGridStructure()
@@ -16820,6 +18623,7 @@ function commitFormulaBarDraft() {
   if (hot) {
     hot.setDataAtCell(cell.gridRow, toHotColumnIndex(cell.column), nextValue, 'formula-bar')
   } else {
+    pushLocalUndoSnapshot('cell-edit')
     const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
     if (!nextRows[cell.dataRow]) {
       nextRows[cell.dataRow] = createEmptyRow(columnHeaders.value.length)
@@ -16950,13 +18754,16 @@ function handleAfterSelection(row: number, hotColumn: number) {
     trace?.mark('headerAnchor')
     if (!isSheetHeaderCellSelected(anchor.column, headerLevel)) {
       selectedSheetHeaderCell.value = { column: anchor.column, headerLevel }
-      getHotInstance()?.render()
     }
     trace?.mark('headerState')
     setFormulaBarGridCell(anchor.row, anchor.column)
     trace?.mark('formulaBar')
     syncColumnMarkerSelection()
     trace?.mark('columnMarker')
+    if (shouldRealignOverlayForSelection(row, column)) {
+      scheduleSheetOverlayAlignment()
+      trace?.mark('overlayAlignment')
+    }
     finishPerf('header', {
       row: anchor.row,
       column: anchor.column,
@@ -17002,6 +18809,10 @@ function handleAfterSelection(row: number, hotColumn: number) {
     trace?.mark('cellAnchor')
     setFormulaBarGridCell(anchor.row, anchor.column)
     trace?.mark('formulaBar')
+    if (shouldRealignOverlayForSelection(row, column)) {
+      scheduleSheetOverlayAlignment()
+      trace?.mark('overlayAlignment')
+    }
   } else {
     clearFormulaBarSelection()
     trace?.mark('clearFormulaBar')
@@ -17012,11 +18823,13 @@ function handleAfterSelection(row: number, hotColumn: number) {
 }
 
 function handleAfterDeselect() {
+  closeRichTextContentEditor({ save: true })
   clearFormulaBarSelection()
   clearColumnMarkerSelection()
   clearRowMarkerSelectionAnchor()
   clearSheetHeaderSelection()
   hasContextMenuFallbackSelection.value = false
+  hideRichTextInlineToolbar({ force: true })
 }
 
 function getSingleSelectedDataCell() {
@@ -17264,6 +19077,7 @@ function mergeSelectedCells() {
     rowspan: range.endRow - range.startRow + 1,
     colspan: range.endColumn - range.startColumn + 1,
   }
+  const undoEntry = createLocalUndoEntry('merge-cells')
   const anchorSynced = syncMergedCellAnchorFromVisibleGrid(nextCell)
   mergedCells.value = normalizeMergedCells(
     [...mergedCells.value, nextCell],
@@ -17274,6 +19088,7 @@ function mergeSelectedCells() {
   if (anchorSynced) {
     refreshFormulaDisplayState()
   }
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
 }
 
@@ -17350,6 +19165,7 @@ function unmergeSelectedCells() {
   if (!selected.length) {
     return
   }
+  const undoEntry = createLocalUndoEntry('unmerge-cells')
   let anchorSynced = false
   selected.forEach((cell) => {
     anchorSynced = syncMergedCellAnchorFromVisibleGrid(cell) || anchorSynced
@@ -17361,6 +19177,7 @@ function unmergeSelectedCells() {
     columnHeaders.value.length,
   )
   refreshGridStructure()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
   if (anchorSynced) {
     refreshFormulaDisplayState()
@@ -17383,6 +19200,26 @@ function getCellActionAt(documentRow: number, columnIndex: number) {
 
 function getCellStyleAt(documentRow: number, columnIndex: number) {
   return getCellMetaAt(documentRow, columnIndex)?.style ?? null
+}
+
+function getCellFormatTypeAt(documentRow: number, columnIndex: number): CellFormatType {
+  const meta = getCellMetaAt(documentRow, columnIndex)
+  return meta?.cell_type === 'rich_text' || meta?.rich_text ? 'rich_text' : 'normal'
+}
+
+function isRichTextCellAt(documentRow: number, columnIndex: number) {
+  return getCellFormatTypeAt(documentRow, columnIndex) === 'rich_text'
+}
+
+function getCellRichTextAt(documentRow: number, columnIndex: number, text: string) {
+  if (isFormulaExpression(text)) {
+    return null
+  }
+  return normalizeRichTextForText(getCellMetaAt(documentRow, columnIndex)?.rich_text, text)
+}
+
+function hasCellRichTextAt(documentRow: number, columnIndex: number) {
+  return !!getCellMetaAt(documentRow, columnIndex)?.rich_text
 }
 
 function updateCellMetaEntry(
@@ -17455,6 +19292,46 @@ function setCellStyle(documentRow: number, columnIndex: number, styleSource: unk
   })
 }
 
+function setCellRichText(documentRow: number, columnIndex: number, richTextSource: unknown, text: string) {
+  const normalizedRichText = isFormulaExpression(text)
+    ? null
+    : normalizeRichTextForText(richTextSource, text)
+  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+    const nextEntry = { ...entry }
+    if (normalizedRichText) {
+      nextEntry.cell_type = 'rich_text'
+      nextEntry.rich_text = normalizedRichText
+    } else {
+      delete nextEntry.rich_text
+    }
+    return nextEntry
+  })
+}
+
+function clearCellRichText(documentRow: number, columnIndex: number) {
+  if (!hasCellRichTextAt(documentRow, columnIndex)) {
+    return
+  }
+  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+    const nextEntry = { ...entry }
+    delete nextEntry.rich_text
+    return nextEntry
+  })
+}
+
+function clearCellRichTextFormat(documentRow: number, columnIndex: number) {
+  const meta = getCellMetaAt(documentRow, columnIndex)
+  if (!meta?.cell_type && !meta?.rich_text) {
+    return
+  }
+  updateCellMetaEntry(documentRow, columnIndex, (entry) => {
+    const nextEntry = { ...entry }
+    delete nextEntry.cell_type
+    delete nextEntry.rich_text
+    return nextEntry
+  })
+}
+
 function updateCellMetaEntries(
   cells: SelectedSheetCell[],
   updater: (entry: SheetCellMeta, cell: SelectedSheetCell) => SheetCellMeta,
@@ -17495,6 +19372,18 @@ function getCommonSelectedCellStyle(cells: SelectedSheetCell[], field: SheetCell
   return hasMixedValue ? '' : firstValue
 }
 
+function getCommonSelectedCellFormatType(cells: SelectedSheetCell[]) {
+  if (!cells.length) {
+    return ''
+  }
+
+  const firstValue = getCellFormatTypeAt(cells[0].documentRow, cells[0].column)
+  const hasMixedValue = cells.some((cell) => (
+    getCellFormatTypeAt(cell.documentRow, cell.column) !== firstValue
+  ))
+  return hasMixedValue ? '' : firstValue
+}
+
 function cloneCellStyle(style: SheetCellStyle | null | undefined) {
   return normalizeCellStyle(style ? { ...style } : null)
 }
@@ -17510,11 +19399,18 @@ function getBaseCellStyleForCopy(cell: SelectedSheetCell) {
     const columnFontFamily = header
       ? getColumnFontFamilyFromConfig(columnConfigs.value[header])
       : 'default'
-    const inheritedStyle: SheetCellStyle | null = columnFontFamily === 'default'
-      ? null
-      : { font_family: columnFontFamily }
+    const columnFontSize = header
+      ? getColumnFontSizeFromConfig(columnConfigs.value[header])
+      : DEFAULT_COLUMN_FONT_SIZE
+    const inheritedStyle: SheetCellStyle = {}
+    if (columnFontFamily !== 'default') {
+      inheritedStyle.font_family = columnFontFamily
+    }
+    if (columnFontSize !== DEFAULT_COLUMN_FONT_SIZE) {
+      inheritedStyle.font_size = columnFontSize
+    }
     return normalizeCellStyle({
-      ...(inheritedStyle ?? {}),
+      ...inheritedStyle,
       ...(explicitStyle ?? {}),
     })
   }
@@ -17535,6 +19431,7 @@ function copySelectedCellFormat() {
   }
 
   copiedCellFormat.value = {
+    cell_type: getCellFormatTypeAt(cell.documentRow, cell.column),
     style: getBaseCellStyleForCopy(cell),
   }
   ElMessage.success('已复制格式')
@@ -17557,8 +19454,25 @@ function pasteCellFormatToSelectedCells() {
   }
 
   const copiedStyle = cloneCellStyle(format.style)
-  updateCellMetaEntries(cells, (entry) => {
+  const copiedCellType = format.cell_type
+  const rejectedKeys = new Set<string>()
+  if (copiedCellType === 'rich_text') {
+    normalizeSheetCellsToMergeAnchors(cells).forEach((cell) => {
+      if (!canUseRichTextFormatForCell(cell)) {
+        rejectedKeys.add(createCellMetaKey(cell.documentRow, cell.column))
+      }
+    })
+  }
+  const undoEntry = createLocalUndoEntry('cell-format')
+  updateCellMetaEntries(cells, (entry, cell) => {
     const nextEntry = { ...entry }
+    const key = createCellMetaKey(cell.documentRow, cell.column)
+    if (copiedCellType === 'rich_text' && !rejectedKeys.has(key)) {
+      nextEntry.cell_type = 'rich_text'
+    } else {
+      delete nextEntry.cell_type
+      delete nextEntry.rich_text
+    }
     if (copiedStyle) {
       nextEntry.style = { ...copiedStyle }
     } else {
@@ -17566,8 +19480,673 @@ function pasteCellFormatToSelectedCells() {
     }
     return nextEntry
   })
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
+  if (rejectedKeys.size) {
+    ElMessage.warning('公式或动作单元格不支持富文本类型，已跳过')
+  }
   ElMessage.success(cells.length > 1 ? '已粘贴格式到选区' : '已粘贴格式')
+}
+
+function getRichTextTargetRange(target: RichTextInlineToolbarTarget | null) {
+  if (!target) {
+    return null
+  }
+  const textLength = target.text.length
+  const start = Math.max(0, Math.min(target.selectionStart, target.selectionEnd, textLength))
+  const end = Math.max(0, Math.min(Math.max(target.selectionStart, target.selectionEnd), textLength))
+  return start < end ? { start, end } : null
+}
+
+function isEditorForSheetCell(editor: SheetActiveEditor, cell: SelectedSheetCell) {
+  if (typeof editor.row !== 'number' || typeof editor.col !== 'number') {
+    return false
+  }
+  const column = toSheetColumnIndex(editor.col)
+  if (column < 0) {
+    return false
+  }
+  const anchor = getMergeAnchorForGridCell(editor.row, column)
+  return anchor.row === cell.row
+    && anchor.column === cell.column
+    && anchor.documentRow === cell.documentRow
+}
+
+function getRichTextContentEditorTarget() {
+  const state = richTextContentEditor.value
+  const cell = state.cell
+  if (!state.visible || !cell || !canEditCellRichTextTarget(cell)) {
+    return null
+  }
+
+  const selection = getRichTextContentEditorSelectionOffsets()
+  if (!selection) {
+    return null
+  }
+
+  const target: RichTextInlineToolbarTarget = {
+    cell,
+    text: state.text,
+    selectionStart: selection.selectionStart,
+    selectionEnd: selection.selectionEnd,
+    scope: 'selection',
+  }
+  return getRichTextTargetRange(target) ? target : null
+}
+
+function getRichTextInlineEditorTarget() {
+  const editor = getActiveOpenedEditor()
+  if (!editor || typeof editor.row !== 'number' || typeof editor.col !== 'number') {
+    return null
+  }
+
+  const column = toSheetColumnIndex(editor.col)
+  if (column < 0) {
+    return null
+  }
+
+  const input = getEditorTextInput(editor)
+  if (!input) {
+    return null
+  }
+
+  const anchor = getMergeAnchorForGridCell(editor.row, column)
+  const cell: SelectedSheetCell = {
+    row: anchor.row,
+    column: anchor.column,
+    documentRow: anchor.documentRow,
+  }
+  if (!canEditCellRichTextTarget(cell)) {
+    return null
+  }
+
+  const text = getActiveEditorDraft(editor)
+  if (isFormulaExpression(text)) {
+    return null
+  }
+
+  const selection = normalizeTextSelection(input, text)
+  const target: RichTextInlineToolbarTarget = {
+    cell,
+    text,
+    selectionStart: selection.selectionStart,
+    selectionEnd: selection.selectionEnd,
+    scope: 'selection',
+  }
+  return getRichTextTargetRange(target) ? target : null
+}
+
+function getSelectedRichTextToolbarCellTarget() {
+  const cell = getSelectedCellRichTextDialogTarget()
+  if (!cell || !canEditCellRichTextTarget(cell)) {
+    return null
+  }
+
+  const text = getCellRawTextForRichText(cell)
+  if (!text || isFormulaExpression(text)) {
+    return null
+  }
+
+  return {
+    cell,
+    text,
+    selectionStart: 0,
+    selectionEnd: text.length,
+    scope: 'cell',
+  } satisfies RichTextInlineToolbarTarget
+}
+
+function getRichTextInlineToolbarPosition(element: HTMLElement, anchor?: { x: number; y: number }) {
+  const rect = element.getBoundingClientRect()
+  const toolbarWidth = 260
+  const toolbarHeight = 40
+  const anchorX = anchor?.x ?? rect.left
+  const anchorY = anchor?.y ?? rect.top
+  const x = Math.max(8, Math.min(anchorX, window.innerWidth - toolbarWidth - 8))
+  const preferredY = anchor ? anchorY - toolbarHeight - 8 : rect.top - toolbarHeight - 8
+  const fallbackY = anchor ? anchorY + 8 : rect.bottom + 8
+  const y = preferredY >= 8
+    ? preferredY
+    : Math.min(fallbackY, window.innerHeight - toolbarHeight - 8)
+  return { x, y: Math.max(8, y) }
+}
+
+function getRichTextInlineToolbarPositionFromPoint(x: number, y: number) {
+  const toolbarWidth = 260
+  const toolbarHeight = 40
+  const left = Math.max(8, Math.min(x, window.innerWidth - toolbarWidth - 8))
+  const preferredTop = y - toolbarHeight - 8
+  const fallbackTop = y + 8
+  const top = preferredTop >= 8
+    ? preferredTop
+    : Math.min(fallbackTop, window.innerHeight - toolbarHeight - 8)
+  return { x: left, y: Math.max(8, top) }
+}
+
+function hideRichTextInlineToolbar(options: { force?: boolean } = {}) {
+  if (!options.force && activeRichTextInlineToolbarColorField.value) {
+    return
+  }
+  richTextInlineToolbar.value = {
+    visible: false,
+    x: 0,
+    y: 0,
+    target: null,
+  }
+  activeRichTextInlineToolbarColorField.value = null
+}
+
+function updateRichTextInlineToolbarFromActiveEditor(anchor?: { x: number; y: number }) {
+  const contentEditorTarget = getRichTextContentEditorTarget()
+  const contentEditor = richTextContentEditorRef.value
+  if (contentEditorTarget && contentEditor) {
+    const position = getRichTextInlineToolbarPosition(contentEditor, anchor)
+    richTextInlineToolbar.value = {
+      visible: true,
+      x: position.x,
+      y: position.y,
+      target: contentEditorTarget,
+    }
+    return
+  }
+
+  const target = getRichTextInlineEditorTarget()
+  const editor = getActiveOpenedEditor()
+  const input = editor ? getEditorTextInput(editor) : null
+  if (!target || !input) {
+    if (richTextInlineToolbar.value.target?.scope === 'cell') {
+      return
+    }
+    hideRichTextInlineToolbar()
+    return
+  }
+
+  const position = getRichTextInlineToolbarPosition(input, anchor)
+  richTextInlineToolbar.value = {
+    visible: true,
+    x: position.x,
+    y: position.y,
+    target,
+  }
+}
+
+function showRichTextInlineToolbarFromContextMenu(event: MouseEvent) {
+  const target = getRichTextContentEditorTarget() ?? getRichTextInlineEditorTarget() ?? getSelectedRichTextToolbarCellTarget()
+  if (!target) {
+    hideRichTextInlineToolbar()
+    return
+  }
+
+  const position = getRichTextInlineToolbarPositionFromPoint(event.clientX, event.clientY)
+  richTextInlineToolbar.value = {
+    visible: true,
+    x: position.x,
+    y: position.y,
+    target,
+  }
+}
+
+function scheduleRichTextInlineToolbarSync() {
+  void nextTick(() => {
+    updateRichTextInlineToolbarFromActiveEditor()
+  })
+}
+
+function getRichTextInlineToolbarApplyTarget() {
+  const contentEditorTarget = getRichTextContentEditorTarget()
+  if (contentEditorTarget) {
+    return contentEditorTarget
+  }
+
+  const currentTarget = getRichTextInlineEditorTarget()
+  if (currentTarget) {
+    return currentTarget
+  }
+
+  const storedTarget = richTextInlineToolbar.value.target
+  if (!storedTarget || !getRichTextTargetRange(storedTarget)) {
+    return null
+  }
+  return storedTarget
+}
+
+function commitRichTextInlineToolbarText(target: RichTextInlineToolbarTarget) {
+  if (isActiveRichTextContentEditorForCell(target.cell)) {
+    const finalText = commitRichTextContentEditor({ close: false, save: false })
+    return finalText == null || isFormulaExpression(finalText) ? null : finalText
+  }
+
+  const text = normalizeCellValue(target.text)
+  if (isFormulaExpression(text)) {
+    return null
+  }
+
+  const finalText = target.cell.row < sheetHeaderRowCount.value
+    ? text
+    : normalizeCellInputValueForColumn(text, target.cell.column)
+
+  if (getGridCellRawValue(target.cell.row, target.cell.column) !== finalText) {
+    const hot = getHotInstance()
+    if (hot) {
+      hot.setDataAtCell(target.cell.row, toHotColumnIndex(target.cell.column), finalText, 'rich-text-inline')
+    } else {
+      setSheetCellRawValueAtDocumentCell(target.cell.documentRow, target.cell.column, finalText)
+    }
+  }
+  return finalText
+}
+
+function restoreRichTextInlineEditorSelection(target: RichTextInlineToolbarTarget, finalText: string) {
+  if (isActiveRichTextContentEditorForCell(target.cell)) {
+    richTextContentEditor.value = {
+      ...richTextContentEditor.value,
+      text: finalText,
+      spans: getCellRichTextAt(target.cell.documentRow, target.cell.column, finalText)?.spans ?? [],
+    }
+    const range = getRichTextTargetRange({
+      ...target,
+      text: finalText,
+    })
+    const caretStart = range?.start ?? Math.min(target.selectionStart, finalText.length)
+    const caretEnd = range?.end ?? caretStart
+    focusRichTextContentEditor(caretStart, caretEnd)
+    return
+  }
+
+  const editor = getActiveOpenedEditor()
+  if (!editor || !isEditorForSheetCell(editor, target.cell)) {
+    return
+  }
+
+  editor.setValue?.(finalText)
+  const input = getEditorTextInput(editor)
+  if (!input) {
+    return
+  }
+  if (input.value !== finalText) {
+    input.value = finalText
+  }
+  const range = getRichTextTargetRange({
+    ...target,
+    text: finalText,
+  })
+  const caretStart = range?.start ?? Math.min(target.selectionStart, finalText.length)
+  const caretEnd = range?.end ?? caretStart
+  input.setSelectionRange(caretStart, caretEnd)
+  editor.focus?.()
+}
+
+function applyRichTextInlineToolbarPatch(patch: SheetRichTextStyle) {
+  const target = getRichTextInlineToolbarApplyTarget()
+  const range = getRichTextTargetRange(target)
+  if (!target || !range) {
+    ElMessage.warning('请先选择需要设置的文字')
+    hideRichTextInlineToolbar({ force: true })
+    return
+  }
+
+  const undoEntry = createLocalUndoEntry('rich-text')
+  const finalText = commitRichTextInlineToolbarText(target)
+  if (finalText == null) {
+    ElMessage.warning('公式单元格不支持富文本')
+    clearCellRichTextFormat(target.cell.documentRow, target.cell.column)
+    pushLocalUndoEntry(undoEntry)
+    hideRichTextInlineToolbar({ force: true })
+    return
+  }
+
+  const normalizedRange = {
+    start: Math.min(range.start, finalText.length),
+    end: Math.min(range.end, finalText.length),
+  }
+  if (normalizedRange.start >= normalizedRange.end) {
+    ElMessage.warning('请先选择需要设置的文字')
+    hideRichTextInlineToolbar({ force: true })
+    return
+  }
+
+  const currentRichText = getCellRichTextAt(target.cell.documentRow, target.cell.column, finalText)
+  const slots = buildRichTextStyleSlots(finalText.length, currentRichText?.spans ?? [])
+  for (let index = normalizedRange.start; index < normalizedRange.end; index += 1) {
+    slots[index] = mergeRichTextStyles(slots[index], patch)
+  }
+
+  setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
+  refreshFormulaDisplayState()
+  syncFormulaBarDraftFromSelectedCell(true)
+  pushLocalUndoEntry(undoEntry)
+  scheduleRemoteSave(0)
+  restoreRichTextInlineEditorSelection(target, finalText)
+  richTextInlineToolbar.value = {
+    ...richTextInlineToolbar.value,
+    target: {
+      ...target,
+      text: finalText,
+      selectionEnd: target.scope === 'cell' ? finalText.length : target.selectionEnd,
+    },
+  }
+}
+
+function clearRichTextInlineToolbarSelectionStyle() {
+  const target = getRichTextInlineToolbarApplyTarget()
+  const range = getRichTextTargetRange(target)
+  if (!target || !range) {
+    ElMessage.warning('请先选择需要清除格式的文字')
+    hideRichTextInlineToolbar({ force: true })
+    return
+  }
+
+  const undoEntry = createLocalUndoEntry('rich-text')
+  const finalText = commitRichTextInlineToolbarText(target)
+  if (finalText == null) {
+    ElMessage.warning('公式单元格不支持富文本')
+    pushLocalUndoEntry(undoEntry)
+    hideRichTextInlineToolbar({ force: true })
+    return
+  }
+
+  const currentRichText = getCellRichTextAt(target.cell.documentRow, target.cell.column, finalText)
+  const slots = buildRichTextStyleSlots(finalText.length, currentRichText?.spans ?? [])
+  const start = Math.min(range.start, finalText.length)
+  const end = Math.min(range.end, finalText.length)
+  for (let index = start; index < end; index += 1) {
+    slots[index] = null
+  }
+
+  setCellRichText(target.cell.documentRow, target.cell.column, { spans: compressRichTextStyleSlots(slots) }, finalText)
+  refreshFormulaDisplayState()
+  syncFormulaBarDraftFromSelectedCell(true)
+  pushLocalUndoEntry(undoEntry)
+  scheduleRemoteSave(0)
+  restoreRichTextInlineEditorSelection(target, finalText)
+}
+
+function setRichTextInlineToolbarColor(field: SheetRichTextColorField, value: string) {
+  const color = normalizeCssColor(value)
+  const nextColors = {
+    ...richTextInlineToolbarColors.value,
+    [field]: color || richTextInlineToolbarColors.value[field],
+  }
+  richTextInlineToolbarColors.value = nextColors
+  saveRichTextInlineToolbarColorsPreference(nextColors)
+  if (!color) {
+    return
+  }
+  applyRichTextInlineToolbarPatch(field === 'text_color'
+    ? { text_color: color }
+    : { background_color: color })
+}
+
+function applyRichTextInlineToolbarCurrentColor(field: SheetRichTextColorField) {
+  const color = normalizeCssColor(richTextInlineToolbarColors.value[field])
+  if (!color) {
+    ElMessage.warning('当前颜色无效')
+    return
+  }
+  applyRichTextInlineToolbarPatch(field === 'text_color'
+    ? { text_color: color }
+    : { background_color: color })
+}
+
+function toggleRichTextInlineToolbarColorPopover(field: SheetRichTextColorField) {
+  activeRichTextInlineToolbarColorField.value = activeRichTextInlineToolbarColorField.value === field ? null : field
+}
+
+function handleRichTextInlineToolbarColorPopoverVisibleChange(field: SheetRichTextColorField, visible: boolean) {
+  activeRichTextInlineToolbarColorField.value = visible ? field : null
+  if (!visible) {
+    scheduleRichTextInlineToolbarSync()
+  }
+}
+
+function getRichTextInlineToolbarSwatchStyle(field: SheetRichTextColorField) {
+  return { backgroundColor: richTextInlineToolbarColors.value[field] }
+}
+
+function handleRichTextInlineToolbarPointerDown(event: MouseEvent) {
+  if (event.target instanceof HTMLElement && event.target.closest('.standard-color-picker-surface')) {
+    return
+  }
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+function handleRichTextInlineSelectionEvent() {
+  scheduleRichTextInlineToolbarSync()
+}
+
+function getRichTextSelectionRange() {
+  const textLength = cellRichTextDraftText.value.length
+  const start = Math.max(0, Math.min(cellRichTextSelection.value.start, cellRichTextSelection.value.end, textLength))
+  const end = Math.max(0, Math.min(Math.max(cellRichTextSelection.value.start, cellRichTextSelection.value.end), textLength))
+  return start < end ? { start, end } : null
+}
+
+function updateCellRichTextSelectionFromTextarea() {
+  const textarea = cellRichTextTextareaRef.value
+  if (!textarea) {
+    return
+  }
+  cellRichTextSelection.value = {
+    start: textarea.selectionStart ?? 0,
+    end: textarea.selectionEnd ?? 0,
+  }
+}
+
+function focusCellRichTextTextarea() {
+  void nextTick(() => {
+    const textarea = cellRichTextTextareaRef.value
+    if (!textarea) {
+      return
+    }
+    textarea.focus()
+    updateCellRichTextSelectionFromTextarea()
+  })
+}
+
+function applyRichTextPatchToDraftSelection(patch: SheetRichTextStyle) {
+  const range = getRichTextSelectionRange()
+  if (!range) {
+    ElMessage.warning('请先选择需要设置的文字')
+    focusCellRichTextTextarea()
+    return
+  }
+  const slots = buildRichTextStyleSlots(cellRichTextDraftText.value.length, cellRichTextDraftSpans.value)
+  for (let index = range.start; index < range.end; index += 1) {
+    slots[index] = mergeRichTextStyles(slots[index], patch)
+  }
+  cellRichTextDraftSpans.value = compressRichTextStyleSlots(slots)
+  focusCellRichTextTextarea()
+}
+
+function clearRichTextDraftSelectionStyle() {
+  const range = getRichTextSelectionRange()
+  if (!range) {
+    ElMessage.warning('请先选择需要清除格式的文字')
+    focusCellRichTextTextarea()
+    return
+  }
+  const slots = buildRichTextStyleSlots(cellRichTextDraftText.value.length, cellRichTextDraftSpans.value)
+  for (let index = range.start; index < range.end; index += 1) {
+    slots[index] = null
+  }
+  cellRichTextDraftSpans.value = compressRichTextStyleSlots(slots)
+  focusCellRichTextTextarea()
+}
+
+function setCellRichTextDraftColor(field: SheetRichTextColorField, value: string) {
+  const color = normalizeCssColor(value)
+  cellRichTextDraftColors.value = {
+    ...cellRichTextDraftColors.value,
+    [field]: color || (field === 'text_color' ? DEFAULT_CELL_TEXT_COLOR : DEFAULT_CELL_BACKGROUND_COLOR),
+  }
+  if (!color) {
+    return
+  }
+  if (!getRichTextSelectionRange()) {
+    return
+  }
+  applyRichTextPatchToDraftSelection(field === 'text_color'
+    ? { text_color: color }
+    : { background_color: color })
+}
+
+function handleCellRichTextColorPopoverVisibleChange(field: SheetRichTextColorField, visible: boolean) {
+  activeCellRichTextColorField.value = visible ? field : null
+}
+
+function getCellRichTextDraftSwatchStyle(field: SheetRichTextColorField) {
+  return { backgroundColor: cellRichTextDraftColors.value[field] }
+}
+
+function handleCellRichTextDraftInput(event: Event) {
+  const textarea = event.target as HTMLTextAreaElement | null
+  cellRichTextDraftText.value = normalizeCellValue(textarea?.value ?? '')
+  cellRichTextDraftSpans.value = normalizeRichTextSpans(cellRichTextDraftSpans.value, cellRichTextDraftText.value.length)
+  updateCellRichTextSelectionFromTextarea()
+}
+
+function getCellRawTextForRichText(cell: SelectedSheetCell) {
+  return getGridCellRawValue(cell.row, cell.column)
+}
+
+function canUseRichTextFormatForCell(cell: SelectedSheetCell) {
+  return !isFormulaExpression(getCellRawTextForRichText(cell))
+    && !getCellActionAt(cell.documentRow, cell.column)
+}
+
+function canEditCellRichTextTarget(cell: SelectedSheetCell | null) {
+  if (!cell || !canEditConfig.value) {
+    return false
+  }
+  if (!isRichTextCellAt(cell.documentRow, cell.column) || !canUseRichTextFormatForCell(cell)) {
+    return false
+  }
+  return cell.row < sheetHeaderRowCount.value ? canEditConfig.value : canEditDataColumn(cell.column)
+}
+
+function getFormulaBarSheetCell(): SelectedSheetCell | null {
+  const cell = formulaBarCell.value
+  if (!cell) {
+    return null
+  }
+  return {
+    row: cell.gridRow,
+    column: cell.column,
+    documentRow: cell.documentGridRow,
+  }
+}
+
+function getSelectedCellRichTextDialogTarget() {
+  const singleCell = getSingleSelectedSheetCell()
+  if (canEditCellRichTextTarget(singleCell)) {
+    return singleCell
+  }
+
+  const editableTargets = getSelectedSheetCells().filter((cell) => canEditCellRichTextTarget(cell))
+  if (editableTargets.length === 1) {
+    return editableTargets[0]
+  }
+
+  const nonEmptyTargets = editableTargets.filter((cell) => (
+    getCellRawTextForRichText(cell).trim()
+    || hasCellRichTextAt(cell.documentRow, cell.column)
+  ))
+  if (nonEmptyTargets.length === 1) {
+    return nonEmptyTargets[0]
+  }
+
+  const formulaBarTarget = getFormulaBarSheetCell()
+  if (canEditCellRichTextTarget(formulaBarTarget)) {
+    return formulaBarTarget
+  }
+  return null
+}
+
+function canOpenSelectedCellRichTextDialog() {
+  return !!getSelectedCellRichTextDialogTarget()
+}
+
+function openSelectedCellRichTextDialog() {
+  const cell = getSelectedCellRichTextDialogTarget()
+  if (!cell || !canEditCellRichTextTarget(cell)) {
+    const selectedCell = getSingleSelectedSheetCell() ?? getFormulaBarSheetCell()
+    if (selectedCell && !isRichTextCellAt(selectedCell.documentRow, selectedCell.column)) {
+      ElMessage.warning('请先把单元格类型改为富文本')
+    } else if (selectedCell && isFormulaExpression(getCellRawTextForRichText(selectedCell))) {
+      ElMessage.warning('公式单元格不支持富文本')
+    } else {
+      ElMessage.warning('请选择一个富文本单元格')
+    }
+    return
+  }
+
+  const rawText = getCellRawTextForRichText(cell)
+  cellRichTextDialogCell.value = cell
+  cellRichTextDraftText.value = rawText
+  cellRichTextDraftSpans.value = getCellRichTextAt(cell.documentRow, cell.column, rawText)?.spans ?? []
+  cellRichTextSelection.value = { start: 0, end: 0 }
+  activeCellRichTextColorField.value = null
+  cellRichTextDialogVisible.value = true
+  focusCellRichTextTextarea()
+}
+
+function closeCellRichTextDialog() {
+  cellRichTextDialogVisible.value = false
+  cellRichTextDialogCell.value = null
+  cellRichTextDraftText.value = ''
+  cellRichTextDraftSpans.value = []
+  cellRichTextSelection.value = { start: 0, end: 0 }
+  activeCellRichTextColorField.value = null
+}
+
+function clearCellRichTextDialogStyles() {
+  cellRichTextDraftSpans.value = []
+  focusCellRichTextTextarea()
+}
+
+function applyCellRichTextDialog() {
+  const cell = cellRichTextDialogCell.value
+  if (!cell || !canEditCellRichTextTarget(cell)) {
+    closeCellRichTextDialog()
+    return
+  }
+
+  const nextText = normalizeCellValue(cellRichTextDraftText.value)
+  if (isFormulaExpression(nextText)) {
+    ElMessage.warning('公式单元格不支持富文本')
+    return
+  }
+
+  const undoEntry = createLocalUndoEntry('rich-text')
+  let finalText = nextText
+  if (cell.row < sheetHeaderRowCount.value) {
+    applySheetHeaderGridChange(cell.row, cell.column, finalText)
+  } else {
+    finalText = normalizeCellInputValueForColumn(nextText, cell.column)
+    const hot = getHotInstance()
+    if (hot) {
+      hot.setDataAtCell(cell.row, toHotColumnIndex(cell.column), finalText, 'rich-text-dialog')
+    } else {
+      const dataRow = getDataRowIndex(cell.row)
+      if (dataRow >= 0) {
+        const nextRows = rows.value.map((row) => normalizeRow(row, columnHeaders.value))
+        if (!nextRows[dataRow]) {
+          nextRows[dataRow] = createEmptyRow(columnHeaders.value.length)
+        }
+        nextRows[dataRow][cell.column] = finalText
+        rows.value = nextRows
+      }
+    }
+  }
+
+  setCellRichText(cell.documentRow, cell.column, { spans: cellRichTextDraftSpans.value }, finalText)
+  refreshFormulaDisplayState()
+  syncFormulaBarDraftFromSelectedCell(true)
+  refreshGridStructure()
+  pushLocalUndoEntry(undoEntry)
+  scheduleRemoteSave(0)
+  closeCellRichTextDialog()
 }
 
 function getCellStyleDraftModelValue(field: SheetCellColorField) {
@@ -17599,11 +20178,35 @@ function handleCellStyleColorPopoverVisibleChange(field: SheetCellColorField, vi
   activeCellStyleColorField.value = visible ? field : null
 }
 
+function setCellStyleDraftFormatType(value: unknown) {
+  cellStyleDraftTouched.value.cell_type = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    cell_type: normalizeCellFormatType(value),
+  }
+}
+
 function setCellStyleDraftFontFamily(value: unknown) {
   cellStyleDraftTouched.value.font_family = true
   cellStyleDraft.value = {
     ...cellStyleDraft.value,
     font_family: normalizeCellFontFamily(value),
+  }
+}
+
+function setCellStyleDraftFontSize(value: unknown) {
+  cellStyleDraftTouched.value.font_size = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    font_size: normalizeCellFontSize(value),
+  }
+}
+
+function clearCellStyleDraftFontSize() {
+  cellStyleDraftTouched.value.font_size = true
+  cellStyleDraft.value = {
+    ...cellStyleDraft.value,
+    font_size: null,
   }
 }
 
@@ -17623,21 +20226,108 @@ function setCellStyleDraftVerticalAlign(value: unknown) {
   }
 }
 
+function getCellStyleDraftCells() {
+  return cellStyleDialogCells.value.length ? cellStyleDialogCells.value : getSelectedSheetCells()
+}
+
+function getCellInheritedFontSize(cell: SelectedSheetCell) {
+  if (cell.row >= sheetHeaderRowCount.value) {
+    const header = columnHeaders.value[cell.column]
+    return header ? getColumnFontSizeFromConfig(columnConfigs.value[header]) : DEFAULT_COLUMN_FONT_SIZE
+  }
+  return DEFAULT_COLUMN_FONT_SIZE
+}
+
+function getCellEffectiveFontSize(cell: SelectedSheetCell) {
+  return normalizeCellFontSize(getCellStyleAt(cell.documentRow, cell.column)?.font_size)
+    ?? getCellInheritedFontSize(cell)
+}
+
+function getCommonCellFontSize(
+  cells: SelectedSheetCell[],
+  resolver: (cell: SelectedSheetCell) => number | null,
+) {
+  const anchorCells = normalizeSheetCellsToMergeAnchors(cells)
+  if (!anchorCells.length) {
+    return null
+  }
+
+  const firstValue = resolver(anchorCells[0])
+  const hasMixedValue = anchorCells.some((cell) => resolver(cell) !== firstValue)
+  return hasMixedValue ? null : firstValue
+}
+
+function getCellStyleDraftFontSizeModelValue() {
+  if (cellStyleDraftTouched.value.font_size) {
+    return cellStyleDraft.value.font_size
+      ?? getCommonCellFontSize(getCellStyleDraftCells(), getCellInheritedFontSize)
+  }
+  return getCommonCellFontSize(getCellStyleDraftCells(), getCellEffectiveFontSize)
+}
+
+function getCellStyleFontSizeStateLabel() {
+  const cells = normalizeSheetCellsToMergeAnchors(getCellStyleDraftCells())
+  if (!cells.length) {
+    return ''
+  }
+
+  if (getCellStyleDraftFontSizeModelValue() == null) {
+    return '多个值'
+  }
+  if (cellStyleDraftTouched.value.font_size) {
+    return cellStyleDraft.value.font_size == null ? '保存后继承' : '将覆盖'
+  }
+
+  const overrideStates = cells.map((cell) => (
+    normalizeCellFontSize(getCellStyleAt(cell.documentRow, cell.column)?.font_size) != null
+  ))
+  const overrideCount = overrideStates.filter(Boolean).length
+  if (overrideCount === 0) {
+    return '继承'
+  }
+  if (overrideCount === overrideStates.length) {
+    return '手动'
+  }
+  return '混合来源'
+}
+
 function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
   const touched = cellStyleDraftTouched.value
   if (
-    !touched.background_color
+    !touched.cell_type
+    && !touched.background_color
     && !touched.text_color
     && !touched.font_family
+    && !touched.font_size
     && !touched.text_align
     && !touched.vertical_align
   ) {
     return
   }
 
-  updateCellMetaEntries(cells, (entry) => {
+  const nextFormatType = normalizeCellFormatType(cellStyleDraft.value.cell_type)
+  const richTextTypeRejectedKeys = new Set<string>()
+  if (touched.cell_type && nextFormatType === 'rich_text') {
+    normalizeSheetCellsToMergeAnchors(cells).forEach((cell) => {
+      if (!canUseRichTextFormatForCell(cell)) {
+        richTextTypeRejectedKeys.add(createCellMetaKey(cell.documentRow, cell.column))
+      }
+    })
+  }
+
+  const undoEntry = createLocalUndoEntry('cell-style')
+  updateCellMetaEntries(cells, (entry, cell) => {
     const nextEntry = { ...entry }
     const nextStyle: SheetCellStyle = { ...(nextEntry.style ?? {}) }
+    if (touched.cell_type) {
+      const key = createCellMetaKey(cell.documentRow, cell.column)
+      if (nextFormatType === 'rich_text' && !richTextTypeRejectedKeys.has(key)) {
+        nextEntry.cell_type = 'rich_text'
+      } else {
+        delete nextEntry.cell_type
+        delete nextEntry.rich_text
+      }
+    }
     if (touched.background_color) {
       const backgroundColor = normalizeCssColor(cellStyleDraft.value.background_color)
       if (backgroundColor) {
@@ -17660,6 +20350,14 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
         nextStyle.font_family = fontFamily
       } else {
         delete nextStyle.font_family
+      }
+    }
+    if (touched.font_size) {
+      const fontSize = normalizeCellFontSize(cellStyleDraft.value.font_size)
+      if (fontSize) {
+        nextStyle.font_size = fontSize
+      } else {
+        delete nextStyle.font_size
       }
     }
     if (touched.text_align) {
@@ -17686,6 +20384,10 @@ function applyCellStyleToSelectedCells(cells: SelectedSheetCell[]) {
     }
     return nextEntry
   })
+  pushLocalUndoEntry(undoEntry)
+  if (richTextTypeRejectedKeys.size) {
+    ElMessage.warning('公式或动作单元格不支持富文本类型，已跳过')
+  }
 }
 
 function openSelectedCellStyleDialog() {
@@ -17700,16 +20402,20 @@ function openSelectedCellStyleDialog() {
   cellStyleDialogCells.value = cells
   activeCellStyleColorField.value = null
   cellStyleDraft.value = {
+    cell_type: getCommonSelectedCellFormatType(cells),
     background_color: getCommonSelectedCellStyle(cells, 'background_color'),
     text_color: getCommonSelectedCellStyle(cells, 'text_color'),
     font_family: normalizeCellFontFamily(getCommonSelectedCellStyle(cells, 'font_family')),
+    font_size: normalizeCellFontSize(getCommonSelectedCellStyle(cells, 'font_size')),
     text_align: normalizeCellTextAlign(getCommonSelectedCellStyle(cells, 'text_align')),
     vertical_align: normalizeCellVerticalAlign(getCommonSelectedCellStyle(cells, 'vertical_align')),
   }
   cellStyleDraftTouched.value = {
+    cell_type: false,
     background_color: false,
     text_color: false,
     font_family: false,
+    font_size: false,
     text_align: false,
     vertical_align: false,
   }
@@ -17721,16 +20427,20 @@ function closeCellStyleDialog() {
   cellStyleDialogCells.value = []
   activeCellStyleColorField.value = null
   cellStyleDraft.value = {
+    cell_type: '',
     background_color: '',
     text_color: '',
     font_family: '',
+    font_size: null,
     text_align: '',
     vertical_align: '',
   }
   cellStyleDraftTouched.value = {
+    cell_type: false,
     background_color: false,
     text_color: false,
     font_family: false,
+    font_size: false,
     text_align: false,
     vertical_align: false,
   }
@@ -17758,11 +20468,15 @@ function clearCellStyleDialog() {
   }
   const cells = [...cellStyleDialogCells.value]
   if (cells.length) {
+    const undoEntry = createLocalUndoEntry('cell-style')
     updateCellMetaEntries(cells, (entry) => {
       const nextEntry = { ...entry }
       delete nextEntry.style
+      delete nextEntry.cell_type
+      delete nextEntry.rich_text
       return nextEntry
     })
+    pushLocalUndoEntry(undoEntry)
   }
   closeCellStyleDialog()
 }
@@ -17928,22 +20642,26 @@ function applyCellLinkDialog() {
       return
     }
 
+    const undoEntry = createLocalUndoEntry('cell-link')
     if (target.kind === 'cell') {
       setCellLink(target.row, target.column, '')
     } else {
       setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, '')
       setColumnHeaderLink(target.column, '')
     }
+    pushLocalUndoEntry(undoEntry)
     closeCellLinkDialog()
     return
   }
 
+  const undoEntry = createLocalUndoEntry('cell-link')
   if (target.kind === 'cell') {
     setCellLink(target.row, target.column, normalizedUrl)
   } else {
     setCellLink(getDocumentGridRowIndex(columnHeaderLevel.value), target.column, normalizedUrl)
     setColumnHeaderLink(target.column, normalizedUrl)
   }
+  pushLocalUndoEntry(undoEntry)
   closeCellLinkDialog()
 }
 
@@ -18503,6 +21221,7 @@ function applyColumnSettings() {
   let configChanged = false
   let widthChanged = false
   let normalizedValuesChanged = false
+  const undoEntry = createLocalUndoEntry('column-settings')
 
   for (const columnIndex of indexes) {
     const header = columnHeaders.value[columnIndex]
@@ -18586,6 +21305,7 @@ function applyColumnSettings() {
   }
   refreshGridStructure()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
   void nextTick(() => {
     scheduleRemoteSave(0)
   })
@@ -18784,6 +21504,10 @@ function getResolvedCellValueStyle(rowIndex: number, columnIndex: number, render
   }
   if (cellStyle?.font_family) {
     fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
+  }
+  if (cellStyle?.font_size) {
+    fontSizeStyle = `${cellStyle.font_size}px`
+    lineHeightStyle = `${getColumnLineHeightFromFontSize(cellStyle.font_size)}px`
   }
   if (cellStyle?.text_align) {
     textAlignStyle = cellStyle.text_align
@@ -19189,6 +21913,7 @@ function insertColumnFromSelection(side: 'left' | 'right', amount = 1) {
     ? (side === 'left' ? bounds.start : bounds.end)
     : columnHeaders.value.length - 1
 
+  pushLocalUndoSnapshot('column-insert')
   pendingColumnInsertionTemplate = createColumnInsertionTemplate(templateColumnIndex, targetIndex)
   try {
     hot.alter('insert_col_start', toHotColumnIndex(targetIndex), columnAmount)
@@ -19216,6 +21941,7 @@ function insertRowFromSelection(side: 'above' | 'below', amount = 1) {
     ? (side === 'above' ? bounds.start : bounds.end)
     : rows.value.length - 1
 
+  pushLocalUndoSnapshot('row-insert')
   pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
   try {
     hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), rowAmount)
@@ -19352,6 +22078,7 @@ function addRegistrationStudentRow() {
   const templateDataIndex = targetDataIndex > 0
     ? targetDataIndex - 1
     : (rows.value.length > 0 ? 0 : -1)
+  pushLocalUndoSnapshot('row-insert')
   pendingRowInsertionTemplate = createRowInsertionTemplate(templateDataIndex, targetDataIndex)
   try {
     hot.alter('insert_row_above', getGridRowIndex(targetDataIndex), 1)
@@ -19378,6 +22105,7 @@ function removeSelectedColumns() {
     return
   }
 
+  pushLocalUndoSnapshot('column-remove')
   hot.alter('remove_col', toHotColumnIndex(bounds.start), bounds.end - bounds.start + 1)
 }
 
@@ -19521,11 +22249,13 @@ function detectAndSetOptionFilters() {
     }
   })
 
+  const undoEntry = createLocalUndoEntry('column-settings')
   closeColumnFilterPopover()
   closeColumnNotePopover()
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
   ElMessage.success(`已设置 ${indexes.length} 个选项筛选字段`)
 }
@@ -19554,11 +22284,13 @@ function hideEmptyColumns() {
     delete nextConfigs[header].restore_index
   })
 
+  const undoEntry = createLocalUndoEntry('column-hide')
   clearEditingColumnState()
   closeColumnNotePopover()
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
   ElMessage.success(`已隐藏 ${indexes.length} 个空列`)
 }
@@ -19586,11 +22318,13 @@ function showHiddenColumnsFromSelection() {
     }
   })
 
+  const undoEntry = createLocalUndoEntry('column-show')
   clearEditingColumnState()
   closeColumnNotePopover()
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
 }
 
@@ -19629,6 +22363,7 @@ function restoreHiddenColumn(header: string) {
     }
   }
 
+  const undoEntry = createLocalUndoEntry('column-show')
   clearEditingColumnState()
   closeColumnNotePopover()
   if (restoreIndex >= 0 && currentIndex !== restoreIndex) {
@@ -19641,6 +22376,7 @@ function restoreHiddenColumn(header: string) {
   columnConfigs.value = nextConfigs
   refreshGridStructure()
   void refreshComputedRowHeights()
+  pushLocalUndoEntry(undoEntry)
   scheduleRemoteSave(0)
 }
 
@@ -19655,6 +22391,7 @@ function removeSelectedRows() {
     return
   }
 
+  pushLocalUndoSnapshot('row-remove')
   hot.alter('remove_row', getGridRowIndex(bounds.start), bounds.end - bounds.start + 1)
 }
 
@@ -19703,6 +22440,46 @@ function resolveCellMeta(row: number, col: number) {
       wordWrap: true,
       textEllipsis: false,
       readOnly: !!action || !canEditDataColumn(column),
+    }
+  } finally {
+    recordSheetPerfRenderCallback('cellMeta', perfStart)
+  }
+}
+
+function resolveCoreCellMeta(row: number, col: number) {
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (isRowMarkerHotColumn(col)) {
+      return {
+        wordWrap: false,
+        textEllipsis: false,
+        readOnly: true,
+        className: 'sheet-row-marker-cell',
+      }
+    }
+
+    const column = toSheetColumnIndex(col)
+    if (column < 0) {
+      return {
+        wordWrap: false,
+        textEllipsis: true,
+        readOnly: true,
+      }
+    }
+
+    if (isSheetHeaderGridRow(row)) {
+      return {
+        wordWrap: false,
+        textEllipsis: true,
+        readOnly: true,
+        className: row === columnNoteHeaderLevel.value ? 'sheet-grid-note-header-cell' : 'sheet-grid-header-cell',
+      }
+    }
+
+    return {
+      wordWrap: false,
+      textEllipsis: true,
+      readOnly: true,
     }
   } finally {
     recordSheetPerfRenderCallback('cellMeta', perfStart)
@@ -19849,6 +22626,8 @@ function handleBeforeRender(isForced: boolean) {
 }
 
 function handleAfterRender(isForced: boolean) {
+  scheduleInlineEditorCellStyleSync()
+  updateRichTextContentEditorPosition()
   if (!sheetPerfLoggingEnabled.value) {
     return
   }
@@ -19905,6 +22684,9 @@ function handleAfterScrollHorizontally() {
       viewport: getSheetPerfHotViewport(),
     },
   })
+  scheduleRichTextInlineToolbarSync()
+  scheduleInlineEditorCellStyleSync()
+  updateRichTextContentEditorPosition()
 }
 
 function handleAfterScrollVertically() {
@@ -19914,6 +22696,41 @@ function handleAfterScrollVertically() {
       viewport: getSheetPerfHotViewport(),
     },
   })
+  scheduleRichTextInlineToolbarSync()
+  scheduleInlineEditorCellStyleSync()
+  updateRichTextContentEditorPosition()
+}
+
+function handleCoreAfterRenderer(
+  TD: HTMLTableCellElement,
+  row: number,
+  hotColumn: number,
+  _prop: string | number,
+  value: string,
+) {
+  const perfStart = getSheetPerfRenderCallbackStart()
+  try {
+    if (row >= 0 && isRowMarkerHotColumn(hotColumn)) {
+      renderRowMarkerCell(TD, row)
+      return
+    }
+
+    const column = toSheetColumnIndex(hotColumn)
+    if (column < 0) {
+      resetRenderedCellState(TD)
+      return
+    }
+
+    if (row >= 0 && isSheetHeaderGridRow(row)) {
+      renderCoreSheetHeaderGridCell(TD, row, column, value)
+      return
+    }
+
+    resetRenderedCellState(TD)
+    applyFreezePaneBoundaryClasses(TD, row, column)
+  } finally {
+    recordSheetPerfRenderCallback('renderer', perfStart)
+  }
 }
 
 function handleAfterRenderer(
@@ -19977,11 +22794,23 @@ function handleAfterRenderer(
     renderedText = formatCellDisplayValueCached(rawText, columnConfig)
   }
 
+  const richText = (
+    !action
+    && formulaText == null
+    && renderedText === rawText
+    && documentRow >= 0
+    && renderColumn >= 0
+  )
+    ? getCellRichTextAt(documentRow, renderColumn, rawText)
+    : null
+
   if (action) {
     renderCellActionButton(TD, renderedText, action, {
       documentRow,
       column: renderColumn,
     })
+  } else if (richText) {
+    renderRichTextCell(TD, renderedText, richText)
   } else if (formulaText != null || renderedText !== rawText) {
     setRenderedCellText(TD, renderedText)
   }
@@ -20033,6 +22862,10 @@ function handleAfterRenderer(
     }
     if (cellStyle?.font_family) {
       fontFamilyStyle = getCellFontFamilyStyle(cellStyle.font_family)
+    }
+    if (cellStyle?.font_size) {
+      fontSizeStyle = `${cellStyle.font_size}px`
+      lineHeightStyle = `${getColumnLineHeightFromFontSize(cellStyle.font_size)}px`
     }
     if (cellStyle?.text_align) {
       textAlignStyle = cellStyle.text_align
@@ -20123,10 +22956,14 @@ function handleAfterColumnResize(newSize: number, hotColumn: number, isDoubleCli
     refreshRowHeights: true,
     save: true,
   })
+  scheduleInlineEditorCellStyleSync()
+  updateRichTextContentEditorPosition()
 }
 
 function handleAfterRowResize() {
   void updateSheetViewportHeight()
+  scheduleInlineEditorCellStyleSync()
+  updateRichTextContentEditorPosition()
 }
 
 watch(
@@ -20185,7 +23022,10 @@ watch(
     }
     const hot = getHotInstance()
     if (hot) {
-      hot.updateSettings({ cells: resolveCellMeta })
+      hot.updateSettings({
+        cells: sheetHotRenderCellMetaResolver.value,
+        readOnly: sheetHotRenderReadOnly.value,
+      })
       hot.render()
     }
   },
@@ -20442,7 +23282,12 @@ onMounted(() => {
   touchContextMenuFallbackEnabled.value = shouldEnableTouchContextMenuFallback()
   bindSheetLayoutObserver()
   window.addEventListener('resize', handleWindowResize)
+  window.addEventListener('scroll', handleWindowScroll, true)
   window.addEventListener('mousedown', handleGlobalMouseDown)
+  document.addEventListener('visibilitychange', handleSheetVisibilityChange)
+  document.addEventListener('selectionchange', handleRichTextInlineSelectionEvent)
+  document.addEventListener('mouseup', handleRichTextInlineSelectionEvent, true)
+  document.addEventListener('keyup', handleRichTextInlineSelectionEvent, true)
   document.addEventListener('input', handleInlineEditorInput, true)
   if (props.sheetId != null) {
     void restoreInitialDocument({
@@ -20459,6 +23304,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  closeRichTextContentEditor({ save: true })
+  clearSheetRenderEnhancementFrame()
+  clearSheetOverlayAlignmentFrame()
   clearSaveTimer()
   if (readOnlyActionWarningSuppressTimer != null) {
     window.clearTimeout(readOnlyActionWarningSuppressTimer)
@@ -20477,7 +23325,12 @@ onBeforeUnmount(() => {
   clearFormulaReferencePointerDownReset()
   studentLookupFeedbackHistoryRequestId += 1
   window.removeEventListener('resize', handleWindowResize)
+  window.removeEventListener('scroll', handleWindowScroll, true)
   window.removeEventListener('mousedown', handleGlobalMouseDown)
+  document.removeEventListener('visibilitychange', handleSheetVisibilityChange)
+  document.removeEventListener('selectionchange', handleRichTextInlineSelectionEvent)
+  document.removeEventListener('mouseup', handleRichTextInlineSelectionEvent, true)
+  document.removeEventListener('keyup', handleRichTextInlineSelectionEvent, true)
   document.removeEventListener('input', handleInlineEditorInput, true)
   void flushSheetPerfLogEntries({ beacon: true })
   uninstallSheetPerfLogger()
@@ -20553,7 +23406,7 @@ defineExpose({
           :model-value="formulaBarDraft"
           class="sheet-formula-input"
           :disabled="!formulaBarCell"
-          :readonly="!canEditFormulaBarCell()"
+          :readonly="!canEditFormulaBarCell() || !shouldUseEnhancedSheetRenderSettings"
           clearable
           @update:model-value="value => updateFormulaBarDraft(String(value))"
           @focus="handleFormulaBarFocus"
@@ -20784,18 +23637,19 @@ defineExpose({
         :row-headers="false"
         :fixed-rows-top="sheetHeaderRowCount"
         :fixed-columns-start="fixedHotColumnsStart"
-        :merge-cells="sheetHotMergeCells"
+        :merge-cells="sheetHotRenderMergeCells"
         :hidden-columns="sheetHotHiddenColumnsSettings"
         :hidden-rows="sheetHotHiddenRowsSettings"
-        :manual-column-resize="canEditConfig"
-        :manual-column-move="canEditConfig"
-        :manual-row-resize="true"
-        :manual-row-move="canEditData"
+        :manual-column-resize="sheetHotRenderManualColumnResize"
+        :manual-column-move="sheetHotRenderManualColumnMove"
+        :manual-row-resize="sheetHotRenderManualRowResize"
+        :manual-row-move="sheetHotRenderManualRowMove"
+        :read-only="sheetHotRenderReadOnly"
         :copy-paste="true"
         :undo="true"
-        :context-menu="contextMenu"
-        :cells="resolveCellMeta"
-        :row-heights="resolveRowHeight"
+        :context-menu="sheetHotRenderContextMenu"
+        :cells="sheetHotRenderCellMetaResolver"
+        :row-heights="sheetHotRenderRowHeightResolver"
         :auto-row-size="false"
         :auto-wrap-row="false"
         :auto-wrap-col="false"
@@ -20837,10 +23691,165 @@ defineExpose({
         :after-render="handleAfterRender"
         :after-scroll-horizontally="handleAfterScrollHorizontally"
         :after-scroll-vertically="handleAfterScrollVertically"
-        :after-renderer="handleAfterRenderer"
+        :after-renderer="sheetHotRenderAfterRenderer"
       />
 
       <div v-else class="sheet-empty-state">{{ sheetEmptyStateText }}</div>
+
+      <Teleport to="body">
+        <div
+          v-if="richTextContentEditor.visible"
+          ref="richTextContentEditorRef"
+          class="sheet-rich-text-cell-editor"
+          :style="[
+            richTextContentEditor.style,
+            {
+              left: `${richTextContentEditor.left}px`,
+              top: `${richTextContentEditor.top}px`,
+              width: `${richTextContentEditor.width}px`,
+              height: `${richTextContentEditor.height}px`,
+            },
+          ]"
+          contenteditable="true"
+          spellcheck="false"
+          @mousedown.stop
+          @click.stop
+          @contextmenu.stop
+          @input="handleRichTextContentEditorInput"
+          @keydown="handleRichTextContentEditorKeyDown"
+          @keyup="handleRichTextInlineSelectionEvent"
+          @mouseup="handleRichTextInlineSelectionEvent"
+          @paste="handleRichTextContentEditorPaste"
+        >
+          <template v-if="richTextContentEditorSegments.length">
+            <span
+              v-for="(segment, index) in richTextContentEditorSegments"
+              :key="index"
+              class="sheet-rich-text-segment"
+              :style="getRichTextSegmentStyle(segment.style)"
+            >{{ segment.text }}</span>
+          </template>
+          <br v-else>
+        </div>
+      </Teleport>
+
+      <div
+        v-if="richTextInlineToolbar.visible"
+        class="sheet-rich-text-inline-toolbar"
+        :style="{
+          left: `${richTextInlineToolbar.x}px`,
+          top: `${richTextInlineToolbar.y}px`,
+        }"
+        @mousedown="handleRichTextInlineToolbarPointerDown"
+        @contextmenu.prevent.stop
+      >
+        <button
+          type="button"
+          class="sheet-rich-text-inline-button is-strong"
+          title="加粗"
+          aria-label="加粗"
+          @click="applyRichTextInlineToolbarPatch({ bold: true })"
+        >
+          B
+        </button>
+        <button
+          type="button"
+          class="sheet-rich-text-inline-button is-italic"
+          title="斜体"
+          aria-label="斜体"
+          @click="applyRichTextInlineToolbarPatch({ italic: true })"
+        >
+          I
+        </button>
+        <button
+          type="button"
+          class="sheet-rich-text-inline-button is-underline"
+          title="下划线"
+          aria-label="下划线"
+          @click="applyRichTextInlineToolbarPatch({ underline: true })"
+        >
+          U
+        </button>
+        <StandardColorPickerPopover
+          :model-value="richTextInlineToolbarColors.text_color"
+          :visible="activeRichTextInlineToolbarColorField === 'text_color'"
+          :reset-value="richTextInlineToolbarColors.text_color"
+          placement="bottom"
+          @update:model-value="value => setRichTextInlineToolbarColor('text_color', value)"
+          @update:visible="visible => handleRichTextInlineToolbarColorPopoverVisibleChange('text_color', visible)"
+        >
+          <template #reference>
+            <span
+              class="sheet-rich-text-inline-split"
+              :class="{ 'is-open': activeRichTextInlineToolbarColorField === 'text_color' }"
+            >
+              <button
+                type="button"
+                class="sheet-rich-text-inline-button sheet-rich-text-inline-color-main is-color"
+                title="应用文字颜色"
+                aria-label="应用文字颜色"
+                @click.stop="applyRichTextInlineToolbarCurrentColor('text_color')"
+              >
+                <span>A</span>
+                <span class="sheet-rich-text-inline-color-bar" :style="getRichTextInlineToolbarSwatchStyle('text_color')" />
+              </button>
+              <button
+                type="button"
+                class="sheet-rich-text-inline-button sheet-rich-text-inline-color-menu"
+                title="选择文字颜色"
+                aria-label="选择文字颜色"
+                @click.stop="toggleRichTextInlineToolbarColorPopover('text_color')"
+              >
+                ▾
+              </button>
+            </span>
+          </template>
+        </StandardColorPickerPopover>
+        <StandardColorPickerPopover
+          :model-value="richTextInlineToolbarColors.background_color"
+          :visible="activeRichTextInlineToolbarColorField === 'background_color'"
+          :reset-value="richTextInlineToolbarColors.background_color"
+          placement="bottom"
+          @update:model-value="value => setRichTextInlineToolbarColor('background_color', value)"
+          @update:visible="visible => handleRichTextInlineToolbarColorPopoverVisibleChange('background_color', visible)"
+        >
+          <template #reference>
+            <span
+              class="sheet-rich-text-inline-split"
+              :class="{ 'is-open': activeRichTextInlineToolbarColorField === 'background_color' }"
+            >
+              <button
+                type="button"
+                class="sheet-rich-text-inline-button sheet-rich-text-inline-color-main is-color"
+                title="应用背景高亮"
+                aria-label="应用背景高亮"
+                @click.stop="applyRichTextInlineToolbarCurrentColor('background_color')"
+              >
+                <span>▰</span>
+                <span class="sheet-rich-text-inline-color-bar" :style="getRichTextInlineToolbarSwatchStyle('background_color')" />
+              </button>
+              <button
+                type="button"
+                class="sheet-rich-text-inline-button sheet-rich-text-inline-color-menu"
+                title="选择背景高亮"
+                aria-label="选择背景高亮"
+                @click.stop="toggleRichTextInlineToolbarColorPopover('background_color')"
+              >
+                ▾
+              </button>
+            </span>
+          </template>
+        </StandardColorPickerPopover>
+        <button
+          type="button"
+          class="sheet-rich-text-inline-clear"
+          title="清除选区格式"
+          aria-label="清除选区格式"
+          @click="clearRichTextInlineToolbarSelectionStyle"
+        >
+          清除
+        </button>
+      </div>
     </div>
 
     <div v-if="isOriginalSheetViewActive && shouldRenderSheetContent && pageStatusText" class="sheet-pagination-bar">
@@ -20905,8 +23914,10 @@ defineExpose({
     <el-dialog
       v-model="excelImportDialogVisible"
       title="导入 Excel"
-      width="460px"
+      width="min(620px, calc(100vw - 24px))"
+      class="sheet-excel-import-dialog"
       destroy-on-close
+      align-center
       append-to-body
       :close-on-click-modal="!excelImportRunning"
       :close-on-press-escape="!excelImportRunning"
@@ -20935,26 +23946,28 @@ defineExpose({
         </div>
       </div>
       <template #footer>
-        <div class="sheet-settings-footer">
+        <div class="sheet-settings-footer sheet-excel-import-footer">
           <el-button :disabled="excelImportRunning" @click="() => closeExcelImportDialog()">取消</el-button>
-          <el-button
-            v-if="shouldShowExcelImportResetButton"
-            type="danger"
-            plain
-            :loading="excelImportRunningMode === 'reset'"
-            :disabled="excelImportRunning || !excelImportFile"
-            @click="applyExcelImport('reset')"
-          >
-            {{ EXCEL_IMPORT_RESET_BUTTON_LABEL }}
-          </el-button>
-          <el-button
-            type="primary"
-            :loading="excelImportRunningMode === 'append'"
-            :disabled="excelImportRunning || !excelImportFile"
-            @click="applyExcelImport('append')"
-          >
-            {{ EXCEL_IMPORT_APPEND_BUTTON_LABEL }}
-          </el-button>
+          <div class="sheet-excel-import-actions">
+            <el-button
+              v-if="shouldShowExcelImportResetButton"
+              type="danger"
+              plain
+              :loading="excelImportRunningMode === 'reset'"
+              :disabled="excelImportRunning || !excelImportFile"
+              @click="applyExcelImport('reset')"
+            >
+              {{ EXCEL_IMPORT_RESET_BUTTON_LABEL }}
+            </el-button>
+            <el-button
+              type="primary"
+              :loading="excelImportRunningMode === 'append'"
+              :disabled="excelImportRunning || !excelImportFile"
+              @click="applyExcelImport('append')"
+            >
+              {{ EXCEL_IMPORT_APPEND_BUTTON_LABEL }}
+            </el-button>
+          </div>
         </div>
       </template>
     </el-dialog>
@@ -21437,6 +24450,22 @@ defineExpose({
     >
       <div class="sheet-settings-form">
         <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label">类型</div>
+          <el-select
+            :model-value="cellStyleDraft.cell_type"
+            class="sheet-settings-inline-select"
+            placeholder="多个值"
+            @change="setCellStyleDraftFormatType"
+          >
+            <el-option
+              v-for="option in CELL_FORMAT_TYPE_OPTIONS"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
           <div class="sheet-settings-label">字体</div>
           <el-select
             :model-value="cellStyleDraft.font_family"
@@ -21450,6 +24479,27 @@ defineExpose({
               :value="option.value"
             />
           </el-select>
+        </div>
+        <div class="sheet-settings-inline-field">
+          <div class="sheet-settings-label-with-state">
+            <span class="sheet-settings-label">字号</span>
+            <span v-if="getCellStyleFontSizeStateLabel()" class="sheet-settings-mixed-badge">
+              {{ getCellStyleFontSizeStateLabel() }}
+            </span>
+          </div>
+          <div class="sheet-settings-number-inline">
+            <el-input-number
+              :model-value="getCellStyleDraftFontSizeModelValue()"
+              class="sheet-settings-number-input sheet-settings-cell-font-size-input"
+              :max="MAX_COLUMN_FONT_SIZE"
+              :step="1"
+              controls-position="right"
+              placeholder="多个值"
+              @change="setCellStyleDraftFontSize"
+            />
+            <span class="sheet-settings-width-unit">px</span>
+            <el-button text size="small" @click="clearCellStyleDraftFontSize">清除</el-button>
+          </div>
         </div>
         <div class="sheet-settings-inline-field">
           <div class="sheet-settings-label">水平对齐</div>
@@ -21551,6 +24601,87 @@ defineExpose({
           <el-button @click="clearCellStyleDialog">清除格式</el-button>
           <el-button @click="closeCellStyleDialog">取消</el-button>
           <el-button type="primary" @click="applyCellStyleDialog">保存</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="cellRichTextDialogVisible"
+      title="富文本编辑"
+      width="520px"
+      destroy-on-close
+      append-to-body
+      @closed="closeCellRichTextDialog"
+    >
+      <div class="sheet-rich-text-dialog">
+        <textarea
+          ref="cellRichTextTextareaRef"
+          class="sheet-rich-text-editor"
+          :value="cellRichTextDraftText"
+          @input="handleCellRichTextDraftInput"
+          @select="updateCellRichTextSelectionFromTextarea"
+          @keyup="updateCellRichTextSelectionFromTextarea"
+          @mouseup="updateCellRichTextSelectionFromTextarea"
+          @focus="updateCellRichTextSelectionFromTextarea"
+        />
+        <div class="sheet-rich-text-toolbar">
+          <span class="sheet-rich-text-selection">{{ cellRichTextSelectionText }}</span>
+          <el-button size="small" @click="applyRichTextPatchToDraftSelection({ bold: true })">B</el-button>
+          <el-button size="small" @click="applyRichTextPatchToDraftSelection({ italic: true })">I</el-button>
+          <el-button size="small" @click="applyRichTextPatchToDraftSelection({ underline: true })">U</el-button>
+          <StandardColorPickerPopover
+            :model-value="cellRichTextDraftColors.text_color"
+            :visible="activeCellRichTextColorField === 'text_color'"
+            :reset-value="cellRichTextDraftColors.text_color"
+            placement="top-start"
+            @update:model-value="value => setCellRichTextDraftColor('text_color', value)"
+            @update:visible="visible => handleCellRichTextColorPopoverVisibleChange('text_color', visible)"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="sheet-color-picker-trigger"
+                title="文字颜色"
+                aria-label="文字颜色"
+              >
+                <span class="sheet-color-picker-swatch" :style="getCellRichTextDraftSwatchStyle('text_color')" />
+              </button>
+            </template>
+          </StandardColorPickerPopover>
+          <StandardColorPickerPopover
+            :model-value="cellRichTextDraftColors.background_color"
+            :visible="activeCellRichTextColorField === 'background_color'"
+            :reset-value="cellRichTextDraftColors.background_color"
+            placement="top-start"
+            @update:model-value="value => setCellRichTextDraftColor('background_color', value)"
+            @update:visible="visible => handleCellRichTextColorPopoverVisibleChange('background_color', visible)"
+          >
+            <template #reference>
+              <button
+                type="button"
+                class="sheet-color-picker-trigger"
+                title="背景颜色"
+                aria-label="背景颜色"
+              >
+                <span class="sheet-color-picker-swatch" :style="getCellRichTextDraftSwatchStyle('background_color')" />
+              </button>
+            </template>
+          </StandardColorPickerPopover>
+          <el-button text size="small" @click="clearRichTextDraftSelectionStyle">清除选区</el-button>
+          <el-button text size="small" @click="clearCellRichTextDialogStyles">清除全部</el-button>
+        </div>
+        <div class="sheet-rich-text-preview">
+          <span
+            v-for="(segment, index) in cellRichTextPreviewSegments"
+            :key="index"
+            :style="getRichTextSegmentStyle(segment.style)"
+          >{{ segment.text }}</span>
+        </div>
+      </div>
+      <template #footer>
+        <div class="sheet-settings-footer">
+          <el-button @click="closeCellRichTextDialog">取消</el-button>
+          <el-button type="primary" @click="applyCellRichTextDialog">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -22374,6 +25505,178 @@ defineExpose({
   gap: 14px;
 }
 
+.sheet-rich-text-cell-editor {
+  position: fixed;
+  z-index: 3800;
+  box-sizing: border-box;
+  min-width: 1px;
+  min-height: 1px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  box-shadow: inset 0 0 0 2px #2563eb;
+  overflow: auto;
+  cursor: text;
+}
+
+.sheet-rich-text-cell-editor:focus {
+  outline: 0;
+}
+
+.sheet-rich-text-inline-toolbar {
+  position: fixed;
+  z-index: 4200;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid #d7dde7;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(31, 45, 61, 0.18);
+}
+
+.sheet-rich-text-inline-button,
+.sheet-rich-text-inline-clear {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  color: #1f2d3d;
+  background: transparent;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet-rich-text-inline-button:hover,
+.sheet-rich-text-inline-clear:hover {
+  background: #eef3fb;
+}
+
+.sheet-rich-text-inline-button.is-strong {
+  font-weight: 700;
+}
+
+.sheet-rich-text-inline-button.is-italic {
+  font-family: Georgia, "Times New Roman", serif;
+  font-style: italic;
+}
+
+.sheet-rich-text-inline-button.is-underline {
+  text-decoration: underline;
+}
+
+.sheet-rich-text-inline-split {
+  display: inline-flex;
+  align-items: stretch;
+  overflow: hidden;
+  border-radius: 5px;
+}
+
+.sheet-rich-text-inline-split.is-open {
+  background: #e8eef8;
+}
+
+.sheet-rich-text-inline-split .sheet-rich-text-inline-button {
+  border-radius: 0;
+}
+
+.sheet-rich-text-inline-button.is-color {
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 600;
+}
+
+.sheet-rich-text-inline-color-main {
+  min-width: 28px;
+  padding-right: 6px;
+  padding-left: 7px;
+}
+
+.sheet-rich-text-inline-color-menu {
+  min-width: 18px;
+  padding-right: 4px;
+  padding-left: 3px;
+  border-left: 1px solid #dde4ef;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.sheet-rich-text-inline-color-bar {
+  width: 16px;
+  height: 3px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.12);
+}
+
+.sheet-rich-text-inline-clear {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.sheet-rich-text-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sheet-rich-text-editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 150px;
+  resize: vertical;
+  padding: 9px 10px;
+  border: 1px solid #dcdfe6;
+  border-radius: 6px;
+  color: #1f2d3d;
+  background: #fff;
+  font: 13px/1.55 Inter, "Segoe UI", sans-serif;
+  outline: none;
+}
+
+.sheet-rich-text-editor:focus {
+  border-color: #409eff;
+  box-shadow: 0 0 0 1px rgba(64, 158, 255, 0.12);
+}
+
+.sheet-rich-text-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sheet-rich-text-toolbar :deep(.el-button) {
+  margin-left: 0;
+}
+
+.sheet-rich-text-selection {
+  color: #8b7355;
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.sheet-rich-text-preview {
+  min-height: 38px;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid #ebe2d4;
+  border-radius: 6px;
+  color: #1f2d3d;
+  background: #fffdfa;
+  font: 13px/1.55 Inter, "Segoe UI", sans-serif;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .sheet-settings-multi-hint {
   padding: 7px 10px;
   border: 1px solid #eadfce;
@@ -22612,6 +25915,10 @@ defineExpose({
   flex: 0 0 auto;
 }
 
+.sheet-settings-cell-font-size-input {
+  width: 136px;
+}
+
 .sheet-settings-hash-color-inline {
   display: flex;
   align-items: center;
@@ -22772,6 +26079,29 @@ defineExpose({
   gap: 10px;
 }
 
+.sheet-settings-footer :deep(.el-button + .el-button) {
+  margin-left: 0;
+}
+
+.sheet-excel-import-footer {
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.sheet-excel-import-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex: 1 1 380px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.sheet-excel-import-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
 .sheet-frame {
   position: relative;
   flex: 1;
@@ -22801,6 +26131,18 @@ defineExpose({
 
 .sheet-frame :deep(.handsontable) {
   font-size: 13px;
+}
+
+:global(.handsontableInputHolder.sheet-inline-cell-editor-holder) {
+  z-index: 3600 !important;
+}
+
+:global(textarea.handsontableInput.sheet-inline-cell-editor) {
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  box-shadow: inset 0 0 0 2px #2563eb !important;
+  resize: none !important;
 }
 
 .sheet-context-menu-fallback {
@@ -23050,13 +26392,6 @@ defineExpose({
   line-height: 1.35;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.sheet-frame :deep(.handsontable td.sheet-grid-header-cell-selected) {
-  position: relative;
-  z-index: 2;
-  outline: 2px solid #409eff;
-  outline-offset: -2px;
 }
 
 .sheet-frame :deep(.sheet-header-label) {

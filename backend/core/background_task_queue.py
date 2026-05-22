@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
+import datetime as dt
 import threading
 import time
 import traceback
@@ -19,6 +20,7 @@ class BackgroundTaskSnapshot:
     finished_at: float | None = None
     error_message: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    result: Any = None
 
 
 @dataclass
@@ -173,7 +175,8 @@ class BackgroundTaskQueue:
                 task.snapshot.started_at = time.time()
                 self._running = task.snapshot
             try:
-                task.func(*task.args, **task.kwargs)
+                result = task.func(*task.args, **task.kwargs)
+                task.snapshot.result = self._serialize_result(result)
                 task.snapshot.status = "completed"
             except Exception as exc:  # pragma: no cover - queue must never kill the app.
                 task.snapshot.status = "failed"
@@ -198,7 +201,22 @@ class BackgroundTaskQueue:
             "finished_at": snapshot.finished_at,
             "error_message": snapshot.error_message,
             "metadata": dict(snapshot.metadata or {}),
+            "result": snapshot.result,
         }
+
+    @classmethod
+    def _serialize_result(cls, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dt.datetime):
+            return value.replace(microsecond=0).isoformat()
+        if is_dataclass(value):
+            return cls._serialize_result(asdict(value))
+        if isinstance(value, dict):
+            return {str(key): cls._serialize_result(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [cls._serialize_result(item) for item in value]
+        return str(value)
 
 
 background_task_queue = BackgroundTaskQueue()

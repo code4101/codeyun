@@ -28,14 +28,14 @@ export interface AttendanceExecutionDeviceSummary {
   updated_at: number
 }
 
-export type AttendanceStepDefaultRole = 'execution_device' | 'data_host'
-export type AttendanceStepEffectiveRole = AttendanceStepDefaultRole | 'custom_device'
+export type AttendanceCourseDataStepDefaultRole = 'browser_device' | 'data_host'
+export type AttendanceCourseDataStepEffectiveRole = AttendanceCourseDataStepDefaultRole | 'custom_device'
 
-export interface AttendanceStepRunnerConfig {
+export interface AttendanceCourseDataStepRunnerConfig {
   step: number
   title: string
-  default_role: AttendanceStepDefaultRole
-  effective_role: AttendanceStepEffectiveRole
+  default_role: AttendanceCourseDataStepDefaultRole
+  effective_role: AttendanceCourseDataStepEffectiveRole
   configured_device_entry_id?: string | null
   effective_device_entry_id?: string | null
   device?: AttendanceExecutionDeviceSummary | null
@@ -58,9 +58,6 @@ export interface AttendanceAccount {
 export interface AttendanceServicePayload {
   current_wjx_account_id?: string | null
   execution_device_entry_id?: string | null
-  data_device_entry_id?: string | null
-  step_device_entry_ids?: Record<string, string | null>
-  step_runners?: AttendanceStepRunnerConfig[]
   scan_reminder_users: string[]
   order_lookup_mode: AttendanceOrderLookupMode
   order_operation_password_configured: boolean
@@ -75,6 +72,20 @@ export interface AttendanceConfigResponse {
   service: AttendanceServicePayload
   current_account?: AttendanceAccount | null
   current_execution_device?: AttendanceExecutionDeviceSummary | null
+}
+
+export interface AttendanceCourseDataFlowPayload {
+  browser_device_entry_id?: string | null
+  fallback_browser_device_entry_id?: string | null
+  effective_browser_device_entry_id?: string | null
+  data_device_entry_id?: string | null
+  step_device_entry_ids?: Record<string, string | null>
+  step_runners?: AttendanceCourseDataStepRunnerConfig[]
+}
+
+export interface AttendanceCourseDataFlowConfigResponse {
+  course_data_flow: AttendanceCourseDataFlowPayload
+  current_browser_device?: AttendanceExecutionDeviceSummary | null
   current_data_device?: AttendanceExecutionDeviceSummary | null
 }
 
@@ -93,12 +104,16 @@ export interface AttendanceFeedbackFormMeta {
 export interface AttendanceConfigUpdateRequest {
   current_wjx_account_id?: string | null
   execution_device_entry_id?: string | null
-  data_device_entry_id?: string | null
-  step_device_entry_ids?: Record<string, string | null>
   scan_reminder_users?: string[]
   order_lookup_mode?: AttendanceOrderLookupMode
   order_operation_password?: string | null
   clear_order_operation_password?: boolean
+}
+
+export interface AttendanceCourseDataFlowConfigUpdateRequest {
+  browser_device_entry_id?: string | null
+  data_device_entry_id?: string | null
+  step_device_entry_ids?: Record<string, string | null>
 }
 
 export interface AttendanceAccountCreateRequest {
@@ -379,6 +394,11 @@ export async function fetchAttendanceConfig() {
   return response.data
 }
 
+export async function fetchAttendanceCourseDataFlowConfig() {
+  const response = await api.get<AttendanceCourseDataFlowConfigResponse>('/attendance/course-data-flow/config')
+  return response.data
+}
+
 export async function generateAttendanceHeaderTool(courseName: string) {
   const response = await api.post<AttendanceHeaderToolResponse>('/attendance/header-tool/generate', {
     course_name: courseName,
@@ -428,6 +448,11 @@ export async function fetchAttendanceFeedbackFormMeta() {
 
 export async function updateAttendanceConfig(payload: AttendanceConfigUpdateRequest) {
   const response = await api.put<AttendanceConfigResponse>('/attendance/config', payload)
+  return response.data
+}
+
+export async function updateAttendanceCourseDataFlowConfig(payload: AttendanceCourseDataFlowConfigUpdateRequest) {
+  const response = await api.put<AttendanceCourseDataFlowConfigResponse>('/attendance/course-data-flow/config', payload)
   return response.data
 }
 

@@ -18,13 +18,18 @@ from backend.core.attendance_progress_style import (
 )
 from backend.core.attendance_service import (
     AttendanceServiceError,
-    get_attendance_step_runner_device,
+    get_attendance_course_data_step_runner_device,
     get_current_execution_device,
     get_or_create_attendance_service_config,
     serialize_user_device,
 )
 from backend.core.background_task_queue import background_task_queue
 from backend.core.device import get_device_id
+from backend.core.fanbei_course_sheets import (
+    FANBEI_ATTENDANCE_SHEET_NUMERIC_ID,
+    has_fanbei_course_storage_sheets,
+    rebuild_fanbei_attendance_from_course_sheets,
+)
 from backend.core.ui_automation import ensure_ui_automation_thread_context
 from backend.models import SheetDocument
 from kq5034.attendance_api import build_fanbei_attendance_step2_data, sync_fanbei_attendance_step1
@@ -36,7 +41,7 @@ FANBEI_ATTENDANCE_EVENING_RUN_TIME = "21:00"
 FANBEI_ATTENDANCE_MORNING_RUN_TIME = "07:10"
 FANBEI_ATTENDANCE_COURSE_NAME = "d260509梵呗初阶"
 FANBEI_ATTENDANCE_SHOP_ID = 1
-FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID = 6
+FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID = FANBEI_ATTENDANCE_SHEET_NUMERIC_ID
 FANBEI_ATTENDANCE_REMOTE_TIMEOUT_SECONDS = 3600
 FANBEI_ATTENDANCE_STEP2_CLOCKIN_NAMES = ["打卡数"]
 FANBEI_ATTENDANCE_STEP2_CLOCKIN_TITLES = [f"学修日志{i:02}" for i in range(1, 12)]
@@ -80,7 +85,7 @@ def _snapshot_step_runner_device(step_number: int) -> dict[str, Any] | None:
     with Session(engine) as session:
         config = get_or_create_attendance_service_config(session)
         try:
-            entry = get_attendance_step_runner_device(session, config, step_number=step_number)
+            entry = get_attendance_course_data_step_runner_device(session, config, step_number=step_number)
         except AttendanceServiceError as exc:
             raise RuntimeError(str(exc)) from exc
         if entry is None:
@@ -158,7 +163,7 @@ def run_fanbei_attendance_step1() -> str:
     }
     entry_snapshot = _snapshot_step_runner_device(1)
     if entry_snapshot is None:
-        raise RuntimeError("step1 需要浏览器执行设备，请在考勤配置页选择默认执行设备或 step1 运行设备")
+        raise RuntimeError("课程数据 step1 需要浏览器设备，请在考勤配置页选择课程数据浏览器或 step1 运行设备")
     result = _run_step1_on_entry(entry_snapshot, payload)
     lesson_count = result.get("lesson_update_count")
     clockin_count = result.get("clockin_update_count")
@@ -296,6 +301,19 @@ def _run_fanbei_attendance_step2_local(execution_entry_snapshot: dict[str, Any] 
         ).first()
         if document is None:
             raise RuntimeError(f"考勤表不存在：sheet_id={FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID}")
+        if has_fanbei_course_storage_sheets(session, attendance_sheet=document):
+            summary = rebuild_fanbei_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
+            )
+            session.commit()
+            return (
+                "当前 CodeYun 实例已从梵呗课程存储 sheet 执行 step2："
+                f"映射 {summary['mapped_columns']} 列，"
+                f"更新 {summary['updated_rows']} 行/{summary['updated_cells']} 格，"
+                f"视频数据 {summary['video_data_rows']} 行压缩为 {summary['video_data_compacted_rows']} 行，"
+                f"打卡数据 {summary['clockin_data_rows']} 行"
+            )
         current_document = dict(document.document_json or {})
         columns = [_sheet_text(column) for column in current_document.get("columns", [])]
         user_id_index = _find_column_index(columns, "用户ID")
@@ -581,7 +599,8 @@ def run_fanbei_attendance_steps(
         if result:
             step_results.append(f"step{step.number}: {result}")
     suffix = f"；{'; '.join(step_results)}" if step_results else ""
-    return f"梵呗考勤{period}流程已执行：{', '.join(executed_steps)}{suffix}"
+    period_label = "晚间" if period == "evening" else "上午"
+    return f"梵呗课程数据{period_label}步骤已执行：{', '.join(executed_steps)}{suffix}"
 
 
 def run_fanbei_attendance_evening_steps() -> str:

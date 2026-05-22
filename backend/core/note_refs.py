@@ -46,7 +46,17 @@ def build_note_ref_map(notes: Iterable[NoteNode]) -> dict[str, NoteNode]:
     return result
 
 
-def load_notes_by_refs(session: Session, user_id: int, refs: Iterable[str]) -> dict[str, NoteNode]:
+def _active_note_condition():
+    return or_(NoteNode.deleted_at.is_(None), NoteNode.deleted_at <= 0)
+
+
+def load_notes_by_refs(
+    session: Session,
+    user_id: int,
+    refs: Iterable[str],
+    *,
+    include_deleted: bool = False,
+) -> dict[str, NoteNode]:
     normalized_refs = {str(ref or "").strip() for ref in refs}
     normalized_refs.discard("")
     if not normalized_refs:
@@ -64,5 +74,7 @@ def load_notes_by_refs(session: Session, user_id: int, refs: Iterable[str]) -> d
         return {}
 
     query = select(NoteNode).where(NoteNode.user_id == user_id)
+    if not include_deleted:
+        query = query.where(_active_note_condition())
     query = query.where(or_(*conditions) if len(conditions) > 1 else conditions[0])
     return build_note_ref_map(session.exec(query).all())

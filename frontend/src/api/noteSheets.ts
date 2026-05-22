@@ -70,6 +70,8 @@ export interface NoteSheetSummary {
   updated_by_user_id?: number | null
   created_at: number
   updated_at: number
+  deleted_at?: number | null
+  deleted_by_user_id?: number | null
   parent_workbook_id?: number | null
   workbook_items: WorkbookRefItem[]
   access?: NoteSheetResourceAccess | null
@@ -116,12 +118,19 @@ export interface WorkbookSummary {
   updated_by_user_id?: number | null
   created_at: number
   updated_at: number
+  deleted_at?: number | null
+  deleted_by_user_id?: number | null
   sheet_count: number
   access?: NoteSheetResourceAccess | null
 }
 
 export interface WorkbookDetail extends WorkbookSummary {
   sheets: NoteSheetSummary[]
+}
+
+export interface NoteSheetTrashResponse {
+  sheets: NoteSheetSummary[]
+  workbooks: WorkbookSummary[]
 }
 
 export interface WorkbookReorderSheetsRequest {
@@ -152,6 +161,7 @@ export interface NoteSheetQueryRequest {
   page?: number
   page_size?: number
   paginate?: boolean
+  include_workbook_context?: boolean
   column_filters?: Record<string, unknown>
   row_filter_programs?: Array<Record<string, unknown>>
 }
@@ -319,6 +329,7 @@ export interface AttendanceLinkCountUpdateResponse {
 
 type NoteSheetResourceRequestOptions = {
   workbookId?: number | null
+  includeWorkbookContext?: boolean
 }
 
 type NoteSheetRegistrationUserMatchOptions = NoteSheetResourceRequestOptions & {
@@ -361,7 +372,13 @@ export async function createNoteSheet(payload: NoteSheetCreateRequest) {
 
 export async function fetchNoteSheet(
   sheetId: number,
-  options?: { page?: number; pageSize?: number; paginate?: boolean; workbookId?: number | null },
+  options?: {
+    page?: number
+    pageSize?: number
+    paginate?: boolean
+    workbookId?: number | null
+    includeWorkbookContext?: boolean
+  },
 ) {
   const request = async () => {
     const response = await api.get<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}`, {
@@ -370,6 +387,7 @@ export async function fetchNoteSheet(
         page_size: options?.pageSize,
         paginate: options?.paginate,
         workbook_id: options?.workbookId ?? undefined,
+        include_workbook_context: options?.includeWorkbookContext,
       },
     })
     return response.data
@@ -390,7 +408,10 @@ export async function queryNoteSheet(
   payload: NoteSheetQueryRequest,
   options?: NoteSheetResourceRequestOptions,
 ) {
-  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/query`, payload, {
+  const requestPayload = options?.includeWorkbookContext === undefined
+    ? payload
+    : { ...payload, include_workbook_context: options.includeWorkbookContext }
+  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/query`, requestPayload, {
     params: {
       workbook_id: options?.workbookId ?? undefined,
     },
@@ -691,6 +712,16 @@ export async function deleteNoteSheet(sheetId: number) {
   await api.delete(`/note-sheets/sheets/${sheetId}`)
 }
 
+export async function restoreNoteSheet(sheetId: number) {
+  const response = await api.post<NoteSheetDetail>(`/note-sheets/sheets/${sheetId}/restore`)
+  return response.data
+}
+
+export async function fetchNoteSheetTrash() {
+  const response = await api.get<NoteSheetTrashResponse>('/note-sheets/trash')
+  return response.data
+}
+
 export async function fetchWorkbooks() {
   const response = await api.get<WorkbookSummary[]>('/note-sheets/workbooks')
   return response.data
@@ -731,6 +762,11 @@ export async function fetchWorkbook(workbookId: number) {
     }
     return retryAfterOptionalAuthRepair(error, request)
   }
+}
+
+export async function restoreWorkbook(workbookId: number) {
+  const response = await api.post<WorkbookDetail>(`/note-sheets/workbooks/${workbookId}/restore`)
+  return response.data
 }
 
 export async function fetchNoteSheetAccessUsers(query = '') {

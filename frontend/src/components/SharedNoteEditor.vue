@@ -2,6 +2,7 @@
   <div
     class="shared-note-editor"
     :class="[`is-${effectiveEditorLayout}`, { 'is-readonly-presentation': readonlyPresentationActive }]"
+    @keydown.capture="handleLocalUndoRedoKeydown"
   >
     <div v-if="props.loading" class="state-line">
       <el-icon class="is-loading"><Loading /></el-icon> 加载内容中...
@@ -18,7 +19,9 @@
             placeholder="节点标题"
             class="title-input"
             :readonly="titleReadonly"
-            @input="queueMetaAutoSave()"
+            @focus="beginLocalEditHistory('title')"
+            @input="handleTitleInput"
+            @blur="endLocalEditHistory"
           />
           <h1 v-else class="readonly-title">{{ currentNote.title || '未命名文档' }}</h1>
           <slot name="actions" :note="currentNote" :readonly="effectiveReadonly" />
@@ -126,8 +129,9 @@
               class="progress-expr-input"
               placeholder="支持 0.41、41/83、(1+2*2)/(4+7)"
               :readonly="effectiveReadonly"
+              @focus="beginLocalEditHistory('completion-progress')"
               @update:model-value="handleCompletionProgressExprChange"
-              @blur="handleCompletionProgressExprBlur"
+              @blur="handleCompletionProgressExprEditBlur"
             />
           </div>
 
@@ -198,7 +202,9 @@
                   placeholder="Key"
                   class="field-key"
                   :readonly="effectiveReadonly"
+                  @focus="beginLocalEditHistory('custom-field')"
                   @input="handleCustomFieldChange"
+                  @blur="endLocalEditHistory"
                 />
 
                 <button
@@ -232,7 +238,9 @@
                     autosize
                     class="field-value"
                     :readonly="effectiveReadonly"
+                    @focus="beginLocalEditHistory('custom-field')"
                     @update:model-value="value => setTextFieldValue(item, value)"
+                    @blur="endLocalEditHistory"
                   />
 
                   <div v-else-if="item.type === 'richtext'" class="field-richtext-editor">
@@ -253,7 +261,9 @@
                     size="small"
                     class="field-value"
                     :readonly="effectiveReadonly"
+                    @focus="beginLocalEditHistory('custom-field')"
                     @update:model-value="value => setNumberFieldValue(item, value)"
+                    @blur="endLocalEditHistory"
                   />
 
                   <el-switch
@@ -362,8 +372,9 @@
         :contenteditable="!effectiveReadonly"
         :aria-readonly="String(effectiveReadonly)"
         @click="handleSourceHtmlClick"
+        @focus="beginLocalEditHistory('content')"
         @input="handleSourceHtmlInput"
-        @blur="handleSourceHtmlBlur"
+        @blur="handleSourceHtmlEditBlur"
       ></div>
       <NoteEditor
         v-else
@@ -413,6 +424,7 @@ import {
   areEditableNoteSnapshotsEqual,
   buildEditableNotePatch,
   buildNoteDraftStorageKey,
+  cloneEditableNoteSnapshot,
   convertNoteCustomFieldValue,
   createEditableNoteSnapshot,
   createNoteCustomFieldItem,
@@ -475,8 +487,16 @@ interface InheritedFieldItem {
   value: string | number | boolean;
 }
 
+interface LocalNoteHistoryEntry {
+  snapshot: EditableNoteSnapshot;
+  key: string;
+  reason: string;
+  createdAt: number;
+}
+
 const CONTENT_SAVE_DELAY_MS = 1800;
 const META_SAVE_DELAY_MS = 450;
+const LOCAL_NOTE_UNDO_STACK_LIMIT = 40;
 const EMPTY_RICH_TEXT_HTML_VALUES = new Set(['', '<p><br></p>', '<p></p>']);
 const CUSTOM_FIELD_KEY_WIDTH_MIN = 96;
 const CUSTOM_FIELD_KEY_WIDTH_MAX = 360;
@@ -520,6 +540,8 @@ const sourceImageMenu = ref({
   src: '',
   alt: '',
 });
+const localUndoStack = ref<LocalNoteHistoryEntry[]>([]);
+const localRedoStack = ref<LocalNoteHistoryEntry[]>([]);
 const sourceImageMenuStyle = computed(() => ({
   left: `${sourceImageMenu.value.left}px`,
   top: `${sourceImageMenu.value.top}px`,
@@ -538,6 +560,9 @@ let customFieldKeyResizeStartX = 0;
 let customFieldKeyResizeStartWidth = customFieldKeyWidth.value;
 let customFieldKeyMeasureCanvas: HTMLCanvasElement | null = null;
 let selectedSourceImageElement: HTMLImageElement | null = null;
+let suppressLocalHistory = false;
+let activeLocalEditHistoryEntry: LocalNoteHistoryEntry | null = null;
+let activeLocalEditHistoryCommitted = false;
 
 const removeLocalDraftByKey = (draftKey: string | null) => {
   if (!draftKey || typeof window === 'undefined' || typeof window.localStorage === 'undefined') return;
@@ -733,6 +758,7 @@ const showSourceImageMenu = (image: HTMLImageElement, event: MouseEvent) => {
 
 const setSourceImageWidth = (width: string) => {
   if (!selectedSourceImageElement || effectiveReadonly.value) return;
+  pushLocalUndoSnapshot('source-image');
   selectedSourceImageElement.style.width = width;
   selectedSourceImageElement.style.maxWidth = '100%';
   selectedSourceImageElement.style.height = 'auto';
@@ -771,6 +797,7 @@ const copySourceImageUrl = async () => {
 
 const deleteSourceImage = () => {
   if (!selectedSourceImageElement || effectiveReadonly.value) return;
+  pushLocalUndoSnapshot('source-image');
   selectedSourceImageElement.remove();
   hideSourceImageMenu();
   persistSourceHtmlEditorContent({ immediate: true });
@@ -782,6 +809,7 @@ const handleSourceHtmlInput = () => {
   if (!element) return;
   hideSourceImageMenu();
   currentNote.value.content = element.innerHTML;
+  recordLocalEditHistory('content');
   queueAutoSave({ delayMs: CONTENT_SAVE_DELAY_MS });
 };
 
@@ -829,14 +857,22 @@ const handleSourceHtmlBlur = () => {
   }
 };
 
+const handleSourceHtmlEditBlur = () => {
+  handleSourceHtmlBlur();
+  endLocalEditHistory();
+};
+
 const startDateProxy = computed<Date | undefined>({
   get: () => currentNote.value ? new Date(currentNote.value.start_at) : undefined,
   set: value => {
     if (!currentNote.value || !value || effectiveReadonly.value) return;
     const original = new Date(currentNote.value.start_at);
+    const previousTime = original.getTime();
     original.setFullYear(value.getFullYear());
     original.setMonth(value.getMonth());
     original.setDate(value.getDate());
+    if (original.getTime() === previousTime) return;
+    pushLocalUndoSnapshot('start-date');
     currentNote.value.start_at = original.getTime();
     queueMetaAutoSave();
   }
@@ -860,6 +896,153 @@ const syncCompletionProgressState = (
 };
 
 const buildCurrentSnapshot = (): EditableNoteSnapshot | null => createEditableNoteSnapshot(currentNote.value, buildStoredCustomFields());
+
+const getLocalHistorySnapshotKey = (snapshot: EditableNoteSnapshot) => JSON.stringify(snapshot);
+
+const trimLocalHistoryStack = (stack: LocalNoteHistoryEntry[]) => {
+  while (stack.length > LOCAL_NOTE_UNDO_STACK_LIMIT) {
+    stack.shift();
+  }
+};
+
+const createLocalHistoryEntry = (reason: string): LocalNoteHistoryEntry | null => {
+  if (suppressLocalHistory || effectiveReadonly.value) return null;
+  const snapshot = buildCurrentSnapshot();
+  if (!snapshot) return null;
+  const clonedSnapshot = cloneEditableNoteSnapshot(snapshot);
+  return {
+    snapshot: clonedSnapshot,
+    key: getLocalHistorySnapshotKey(clonedSnapshot),
+    reason,
+    createdAt: Date.now()
+  };
+};
+
+const pushLocalUndoEntry = (
+  entry: LocalNoteHistoryEntry | null | undefined,
+  options: { skipCurrentCompare?: boolean } = {}
+) => {
+  if (!entry || suppressLocalHistory) return;
+  const currentSnapshot = buildCurrentSnapshot();
+  if (!currentSnapshot) return;
+  if (!options.skipCurrentCompare && getLocalHistorySnapshotKey(currentSnapshot) === entry.key) return;
+  const lastEntry = localUndoStack.value[localUndoStack.value.length - 1];
+  if (lastEntry?.key === entry.key) return;
+  localUndoStack.value.push(entry);
+  trimLocalHistoryStack(localUndoStack.value);
+  localRedoStack.value = [];
+};
+
+const pushLocalUndoSnapshot = (reason: string) => {
+  pushLocalUndoEntry(createLocalHistoryEntry(reason), { skipCurrentCompare: true });
+};
+
+const resetLocalUndoHistory = () => {
+  localUndoStack.value = [];
+  localRedoStack.value = [];
+  activeLocalEditHistoryEntry = null;
+  activeLocalEditHistoryCommitted = false;
+};
+
+const beginLocalEditHistory = (reason: string) => {
+  if (effectiveReadonly.value) return;
+  activeLocalEditHistoryEntry = createLocalHistoryEntry(reason);
+  activeLocalEditHistoryCommitted = false;
+};
+
+const recordLocalEditHistory = (reason: string) => {
+  if (activeLocalEditHistoryCommitted) return;
+  if (!activeLocalEditHistoryEntry) {
+    activeLocalEditHistoryEntry = createLocalHistoryEntry(reason);
+  }
+  pushLocalUndoEntry(activeLocalEditHistoryEntry);
+  activeLocalEditHistoryCommitted = true;
+};
+
+const endLocalEditHistory = () => {
+  activeLocalEditHistoryEntry = null;
+  activeLocalEditHistoryCommitted = false;
+};
+
+const restoreLocalHistorySnapshot = (snapshot: EditableNoteSnapshot) => {
+  if (!currentNote.value) return;
+  suppressLocalHistory = true;
+  try {
+    syncCurrentNoteFromSnapshot(cloneEditableNoteSnapshot(snapshot), currentNote.value);
+    if (currentNote.value) {
+      emit('change', currentNote.value);
+    }
+  } finally {
+    suppressLocalHistory = false;
+  }
+  queueAutoSave({ immediate: true, delayMs: 0 });
+  window.setTimeout(syncSourceHtmlEditor, 0);
+};
+
+const undoLocalNoteChange = () => {
+  const entry = localUndoStack.value.pop();
+  if (!entry) return false;
+  const currentEntry = createLocalHistoryEntry('redo');
+  if (currentEntry) {
+    localRedoStack.value.push(currentEntry);
+    trimLocalHistoryStack(localRedoStack.value);
+  }
+  restoreLocalHistorySnapshot(entry.snapshot);
+  return true;
+};
+
+const redoLocalNoteChange = () => {
+  const entry = localRedoStack.value.pop();
+  if (!entry) return false;
+  const currentEntry = createLocalHistoryEntry('undo');
+  if (currentEntry) {
+    localUndoStack.value.push(currentEntry);
+    trimLocalHistoryStack(localUndoStack.value);
+  }
+  restoreLocalHistorySnapshot(entry.snapshot);
+  return true;
+};
+
+const isUndoShortcut = (event: KeyboardEvent) => (
+  (event.ctrlKey || event.metaKey)
+  && !event.altKey
+  && event.key.toLowerCase() === 'z'
+  && !event.shiftKey
+);
+
+const isRedoShortcut = (event: KeyboardEvent) => (
+  (event.ctrlKey || event.metaKey)
+  && !event.altKey
+  && (
+    event.key.toLowerCase() === 'y'
+    || (event.key.toLowerCase() === 'z' && event.shiftKey)
+  )
+);
+
+const shouldLetFocusedEditorHandleUndoRedo = (target: EventTarget | null) => {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest('[data-slate-editor]')) return true;
+  if (target.closest('.field-richtext-editor')) return true;
+  if (target.closest('.title-input, .field-key, .field-value, .progress-expr-input, .source-html-preview')) {
+    return true;
+  }
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === 'textarea' || target.isContentEditable) return true;
+  return false;
+};
+
+const handleLocalUndoRedoKeydown = (event: KeyboardEvent) => {
+  if (effectiveReadonly.value || event.defaultPrevented) return;
+  if (!isUndoShortcut(event) && !isRedoShortcut(event)) return;
+  if (shouldLetFocusedEditorHandleUndoRedo(event.target)) return;
+
+  const handled = isUndoShortcut(event)
+    ? undoLocalNoteChange()
+    : redoLocalNoteChange();
+  if (!handled) return;
+  event.preventDefault();
+  event.stopPropagation();
+};
 
 const normalizeIncomingNote = (note: NoteNode) => {
   const cloned = JSON.parse(JSON.stringify(note)) as NoteNode;
@@ -994,6 +1177,7 @@ useSortableList({
     const reordered = [...customFieldsList.value];
     const [movedItem] = reordered.splice(oldIndex, 1);
     if (!movedItem) return;
+    pushLocalUndoSnapshot('custom-field-reorder');
     reordered.splice(Math.min(newIndex, reordered.length), 0, movedItem);
     customFieldsList.value = reordered;
     syncCustomFields();
@@ -1050,6 +1234,7 @@ watch(() => props.modelValue, async newVal => {
     inheritedFieldSource.value = null;
     refreshInheritedFields(null);
     autoSave.loadSnapshot(null, { draftStrategy: 'discard' });
+    resetLocalUndoHistory();
     return;
   }
 
@@ -1111,6 +1296,7 @@ watch(() => props.modelValue, async newVal => {
   }
 
   syncCurrentNoteFromSnapshot(activeSnapshot, note);
+  resetLocalUndoHistory();
   saveStatus.value = autoSave.saveStatus.value;
   showHistory.value = false;
 }, { immediate: true });
@@ -1158,6 +1344,11 @@ const queueMetaAutoSave = (options: { immediate?: boolean } = {}) => {
   queueAutoSave({ immediate: options.immediate, delayMs: options.immediate ? 0 : META_SAVE_DELAY_MS });
 };
 
+const handleTitleInput = () => {
+  recordLocalEditHistory('title');
+  queueMetaAutoSave();
+};
+
 const handleContentChange = (html: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   currentNote.value.content = html;
@@ -1176,10 +1367,17 @@ const onWeightChange = (value: number | undefined) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   if (value == null || Number.isNaN(value)) {
     const baseline = autoSave.getBaselineSnapshot();
-    currentNote.value.weight = baseline ? normalizeNoteWeight(baseline.weight) : NOTE_WEIGHT_DEFAULT;
+    const nextWeight = baseline ? normalizeNoteWeight(baseline.weight) : NOTE_WEIGHT_DEFAULT;
+    if (currentNote.value.weight !== nextWeight) {
+      pushLocalUndoSnapshot('weight');
+      currentNote.value.weight = nextWeight;
+    }
     return;
   }
-  currentNote.value.weight = normalizeNoteWeight(value);
+  const nextWeight = normalizeNoteWeight(value);
+  if (currentNote.value.weight === nextWeight) return;
+  pushLocalUndoSnapshot('weight');
+  currentNote.value.weight = nextWeight;
   queueMetaAutoSave();
 };
 
@@ -1191,10 +1389,17 @@ const onPrivateLevelChange = (value: number | undefined) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   if (value == null || Number.isNaN(value)) {
     const baseline = autoSave.getBaselineSnapshot();
-    currentNote.value.private_level = baseline ? normalizePrivateLevel(baseline.private_level) : 0;
+    const nextPrivateLevel = baseline ? normalizePrivateLevel(baseline.private_level) : 0;
+    if (currentNote.value.private_level !== nextPrivateLevel) {
+      pushLocalUndoSnapshot('private-level');
+      currentNote.value.private_level = nextPrivateLevel;
+    }
     return;
   }
-  currentNote.value.private_level = normalizePrivateLevel(value);
+  const nextPrivateLevel = normalizePrivateLevel(value);
+  if (currentNote.value.private_level === nextPrivateLevel) return;
+  pushLocalUndoSnapshot('private-level');
+  currentNote.value.private_level = nextPrivateLevel;
   queueMetaAutoSave();
 };
 
@@ -1208,6 +1413,7 @@ const handleTimeChange = (value: string) => {
   d.setHours(h);
   d.setMinutes(m);
   d.setSeconds(s);
+  pushLocalUndoSnapshot('start-time');
   currentNote.value.start_at = d.getTime();
   queueMetaAutoSave();
 };
@@ -1235,6 +1441,8 @@ const syncLegacyFieldsFromTaxonomy = () => {
 const handleNoteCategoriesChange = (value: unknown) => {
   if (!currentNote.value || nodeTypeReadonly.value) return;
   const nextNoteCategories = normalizeNoteTypeAssignments(value, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
+  if (JSON.stringify(nextNoteCategories) === JSON.stringify(currentNote.value.note_categories ?? [])) return;
+  pushLocalUndoSnapshot('note-categories');
   currentNote.value.note_categories = nextNoteCategories;
   currentNote.value.primary_category = derivePrimaryNodeType(nextNoteCategories, currentNote.value.primary_category ?? NOTE_CATEGORY_DEFAULT);
   syncLegacyFieldsFromTaxonomy();
@@ -1243,14 +1451,20 @@ const handleNoteCategoriesChange = (value: unknown) => {
 
 const handleNoteFormChange = (value: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
-  currentNote.value.note_form = value || NOTE_FORM_DEFAULT;
+  const nextNoteForm = value || NOTE_FORM_DEFAULT;
+  if (currentNote.value.note_form === nextNoteForm) return;
+  pushLocalUndoSnapshot('note-form');
+  currentNote.value.note_form = nextNoteForm;
   syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };
 
 const handleLifecycleStageChange = (value: string) => {
   if (!currentNote.value || effectiveReadonly.value) return;
-  currentNote.value.lifecycle_stage = value || NOTE_LIFECYCLE_STAGE_DEFAULT;
+  const nextLifecycleStage = value || NOTE_LIFECYCLE_STAGE_DEFAULT;
+  if (currentNote.value.lifecycle_stage === nextLifecycleStage) return;
+  pushLocalUndoSnapshot('lifecycle-stage');
+  currentNote.value.lifecycle_stage = nextLifecycleStage;
   syncLegacyFieldsFromTaxonomy();
   queueMetaAutoSave({ immediate: true });
 };
@@ -1258,21 +1472,36 @@ const handleLifecycleStageChange = (value: string) => {
 const handleCompletionProgressExprChange = (value: string | number) => {
   if (!currentNote.value || effectiveReadonly.value) return;
   const expr = normalizeCompletionProgressExpr(value);
+  if ((currentNote.value.completion_progress_expr ?? null) === (expr || null)) return;
   currentNote.value.completion_progress_expr = expr || null;
   currentNote.value.completion_progress = evaluateCompletionProgressExpr(expr);
+  recordLocalEditHistory('completion-progress');
   syncCustomFields();
 };
 
 const handleCompletionProgressExprBlur = () => {
   if (!currentNote.value || effectiveReadonly.value) return;
   const normalizedExpr = normalizeCompletionProgressExpr(currentNote.value.completion_progress_expr);
+  if ((currentNote.value.completion_progress_expr ?? null) !== (normalizedExpr || null)) {
+    currentNote.value.completion_progress_expr = normalizedExpr || null;
+    currentNote.value.completion_progress = evaluateCompletionProgressExpr(normalizedExpr);
+    recordLocalEditHistory('completion-progress');
+    syncCustomFields({ immediate: true });
+    return;
+  }
   currentNote.value.completion_progress_expr = normalizedExpr || null;
   currentNote.value.completion_progress = evaluateCompletionProgressExpr(normalizedExpr);
   syncCustomFields({ immediate: true });
 };
 
+const handleCompletionProgressExprEditBlur = () => {
+  handleCompletionProgressExprBlur();
+  endLocalEditHistory();
+};
+
 const addCustomField = () => {
   if (effectiveReadonly.value) return;
+  pushLocalUndoSnapshot('custom-field');
   setCustomFieldsCollapsed(false);
   customFieldsList.value.push(createNoteCustomFieldItem());
 };
@@ -1283,23 +1512,27 @@ const addInheritedField = (key: string, value: string | number | boolean, typeFr
   if (typeFromInheritance && ['string', 'richtext', 'number', 'boolean'].includes(typeFromInheritance)) type = typeFromInheritance as NoteCustomFieldType;
   else if (typeof value === 'boolean') type = 'boolean';
   else if (typeof value === 'number') type = 'number';
+  pushLocalUndoSnapshot('custom-field');
   customFieldsList.value.push(createNoteCustomFieldItem(key, type, value));
   syncCustomFields();
 };
 
 const removeCustomField = (index: number) => {
   if (effectiveReadonly.value) return;
+  pushLocalUndoSnapshot('custom-field');
   customFieldsList.value.splice(index, 1);
   syncCustomFields();
 };
 
 const handleCustomFieldChange = () => {
   if (effectiveReadonly.value) return;
+  recordLocalEditHistory('custom-field');
   syncCustomFields();
 };
 
 const handleCustomFieldTypeChange = (item: NoteCustomFieldItem) => {
   if (effectiveReadonly.value) return;
+  pushLocalUndoSnapshot('custom-field');
   item.value = convertNoteCustomFieldValue(item.type, item.value);
   syncCustomFields({ immediate: true });
 };
@@ -1309,19 +1542,28 @@ const getBooleanFieldValue = (item: NoteCustomFieldItem) => item.type === 'boole
 
 const setTextFieldValue = (item: NoteCustomFieldItem, value: string | number) => {
   if (effectiveReadonly.value || item.type === 'boolean') return;
-  item.value = String(value ?? '');
+  const nextValue = String(value ?? '');
+  if (item.value === nextValue) return;
+  if (!activeLocalEditHistoryEntry) pushLocalUndoSnapshot('custom-field');
+  item.value = nextValue;
   handleCustomFieldChange();
 };
 
 const setNumberFieldValue = (item: NoteCustomFieldItem, value: string | number) => {
   if (effectiveReadonly.value || item.type !== 'number') return;
-  item.value = String(value ?? '');
+  const nextValue = String(value ?? '');
+  if (item.value === nextValue) return;
+  if (!activeLocalEditHistoryEntry) pushLocalUndoSnapshot('custom-field');
+  item.value = nextValue;
   handleCustomFieldChange();
 };
 
 const setBooleanFieldValue = (item: NoteCustomFieldItem, value: string | number | boolean) => {
   if (effectiveReadonly.value || item.type !== 'boolean') return;
-  item.value = Boolean(value);
+  const nextValue = Boolean(value);
+  if (item.value === nextValue) return;
+  pushLocalUndoSnapshot('custom-field');
+  item.value = nextValue;
   handleCustomFieldChange();
 };
 

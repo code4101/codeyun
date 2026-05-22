@@ -450,7 +450,10 @@ async function loadWorkbookResource() {
     const workbookRequest = fetchWorkbook(targetWorkbookId)
     const sheetRequest = targetSheetId == null
       ? Promise.resolve<NoteSheetDetail | null>(null)
-      : fetchNoteSheet(targetSheetId, { workbookId: targetWorkbookId }).catch((error) => {
+      : fetchNoteSheet(targetSheetId, {
+          workbookId: targetWorkbookId,
+          includeWorkbookContext: false,
+        }).catch((error) => {
           console.warn('Failed to prefetch workbook sheet:', error)
           return null
         })
@@ -957,10 +960,10 @@ async function deleteWorkbookFromContextMenu() {
 
   try {
     await ElMessageBox.confirm(
-      `删除工作簿“${currentWorkbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其权限设置。此操作不可恢复。`,
+      `工作簿“${currentWorkbook.title}”会移入回收站，其中未被其它工作簿引用的工作表也会一起移入回收站。`,
       '删除工作簿',
       {
-        confirmButtonText: '确认删除',
+        confirmButtonText: '移入回收站',
         cancelButtonText: '取消',
         type: 'warning',
       },
@@ -1132,10 +1135,10 @@ async function deleteSheetFromTabContextMenu() {
 
   try {
     await ElMessageBox.confirm(
-      `删除工作表“${sheet.title}”后，会从所有工作簿中移除并删除其权限设置。此操作不可恢复。`,
+      `工作表“${sheet.title}”会移入回收站，并暂时从普通工作簿视图中隐藏。`,
       '删除工作表',
       {
-        confirmButtonText: '确认删除',
+        confirmButtonText: '移入回收站',
         cancelButtonText: '取消',
         type: 'warning',
       },

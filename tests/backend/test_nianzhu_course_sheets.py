@@ -20,6 +20,7 @@ from backend.core.nianzhu_course_sheets import (
     materialize_nianzhu_course_sheets,
     normalize_nianzhu_course_sheet_names,
     rebuild_nianzhu_attendance_from_course_sheets,
+    repair_nianzhu_clockin_refunds_from_course_sheets,
 )
 from backend.models import SheetDocument, WorkbookDocument, WorkbookSheetLink
 
@@ -99,8 +100,26 @@ def _create_nianzhu_workbook(session: Session) -> None:
         document_json=_sheet_document(columns, rows),
         owner_user_id=2,
     )
+    registration = SheetDocument(
+        id="20",
+        numeric_id=20,
+        scope="notes",
+        owner_type="course_workbook",
+        owner_key="20250106-nianzhu-chuangguan",
+        sheet_key="registration",
+        title="报名表",
+        document_json=_sheet_document(
+            ["序号", "姓名", "用户ID", "关联用户ID"],
+            [
+                ["101", "甲", "u1", ""],
+                ["102", "乙", "u2", ""],
+            ],
+        ),
+        owner_user_id=2,
+    )
     session.add(workbook)
     session.add(attendance)
+    session.add(registration)
     session.add(WorkbookSheetLink(workbook_id="7", sheet_id="21", order_index=10))
     session.commit()
 
@@ -503,13 +522,223 @@ def test_rebuild_nianzhu_attendance_uses_course_sheets_as_source(session: Sessio
 
     attendance = _find_sheet(session, "attendance")
     rows = attendance.document_json["rows"]
-    assert rows[0][8] == ""
+    assert rows[0][8] == "1遍/100%"
     assert rows[0][3] == 2
-    assert rows[0][4] == 1
-    assert rows[0][5] == 20
+    assert rows[0][4] == 2
+    assert rows[0][5] == 40
     assert rows[0][6] == 150
     assert rows[0][7] == 10
     assert rows[1][8] == "1遍/100%"
+
+
+def test_rebuild_nianzhu_attendance_clears_blank_progress_background_on_skipped_rows(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance_document = copy.deepcopy(attendance.document_json)
+    columns = attendance_document["columns"]
+    document_row = attendance_document["data_start_row"] + 1
+    filled_column = columns.index("第01课")
+    blank_column = columns.index("第12课")
+    entity_row_id = f"row_{document_row}"
+    filled_column_id = f"col_{filled_column}"
+    blank_column_id = f"col_{blank_column}"
+    attendance_document["entity_rows"] = [
+        {"id": f"row_{index}"}
+        for index in range(attendance_document["data_start_row"] + len(attendance_document["rows"]))
+    ]
+    attendance_document["entity_columns"] = [
+        {"id": f"col_{index}", "header": column}
+        for index, column in enumerate(columns)
+    ]
+    attendance_document["entity_cells"] = {
+        entity_row_id: {
+            filled_column_id: {"value": "1遍/100%", "style": {"background_color": "#80FF80"}},
+            blank_column_id: {"style": {"background_color": "#80FF80"}},
+        },
+    }
+    attendance_document["cell_meta"] = {
+        f"{document_row}:{filled_column}": {"style": {"background_color": "#80FF80"}},
+        f"{document_row}:{blank_column}": {"style": {"background_color": "#80FF80"}},
+    }
+    attendance.document_json = attendance_document
+    session.add(attendance)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["skipped_rows"] == 1
+    assert summary["styled_cells"] >= 1
+    session.refresh(attendance)
+    cell_meta = attendance.document_json["cell_meta"]
+    assert cell_meta[f"{document_row}:{filled_column}"]["style"]["background_color"] == "#80FF80"
+    assert f"{document_row}:{blank_column}" not in cell_meta
+    entity_cells = attendance.document_json["entity_cells"][entity_row_id]
+    assert entity_cells[filled_column_id]["style"]["background_color"] == "#80FF80"
+    assert blank_column_id not in entity_cells
+
+
+def test_rebuild_nianzhu_attendance_keeps_existing_progress_when_source_has_no_progress(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_document = copy.deepcopy(video_data.document_json)
+    for row in video_document["rows"]:
+        if row[1] == "u1" and row[15] == 1:
+            row[5] = 0
+            row[10] = "学习中"
+            row[11] = 0
+    video_data.document_json = video_document
+    session.add(video_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["updated_rows"] == 1
+    attendance = _find_sheet(session, "attendance")
+    columns = attendance.document_json["columns"]
+    row = attendance.document_json["rows"][0]
+    assert row[columns.index("第01课")] == "1遍/100%"
+
+
+def test_rebuild_nianzhu_attendance_keeps_existing_clockin_when_source_has_no_count(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(CLOCKIN_DATA_COLUMNS, [])
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["updated_rows"] == 1
+    attendance = _find_sheet(session, "attendance")
+    columns = attendance.document_json["columns"]
+    row = attendance.document_json["rows"][0]
+    assert row[columns.index("打卡数")] == 5
+    assert row[columns.index("打卡应返款")] == 100
+
+
+def test_rebuild_nianzhu_attendance_merges_linked_user_ids(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    attendance = _find_sheet(session, "attendance")
+    attendance_document = copy.deepcopy(attendance.document_json)
+    user_id_index = attendance_document["columns"].index("用户ID")
+    attendance_document["columns"].pop(user_id_index)
+    for row in attendance_document["rows"]:
+        row.pop(user_id_index)
+    attendance_document["grid_rows"] = [attendance_document["columns"], *attendance_document["rows"]]
+    attendance.document_json = attendance_document
+    session.add(attendance)
+
+    registration = _find_sheet(session, "registration")
+    registration_document = copy.deepcopy(registration.document_json)
+    linked_index = registration_document["columns"].index("关联用户ID")
+    registration_document["rows"][0][linked_index] = "u_alias"
+    registration_document["grid_rows"] = [registration_document["columns"], *registration_document["rows"]]
+    registration.document_json = registration_document
+    session.add(registration)
+
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {"lesson_id": 1, "lesson_name": "第01课 测试课程", "video_duration": 100},
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {"course_name": "d250106念住闯关"}
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {"lesson_data_id": 1, "user_id2": "u_alias", "cum_seconds": 180, "lesson_id": 1},
+            ),
+        ],
+    )
+    clockin_data = _find_sheet(session, CLOCKIN_DATA_SHEET_KEY)
+    clockin_data.document_json = _sheet_document(
+        CLOCKIN_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                CLOCKIN_DATA_COLUMNS,
+                {"clockin_data_id": 1, "user_id2": "u1", "task_date": "2026-05-20", "update_title": "第1天"},
+            ),
+            _row_from_dict(
+                CLOCKIN_DATA_COLUMNS,
+                {"clockin_data_id": 2, "user_id2": "u_alias", "task_date": "2026-05-20", "update_title": "第1天"},
+            ),
+            _row_from_dict(
+                CLOCKIN_DATA_COLUMNS,
+                {"clockin_data_id": 3, "user_id2": "u_alias", "task_date": "2026-05-21", "update_title": "第2天"},
+            ),
+        ],
+    )
+    session.add(video_config)
+    session.add(video_data)
+    session.add(clockin_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["updated_rows"] == 1
+    session.refresh(attendance)
+    columns = attendance.document_json["columns"]
+    row = attendance.document_json["rows"][0]
+    assert row[columns.index("第01课")] == "2遍/180%"
+    assert row[columns.index("完成视频数")] == 1
+    assert row[columns.index("视频应返款")] == 20
+    assert row[columns.index("打卡数")] == 2
+
+
+def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance_document = copy.deepcopy(attendance.document_json)
+    columns = attendance_document["columns"]
+    for column in ["商户订单号", "总应返款", "已返款", "订单金额", "当前应返款"]:
+        columns.append(column)
+    for row_index, row in enumerate(attendance_document["rows"]):
+        if row_index == 1:
+            row[columns.index("打卡数")] = 1
+            row[columns.index("打卡应返款")] = 0
+            row[columns.index("视频应返款")] = 420
+            row.extend(["T" * 19, "=MIN(IFERROR(I5+J5+M5-IF($L$3>0,$L$3,M5),0),M5)", 620, 620, -200])
+        else:
+            row.extend(["T" * 19, 0, 0, 620, 0])
+    attendance_document["grid_rows"] = [columns, ["" for _ in columns], ["" for _ in columns], *attendance_document["rows"]]
+    attendance_document["data_start_row"] = 3
+    attendance_document["grid_rows"][2][columns.index("已返款")] = 620
+    attendance.document_json = attendance_document
+    session.add(attendance)
+    session.commit()
+
+    summary = repair_nianzhu_clockin_refunds_from_course_sheets(session)
+    session.commit()
+
+    assert summary["updated_rows"] == 2
+    session.refresh(attendance)
+    columns = attendance.document_json["columns"]
+    row = attendance.document_json["rows"][1]
+    assert row[columns.index("打卡数")] == 10
+    assert row[columns.index("打卡应返款")] == 150
+    assert row[columns.index("总应返款")] == "=MIN(IFERROR(I5+J5+M5-IF($L$3>0,$L$3,M5),0),M5)"
+    assert row[columns.index("当前应返款")] == -50
 
 
 def test_materialize_video_config_preserves_legacy_lesson_table_fields(

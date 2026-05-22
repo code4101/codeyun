@@ -1198,6 +1198,7 @@ def test_note_sheet_registration_order_match_updates_order_columns(client, sessi
         "订单金额",
         "已返款",
         "用户ID",
+        "关联用户ID",
         "匹配得分",
         "参考信息",
     ]
@@ -1770,6 +1771,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         "订单金额",
         "已返款",
         "用户ID",
+        "关联用户ID",
         "匹配得分",
     ]
     attendance_columns = [
@@ -1795,6 +1797,7 @@ def test_note_sheet_registration_composite_run_updates_matches_and_attendance(cl
         "追踪状态",
         "冻结时间",
         "规则版本",
+        "关联用户ID",
     ]
 
     def fake_get_kqdb():
@@ -1992,6 +1995,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
         "订单金额",
         "已返款",
         "用户ID",
+        "关联用户ID",
         "匹配得分",
     ]
     attendance_columns = [
@@ -2016,6 +2020,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
         "追踪状态",
         "冻结时间",
         "规则版本",
+        "关联用户ID",
     ]
     registration_doc = {
         "schema_version": 1,
@@ -2033,6 +2038,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
             "620",
             "0",
             "u_new",
+            "u_linked",
             "95",
         ]],
     }
@@ -2064,9 +2070,10 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
                 "追踪中",
                 "",
                 "当前规则",
+                "",
             ],
-            ["05/21 09:46", "124", "赵誉博", "赵玉博", "M20260521", "u_new", "", "0", "0", "0", "0", "", "", "", "", "", "", "", "追踪中", "", "当前规则"],
-            ["03/11 11:41", "115", "历史学员", "历史昵称", "M20260311", "u_history", "0", "0", "0", "40", "0", "40", "40", "620", "0", "", "", "1遍/137%", "已冻结", "2026-05-01 08:00:00", "当前规则"],
+            ["05/21 09:46", "124", "赵誉博", "赵玉博", "M20260521", "u_new", "", "0", "0", "0", "0", "", "", "", "", "", "", "", "追踪中", "", "当前规则", ""],
+            ["03/11 11:41", "115", "历史学员", "历史昵称", "M20260311", "u_history", "0", "0", "0", "40", "0", "40", "40", "620", "0", "", "", "1遍/137%", "已冻结", "2026-05-01 08:00:00", "当前规则", ""],
         ],
         "grid_rows": [attendance_columns],
         "entity_rows": [
@@ -2106,6 +2113,7 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert repaired_row[attendance_columns.index("总应返款")] == '=MIN(IFERROR(J3+K3+N3-$N$1,0),N3)'
     assert repaired_row[attendance_columns.index("已返款")] == "0"
     assert repaired_row[attendance_columns.index("订单金额")] == "620"
+    assert repaired_row[attendance_columns.index("关联用户ID")] == "u_linked"
     assert repaired_row[attendance_columns.index("当前应返款")] == '=OR(LEN(E3)=19,LEN(E3)=24)*(L3-M3)'
     assert repaired_row[attendance_columns.index("打卡数")] == ""
     assert "2:0" not in next_doc["cell_meta"]
@@ -2114,6 +2122,30 @@ def test_note_sheet_registration_attendance_sync_repairs_incomplete_existing_row
     assert "style" not in next_doc["entity_cells"]["row_new"]["col_1"]
     assert "col_17" not in next_doc["entity_cells"]["row_new"]
     assert next_doc["entity_cells"]["row_archived"]["col_0"]["style"]["background_color"] == "#F2F2F2"
+
+
+def test_note_sheet_registration_attendance_sync_allows_attendance_without_user_id():
+    registration_columns = ["序号", "提交时间", "姓名", "微信昵称", "商户订单号", "用户ID", "匹配得分"]
+    attendance_columns = ["报名日期", "学号", "姓名", "昵称", "商户订单号", "打卡数"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [["124", "2026/5/21 09:46:30", "赵誉博", "赵玉博", "M20260521", "u_new", "95"]],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 1,
+        "formula_reference_origin": "sheet_v2",
+        "rows": [],
+        "grid_rows": [attendance_columns],
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert summary["inserted_count"] == 1
+    assert next_doc["columns"] == attendance_columns
+    assert next_doc["rows"] == [["2026-05-21 09:46", "124", "赵誉博", "赵玉博", "M20260521", ""]]
 
 
 def test_note_sheet_registration_user_match_defaults_to_db_only(client, session, monkeypatch):

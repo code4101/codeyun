@@ -840,6 +840,7 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
         runtime_kind=req.runtime_kind,
         schedule=req.schedule,
         schedule_policy=req.schedule_policy,
+        next_run_at=task_manager._format_next_run_at(req.next_run_at),
         timeout=req.timeout,
         created_at=time.time(),
         order=next_order,
@@ -848,7 +849,9 @@ def _create_local_task(session: Session, entry: UserDevice, req: CreateTaskReque
     session.commit()
     session.refresh(new_task)
 
-    if req.schedule_policy or req.schedule:
+    if req.next_run_at:
+        task_manager.set_next_run_at(new_task.id, req.next_run_at)
+    elif req.schedule_policy or req.schedule:
         task_manager.update_schedule(new_task.id, req.schedule, req.schedule_policy, reset_state=True)
 
     return new_task.model_dump()
@@ -900,13 +903,17 @@ def _update_local_task(session: Session, entry: UserDevice, task_id: str, req: U
     if "schedule_policy" in req.model_fields_set:
         task.schedule_policy = req.schedule_policy
         task.schedule_state = {}
+    if "next_run_at" in req.model_fields_set:
+        task.next_run_at = task_manager._format_next_run_at(req.next_run_at)
     if req.timeout is not None:
         task.timeout = req.timeout
 
     session.add(task)
     session.commit()
     session.refresh(task)
-    if req.schedule is not None or "schedule_policy" in req.model_fields_set:
+    if "next_run_at" in req.model_fields_set:
+        task_manager.set_next_run_at(task_id, req.next_run_at)
+    elif req.schedule is not None or "schedule_policy" in req.model_fields_set:
         task_manager.update_schedule(
             task_id,
             task.schedule,
@@ -1006,7 +1013,7 @@ def create_task_for_entry(
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         return _create_local_task(session, entry, req)
-    return _proxy_request(entry, "POST", "/task/create", json_body=req.model_dump())
+    return _proxy_request(entry, "POST", "/task/create", json_body=req.model_dump(exclude_unset=True))
 
 
 @router.delete("/{entry_id}/task/{task_id}")
@@ -1059,7 +1066,7 @@ def update_task_for_entry(
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
         return _update_local_task(session, entry, task_id, req)
-    return _proxy_request(entry, "POST", f"/task/{task_id}/update", json_body=req.model_dump(exclude_none=True))
+    return _proxy_request(entry, "POST", f"/task/{task_id}/update", json_body=req.model_dump(exclude_unset=True))
 
 
 @router.post("/{entry_id}/task/reorder")
@@ -1264,8 +1271,19 @@ def configure_runtime_job_schedule_for_entry(
 ):
     entry = _get_entry_or_404(session, current_user, entry_id)
     if entry.mode == "local":
-        return configure_builtin_runtime_job_schedule(job_key, payload.schedule_policy, session)
-    return _proxy_request(entry, "POST", f"/runtime/jobs/{job_key}/schedule", json_body=payload.model_dump())
+        return configure_builtin_runtime_job_schedule(
+            job_key,
+            payload.schedule_policy,
+            session,
+            next_run_at=payload.next_run_at,
+            next_run_at_provided="next_run_at" in payload.model_fields_set,
+        )
+    return _proxy_request(
+        entry,
+        "POST",
+        f"/runtime/jobs/{job_key}/schedule",
+        json_body=payload.model_dump(exclude_unset=True),
+    )
 
 
 @router.delete("/{entry_id}/runtime/jobs/queue/{task_id}")

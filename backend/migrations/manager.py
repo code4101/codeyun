@@ -4450,6 +4450,19 @@ def _ensure_task_schedule_policy_columns(session: Session) -> bool:
     return changed
 
 
+def _ensure_task_next_run_at_column(session: Session) -> bool:
+    if not _table_exists(session, "task"):
+        return False
+    columns = _get_table_columns(session, "task")
+    changed = False
+    if "next_run_at" not in columns:
+        session.exec(text('ALTER TABLE "task" ADD COLUMN next_run_at VARCHAR'))
+        changed = True
+    session.exec(text('CREATE INDEX IF NOT EXISTS ix_task_next_run_at ON "task" (next_run_at)'))
+    session.commit()
+    return changed
+
+
 def v61_add_task_runtime_kind(session: Session):
     """
     Migration V61: Add explicit command runtime kind for service/job grouping.
@@ -4474,6 +4487,75 @@ def v62_add_task_schedule_policy(session: Session):
         print("  Columns 'schedule_policy' and 'schedule_state' already exist, skipping.")
 
 
+def v63_add_task_next_run_at(session: Session):
+    """
+    Migration V63: Add canonical next run time for command tasks.
+    """
+    print("Running System Upgrade V63: Add task next_run_at...")
+    if not _table_exists(session, "task"):
+        print("  Task table missing, skipping.")
+        return
+    if not _ensure_task_next_run_at_column(session):
+        print("  Column 'next_run_at' already exists, skipping.")
+
+
+def v64_add_fanxiu_pseudocode_cards(session: Session):
+    """
+    Migration V64: Add persistent Fanxiu pseudo-code card table.
+    """
+    print("Running System Upgrade V64: Add Fanxiu pseudo-code card table...")
+    session.exec(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS fanxiupseudocodecard (
+                id VARCHAR NOT NULL PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                scope VARCHAR NOT NULL DEFAULT 'action',
+                title TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                enabled BOOLEAN NOT NULL DEFAULT 1,
+                order_index INTEGER NOT NULL DEFAULT 0,
+                created_at FLOAT NOT NULL,
+                updated_at FLOAT NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES user (id)
+            )
+            """
+        )
+    )
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_fanxiupseudocodecard_user_id ON fanxiupseudocodecard (user_id)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_fanxiupseudocodecard_scope ON fanxiupseudocodecard (scope)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_fanxiupseudocodecard_enabled ON fanxiupseudocodecard (enabled)"))
+    session.exec(text("CREATE INDEX IF NOT EXISTS ix_fanxiupseudocodecard_order_index ON fanxiupseudocodecard (order_index)"))
+    session.commit()
+
+
+def _ensure_resource_trash_columns(session: Session) -> bool:
+    changed = False
+    for table_name in ("notenode", "sheetdocument", "workbookdocument"):
+        if not _table_exists(session, table_name):
+            continue
+        columns = _get_table_columns(session, table_name)
+        if "deleted_at" not in columns:
+            session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN deleted_at FLOAT"))
+            changed = True
+        if "deleted_by_user_id" not in columns:
+            session.exec(text(f"ALTER TABLE {table_name} ADD COLUMN deleted_by_user_id INTEGER"))
+            changed = True
+        session.exec(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_deleted_at ON {table_name} (deleted_at)"))
+        session.exec(text(f"CREATE INDEX IF NOT EXISTS ix_{table_name}_deleted_by_user_id ON {table_name} (deleted_by_user_id)"))
+    session.commit()
+    return changed
+
+
+def v65_add_resource_trash_columns(session: Session):
+    """
+    Migration V65: Add soft-delete markers for note resources.
+    """
+    print("Running System Upgrade V65: Add resource trash columns...")
+    if not _ensure_resource_trash_columns(session):
+        print("  Resource trash columns already exist, skipping.")
+
+
 def run_startup_schema_repairs(engine):
     """
     Apply small idempotent repairs required before the full migration chain can
@@ -4485,6 +4567,8 @@ def run_startup_schema_repairs(engine):
     with Session(engine) as session:
         _ensure_task_runtime_kind_column(session)
         _ensure_task_schedule_policy_columns(session)
+        _ensure_task_next_run_at_column(session)
+        _ensure_resource_trash_columns(session)
 
 
 # --- Migration Registry ---
@@ -4552,6 +4636,9 @@ MIGRATIONS = [
     (60, "Migrate sheet/workbook primary keys to numeric route ids", v60_migrate_sheet_workbook_primary_keys_to_numeric),
     (61, "Add task runtime kind", v61_add_task_runtime_kind),
     (62, "Add task schedule policy", v62_add_task_schedule_policy),
+    (63, "Add task next run time", v63_add_task_next_run_at),
+    (64, "Add Fanxiu pseudo-code cards", v64_add_fanxiu_pseudocode_cards),
+    (65, "Add resource trash columns", v65_add_resource_trash_columns),
 ]
 
 def get_current_version(session: Session) -> int:

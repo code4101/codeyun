@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -15,6 +18,8 @@ from backend.core.settings import ROOT_DIR, get_settings
 from backend.core.sunlogin_rotate_preview import (
     WindowCapture,
     click_window_raw_point,
+    drag_window_raw_points,
+    encode_jpeg,
     ensure_windows_runtime,
     find_window,
     iter_mjpeg_frames,
@@ -37,6 +42,12 @@ DEFAULT_TRIM_BORDER = "0,0,0,0"
 DEFAULT_ROTATE = "90"
 DEFAULT_FIXED_WIDTH = "0"
 DEFAULT_FIXED_HEIGHT = "0"
+SCREENSHOT_FRAME_DIRNAME = "截图"
+MATCH_FRAME_DIRNAME = "匹配"
+_SCREENSHOT_FRAME_LOCK = threading.Lock()
+_MATCH_FRAME_LOCK = threading.Lock()
+_SCREENSHOT_FRAME_NAME_PATTERN = re.compile(r"^(\d+)\.jpe?g$", re.IGNORECASE)
+_SCREENSHOT_IMAGE_SUFFIXES = {".jpg", ".jpeg"}
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,259 @@ def get_target_title() -> str:
 
 def get_preview_title() -> str:
     return (os.getenv("CODEYUN_FANXIU_SUNLOGIN_PREVIEW_TITLE") or DEFAULT_PREVIEW_TITLE).strip() or DEFAULT_PREVIEW_TITLE
+
+
+def _home_root() -> Path:
+    return ROOT_DIR.parent.parent if ROOT_DIR.parent.name.lower() == "slns" else ROOT_DIR.parent
+
+
+def get_fanxiu_mainwin_root() -> Path:
+    configured = os.getenv("FX_MAINWIN_ROOT")
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser().resolve(strict=False)
+    return (_home_root() / "data" / "m2508凡修" / "mainwin").resolve(strict=False)
+
+
+def get_fanxiu_screenshot_frame_dir() -> Path:
+    configured = os.getenv("FX_SCREENSHOT_FRAME_DIR")
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser().resolve(strict=False)
+    return (get_fanxiu_mainwin_root() / SCREENSHOT_FRAME_DIRNAME).resolve(strict=False)
+
+
+def get_fanxiu_match_frame_dir() -> Path:
+    configured = os.getenv("FX_MATCH_FRAME_DIR")
+    if configured and configured.strip():
+        return Path(configured.strip()).expanduser().resolve(strict=False)
+    return (get_fanxiu_mainwin_root() / MATCH_FRAME_DIRNAME).resolve(strict=False)
+
+
+def _next_numbered_frame_path(output_dir: Path) -> tuple[int, Path]:
+    max_index = 0
+    if output_dir.exists():
+        for path in output_dir.iterdir():
+            if not path.is_file():
+                continue
+            match = _SCREENSHOT_FRAME_NAME_PATTERN.match(path.name)
+            if match:
+                max_index = max(max_index, int(match.group(1)))
+    index = max_index + 1
+    return index, output_dir / f"{index:04d}.jpg"
+
+
+def _next_screenshot_frame_path(output_dir: Path) -> tuple[int, Path]:
+    return _next_numbered_frame_path(output_dir)
+
+
+def _normalize_screenshot_filename(filename: str) -> str:
+    name = Path(str(filename or "")).name
+    if not name or name != str(filename) or "\x00" in name:
+        raise ValueError("截图文件名不合法")
+    if Path(name).suffix.lower() not in _SCREENSHOT_IMAGE_SUFFIXES:
+        raise ValueError("截图只支持 jpg/jpeg")
+    return name
+
+
+def _screenshot_sort_key(path: Path) -> tuple[int, int, str]:
+    match = _SCREENSHOT_FRAME_NAME_PATTERN.match(path.name)
+    if match:
+        return (0, int(match.group(1)), path.name.lower())
+    return (1, 0, path.name.lower())
+
+
+def _read_image_size(path: Path) -> tuple[int, int]:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            return int(image.width), int(image.height)
+    except Exception:
+        return 0, 0
+
+
+def _read_image_bgr(path: Path):
+    import cv2
+    import numpy as np
+
+    data = np.frombuffer(path.read_bytes(), dtype=np.uint8)
+    if data.size == 0:
+        return None
+    return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+
+def _screenshot_path(filename: str) -> Path:
+    output_dir = get_fanxiu_screenshot_frame_dir()
+    image_path = (output_dir / _normalize_screenshot_filename(filename)).resolve(strict=False)
+    if image_path.parent != output_dir.resolve(strict=False):
+        raise ValueError("截图路径越界")
+    return image_path
+
+
+def _match_frame_path(filename: str) -> Path:
+    output_dir = get_fanxiu_match_frame_dir()
+    image_path = (output_dir / _normalize_screenshot_filename(filename)).resolve(strict=False)
+    if image_path.parent != output_dir.resolve(strict=False):
+        raise ValueError("匹配帧路径越界")
+    return image_path
+
+
+def _screenshot_pre_label_path(image_path: Path) -> Path:
+    return image_path.with_name(f"{image_path.stem}_pre.json")
+
+
+def _screenshot_final_label_path(image_path: Path) -> Path:
+    return image_path.with_suffix(".json")
+
+
+def list_fanxiu_screenshots() -> dict[str, Any]:
+    output_dir = get_fanxiu_screenshot_frame_dir()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    for path in sorted(
+        (item for item in output_dir.iterdir() if item.is_file() and item.suffix.lower() in _SCREENSHOT_IMAGE_SUFFIXES),
+        key=_screenshot_sort_key,
+    ):
+        stat = path.stat()
+        width, height = _read_image_size(path)
+        pre_label_path = _screenshot_pre_label_path(path)
+        label_path = _screenshot_final_label_path(path)
+        items.append(
+            {
+                "filename": path.name,
+                "stem": path.stem,
+                "pre_label_filename": pre_label_path.name,
+                "pre_label_exists": pre_label_path.is_file(),
+                "label_filename": label_path.name,
+                "label_exists": label_path.is_file(),
+                "size": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+                "width": width,
+                "height": height,
+            }
+        )
+    return {
+        "directory": os.fspath(output_dir),
+        "items": items,
+    }
+
+
+def get_fanxiu_screenshot_path(filename: str) -> Path:
+    image_path = _screenshot_path(filename)
+    if not image_path.is_file():
+        raise FileNotFoundError(f"截图不存在：{image_path.name}")
+    return image_path
+
+
+def get_fanxiu_match_frame_path(filename: str) -> Path:
+    image_path = _match_frame_path(filename)
+    if not image_path.is_file():
+        raise FileNotFoundError(f"匹配帧不存在：{image_path.name}")
+    return image_path
+
+
+def delete_fanxiu_screenshot(filename: str) -> dict[str, Any]:
+    image_path = get_fanxiu_screenshot_path(filename)
+    deleted: list[str] = []
+    for path in (image_path, _screenshot_pre_label_path(image_path), _screenshot_final_label_path(image_path)):
+        if path.is_file():
+            path.unlink()
+            deleted.append(path.name)
+    return {
+        "filename": image_path.name,
+        "deleted": deleted,
+    }
+
+
+def _default_screenshot_pre_label_payload(image_path: Path) -> dict[str, Any]:
+    width, height = _read_image_size(image_path)
+    return {
+        "version": 1,
+        "image": image_path.name,
+        "size": {
+            "width": width,
+            "height": height,
+        },
+        "boxes": [],
+    }
+
+
+def _normalize_screenshot_pre_label_payload(image_path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    width, height = _read_image_size(image_path)
+    normalized_boxes: list[dict[str, Any]] = []
+    raw_boxes = payload.get("boxes") if isinstance(payload, dict) else None
+    if isinstance(raw_boxes, list):
+        for index, raw_box in enumerate(raw_boxes, start=1):
+            if not isinstance(raw_box, dict):
+                continue
+            try:
+                x = round(float(raw_box.get("x", 0)))
+                y = round(float(raw_box.get("y", 0)))
+                w = round(float(raw_box.get("w", 0)))
+                h = round(float(raw_box.get("h", 0)))
+            except (TypeError, ValueError):
+                continue
+            if w <= 0 or h <= 0:
+                continue
+            name = str(raw_box.get("name") or "").strip()[:100]
+            max_x = width if width > 0 else max(1, x + w)
+            max_y = height if height > 0 else max(1, y + h)
+            x = min(max(0, x), max(0, max_x - 1))
+            y = min(max(0, y), max(0, max_y - 1))
+            w = min(max(1, w), max(1, max_x - x))
+            h = min(max(1, h), max(1, max_y - y))
+            normalized_boxes.append(
+                {
+                    "name": name,
+                    "x": x,
+                    "y": y,
+                    "w": w,
+                    "h": h,
+                }
+            )
+
+    return {
+        "version": 1,
+        "image": image_path.name,
+        "size": {
+            "width": width,
+            "height": height,
+        },
+        "boxes": normalized_boxes,
+    }
+
+
+def read_fanxiu_screenshot_pre_label(filename: str) -> dict[str, Any]:
+    image_path = get_fanxiu_screenshot_path(filename)
+    pre_label_path = _screenshot_pre_label_path(image_path)
+    if not pre_label_path.is_file():
+        return {
+            "exists": False,
+            "filename": pre_label_path.name,
+            "payload": _default_screenshot_pre_label_payload(image_path),
+        }
+    try:
+        payload = json.loads(pre_label_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "exists": True,
+        "filename": pre_label_path.name,
+        "payload": _normalize_screenshot_pre_label_payload(image_path, payload),
+    }
+
+
+def write_fanxiu_screenshot_pre_label(filename: str, payload: dict[str, Any]) -> dict[str, Any]:
+    image_path = get_fanxiu_screenshot_path(filename)
+    pre_label_path = _screenshot_pre_label_path(image_path)
+    normalized = _normalize_screenshot_pre_label_payload(image_path, payload)
+    pre_label_path.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "exists": True,
+        "filename": pre_label_path.name,
+        "payload": normalized,
+    }
 
 
 def _runtime_dir() -> Path:
@@ -387,6 +651,266 @@ def capture_sunlogin_rotate_frame(
     )
 
 
+def save_fanxiu_screenshot_frame(
+    *,
+    title: str | None = None,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+    quality: int = 82,
+) -> dict[str, Any]:
+    frame = capture_sunlogin_rotate_frame(
+        title=title,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+    )
+    height, width = frame.shape[:2]
+    data = encode_jpeg(frame, quality)
+
+    output_dir = get_fanxiu_screenshot_frame_dir()
+    with _SCREENSHOT_FRAME_LOCK:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        index, output = _next_screenshot_frame_path(output_dir)
+        while output.exists():
+            index += 1
+            output = output_dir / f"{index:04d}.jpg"
+        output.write_bytes(data)
+
+    return {
+        "ok": True,
+        "index": index,
+        "filename": output.name,
+        "path": os.fspath(output),
+        "directory": os.fspath(output_dir),
+        "width": width,
+        "height": height,
+    }
+
+
+def _normalize_match_box(box: dict[str, Any], width: int, height: int) -> dict[str, Any]:
+    try:
+        x = round(float(box.get("x", 0)))
+        y = round(float(box.get("y", 0)))
+        w = round(float(box.get("w", 0)))
+        h = round(float(box.get("h", 0)))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("匹配框坐标不合法") from exc
+    if w <= 0 or h <= 0:
+        raise ValueError("匹配框宽高必须大于 0")
+    max_x = width if width > 0 else max(1, x + w)
+    max_y = height if height > 0 else max(1, y + h)
+    x = min(max(0, x), max(0, max_x - 1))
+    y = min(max(0, y), max(0, max_y - 1))
+    w = min(max(1, w), max(1, max_x - x))
+    h = min(max(1, h), max(1, max_y - y))
+    return {
+        "name": str(box.get("name") or "").strip()[:100],
+        "x": x,
+        "y": y,
+        "w": w,
+        "h": h,
+    }
+
+
+def _ensure_bgr_frame(frame: Any):
+    import cv2
+
+    if frame is None:
+        raise ValueError("图片为空")
+    if frame.ndim == 2:
+        return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    if frame.ndim == 3 and frame.shape[2] == 4:
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+    return frame[:, :, :3]
+
+
+def _crop_frame_box(frame: Any, box: dict[str, Any]):
+    return frame[box["y"]:box["y"] + box["h"], box["x"]:box["x"] + box["w"]]
+
+
+def _scale_box(box: dict[str, Any], source_width: int, source_height: int, target_width: int, target_height: int) -> dict[str, Any]:
+    scale_x = target_width / source_width if source_width > 0 else 1.0
+    scale_y = target_height / source_height if source_height > 0 else 1.0
+    return _normalize_match_box(
+        {
+            "name": box.get("name", ""),
+            "x": round(box["x"] * scale_x),
+            "y": round(box["y"] * scale_y),
+            "w": round(box["w"] * scale_x),
+            "h": round(box["h"] * scale_y),
+        },
+        target_width,
+        target_height,
+    )
+
+
+def _compare_frame_crops(reference_crop: Any, current_crop: Any) -> tuple[int, float]:
+    import cv2
+    import numpy as np
+
+    reference_crop = _ensure_bgr_frame(reference_crop)
+    current_crop = _ensure_bgr_frame(current_crop)
+    if reference_crop.size == 0 or current_crop.size == 0:
+        raise ValueError("匹配框裁剪结果为空")
+
+    ref_height, ref_width = reference_crop.shape[:2]
+    if current_crop.shape[:2] != (ref_height, ref_width):
+        current_crop = cv2.resize(current_crop, (ref_width, ref_height), interpolation=cv2.INTER_AREA)
+
+    ref = reference_crop.astype(np.float32)
+    cur = current_crop.astype(np.float32)
+    diff_score = 1.0 - float(np.mean(np.abs(ref - cur))) / 255.0
+
+    ref_gray = cv2.cvtColor(reference_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    cur_gray = cv2.cvtColor(current_crop, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    ref_std = float(ref_gray.std())
+    cur_std = float(cur_gray.std())
+    if ref_std > 1e-6 and cur_std > 1e-6:
+        corr = float(np.mean(((ref_gray - ref_gray.mean()) / ref_std) * ((cur_gray - cur_gray.mean()) / cur_std)))
+        corr_score = (corr + 1.0) / 2.0
+        score = 0.7 * diff_score + 0.3 * corr_score
+    else:
+        score = diff_score
+
+    score = max(0.0, min(1.0, score))
+    return int(round(score * 100)), score
+
+
+def _match_template_frame(reference_crop: Any, current_frame: Any, current_box: dict[str, Any]) -> dict[str, Any]:
+    import cv2
+    import numpy as np
+
+    template = _ensure_bgr_frame(reference_crop)
+    frame = _ensure_bgr_frame(current_frame)
+    if template.size == 0 or frame.size == 0:
+        raise ValueError("模板匹配图片为空")
+
+    frame_height, frame_width = frame.shape[:2]
+    template_width = min(max(1, int(current_box["w"])), frame_width)
+    template_height = min(max(1, int(current_box["h"])), frame_height)
+    if template.shape[:2] != (template_height, template_width):
+        template = cv2.resize(template, (template_width, template_height), interpolation=cv2.INTER_AREA)
+
+    frame_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+    if template_gray.shape[0] > frame_gray.shape[0] or template_gray.shape[1] > frame_gray.shape[1]:
+        raise ValueError("模板尺寸大于当前画面")
+
+    if float(template_gray.std()) > 1e-6 and float(frame_gray.std()) > 1e-6:
+        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_CCOEFF_NORMED)
+        _, max_value, _, max_loc = cv2.minMaxLoc(result)
+        score = max(0.0, min(1.0, float(max_value)))
+        x, y = max_loc
+    else:
+        result = cv2.matchTemplate(frame_gray, template_gray, cv2.TM_SQDIFF_NORMED)
+        min_value, _, min_loc, _ = cv2.minMaxLoc(result)
+        score = max(0.0, min(1.0, 1.0 - float(min_value)))
+        x, y = min_loc
+
+    box = _normalize_match_box(
+        {
+            "name": current_box.get("name", ""),
+            "x": x,
+            "y": y,
+            "w": template_width,
+            "h": template_height,
+        },
+        frame_width,
+        frame_height,
+    )
+    matched_crop = _crop_frame_box(frame, box)
+    crop_similarity, crop_score = _compare_frame_crops(template, matched_crop)
+    return {
+        "box": box,
+        "similarity": int(round(score * 100)),
+        "score": score,
+        "crop_similarity": crop_similarity,
+        "crop_score": crop_score,
+    }
+
+
+def match_fanxiu_screenshot_box_frame(
+    *,
+    filename: str,
+    box: dict[str, Any],
+    title: str | None = None,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+    quality: int = 82,
+) -> dict[str, Any]:
+    source_path = get_fanxiu_screenshot_path(filename)
+    reference_frame = _read_image_bgr(source_path)
+    if reference_frame is None:
+        raise RuntimeError(f"读取截图失败：{source_path.name}")
+    source_height, source_width = reference_frame.shape[:2]
+    source_box = _normalize_match_box(box, source_width, source_height)
+    reference_crop = _crop_frame_box(reference_frame, source_box)
+
+    current_frame = capture_sunlogin_rotate_frame(
+        title=title,
+        mode=mode,
+        area=area,
+        crop=crop,
+        trim_border=trim_border,
+        rotate=rotate,
+        fixed_width=fixed_width,
+        fixed_height=fixed_height,
+    )
+    current_height, current_width = current_frame.shape[:2]
+    current_box = _scale_box(source_box, source_width, source_height, current_width, current_height)
+    current_crop = _crop_frame_box(current_frame, current_box)
+    similarity, score = _compare_frame_crops(reference_crop, current_crop)
+    template_match = _match_template_frame(reference_crop, current_frame, current_box)
+
+    output_dir = get_fanxiu_match_frame_dir()
+    data = encode_jpeg(current_frame, quality)
+    with _MATCH_FRAME_LOCK:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        index, output = _next_numbered_frame_path(output_dir)
+        while output.exists():
+            index += 1
+            output = output_dir / f"{index:04d}.jpg"
+        output.write_bytes(data)
+
+    return {
+        "ok": True,
+        "index": index,
+        "source_filename": source_path.name,
+        "match_filename": output.name,
+        "path": os.fspath(output),
+        "directory": os.fspath(output_dir),
+        "similarity": similarity,
+        "score": score,
+        "fixed_similarity": similarity,
+        "fixed_score": score,
+        "template_similarity": template_match["similarity"],
+        "template_score": template_match["score"],
+        "template_crop_similarity": template_match["crop_similarity"],
+        "template_crop_score": template_match["crop_score"],
+        "box": source_box,
+        "current_box": current_box,
+        "template_box": template_match["box"],
+        "source_width": source_width,
+        "source_height": source_height,
+        "width": current_width,
+        "height": current_height,
+    }
+
+
 def click_sunlogin_rotate_processed_point(
     *,
     x: float,
@@ -465,6 +989,111 @@ def click_sunlogin_rotate_processed_point(
         "frame_height": frame_height,
         "raw_x": raw_point[0],
         "raw_y": raw_point[1],
+        "area": resolved_area,
+        "mode": resolved_mode,
+        "rotate": resolved_rotate,
+    }
+
+
+def drag_sunlogin_rotate_processed_points(
+    *,
+    start_x: float,
+    start_y: float,
+    end_x: float,
+    end_y: float,
+    duration_ms: int = 300,
+    title: str | None = None,
+    mode: str | None = None,
+    area: str | None = None,
+    crop: str | None = None,
+    trim_border: str | None = None,
+    rotate: str | None = None,
+    fixed_width: int | None = None,
+    fixed_height: int | None = None,
+) -> dict[str, Any]:
+    ensure_windows_runtime()
+    set_dpi_awareness()
+
+    resolved_fixed_width = int(
+        fixed_width if fixed_width is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_WIDTH", DEFAULT_FIXED_WIDTH)
+    )
+    resolved_fixed_height = int(
+        fixed_height if fixed_height is not None else os.getenv("CODEYUN_FANXIU_SUNLOGIN_FIXED_HEIGHT", DEFAULT_FIXED_HEIGHT)
+    )
+    if resolved_fixed_width > 0 or resolved_fixed_height > 0:
+        raise RuntimeError("固定画布模式暂不支持反向拖拽坐标映射")
+
+    normalized_title = (title or get_target_title()).strip() or get_target_title()
+    resolved_area = area or os.getenv("CODEYUN_FANXIU_SUNLOGIN_AREA", "outer")
+    resolved_mode = mode or os.getenv("CODEYUN_FANXIU_SUNLOGIN_MODE", "screen")
+    resolved_crop = parse_crop(crop or os.getenv("CODEYUN_FANXIU_SUNLOGIN_CROP", DEFAULT_CROP))
+    resolved_trim_border = parse_crop(
+        trim_border or os.getenv("CODEYUN_FANXIU_SUNLOGIN_TRIM_BORDER", DEFAULT_TRIM_BORDER)
+    )
+    resolved_rotate = normalize_rotate(rotate or os.getenv("CODEYUN_FANXIU_SUNLOGIN_ROTATE", DEFAULT_ROTATE))
+
+    target = find_window(normalized_title)
+    capturer = WindowCapture(target.hwnd, resolved_area, resolved_mode, normalized_title, refind_interval=1.0)
+    raw_frame = capturer.capture()
+    if raw_frame is None:
+        raise RuntimeError("拖拽前截图失败，无法确认窗口坐标")
+
+    frame = process_frame(
+        raw_frame,
+        resolved_crop,
+        resolved_trim_border,
+        resolved_rotate,
+        max_width=0,
+        max_height=0,
+        scale=1.0,
+        fixed_width=0,
+        fixed_height=0,
+    )
+    frame_height, frame_width = frame.shape[:2]
+    frame_start_x = int(round(start_x))
+    frame_start_y = int(round(start_y))
+    frame_end_x = int(round(end_x))
+    frame_end_y = int(round(end_y))
+    for label, point_x, point_y in (
+        ("起点", frame_start_x, frame_start_y),
+        ("终点", frame_end_x, frame_end_y),
+    ):
+        if not (0 <= point_x < frame_width and 0 <= point_y < frame_height):
+            raise RuntimeError(f"拖拽{label}坐标超出画面范围：({point_x}, {point_y}) / {frame_width}x{frame_height}")
+
+    start_raw_point = map_processed_point_to_raw_point(
+        (frame_start_x, frame_start_y),
+        raw_shape=raw_frame.shape,
+        crop=resolved_crop,
+        trim_border=resolved_trim_border,
+        rotate=resolved_rotate,
+    )
+    end_raw_point = map_processed_point_to_raw_point(
+        (frame_end_x, frame_end_y),
+        raw_shape=raw_frame.shape,
+        crop=resolved_crop,
+        trim_border=resolved_trim_border,
+        rotate=resolved_rotate,
+    )
+    if start_raw_point is None or end_raw_point is None:
+        raise RuntimeError("拖拽坐标无法映射到原始窗口坐标")
+
+    drag_window_raw_points(capturer.hwnd, resolved_area, start_raw_point, end_raw_point, duration_ms=duration_ms)
+    return {
+        "ok": True,
+        "title": normalized_title,
+        "hwnd": capturer.hwnd,
+        "frame_start_x": frame_start_x,
+        "frame_start_y": frame_start_y,
+        "frame_end_x": frame_end_x,
+        "frame_end_y": frame_end_y,
+        "frame_width": frame_width,
+        "frame_height": frame_height,
+        "raw_start_x": start_raw_point[0],
+        "raw_start_y": start_raw_point[1],
+        "raw_end_x": end_raw_point[0],
+        "raw_end_y": end_raw_point[1],
+        "duration_ms": duration_ms,
         "area": resolved_area,
         "mode": resolved_mode,
         "rotate": resolved_rotate,

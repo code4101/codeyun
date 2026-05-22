@@ -6,6 +6,7 @@ import freebillPage from './freebill'
 import notesCenterPage from './center'
 import notesSheetEditorPage from './sheet-editor'
 import notesSheetsManagerPage from './sheets-manager'
+import notesTrashPage from './trash'
 import notesWorkbookViewPage from './workbook-view'
 import notesWechatPage from './wechat'
 
@@ -15,6 +16,7 @@ const pages: AppPageDefinition[] = [
   freebillPage,
   infiniteCanvasPage,
   notesSheetsManagerPage,
+  notesTrashPage,
   notesWechatPage,
   notesWorkbookViewPage,
   notesSheetEditorPage,

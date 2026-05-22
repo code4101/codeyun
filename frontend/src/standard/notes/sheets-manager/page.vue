@@ -226,10 +226,10 @@ async function handleDeleteWorkbook(workbook: WorkbookSummary) {
 
   try {
     await ElMessageBox.confirm(
-      `删除工作簿“${workbook.title}”后，会同时删除其中未被其它工作簿引用的工作表及其权限设置。此操作不可恢复。`,
+      `工作簿“${workbook.title}”会移入回收站，其中未被其它工作簿引用的工作表也会一起移入回收站。`,
       '删除工作簿',
       {
-        confirmButtonText: '确认删除',
+        confirmButtonText: '移入回收站',
         cancelButtonText: '取消',
         type: 'warning',
       },
@@ -304,6 +304,7 @@ onMounted(() => {
         >
           {{ option.label }}
         </button>
+        <el-button :icon="Delete" @click="router.push('/notes/trash')">回收站</el-button>
         <el-button :icon="Refresh" @click="reloadWorkbooks">刷新</el-button>
         <el-button type="primary" :icon="Plus" @click="handleCreateWorkbook">新建工作簿</el-button>
       </div>

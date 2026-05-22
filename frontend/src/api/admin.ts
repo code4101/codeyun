@@ -148,6 +148,10 @@ export interface MaintenanceStatusResponse {
 export interface ScheduleConfig {
   enabled: boolean;
   cron_expression: string;
+  cleanup_enabled: boolean;
+  max_storage_bytes: number;
+  trash_grace_days: number;
+  vacuum_sqlite: boolean;
 }
 
 export interface AdminAccountSummary {
@@ -259,6 +263,31 @@ export const fetchScheduleConfig = async (): Promise<ScheduleConfig> => {
 
 export const updateScheduleConfig = async (config: ScheduleConfig): Promise<ScheduleConfig> => {
   const response = await api.post('/admin/storage/schedule', config);
+  return response.data;
+};
+
+export interface StorageCleanupRunResult {
+  cleanup_enabled: boolean;
+  dry_run: boolean;
+  force: boolean;
+  max_storage_bytes: number;
+  trash_grace_seconds: number;
+  usage_before_bytes: number;
+  usage_after_bytes: number;
+  bytes_over_limit_before: number;
+  candidate_count: number;
+  estimated_candidate_bytes: number;
+  purged_count: number;
+  purged_estimated_bytes: number;
+  purged_by_kind: Record<string, number>;
+  vacuum_ran: boolean;
+  skipped_reason: string;
+}
+
+export const runStorageCleanup = async (
+  payload: { dry_run?: boolean; force?: boolean } = {},
+): Promise<StorageCleanupRunResult> => {
+  const response = await api.post('/admin/storage/cleanup/run', payload);
   return response.data;
 };
 

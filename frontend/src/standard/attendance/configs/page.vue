@@ -8,27 +8,34 @@ import {
   deleteAttendanceAccount,
   fetchAttendanceAccounts,
   fetchAttendanceConfig,
+  fetchAttendanceCourseDataFlowConfig,
   type AttendanceAccount,
+  type AttendanceCourseDataFlowConfigResponse,
+  type AttendanceCourseDataFlowConfigUpdateRequest,
   type AttendanceConfigResponse,
   type AttendanceConfigUpdateRequest,
   type AttendanceOrderLookupMode,
-  type AttendanceStepRunnerConfig,
+  type AttendanceCourseDataStepRunnerConfig,
   updateAttendanceAccount,
   updateAttendanceConfig,
+  updateAttendanceCourseDataFlowConfig,
 } from '@/api/attendance'
 import { taskStore, type Device } from '@/store/taskStore'
 
 const loading = ref(false)
 const savingCurrent = ref(false)
+const savingCourseDataFlow = ref(false)
 const savingAccount = ref(false)
 const accountDialogVisible = ref(false)
 const editingAccountId = ref('')
 const accounts = ref<AttendanceAccount[]>([])
 const currentExecutionDeviceId = ref('')
 const currentExecutionDeviceLabel = ref('')
-const currentDataDeviceId = ref('')
-const currentDataDeviceLabel = ref('')
-const stepRunners = ref<AttendanceStepRunnerConfig[]>([])
+const courseBrowserDeviceId = ref('')
+const courseBrowserDeviceLabel = ref('')
+const courseDataDeviceId = ref('')
+const courseDataDeviceLabel = ref('')
+const stepRunners = ref<AttendanceCourseDataStepRunnerConfig[]>([])
 const stepDeviceEntryIds = reactive<Record<string, string>>({
   '1': '',
   '2': '',
@@ -56,13 +63,13 @@ const accountForm = reactive({
 
 const account = computed(() => accounts.value[0] ?? null)
 
-const fallbackStepRunners: AttendanceStepRunnerConfig[] = [
-  { step: 1, title: 'step1 浏览器导入原始数据', default_role: 'execution_device', effective_role: 'execution_device' },
-  { step: 2, title: 'step2 数据聚合与写回', default_role: 'data_host', effective_role: 'data_host' },
-  { step: 3, title: 'step3 返款计算与高亮', default_role: 'data_host', effective_role: 'data_host' },
-  { step: 4, title: 'step4 上午浏览器检查', default_role: 'execution_device', effective_role: 'execution_device' },
-  { step: 5, title: 'step5 上午数据处理', default_role: 'data_host', effective_role: 'data_host' },
-  { step: 6, title: 'step6 上午收尾执行', default_role: 'execution_device', effective_role: 'execution_device' },
+const fallbackStepRunners: AttendanceCourseDataStepRunnerConfig[] = [
+  { step: 1, title: 'step1 课程数据浏览器导入原始数据', default_role: 'browser_device', effective_role: 'browser_device' },
+  { step: 2, title: 'step2 课程数据聚合与写回', default_role: 'data_host', effective_role: 'data_host' },
+  { step: 3, title: 'step3 课程数据返款计算与高亮', default_role: 'data_host', effective_role: 'data_host' },
+  { step: 4, title: 'step4 课程数据上午浏览器检查', default_role: 'browser_device', effective_role: 'browser_device' },
+  { step: 5, title: 'step5 课程数据上午处理', default_role: 'data_host', effective_role: 'data_host' },
+  { step: 6, title: 'step6 课程数据上午收尾', default_role: 'browser_device', effective_role: 'browser_device' },
 ]
 
 const maskedPassword = computed(() => {
@@ -93,7 +100,8 @@ const deviceOptions = computed(() => {
   }
 
   ensureDeviceOption(currentExecutionDeviceId.value, `${currentExecutionDeviceLabel.value}（当前执行设备）`)
-  ensureDeviceOption(currentDataDeviceId.value, `${currentDataDeviceLabel.value}（数据主机）`)
+  ensureDeviceOption(courseBrowserDeviceId.value, `${courseBrowserDeviceLabel.value}（课程数据浏览器）`)
+  ensureDeviceOption(courseDataDeviceId.value, `${courseDataDeviceLabel.value}（课程数据主机）`)
   stepRunners.value.forEach((runner) => {
     const device = runner.device
     if (!device) return
@@ -118,10 +126,16 @@ const selectedExecutionDeviceLabel = computed(() => {
   return device ? getDeviceLabel(device) : (currentExecutionDeviceLabel.value || '未设置')
 })
 
-const selectedDataDeviceLabel = computed(() => {
-  if (!currentDataDeviceId.value) return '当前 CodeYun 实例'
-  const device = deviceOptions.value.find(item => item.id === currentDataDeviceId.value)
-  return device ? getDeviceLabel(device) : (currentDataDeviceLabel.value || '未设置')
+const selectedCourseBrowserDeviceLabel = computed(() => {
+  if (!courseBrowserDeviceId.value) return '继承采集与订单默认执行设备'
+  const device = deviceOptions.value.find(item => item.id === courseBrowserDeviceId.value)
+  return device ? getDeviceLabel(device) : (courseBrowserDeviceLabel.value || '未设置')
+})
+
+const selectedCourseDataDeviceLabel = computed(() => {
+  if (!courseDataDeviceId.value) return '当前 CodeYun 实例'
+  const device = deviceOptions.value.find(item => item.id === courseDataDeviceId.value)
+  return device ? getDeviceLabel(device) : (courseDataDeviceLabel.value || '未设置')
 })
 
 const stepRunnerRows = computed(() => stepRunners.value.length ? stepRunners.value : fallbackStepRunners)
@@ -161,29 +175,34 @@ function setStepDeviceEntryIds(value?: Record<string, string | null>) {
 function applyConfig(config: AttendanceConfigResponse) {
   currentExecutionDeviceId.value = config.service.execution_device_entry_id || ''
   currentExecutionDeviceLabel.value = config.current_execution_device?.name || ''
-  currentDataDeviceId.value = config.service.data_device_entry_id || ''
-  currentDataDeviceLabel.value = config.current_data_device?.name || ''
-  stepRunners.value = config.service.step_runners || []
-  setStepDeviceEntryIds(config.service.step_device_entry_ids || {})
   scanReminderText.value = (config.service.scan_reminder_users || []).join('\n')
   currentOrderLookupMode.value = config.service.order_lookup_mode || 'browser_only'
   resetOrderOperationPasswordState(Boolean(config.service.order_operation_password_configured))
 }
 
-function getDefaultRunnerLabel(runner: AttendanceStepRunnerConfig) {
-  return runner.default_role === 'execution_device' ? '默认执行设备' : '默认数据主机'
+function applyCourseDataFlowConfig(config: AttendanceCourseDataFlowConfigResponse) {
+  courseBrowserDeviceId.value = config.course_data_flow.browser_device_entry_id || ''
+  courseBrowserDeviceLabel.value = config.current_browser_device?.name || ''
+  courseDataDeviceId.value = config.course_data_flow.data_device_entry_id || ''
+  courseDataDeviceLabel.value = config.current_data_device?.name || ''
+  stepRunners.value = config.course_data_flow.step_runners || []
+  setStepDeviceEntryIds(config.course_data_flow.step_device_entry_ids || {})
 }
 
-function getStepDefaultOptionLabel(runner: AttendanceStepRunnerConfig) {
-  return runner.default_role === 'execution_device' ? '默认：当前执行设备' : '默认：数据主机'
+function getDefaultRunnerLabel(runner: AttendanceCourseDataStepRunnerConfig) {
+  return runner.default_role === 'browser_device' ? '默认课程数据浏览器' : '默认课程数据主机'
 }
 
-function getEffectiveRunnerLabel(runner: AttendanceStepRunnerConfig) {
+function getStepDefaultOptionLabel(runner: AttendanceCourseDataStepRunnerConfig) {
+  return runner.default_role === 'browser_device' ? '默认：课程数据浏览器' : '默认：课程数据主机'
+}
+
+function getEffectiveRunnerLabel(runner: AttendanceCourseDataStepRunnerConfig) {
   if (runner.configured_device_entry_id) return '自定义设备'
   return getDefaultRunnerLabel(runner)
 }
 
-function getStepRunnerTitle(runner: AttendanceStepRunnerConfig) {
+function getStepRunnerTitle(runner: AttendanceCourseDataStepRunnerConfig) {
   return runner.title.replace(/^step\d+\s*/, '')
 }
 
@@ -216,13 +235,15 @@ function openEditAccountDialog(account: AttendanceAccount) {
 async function loadPageData() {
   loading.value = true
   try {
-    const [config, accountItems] = await Promise.all([
+    const [config, courseDataFlowConfig, accountItems] = await Promise.all([
       fetchAttendanceConfig(),
+      fetchAttendanceCourseDataFlowConfig(),
       fetchAttendanceAccounts(),
       taskStore.fetchDevices(),
     ])
     accounts.value = accountItems
     applyConfig(config)
+    applyCourseDataFlowConfig(courseDataFlowConfig)
   } catch (error: any) {
     ElMessage.error(error.response?.data?.detail || '加载考勤配置失败')
   } finally {
@@ -235,8 +256,6 @@ async function saveCurrentSelections() {
   try {
     const payload: AttendanceConfigUpdateRequest = {
       execution_device_entry_id: currentExecutionDeviceId.value || '',
-      data_device_entry_id: currentDataDeviceId.value || '',
-      step_device_entry_ids: buildStepDevicePayload(),
       scan_reminder_users: parseLines(scanReminderText.value),
       order_lookup_mode: currentOrderLookupMode.value,
     }
@@ -250,11 +269,29 @@ async function saveCurrentSelections() {
 
     const config = await updateAttendanceConfig(payload)
     applyConfig(config)
-    ElMessage.success('全局当前配置已保存')
+    ElMessage.success('采集与订单配置已保存')
   } catch (error: any) {
-    ElMessage.error(error.response?.data?.detail || '保存全局当前配置失败')
+    ElMessage.error(error.response?.data?.detail || '保存采集与订单配置失败')
   } finally {
     savingCurrent.value = false
+  }
+}
+
+async function saveCourseDataFlowConfig() {
+  savingCourseDataFlow.value = true
+  try {
+    const payload: AttendanceCourseDataFlowConfigUpdateRequest = {
+      browser_device_entry_id: courseBrowserDeviceId.value || '',
+      data_device_entry_id: courseDataDeviceId.value || '',
+      step_device_entry_ids: buildStepDevicePayload(),
+    }
+    const config = await updateAttendanceCourseDataFlowConfig(payload)
+    applyCourseDataFlowConfig(config)
+    ElMessage.success('课程数据配置已保存')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.detail || '保存课程数据配置失败')
+  } finally {
+    savingCourseDataFlow.value = false
   }
 }
 
@@ -315,7 +352,7 @@ onMounted(() => {
         <div class="hero-copy">
           <div class="eyebrow">禅寺考勤 / 考勤配置</div>
           <h1>考勤配置</h1>
-        <p>这里维护问卷账号、默认执行设备、数据主机、六步运行位置、扫码提醒对象、操作密码和订单查单模式。</p>
+        <p>这里分别维护课程数据运行位置、采集与订单默认值，以及问卷采集账号。</p>
       </div>
       <el-button type="primary" :icon="RefreshRight" :loading="loading" @click="loadPageData">
         刷新
@@ -326,19 +363,19 @@ onMounted(() => {
       <section class="panel-card">
         <div class="panel-header">
           <div>
-            <p class="panel-kicker">全局当前值</p>
-            <h2>默认执行配置</h2>
+            <p class="panel-kicker">课程数据</p>
+            <h2>step1-step6 运行位置</h2>
           </div>
           <el-tag type="warning" effect="plain">管理员共享</el-tag>
         </div>
 
         <el-form label-position="top" class="settings-form">
-          <el-form-item label="当前执行设备">
+          <el-form-item label="课程数据浏览器设备">
             <el-select
-              v-model="currentExecutionDeviceId"
+              v-model="courseBrowserDeviceId"
               filterable
               clearable
-              placeholder="从你已有的设备资产里选一个"
+              placeholder="留空时继承采集与订单默认执行设备"
             >
               <el-option
                 v-for="device in deviceOptions"
@@ -349,14 +386,93 @@ onMounted(() => {
             </el-select>
           </el-form-item>
 
-          <el-form-item label="数据主机">
+          <el-form-item label="课程数据主机">
             <el-select
-              v-model="currentDataDeviceId"
+              v-model="courseDataDeviceId"
               filterable
               clearable
               placeholder="留空表示当前 CodeYun 实例"
             >
               <el-option label="当前 CodeYun 实例" value="" />
+              <el-option
+                v-for="device in deviceOptions"
+                :key="device.id"
+                :label="getDeviceLabel(device)"
+                :value="device.id"
+              />
+            </el-select>
+          </el-form-item>
+
+          <div class="step-runner-block">
+            <div class="step-runner-heading">
+              <span>课程数据单步覆盖</span>
+              <el-tag size="small" effect="plain">{{ stepOverrideCount }} 个覆盖</el-tag>
+            </div>
+            <div class="step-runner-list">
+              <div
+                v-for="runner in stepRunnerRows"
+                :key="runner.step"
+                class="step-runner-row"
+                :class="{ 'is-warning': runner.device_missing || runner.device_inactive }"
+              >
+                <div class="step-runner-main">
+                  <strong>step{{ runner.step }}</strong>
+                  <span>{{ getStepRunnerTitle(runner) }}</span>
+                  <el-tag size="small" effect="plain">
+                    {{ getEffectiveRunnerLabel(runner) }}
+                  </el-tag>
+                </div>
+                <el-select
+                  v-model="stepDeviceEntryIds[String(runner.step)]"
+                  filterable
+                  clearable
+                  class="step-runner-select"
+                  :placeholder="getStepDefaultOptionLabel(runner)"
+                >
+                  <el-option :label="getStepDefaultOptionLabel(runner)" value="" />
+                  <el-option
+                    v-for="device in deviceOptions"
+                    :key="`${runner.step}-${device.id}`"
+                    :label="getDeviceLabel(device)"
+                    :value="device.id"
+                  />
+                </el-select>
+              </div>
+            </div>
+          </div>
+
+        </el-form>
+
+        <div class="summary-strip">
+          <span>课程数据浏览器：{{ selectedCourseBrowserDeviceLabel }}</span>
+          <span>课程数据主机：{{ selectedCourseDataDeviceLabel }}</span>
+          <span>步骤覆盖：{{ stepOverrideCount ? `${stepOverrideCount} 个` : '使用默认规则' }}</span>
+        </div>
+
+        <div class="action-row">
+          <el-button type="primary" :icon="Check" :loading="savingCourseDataFlow" @click="saveCourseDataFlowConfig">
+            保存课程数据配置
+          </el-button>
+        </div>
+      </section>
+
+      <section class="panel-card">
+        <div class="panel-header">
+          <div>
+            <p class="panel-kicker">采集与订单</p>
+            <h2>默认执行配置</h2>
+          </div>
+          <el-tag type="warning" effect="plain">管理员共享</el-tag>
+        </div>
+
+        <el-form label-position="top" class="settings-form">
+          <el-form-item label="默认执行设备">
+            <el-select
+              v-model="currentExecutionDeviceId"
+              filterable
+              clearable
+              placeholder="用于问卷采集、订单查单等非课程数据动作"
+            >
               <el-option
                 v-for="device in deviceOptions"
                 :key="device.id"
@@ -409,52 +525,10 @@ onMounted(() => {
               </el-button>
             </div>
           </el-form-item>
-
-          <div class="step-runner-block">
-            <div class="step-runner-heading">
-              <span>六步运行位置</span>
-              <el-tag size="small" effect="plain">{{ stepOverrideCount }} 个覆盖</el-tag>
-            </div>
-            <div class="step-runner-list">
-              <div
-                v-for="runner in stepRunnerRows"
-                :key="runner.step"
-                class="step-runner-row"
-                :class="{ 'is-warning': runner.device_missing || runner.device_inactive }"
-              >
-                <div class="step-runner-main">
-                  <strong>step{{ runner.step }}</strong>
-                  <span>{{ getStepRunnerTitle(runner) }}</span>
-                  <el-tag size="small" effect="plain">
-                    {{ getEffectiveRunnerLabel(runner) }}
-                  </el-tag>
-                </div>
-                <el-select
-                  v-model="stepDeviceEntryIds[String(runner.step)]"
-                  filterable
-                  clearable
-                  class="step-runner-select"
-                  :placeholder="getStepDefaultOptionLabel(runner)"
-                >
-                  <el-option :label="getStepDefaultOptionLabel(runner)" value="" />
-                  <el-option
-                    v-for="device in deviceOptions"
-                    :key="`${runner.step}-${device.id}`"
-                    :label="getDeviceLabel(device)"
-                    :value="device.id"
-                  />
-                </el-select>
-              </div>
-            </div>
-          </div>
-
         </el-form>
 
         <div class="summary-strip">
-          <span>问卷账号：{{ account?.login_username || '未配置' }}</span>
-          <span>当前设备：{{ selectedExecutionDeviceLabel }}</span>
-          <span>数据主机：{{ selectedDataDeviceLabel }}</span>
-          <span>步骤覆盖：{{ stepOverrideCount ? `${stepOverrideCount} 个` : '使用默认规则' }}</span>
+          <span>默认执行设备：{{ selectedExecutionDeviceLabel }}</span>
           <span>扫码提醒：{{ parseLines(scanReminderText).join('、') || '未配置' }}</span>
           <span>查单模式：{{ orderLookupModeOptions.find(item => item.value === currentOrderLookupMode)?.label || '强制网页查最新数据' }}</span>
           <span>操作密码：{{ clearOrderOperationPassword ? '本次保存后清空' : (orderOperationPasswordConfigured ? '已配置' : '未配置') }}</span>
@@ -462,7 +536,7 @@ onMounted(() => {
 
         <div class="action-row">
           <el-button type="primary" :icon="Check" :loading="savingCurrent" @click="saveCurrentSelections">
-            保存全局当前配置
+            保存采集与订单配置
           </el-button>
         </div>
       </section>
@@ -479,7 +553,7 @@ onMounted(() => {
         </div>
 
         <div v-if="!account" class="placeholder-card">
-          <p>还没有配置问卷账号。这里只支持一个全局账号；问卷课程清单会从星云表格自动读取。</p>
+          <p>还没有配置问卷账号。这里只保存问卷采集登录信息，不参与课程数据 step 配置。</p>
         </div>
 
         <div v-else class="single-account-card">

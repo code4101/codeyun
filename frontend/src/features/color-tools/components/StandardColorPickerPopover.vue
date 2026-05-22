@@ -116,27 +116,33 @@
         <button
           type="button"
           class="picker-advanced-toggle"
-          :aria-expanded="precisionOpen"
-          @click="precisionOpen = !precisionOpen"
+          :aria-expanded="customColorPanelOpen"
+          @click="customColorPanelOpen = !customColorPanelOpen"
         >
-          <span>精调</span>
-          <span>{{ precisionOpen ? '收起' : '打开' }}</span>
+          <span>自定义颜色</span>
+          <span
+            class="picker-advanced-chevron"
+            :class="{ open: customColorPanelOpen }"
+            aria-hidden="true"
+          >
+            ▾
+          </span>
         </button>
         <ElColorPickerPanel
-          v-if="precisionOpen"
+          v-if="customColorPanelOpen"
           :model-value="normalizedModelValue"
           color-format="hex"
           class="standard-color-picker-panel"
           @update:model-value="handlePanelValueChange"
         >
           <template #footer>
-            <div class="picker-precision-footer" />
+            <div class="picker-custom-color-footer" />
           </template>
         </ElColorPickerPanel>
       </div>
 
       <div class="picker-footer-actions">
-        <el-button size="small" text @click="resetDraft">重置</el-button>
+        <el-button size="small" type="primary" text @click="confirmSelection">确认</el-button>
       </div>
     </div>
   </el-popover>
@@ -181,7 +187,7 @@ const emit = defineEmits<{
 
 const searchKeyword = ref('')
 const sessionResetValue = ref('#606266')
-const precisionOpen = ref(false)
+const customColorPanelOpen = ref(false)
 
 const createPaletteRow = (entries: Array<[string, string]>): PaletteSwatch[] => (
   entries.map(([hex, label]) => ({ hex, label }))
@@ -299,7 +305,7 @@ watch(() => props.visible, (visible) => {
   searchKeyword.value = ''
   if (visible) {
     sessionResetValue.value = normalizePickerHex(props.resetValue ?? props.modelValue)
-    precisionOpen.value = false
+    customColorPanelOpen.value = false
   }
 })
 
@@ -377,8 +383,8 @@ function applyMappedColor(): void {
   emit('update:modelValue', mappedInfo.value.mappedColor.hex)
 }
 
-function resetDraft(): void {
-  emit('update:modelValue', sessionResetValue.value)
+function confirmSelection(): void {
+  emit('update:visible', false)
 }
 </script>
 
@@ -419,7 +425,9 @@ function resetDraft(): void {
 .picker-advanced-block{display:flex;flex-direction:column;gap:8px}
 .picker-advanced-toggle{display:flex;align-items:center;justify-content:space-between;width:100%;padding:7px 0;border:none;background:transparent;color:#526173;font-size:12px;line-height:1.3;cursor:pointer}
 .picker-advanced-toggle:hover{color:#1d4ed8}
-.picker-precision-footer{display:none}
+.picker-advanced-chevron{font-size:11px;line-height:1;transition:transform .15s ease}
+.picker-advanced-chevron.open{transform:rotate(180deg)}
+.picker-custom-color-footer{display:none}
 .picker-footer-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 </style>
 

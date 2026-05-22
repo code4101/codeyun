@@ -100,10 +100,12 @@ const form = ref({
   schedule_month_day: 1,
   schedule_cron: '',
   scheduled_action: 'default',
+  next_run_at: '',
   retry_enabled: false,
   retry_minutes: 10,
   timeout: null as number | null
 });
+const initialNextRunAt = ref('');
 
 const nlpInput = ref('');
 
@@ -649,6 +651,25 @@ const scheduleUnitSeconds = (unit: string) => {
 
 const defaultScheduledAction = (kind: RuntimeKind) => kind === 'job' ? 'enqueue' : 'restart';
 
+const toDateTimeInputValue = (value: string | null | undefined) => {
+  if (!value) return '';
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return String(value).slice(0, 19);
+  return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}T${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
+};
+
+const setFormNextRunAt = (value: string | null | undefined) => {
+  const formatted = toDateTimeInputValue(value);
+  form.value.next_run_at = formatted;
+  initialNextRunAt.value = formatted;
+};
+
+const buildNextRunAtPatch = () => {
+  const current = form.value.next_run_at || '';
+  if (current === initialNextRunAt.value) return {};
+  return { next_run_at: current.trim() || null };
+};
+
 const resetScheduleFields = () => {
   form.value.schedule = '';
   form.value.schedule_mode = 'manual';
@@ -791,6 +812,7 @@ const buildTaskPayloadFromForm = () => ({
   schedule: '',
   schedule_policy: buildSchedulePolicyFromForm(),
   timeout: form.value.timeout,
+  ...buildNextRunAtPatch(),
 });
 
 const openCreateDialog = (kind: RuntimeKind) => {
@@ -819,10 +841,12 @@ const openCreateDialog = (kind: RuntimeKind) => {
         schedule_month_day: 1,
         schedule_cron: '',
         scheduled_action: 'default',
+        next_run_at: '',
         retry_enabled: false,
         retry_minutes: 10,
         timeout: null
     };
+    initialNextRunAt.value = '';
     dialogVisible.value = true;
 };
 
@@ -849,10 +873,12 @@ const openEditDialog = (item: RuntimeItem) => {
         schedule_month_day: 1,
         schedule_cron: '',
         scheduled_action: 'default',
+        next_run_at: '',
         retry_enabled: false,
         retry_minutes: 10,
         timeout: item.timeout ?? null
     };
+    setFormNextRunAt(getRuntimeNextRunAt(item));
     applySchedulePolicyToForm(item.schedule_policy);
     if (!item.schedule_policy && item.schedule) {
         form.value.schedule_mode = 'cron';
@@ -867,6 +893,7 @@ const openBuiltinScheduleDialog = (item: RuntimeItem) => {
     scheduleTarget.value = item;
     form.value.runtime_kind = 'job';
     resetScheduleFields();
+    setFormNextRunAt(getRuntimeNextRunAt(item));
     applySchedulePolicyToForm(item.schedule_policy);
     if (!item.schedule_policy && item.schedule) {
         form.value.schedule_mode = 'cron';
@@ -909,7 +936,8 @@ const handleSubmitBuiltinSchedule = async () => {
 
     try {
         const policy = buildSchedulePolicyFromForm();
-        await configureRuntimeJobSchedule(currentDeviceId.value, target.key, policy);
+        const nextRunPatch = buildNextRunAtPatch() as { next_run_at?: string | null };
+        await configureRuntimeJobSchedule(currentDeviceId.value, target.key, policy, nextRunPatch.next_run_at);
         ElMessage.success('定时已保存');
         scheduleDialogVisible.value = false;
         scheduleTarget.value = null;
@@ -1684,6 +1712,16 @@ onUnmounted(() => {
             </template>
           </div>
         </el-form-item>
+        <el-form-item label="下次触发">
+          <el-date-picker
+            v-model="form.next_run_at"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            format="YYYY-MM-DD HH:mm"
+            clearable
+            class="schedule-once"
+          />
+        </el-form-item>
         <el-form-item v-if="form.schedule_mode !== 'manual'" label="触发动作">
           <div class="schedule-editor">
             <el-select v-model="form.scheduled_action" class="schedule-action-select">
@@ -1782,6 +1820,16 @@ onUnmounted(() => {
               <el-input v-model="form.schedule_cron" placeholder="*/5 * * * *" class="schedule-cron" />
             </template>
           </div>
+        </el-form-item>
+        <el-form-item label="下次触发">
+          <el-date-picker
+            v-model="form.next_run_at"
+            type="datetime"
+            value-format="YYYY-MM-DDTHH:mm:ss"
+            format="YYYY-MM-DD HH:mm"
+            clearable
+            class="schedule-once"
+          />
         </el-form-item>
         <el-form-item v-if="form.schedule_mode !== 'manual'" label="失败处理">
           <div class="schedule-editor">

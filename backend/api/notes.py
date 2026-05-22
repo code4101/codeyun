@@ -755,6 +755,7 @@ def _find_existing_codex_diary_notes(
             NoteNode.start_at >= day_start_at,
             NoteNode.start_at < day_end_at,
         )
+        .where(_active_note_condition())
         .order_by(NoteNode.start_at, NoteNode.created_at)
     ).all()
     duplicate_ids: list[str] = []
@@ -781,6 +782,7 @@ def _codex_diary_public_note_ids(session: Session, user_id: int, note_ids: list[
                 or_(NoteNode.id.in_(legacy_ids), NoteNode.legacy_id.in_(legacy_ids)) if legacy_ids else False,
                 NoteNode.numeric_id.in_(numeric_ids) if numeric_ids else False,
             ),
+            _active_note_condition(),
         )
     ).all()
     note_by_ref: dict[str, NoteNode] = {}
@@ -1545,6 +1547,7 @@ def _build_codex_diary_note_title_hints(
     rows = session.exec(
         select(NoteNode)
         .where(NoteNode.user_id == user_id)
+        .where(_active_note_condition())
         .order_by(NoteNode.updated_at.desc())
         .limit(5000)
     ).all()
@@ -3830,6 +3833,14 @@ def _note_edge_ref_set(notes: Iterable[NoteNode]) -> set[str]:
     return refs
 
 
+def _active_note_condition():
+    return or_(NoteNode.deleted_at.is_(None), NoteNode.deleted_at <= 0)
+
+
+def _deleted_note_condition():
+    return NoteNode.deleted_at > 0
+
+
 def _resolve_note_legacy_id(note_ref: str, current_user: User, session: Session) -> str | None:
     note = _get_accessible_note_by_any_ref(note_ref, current_user, session)
     if note is None:
@@ -3844,7 +3855,13 @@ def _resolve_note_public_ref(note_ref: str, current_user: User, session: Session
     return _note_public_id(note)
 
 
-def _get_accessible_note_by_any_ref(note_id: str, current_user: User, session: Session) -> NoteNode | None:
+def _get_accessible_note_by_any_ref(
+    note_id: str,
+    current_user: User,
+    session: Session,
+    *,
+    include_deleted: bool = False,
+) -> NoteNode | None:
     normalized_id = str(note_id or "").strip()
     if _is_numeric_note_ref(normalized_id):
         query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_id))
@@ -3852,16 +3869,26 @@ def _get_accessible_note_by_any_ref(note_id: str, current_user: User, session: S
         query = select(NoteNode).where(or_(NoteNode.id == normalized_id, NoteNode.legacy_id == normalized_id))
     if not current_user.is_superuser:
         query = query.where(NoteNode.user_id == current_user.id)
+    if not include_deleted:
+        query = query.where(_active_note_condition())
     return session.exec(query).first()
 
 
-def _get_accessible_note(note_id: str, current_user: User, session: Session) -> NoteNode | None:
+def _get_accessible_note(
+    note_id: str,
+    current_user: User,
+    session: Session,
+    *,
+    include_deleted: bool = False,
+) -> NoteNode | None:
     normalized_id = str(note_id or "").strip()
     if not _is_numeric_note_ref(normalized_id):
         return None
     query = select(NoteNode).where(NoteNode.numeric_id == int(normalized_id))
     if not current_user.is_superuser:
         query = query.where(NoteNode.user_id == current_user.id)
+    if not include_deleted:
+        query = query.where(_active_note_condition())
     return session.exec(query).first()
 
 
@@ -3888,13 +3915,17 @@ def _get_component_note_ids(
     if not _is_numeric_note_ref(normalized_seed_id):
         raise HTTPException(status_code=404, detail="Note not found")
     start_note = session.exec(
-        select(NoteNode).where(NoteNode.numeric_id == int(normalized_seed_id), NoteNode.user_id == user_id)
+        select(NoteNode)
+        .where(NoteNode.numeric_id == int(normalized_seed_id), NoteNode.user_id == user_id)
+        .where(_active_note_condition())
     ).first()
     if not start_note:
         raise HTTPException(status_code=404, detail="Note not found")
 
     seed_node_id = _note_public_id(start_note)
-    all_notes = session.exec(select(NoteNode).where(NoteNode.user_id == user_id)).all()
+    all_notes = session.exec(
+        select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())
+    ).all()
     ref_to_note = build_note_ref_map(all_notes)
     edges = session.exec(select(NoteEdge).where(NoteEdge.user_id == user_id)).all()
     adj: dict[str, list[str]] = {}
@@ -4054,7 +4085,7 @@ def _sort_notes(notes: List[NoteNode], order_by: str, order_desc: bool) -> List[
 
 
 def _load_note_context(user_id: int, session: Session, *, include_edges: bool) -> NoteGraphContext:
-    notes = session.exec(select(NoteNode).where(NoteNode.user_id == user_id)).all()
+    notes = session.exec(select(NoteNode).where(NoteNode.user_id == user_id).where(_active_note_condition())).all()
     edges = []
     if include_edges:
         edges = session.exec(select(NoteEdge).where(NoteEdge.user_id == user_id)).all()
@@ -4279,7 +4310,7 @@ def read_notes(
     Supports filtering by start_at (mapped from created_*) and update time range.
     Default limit is 128.
     """
-    query = select(NoteNode).where(NoteNode.user_id == current_user.id)
+    query = select(NoteNode).where(NoteNode.user_id == current_user.id).where(_active_note_condition())
     
     # Apply Time Filters
     # Note: 'created_start/end' params now filter by 'start_at' field
@@ -4301,6 +4332,25 @@ def read_notes(
     return [_serialize_note_list(note, current_user) for note in notes]
 
 
+@router.get("/trash", response_model=List[NoteListRead])
+def read_deleted_notes(
+    skip: int = 0,
+    limit: int = 200,
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
+    session: Session = Depends(get_session),
+):
+    query = (
+        select(NoteNode)
+        .where(NoteNode.user_id == current_user.id)
+        .where(_deleted_note_condition())
+        .order_by(NoteNode.deleted_at.desc(), NoteNode.updated_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+    notes = session.exec(query).all()
+    return [_serialize_note_list(note, current_user) for note in notes]
+
+
 @router.post("/query", response_model=NoteQueryResponse)
 def query_notes(
     request: NoteQueryRequest,
@@ -4311,7 +4361,7 @@ def query_notes(
     Query a reusable note set using a generic scope + rules model.
     """
     scope = request.scope
-    query = select(NoteNode).where(NoteNode.user_id == current_user.id)
+    query = select(NoteNode).where(NoteNode.user_id == current_user.id).where(_active_note_condition())
 
     edge_pool: List[NoteEdge] = []
     if scope.mode in {"planetary", "satellite"}:
@@ -4395,7 +4445,8 @@ def batch_update_notes(
     notes = session.exec(
         select(NoteNode).where(
             NoteNode.user_id == current_user.id,
-            NoteNode.numeric_id.in_(numeric_ids)
+            NoteNode.numeric_id.in_(numeric_ids),
+            _active_note_condition(),
         )
     ).all()
 
@@ -4684,7 +4735,9 @@ def merge_note_category_palette_item(
 
     changed = False
     now = time.time()
-    notes = session.exec(select(NoteNode).where(NoteNode.user_id == current_user.id)).all()
+    notes = session.exec(
+        select(NoteNode).where(NoteNode.user_id == current_user.id).where(_active_note_condition())
+    ).all()
     for note in notes:
         effective_note_categories = _resolve_effective_note_categories_payload(
             note.note_categories,
@@ -5331,7 +5384,8 @@ def get_connected_component(
     nodes = session.exec(
         select(NoteNode).where(
             NoteNode.user_id == current_user.id,
-            NoteNode.numeric_id.in_([int(note_id) for note_id in note_ids if str(note_id).isdecimal()])
+            NoteNode.numeric_id.in_([int(note_id) for note_id in note_ids if str(note_id).isdecimal()]),
+            _active_note_condition(),
         )
     ).all()
     component_refs = _note_edge_ref_set(nodes)
@@ -5385,26 +5439,35 @@ def delete_note(
     db_note = _get_accessible_note(note_id, current_user, session)
     if not db_note:
         raise HTTPException(status_code=404, detail="Note not found")
-    note_refs = note_ref_aliases(db_note)
-
-    edges = session.exec(
-        select(NoteEdge).where(
-            or_(
-                NoteEdge.source_id.in_(note_refs),
-                NoteEdge.target_id.in_(note_refs),
-            )
-        )
-    ).all()
-    for edge in edges:
-        session.delete(edge)
-    session.exec(
-        delete(ResourceAccessGrant)
-        .where(ResourceAccessGrant.resource_type == NOTE_DOC_RESOURCE_TYPE)
-        .where(ResourceAccessGrant.resource_id == _note_public_id(db_note))
-    )
-    session.delete(db_note)
+    now = time.time()
+    db_note.deleted_at = now
+    db_note.deleted_by_user_id = current_user.id
+    db_note.updated_at = now
+    session.add(db_note)
     session.commit()
     return {"ok": True}
+
+
+@router.post("/{note_id}/restore", response_model=NoteRead)
+def restore_note(
+    note_id: str,
+    current_user: User = Depends(get_current_active_or_guest_notes_user),
+    session: Session = Depends(get_session),
+):
+    db_note = _get_accessible_note_by_any_ref(note_id, current_user, session, include_deleted=True)
+    if not db_note:
+        raise HTTPException(status_code=404, detail="Note not found")
+    if not db_note.deleted_at:
+        return _serialize_note_read(db_note, current_user)
+
+    now = time.time()
+    db_note.deleted_at = None
+    db_note.deleted_by_user_id = None
+    db_note.updated_at = now
+    session.add(db_note)
+    session.commit()
+    session.refresh(db_note)
+    return _serialize_note_read(db_note, current_user)
 
 # --- Edges ---
 

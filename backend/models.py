@@ -113,6 +113,7 @@ class Task(SQLModel, table=True):
     schedule: Optional[str] = None 
     schedule_policy: Optional[dict] = Field(default=None, sa_column=Column(JSON))
     schedule_state: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    next_run_at: Optional[str] = Field(default=None, index=True)
     timeout: Optional[int] = None 
     order: Optional[int] = Field(default=0)
     created_at: float = Field(default_factory=time.time)
@@ -151,6 +152,21 @@ class ServiceAccessToken(SQLModel, table=True):
     call_count: int = Field(default=0)
     last_used_at: Optional[float] = Field(default=None, index=True)
     created_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class FanxiuPseudoCodeCard(SQLModel, table=True):
+    __tablename__ = "fanxiupseudocodecard"
+    __table_args__ = {"extend_existing": True}
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    scope: str = Field(default="action", index=True)
+    title: str = Field(default="", sa_column=Column(Text))
+    body: str = Field(default="", sa_column=Column(Text))
+    enabled: bool = Field(default=True, index=True)
+    order_index: int = Field(default=0, index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 
@@ -736,6 +752,8 @@ class SheetDocument(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    deleted_at: Optional[float] = Field(default=None, index=True)
+    deleted_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
 
 
 class WorkbookDocument(SQLModel, table=True):
@@ -751,6 +769,8 @@ class WorkbookDocument(SQLModel, table=True):
     updated_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+    deleted_at: Optional[float] = Field(default=None, index=True)
+    deleted_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
 
 
 class WorkbookSheetLink(SQLModel, table=True):
@@ -1070,6 +1090,8 @@ class NoteNode(SQLModel, table=True):
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     start_at: float = Field(default_factory=time.time)
+    deleted_at: Optional[float] = Field(default=None, index=True)
+    deleted_by_user_id: Optional[int] = Field(default=None, foreign_key="user.id", index=True)
     
     # Operation logs: list of {"ts": int, "f": str, "v": any}
     history: List[dict] = Field(default=[], sa_column=Column(JSON))

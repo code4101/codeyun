@@ -30,7 +30,7 @@ def _set_enabled(monkeypatch, enabled_by_key):
     )
 
 
-def _write_schedule_state(path, values, *, schedule_version=5):
+def _write_schedule_state(path, values, *, schedule_version=background_tasks.BACKGROUND_TASK_SCHEDULE_STATE_VERSION):
     blackboard = {} if schedule_version is None else {"schedule_version": schedule_version}
     path.write_text(
         json.dumps(
@@ -202,6 +202,57 @@ def test_background_task_runner_persists_next_run_when_queue_job_is_running(tmp_
     assert tree_runner.state["nodes"]["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2026-05-19 17:52:00"
 
 
+def test_background_task_runner_uses_queue_result_next_run_at(tmp_path, monkeypatch):
+    spec = BackgroundTaskSpec(
+        key="ruanyf_weekly_note",
+        title="阮一峰周刊笔记",
+        category="笔记",
+        description="",
+        schedule_label="每周五 06:00",
+        retry_label="失败后 10 分钟重试",
+        action=lambda: "queue-1",
+    )
+    monkeypatch.setattr("backend.core.background_task_runner.BACKGROUND_TASK_SPECS", (spec,))
+    _set_enabled(monkeypatch, {"ruanyf_weekly_note": True})
+    monkeypatch.setattr(
+        "backend.core.background_task_runner._effective_background_task_schedule_policy",
+        lambda task_key, enabled=None: {
+            "enabled": True,
+            "trigger": {"type": "weekly", "weekdays": [5], "time": "06:00"},
+            "action": {"type": "enqueue"},
+        },
+    )
+    monkeypatch.setattr(
+        "backend.core.background_task_runner.background_task_queue.snapshot",
+        lambda: {
+            "running": None,
+            "pending": [],
+            "recent": [
+                {
+                    "id": "queue-1",
+                    "status": "completed",
+                    "result": {"next_run_at": "2026-05-22T08:00:00"},
+                }
+            ],
+        },
+    )
+
+    runner = _runner_for_test(tmp_path)
+    _write_schedule_state(
+        runner.state_path,
+        {"ruanyf_weekly_note": "2026-05-22 06:00:00"},
+    )
+    tree_runner = BehaviorTreeRunner(
+        runner.build_tree(),
+        runner.state_path,
+        now_func=FakeClock("2026-05-22 06:00:00"),
+    )
+    runner._ensure_schedule_state_version(tree_runner)
+
+    assert tree_runner.run_once() == Status.SUCCESS
+    assert tree_runner.state["nodes"]["Root/MemorySelector/ruanyf_weekly_note"]["next_run_at"] == "2026-05-22 08:00:00"
+
+
 def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkeypatch):
     task_keys = {spec.key for spec in BACKGROUND_TASK_SPECS}
     _set_enabled(monkeypatch, {key: False for key in task_keys})
@@ -223,4 +274,4 @@ def test_background_task_runner_resets_versioned_schedule_state(tmp_path, monkey
     assert nodes["Root/MemorySelector/auto_git_commit"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/storage_analysis"].get("next_run_at") is None
     assert nodes["Root/MemorySelector/rime_config_sync"]["next_run_at"] == "2099-05-10 01:00:00"
-    assert tree_runner.state["blackboard"]["schedule_version"] == 5
+    assert tree_runner.state["blackboard"]["schedule_version"] == background_tasks.BACKGROUND_TASK_SCHEDULE_STATE_VERSION

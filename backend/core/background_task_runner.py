@@ -33,7 +33,7 @@ from backend.core.weekly_note_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_
 from backend.models import AppSetting
 
 
-TaskAction = Callable[[], str | None]
+TaskAction = Callable[[], Any]
 AUTO_GIT_COMMIT_RUN_TIME = "00:15"
 CODEX_DIARY_RUN_TIME = "00:10"
 ATTENDANCE_SUMMARY_RUN_TIME = "00:00"
@@ -41,11 +41,10 @@ MEDIA_SYNC_HOME_DISCOVERY_TASK_KEY = "media_sync_home_discovery"
 MEDIA_SYNC_HOME_DISCOVERY_RUN_TIME = "00:25"
 MEDIA_SYNC_HOME_DISCOVERY_DOWNLOAD_LIMIT = 100
 METADATA_FEEDBACK_RUN_TIME = "00:05"
-STORAGE_ANALYSIS_RUN_TIME = "00:35"
+STORAGE_ANALYSIS_RUN_TIME = "01:00"
 MARKET_QUOTE_REFRESH_TASK_KEY = "market_quote_refresh"
-RUANYF_WEEKLY_FRIDAY_RUN_TIMES = tuple(f"{hour:02d}:00" for hour in range(0, 23, 2))
-RUANYF_WEEKLY_SATURDAY_RUN_TIME = "00:00"
-BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 5
+RUANYF_WEEKLY_START_TIME = "06:00"
+BACKGROUND_TASK_SCHEDULE_STATE_VERSION = 6
 BACKGROUND_QUEUE_POLL_SECONDS = 1.0
 SCHEDULE_VERSIONED_TASK_KEYS = {
     "auto_git_commit",
@@ -131,6 +130,26 @@ def _job_schedule_policy(trigger: dict[str, Any], *, retry_minutes: int | None =
     return policy
 
 
+def _storage_analysis_schedule_policy() -> dict[str, Any]:
+    cron = ""
+    try:
+        from apscheduler.triggers.cron import CronTrigger
+        from backend.db import engine
+
+        with Session(engine) as session:
+            row = session.get(AppSetting, "storage.schedule")
+            if row and isinstance(row.value, dict):
+                cron = str(row.value.get("cron_expression") or "").strip()
+        if cron:
+            CronTrigger.from_crontab(cron)
+    except Exception:
+        cron = ""
+
+    if cron:
+        return _job_schedule_policy({"type": "cron", "expression": cron})
+    return _job_schedule_policy({"type": "daily", "time": STORAGE_ANALYSIS_RUN_TIME})
+
+
 def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | None:
     if task_key == "auto_git_commit":
         return _job_schedule_policy({"type": "daily", "time": AUTO_GIT_COMMIT_RUN_TIME}, retry_minutes=10)
@@ -140,13 +159,7 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
         return _job_schedule_policy({"type": "daily", "time": CODEX_DIARY_RUN_TIME}, retry_minutes=10)
     if task_key == RUANYF_WEEKLY_TASK_NAME:
         return _job_schedule_policy(
-            {
-                "type": "any",
-                "rules": [
-                    {"type": "weekly", "weekdays": [5], "times": list(RUANYF_WEEKLY_FRIDAY_RUN_TIMES)},
-                    {"type": "weekly", "weekdays": [6], "time": RUANYF_WEEKLY_SATURDAY_RUN_TIME},
-                ],
-            },
+            {"type": "weekly", "weekdays": [5], "time": RUANYF_WEEKLY_START_TIME},
             retry_minutes=10,
         )
     if task_key == "attendance_summary_monthly_templates":
@@ -162,7 +175,7 @@ def _default_background_task_schedule_policy(task_key: str) -> dict[str, Any] | 
     if task_key == MARKET_QUOTE_REFRESH_TASK_KEY:
         return _job_schedule_policy({"type": "interval", "minutes": 60, "anchor": "last_finish"})
     if task_key == "storage_analysis":
-        return _job_schedule_policy({"type": "daily", "time": STORAGE_ANALYSIS_RUN_TIME})
+        return _storage_analysis_schedule_policy()
     if task_key == FANXIU_SLIMMING_TASK_KEY:
         return _job_schedule_policy({"type": "daily", "time": FANXIU_SLIMMING_RUN_TIME}, retry_minutes=10)
     return None
@@ -454,7 +467,7 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         title="阮一峰周刊笔记",
         category="笔记",
         description="周五发布窗口轮询阮一峰科技爱好者周刊，发现新一期后复用现有周刊笔记模板写入星图笔记。",
-        schedule_label="周五每 2 小时，周六 00:00 兜底",
+        schedule_label=f"每周五 {RUANYF_WEEKLY_START_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_ruanyf_weekly_note,
         manual_warning="会访问 GitHub 上的 ruanyf/weekly 仓库；已写入过当前发布窗口的新一期会自动跳过。",
@@ -480,23 +493,23 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_EVENING_TASK_KEY,
-        title="梵呗考勤晚间流程",
+        title="梵呗课程数据晚间步骤",
         category="考勤",
-        description="梵呗课程每天晚间执行 step1-step3。step1 默认调用执行设备下载小鹅通数据，step2/step3 默认在数据主机写表、计算返款并渲染高亮；每步运行位置可在考勤配置中覆盖。",
+        description="梵呗课程数据每天晚间执行 step1-step3。step1 默认调用课程数据浏览器下载小鹅通数据，step2/step3 默认在课程数据主机写表、计算返款并渲染高亮；每步运行位置可在考勤配置中覆盖。",
         schedule_label=f"每天 {FANBEI_ATTENDANCE_EVENING_RUN_TIME}",
         retry_label="无额外重试",
         action=enqueue_fanbei_attendance_evening_steps,
-        manual_warning="会按考勤配置里的六步运行位置执行：step1 默认使用执行设备，step2/step3 默认使用数据主机。",
+        manual_warning="会按考勤配置里的课程数据 step1-step6 运行位置执行：step1 默认使用课程数据浏览器，step2/step3 默认使用课程数据主机。",
     ),
     BackgroundTaskSpec(
         key=FANBEI_ATTENDANCE_MORNING_TASK_KEY,
-        title="梵呗考勤上午流程",
+        title="梵呗课程数据上午步骤",
         category="考勤",
-        description="梵呗课程每天上午执行 step4-step6。当前仅保留调度框架，具体步骤为空实现。",
+        description="梵呗课程数据每天上午执行 step4-step6。当前仅保留调度框架，具体步骤为空实现。",
         schedule_label=f"每天 {FANBEI_ATTENDANCE_MORNING_RUN_TIME}",
         retry_label="无额外重试",
         action=enqueue_fanbei_attendance_morning_steps,
-        manual_warning="当前仅执行空的 step4-step6 框架，不会修改考勤数据。",
+        manual_warning="当前仅执行课程数据 step4-step6 空框架，不会修改考勤数据。",
     ),
     BackgroundTaskSpec(
         key="rime_config_sync",
@@ -520,9 +533,9 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
     ),
     BackgroundTaskSpec(
         key="storage_analysis",
-        title="存储分析",
+        title="存储清理",
         category="存储",
-        description="按配置定期执行附件与死链维护分析。",
+        description="按配置检查数据工作区总占用，超出上限时优先永久清理旧回收站资源。",
         schedule_label=f"每天 {STORAGE_ANALYSIS_RUN_TIME}",
         retry_label="无额外重试",
         action=_enqueue_storage_analysis,
@@ -668,9 +681,14 @@ class BackgroundTaskRunner:
             return
         policy = _effective_background_task_schedule_policy(task_key, enabled=True)
         ctx.next_run_at = compute_next_trigger_at(policy, base_time=ctx.now())
-        queue_task_id = spec.action()
+        action_result = spec.action()
+        queue_task_id = _queue_task_id_from_action_result(action_result)
+        run_result = action_result
         if queue_task_id:
-            yield from self._wait_for_queue_task(ctx, queue_task_id)
+            run_result = yield from self._wait_for_queue_task(ctx, queue_task_id)
+        next_run_at = _next_run_at_from_action_result(run_result)
+        if next_run_at is not None:
+            return NextWake(next_run_at)
         next_run_at = compute_next_trigger_at(policy, base_time=ctx.now())
         if next_run_at is not None:
             return NextWake(next_run_at)
@@ -688,7 +706,7 @@ class BackgroundTaskRunner:
                 continue
 
             if status == "completed":
-                return
+                return queue_task.get("result")
 
             error_message = queue_task.get("error_message") or f"后台队列任务失败：{queue_task_id}"
             raise RuntimeError(str(error_message))
@@ -747,6 +765,36 @@ class BackgroundTaskRunner:
             runner.save_state()
         return changed
 
+    def set_task_next_run_at(self, task_key: str, next_run_at: Any) -> str | None:
+        runner = self._runner or self.build_runner()
+        formatted = _format_datetime(_parse_datetime(next_run_at))
+        nodes = runner.state.setdefault("nodes", {})
+        changed = False
+        matched = False
+        for path, state in list(nodes.items()):
+            if not isinstance(state, dict) or not _path_matches_task(path, task_key):
+                continue
+            matched = True
+            if formatted:
+                state["next_run_at"] = formatted
+            else:
+                state.pop("next_run_at", None)
+            changed = True
+
+        if not matched:
+            state = nodes.setdefault(f"Root/MemorySelector/{task_key}", {})
+            if formatted:
+                state["next_run_at"] = formatted
+            else:
+                state.pop("next_run_at", None)
+            changed = True
+
+        if changed:
+            runner.save_state()
+        with self._lock:
+            self._wake_event.set()
+        return formatted
+
 
 def _format_datetime(value: dt.datetime | None) -> str | None:
     if value is None:
@@ -766,6 +814,21 @@ def _parse_datetime(value: Any) -> dt.datetime | None:
             return dt.datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
         except ValueError:
             return None
+
+
+def _queue_task_id_from_action_result(value: Any) -> str | None:
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, dict):
+        queue_task_id = value.get("queue_task_id") or value.get("task_id")
+        return str(queue_task_id) if queue_task_id else None
+    return None
+
+
+def _next_run_at_from_action_result(value: Any) -> dt.datetime | None:
+    if isinstance(value, dict):
+        return _parse_datetime(value.get("next_run_at") or value.get("next_trigger_at"))
+    return _parse_datetime(getattr(value, "next_run_at", None))
 
 
 def _path_matches_task(path: str, task_key: str) -> bool:
@@ -848,6 +911,10 @@ def refresh_background_task_schedule_states(task_key: str | None = None) -> None
 
 def reset_background_task_schedule(task_key: str) -> bool:
     return background_task_runner.reset_task(task_key)
+
+
+def set_background_task_next_run_at(task_key: str, next_run_at: Any) -> str | None:
+    return background_task_runner.set_task_next_run_at(task_key, next_run_at)
 
 
 def is_background_task_deleted(task_key: str) -> bool:

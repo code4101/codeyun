@@ -23,6 +23,7 @@ from backend.core.background_task_runner import (
     is_background_task_deleted,
     refresh_background_task_schedule_states,
     reset_background_task_schedule,
+    set_background_task_next_run_at,
     set_background_task_schedule_policy,
     set_background_task_deleted,
     set_background_task_enabled,
@@ -41,6 +42,12 @@ from backend.core.storage import (
     ATTACHMENT_URL_PATTERN,
     build_attachment_url,
     get_attachments_dir,
+)
+from backend.core.resource_backup_cleanup import (
+    DEFAULT_RESOURCE_BACKUP_MAX_STORAGE_BYTES,
+    load_resource_backup_storage_policy,
+    run_resource_backup_storage_cleanup,
+    save_resource_backup_storage_policy,
 )
 from backend.core.storage_usage import collect_directory_usage
 from backend.core.storage_health import build_storage_health_report
@@ -71,7 +78,7 @@ LEGACY_STORAGE_CONFIG_FILE = os.path.join(
 STORAGE_SCHEDULE_SETTING_KEY = "storage.schedule"
 DEFAULT_STORAGE_SCHEDULE = {
     "schedule_enabled": False,
-    "cron_expression": "35 0 * * *",
+    "cron_expression": "0 1 * * *",
 }
 
 # --- Scheduler Setup ---
@@ -147,13 +154,17 @@ def save_config(config):
 
 def scheduled_analysis_job():
     """
-    Background job to run analysis.
-    In a real system, this might save results to DB history.
-    For now, it just logs.
+    Background job to run storage governance.
     """
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Running scheduled storage analysis...")
-    # TODO: Implement heavy analysis and cache results
-    pass
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] Running scheduled storage cleanup...")
+    result = run_resource_backup_storage_cleanup()
+    print(
+        "Storage cleanup finished: "
+        f"purged={result.get('purged_count', 0)}, "
+        f"over_limit={result.get('bytes_over_limit_before', 0)}, "
+        f"reason={result.get('skipped_reason') or 'done'}"
+    )
+    return result
 
 def init_storage_scheduler():
     config = load_config()
@@ -168,9 +179,9 @@ def init_storage_scheduler():
                 id="storage_analysis",
                 replace_existing=True
             )
-            print(f"Storage analysis scheduled: {cron}")
+            print(f"Storage cleanup scheduled: {cron}")
         except Exception as e:
-            print(f"Failed to schedule storage analysis: {e}")
+            print(f"Failed to schedule storage cleanup: {e}")
 
 # --- Models ---
 
@@ -357,6 +368,15 @@ class MaintenanceStatusResponse(BaseModel):
 class ScheduleConfig(BaseModel):
     enabled: bool
     cron_expression: str
+    cleanup_enabled: bool = True
+    max_storage_bytes: int = DEFAULT_RESOURCE_BACKUP_MAX_STORAGE_BYTES
+    trash_grace_days: float = 1
+    vacuum_sqlite: bool = True
+
+
+class StorageCleanupRunRequest(BaseModel):
+    dry_run: bool = False
+    force: bool = False
 
 
 class BackgroundTaskRead(BaseModel):
@@ -839,6 +859,7 @@ class BackgroundTaskToggleRequest(BaseModel):
 
 class BackgroundTaskScheduleRequest(BaseModel):
     schedule_policy: Optional[Dict[str, Any]] = None
+    next_run_at: Optional[str] = None
 
 
 @tasks_router.post("/background-tasks/{task_key}/toggle", response_model=dict)
@@ -867,12 +888,29 @@ def configure_background_task_schedule(
     if not any(spec.key == normalized_key for spec in BACKGROUND_TASK_SPECS):
         raise HTTPException(status_code=404, detail="后台任务不存在")
     policy = payload.schedule_policy if isinstance(payload.schedule_policy, dict) else None
-    enabled = bool(policy and policy.get("enabled", True))
-    set_background_task_schedule_policy(normalized_key, policy if enabled else None)
+    has_next_run_override = "next_run_at" in payload.model_fields_set and bool(payload.next_run_at)
+    enabled = bool(policy and policy.get("enabled", True)) or has_next_run_override
+    stored_policy = policy
+    if stored_policy is None and has_next_run_override:
+        stored_policy = {
+            "enabled": True,
+            "trigger": {"type": "manual"},
+            "action": {"type": "enqueue"},
+        }
+    set_background_task_schedule_policy(normalized_key, stored_policy if enabled else None)
     set_background_task_enabled(normalized_key, enabled)
-    reset_background_task_schedule(normalized_key)
+    next_run_at = None
+    if "next_run_at" in payload.model_fields_set:
+        next_run_at = set_background_task_next_run_at(normalized_key, payload.next_run_at)
+    else:
+        reset_background_task_schedule(normalized_key)
     refresh_background_task_schedule_states(normalized_key)
-    return {"success": True, "enabled": enabled, "schedule_policy": policy if enabled else None}
+    return {
+        "success": True,
+        "enabled": enabled,
+        "schedule_policy": stored_policy if enabled else None,
+        "next_run_at": next_run_at,
+    }
 
 
 @tasks_router.delete("/background-tasks/queue/{task_id}", response_model=dict)
@@ -1144,16 +1182,52 @@ def get_orphan_images(session: Session = Depends(get_session)):
     )
 
 @images_router.get("/storage/schedule", response_model=ScheduleConfig)
-def get_schedule_config():
+def get_schedule_config(session: Session = Depends(get_session)):
     config = load_config()
+    policy = load_resource_backup_storage_policy(session)
     return ScheduleConfig(
         enabled=config.get("schedule_enabled", False),
-        cron_expression=config.get("cron_expression", DEFAULT_STORAGE_SCHEDULE["cron_expression"])
+        cron_expression=config.get("cron_expression", DEFAULT_STORAGE_SCHEDULE["cron_expression"]),
+        cleanup_enabled=policy.cleanup_enabled,
+        max_storage_bytes=policy.max_storage_bytes,
+        trash_grace_days=policy.trash_grace_days,
+        vacuum_sqlite=policy.vacuum_sqlite,
     )
 
 @images_router.post("/storage/schedule", response_model=ScheduleConfig)
-def set_schedule_config(config: ScheduleConfig):
+def set_schedule_config(config: ScheduleConfig, session: Session = Depends(get_session)):
+    if config.enabled:
+        try:
+            CronTrigger.from_crontab(config.cron_expression)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid cron expression: {e}")
+
     save_config(config.dict())
+    policy = save_resource_backup_storage_policy(
+        session,
+        {
+            "cleanup_enabled": config.cleanup_enabled,
+            "max_storage_bytes": config.max_storage_bytes,
+            "trash_grace_days": config.trash_grace_days,
+            "vacuum_sqlite": config.vacuum_sqlite,
+        },
+    )
+
+    if config.enabled:
+        set_background_task_schedule_policy(
+            "storage_analysis",
+            {
+                "enabled": True,
+                "trigger": {"type": "cron", "expression": config.cron_expression},
+                "action": {"type": "enqueue"},
+                "concurrency": {"scope": "group", "policy": "queue"},
+            },
+        )
+        set_background_task_enabled("storage_analysis", True)
+    else:
+        set_background_task_schedule_policy("storage_analysis", None)
+        set_background_task_enabled("storage_analysis", False)
+    refresh_background_task_schedule_states("storage_analysis")
     
     if config.enabled:
         try:
@@ -1171,7 +1245,19 @@ def set_schedule_config(config: ScheduleConfig):
         if storage_scheduler.get_job("storage_analysis"):
             storage_scheduler.remove_job("storage_analysis")
             
-    return config
+    return ScheduleConfig(
+        enabled=config.enabled,
+        cron_expression=config.cron_expression,
+        cleanup_enabled=policy.cleanup_enabled,
+        max_storage_bytes=policy.max_storage_bytes,
+        trash_grace_days=policy.trash_grace_days,
+        vacuum_sqlite=policy.vacuum_sqlite,
+    )
+
+
+@images_router.post("/storage/cleanup/run", response_model=dict)
+def run_storage_cleanup(request: StorageCleanupRunRequest):
+    return run_resource_backup_storage_cleanup(dry_run=request.dry_run, force=request.force)
 
 
 @images_router.get("/device-control/identity", response_model=DeviceControlIdentityResponse)

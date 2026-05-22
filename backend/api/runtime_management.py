@@ -33,6 +33,7 @@ class RuntimeJobToggleRequest(BaseModel):
 
 class RuntimeJobScheduleRequest(BaseModel):
     schedule_policy: dict | None = None
+    next_run_at: str | None = None
 
 
 @router.get("/status")
@@ -117,7 +118,13 @@ def configure_runtime_job_schedule(
     _token_device: BaseDevice = Depends(verify_api_token),
     session: Session = Depends(get_session),
 ):
-    return configure_builtin_runtime_job_schedule(job_key, payload.schedule_policy, session)
+    return configure_builtin_runtime_job_schedule(
+        job_key,
+        payload.schedule_policy,
+        session,
+        next_run_at=payload.next_run_at,
+        next_run_at_provided="next_run_at" in payload.model_fields_set,
+    )
 
 
 @router.delete("/jobs/queue/{task_id}")
