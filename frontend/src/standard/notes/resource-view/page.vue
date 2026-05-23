@@ -76,6 +76,8 @@ type WorkbookContextMenuCommand =
   | 'link'
   | 'rename'
   | 'access'
+  | 'defined_names'
+  | 'save_as'
   | 'template'
   | 'duplicate'
   | 'delete'
@@ -86,6 +88,7 @@ type WorkbookContextMenuItem = {
   danger?: boolean
   divided?: boolean
   linkSubmenu?: boolean
+  saveAsSubmenu?: boolean
 }
 
 type SheetWorkspaceRouteView = 'lookup' | 'sheet'
@@ -228,8 +231,8 @@ const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
     { command: 'link', label: '打开链接', linkSubmenu: true, enabled: true },
     { command: 'rename', label: '重命名', enabled: canManageWorkbookSheets.value },
     { command: 'access', label: '设置权限', enabled: canManageWorkbookSheets.value },
-    { command: 'template', label: '另存为模版', enabled: true },
-    { command: 'duplicate', label: '另存为副本', enabled: true },
+    { command: 'defined_names', label: '名称管理器', enabled: canEditWorkbookSheets.value },
+    { command: 'save_as', label: '另存为', saveAsSubmenu: true, enabled: true },
     { command: 'delete', label: '删除工作簿', danger: true, divided: true, enabled: canManageWorkbookSheets.value },
   ]
   return items
@@ -240,6 +243,7 @@ const workbookContextMenuItems = computed<WorkbookContextMenuItem[]>(() => {
       danger: item.danger,
       divided: item.divided,
       linkSubmenu: item.linkSubmenu,
+      saveAsSubmenu: item.saveAsSubmenu,
     }))
 })
 const standaloneBackWorkbook = computed(() => {
@@ -877,6 +881,12 @@ function handleWorkbookContextMenuCommand(command: WorkbookContextMenuCommand) {
     case 'access':
       openWorkbookAccessFromContextMenu()
       break
+    case 'defined_names':
+      void openDefinedNamesFromWorkbookContextMenu()
+      break
+    case 'save_as':
+      void saveAsWorkbookFromContextMenu('duplicate')
+      break
     case 'template':
       void saveAsWorkbookFromContextMenu('template')
       break
@@ -922,6 +932,25 @@ function openWorkbookAccessFromContextMenu() {
     return
   }
   workbookAccessDialogVisible.value = true
+}
+
+async function openDefinedNamesFromWorkbookContextMenu() {
+  const currentWorkbook = workbook.value
+  closeWorkbookContextMenu()
+  if (!currentWorkbook || !canEditWorkbookSheets.value) {
+    ElMessage.warning('没有权限修改该工作簿')
+    return
+  }
+  if (activeSheetId.value == null) {
+    ElMessage.warning('请先选择一个工作表')
+    return
+  }
+  const workspace = await waitForSheetWorkspaceRef()
+  if (!workspace) {
+    ElMessage.warning('工作表还未加载完成')
+    return
+  }
+  workspace.openDefinedNamesDialog?.()
 }
 
 async function saveAsWorkbookFromContextMenu(mode: 'template' | 'duplicate') {
@@ -1451,6 +1480,34 @@ onBeforeUnmount(() => {
                 @click="handleWorkbookLinkMenuCommand(linkItem.command)"
               >
                 {{ linkItem.label }}
+              </button>
+            </div>
+          </div>
+          <div
+            v-else-if="item.saveAsSubmenu"
+            class="sheet-tab-context-menu-branch"
+          >
+            <button
+              type="button"
+              class="sheet-tab-context-menu-item has-submenu"
+              @click="handleWorkbookContextMenuCommand(item.command)"
+            >
+              {{ item.label }}
+            </button>
+            <div class="sheet-tab-context-submenu">
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleWorkbookContextMenuCommand('duplicate')"
+              >
+                副本
+              </button>
+              <button
+                type="button"
+                class="sheet-tab-context-menu-item"
+                @click="handleWorkbookContextMenuCommand('template')"
+              >
+                模版
               </button>
             </div>
           </div>

@@ -35,7 +35,7 @@ SOURCE_SHEET_TITLES = (
 TRACKING_STATUS_COLUMN = "追踪状态"
 SOURCE_SHEET_COLUMN = "来源sheet"
 FROZEN_STATUS = "已冻结"
-LEFT_STYLE_END_COLUMN = "返款配置"
+LEFT_STYLE_END_COLUMN = "当前应返款"
 PROGRESS_STYLE_START_COLUMN = "打卡数"
 TRACKING_GROUP_COLUMN = "追踪分组"
 FROZEN_BACKGROUND_COLOR = "#F2F2F2"
@@ -97,6 +97,7 @@ def _row_value(row: list[Any], columns: list[str], header: str) -> Any:
 def _row_key(row: list[Any], columns: list[str]) -> str:
     return "|".join([
         _normalize_datetime_key(_row_value(row, columns, "报名日期")),
+        _normalize_text(_row_value(row, columns, "学号")),
         _normalize_text(_row_value(row, columns, "姓名")),
         _normalize_text(_row_value(row, columns, "商户订单号")),
         _normalize_text(_row_value(row, columns, "用户ID")),

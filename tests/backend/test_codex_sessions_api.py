@@ -632,7 +632,8 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     completed_payload = _wait_for_daily_summary_run(client, entry_id, first_run["id"])
     assert completed_payload["status"] == "completed"
     assert completed_payload["stage"] == "completed"
-    assert completed_payload["generated_by"] == "codex_cli"
+    assert completed_payload["generated_by"] == "deepseek"
+    assert completed_payload["model"] == "deepseek-v4-pro"
     assert completed_payload["thread_count"] == 2
     assert completed_payload["turn_count"] == 2
     assert completed_payload["user_message_count"] == 2
@@ -693,7 +694,8 @@ def test_local_device_entry_persists_codex_daily_summary_runs(client, session: S
     assert "缺陷（key=bug）" in prompt
     assert "一级分类不得使用这些名称：任务、重点、项目、模块" in captured[0]["system_prompt"]
     assert "2026年4月22日" in captured[0]["system_prompt"]
-    assert captured[0]["provider_id"] == "codex-daily-summary"
+    assert captured[0]["provider_id"] == "deepseek"
+    assert captured[0]["model"] == "deepseek-v4-pro"
 
     session.expire_all()
     run_rows = session.exec(

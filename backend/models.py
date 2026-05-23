@@ -478,7 +478,7 @@ class CodexDailySummaryRun(SQLModel, table=True):
     summary_date: str = Field(default="", index=True)
     timezone: str = Field(default="Asia/Shanghai")
     provider: str = Field(default="", index=True)
-    generated_by: str = Field(default="codex_cli", index=True)
+    generated_by: str = Field(default="deepseek", index=True)
     model: str = Field(default="", index=True)
     prompt_version: str = Field(default="", index=True)
     force_requested: bool = Field(default=False, index=True)

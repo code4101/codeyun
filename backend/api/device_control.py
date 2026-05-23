@@ -24,6 +24,7 @@ from backend.core.device import (
 )
 from backend.core.ui_automation import ensure_ui_automation_thread_context
 from backend.core.trusted_python_runs import get_trusted_python_run, start_trusted_python_run
+from backend.core.clockin_link_detector import detect_clockin_links_browser
 from backend.core.fanbei_attendance_schedule import (
     FANBEI_ATTENDANCE_ATTENDANCE_SHEET_ID,
     FANBEI_ATTENDANCE_COURSE_NAME,
@@ -38,7 +39,6 @@ from backend.core.fanbei_course_sheets import (
 from backend.core.nianzhu_attendance_schedule import (
     NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID,
     NIANZHU_CHUANGGUAN_COURSE_NAME,
-    run_nianzhu_attendance_step3_for_sheet,
 )
 from backend.core.nianzhu_course_sheets import (
     NIANZHU_WORKBOOK_NUMERIC_ID,
@@ -327,6 +327,7 @@ class AttendanceNianzhuStep1Request(BaseModel):
 
 class AttendanceNianzhuStep2Request(BaseModel):
     attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
     rebuild: bool = False
     include_frozen: bool = False
 
@@ -342,6 +343,7 @@ class AttendanceNianzhuCourseSheetsRequest(BaseModel):
 
 class AttendanceNianzhuRebuildFromSheetsRequest(BaseModel):
     attendance_sheet_id: int = NIANZHU_CHUANGGUAN_ATTENDANCE_SHEET_ID
+    course_name: str = NIANZHU_CHUANGGUAN_COURSE_NAME
     include_frozen: bool = False
 
 
@@ -355,6 +357,14 @@ class AttendanceFanbeiLessonExportInspectRequest(BaseModel):
     course_name: str
     lesson_number: int = 1
     shop_id: int = 1
+
+
+class AttendanceClockinLinkDetectRequest(BaseModel):
+    root_url: str
+    targets: List[str] = Field(default_factory=list)
+    provider_id: str = "deepseek"
+    model: str = "deepseek-v4-flash"
+    close_tabs: bool = True
 
 
 @router.post("/attendance/order/execute")
@@ -508,6 +518,7 @@ def run_attendance_nianzhu_step2(req: AttendanceNianzhuStep2Request | None = Non
             step2_summary = compact_nianzhu_course_sheet_step2(
                 session,
                 attendance_sheet_id=req.attendance_sheet_id,
+                course_name=req.course_name,
             )
             rebuild_summary = None
             if req.rebuild:
@@ -515,6 +526,7 @@ def run_attendance_nianzhu_step2(req: AttendanceNianzhuStep2Request | None = Non
                     session,
                     attendance_sheet_id=req.attendance_sheet_id,
                     active_only=not req.include_frozen,
+                    course_name=req.course_name,
                 )
             session.commit()
             return {
@@ -529,10 +541,28 @@ def run_attendance_nianzhu_step2(req: AttendanceNianzhuStep2Request | None = Non
 def run_attendance_nianzhu_step3(req: AttendanceNianzhuStep3Request | None = None):
     req = req or AttendanceNianzhuStep3Request()
     try:
-        return run_nianzhu_attendance_step3_for_sheet(
-            sheet_id=req.sheet_id,
-            course_name=req.course_name,
-        )
+        from backend.db import engine
+
+        with Session(engine) as session:
+            summary = rebuild_nianzhu_attendance_from_course_sheets(
+                session,
+                attendance_sheet_id=req.sheet_id,
+                active_only=not req.include_frozen,
+                course_name=req.course_name,
+            )
+            session.commit()
+            return {
+                "sheet_id": int(req.sheet_id),
+                "course_name": req.course_name,
+                **summary,
+                "message": (
+                    f"当前 CodeYun 实例已执行念住闯关 step3："
+                    f"从课程存储 sheet 重建 {summary.get('rows', 0)} 行，"
+                    f"更新 {summary.get('updated_rows', 0)} 行/"
+                    f"{summary.get('updated_cells', 0)} 格，"
+                    f"渲染 {summary.get('styled_cells', 0)} 格"
+                ),
+            }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -557,6 +587,7 @@ def materialize_attendance_nianzhu_course_sheets(req: AttendanceNianzhuCourseShe
                     session,
                     attendance_sheet_id=req.attendance_sheet_id,
                     active_only=not req.include_frozen,
+                    course_name=req.course_name,
                 )
             session.commit()
             return {
@@ -578,6 +609,7 @@ def rebuild_attendance_nianzhu_from_course_sheets(req: AttendanceNianzhuRebuildF
                 session,
                 attendance_sheet_id=req.attendance_sheet_id,
                 active_only=not req.include_frozen,
+                course_name=req.course_name,
             )
             session.commit()
             return summary
@@ -605,6 +637,21 @@ def inspect_attendance_fanbei_lesson_export(req: AttendanceFanbeiLessonExportIns
                 course_name=req.course_name,
                 lesson_number=req.lesson_number,
                 shop_id=req.shop_id,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/attendance/clockin-links/detect")
+def detect_attendance_clockin_links(req: AttendanceClockinLinkDetectRequest):
+    try:
+        with ensure_ui_automation_thread_context():
+            return detect_clockin_links_browser(
+                root_url=req.root_url,
+                targets=req.targets,
+                provider_id=req.provider_id,
+                model=req.model,
+                close_tabs=req.close_tabs,
             )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

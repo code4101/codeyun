@@ -4,24 +4,24 @@ import importlib
 import json
 import math
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 from sqlmodel import Session, select
 
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.settings import ROOT_DIR
 from backend.models import AttendanceWjxDataEntry, SheetDocument
 
 
 REFUND_RECONCILIATION_SKILL = "refund_total_reconciliation_v1"
 GENERAL_TRIAGE_SKILL = "general_readonly_triage_v1"
+ATTENDANCE_PRECHECK_DEEPSEEK_PROVIDER_ID = "deepseek"
+ATTENDANCE_PRECHECK_DEEPSEEK_MODEL = "deepseek-v4-pro"
+ATTENDANCE_PRECHECK_DEEPSEEK_TIMEOUT_SECONDS = 90
 
 VIDEO_REFUND_UNIT = 27
 COLEARN_REFUND_UNIT = 10
@@ -605,12 +605,7 @@ def _extract_json_object(text: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _try_codex_cli_report(precheck: dict[str, Any], warnings: list[str]) -> dict[str, str] | None:
-    codex = shutil.which("codex")
-    if not codex:
-        warnings.append("未找到 codex CLI，已使用确定性报告")
-        return None
-
+def _try_deepseek_report(precheck: dict[str, Any], warnings: list[str]) -> dict[str, str] | None:
     prompt = (
         "你是 CodeYun 考勤问卷的只读 AI 初判写作器。\n"
         "只能基于下面 FACTS 和 DRAFT_REPORT 改写，不要自行假设数据，不要调用外部工具，不要建议修改原始数据。\n"
@@ -622,54 +617,34 @@ def _try_codex_cli_report(precheck: dict[str, Any], warnings: list[str]) -> dict
         f"{precheck.get('report') or ''}\n"
     )
 
-    with tempfile.TemporaryDirectory(prefix="codeyun-attendance-precheck-") as tmp_dir:
-        output_path = Path(tmp_dir) / "last-message.json"
-        command = [
-            codex,
-            "exec",
-            "--skip-git-repo-check",
-            "--sandbox",
-            "read-only",
-            "--color",
-            "never",
-            "--json",
-            "--ephemeral",
-            "--cd",
-            str(ROOT_DIR),
-            "--output-last-message",
-            str(output_path),
-            "-",
-        ]
-        try:
-            completed = subprocess.run(
-                command,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=str(ROOT_DIR),
-                timeout=90,
-                check=False,
-            )
-        except Exception as exc:  # pragma: no cover - depends on local CLI
-            warnings.append(f"调用 codex CLI 失败，已使用确定性报告：{exc}")
-            return None
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-            warnings.append(f"调用 codex CLI 失败，已使用确定性报告：{detail[-1] if detail else completed.returncode}")
-            return None
-        output_text = output_path.read_text(encoding="utf-8", errors="replace") if output_path.exists() else completed.stdout
-        payload = _extract_json_object(output_text)
-        if not payload:
-            warnings.append("codex CLI 未返回可解析 JSON，已使用确定性报告")
-            return None
-        summary = _text(payload.get("summary"))
-        report = _text(payload.get("report"))
-        if not summary or not report:
-            warnings.append("codex CLI 返回内容缺少 summary/report，已使用确定性报告")
-            return None
-        return {"summary": summary, "report": report}
+    try:
+        response = chat_with_provider(
+            provider_id=ATTENDANCE_PRECHECK_DEEPSEEK_PROVIDER_ID,
+            model=ATTENDANCE_PRECHECK_DEEPSEEK_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="你是只读考勤问卷初判写作器，只返回 JSON。",
+            response_format="json",
+            temperature=0.2,
+            timeout_seconds=ATTENDANCE_PRECHECK_DEEPSEEK_TIMEOUT_SECONDS,
+        )
+    except OllamaClientError as exc:
+        warnings.append(f"调用 DeepSeek 失败，已使用确定性报告：{exc}")
+        return None
+
+    payload = _extract_json_object(str(response.get("content") or ""))
+    if not payload:
+        warnings.append("DeepSeek 未返回可解析 JSON，已使用确定性报告")
+        return None
+    summary = _text(payload.get("summary"))
+    report = _text(payload.get("report"))
+    if not summary or not report:
+        warnings.append("DeepSeek 返回内容缺少 summary/report，已使用确定性报告")
+        return None
+    return {
+        "summary": summary,
+        "report": report,
+        "model": str(response.get("model") or ATTENDANCE_PRECHECK_DEEPSEEK_MODEL),
+    }
 
 
 def build_attendance_wjx_ai_precheck(
@@ -715,18 +690,20 @@ def build_attendance_wjx_ai_precheck(
         "generated_at": time.time(),
         "facts": facts,
         "warnings": warnings,
-        "codex_cli": {
+        "deepseek": {
             "requested": bool(use_codex_cli),
             "used": False,
+            "model": ATTENDANCE_PRECHECK_DEEPSEEK_MODEL,
         },
     }
 
     if use_codex_cli:
-        codex_result = _try_codex_cli_report(precheck, warnings)
-        if codex_result:
-            precheck["summary"] = codex_result["summary"]
-            precheck["report"] = codex_result["report"]
-            precheck["codex_cli"]["used"] = True
+        deepseek_result = _try_deepseek_report(precheck, warnings)
+        if deepseek_result:
+            precheck["summary"] = deepseek_result["summary"]
+            precheck["report"] = deepseek_result["report"]
+            precheck["deepseek"]["used"] = True
+            precheck["deepseek"]["model"] = deepseek_result["model"]
         precheck["warnings"] = warnings
 
     return precheck

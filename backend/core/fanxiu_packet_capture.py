@@ -24,6 +24,16 @@ PROCESS_KEYWORDS = (
 FAKE_IP_NETWORKS = (
     ipaddress.ip_network("198.18.0.0/15"),
 )
+COMMON_HTTP_PORTS = {80, 443, 8080, 8443}
+LOW_VALUE_HOST_HINTS = (
+    "cdn",
+    "beian",
+    "report",
+    "log",
+    "upload",
+    "analytics",
+    "stat",
+)
 
 
 def _normalize_dns_hosts(hosts: list[str] | None) -> list[str]:
@@ -49,6 +59,24 @@ def _is_fake_ip(value: str) -> bool:
     return any(ip in network for network in FAKE_IP_NETWORKS)
 
 
+def _ip_scope(value: str) -> str:
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return "unknown"
+    if any(ip in network for network in FAKE_IP_NETWORKS):
+        return "fake_ip"
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_private:
+        return "private"
+    if ip.is_link_local:
+        return "link_local"
+    if ip.is_global:
+        return "public"
+    return "reserved"
+
+
 def _address_to_dict(addr: Any) -> dict[str, Any] | None:
     if not addr:
         return None
@@ -69,6 +97,99 @@ def _connection_protocol(conn: Any) -> str:
     if conn.type == socket.SOCK_DGRAM:
         return "udp"
     return str(conn.type)
+
+
+def _connection_signal(
+    *,
+    process_group: str,
+    protocol: str,
+    status: str,
+    remote: dict[str, Any] | None,
+    mapped_hosts: list[str],
+    is_fake_ip: bool,
+) -> dict[str, Any]:
+    if not remote:
+        return {
+            "remote_scope": "",
+            "signal_score": 0,
+            "signal_label": "本地监听",
+            "signal_reason": "没有远端地址",
+        }
+
+    remote_ip = str(remote.get("ip") or "")
+    remote_port = int(remote.get("port") or 0)
+    remote_scope = _ip_scope(remote_ip)
+    score = 0
+    reasons: list[str] = []
+
+    if process_group == "mumu":
+        score += 30
+        reasons.append("MuMu 进程")
+    elif process_group == "android":
+        score += 16
+        reasons.append("安卓相关进程")
+    elif process_group == "proxy":
+        score -= 28
+        reasons.append("代理工具自身连接")
+
+    if protocol == "udp":
+        score += 18
+        reasons.append("UDP")
+    elif protocol == "tcp":
+        score += 10
+        reasons.append("TCP")
+
+    normalized_status = str(status or "").upper()
+    if normalized_status == "ESTABLISHED":
+        score += 12
+        reasons.append("已建立")
+    elif protocol == "udp":
+        score += 6
+
+    if is_fake_ip or remote_scope == "fake_ip":
+        score += 26
+        reasons.append("Fake IP")
+    elif remote_scope == "public":
+        score += 22
+        reasons.append("公网远端")
+    elif remote_scope in {"private", "loopback", "link_local"}:
+        score -= 35
+        reasons.append("本地/内网")
+    else:
+        score -= 8
+
+    if remote_port in COMMON_HTTP_PORTS:
+        score -= 8
+        reasons.append("常见 HTTP 端口")
+    elif remote_port:
+        score += 18
+        reasons.append("非 HTTP 常用端口")
+
+    lowered_hosts = " ".join(mapped_hosts).lower()
+    if mapped_hosts:
+        if any(hint in lowered_hosts for hint in LOW_VALUE_HOST_HINTS):
+            score -= 18
+            reasons.append("域名像 CDN/上报")
+        else:
+            score += 8
+            reasons.append("已映射域名")
+
+    score = max(0, min(100, score))
+    if score >= 70:
+        label = "疑似业务连接"
+    elif score >= 45:
+        label = "可能业务连接"
+    elif score >= 25:
+        label = "观察连接"
+    else:
+        label = "低价值"
+
+    return {
+        "remote_scope": remote_scope,
+        "signal_score": score,
+        "signal_label": label,
+        "signal_reason": "；".join(reasons) or "-",
+    }
 
 
 def _process_group(info: dict[str, Any]) -> str:
@@ -184,9 +305,13 @@ def _resolve_dns_hosts(hosts: list[str]) -> tuple[list[dict[str, Any]], dict[str
     return mappings, ip_to_hosts
 
 
-def build_fanxiu_packet_capture_snapshot(dns_hosts: list[str] | None = None) -> dict[str, Any]:
-    hosts = _normalize_dns_hosts(dns_hosts)
-    dns_mappings, ip_to_hosts = _resolve_dns_hosts(hosts)
+def build_fanxiu_packet_capture_snapshot(
+    dns_hosts: list[str] | None = None,
+    *,
+    resolve_dns: bool = True,
+) -> dict[str, Any]:
+    hosts = _normalize_dns_hosts(dns_hosts) if resolve_dns else []
+    dns_mappings, ip_to_hosts = _resolve_dns_hosts(hosts) if resolve_dns else ([], {})
     processes = _safe_processes()
     connections: list[dict[str, Any]] = []
     listeners: list[dict[str, Any]] = []
@@ -204,17 +329,30 @@ def build_fanxiu_packet_capture_snapshot(dns_hosts: list[str] | None = None) -> 
         local = _address_to_dict(conn.laddr)
         remote = _address_to_dict(conn.raddr)
         process = processes[conn.pid]
+        mapped_hosts = ip_to_hosts.get(remote["ip"], []) if remote else []
+        is_fake_ip = _is_fake_ip(remote["ip"]) if remote else False
+        protocol = _connection_protocol(conn)
         item = {
             "pid": conn.pid,
             "process_name": process["name"],
             "process_group": process["group"],
-            "protocol": _connection_protocol(conn),
+            "protocol": protocol,
             "status": conn.status,
             "local": local,
             "remote": remote,
-            "mapped_hosts": ip_to_hosts.get(remote["ip"], []) if remote else [],
-            "is_fake_ip": _is_fake_ip(remote["ip"]) if remote else False,
+            "mapped_hosts": mapped_hosts,
+            "is_fake_ip": is_fake_ip,
         }
+        item.update(
+            _connection_signal(
+                process_group=process["group"],
+                protocol=protocol,
+                status=conn.status,
+                remote=remote,
+                mapped_hosts=mapped_hosts,
+                is_fake_ip=is_fake_ip,
+            )
+        )
         if remote:
             connections.append(item)
         else:
@@ -234,10 +372,15 @@ def build_fanxiu_packet_capture_snapshot(dns_hosts: list[str] | None = None) -> 
         "process_count": len(processes),
         "connection_count": len(connections),
         "listener_count": len(listeners),
+        "tcp_connection_count": sum(1 for item in connections if item["protocol"] == "tcp"),
+        "udp_connection_count": sum(1 for item in connections if item["protocol"] == "udp"),
         "mumu_connection_count": sum(1 for item in connections if item["process_group"] == "mumu"),
+        "mumu_tcp_connection_count": sum(1 for item in connections if item["process_group"] == "mumu" and item["protocol"] == "tcp"),
+        "mumu_udp_connection_count": sum(1 for item in connections if item["process_group"] == "mumu" and item["protocol"] == "udp"),
         "proxy_connection_count": sum(1 for item in connections if item["process_group"] == "proxy"),
         "fake_ip_connection_count": sum(1 for item in connections if item["is_fake_ip"]),
         "mapped_connection_count": sum(1 for item in connections if item["mapped_hosts"]),
+        "candidate_connection_count": sum(1 for item in connections if int(item.get("signal_score") or 0) >= 45),
     }
     return {
         "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),

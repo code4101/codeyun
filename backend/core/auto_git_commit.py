@@ -10,13 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from sqlmodel import Session, select
 
-from backend.core.ai_chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
-    AiProviderConfig,
-    OllamaClientError,
-    chat_with_provider,
-)
+from backend.core.ai_chat import AiProviderConfig
 from backend.core.ai_git_commit import AiGitCommitError, resolve_ai_git_commit_runtime_config as resolve_ai_runtime_config
 from backend.core.ai_git_reduction import generate_ai_git_commit_draft_hierarchical
 from backend.core.ai_git_repos import list_user_ai_git_repos
@@ -33,11 +27,7 @@ AUTO_GIT_COMMIT_SCHEDULE_SETTING_KEY = f"background_task.{AUTO_GIT_COMMIT_TASK_K
 AUTO_GIT_COMMIT_BRANCH_FACTOR = 10
 AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80
 AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
-AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID = "auto-git-pre-commit-codex"
-AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS = 1800
-AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS + 900
-AUTO_GIT_PRE_COMMIT_RESULT_LIMIT = 3000
-AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS = AUTO_GIT_COMMIT_REPO_KEYS
+AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = 2700
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
 AUTO_GIT_CHECKPOINT_FILE_THRESHOLD = 50
 AUTO_GIT_CHECKPOINT_LINE_THRESHOLD = 3000
@@ -363,7 +353,7 @@ def mark_stale_auto_git_commit_runs(
         run.stage_label = "任务心跳超时"
         run.error_message = (
             f"后台任务心跳超过 {stale_minutes} 分钟未更新，且当前执行队列中没有对应任务；"
-            "通常是服务重启、进程中断或 Codex CLI 调用被外部终止。"
+            "通常是服务重启、进程中断或 AI 提交总结调用被外部终止。"
         )
         run.finished_at = current_ts
         run.heartbeat_at = current_ts
@@ -471,18 +461,8 @@ def _update_result_from_inspect(result: dict[str, Any], inspect_payload: dict[st
     )
 
 
-def _limit_codex_result_text(value: Any) -> str:
-    text = str(value or "").strip()
-    if len(text) <= AUTO_GIT_PRE_COMMIT_RESULT_LIMIT:
-        return text
-    return text[: AUTO_GIT_PRE_COMMIT_RESULT_LIMIT - 1].rstrip() + "…"
-
-
-def _skip_pre_commit_optimizer_reason(candidate: AutoGitCommitCandidate) -> str | None:
-    repo_key = _normalize_repo_key(candidate.name)
-    if repo_key in AUTO_GIT_PRE_COMMIT_SKIP_REPO_KEYS:
-        return f"{candidate.name} 自动提交只生成提交信息，不执行提交前 Codex 优化"
-    return None
+def _auto_git_summary_only_reason(candidate: AutoGitCommitCandidate) -> str:
+    return f"{candidate.name} 自动提交只生成提交信息，不执行提交前自动优化"
 
 
 def _build_skipped_pre_commit_review(reason: str) -> dict[str, str]:
@@ -494,9 +474,7 @@ def _build_skipped_pre_commit_review(reason: str) -> dict[str, str]:
 
 
 def _auto_git_processing_stage_label(candidate: AutoGitCommitCandidate) -> str:
-    if _skip_pre_commit_optimizer_reason(candidate):
-        return f"检查/提交 {candidate.name}"
-    return f"检查/优化 {candidate.name}"
+    return f"检查/提交 {candidate.name}"
 
 
 def _uses_lightweight_draft(candidate: AutoGitCommitCandidate) -> bool:
@@ -653,104 +631,6 @@ def _build_checkpoint_commit_draft(
     }
 
 
-def _build_auto_git_pre_commit_codex_provider(cwd: str) -> AiProviderConfig:
-    return AiProviderConfig(
-        id=AUTO_GIT_PRE_COMMIT_CODEX_PROVIDER_ID,
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
-        timeout_seconds=AUTO_GIT_PRE_COMMIT_CODEX_TIMEOUT_SECONDS,
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
-        is_custom=False,
-        workspace_dir=cwd,
-    )
-
-
-def _build_auto_git_pre_commit_codex_prompt(
-    candidate: AutoGitCommitCandidate,
-    inspect_payload: dict[str, Any],
-) -> str:
-    changed_paths = _changed_paths_from_inspect(inspect_payload)
-    omitted_count = max(0, len(inspect_payload.get("changed_files") or []) - len(changed_paths))
-    path_lines = [f"- {path}" for path in changed_paths]
-    if omitted_count:
-        path_lines.append(f"- ... 还有 {omitted_count} 个文件未列出")
-
-    status_lines = [str(line) for line in inspect_payload.get("status_lines") or [] if str(line).strip()]
-    diff_stat = str(inspect_payload.get("diff_stat") or "").strip()
-    staged_diff_stat = str(inspect_payload.get("staged_diff_stat") or "").strip()
-
-    return "\n".join(
-        [
-            "请在这个仓库提交前先做一次代码 review 和工程优化。",
-            "",
-            "仓库信息：",
-            f"- 名称: {candidate.name}",
-            f"- 路径: {candidate.cwd}",
-            f"- 分支: {inspect_payload.get('branch') or ''}",
-            f"- 变更文件数: {len(inspect_payload.get('changed_files') or [])}",
-            "",
-            "当前状态：",
-            *(f"- {line}" for line in status_lines[:40]),
-            "",
-            "变更文件：",
-            *(path_lines or ["- (未列出)"]),
-            "",
-            "未暂存 diff 统计：",
-            diff_stat or "(无)",
-            "",
-            "已暂存 diff 统计：",
-            staged_diff_stat or "(无)",
-            "",
-            "执行要求：",
-            "- 直接检查当前工作区改动，优先发现真实 bug、回归风险、缺失校验、低质量实现和明显工程结构问题。",
-            "- 可以直接修改源码做小范围工程优化；保持改动与当前待提交内容相关。",
-            "- 不要执行 git commit、git reset、git checkout 或破坏用户未提交改动的命令。",
-            "- 不要新增大规模重构、格式化全仓、迁移依赖或修改与当前变更无关的文件。",
-            "- 如果合理，运行最小必要验证；无法运行时在最终回复说明。",
-            "- 最终用简短中文说明 review 发现、做了哪些优化、验证结果。",
-        ]
-    ).strip()
-
-
-def run_auto_git_pre_commit_codex_review(
-    candidate: AutoGitCommitCandidate,
-    inspect_payload: dict[str, Any],
-    *,
-    chat_func: Callable[..., dict[str, Any]] = chat_with_provider,
-) -> dict[str, Any]:
-    provider = _build_auto_git_pre_commit_codex_provider(candidate.cwd)
-    try:
-        response = chat_func(
-            provider_id=provider.id,
-            model=provider.default_model,
-            system_prompt=(
-                "你是 CodeYun 自动 Git 提交前的 Codex 工程代理。"
-                "你的职责是在提交前审查当前仓库改动，并做必要的小范围工程优化。"
-                "必须尊重用户已有改动，不要提交，不要回滚，不要扩大改动范围。"
-            ),
-            messages=[{"role": "user", "content": _build_auto_git_pre_commit_codex_prompt(candidate, inspect_payload)}],
-            timeout_seconds=provider.timeout_seconds,
-            extra_providers=(provider,),
-        )
-    except OllamaClientError as exc:
-        raise GitToolError(f"Codex CLI 预提交 review/优化失败：{exc}") from exc
-
-    return {
-        "status": "completed",
-        "provider": provider.id,
-        "model": str(response.get("model") or provider.default_model),
-        "summary": _limit_codex_result_text(response.get("content")),
-        "session_id": response.get("session_id"),
-    }
-
-
 def _sync_run(session: Session, run: AutoGitCommitRun, results: list[dict[str, Any]]) -> None:
     run.repo_count = len(results)
     run.changed_repo_count = sum(1 for item in results if bool(item.get("has_changes")))
@@ -880,7 +760,6 @@ def _run_one_repo(
     candidate: AutoGitCommitCandidate,
     *,
     inspect_func: Callable[[str], dict[str, Any]],
-    pre_commit_optimizer: Callable[[AutoGitCommitCandidate, dict[str, Any]], dict[str, Any] | None],
     draft_generator: Callable[..., dict[str, Any]],
     commit_func: Callable[..., dict[str, Any]],
 ) -> dict[str, Any]:
@@ -913,27 +792,9 @@ def _run_one_repo(
         )
         return result
 
-    skip_pre_commit_reason = _skip_pre_commit_optimizer_reason(candidate)
-    if skip_pre_commit_reason:
-        result["pre_commit_review"] = _build_skipped_pre_commit_review(skip_pre_commit_reason)
-    else:
-        result["pre_commit_review"] = pre_commit_optimizer(candidate, inspect_payload) or {"status": "skipped"}
-
-    inspect_payload = inspect_func(candidate.cwd)
-    _update_result_from_inspect(result, inspect_payload)
-    if bool(inspect_payload.get("clean")):
-        result["status"] = "clean"
-        return result
-
-    inspect_payload, precheck = _refresh_after_auto_gitignore(candidate, result, inspect_payload, inspect_func)
-    if bool(precheck.get("has_blocking_issues")):
-        result.update(
-            {
-                "status": "failed",
-                "error_message": f"Codex 优化后提交前预检未通过，发现 {int(precheck.get('blocking_issue_count') or 0)} 条阻断项",
-            }
-        )
-        return result
+    result["pre_commit_review"] = _build_skipped_pre_commit_review(
+        _auto_git_summary_only_reason(candidate)
+    )
 
     if _should_checkpoint_commit(candidate, inspect_payload):
         draft = _build_checkpoint_commit_draft(candidate, inspect_payload)
@@ -1010,7 +871,6 @@ def run_auto_git_commit_worker(
     *,
     candidate_selector: Callable[[Session], list[AutoGitCommitCandidate]] = select_auto_git_commit_candidates,
     inspect_func: Callable[[str], dict[str, Any]] = inspect_git_repository,
-    pre_commit_optimizer: Callable[[AutoGitCommitCandidate, dict[str, Any]], dict[str, Any] | None] = run_auto_git_pre_commit_codex_review,
     draft_generator: Callable[..., dict[str, Any]] = generate_ai_git_commit_draft_hierarchical,
     commit_func: Callable[..., dict[str, Any]] = create_git_commit,
 ) -> None:
@@ -1069,7 +929,6 @@ def run_auto_git_commit_worker(
                         session,
                         candidate,
                         inspect_func=inspect_func,
-                        pre_commit_optimizer=pre_commit_optimizer,
                         draft_generator=draft_generator,
                         commit_func=commit_func,
                     )

@@ -15,10 +15,15 @@ import {
 } from '@/api/attendance'
 import {
   fetchNoteSheet,
+  fetchNoteSheetActiveClockinLinkDetectionRun,
   fetchNoteSheetActiveRegistrationMatchRun,
   fetchNoteSheetColumnOptions,
+  fetchNoteSheetClockinLinkDetectionRun,
   fetchNoteSheetRegistrationMatchRun,
   fetchAttendanceCourseScriptStatuses,
+  fetchWorkbookDefinedNames,
+  fetchSheetDefinedNames,
+  exportAttendanceSheet,
   generateAttendanceCourseScript,
   generateAttendanceCourseTemplate,
   getNoteSheetApiErrorStatus,
@@ -26,14 +31,21 @@ import {
   organizeAttendanceCourseScripts,
   queryNoteSheet,
   setAttendanceRowCompleted,
+  startNoteSheetClockinLinkDetectionRun,
   startNoteSheetRegistrationMatchRun,
   updateAttendanceLinkCounts,
+  updateSheetDefinedNames,
+  updateWorkbookDefinedNames,
   type AttendanceLinkCountFieldKey,
   type AttendanceCourseScriptStatusItem,
+  type NoteSheetDefinedNameItem,
+  type NoteSheetDefinedNameWorksheetScope,
+  type NoteSheetDefinedNamesResponse,
   type NoteSheetAccessCapabilities,
   type NoteSheetColumnOptionItem,
   type NoteSheetExcelImportMode,
   type NoteSheetPaginationState,
+  type NoteSheetClockinLinkDetectionRunResponse,
   type NoteSheetRegistrationMatchRunResponse,
   type NoteSheetResourceAccess,
   type WorkbookRefItem,
@@ -126,6 +138,9 @@ const DEFAULT_CELL_BACKGROUND_COLOR = '#FEF3C7'
 const DEFAULT_RICH_TEXT_INLINE_TEXT_COLOR = '#FF0000'
 const RICH_TEXT_INLINE_TOOLBAR_COLORS_STORAGE_KEY = 'codeyun.noteSheet.richTextInlineToolbarColors.v1'
 const FORMULA_CELL_REFERENCE_RE = /(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(!])/g
+const DEFINED_NAME_RE = /^[\p{L}_][\p{L}\p{N}_.]*$/u
+const DEFINED_NAME_A1_RE = /^\$?[A-Za-z]{1,3}\$?\d+$/
+const DEFINED_NAME_R1C1_RE = /^[Rr]\d*[Cc]\d+$/
 const MULTI_TEXT_ITEM_SEPARATOR_RE = /[,\uFF0C\u3001;\uFF1B\r\n]+/g
 const ATTENDANCE_SUMMARY_WORKBOOK_ID = 2
 const ATTENDANCE_SUMMARY_SHEET_ID = 4
@@ -165,6 +180,8 @@ const SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT = 'registration_add_student'
 const SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = 'registration_order_match'
 const SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = 'registration_user_match'
 const SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = 'registration_composite_update'
+const SHEET_CELL_ACTION_ATTENDANCE_EXPORT = 'attendance_export'
+const SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = 'clockin_link_detect'
 const ROW_DETAIL_DIALOG_SIZE_STORAGE_KEY = 'codeyun.noteSheet.rowDetailDialog.size.v1'
 const ROW_DETAIL_DIALOG_DEFAULT_WIDTH = 760
 const ROW_DETAIL_DIALOG_DEFAULT_HEIGHT = 760
@@ -177,6 +194,8 @@ const SHEET_CELL_ACTION_LABELS = {
   [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]: '更新订单匹配',
   [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]: '更新用户匹配',
   [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]: '综合更新',
+  [SHEET_CELL_ACTION_ATTENDANCE_EXPORT]: '导出excel',
+  [SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]: '自动检测打卡链接',
 } as const
 const EXCEL_IMPORT_ACTION_LABEL = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_EXCEL_IMPORT_RESET]
 const EXCEL_IMPORT_RESET_BUTTON_LABEL = '清空原表数据后导入新表数据'
@@ -897,6 +916,7 @@ type SheetDocument = {
   column_configs?: Record<string, SheetColumnConfig>
   column_widths?: number[]
   view_settings?: SheetViewSettings
+  defined_names?: NoteSheetDefinedNameItem[]
 }
 
 type SheetDraftPayload = {
@@ -1073,8 +1093,34 @@ type FormulaEngineInstance = {
 
 type FormulaEngineCellValue = string | number | boolean | null
 
+type SheetFormulaNamedExpression = {
+  name: string
+  expression: string
+  scope?: number
+}
+
+type SheetFormulaNameAlias = {
+  source: string
+  sourceLower: string
+  alias: string
+}
+
+type SheetFormulaNamedExpressionContext = {
+  namedExpressions: SheetFormulaNamedExpression[]
+  aliases: SheetFormulaNameAlias[]
+}
+
+type SheetFormulaNamedExpressionContextCache = {
+  signature: string
+  context: SheetFormulaNamedExpressionContext
+}
+
 type FormulaEngineClass = {
-  buildFromArray: (data: FormulaEngineCellValue[][], config: { licenseKey: string }) => FormulaEngineInstance
+  buildFromArray: (
+    data: FormulaEngineCellValue[][],
+    config: { licenseKey: string },
+    namedExpressions?: SheetFormulaNamedExpression[],
+  ) => FormulaEngineInstance
   getFunctionPlugin?: (functionId: string) => unknown
   registerFunctionPlugin?: (plugin: unknown, translations?: Record<string, Record<string, string>>) => void
 }
@@ -1206,6 +1252,8 @@ const columnHeaders = ref<string[]>([...DEFAULT_SHEET_COLUMNS])
 const headerGroups = ref<SheetHeaderGroupCell[][]>([])
 const mergedCells = ref<SheetMergedCell[]>([])
 const columnConfigs = ref<Record<string, SheetColumnConfig>>({})
+const workbookDefinedNames = ref<NoteSheetDefinedNameItem[]>([])
+const sheetDefinedNames = ref<NoteSheetDefinedNameItem[]>([])
 const sheetHeaderPrefixRows = ref<SheetRow[]>([])
 const cellMeta = ref<SheetCellMetaMap>({})
 const columnEntityIds = ref<string[]>([])
@@ -1214,6 +1262,7 @@ const dataRowEntityIds = ref<string[]>([])
 const entityCells = ref<SheetEntityCellMap>({})
 const attendanceCourseScriptStatuses = ref<Record<number, AttendanceCourseScriptStatusItem>>({})
 const formulaEngineClass = shallowRef<FormulaEngineClass | null>(null)
+let formulaNamedExpressionContextCache: SheetFormulaNamedExpressionContextCache | null = null
 const sheetViewSettings = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
 const columnWidths = ref<number[]>(DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header)))
 const editingColumnIndex = ref<number | null>(null)
@@ -1227,6 +1276,20 @@ const sheetSettingsDialogVisible = ref(false)
 const sheetSettingsDraft = ref<Required<SheetViewSettings>>(createDefaultSheetViewSettings(getDefaultSheetHeightMode()))
 const sheetSettingsColumnFilterDraft = ref<Record<string, boolean>>({})
 const sheetAccessDialogVisible = ref(false)
+type DefinedNameScopeKey = 'workbook' | `worksheet:${number}`
+type DefinedNameDraftRow = {
+  key: string
+  scopeKey: DefinedNameScopeKey
+  name: string
+  formula: string
+  comment: string
+}
+const definedNamesDialogVisible = ref(false)
+const definedNamesLoading = ref(false)
+const definedNamesSaving = ref(false)
+const definedNameDraftRows = ref<DefinedNameDraftRow[]>([])
+const definedNamesError = ref('')
+const definedNameWorksheetScopes = ref<NoteSheetDefinedNameWorksheetScope[]>([])
 const excelImportDialogVisible = ref(false)
 const excelImportFileInputRef = ref<HTMLInputElement | null>(null)
 const excelImportFile = ref<File | null>(null)
@@ -1238,6 +1301,7 @@ const userMatchDialogVisible = ref(false)
 const userMatchUseBrowserFallback = ref(true)
 const userMatchStartPending = ref(false)
 const userMatchRunStatus = ref<NoteSheetRegistrationMatchRunResponse | null>(null)
+const clockinLinkDetectionRunStatus = ref<NoteSheetClockinLinkDetectionRunResponse | null>(null)
 const sheetCellActionRunning = ref<SheetCellActionType | null>(null)
 const attendanceWjxAiPrecheckRunning = ref(false)
 const rowDetailDialogVisible = ref(false)
@@ -1256,6 +1320,10 @@ function isRegistrationMatchRunActive(run?: NoteSheetRegistrationMatchRunRespons
   return run?.status === 'pending' || run?.status === 'running'
 }
 
+function isClockinLinkDetectionRunActive(run?: NoteSheetClockinLinkDetectionRunResponse | null) {
+  return run?.status === 'pending' || run?.status === 'running'
+}
+
 function isRegistrationAsyncAction(type: SheetCellActionType) {
   return (
     type === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
@@ -1265,6 +1333,7 @@ function isRegistrationAsyncAction(type: SheetCellActionType) {
 }
 
 const activeRegistrationActionRun = computed(() => isRegistrationMatchRunActive(userMatchRunStatus.value))
+const activeClockinLinkDetectionRun = computed(() => isClockinLinkDetectionRunActive(clockinLinkDetectionRunStatus.value))
 const activeUserMatchRun = computed(() => (
   activeRegistrationActionRun.value
   && userMatchRunStatus.value?.action === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
@@ -4053,6 +4122,9 @@ let columnMarkerSelectionAnchor: number | null = null
 let userMatchRunPollTimer: ReturnType<typeof setTimeout> | null = null
 let lastNotifiedUserMatchRunId = ''
 let lastNotifiedUserMatchRunStatus = ''
+let clockinLinkDetectionRunPollTimer: ReturnType<typeof setTimeout> | null = null
+let lastNotifiedClockinLinkDetectionRunId = ''
+let lastNotifiedClockinLinkDetectionRunStatus = ''
 let pendingColumnInsertionTemplate: ColumnInsertionTemplate | null = null
 let pendingRowInsertionTemplate: RowInsertionTemplate | null = null
 let contextMenuRowInsertAmount = 1
@@ -4978,6 +5050,37 @@ function canRunRegistrationMatchAction() {
   return props.sheetId != null && canEditData.value && canRunSheetActions.value
 }
 
+function canExportAttendanceSheet() {
+  return props.sheetId != null && canEditData.value && canRunSheetActions.value
+}
+
+function canDetectClockinLinks() {
+  return props.sheetId != null && canEditData.value && canRunSheetActions.value
+}
+
+function isSheetCellActionDisabledByPermission(actionType: SheetCellActionType) {
+  if (actionType === SHEET_CELL_ACTION_EXCEL_IMPORT_RESET) {
+    return !canOpenExcelImportDialog()
+  }
+  if (actionType === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
+    return !(props.sheetId != null && canEditData.value)
+  }
+  if (
+    actionType === SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH
+    || actionType === SHEET_CELL_ACTION_REGISTRATION_USER_MATCH
+    || actionType === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE
+  ) {
+    return !canRunRegistrationMatchAction()
+  }
+  if (actionType === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
+    return !canExportAttendanceSheet()
+  }
+  if (actionType === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
+    return !canDetectClockinLinks()
+  }
+  return false
+}
+
 function getSheetActionErrorMessage(error: unknown, fallback: string) {
   const maybeError = error as { response?: { data?: { detail?: unknown } }, message?: string }
   const detail = maybeError?.response?.data?.detail
@@ -5139,6 +5242,80 @@ async function refreshUserMatchRunStatus(runId?: string, options: { silent?: boo
   }
 }
 
+function clearClockinLinkDetectionRunPollTimer() {
+  if (clockinLinkDetectionRunPollTimer) {
+    clearTimeout(clockinLinkDetectionRunPollTimer)
+    clockinLinkDetectionRunPollTimer = null
+  }
+}
+
+function scheduleClockinLinkDetectionRunPolling() {
+  clearClockinLinkDetectionRunPollTimer()
+  const runId = clockinLinkDetectionRunStatus.value?.run_id
+  if (!runId || !activeClockinLinkDetectionRun.value || props.sheetId == null) {
+    return
+  }
+  clockinLinkDetectionRunPollTimer = setTimeout(() => {
+    void refreshClockinLinkDetectionRunStatus(runId)
+  }, REGISTRATION_MATCH_RUN_POLL_MS)
+}
+
+function notifyClockinLinkDetectionRunTerminalStatus(run: NoteSheetClockinLinkDetectionRunResponse) {
+  if (!run.run_id || isClockinLinkDetectionRunActive(run) || run.status === 'idle') {
+    return
+  }
+  if (lastNotifiedClockinLinkDetectionRunId === run.run_id && lastNotifiedClockinLinkDetectionRunStatus === run.status) {
+    return
+  }
+  lastNotifiedClockinLinkDetectionRunId = run.run_id
+  lastNotifiedClockinLinkDetectionRunStatus = run.status
+  const actionLabel = SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]
+
+  if (run.status === 'completed') {
+    const message = run.message || `${actionLabel}完成`
+    if (run.error_count || run.warning_count) {
+      ElMessage.warning(message)
+    } else {
+      ElMessage.success(message)
+    }
+  } else if (run.status === 'failed') {
+    ElMessage.error(run.error_message || run.message || `${actionLabel}失败`)
+  } else if (run.status === 'cancelled') {
+    ElMessage.warning(run.message || `${actionLabel}已取消`)
+  }
+}
+
+async function refreshClockinLinkDetectionRunStatus(runId?: string, options: { silent?: boolean } = {}) {
+  if (props.sheetId == null) {
+    return null
+  }
+  try {
+    const status = runId
+      ? await fetchNoteSheetClockinLinkDetectionRun(props.sheetId, runId, { workbookId: props.workbookId })
+      : await fetchNoteSheetActiveClockinLinkDetectionRun(props.sheetId, { workbookId: props.workbookId })
+
+    clockinLinkDetectionRunStatus.value = status.status === 'idle' ? null : status
+    applyClockinLinkDetectionRunSheetDetail(status)
+    getHotInstance()?.render()
+    if (isClockinLinkDetectionRunActive(status)) {
+      scheduleClockinLinkDetectionRunPolling()
+    } else {
+      clearClockinLinkDetectionRunPollTimer()
+      if (!options.silent) {
+        notifyClockinLinkDetectionRunTerminalStatus(status)
+      }
+    }
+    return status
+  } catch (error) {
+    clearClockinLinkDetectionRunPollTimer()
+    console.warn('Failed to refresh clockin link detection run', error)
+    if (!options.silent) {
+      ElMessage.error(getSheetActionErrorMessage(error, '刷新打卡链接检测状态失败'))
+    }
+    return null
+  }
+}
+
 function openExcelImportDialog(actionCell: { documentRow: number; column: number }) {
   if (!canOpenExcelImportDialog()) {
     warnReadOnlyAction()
@@ -5230,6 +5407,82 @@ async function applyExcelImport(mode: NoteSheetExcelImportMode) {
     ElMessage.error(getExcelImportErrorMessage(error))
   } finally {
     excelImportRunningMode.value = null
+  }
+}
+
+async function downloadAttendanceExport() {
+  if (props.sheetId == null) {
+    return
+  }
+  if (!canExportAttendanceSheet()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (sheetCellActionRunning.value) {
+    return
+  }
+
+  sheetCellActionRunning.value = SHEET_CELL_ACTION_ATTENDANCE_EXPORT
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const result = await exportAttendanceSheet(props.sheetId, { workbookId: props.workbookId })
+    const url = window.URL.createObjectURL(result.blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = result.filename || '考勤表.xlsx'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.URL.revokeObjectURL(url)
+    ElMessage.success('已导出考勤表')
+  } catch (error) {
+    console.warn('Failed to export attendance sheet', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '导出考勤表失败'))
+  } finally {
+    sheetCellActionRunning.value = null
+  }
+}
+
+async function startClockinLinkDetectionRun(forceRestart = false) {
+  if (props.sheetId == null) {
+    return
+  }
+  if (!canDetectClockinLinks()) {
+    warnReadOnlyAction()
+    return
+  }
+  if (activeClockinLinkDetectionRun.value && !forceRestart) {
+    ElMessage.info(clockinLinkDetectionRunStatus.value?.message || '已有打卡链接检测任务正在运行')
+    return
+  }
+  if (sheetCellActionRunning.value) {
+    return
+  }
+
+  sheetCellActionRunning.value = SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT
+  try {
+    commitPendingSheetGridEdit()
+    await flushRemoteSave()
+    const status = await startNoteSheetClockinLinkDetectionRun(
+      props.sheetId,
+      { forceRestart },
+      { workbookId: props.workbookId },
+    )
+    clockinLinkDetectionRunStatus.value = status
+    applyClockinLinkDetectionRunSheetDetail(status)
+    getHotInstance()?.render()
+    ElMessage.success(status.already_running ? '已有打卡链接检测任务正在运行' : '已在后台开始自动检测打卡链接')
+    if (isClockinLinkDetectionRunActive(status)) {
+      scheduleClockinLinkDetectionRunPolling()
+    } else {
+      notifyClockinLinkDetectionRunTerminalStatus(status)
+    }
+  } catch (error) {
+    console.warn('Failed to start clockin link detection run', error)
+    ElMessage.error(getSheetActionErrorMessage(error, '启动自动检测打卡链接失败'))
+  } finally {
+    sheetCellActionRunning.value = null
   }
 }
 
@@ -5347,6 +5600,14 @@ function runSheetCellAction(action: SheetCellAction, actionCell: { documentRow: 
   }
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_ADD_STUDENT) {
     addRegistrationStudentRow()
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
+    void downloadAttendanceExport()
+    return
+  }
+  if (action.type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
+    void startClockinLinkDetectionRun()
     return
   }
   if (isRegistrationAsyncAction(action.type) && activeRegistrationActionRun.value) {
@@ -5902,6 +6163,12 @@ function resetWorkspaceState() {
   headerGroups.value = []
   mergedCells.value = []
   columnConfigs.value = {}
+  workbookDefinedNames.value = []
+  sheetDefinedNames.value = []
+  definedNameWorksheetScopes.value = []
+  definedNameDraftRows.value = []
+  definedNamesError.value = ''
+  definedNamesDialogVisible.value = false
   sheetHeaderPrefixRows.value = []
   cellMeta.value = {}
   columnEntityIds.value = []
@@ -5927,10 +6194,12 @@ function resetWorkspaceState() {
   closeColumnFilterPopover()
   closeExcelImportDialog()
   clearUserMatchRunPollTimer()
+  clearClockinLinkDetectionRunPollTimer()
   userMatchDialogVisible.value = false
   userMatchUseBrowserFallback.value = true
   userMatchStartPending.value = false
   userMatchRunStatus.value = null
+  clockinLinkDetectionRunStatus.value = null
   sheetCellActionRunning.value = null
   attendanceWjxAiPrecheckRunning.value = false
   closeSheetWorkspaceViewLinkMenu()
@@ -6179,12 +6448,9 @@ function inferAttendanceHeaderGroupLabel(fieldLabels: string[]) {
   }
   if (
     hasAll('完成视频数', '视频应返款', '打卡应返款', '总应返款')
-    && hasAny('已返款', '订单金额')
+    && hasAny('已返款', '订单金额', '当前应返款')
   ) {
     return '退款总计（每天晚上上21点更新数据）'
-  }
-  if (hasAll('当前应返款', '返款配置')) {
-    return '退款操作'
   }
   return ''
 }
@@ -6949,6 +7215,8 @@ function normalizeLegacySheetCellActionType(value: unknown): SheetCellActionType
     [SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH]],
     [SHEET_CELL_ACTION_REGISTRATION_USER_MATCH, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_USER_MATCH]],
     [SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE]],
+    [SHEET_CELL_ACTION_ATTENDANCE_EXPORT, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_ATTENDANCE_EXPORT]],
+    [SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT, SHEET_CELL_ACTION_LABELS[SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT]],
   ]
   const matched = legacyLabels.find(([, label]) => compactValue === label.replace(/\s+/g, '').toLowerCase())
   return matched?.[0] ?? null
@@ -7534,6 +7802,164 @@ function normalizeSheetViewSettings(
   }
 }
 
+function isDefinedNameValid(name: string) {
+  return DEFINED_NAME_RE.test(name)
+    && !DEFINED_NAME_A1_RE.test(name)
+    && !DEFINED_NAME_R1C1_RE.test(name)
+}
+
+function normalizeDefinedNameFormula(value: unknown) {
+  const text = normalizeCellValue(value).trim()
+  if (!text) {
+    return ''
+  }
+  return normalizeFormulaInputExpression(text.startsWith('=') ? text : `=${text}`)
+}
+
+function normalizeDefinedNameItems(
+  source: unknown,
+  scope?: NoteSheetDefinedNameItem['scope'],
+): NoteSheetDefinedNameItem[] {
+  if (!Array.isArray(source)) {
+    return []
+  }
+  const result: NoteSheetDefinedNameItem[] = []
+  const seen = new Set<string>()
+  source.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return
+    }
+    const record = item as Record<string, unknown>
+    const name = normalizeCellValue(record.name).trim()
+    if (!name || !isDefinedNameValid(name)) {
+      return
+    }
+    const key = name.toLowerCase()
+    if (seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    result.push({
+      name,
+      formula: normalizeDefinedNameFormula(record.formula),
+      comment: normalizeCellValue(record.comment).trim(),
+      scope: scope ?? (record.scope === 'workbook' || record.scope === 'worksheet' ? record.scope : undefined),
+    })
+  })
+  return result
+}
+
+function serializeDefinedNameItems(source: NoteSheetDefinedNameItem[]) {
+  return normalizeDefinedNameItems(source).map((item) => ({
+    name: item.name,
+    formula: item.formula,
+    comment: item.comment ?? '',
+  }))
+}
+
+function getDefinedNameWorksheetScopeKey(sheetId: number): DefinedNameScopeKey {
+  return `worksheet:${sheetId}`
+}
+
+function parseDefinedNameWorksheetScopeKey(scopeKey: DefinedNameScopeKey) {
+  if (!scopeKey.startsWith('worksheet:')) {
+    return null
+  }
+  const sheetId = Number(scopeKey.slice('worksheet:'.length))
+  return Number.isInteger(sheetId) && sheetId > 0 ? sheetId : null
+}
+
+function normalizeDefinedNameWorksheetScopes(source: unknown): NoteSheetDefinedNameWorksheetScope[] {
+  if (!Array.isArray(source)) {
+    return []
+  }
+  const result: NoteSheetDefinedNameWorksheetScope[] = []
+  const seen = new Set<number>()
+  source.forEach((item) => {
+    if (!item || typeof item !== 'object') {
+      return
+    }
+    const record = item as Record<string, unknown>
+    const sheetId = Number(record.sheet_id)
+    if (!Number.isInteger(sheetId) || sheetId <= 0 || seen.has(sheetId)) {
+      return
+    }
+    seen.add(sheetId)
+    const sheetVersion = Number(record.sheet_version)
+    result.push({
+      sheet_id: sheetId,
+      sheet_title: normalizeCellValue(record.sheet_title).trim() || `工作表${sheetId}`,
+      sheet_version: Number.isFinite(sheetVersion) ? sheetVersion : null,
+      names: normalizeDefinedNameItems(record.names, 'worksheet'),
+    })
+  })
+  return result
+}
+
+const definedNameScopeOptions = computed(() => [
+  ...(props.workbookId != null
+    ? [{ value: 'workbook' as DefinedNameScopeKey, label: '工作簿（全部工作表）' }]
+    : []),
+  ...definedNameWorksheetScopes.value.map((item) => ({
+    value: getDefinedNameWorksheetScopeKey(item.sheet_id),
+    label: item.sheet_title || `工作表${item.sheet_id}`,
+  })),
+])
+
+function getCurrentDefinedNameWorksheetScopeKey(): DefinedNameScopeKey {
+  const currentSheetId = Number(props.sheetId)
+  if (Number.isInteger(currentSheetId) && currentSheetId > 0) {
+    const currentScope = definedNameWorksheetScopes.value.find((item) => item.sheet_id === currentSheetId)
+    if (currentScope) {
+      return getDefinedNameWorksheetScopeKey(currentSheetId)
+    }
+  }
+  const firstScope = definedNameWorksheetScopes.value[0]
+  if (firstScope) {
+    return getDefinedNameWorksheetScopeKey(firstScope.sheet_id)
+  }
+  return props.workbookId != null ? 'workbook' : getDefinedNameWorksheetScopeKey(currentSheetId)
+}
+
+function serializeDefinedNameWorksheetScopes(
+  worksheetNamesBySheetId: Map<number, NoteSheetDefinedNameItem[]>,
+): NoteSheetDefinedNameWorksheetScope[] {
+  return definedNameWorksheetScopes.value.map((scope) => ({
+    sheet_id: scope.sheet_id,
+    sheet_title: scope.sheet_title,
+    sheet_version: scope.sheet_version,
+    names: serializeDefinedNameItems(worksheetNamesBySheetId.get(scope.sheet_id) ?? []),
+  }))
+}
+
+function syncDefinedNamesFromResponse(response: NoteSheetDefinedNamesResponse) {
+  workbookDefinedNames.value = normalizeDefinedNameItems(response.workbook, 'workbook')
+  const responseWorksheets = normalizeDefinedNameWorksheetScopes(response.worksheets)
+  const fallbackWorksheetNames = normalizeDefinedNameItems(response.worksheet, 'worksheet')
+  const currentSheetId = Number(props.sheetId)
+  if (responseWorksheets.length) {
+    definedNameWorksheetScopes.value = responseWorksheets
+  } else if (Number.isInteger(currentSheetId) && currentSheetId > 0) {
+    definedNameWorksheetScopes.value = [{
+      sheet_id: currentSheetId,
+      sheet_title: sheetTitle.value || `工作表${currentSheetId}`,
+      sheet_version: Number.isFinite(response.sheet_version) ? Number(response.sheet_version) : null,
+      names: fallbackWorksheetNames,
+    }]
+  } else {
+    definedNameWorksheetScopes.value = []
+  }
+
+  const activeWorksheet = definedNameWorksheetScopes.value.find((item) => item.sheet_id === currentSheetId)
+  sheetDefinedNames.value = activeWorksheet
+    ? normalizeDefinedNameItems(activeWorksheet.names, 'worksheet')
+    : fallbackWorksheetNames
+  const activeSheetVersion = activeWorksheet?.sheet_version ?? response.sheet_version
+  if (Number.isFinite(activeSheetVersion)) {
+    sheetVersion.value = Number(activeSheetVersion)
+  }
+}
+
 function normalizeColumnConfigs(source: unknown, headers: string[]): Record<string, SheetColumnConfig> {
   if (!source || typeof source !== 'object') {
     return {}
@@ -7879,6 +8305,7 @@ function createDefaultDocument(defaultHeightMode: SheetHeightMode = getDefaultSh
     column_configs: {},
     column_widths: DEFAULT_SHEET_COLUMNS.map((header) => getAdaptiveColumnWidth(header)),
     view_settings: createDefaultSheetViewSettings(defaultHeightMode),
+    defined_names: [],
   }
 }
 
@@ -8114,6 +8541,7 @@ function normalizeSheetDocument(
     column_configs: normalizedColumnConfigs,
     column_widths: normalizedWidths,
     view_settings: normalizedSettings,
+    defined_names: normalizeDefinedNameItems(record.defined_names, 'worksheet'),
   }
 }
 
@@ -8274,6 +8702,7 @@ function buildCurrentDocument(): SheetDocument {
       normalizeColumnConfigs(columnConfigs.value, headers),
     )),
     view_settings: normalizeSheetViewSettings(sheetViewSettings.value, headers.length),
+    defined_names: serializeDefinedNameItems(sheetDefinedNames.value),
   }
 }
 
@@ -8464,7 +8893,7 @@ function readFormulaFunctionAlias(value: string, startIndex: number) {
 }
 
 function isFormulaIdentifierChar(char: string | undefined) {
-  return !!char && /[A-Za-z0-9_.]/.test(char)
+  return !!char && /[\p{L}\p{N}_.]/u.test(char)
 }
 
 function readFormulaBooleanLiteral(value: string, startIndex: number) {
@@ -9592,16 +10021,21 @@ function buildFormulaDisplayStateForRows(
     }
   }
 
-  const engineRows = normalizedRows.map((row) => row.map((cellValue) => (
-    isFormulaExpression(cellValue)
-      ? normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedDataRows.length, headerRowCount)
-      : normalizeFormulaEngineCellValue(cellValue)
-  )))
+  const namedExpressionContext = buildFormulaNamedExpressionContext()
+  const engineRows = normalizedRows.map((row) => row.map((cellValue) => {
+    if (!isFormulaExpression(cellValue)) {
+      return normalizeFormulaEngineCellValue(cellValue)
+    }
+    return replaceFormulaDefinedNameAliases(
+      normalizeFormulaExpressionForPagedEngine(cellValue, rowOffset, normalizedDataRows.length, headerRowCount),
+      namedExpressionContext.aliases,
+    )
+  }))
   const cells = normalizedRows.map((row) => row.map(() => null as FormulaCellModel | null))
   const errorKeys = new Set<string>()
   let engine: FormulaEngineInstance | null = null
   try {
-    engine = FormulaEngine.buildFromArray(engineRows, { licenseKey: 'gpl-v3' })
+    engine = FormulaEngine.buildFromArray(engineRows, { licenseKey: 'gpl-v3' }, namedExpressionContext.namedExpressions)
     formulaCells.forEach(({ row, column }) => {
       const calculatedValue = engine?.getCellValue({ sheet: 0, row, col: column })
       cells[row][column] = createFormulaCellModel(
@@ -9629,6 +10063,115 @@ function buildFormulaDisplayStateForRows(
   }
 
   return { cells, errorKeys, dataStartRow: headerRowCount }
+}
+
+function buildFormulaDefinedNameAliases(items: NoteSheetDefinedNameItem[]): SheetFormulaNameAlias[] {
+  const aliases: SheetFormulaNameAlias[] = []
+  const seen = new Set<string>()
+  items.forEach((item) => {
+    const name = normalizeCellValue(item.name).trim()
+    const key = name.toLowerCase()
+    if (!name || seen.has(key)) {
+      return
+    }
+    seen.add(key)
+    aliases.push({
+      source: name,
+      sourceLower: key,
+      alias: `__cy_defined_name_${aliases.length}`,
+    })
+  })
+  return aliases.sort((left, right) => right.source.length - left.source.length)
+}
+
+function replaceFormulaDefinedNameAliases(value: string, aliases: SheetFormulaNameAlias[]) {
+  if (!aliases.length || !isFormulaExpression(value)) {
+    return value
+  }
+
+  let result = ''
+  let index = 0
+  let inString = false
+  while (index < value.length) {
+    const char = value[index] ?? ''
+    if (char === '"') {
+      result += char
+      if (inString && value[index + 1] === '"') {
+        result += value[index + 1]
+        index += 2
+        continue
+      }
+      inString = !inString
+      index += 1
+      continue
+    }
+
+    if (!inString) {
+      const matchedAlias = aliases.find((alias) => {
+        const sourceText = value.slice(index, index + alias.source.length)
+        return (
+          sourceText.toLowerCase() === alias.sourceLower
+          && !isFormulaIdentifierChar(value[index - 1])
+          && !isFormulaIdentifierChar(value[index + alias.source.length])
+        )
+      })
+      if (matchedAlias) {
+        result += matchedAlias.alias
+        index += matchedAlias.source.length
+        continue
+      }
+    }
+
+    result += char
+    index += 1
+  }
+  return result
+}
+
+function buildFormulaNamedExpressionContextSignature(
+  workbookItems: NoteSheetDefinedNameItem[],
+  worksheetItems: NoteSheetDefinedNameItem[],
+) {
+  return JSON.stringify({
+    workbook: workbookItems.map((item) => [item.name, item.formula]),
+    worksheet: worksheetItems.map((item) => [item.name, item.formula]),
+  })
+}
+
+function buildFormulaNamedExpressionContext(): SheetFormulaNamedExpressionContext {
+  const workbookItems = normalizeDefinedNameItems(workbookDefinedNames.value, 'workbook')
+  const worksheetItems = normalizeDefinedNameItems(sheetDefinedNames.value, 'worksheet')
+  const signature = buildFormulaNamedExpressionContextSignature(workbookItems, worksheetItems)
+  if (formulaNamedExpressionContextCache?.signature === signature) {
+    return formulaNamedExpressionContextCache.context
+  }
+  const aliases = buildFormulaDefinedNameAliases([...workbookItems, ...worksheetItems])
+  const aliasByName = new Map(aliases.map((item) => [item.sourceLower, item.alias]))
+  const namedExpressions: SheetFormulaNamedExpression[] = []
+
+  workbookItems.forEach((item) => {
+    const alias = aliasByName.get(item.name.toLowerCase())
+    if (alias && item.formula) {
+      namedExpressions.push({
+        name: alias,
+        expression: replaceFormulaDefinedNameAliases(item.formula, aliases),
+      })
+    }
+  })
+  worksheetItems.forEach((item) => {
+    const alias = aliasByName.get(item.name.toLowerCase())
+    if (alias && item.formula) {
+      namedExpressions.push({
+        name: alias,
+        expression: replaceFormulaDefinedNameAliases(item.formula, aliases),
+        scope: 0,
+      })
+    }
+  })
+
+  const context = { namedExpressions, aliases }
+  formulaNamedExpressionContextCache = { signature, context }
+  return context
 }
 
 function buildFormulaDisplayState(): FormulaDisplayState {
@@ -10822,6 +11365,12 @@ function getCellActionTitle(action: SheetCellAction) {
   if (action.type === SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE) {
     return '补齐订单信息和用户ID，本地未命中时用 codepc_mi15 实时回查，并把新学员同步到考勤表'
   }
+  if (action.type === SHEET_CELL_ACTION_ATTENDANCE_EXPORT) {
+    return '导出考勤表，导出文件会按报名表学号把手机号补到昵称后面'
+  }
+  if (action.type === SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
+    return '从名称管理器的“打卡根目录”开始识别共学、共修打卡数据页，并写回当前打卡配置'
+  }
   return ''
 }
 
@@ -10833,12 +11382,27 @@ function getActiveRegistrationRunForAction(actionType: SheetCellActionType) {
   return run
 }
 
+function getActiveClockinLinkDetectionRunForAction(actionType: SheetCellActionType) {
+  const run = clockinLinkDetectionRunStatus.value
+  if (!run || !isClockinLinkDetectionRunActive(run) || actionType !== SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT) {
+    return null
+  }
+  return run
+}
+
 function isCellActionBlockedByActiveRun(actionType: SheetCellActionType) {
-  return !!getActiveRegistrationRunForAction(actionType)
+  return !!getActiveRegistrationRunForAction(actionType) || !!getActiveClockinLinkDetectionRunForAction(actionType)
 }
 
 function getCellActionRunningLabel(action: SheetCellAction, label: string) {
   const run = getActiveRegistrationRunForAction(action.type)
+  const clockinRun = getActiveClockinLinkDetectionRunForAction(action.type)
+  if (sheetCellActionRunning.value === action.type) {
+    return `${SHEET_CELL_ACTION_LABELS[action.type] || label}中`
+  }
+  if (clockinRun) {
+    return `${SHEET_CELL_ACTION_LABELS[action.type] || label}中`
+  }
   if (!run || run.action !== action.type) {
     return label
   }
@@ -10858,11 +11422,13 @@ function renderCellActionButton(
   button.className = 'sheet-cell-action-button-inner'
   button.title = getCellActionTitle(action)
   const activeRun = getActiveRegistrationRunForAction(action.type)
-  const isRunningSelf = !!activeRun && activeRun.action === action.type
+  const activeClockinRun = getActiveClockinLinkDetectionRunForAction(action.type)
+  const isRunningSelf = (!!activeRun && activeRun.action === action.type) || !!activeClockinRun || sheetCellActionRunning.value === action.type
   const isBlocked = isCellActionBlockedByActiveRun(action.type)
+  const isPermissionDisabled = isSheetCellActionDisabledByPermission(action.type)
   if (isRunningSelf) {
     button.classList.add('is-running')
-  } else if (isBlocked) {
+  } else if (isBlocked || isPermissionDisabled) {
     button.classList.add('is-disabled')
     button.disabled = true
   }
@@ -14202,6 +14768,173 @@ function buildColumnConfigsWithFilterDraft(
   return normalizeColumnConfigs(nextConfigs, headers)
 }
 
+function createDefinedNameDraftRow(
+  item?: Partial<NoteSheetDefinedNameItem>,
+  fallbackScopeKey: DefinedNameScopeKey = getCurrentDefinedNameWorksheetScopeKey(),
+): DefinedNameDraftRow {
+  return {
+    key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    scopeKey: item?.scope === 'workbook' ? 'workbook' : fallbackScopeKey,
+    name: normalizeCellValue(item?.name).trim(),
+    formula: normalizeDefinedNameFormula(item?.formula),
+    comment: normalizeCellValue(item?.comment).trim(),
+  }
+}
+
+function refreshDefinedNameDraftRows() {
+  const worksheetRows = definedNameWorksheetScopes.value.flatMap((scope) => (
+    normalizeDefinedNameItems(scope.names, 'worksheet')
+      .map((item) => createDefinedNameDraftRow(item, getDefinedNameWorksheetScopeKey(scope.sheet_id)))
+  ))
+  definedNameDraftRows.value = [
+    ...normalizeDefinedNameItems(workbookDefinedNames.value, 'workbook')
+      .map((item) => createDefinedNameDraftRow(item, 'workbook')),
+    ...worksheetRows,
+  ]
+}
+
+async function openDefinedNamesDialog() {
+  if (props.sheetId == null) {
+    return
+  }
+  if (!ensureCanEditConfig()) {
+    return
+  }
+
+  definedNamesDialogVisible.value = true
+  definedNamesError.value = ''
+  definedNamesLoading.value = true
+  try {
+    const response = props.workbookId != null
+      ? await fetchWorkbookDefinedNames(props.workbookId)
+      : await fetchSheetDefinedNames(props.sheetId, { workbookId: props.workbookId })
+    syncDefinedNamesFromResponse(response)
+  } catch (error) {
+    definedNamesError.value = '名称管理器加载失败'
+    console.warn('Failed to load defined names:', error)
+  } finally {
+    definedNamesLoading.value = false
+    refreshDefinedNameDraftRows()
+  }
+}
+
+function closeDefinedNamesDialog() {
+  definedNamesDialogVisible.value = false
+}
+
+function addDefinedNameDraftRow(scope: 'workbook' | 'worksheet' = 'workbook') {
+  const scopeKey = scope === 'workbook' ? 'workbook' : getCurrentDefinedNameWorksheetScopeKey()
+  definedNameDraftRows.value = [
+    ...definedNameDraftRows.value,
+    createDefinedNameDraftRow({ scope }, scopeKey),
+  ]
+}
+
+function removeDefinedNameDraftRow(index: number) {
+  definedNameDraftRows.value = definedNameDraftRows.value.filter((_, rowIndex) => rowIndex !== index)
+}
+
+function validateDefinedNameDraftRows() {
+  const scopedNames = new Map<string, Set<string>>()
+  const workbookNames: NoteSheetDefinedNameItem[] = []
+  const worksheetNamesBySheetId = new Map<number, NoteSheetDefinedNameItem[]>()
+  definedNameWorksheetScopes.value.forEach((scope) => {
+    worksheetNamesBySheetId.set(scope.sheet_id, [])
+  })
+  for (const row of definedNameDraftRows.value) {
+    const name = normalizeCellValue(row.name).trim()
+    const formula = normalizeDefinedNameFormula(row.formula)
+    const comment = normalizeCellValue(row.comment).trim()
+    const scopeKey = row.scopeKey === 'workbook' ? 'workbook' : row.scopeKey
+    const sheetId = parseDefinedNameWorksheetScopeKey(scopeKey)
+    if (!name && !formula && !comment) {
+      continue
+    }
+    if (scopeKey !== 'workbook' && sheetId == null) {
+      return { error: '请选择具体的工作表作用域' }
+    }
+    if (!name) {
+      return { error: '名称不能为空' }
+    }
+    if (!isDefinedNameValid(name)) {
+      return { error: `名称不合法：${name}` }
+    }
+    if (!formula) {
+      return { error: `公式不能为空：${name}` }
+    }
+    const key = name.toLowerCase()
+    const namesInScope = scopedNames.get(scopeKey) ?? new Set<string>()
+    if (namesInScope.has(key)) {
+      return { error: `同一作用域内名称重复：${name}` }
+    }
+    namesInScope.add(key)
+    scopedNames.set(scopeKey, namesInScope)
+    const item = {
+      name,
+      formula,
+      comment,
+      scope: scopeKey === 'workbook' ? 'workbook' : 'worksheet',
+    } satisfies NoteSheetDefinedNameItem
+    if (scopeKey === 'workbook') {
+      workbookNames.push(item)
+    } else if (sheetId != null) {
+      const names = worksheetNamesBySheetId.get(sheetId) ?? []
+      names.push(item)
+      worksheetNamesBySheetId.set(sheetId, names)
+    }
+  }
+  return { workbookNames, worksheetNamesBySheetId }
+}
+
+async function applyDefinedNamesDialog() {
+  if (props.sheetId == null || !ensureCanEditConfig()) {
+    closeDefinedNamesDialog()
+    return
+  }
+  const validated = validateDefinedNameDraftRows()
+  if ('error' in validated && validated.error) {
+    definedNamesError.value = validated.error
+    return
+  }
+  const workbookNames = validated.workbookNames ?? []
+  const worksheetNamesBySheetId = validated.worksheetNamesBySheetId ?? new Map<number, NoteSheetDefinedNameItem[]>()
+  if (workbookNames.length && props.workbookId == null) {
+    definedNamesError.value = '工作簿名称需要在工作簿内使用'
+    return
+  }
+
+  definedNamesSaving.value = true
+  definedNamesError.value = ''
+  try {
+    await flushRemoteSave()
+    if (props.workbookId != null) {
+      const workbookResponse = await updateWorkbookDefinedNames(
+        props.workbookId,
+        serializeDefinedNameItems(workbookNames),
+        { worksheets: serializeDefinedNameWorksheetScopes(worksheetNamesBySheetId) },
+      )
+      syncDefinedNamesFromResponse(workbookResponse)
+    } else {
+      const currentSheetId = Number(props.sheetId)
+      const sheetResponse = await updateSheetDefinedNames(
+        props.sheetId,
+        serializeDefinedNameItems(worksheetNamesBySheetId.get(currentSheetId) ?? []),
+        { workbookId: props.workbookId },
+      )
+      syncDefinedNamesFromResponse(sheetResponse)
+    }
+    refreshFormulaDisplayState()
+    getHotInstance()?.render()
+    closeDefinedNamesDialog()
+    ElMessage.success('名称管理器已保存')
+  } catch (error) {
+    definedNamesError.value = '名称管理器保存失败'
+    console.warn('Failed to save defined names:', error)
+  } finally {
+    definedNamesSaving.value = false
+  }
+}
+
 function openSheetSettings() {
   if (props.sheetId == null) {
     return
@@ -14348,6 +15081,7 @@ function loadSheetDocument(document: SheetDocument) {
   columnHeaders.value = normalizedHeaders
   headerGroups.value = normalizeHeaderGroups(document.header_groups, normalizedHeaders.length)
   columnConfigs.value = normalizeColumnConfigs(document.column_configs, normalizedHeaders)
+  sheetDefinedNames.value = normalizeDefinedNameItems(document.defined_names, 'worksheet')
   const dataStartRow = normalizeNonNegativeInt(document.data_start_row, sheetHeaderRowCount.value)
   const fieldRowIndex = normalizeNonNegativeInt(document.field_row_index, Math.max(0, dataStartRow - 1))
   sheetHeaderPrefixRows.value = Array.isArray(document.grid_rows)
@@ -14650,6 +15384,8 @@ function applyInlineSheetDocument() {
   suppressPersistence = true
   try {
     remoteAccessCapabilities.value = INLINE_READONLY_ACCESS_CAPABILITIES
+    workbookDefinedNames.value = []
+    definedNameWorksheetScopes.value = []
     sheetTitle.value = props.inlineTitle || '未命名表格'
     sheetVersion.value = 0
     beginSheetCoreRenderPhase()
@@ -14756,6 +15492,12 @@ function applyRegistrationActionRunSheetDetail(status: NoteSheetRegistrationMatc
     return
   }
   applyRemoteSheetDetail(status.sheet)
+}
+
+function applyClockinLinkDetectionRunSheetDetail(status: NoteSheetClockinLinkDetectionRunResponse) {
+  if (status.sheet) {
+    applyRemoteSheetDetail(status.sheet)
+  }
 }
 
 async function flushRemoteSave() {
@@ -15416,6 +16158,29 @@ function isCurrentRestoreInitialDocumentRequest(seq: number, sheetId: number, wo
   )
 }
 
+async function syncDefinedNamesForRestoreRequest(
+  requestSeq: number,
+  requestSheetId: number,
+  requestWorkbookId: number | null,
+) {
+  try {
+    const response = await fetchSheetDefinedNames(requestSheetId, { workbookId: requestWorkbookId })
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
+    syncDefinedNamesFromResponse(response)
+  } catch (error) {
+    if (getNoteSheetApiErrorStatus(error) !== 404) {
+      console.warn('Failed to load note sheet defined names:', error)
+    }
+    if (isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      workbookDefinedNames.value = []
+      sheetDefinedNames.value = []
+      definedNameWorksheetScopes.value = []
+    }
+  }
+}
+
 function scheduleFilteredPaginationReload() {
   if (props.sheetId == null || !paginationEnabled.value) {
     return
@@ -15642,6 +16407,10 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       pendingDeletedPageRowIndexes.value = []
     }
 
+    await syncDefinedNamesForRestoreRequest(requestSeq, requestSheetId, requestWorkbookId)
+    if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
+      return
+    }
     beginSheetCoreRenderPhase()
     loadSheetDocument(activeDocument)
     trace?.mark('load-document')
@@ -15672,6 +16441,7 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
     }
     void refreshAttendanceCourseScriptStatuses()
     void refreshUserMatchRunStatus(undefined, { silent: true })
+    void refreshClockinLinkDetectionRunStatus(undefined, { silent: true })
   } catch (error) {
     const status = getNoteSheetApiErrorStatus(error)
     const message = status === 401 || status === 403
@@ -23037,7 +23807,9 @@ watch(
   (nextSheetId, previousSheetId) => {
     sheetWorkspaceView.value = getDefaultSheetWorkspaceView()
     clearUserMatchRunPollTimer()
+    clearClockinLinkDetectionRunPollTimer()
     userMatchRunStatus.value = null
+    clockinLinkDetectionRunStatus.value = null
     userMatchStartPending.value = false
     clearSaveTimer()
     resetSheetFilterReloadState()
@@ -23107,7 +23879,9 @@ watch(
     }
     sheetWorkspaceView.value = getDefaultSheetWorkspaceView()
     clearUserMatchRunPollTimer()
+    clearClockinLinkDetectionRunPollTimer()
     userMatchRunStatus.value = null
+    clockinLinkDetectionRunStatus.value = null
     userMatchStartPending.value = false
     clearSaveTimer()
     resetSheetFilterReloadState()
@@ -23316,6 +24090,7 @@ onBeforeUnmount(() => {
   clearCellLinkOpenPointerGuard()
   resetSheetFilterReloadState()
   clearUserMatchRunPollTimer()
+  clearClockinLinkDetectionRunPollTimer()
   finishFormulaReferenceRange()
   clearScheduledFormulaBarDraftSync()
   clearScheduledInlineEditorFormulaBarSync()
@@ -23340,6 +24115,7 @@ onBeforeUnmount(() => {
 
 defineExpose({
   openSheetSettings,
+  openDefinedNamesDialog,
   hideEmptyColumns,
   detectAndSetOptionFilters,
 })
@@ -24017,6 +24793,69 @@ defineExpose({
           >
             开始匹配
           </el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="definedNamesDialogVisible"
+      title="名称管理器"
+      width="min(820px, calc(100vw - 24px))"
+      class="sheet-defined-names-dialog"
+      destroy-on-close
+      append-to-body
+      :close-on-click-modal="!definedNamesSaving"
+      :close-on-press-escape="!definedNamesSaving"
+    >
+      <div class="sheet-defined-names-toolbar">
+        <el-button
+          size="small"
+          title="新增名称"
+          aria-label="新增名称"
+          @click="addDefinedNameDraftRow('workbook')"
+        >+</el-button>
+      </div>
+      <div v-if="definedNamesError" class="sheet-defined-names-error">{{ definedNamesError }}</div>
+      <div v-loading="definedNamesLoading" class="sheet-defined-names-list">
+        <div class="sheet-defined-names-header">
+          <span>作用域</span>
+          <span>名称</span>
+          <span>公式</span>
+          <span>备注</span>
+          <span />
+        </div>
+        <div
+          v-for="(row, index) in definedNameDraftRows"
+          :key="row.key"
+          class="sheet-defined-names-row"
+        >
+          <el-select v-model="row.scopeKey" size="small">
+            <el-option
+              v-for="option in definedNameScopeOptions"
+              :key="option.value"
+              :label="option.label"
+              :value="option.value"
+            />
+          </el-select>
+          <el-input v-model="row.name" size="small" placeholder="period_index" />
+          <el-input v-model="row.formula" size="small" placeholder="=1" />
+          <el-input v-model="row.comment" size="small" />
+          <button
+            type="button"
+            class="sheet-defined-names-remove"
+            title="删除"
+            aria-label="删除"
+            @click="removeDefinedNameDraftRow(index)"
+          >-</button>
+        </div>
+        <div v-if="!definedNameDraftRows.length && !definedNamesLoading" class="sheet-defined-names-empty">
+          暂无名称
+        </div>
+      </div>
+      <template #footer>
+        <div class="sheet-settings-footer">
+          <el-button :disabled="definedNamesSaving" @click="closeDefinedNamesDialog">取消</el-button>
+          <el-button type="primary" :loading="definedNamesSaving" @click="applyDefinedNamesDialog">保存</el-button>
         </div>
       </template>
     </el-dialog>
@@ -25747,6 +26586,79 @@ defineExpose({
   line-height: 1.5;
 }
 
+.sheet-defined-names-toolbar {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-start;
+  margin-bottom: 10px;
+}
+
+.sheet-defined-names-error {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #f3c6c6;
+  border-radius: 6px;
+  background: #fff5f5;
+  color: #b42318;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sheet-defined-names-list {
+  min-height: 160px;
+  max-height: min(56vh, 520px);
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+
+.sheet-defined-names-header,
+.sheet-defined-names-row {
+  display: grid;
+  grid-template-columns: 180px minmax(130px, 0.8fr) minmax(220px, 1.4fr) minmax(140px, 1fr) 36px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+}
+
+.sheet-defined-names-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sheet-defined-names-row + .sheet-defined-names-row {
+  border-top: 1px solid #f1f5f9;
+}
+
+.sheet-defined-names-remove {
+  width: 28px;
+  height: 28px;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #b42318;
+  background: #fff;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet-defined-names-remove:hover {
+  background: #fff5f5;
+}
+
+.sheet-defined-names-empty {
+  padding: 28px 12px;
+  color: #94a3b8;
+  text-align: center;
+  font-size: 13px;
+}
+
 :global(.sheet-row-detail-dialog.el-dialog) {
   display: flex;
   flex-direction: column;
@@ -26805,6 +27717,19 @@ defineExpose({
 
   .sheet-student-feedback-submit-status {
     text-align: left;
+  }
+
+  .sheet-defined-names-header {
+    display: none;
+  }
+
+  .sheet-defined-names-row {
+    grid-template-columns: 1fr;
+    gap: 7px;
+  }
+
+  .sheet-defined-names-remove {
+    justify-self: end;
   }
 
   .sheet-student-feedback-context {

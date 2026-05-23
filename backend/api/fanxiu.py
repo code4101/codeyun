@@ -73,6 +73,9 @@ from backend.core.fanxiu_inventory import (
 )
 from backend.core.fanxiu_processes import match_fanxiu_process_fields, list_fanxiu_processes, terminate_fanxiu_processes
 from backend.core.fanxiu_packet_capture import build_fanxiu_packet_capture_snapshot
+from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
+from backend.core.fanxiu_packet_activity import fanxiu_packet_activity_service
+from backend.core.fanxiu_packet_proxy import fanxiu_packet_proxy_service
 from backend.core.fanxiu_behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
@@ -365,6 +368,7 @@ class FanxiuProcessListResponse(BaseModel):
 
 class FanxiuPacketCaptureSnapshotRequest(BaseModel):
     dns_hosts: List[str] = Field(default_factory=list)
+    resolve_dns: bool = True
 
 
 class FanxiuPacketCaptureDnsMapping(BaseModel):
@@ -397,6 +401,10 @@ class FanxiuPacketCaptureConnection(BaseModel):
     remote: Optional[FanxiuPacketCaptureAddress] = None
     mapped_hosts: List[str] = Field(default_factory=list)
     is_fake_ip: bool = False
+    remote_scope: str = ""
+    signal_score: int = 0
+    signal_label: str = ""
+    signal_reason: str = ""
 
 
 class FanxiuPacketCaptureSnapshot(BaseModel):
@@ -408,6 +416,199 @@ class FanxiuPacketCaptureSnapshot(BaseModel):
     listeners: List[FanxiuPacketCaptureConnection] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)
     summary: dict[str, int] = Field(default_factory=dict)
+
+
+class FanxiuPacketProxyStartRequest(BaseModel):
+    host: str = "127.0.0.1"
+    port: int = Field(8899, ge=1, le=65535)
+    device_id: str = ""
+
+
+class FanxiuPacketProxyStatus(BaseModel):
+    running: bool
+    host: str = ""
+    port: int = 0
+    addresses: List[str] = Field(default_factory=list)
+    event_count: int = 0
+    last_error: str = ""
+
+
+class FanxiuAndroidProxyStatus(BaseModel):
+    available: bool = False
+    adb_path: str = ""
+    device_id: str = ""
+    devices: List[str] = Field(default_factory=list)
+    http_proxy: str = ""
+    enabled: bool = False
+    target_proxy: str = ""
+    matches_target: bool = False
+    last_error: str = ""
+
+
+class FanxiuPacketCaptureSessionStatus(BaseModel):
+    active: bool = False
+    target_proxy: str = ""
+    proxy: FanxiuPacketProxyStatus
+    android: FanxiuAndroidProxyStatus
+    last_error: str = ""
+
+
+class FanxiuPacketActivityStartRequest(BaseModel):
+    bind_ip: str = ""
+
+
+class FanxiuPacketPayloadDirection(BaseModel):
+    length: int = 0
+    hex: str = ""
+    ascii: str = ""
+    text: str = ""
+    printable_ratio: float = 0
+    guess: str = "无负载"
+
+
+class FanxiuPacketPayloadPreview(BaseModel):
+    up: FanxiuPacketPayloadDirection = Field(default_factory=FanxiuPacketPayloadDirection)
+    down: FanxiuPacketPayloadDirection = Field(default_factory=FanxiuPacketPayloadDirection)
+
+
+class FanxiuPacketActivityFlow(BaseModel):
+    key: str
+    protocol: str
+    remote: FanxiuPacketCaptureAddress
+    packets_up: int = 0
+    packets_down: int = 0
+    bytes_up: int = 0
+    bytes_down: int = 0
+    payload_bytes_up: int = 0
+    payload_bytes_down: int = 0
+    payload_preview: FanxiuPacketPayloadPreview = Field(default_factory=FanxiuPacketPayloadPreview)
+    first_seen: str = ""
+    last_seen: str = ""
+
+
+class FanxiuPacketActivityStatus(BaseModel):
+    running: bool = False
+    bind_ip: str = ""
+    interfaces: List[str] = Field(default_factory=list)
+    started_at: str = ""
+    last_error: str = ""
+    total_packets: int = 0
+    total_bytes: int = 0
+    history_total: int = 0
+    history_capacity: int = 0
+    items: List[FanxiuPacketActivityFlow] = Field(default_factory=list)
+
+
+class FanxiuPacketActivityPayloadEvent(BaseModel):
+    id: int = 0
+    captured_at: str = ""
+    key: str = ""
+    protocol: str = ""
+    remote: FanxiuPacketCaptureAddress
+    direction: str = ""
+    packet_bytes: int = 0
+    payload_bytes: int = 0
+    payload_preview: FanxiuPacketPayloadDirection = Field(default_factory=FanxiuPacketPayloadDirection)
+
+
+class FanxiuPacketActivityHistoryResponse(BaseModel):
+    items: List[FanxiuPacketActivityPayloadEvent] = Field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    limit: int = 50
+    history_capacity: int = 0
+
+
+class FanxiuPacketActivityStreamDirection(BaseModel):
+    packet_count: int = 0
+    payload_bytes: int = 0
+    sampled_bytes: int = 0
+    dropped_bytes: int = 0
+    truncated_packets: int = 0
+    first_seen: str = ""
+    last_seen: str = ""
+    preview: FanxiuPacketPayloadDirection = Field(default_factory=FanxiuPacketPayloadDirection)
+
+
+class FanxiuPacketActivityStreamResponse(BaseModel):
+    key: str = ""
+    max_bytes: int = 0
+    up: FanxiuPacketActivityStreamDirection = Field(default_factory=FanxiuPacketActivityStreamDirection)
+    down: FanxiuPacketActivityStreamDirection = Field(default_factory=FanxiuPacketActivityStreamDirection)
+
+
+class FanxiuPacketProxyEvent(BaseModel):
+    id: int = 0
+    timeline_id: str = ""
+    source: str = ""
+    source_label: str = ""
+    started_at: str = ""
+    finished_at: Optional[str] = None
+    active: bool = False
+    error: str = ""
+    client: str = ""
+    event_type: str = "unknown"
+    method: str = ""
+    target: str = ""
+    url: str = ""
+    request_headers: str = ""
+    request_body_text: str = ""
+    request_body_hex: str = ""
+    response_status: str = ""
+    response_headers: str = ""
+    response_body_text: str = ""
+    response_body_hex: str = ""
+    bytes_up: int = 0
+    bytes_down: int = 0
+    plaintext_state: str = "unknown"
+    semantic_role: str = "unknown"
+    signal_score: int = 0
+    signal_label: str = "未判断"
+    signal_reason: str = ""
+
+
+class FanxiuPacketProxyEventListResponse(BaseModel):
+    items: List[FanxiuPacketProxyEvent] = Field(default_factory=list)
+    status: FanxiuPacketProxyStatus
+
+
+class FanxiuPacketProxyTimelineResponse(BaseModel):
+    items: List[FanxiuPacketProxyEvent] = Field(default_factory=list)
+    status: FanxiuPacketProxyStatus
+    total: int = 0
+    offset: int = 0
+    limit: int = 50
+    summary: dict[str, int] = Field(default_factory=dict)
+    log_directory: str = ""
+
+
+class FanxiuPacketProxySaveRequest(BaseModel):
+    label: str = ""
+
+
+class FanxiuPacketProxySaveResponse(BaseModel):
+    saved_at: str
+    path: str
+    event_count: int
+    status: FanxiuPacketProxyStatus
+
+
+class FanxiuPacketProxyLogFile(BaseModel):
+    name: str
+    path: str
+    size: int
+    modified_at: str
+    event_count: int
+
+
+class FanxiuPacketProxyLogListResponse(BaseModel):
+    items: List[FanxiuPacketProxyLogFile] = Field(default_factory=list)
+    directory: str
+
+
+class FanxiuPacketProxyLogLoadResponse(BaseModel):
+    log: FanxiuPacketProxyLogFile
+    items: List[FanxiuPacketProxyEvent] = Field(default_factory=list)
 
 
 class LocalScriptProcessItem(BaseModel):
@@ -3899,8 +4100,378 @@ def get_fanxiu_packet_capture_snapshot(
 ):
     ensure_fanxiu_write_permission(current_user, session)
     return FanxiuPacketCaptureSnapshot.model_validate(
-        build_fanxiu_packet_capture_snapshot(payload.dns_hosts)
+        build_fanxiu_packet_capture_snapshot(payload.dns_hosts, resolve_dns=payload.resolve_dns)
     )
+
+
+@status_router.get("/packet-capture/activity/status", response_model=FanxiuPacketActivityStatus)
+def get_fanxiu_packet_activity_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.status())
+
+
+@status_router.get("/packet-capture/activity/history", response_model=FanxiuPacketActivityHistoryResponse)
+def get_fanxiu_packet_activity_history(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    key: str = Query(""),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityHistoryResponse.model_validate(
+        fanxiu_packet_activity_service.history(offset=offset, limit=limit, key=key)
+    )
+
+
+@status_router.get("/packet-capture/activity/stream", response_model=FanxiuPacketActivityStreamResponse)
+def get_fanxiu_packet_activity_stream(
+    key: str = Query(""),
+    max_bytes: int = Query(32768, ge=1024, le=65536),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityStreamResponse.model_validate(
+        fanxiu_packet_activity_service.stream(key=key, max_bytes=max_bytes)
+    )
+
+
+@status_router.post("/packet-capture/activity/start", response_model=FanxiuPacketActivityStatus)
+def start_fanxiu_packet_activity(
+    payload: FanxiuPacketActivityStartRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.start(payload.bind_ip))
+
+
+@status_router.post("/packet-capture/activity/stop", response_model=FanxiuPacketActivityStatus)
+def stop_fanxiu_packet_activity(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.stop())
+
+
+@status_router.delete("/packet-capture/activity", response_model=FanxiuPacketActivityStatus)
+def clear_fanxiu_packet_activity(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketActivityStatus.model_validate(fanxiu_packet_activity_service.clear())
+
+
+def _recommended_fanxiu_proxy_address(status: dict[str, Any]) -> str:
+    addresses = [str(item) for item in status.get("addresses") or []]
+    for address in addresses:
+        if not address.startswith("127.") and not address.startswith("198.18."):
+            return address
+    return addresses[0] if addresses else ""
+
+
+def _saved_fanxiu_capture_host_port() -> tuple[str, int]:
+    state = fanxiu_packet_proxy_service.session_state()
+    host = str(state.get("host") or "0.0.0.0").strip()
+    try:
+        port = int(state.get("port") or 8899)
+    except (TypeError, ValueError):
+        port = 8899
+    return host, port
+
+
+def _ensure_fanxiu_capture_session(device_id: str = "") -> Optional[dict[str, Any]]:
+    state = fanxiu_packet_proxy_service.session_state()
+    if not state.get("active"):
+        return None
+
+    host, port = _saved_fanxiu_capture_host_port()
+    selected_device = str(device_id or state.get("device_id") or "").strip()
+    proxy_status = fanxiu_packet_proxy_service.status()
+    needs_start = (
+        not proxy_status.get("running")
+        or str(proxy_status.get("host") or "") != host
+        or int(proxy_status.get("port") or 0) != port
+    )
+    if needs_start:
+        try:
+            proxy_status = fanxiu_packet_proxy_service.start(host, port)
+        except RuntimeError as exc:
+            fanxiu_packet_proxy_service.save_session_state(
+                active=True,
+                host=host,
+                port=port,
+                device_id=selected_device,
+                target_proxy=str(state.get("target_proxy") or ""),
+                last_error=f"恢复 Python 抓包代理失败：{exc}",
+            )
+            return None
+
+    target_proxy = _recommended_fanxiu_proxy_address(proxy_status) or str(state.get("target_proxy") or "")
+    android_status = fanxiu_android_proxy_service.status(
+        device_id=selected_device,
+        target_proxy=target_proxy,
+    )
+    if target_proxy and android_status.get("available") and not android_status.get("matches_target"):
+        try:
+            android_status = fanxiu_android_proxy_service.set_http_proxy(
+                target_proxy,
+                device_id=str(android_status.get("device_id") or selected_device),
+            )
+        except Exception as exc:
+            android_status["last_error"] = f"恢复安卓代理失败：{exc}"
+
+    fanxiu_packet_proxy_service.save_session_state(
+        active=True,
+        host=host,
+        port=port,
+        device_id=str(android_status.get("device_id") or selected_device),
+        target_proxy=target_proxy,
+        last_error=str(android_status.get("last_error") or ""),
+    )
+    return android_status
+
+
+def _fanxiu_packet_capture_session_status(
+    *,
+    android_status: Optional[dict[str, Any]] = None,
+    device_id: str = "",
+) -> dict[str, Any]:
+    if android_status is None:
+        android_status = _ensure_fanxiu_capture_session(device_id=device_id)
+    proxy_status = fanxiu_packet_proxy_service.status()
+    state = fanxiu_packet_proxy_service.session_state()
+    target_proxy = _recommended_fanxiu_proxy_address(proxy_status) or str(state.get("target_proxy") or "")
+    android = android_status or fanxiu_android_proxy_service.status(
+        device_id=device_id,
+        target_proxy=target_proxy,
+    )
+    if target_proxy and not android.get("target_proxy"):
+        android["target_proxy"] = target_proxy
+        android["matches_target"] = android.get("http_proxy") == target_proxy
+    last_error = str(android.get("last_error") or proxy_status.get("last_error") or state.get("last_error") or "")
+    return {
+        "active": bool(proxy_status.get("running") and android.get("matches_target")),
+        "target_proxy": target_proxy,
+        "proxy": proxy_status,
+        "android": android,
+        "last_error": last_error,
+    }
+
+
+@status_router.get("/packet-capture/session/status", response_model=FanxiuPacketCaptureSessionStatus)
+def get_fanxiu_packet_capture_session_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketCaptureSessionStatus.model_validate(
+        _fanxiu_packet_capture_session_status()
+    )
+
+
+@status_router.post("/packet-capture/session/start", response_model=FanxiuPacketCaptureSessionStatus)
+def start_fanxiu_packet_capture_session(
+    payload: FanxiuPacketProxyStartRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        proxy_status = fanxiu_packet_proxy_service.start(payload.host, payload.port)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    target_proxy = _recommended_fanxiu_proxy_address(proxy_status)
+    android_status: dict[str, Any]
+    try:
+        android_status = fanxiu_android_proxy_service.set_http_proxy(
+            target_proxy,
+            device_id=payload.device_id,
+        )
+    except Exception as exc:
+        android_status = fanxiu_android_proxy_service.status(
+            device_id=payload.device_id,
+            target_proxy=target_proxy,
+        )
+        android_status["last_error"] = str(exc)
+
+    fanxiu_packet_proxy_service.save_session_state(
+        active=True,
+        host=payload.host,
+        port=payload.port,
+        device_id=str(android_status.get("device_id") or payload.device_id),
+        target_proxy=target_proxy,
+        last_error=str(android_status.get("last_error") or ""),
+    )
+    return FanxiuPacketCaptureSessionStatus.model_validate(
+        _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
+    )
+
+
+@status_router.post("/packet-capture/session/stop", response_model=FanxiuPacketCaptureSessionStatus)
+def stop_fanxiu_packet_capture_session(
+    payload: FanxiuPacketProxyStartRequest = FanxiuPacketProxyStartRequest(),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    android_status: dict[str, Any]
+    try:
+        android_status = fanxiu_android_proxy_service.clear_http_proxy(device_id=payload.device_id)
+    except Exception as exc:
+        proxy_status = fanxiu_packet_proxy_service.status()
+        target_proxy = _recommended_fanxiu_proxy_address(proxy_status)
+        android_status = fanxiu_android_proxy_service.status(
+            device_id=payload.device_id,
+            target_proxy=target_proxy,
+        )
+        android_status["last_error"] = f"清理安卓代理失败，已保留 Python 代理运行：{exc}"
+        host, port = _saved_fanxiu_capture_host_port()
+        fanxiu_packet_proxy_service.save_session_state(
+            active=True,
+            host=host,
+            port=port,
+            device_id=str(android_status.get("device_id") or payload.device_id),
+            target_proxy=target_proxy,
+            last_error=str(android_status.get("last_error") or ""),
+        )
+        return FanxiuPacketCaptureSessionStatus.model_validate(
+            _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
+        )
+
+    fanxiu_packet_proxy_service.stop()
+    host, port = _saved_fanxiu_capture_host_port()
+    fanxiu_packet_proxy_service.save_session_state(
+        active=False,
+        host=host,
+        port=port,
+        device_id=str(android_status.get("device_id") or payload.device_id),
+    )
+    return FanxiuPacketCaptureSessionStatus.model_validate(
+        _fanxiu_packet_capture_session_status(android_status=android_status, device_id=payload.device_id)
+    )
+
+
+@status_router.get("/packet-capture/proxy/status", response_model=FanxiuPacketProxyStatus)
+def get_fanxiu_packet_proxy_status(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    _ensure_fanxiu_capture_session()
+    return FanxiuPacketProxyStatus.model_validate(fanxiu_packet_proxy_service.status())
+
+
+@status_router.post("/packet-capture/proxy/start", response_model=FanxiuPacketProxyStatus)
+def start_fanxiu_packet_proxy(
+    payload: FanxiuPacketProxyStartRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return FanxiuPacketProxyStatus.model_validate(
+            fanxiu_packet_proxy_service.start(payload.host, payload.port)
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@status_router.post("/packet-capture/proxy/stop", response_model=FanxiuPacketProxyStatus)
+def stop_fanxiu_packet_proxy(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketProxyStatus.model_validate(fanxiu_packet_proxy_service.stop())
+
+
+@status_router.get("/packet-capture/proxy/events", response_model=FanxiuPacketProxyEventListResponse)
+def get_fanxiu_packet_proxy_events(
+    limit: int = Query(200, ge=1, le=500),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    _ensure_fanxiu_capture_session()
+    return FanxiuPacketProxyEventListResponse.model_validate(
+        fanxiu_packet_proxy_service.list_events(limit)
+    )
+
+
+@status_router.get("/packet-capture/proxy/timeline", response_model=FanxiuPacketProxyTimelineResponse)
+def get_fanxiu_packet_proxy_timeline(
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    event_filter: str = Query("all", pattern="^(candidate|readable|encrypted_or_resource|all)$"),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    _ensure_fanxiu_capture_session()
+    return FanxiuPacketProxyTimelineResponse.model_validate(
+        fanxiu_packet_proxy_service.list_timeline(offset=offset, limit=limit, event_filter=event_filter)
+    )
+
+
+@status_router.delete("/packet-capture/proxy/events", response_model=FanxiuPacketProxyEventListResponse)
+def clear_fanxiu_packet_proxy_events(
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketProxyEventListResponse.model_validate(
+        fanxiu_packet_proxy_service.clear_events()
+    )
+
+
+@status_router.post("/packet-capture/proxy/events/save", response_model=FanxiuPacketProxySaveResponse)
+def save_fanxiu_packet_proxy_events(
+    payload: FanxiuPacketProxySaveRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketProxySaveResponse.model_validate(
+        fanxiu_packet_proxy_service.save_events(payload.label)
+    )
+
+
+@status_router.get("/packet-capture/proxy/logs", response_model=FanxiuPacketProxyLogListResponse)
+def list_fanxiu_packet_proxy_logs(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuPacketProxyLogListResponse.model_validate(
+        fanxiu_packet_proxy_service.list_logs(limit)
+    )
+
+
+@status_router.get("/packet-capture/proxy/logs/load", response_model=FanxiuPacketProxyLogLoadResponse)
+def load_fanxiu_packet_proxy_log(
+    name: str = Query(..., min_length=1),
+    limit: int = Query(500, ge=1, le=2000),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        return FanxiuPacketProxyLogLoadResponse.model_validate(
+            fanxiu_packet_proxy_service.load_log(name, limit)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @status_router.post("/processes/terminate", response_model=FanxiuProcessTerminateResponse)

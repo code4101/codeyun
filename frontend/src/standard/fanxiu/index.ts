@@ -23,12 +23,14 @@ import spiritArtifactHallPage from './spirit-artifact-hall'
 import spiritBeastHallPage from './spirit-beast-hall'
 import fanxiuTaskStatusPage from './task-status'
 import wardrobeHallPage from './wardrobe-hall'
+import fanxiuWikiPage from './wiki'
 import xianzhouRacePage from './xianzhou-race'
 
 const pages: AppPageDefinition[] = [
   fanxiuTaskStatusPage,
   fanxiuGameWindowPage,
   fanxiuPacketCapturePage,
+  fanxiuWikiPage,
   fanxiuGameWindow2Page,
   fanxiuActivityListPage,
   fanxiuKunlunSecretPage,

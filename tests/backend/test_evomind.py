@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from backend.core import evomind
@@ -133,7 +131,7 @@ def test_evomind_pending_imports_round_trip(monkeypatch, tmp_path) -> None:
             "skipped_threads": 0,
             "scanned_messages": 1,
             "heuristic_candidate_count": 1,
-            "analysis_mode": "codex_cli_cache",
+            "analysis_mode": "deepseek_cache",
             "codex_cli_used": True,
             "codex_cli_invoked": False,
             "cache_hit_count": 1,
@@ -338,7 +336,7 @@ def test_scan_codex_cases_detects_friction_marker(monkeypatch) -> None:
     assert "再删掉不服务这个判断" in item["inferred_rule"]
 
 
-def test_scan_codex_cases_can_refine_candidates_with_codex_cli(monkeypatch) -> None:
+def test_scan_codex_cases_can_refine_candidates_with_deepseek(monkeypatch) -> None:
     monkeypatch.setattr(
         evomind,
         "build_codex_overview",
@@ -390,7 +388,7 @@ def test_scan_codex_cases_can_refine_candidates_with_codex_cli(monkeypatch) -> N
         called["candidate_limit"] = candidate_limit
         called["count"] = len(candidates)
         refined = dict(candidates[0])
-        refined["title"] = "Codex判断：文件清单密度对齐"
+        refined["title"] = "DeepSeek判断：文件清单密度对齐"
         refined["inferred_rule"] = "列表密度应对齐同屏参照区域，连续上下文合并展示。"
         return [refined], {
             "codex_cli_invoked": True,
@@ -410,15 +408,14 @@ def test_scan_codex_cases_can_refine_candidates_with_codex_cli(monkeypatch) -> N
     )
 
     assert result["codex_cli_used"] is True
-    assert result["analysis_mode"] == "codex_cli"
+    assert result["analysis_mode"] == "deepseek"
     assert called == {"candidate_limit": 3, "count": 1}
-    assert result["items"][0]["title"] == "Codex判断：文件清单密度对齐"
+    assert result["items"][0]["title"] == "DeepSeek判断：文件清单密度对齐"
 
 
-def test_codex_cli_scan_cache_reuses_rule_matched_candidates(monkeypatch, tmp_path) -> None:
+def test_deepseek_scan_cache_reuses_rule_matched_candidates(monkeypatch, tmp_path) -> None:
     cache_path = tmp_path / "scan-cache.json"
     monkeypatch.setattr(evomind, "_evomind_cache_path", lambda: cache_path)
-    monkeypatch.setattr(evomind, "_codex_cli_executable", lambda: "codex")
 
     candidates = [
         {
@@ -456,10 +453,9 @@ def test_codex_cli_scan_cache_reuses_rule_matched_candidates(monkeypatch, tmp_pa
     ]
     run_count = {"value": 0}
 
-    def fake_run(args: list[str], **kwargs: Any) -> SimpleNamespace:
+    def fake_call_deepseek_json(*args: Any, **kwargs: Any) -> dict[str, Any]:
         run_count["value"] += 1
-        output_path = args[args.index("-o") + 1]
-        payload = {
+        return {
             "items": [
                 {
                     "id": "candidate-1",
@@ -481,12 +477,8 @@ def test_codex_cli_scan_cache_reuses_rule_matched_candidates(monkeypatch, tmp_pa
                 {"id": "candidate-2", "keep": False, "reject_reason": "纯机制讨论"},
             ]
         }
-        tmp_path.joinpath("stdout.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        with open(output_path, "w", encoding="utf-8") as output_file:
-            json.dump(payload, output_file, ensure_ascii=False)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(evomind.subprocess, "run", fake_run)
+    monkeypatch.setattr(evomind, "_call_deepseek_json", fake_call_deepseek_json)
 
     first_items, first_stats = evomind._refine_candidates_with_codex_cli(
         candidates,
@@ -513,7 +505,7 @@ def test_scan_rule_text_changes_cache_rule_hash() -> None:
     assert evomind._scanner_rule_hash("规则 A") != evomind._scanner_rule_hash("规则 B")
 
 
-def test_case_card_prompt_requires_codex_cli_to_rewrite_fragments() -> None:
+def test_case_card_prompt_requires_deepseek_to_rewrite_fragments() -> None:
     prompt = evomind._build_codex_cli_case_card_prompt(
         case={
             "id": "case-ui",
@@ -555,12 +547,9 @@ def test_scan_prompt_requires_rule_essence_title() -> None:
     assert '"title": "规则精髓标题，不是素材标题"' in prompt
 
 
-def test_derive_case_card_uses_codex_cli(monkeypatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(evomind, "_codex_cli_executable", lambda: "codex")
-
-    def fake_run(args: list[str], **kwargs: Any) -> SimpleNamespace:
-        output_path = args[args.index("-o") + 1]
-        payload = {
+def test_derive_case_card_uses_deepseek(monkeypatch, tmp_path: Path) -> None:
+    def fake_call_deepseek_json(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {
             "id": "case-ui",
             "title": "先定参照，再统一密度",
             "domain": "frontend_ui",
@@ -581,11 +570,8 @@ def test_derive_case_card_uses_codex_cli(monkeypatch, tmp_path: Path) -> None:
                 "把用户原话改写为可执行模式，避免保留聊天填充语。",
             ],
         }
-        with open(output_path, "w", encoding="utf-8") as output_file:
-            json.dump(payload, output_file, ensure_ascii=False)
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(evomind.subprocess, "run", fake_run)
+    monkeypatch.setattr(evomind, "_call_deepseek_json", fake_call_deepseek_json)
 
     result = evomind.derive_evomind_case_card(
         case={
@@ -598,7 +584,7 @@ def test_derive_case_card_uses_codex_cli(monkeypatch, tmp_path: Path) -> None:
         },
     )
 
-    assert result["generation_mode"] == "codex_cli"
+    assert result["generation_mode"] == "deepseek"
     assert result["title"] == "先定参照，再统一密度"
     assert result["evidence_strength"] == "p0"
     assert "好像还是大啊" not in "\n".join(result["anti_patterns"] + result["positive_patterns"])
@@ -651,7 +637,7 @@ def test_generate_rule_proposal_selects_existing_frontend_skill(monkeypatch, tmp
     assert "展示高信息密度素材时使用 inspector 结构" in proposal["content"]
 
 
-def test_generate_rule_proposal_falls_back_when_codex_cli_fails(monkeypatch, tmp_path: Path) -> None:
+def test_generate_rule_proposal_falls_back_when_deepseek_fails(monkeypatch, tmp_path: Path) -> None:
     skill_dir = tmp_path / "设计品味"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
@@ -660,10 +646,10 @@ def test_generate_rule_proposal_falls_back_when_codex_cli_fails(monkeypatch, tmp
     )
     monkeypatch.setattr(evomind, "_skills_root_path", lambda: tmp_path)
 
-    def fail_cli(**kwargs: Any) -> dict[str, Any]:
-        raise RuntimeError("mock cli failed")
+    def fail_deepseek(**kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("mock DeepSeek failed")
 
-    monkeypatch.setattr(evomind, "_generate_proposal_with_codex_cli", fail_cli)
+    monkeypatch.setattr(evomind, "_generate_proposal_with_codex_cli", fail_deepseek)
 
     proposal = evomind.generate_evomind_rule_proposal(
         case={
@@ -678,5 +664,5 @@ def test_generate_rule_proposal_falls_back_when_codex_cli_fails(monkeypatch, tmp
     )
 
     assert proposal["generation_mode"] == "heuristic_fallback"
-    assert "mock cli failed" in proposal["warning"]
+    assert "mock DeepSeek failed" in proposal["warning"]
     assert proposal["lifecycle"] == "candidate"

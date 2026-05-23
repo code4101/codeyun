@@ -181,7 +181,7 @@ EvoMind 不应把所有东西都升级成全局 skill。
 ```mermaid
 flowchart TD
     A["Codex 真实会话记录"] --> B["工程预筛选"]
-    B --> C["Codex CLI 语义扫描"]
+    B --> C["DeepSeek 语义扫描"]
     C --> D["案例池"]
     C --> E["扫描缓存"]
     E --> C
@@ -283,7 +283,7 @@ flowchart TD
 - 候选来源 id。
 - 候选文本内容 hash。
 - 扫描规则 hash。
-- Codex CLI 语义扫描 prompt hash。
+- DeepSeek 语义扫描 prompt hash。
 - 工程预筛规则版本。
 - EvoMind 结构化 schema 版本。
 
@@ -473,7 +473,7 @@ sequenceDiagram
     alt 命中缓存
         C-->>BE: 返回结构化案例或丢弃结果
     else 未命中
-        BE->>CLI: 调用 Codex CLI 语义扫描
+        BE->>DeepSeek: 调用 DeepSeek 语义扫描
         CLI-->>BE: keep/drop + 结构化结果
         BE->>C: 写入缓存
     end
@@ -601,7 +601,7 @@ Candidate：
 
 - 已接入 EvoMind 页面。
 - 已删除 demo 样例，扫描真实 Codex 会话。
-- 已支持 Codex CLI 语义扫描。
+- 已支持 DeepSeek 语义扫描。
 - 已支持人工触发扫描。
 - 已支持规则指纹和扫描缓存。
 - 已支持重置缓存并重扫。

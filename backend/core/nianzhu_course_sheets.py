@@ -1235,24 +1235,30 @@ def _compute_next_lesson_update(
     now = now or datetime.now()
     lesson_name = _normalize_text(row.get("lesson_name"))
     rule_text = f"{_normalize_text(course_name)} {lesson_name}".strip()
+    is_zen_stage_course = _is_zen_stage_course_text(rule_text)
     start_date = _parse_datetime_cell(row.get("start_date")) or now
     end_date = _parse_datetime_cell(row.get("end_date")) or datetime(9999, 12, 31, 23, 59, 59)
     current_next_update = _parse_datetime_cell(row.get("next_update")) or start_date
     video_duration = _to_float(row.get("video_duration"))
     video_end_time = start_date if "闯关" in rule_text else start_date + timedelta(seconds=video_duration)
-    update_interval = timedelta(days=7 if "禅宗" in rule_text else 1)
+    update_interval = timedelta(days=7 if is_zen_stage_course else 1)
 
     if now < video_end_time:
         return _format_datetime_for_sheet(video_end_time)
     if now >= end_date:
         return _format_datetime_for_sheet(datetime(9999, 12, 31, 23, 59, 59))
 
-    next_time = current_next_update if "禅宗" in rule_text else video_end_time
+    next_time = current_next_update if is_zen_stage_course else video_end_time
     while next_time <= now:
         next_time += update_interval
     if next_time > end_date:
         next_time = end_date
     return _format_datetime_for_sheet(next_time)
+
+
+def _is_zen_stage_course_text(text: str) -> bool:
+    normalized = _normalize_text(text)
+    return "禅宗" in normalized or "修道班" in normalized
 
 
 def _read_export_table(file: str | Path):
@@ -1433,6 +1439,21 @@ def _update_course_sheet_document(sheet: SheetDocument, document: dict[str, Any]
     sheet.document_json = document
     sheet.version = max(int(sheet.version or 1), 1) + 1
     sheet.updated_at = time.time()
+
+
+def _ensure_course_source_meta(document: dict[str, Any], *, course_name: str) -> bool:
+    resolved_course_name = _normalize_text(course_name)
+    if not resolved_course_name:
+        return False
+    source_meta = dict(document.get("source_meta") or {})
+    current_course_name = _normalize_text(source_meta.get("course_name"))
+    if current_course_name and not (
+        current_course_name == NIANZHU_COURSE_NAME and resolved_course_name != NIANZHU_COURSE_NAME
+    ):
+        return False
+    source_meta["course_name"] = resolved_course_name
+    document["source_meta"] = source_meta
+    return True
 
 
 def _match_clockin_name(name: str, pattern: str) -> bool:
@@ -1707,6 +1728,13 @@ def materialize_nianzhu_course_sheets(
             replace=replace,
         )
         document_json = dict(sheet.document_json or {})
+        if _ensure_course_source_meta(document_json, course_name=course_name):
+            sheet.document_json = document_json
+            sheet.version = max(int(sheet.version or 1), 1) + 1
+            sheet.updated_by_user_id = owner_user_id
+            sheet.updated_at = time.time()
+            session.add(sheet)
+            changed = True
         changed_any = changed_any or changed
         sheet_summaries.append({
             "sheet_key": sheet.sheet_key,
@@ -1922,7 +1950,7 @@ def _challenge_progress_text_from_percent(progress: int | float) -> str:
 
 def _legacy_video_algorithm_kind(lesson: VideoConfigItem) -> str:
     text = f"{lesson.course_name} {lesson.lesson_name}"
-    if "禅宗" in text:
+    if _is_zen_stage_course_text(text):
         return "b"
     if "念住闯关" in text:
         return "c"
@@ -2301,10 +2329,17 @@ def compact_nianzhu_course_sheet_step2(
     session: Session,
     *,
     attendance_sheet_id: int = NIANZHU_ATTENDANCE_SHEET_NUMERIC_ID,
+    course_name: str = "",
 ) -> dict[str, Any]:
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
     video_config_document = dict(bundle[VIDEO_CONFIG_SHEET_KEY].document_json or {})
+    video_config_sheet = bundle[VIDEO_CONFIG_SHEET_KEY]
+    if _ensure_course_source_meta(video_config_document, course_name=course_name):
+        video_config_sheet.document_json = video_config_document
+        video_config_sheet.version = max(int(video_config_sheet.version or 1), 1) + 1
+        video_config_sheet.updated_at = time.time()
+        session.add(video_config_sheet)
     video_data_sheet = bundle[VIDEO_DATA_SHEET_KEY]
     current_document = dict(video_data_sheet.document_json or {})
     video_config = _load_video_config(video_config_document)
@@ -2530,6 +2565,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
     *,
     attendance_sheet_id: int = NIANZHU_ATTENDANCE_SHEET_NUMERIC_ID,
     active_only: bool = True,
+    course_name: str = "",
 ) -> dict[str, Any]:
     attendance = _get_sheet(session, attendance_sheet_id)
     bundle = _load_course_sheet_bundle(session, attendance=attendance)
@@ -2548,10 +2584,7 @@ def rebuild_nianzhu_attendance_from_course_sheets(
 
     video_config_sheet = bundle[VIDEO_CONFIG_SHEET_KEY]
     video_config_document = dict(video_config_sheet.document_json or {})
-    video_source_meta = dict(video_config_document.get("source_meta") or {})
-    if not _normalize_text(video_source_meta.get("course_name")):
-        video_source_meta["course_name"] = NIANZHU_COURSE_NAME
-        video_config_document["source_meta"] = video_source_meta
+    if _ensure_course_source_meta(video_config_document, course_name=course_name):
         video_config_sheet.document_json = video_config_document
         video_config_sheet.version = max(int(video_config_sheet.version or 1), 1) + 1
         video_config_sheet.updated_at = time.time()
@@ -2869,7 +2902,6 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
     )
 
     indexes = {
-        "商户订单号": _find_column_index(columns, "商户订单号"),
         "视频应返款": _find_column_index(columns, "视频应返款"),
         "打卡应返款": _find_column_index(columns, "打卡应返款"),
         "总应返款": _find_column_index(columns, "总应返款"),
@@ -3037,8 +3069,8 @@ def repair_nianzhu_clockin_refunds_from_course_sheets(
         ):
             old_current_refund = next_row[current_index]
             refunded_amount = _to_float(next_row[indexes["已返款"]]) if indexes["已返款"] is not None else 0.0
-            merchant_order = next_row[indexes["商户订单号"]] if indexes["商户订单号"] is not None else ""
-            current_refund = computed_total_refund - refunded_amount if _valid_refund_order_number(merchant_order) else 0.0
+            order_amount = _to_float(next_row[order_amount_index]) if order_amount_index is not None else 0.0
+            current_refund = computed_total_refund - refunded_amount if order_amount > 0 else 0.0
             if _set_row_value(
                 current_document,
                 next_row,

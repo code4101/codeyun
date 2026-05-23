@@ -1510,7 +1510,7 @@ def v32_add_codex_daily_summary_run_table(session: Session):
                 summary_date VARCHAR NOT NULL DEFAULT '',
                 timezone VARCHAR NOT NULL DEFAULT 'Asia/Shanghai',
                 provider VARCHAR NOT NULL DEFAULT '',
-                generated_by VARCHAR NOT NULL DEFAULT 'codex_cli',
+                generated_by VARCHAR NOT NULL DEFAULT 'deepseek',
                 model VARCHAR NOT NULL DEFAULT '',
                 prompt_version VARCHAR NOT NULL DEFAULT '',
                 force_requested BOOLEAN NOT NULL DEFAULT 0,
