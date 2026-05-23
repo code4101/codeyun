@@ -711,16 +711,16 @@ def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: S
     attendance = _find_sheet(session, "attendance")
     attendance_document = copy.deepcopy(attendance.document_json)
     columns = attendance_document["columns"]
-    for column in ["商户订单号", "总应返款", "已返款", "订单金额", "当前应返款"]:
+    for column in ["总应返款", "已返款", "订单金额", "当前应返款"]:
         columns.append(column)
     for row_index, row in enumerate(attendance_document["rows"]):
         if row_index == 1:
             row[columns.index("打卡数")] = 1
             row[columns.index("打卡应返款")] = 0
             row[columns.index("视频应返款")] = 420
-            row.extend(["T" * 19, "=MIN(IFERROR(I5+J5+M5-IF($L$3>0,$L$3,M5),0),M5)", 620, 620, -200])
+            row.extend(["=MIN(IFERROR(I5+J5+L5-IF($K$3>0,$K$3,L5),0),L5)", 620, 620, -200])
         else:
-            row.extend(["T" * 19, 0, 0, 620, 0])
+            row.extend([0, 0, 620, 0])
     attendance_document["grid_rows"] = [columns, ["" for _ in columns], ["" for _ in columns], *attendance_document["rows"]]
     attendance_document["data_start_row"] = 3
     attendance_document["grid_rows"][2][columns.index("已返款")] = 620
@@ -737,7 +737,7 @@ def test_repair_nianzhu_clockin_refunds_updates_frozen_static_refunds(session: S
     row = attendance.document_json["rows"][1]
     assert row[columns.index("打卡数")] == 10
     assert row[columns.index("打卡应返款")] == 150
-    assert row[columns.index("总应返款")] == "=MIN(IFERROR(I5+J5+M5-IF($L$3>0,$L$3,M5),0),M5)"
+    assert row[columns.index("总应返款")] == "=MIN(IFERROR(I5+J5+L5-IF($K$3>0,$K$3,L5),0),L5)"
     assert row[columns.index("当前应返款")] == -50
 
 

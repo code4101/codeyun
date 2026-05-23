@@ -15,11 +15,11 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, delete, select
 
-from backend.core.ai_chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
-    AiProviderConfig,
-    chat_with_provider,
+from backend.core.ai_chat import chat_with_provider
+from backend.core.ai_chat_user_config import (
+    AiChatUserConfigError,
+    get_user_ai_chat_provider_runtime_config,
+    list_user_ai_chat_custom_provider_configs,
 )
 from backend.db import engine
 from backend.core.note_semantics import (
@@ -42,7 +42,9 @@ from backend.models import (
 
 _CODEX_CACHE_LOCK = threading.Lock()
 _CODEX_DAILY_SUMMARY_TIMEZONE = "Asia/Shanghai"
-_CODEX_DAILY_SUMMARY_PROVIDER_ID = "codex-daily-summary"
+_CODEX_DAILY_SUMMARY_PROVIDER_ID = "deepseek"
+_CODEX_DAILY_SUMMARY_GENERATED_BY = "deepseek"
+_CODEX_DAILY_SUMMARY_DEFAULT_MODEL = "deepseek-v4-pro"
 _CODEX_DAILY_SUMMARY_TIMEOUT_SECONDS = 900.0
 _CODEX_DAILY_SUMMARY_PROMPT_VERSION = "2026-04-23.hierarchical-note-types-v1"
 _CODEX_DAILY_SUMMARY_HEARTBEAT_INTERVAL_SECONDS = 2.0
@@ -1441,22 +1443,35 @@ def build_codex_workload(
     }
 
 
-def _build_default_codex_daily_summary_provider() -> AiProviderConfig:
-    return AiProviderConfig(
-        id=_CODEX_DAILY_SUMMARY_PROVIDER_ID,
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
-        timeout_seconds=_CODEX_DAILY_SUMMARY_TIMEOUT_SECONDS,
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
-        is_custom=False,
-    )
+def _resolve_codex_daily_summary_model(model: str | None = None) -> str:
+    return (model or "").strip() or _CODEX_DAILY_SUMMARY_DEFAULT_MODEL
+
+
+def _resolve_codex_daily_summary_runtime_config(
+    session: Session | None,
+    user_id: int | None,
+) -> dict[str, Any]:
+    runtime: dict[str, Any] = {
+        "provider_id": _CODEX_DAILY_SUMMARY_PROVIDER_ID,
+        "base_url": None,
+        "api_key": None,
+        "extra_providers": (),
+    }
+    if session is None or user_id is None:
+        return runtime
+
+    try:
+        saved_config = get_user_ai_chat_provider_runtime_config(
+            session,
+            int(user_id),
+            _CODEX_DAILY_SUMMARY_PROVIDER_ID,
+        )
+        runtime["base_url"] = str(saved_config.get("base_url") or "").strip() or None
+        runtime["api_key"] = str(saved_config.get("api_key") or "").strip() or None
+        runtime["extra_providers"] = tuple(list_user_ai_chat_custom_provider_configs(session, int(user_id)))
+        return runtime
+    except AiChatUserConfigError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -2078,6 +2093,7 @@ def _build_codex_daily_summary_result_from_source(
     *,
     model: str | None = None,
     before_codex_call: Any = None,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     context = dict(source["context"])
     timezone = source["timezone"]
@@ -2112,26 +2128,29 @@ def _build_codex_daily_summary_result_from_source(
         type_items=list(source["type_items"]),
         turn_records=list(source["turn_records"]),
     )
-    provider = _build_default_codex_daily_summary_provider()
+    resolved_model = _resolve_codex_daily_summary_model(model)
+    runtime_config = runtime_config or _resolve_codex_daily_summary_runtime_config(None, None)
     if callable(before_codex_call):
         before_codex_call()
     response = chat_with_provider(
-        provider_id=provider.id,
-        model=model or provider.default_model,
+        provider_id=str(runtime_config.get("provider_id") or _CODEX_DAILY_SUMMARY_PROVIDER_ID),
+        base_url=runtime_config.get("base_url"),
+        api_key=runtime_config.get("api_key"),
+        model=resolved_model,
         system_prompt=_build_codex_daily_summary_system_prompt(source["target_date"], list(source["type_items"])),
         messages=[{"role": "user", "content": prompt}],
         timeout_seconds=_CODEX_DAILY_SUMMARY_TIMEOUT_SECONDS,
-        extra_providers=(provider,),
+        extra_providers=tuple(runtime_config.get("extra_providers") or ()),
     )
     summary_text = str(response.get("content") or "").strip()
     if not summary_text:
-        raise ValueError("Codex CLI 没有返回有效的日报总结")
+        raise ValueError("DeepSeek 没有返回有效的日报总结")
 
     return {
         **result_base,
         "generated_at": response.get("created_at"),
-        "generated_by": "codex_cli",
-        "model": response.get("model") or model or provider.default_model,
+        "generated_by": _CODEX_DAILY_SUMMARY_GENERATED_BY,
+        "model": response.get("model") or resolved_model,
         "summary_text": summary_text,
     }
 
@@ -2141,11 +2160,13 @@ def build_codex_daily_summary_result_from_source(
     *,
     model: str | None = None,
     before_codex_call: Any = None,
+    runtime_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return _build_codex_daily_summary_result_from_source(
         source,
         model=model,
         before_codex_call=before_codex_call,
+        runtime_config=runtime_config,
     )
 
 
@@ -2157,13 +2178,19 @@ def build_codex_daily_summary(
     user_id: int | None = None,
     session: Session | None = None,
 ) -> dict[str, Any]:
-    source = _collect_codex_daily_summary_source(
-        root_dir,
-        target_date_text,
-        user_id=user_id,
-        session=session,
+    with _session_scope(session) as active_session:
+        source = _collect_codex_daily_summary_source(
+            root_dir,
+            target_date_text,
+            user_id=user_id,
+            session=active_session,
+        )
+        runtime_config = _resolve_codex_daily_summary_runtime_config(active_session, user_id)
+    return _build_codex_daily_summary_result_from_source(
+        source,
+        model=model,
+        runtime_config=runtime_config,
     )
-    return _build_codex_daily_summary_result_from_source(source, model=model)
 
 
 def resolve_codex_daily_summary_epoch_range(target_date_text: str) -> tuple[str, float, float]:
@@ -2346,10 +2373,15 @@ def _run_codex_daily_summary_worker(
                     user_id=user_id,
                     session=session,
                 )
+            runtime_config = _resolve_codex_daily_summary_runtime_config(session, user_id)
         apply_stage("building_prompt", "整理类型归类与层次提纲", source=source)
 
         if not source["turn_records"]:
-            result = _build_codex_daily_summary_result_from_source(source, model=model)
+            result = _build_codex_daily_summary_result_from_source(
+                source,
+                model=model,
+                runtime_config=runtime_config,
+            )
             completed_at = time.time()
 
             def _mutate_empty(run: CodexDailySummaryRun) -> None:
@@ -2377,13 +2409,14 @@ def _run_codex_daily_summary_worker(
             return
 
         def _before_codex_call() -> None:
-            apply_stage("running_codex", "调用 Codex CLI 生成日报", source=source)
+            apply_stage("running_deepseek", "调用 DeepSeek 生成日报", source=source)
             start_heartbeat()
 
         result = _build_codex_daily_summary_result_from_source(
             source,
             model=model,
             before_codex_call=_before_codex_call,
+            runtime_config=runtime_config,
         )
         stop_heartbeat()
         completed_at = time.time()
@@ -2500,6 +2533,7 @@ def start_codex_daily_summary_run(
     root_identity = root_identity or _resolve_codex_daily_summary_root_identity(root_dir, require_existing=True)
     normalized_date_text, _, timezone, _, _ = _resolve_codex_daily_summary_range(target_date_text)
     db_engine = engine
+    resolved_model = _resolve_codex_daily_summary_model(model)
 
     with _session_scope(session) as session:
         try:
@@ -2528,8 +2562,8 @@ def start_codex_daily_summary_run(
             summary_date=normalized_date_text,
             timezone=timezone.key,
             provider=_CODEX_DAILY_SUMMARY_PROVIDER_ID,
-            generated_by="codex_cli",
-            model=(model or "").strip(),
+            generated_by=_CODEX_DAILY_SUMMARY_GENERATED_BY,
+            model=resolved_model,
             prompt_version=_CODEX_DAILY_SUMMARY_PROMPT_VERSION,
             force_requested=bool(force),
             status="running",
@@ -2553,7 +2587,7 @@ def start_codex_daily_summary_run(
             "root_dir": root_identity["root_dir"],
             "target_date_text": normalized_date_text,
             "user_id": user_id,
-            "model": (model or "").strip() or None,
+            "model": resolved_model,
             "source_loader": source_loader,
         },
         daemon=True,

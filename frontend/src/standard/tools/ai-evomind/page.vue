@@ -286,7 +286,7 @@
             <div class="head-actions">
               <el-select v-model="verifyExecutor" class="executor-select">
                 <el-option label="本地启发式" value="heuristic" />
-                <el-option label="codex-cli 沙盒" value="codex_cli" disabled />
+                <el-option label="DeepSeek 语义筛选" value="codex_cli" disabled />
               </el-select>
               <el-button type="primary" @click="runReplay">运行</el-button>
             </div>
@@ -1066,7 +1066,7 @@ async function repairExistingCaseCards() {
     }
     saveRewrittenCaseSignatures(signatures)
     if (repaired) {
-      ElMessage.success(`已用 Codex CLI 修正 ${repaired} 个已有案例卡`)
+      ElMessage.success(`已用 DeepSeek 修正 ${repaired} 个已有案例卡`)
     }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -1085,7 +1085,7 @@ async function deriveCaseCard() {
       case_rule_text: buildScanRuleText(),
     })
     await applyCaseCardResponse(item, response)
-    ElMessage.success(response.generation_mode === 'codex_cli' ? 'Codex CLI 案例卡已生成' : '案例卡已更新')
+    ElMessage.success(response.generation_mode === 'deepseek' ? 'DeepSeek 案例卡已生成' : '案例卡已更新')
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
   } finally {
@@ -1151,7 +1151,7 @@ async function generateProposal() {
     if (response.warning) {
       ElMessage.warning(response.warning)
     } else {
-      ElMessage.success(response.generation_mode === 'codex_cli' ? 'Codex CLI 提案已生成' : '提案已生成')
+      ElMessage.success(response.generation_mode === 'deepseek' ? 'DeepSeek 提案已生成' : '提案已生成')
     }
   } catch (error) {
     ElMessage.error(getErrorMessage(error))
@@ -1195,7 +1195,7 @@ function runReplay() {
     report: [
       `Candidate 比 baseline 高 ${candidateScore - baselineScore} 分。`,
       `主要改善来自：${item.positivePatterns.slice(0, 2).join('；') || '正向范式待补充'}。`,
-      '当前执行器是本地启发式，只验证闭环结构；接入 codex-cli 后应替换为真实 worktree 回放。',
+      '当前执行器是本地启发式，只验证闭环结构；接入真实回放后应替换为 worktree 级验证。',
     ].join('\n'),
     createdAt: nowText(),
   }
@@ -1287,9 +1287,9 @@ async function scanRealCases(options: ScanRealCasesOptions = {}) {
       state.selectedCaseId = imported[0].id
       activeStage.value = 'case'
     }
-    const scanMode = payload.analysis_mode === 'codex_cli_cache'
-      ? 'Codex CLI 缓存命中'
-      : payload.codex_cli_used ? 'Codex CLI 语义筛选' : '本地预筛选'
+    const scanMode = payload.analysis_mode === 'deepseek_cache'
+      ? 'DeepSeek 缓存命中'
+      : payload.codex_cli_used ? 'DeepSeek 语义筛选' : '本地预筛选'
     const cacheText = payload.codex_cli_used
       ? `，缓存 ${payload.cache_hit_count}/${payload.cache_hit_count + payload.cache_miss_count}，规则 ${payload.cache_rule_hash.slice(0, 8)}`
       : ''
@@ -1355,7 +1355,7 @@ function importPendingCaseImportsWithRetry() {
 
 async function rescanRealCases() {
   try {
-    await ElMessageBox.confirm('重扫会清空 EvoMind 后端扫描缓存，并重新调用 Codex CLI 分析候选。', '重扫真实记录', {
+    await ElMessageBox.confirm('重扫会清空 EvoMind 后端扫描缓存，并重新调用 DeepSeek 分析候选。', '重扫真实记录', {
       type: 'warning',
       confirmButtonText: '重扫',
       cancelButtonText: '取消',

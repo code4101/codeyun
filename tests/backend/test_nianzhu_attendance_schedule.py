@@ -95,20 +95,26 @@ def test_apply_nianzhu_step3_calculates_refunds_scores_and_styles(session):
     assert "4:8" not in cell_meta
 
 
-def test_run_nianzhu_step3_endpoint_delegates_to_sheet_runner(client, test_device, monkeypatch):
+def test_run_nianzhu_step3_endpoint_rebuilds_from_course_sheets(client, test_device, monkeypatch):
+    import backend.api.device_control as device_control
+
     calls = []
 
-    def fake_run_nianzhu_attendance_step3_for_sheet(**kwargs):
+    def fake_rebuild_nianzhu_attendance_from_course_sheets(session, **kwargs):
         calls.append(kwargs)
         return {
-            "sheet_id": kwargs["sheet_id"],
-            "course_name": kwargs["course_name"],
-            "message": "ok",
+            "attendance_sheet_id": kwargs["attendance_sheet_id"],
+            "active_only": kwargs["active_only"],
+            "rows": 3,
+            "updated_rows": 2,
+            "updated_cells": 5,
+            "styled_cells": 7,
         }
 
     monkeypatch.setattr(
-        "backend.api.device_control.run_nianzhu_attendance_step3_for_sheet",
-        fake_run_nianzhu_attendance_step3_for_sheet,
+        device_control,
+        "rebuild_nianzhu_attendance_from_course_sheets",
+        fake_rebuild_nianzhu_attendance_from_course_sheets,
     )
 
     response = client.post(
@@ -118,28 +124,33 @@ def test_run_nianzhu_step3_endpoint_delegates_to_sheet_runner(client, test_devic
     )
 
     assert response.status_code == 200
-    assert response.json()["message"] == "ok"
-    assert calls == [{"sheet_id": 721, "course_name": "d250106念住闯关"}]
+    assert response.json()["sheet_id"] == 721
+    assert response.json()["attendance_sheet_id"] == 721
+    assert "从课程存储 sheet 重建 3 行" in response.json()["message"]
+    assert calls == [{"attendance_sheet_id": 721, "active_only": True}]
 
 
-def test_run_nianzhu_step3_endpoint_keeps_legacy_runner(client, test_device, monkeypatch):
+def test_run_nianzhu_step3_endpoint_include_frozen_rebuilds_all_rows(client, test_device, monkeypatch):
     import backend.api.device_control as device_control
 
     calls = []
 
-    def fake_run_nianzhu_attendance_step3_for_sheet(**kwargs):
+    def fake_rebuild_nianzhu_attendance_from_course_sheets(session, **kwargs):
         calls.append(kwargs)
         return {
-            "sheet_id": kwargs["sheet_id"],
-            "course_name": kwargs["course_name"],
-            "message": "legacy ok",
+            "attendance_sheet_id": kwargs["attendance_sheet_id"],
+            "active_only": kwargs["active_only"],
+            "rows": 3,
+            "updated_rows": 1,
+            "updated_cells": 2,
+            "styled_cells": 4,
         }
 
-    def sheet_rebuild_should_not_run(*args, **kwargs):
-        raise AssertionError("sheet rebuild should be triggered only by explicit sheet endpoints")
-
-    monkeypatch.setattr(device_control, "run_nianzhu_attendance_step3_for_sheet", fake_run_nianzhu_attendance_step3_for_sheet)
-    monkeypatch.setattr(device_control, "rebuild_nianzhu_attendance_from_course_sheets", sheet_rebuild_should_not_run)
+    monkeypatch.setattr(
+        device_control,
+        "rebuild_nianzhu_attendance_from_course_sheets",
+        fake_rebuild_nianzhu_attendance_from_course_sheets,
+    )
 
     response = client.post(
         "/api/device-control/attendance/nianzhu/step3",
@@ -148,8 +159,8 @@ def test_run_nianzhu_step3_endpoint_keeps_legacy_runner(client, test_device, mon
     )
 
     assert response.status_code == 200
-    assert response.json()["message"] == "legacy ok"
-    assert calls == [{"sheet_id": 21, "course_name": "d250106念住闯关"}]
+    assert response.json()["active_only"] is False
+    assert calls == [{"attendance_sheet_id": 21, "active_only": False}]
 
 
 def test_run_nianzhu_step1_endpoint_updates_course_sheets(client, test_device, monkeypatch):

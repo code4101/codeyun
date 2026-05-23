@@ -5,7 +5,7 @@ import json
 import time
 from datetime import date
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from sqlmodel import Session, select
 
 from backend.api import note_sheets as note_sheets_api
@@ -469,6 +469,7 @@ def test_note_sheet_blank_create_uses_sheet_address_defaults(client, session):
 
 
 def test_note_sheet_excel_import_reset_preserves_action_row(client, session, monkeypatch):
+    monkeypatch.delenv("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL", raising=False)
     user = _create_user(session, username="note-sheet-excel-import-user")
     _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
     _override_user(user)
@@ -508,8 +509,9 @@ def test_note_sheet_excel_import_reset_preserves_action_row(client, session, mon
         assert "excel_import_reset" in prompt
         assert "导入报名" in prompt
         assert "不要把无法匹配的普通源字段塞进“备注”" in kwargs["system_prompt"]
-        assert kwargs["response_format"]["properties"]["extra_columns"]["items"]["type"] == "string"
-        assert kwargs["response_format"]["properties"]["rows"]["items"]["properties"]["姓名"]["type"] == "string"
+        assert kwargs["provider_id"] == "deepseek"
+        assert kwargs["model"] == "deepseek-v4-pro"
+        assert kwargs["response_format"] == "json"
         return {
             "content": json.dumps(
                 {
@@ -2146,6 +2148,99 @@ def test_note_sheet_registration_attendance_sync_allows_attendance_without_user_
     assert summary["inserted_count"] == 1
     assert next_doc["columns"] == attendance_columns
     assert next_doc["rows"] == [["2026-05-21 09:46", "124", "赵誉博", "赵玉博", "M20260521", ""]]
+
+
+def test_note_sheet_registration_attendance_sync_derives_order_amount_without_attendance_order_column():
+    registration_columns = ["序号", "提交时间", "姓名", "微信昵称", "商户订单号", "订单金额", "用户ID"]
+    attendance_columns = ["报名日期", "学号", "姓名", "昵称", "订单金额", "当前应返款"]
+    registration_doc = {
+        "schema_version": 1,
+        "columns": registration_columns,
+        "rows": [
+            ["124", "2026/5/21 09:46:30", "赵誉博", "赵玉博", "", "620", "u_no_order"],
+            ["125", "2026/5/22 09:46:30", "李同学", "同学", "M20260522", "620", "u_with_order"],
+        ],
+    }
+    attendance_doc = {
+        "schema_version": 1,
+        "columns": attendance_columns,
+        "data_start_row": 1,
+        "formula_reference_origin": "sheet_v2",
+        "rows": [
+            ["2026-05-21 09:46", "124", "赵誉博", "赵玉博", "620", "0"],
+            ["2026-05-22 09:46", "125", "李同学", "同学", "0", "0"],
+        ],
+        "grid_rows": [attendance_columns],
+    }
+
+    next_doc, summary = note_sheets_api._sync_registration_rows_to_attendance_document(registration_doc, attendance_doc)
+
+    assert summary["repaired_count"] == 2
+    assert next_doc["rows"][0][attendance_columns.index("订单金额")] == "0"
+    assert next_doc["rows"][1][attendance_columns.index("订单金额")] == "620"
+
+
+def test_note_sheet_attendance_export_inserts_registration_phone_after_nickname(client, session):
+    user = _create_user(session, username="attendance-export-user")
+    _grant_feature_access(session, user_id=user.id, feature_key="notes.sheets")
+    _override_user(user)
+
+    try:
+        workbook_response = client.post("/api/note-sheets/workbooks", json={"title": "修道班7期5阶"})
+        workbook_id = workbook_response.json()["id"]
+        registration_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "报名表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["序号", "姓名", "微信昵称", "手机号"],
+                    "rows": [
+                        ["1", "张三", "三三", "13800138000"],
+                        ["2", "李四", "四四", "13900139000"],
+                    ],
+                },
+            },
+        )
+        assert registration_response.status_code == 200
+        attendance_response = client.post(
+            "/api/note-sheets/sheets",
+            json={
+                "title": "考勤表",
+                "workbook_id": workbook_id,
+                "document_json": {
+                    "schema_version": 1,
+                    "columns": ["学号", "姓名", "昵称", "当前应返款"],
+                    "rows": [
+                        ["1", "张三", "三三", "0"],
+                        ["2", "李四", "四四", "50"],
+                    ],
+                },
+            },
+        )
+        assert attendance_response.status_code == 200
+        attendance_id = attendance_response.json()["id"]
+
+        response = client.get(
+            f"/api/note-sheets/sheets/{attendance_id}/attendance-export",
+            params={"workbook_id": workbook_id},
+        )
+
+        assert response.status_code == 200
+        workbook = load_workbook(io.BytesIO(response.content), data_only=True)
+        worksheet = workbook.active
+        assert [worksheet.cell(1, column).value for column in range(1, 6)] == [
+            "学号",
+            "姓名",
+            "昵称",
+            "手机号",
+            "当前应返款",
+        ]
+        assert [worksheet.cell(2, column).value for column in range(1, 6)] == ["1", "张三", "三三", "13800138000", "0"]
+        assert [worksheet.cell(3, column).value for column in range(1, 6)] == ["2", "李四", "四四", "13900139000", "50"]
+    finally:
+        _clear_user_override()
 
 
 def test_note_sheet_registration_user_match_defaults_to_db_only(client, session, monkeypatch):

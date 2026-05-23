@@ -348,6 +348,17 @@
       "default_anonymous_allow": false
     },
     {
+      "key": "fanxiu.wiki",
+      "title": "凡修图鉴",
+      "node_type": "feature",
+      "parent_key": "fanxiu",
+      "sort_order": 6,
+      "route_paths": ["/fanxiu/wiki"],
+      "menu_paths": ["/fanxiu/wiki"],
+      "api_scopes": ["fanxiu"],
+      "default_anonymous_allow": true
+    },
+    {
       "key": "fanxiu.activity-list",
       "title": "活动列表",
       "node_type": "group",

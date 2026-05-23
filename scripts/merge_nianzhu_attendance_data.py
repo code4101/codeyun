@@ -436,7 +436,9 @@ def _build_cell_meta(
     data_start_row: int,
 ) -> dict[str, Any]:
     cell_meta = _preserve_header_cell_meta(base_document, data_start_row)
-    if "返款配置" in final_columns:
+    if "当前应返款" in final_columns:
+        frozen_style_end_column = final_columns.index("当前应返款")
+    elif "返款配置" in final_columns:
         frozen_style_end_column = final_columns.index("返款配置")
     elif "打卡数" in final_columns:
         frozen_style_end_column = final_columns.index("打卡数") - 1

@@ -126,6 +126,33 @@ export interface WorkbookSummary {
 
 export interface WorkbookDetail extends WorkbookSummary {
   sheets: NoteSheetSummary[]
+  defined_names?: NoteSheetDefinedNameItem[]
+}
+
+export type NoteSheetDefinedNameScope = 'workbook' | 'worksheet'
+
+export interface NoteSheetDefinedNameItem {
+  name: string
+  formula: string
+  comment?: string
+  scope?: NoteSheetDefinedNameScope | null
+}
+
+export interface NoteSheetDefinedNameWorksheetScope {
+  sheet_id: number
+  sheet_title: string
+  sheet_version?: number | null
+  names: NoteSheetDefinedNameItem[]
+}
+
+export interface NoteSheetDefinedNamesResponse {
+  workbook_id?: number | null
+  sheet_id?: number | null
+  sheet_version?: number | null
+  workbook: NoteSheetDefinedNameItem[]
+  worksheet: NoteSheetDefinedNameItem[]
+  worksheets?: NoteSheetDefinedNameWorksheetScope[]
+  effective: NoteSheetDefinedNameItem[]
 }
 
 export interface NoteSheetTrashResponse {
@@ -224,6 +251,35 @@ export interface NoteSheetRegistrationMatchRunResponse {
   warning_count: number
   message: string
   error_message?: string | null
+  sheet?: NoteSheetDetail | null
+}
+
+export type NoteSheetClockinLinkDetectionRunStatus = NoteSheetRegistrationMatchRunStatus
+
+export interface NoteSheetClockinLinkDetectionRunResponse {
+  run_id: string
+  action: string
+  sheet_id: number
+  workbook_id?: number | null
+  status: NoteSheetClockinLinkDetectionRunStatus
+  phase: string
+  already_running: boolean
+  cancel_requested: boolean
+  queued_at?: number | null
+  started_at?: number | null
+  finished_at?: number | null
+  total_count: number
+  processed_count: number
+  updated_count: number
+  skipped_count: number
+  error_count: number
+  warning_count: number
+  message: string
+  error_message?: string | null
+  provider_id: string
+  model: string
+  results: Record<string, unknown>[]
+  warnings: string[]
   sheet?: NoteSheetDetail | null
 }
 
@@ -502,6 +558,37 @@ export async function importNoteSheetFromExcel(
 
 export const importNoteSheetFromExcelReset = importNoteSheetFromExcel
 
+function parseContentDispositionFilename(value: unknown) {
+  const text = typeof value === 'string' ? value : ''
+  const utf8Match = text.match(/filename\*=UTF-8''([^;]+)/i)
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1])
+    } catch {
+      return utf8Match[1]
+    }
+  }
+  const quotedMatch = text.match(/filename="?([^";]+)"?/i)
+  return quotedMatch?.[1] ?? ''
+}
+
+export async function exportAttendanceSheet(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<Blob>(`/note-sheets/sheets/${sheetId}/attendance-export`, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+    responseType: 'blob',
+    timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+  })
+  return {
+    blob: response.data,
+    filename: parseContentDispositionFilename(response.headers['content-disposition']) || '考勤表.xlsx',
+  }
+}
+
 export async function updateNoteSheetRegistrationOrderMatch(
   sheetId: number,
   options?: NoteSheetResourceRequestOptions,
@@ -587,6 +674,63 @@ export async function fetchNoteSheetRegistrationMatchRun(
 ) {
   const response = await api.get<NoteSheetRegistrationMatchRunResponse>(
     `/note-sheets/sheets/${sheetId}/registration/match-runs/${runId}`,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function startNoteSheetClockinLinkDetectionRun(
+  sheetId: number,
+  payload: {
+    forceRestart?: boolean
+    providerId?: string
+    model?: string
+  } = {},
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.post<NoteSheetClockinLinkDetectionRunResponse>(
+    `/note-sheets/sheets/${sheetId}/clockin/link-detection-runs`,
+    {
+      force_restart: payload.forceRestart ?? false,
+      provider_id: payload.providerId ?? 'deepseek',
+      model: payload.model ?? 'deepseek-v4-flash',
+    },
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+      timeout: NOTE_SHEET_ACTION_TIMEOUT_MS,
+    },
+  )
+  return response.data
+}
+
+export async function fetchNoteSheetActiveClockinLinkDetectionRun(
+  sheetId: number,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<NoteSheetClockinLinkDetectionRunResponse>(
+    `/note-sheets/sheets/${sheetId}/clockin/link-detection-runs/active`,
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
+  return response.data
+}
+
+export async function fetchNoteSheetClockinLinkDetectionRun(
+  sheetId: number,
+  runId: string,
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.get<NoteSheetClockinLinkDetectionRunResponse>(
+    `/note-sheets/sheets/${sheetId}/clockin/link-detection-runs/${runId}`,
     {
       params: {
         workbook_id: options?.workbookId ?? undefined,
@@ -737,6 +881,23 @@ export async function updateWorkbook(workbookId: number, payload: { title?: stri
   return response.data
 }
 
+export async function fetchWorkbookDefinedNames(workbookId: number) {
+  const response = await api.get<NoteSheetDefinedNamesResponse>(`/note-sheets/workbooks/${workbookId}/defined-names`)
+  return response.data
+}
+
+export async function updateWorkbookDefinedNames(
+  workbookId: number,
+  names: NoteSheetDefinedNameItem[],
+  options?: { worksheets?: NoteSheetDefinedNameWorksheetScope[] },
+) {
+  const response = await api.put<NoteSheetDefinedNamesResponse>(
+    `/note-sheets/workbooks/${workbookId}/defined-names`,
+    { names, worksheets: options?.worksheets },
+  )
+  return response.data
+}
+
 export async function saveAsWorkbook(
   workbookId: number,
   payload: {
@@ -793,6 +954,32 @@ export async function updateWorkbookAccess(
 
 export async function fetchSheetAccess(sheetId: number) {
   const response = await api.get<NoteSheetResourceAccessResponse>(`/note-sheets/sheets/${sheetId}/access`)
+  return response.data
+}
+
+export async function fetchSheetDefinedNames(sheetId: number, options?: NoteSheetResourceRequestOptions) {
+  const response = await api.get<NoteSheetDefinedNamesResponse>(`/note-sheets/sheets/${sheetId}/defined-names`, {
+    params: {
+      workbook_id: options?.workbookId ?? undefined,
+    },
+  })
+  return response.data
+}
+
+export async function updateSheetDefinedNames(
+  sheetId: number,
+  names: NoteSheetDefinedNameItem[],
+  options?: NoteSheetResourceRequestOptions,
+) {
+  const response = await api.put<NoteSheetDefinedNamesResponse>(
+    `/note-sheets/sheets/${sheetId}/defined-names`,
+    { names },
+    {
+      params: {
+        workbook_id: options?.workbookId ?? undefined,
+      },
+    },
+  )
   return response.data
 }
 

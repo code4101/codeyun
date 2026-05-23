@@ -84,10 +84,6 @@ def _load_auto_git_schedule(session):
     return row.value
 
 
-def _noop_pre_commit_optimizer(candidate, inspect_payload):
-    return {"status": "completed", "summary": f"已检查 {candidate.name}"}
-
-
 def test_auto_git_commit_candidates_use_first_three_allowed_saved_repos(session, auth_user, tmp_path):
     _save_auto_commit_repos(
         session,
@@ -283,13 +279,9 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
             "reason": "",
         }
 
-    def unexpected_pre_commit_optimizer(candidate, inspect_payload):
-        raise AssertionError("codeyun should skip pre-commit optimization")
-
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        pre_commit_optimizer=unexpected_pre_commit_optimizer,
         draft_generator=fake_draft_generator,
     )
 
@@ -304,7 +296,7 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     assert result_statuses == {"codeyun": "committed", "pyxllib": "clean"}
     repo_result = next(item for item in updated.result_json["repos"] if item["name"] == "codeyun")
     assert repo_result["pre_commit_review"]["status"] == "skipped"
-    assert "codeyun 自动提交只生成提交信息" in repo_result["pre_commit_review"]["summary"]
+    assert "codeyun 自动提交只生成提交信息，不执行提交前自动优化" in repo_result["pre_commit_review"]["summary"]
     assert repo_result["commit_strategy"] == "lightweight_ai"
     assert len(draft_calls) == 1
     reduction_input = draft_calls[0]["reduction_input"]
@@ -341,7 +333,6 @@ def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, au
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        pre_commit_optimizer=_noop_pre_commit_optimizer,
         draft_generator=unexpected_draft_generator,
     )
 
@@ -362,7 +353,7 @@ def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, au
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
-def test_auto_git_commit_worker_skips_pre_commit_optimizer_before_draft(session, auth_user, tmp_path, monkeypatch):
+def test_auto_git_commit_worker_records_summary_only_before_draft(session, auth_user, tmp_path, monkeypatch):
     dirty_repo = tmp_path / "dirty-review-repo"
     _init_git_repo(dirty_repo)
     (dirty_repo / "feature.txt").write_text("new feature\n", encoding="utf-8")
@@ -382,9 +373,6 @@ def test_auto_git_commit_worker_skips_pre_commit_optimizer_before_draft(session,
 
     events = []
 
-    def unexpected_pre_commit_optimizer(candidate, inspect_payload):
-        raise AssertionError("auto git commit should skip pre-commit optimizer")
-
     def fake_draft_generator(**kwargs):
         events.append(("draft", _run_git(dirty_repo, "status", "--short")))
         return {
@@ -398,7 +386,6 @@ def test_auto_git_commit_worker_skips_pre_commit_optimizer_before_draft(session,
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        pre_commit_optimizer=unexpected_pre_commit_optimizer,
         draft_generator=fake_draft_generator,
     )
 
@@ -409,7 +396,7 @@ def test_auto_git_commit_worker_skips_pre_commit_optimizer_before_draft(session,
     assert updated.committed_repo_count == 1
     assert repo_result["status"] == "committed"
     assert repo_result["pre_commit_review"]["status"] == "skipped"
-    assert "pyxllib 自动提交只生成提交信息" in repo_result["pre_commit_review"]["summary"]
+    assert "pyxllib 自动提交只生成提交信息，不执行提交前自动优化" in repo_result["pre_commit_review"]["summary"]
     assert events[0][0] == "draft"
     assert "feature.txt" in events[0][1]
     assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "自动提交凌晨检查改动"
@@ -518,7 +505,6 @@ def test_auto_git_commit_worker_marks_run_failed_when_any_repo_fails(session, au
         session.get_bind(),
         run.id,
         candidate_selector=lambda _session: candidates,
-        pre_commit_optimizer=_noop_pre_commit_optimizer,
         draft_generator=fake_draft_generator,
     )
 
@@ -557,7 +543,6 @@ def test_auto_git_commit_worker_records_ai_failure_without_blocking_or_committin
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        pre_commit_optimizer=_noop_pre_commit_optimizer,
         draft_generator=failing_draft_generator,
     )
 

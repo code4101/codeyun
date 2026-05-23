@@ -500,6 +500,92 @@ def _find_weasel_deployer() -> Path | None:
     return sorted(candidates, key=lambda item: str(item), reverse=True)[0] if candidates else None
 
 
+def _find_weasel_server(deployer: Path | None) -> Path | None:
+    configured = os.environ.get("CODEYUN_WEASEL_SERVER")
+    if configured:
+        path = Path(configured).expanduser()
+        if path.exists():
+            return path
+
+    if deployer:
+        sibling = deployer.with_name("WeaselServer.exe")
+        if sibling.exists():
+            return sibling
+
+    return None
+
+
+def _restart_weasel_server(deployer: Path | None) -> dict[str, Any]:
+    if os.name != "nt":
+        return {
+            "ok": True,
+            "status": "skipped",
+            "message": "当前系统不是 Windows，跳过 WeaselServer 重启。",
+        }
+
+    server = _find_weasel_server(deployer)
+    if not server:
+        return {
+            "ok": False,
+            "status": "server_missing",
+            "message": "未找到 WeaselServer.exe，已重新部署但未能自动重启小狼毫服务。",
+        }
+
+    try:
+        stop_completed = subprocess.run(
+            ["taskkill", "/F", "/IM", "WeaselServer.exe"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return {
+            "ok": False,
+            "status": "stop_failed",
+            "message": f"停止 WeaselServer 失败：{exc}",
+            "server": str(server),
+        }
+
+    time.sleep(0.5)
+    creationflags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        creationflags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "DETACHED_PROCESS"):
+        creationflags |= subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(
+            [str(server)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+    except OSError as exc:
+        output = "\n".join(
+            item.strip()
+            for item in [stop_completed.stdout, stop_completed.stderr]
+            if item and item.strip()
+        )
+        return {
+            "ok": False,
+            "status": "start_failed",
+            "message": f"启动 WeaselServer 失败：{exc}",
+            "server": str(server),
+            "stop_returncode": stop_completed.returncode,
+            "stop_output": output[-300:] if output else "",
+        }
+
+    return {
+        "ok": True,
+        "status": "restarted",
+        "message": "WeaselServer 已重启。",
+        "server": str(server),
+        "stop_returncode": stop_completed.returncode,
+    }
+
+
 def deploy_rime_weasel() -> dict[str, Any]:
     deployer = _find_weasel_deployer()
     if not deployer:
@@ -548,12 +634,24 @@ def deploy_rime_weasel() -> dict[str, Any]:
             "returncode": completed.returncode,
         }
 
+    restart_result = _restart_weasel_server(deployer)
+    if not restart_result.get("ok"):
+        return {
+            "ok": False,
+            "status": "deployed_reload_failed",
+            "message": str(restart_result.get("message") or "小狼毫已重新部署，但服务重启失败。"),
+            "deployer": str(deployer),
+            "returncode": completed.returncode,
+            "reload": restart_result,
+        }
+
     return {
         "ok": True,
         "status": "deployed",
-        "message": "小狼毫已重新部署。",
+        "message": "小狼毫已重新部署，并已重启服务。",
         "deployer": str(deployer),
         "returncode": completed.returncode,
+        "reload": restart_result,
     }
 
 
@@ -2002,42 +2100,28 @@ def _collect_ai_lint_issues(sources: list[dict[str, Any]]) -> tuple[list[dict[st
         return [], ""
     try:
         from backend.core.ai_chat import (  # Local import keeps the rule checker lightweight.
-            AiProviderConfig,
-            CODEX_CLI_DEFAULT_COMMAND,
-            CODEX_CLI_DEFAULT_MODEL,
             OllamaClientError,
             chat_with_provider,
         )
     except ImportError as exc:
         return [], f"AI 校对模块不可用：{exc}"
 
-    provider = AiProviderConfig(
-        id="rime-codex-cli",
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=os.environ.get("CODEYUN_RIME_LINT_CODEX_COMMAND", CODEX_CLI_DEFAULT_COMMAND),
-        default_model=os.environ.get("CODEYUN_RIME_LINT_MODEL", CODEX_CLI_DEFAULT_MODEL),
-        timeout_seconds=float(os.environ.get("CODEYUN_RIME_LINT_TIMEOUT", "120")),
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(os.environ.get("CODEYUN_RIME_LINT_MODEL", CODEX_CLI_DEFAULT_MODEL),),
-        workspace_dir=str(_resolve_rime_dir() or Path.cwd()),
-        session_id="",
-    )
+    provider_id = os.environ.get("CODEYUN_RIME_LINT_PROVIDER", "deepseek").strip() or "deepseek"
+    model = os.environ.get("CODEYUN_RIME_LINT_MODEL", "deepseek-v4-flash").strip() or "deepseek-v4-flash"
+    try:
+        timeout_seconds = float(os.environ.get("CODEYUN_RIME_LINT_TIMEOUT", "120"))
+    except ValueError:
+        timeout_seconds = 120.0
 
     source_by_id = {str(item.get("source_id") or ""): item for item in sources}
     try:
         result = chat_with_provider(
-            provider_id=provider.id,
-            extra_providers=(provider,),
+            provider_id=provider_id,
             messages=[{"role": "user", "content": _build_ai_lint_prompt(sources)}],
-            model=provider.default_model,
+            model=model,
             system_prompt="你是中文文本校对助手。只返回 JSON。",
-            response_format={"type": "json_object"},
-            timeout_seconds=provider.timeout_seconds,
+            response_format="json",
+            timeout_seconds=timeout_seconds,
         )
         payload = json.loads(_strip_json_code_fence(str(result.get("content") or "")))
     except (OllamaClientError, json.JSONDecodeError, OSError, ValueError) as exc:

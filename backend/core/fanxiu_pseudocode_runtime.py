@@ -5,24 +5,24 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 from pathlib import Path
 from typing import Any
 
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.device import build_background_popen_kwargs
 from backend.core.fanxiu_sunlogin_rotate import get_fanxiu_mainwin_root
-from backend.core.settings import ROOT_DIR
 
 
 PSEUDOCODE_DIRNAME = "伪代码"
 COMPILED_SCRIPT_FILENAME = "compiled_runtime.py"
 COMPILE_MANIFEST_FILENAME = "compile_manifest.json"
 LAST_RESULT_FILENAME = "last_result.json"
+FANXIU_PSEUDOCODE_PROVIDER_ID = "deepseek"
+FANXIU_PSEUDOCODE_DEFAULT_MODEL = "deepseek-v4-pro"
 
 
 def _runtime_dir() -> Path:
@@ -89,38 +89,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(_json_dumps(payload, indent=2), encoding="utf-8")
 
 
-def _codex_command() -> list[str]:
-    configured = (os.getenv("CODEYUN_FANXIU_PSEUDOCODE_CODEX") or "").strip()
-    if configured:
-        return [configured]
-
-    repo_tools_node = ROOT_DIR / "tools" / "node"
-    candidates = [
-        repo_tools_node / "codex.cmd",
-        Path.home() / "scoop" / "apps" / "nodejs-lts" / "current" / "bin" / "codex.cmd",
-        Path.home() / "AppData" / "Local" / "OpenAI" / "Codex" / "bin" / "codex.cmd",
-        Path.home() / ".cargo" / "bin" / "codex.cmd",
-    ]
-    for candidate in candidates:
-        if not candidate.exists():
-            continue
-        if candidate.parent == repo_tools_node:
-            package_script = repo_tools_node / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
-            if not package_script.exists():
-                continue
-        return [os.fspath(candidate)]
-
-    resolved = shutil.which("codex.cmd") or shutil.which("codex.exe") or shutil.which("codex")
-    if resolved:
-        resolved_path = Path(resolved)
-        if resolved_path.parent == repo_tools_node:
-            package_script = repo_tools_node / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
-            if not package_script.exists():
-                return ["codex"]
-        return [resolved]
-    return ["codex"]
-
-
 def _build_compile_prompt(card: dict[str, Any], function_name: str) -> str:
     scope_label = "守护" if card.get("scope") == "guard" else "动作"
     title = str(card.get("title") or "").strip()
@@ -183,75 +151,38 @@ def _validate_python_function(code: str, function_name: str) -> None:
     try:
         module = ast.parse(code)
     except SyntaxError as exc:
-        raise RuntimeError(f"Codex CLI 生成的 Python 语法无效：{exc}") from exc
+        raise RuntimeError(f"DeepSeek 生成的 Python 语法无效：{exc}") from exc
     names = {node.name for node in module.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
     if function_name not in names:
-        raise RuntimeError(f"Codex CLI 未生成指定函数：{function_name}")
+        raise RuntimeError(f"DeepSeek 未生成指定函数：{function_name}")
 
 
-def _call_codex_for_card(card: dict[str, Any], function_name: str, *, model: str, timeout: int) -> tuple[str, str]:
+def _call_deepseek_for_card(card: dict[str, Any], function_name: str, *, model: str, timeout: int) -> tuple[str, str]:
     prompt = _build_compile_prompt(card, function_name)
-    with tempfile.TemporaryDirectory(prefix="codeyun-fanxiu-pseudocode-") as temp_dir:
-        output_path = Path(temp_dir) / "last-message.txt"
-        prompt_path = Path(temp_dir) / "prompt.md"
-        prompt_path.write_text(prompt, encoding="utf-8")
-        command = [
-            *_codex_command(),
-            "exec",
-            "--skip-git-repo-check",
-            "--ephemeral",
-            "--sandbox",
-            "read-only",
-            "--ignore-rules",
-            "--color",
-            "never",
-            "--json",
-            "-C",
-            os.fspath(_runtime_dir()),
-            "--output-last-message",
-            os.fspath(output_path),
-        ]
-        if model.strip():
-            command.extend(["--model", model.strip()])
-        command.append("-")
-        try:
-            completed = subprocess.run(
-                command,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                cwd=os.fspath(ROOT_DIR),
-                timeout=timeout,
-                check=False,
-                **build_background_popen_kwargs(),
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError(f"未找到 Codex CLI 命令：{command[0]}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError("Codex CLI 编译超时") from exc
-        except OSError as exc:
-            raise RuntimeError(f"启动 Codex CLI 失败：{exc}") from exc
-
-        raw_output = output_path.read_text("utf-8").strip() if output_path.exists() else ""
-        process_log = "\n".join(
-            part for part in [
-                f"$ {' '.join(command[:-1])} -",
-                completed.stderr.strip(),
-                completed.stdout.strip(),
-                raw_output,
-            ]
-            if part
+    resolved_model = (
+        model.strip()
+        or os.getenv("CODEYUN_FANXIU_PSEUDOCODE_MODEL", "").strip()
+        or FANXIU_PSEUDOCODE_DEFAULT_MODEL
+    )
+    try:
+        response = chat_with_provider(
+            provider_id=FANXIU_PSEUDOCODE_PROVIDER_ID,
+            model=resolved_model,
+            messages=[{"role": "user", "content": prompt}],
+            system_prompt="你是凡修手游自动化的伪代码编译器，只输出 Python 源码。",
+            temperature=0.1,
+            timeout_seconds=timeout,
         )
-        if completed.returncode != 0:
-            raise RuntimeError(f"Codex CLI 编译失败：{process_log[-4000:]}")
-        if not raw_output:
-            raise RuntimeError("Codex CLI 未返回代码")
+    except OllamaClientError as exc:
+        raise RuntimeError(f"DeepSeek 编译失败：{exc}") from exc
+
+    raw_output = str(response.get("content") or "").strip()
+    if not raw_output:
+        raise RuntimeError("DeepSeek 未返回代码")
 
     code = _extract_python_code(raw_output)
     _validate_python_function(code, function_name)
-    return code, process_log
+    return code, f"DeepSeek 编译完成：model={response.get('model') or resolved_model}"
 
 
 def _compile_card(card: dict[str, Any], index: int, *, model: str, timeout: int) -> dict[str, Any]:
@@ -273,7 +204,7 @@ def _compile_card(card: dict[str, Any], index: int, *, model: str, timeout: int)
             "log": f"缓存命中：{card.get('title') or card.get('id')}",
         }
 
-    code, log = _call_codex_for_card(card, function_name, model=model, timeout=timeout)
+    code, log = _call_deepseek_for_card(card, function_name, model=model, timeout=timeout)
     payload = {
         "id": card.get("id"),
         "title": card.get("title") or "",

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
-import subprocess
-import tempfile
 import hashlib
 import time
 from pathlib import Path
@@ -12,6 +9,7 @@ from typing import Any
 
 from sqlmodel import Session
 
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.codex_sessions import build_codex_overview, build_codex_thread_detail
 from backend.core.settings import get_settings
 
@@ -62,20 +60,22 @@ SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(?P<key>token|api[_-]?key|secret|password|passwd|pwd|authorization)\s*[:=]\s*(?P<value>[A-Za-z0-9._~+/=-]{8,})"
 )
 LONG_SECRET_RE = re.compile(r"\b[A-Za-z0-9_-]{24,}\b")
-CODEX_CLI_TIMEOUT_SECONDS = 240
-CODEX_CLI_DEFAULT_CANDIDATE_LIMIT = 40
-CODEX_CLI_PROPOSAL_TIMEOUT_SECONDS = 300
-CODEX_CLI_CASE_CARD_TIMEOUT_SECONDS = 300
+EVOMIND_DEEPSEEK_SCAN_TIMEOUT_SECONDS = 240
+EVOMIND_DEEPSEEK_DEFAULT_CANDIDATE_LIMIT = 40
+EVOMIND_DEEPSEEK_PROPOSAL_TIMEOUT_SECONDS = 300
+EVOMIND_DEEPSEEK_CASE_CARD_TIMEOUT_SECONDS = 300
+EVOMIND_DEEPSEEK_PROVIDER_ID = "deepseek"
+EVOMIND_DEEPSEEK_MODEL = "deepseek-v4-pro"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCAN_CACHE_SCHEMA_VERSION = 1
-SCAN_RULE_VERSION = "2026-05-12.codex-cli-semantic-cache.v5"
+SCAN_RULE_VERSION = "2026-05-23.deepseek-semantic-cache.v1"
 SCAN_SIGNAL_TYPES = {
     "explicit_learning_marker",
     "friction",
     "repeated_correction",
     "final_artifact_delta",
 }
-CODEX_CLI_SCAN_INSTRUCTIONS = (
+DEEPSEEK_SCAN_INSTRUCTIONS = (
     "你是 EvoMind 的真实案例扫描器。你只能分析我提供的候选片段，不要读取文件、不要运行命令、不要改代码。\n"
     "目标：从 Codex 历史对话候选中找出真正值得沉淀为 skill/AGENTS/docs 的高价值操作案例。\n\n"
     "判定标准：\n"
@@ -91,7 +91,7 @@ CODEX_CLI_SCAN_INSTRUCTIONS = (
     "10. anti_patterns / positive_patterns 必须是完整、可执行、可复用的模式描述，不得直接复制聊天口语碎片。\n"
     "11. 禁止输出“对，你感觉没错”“好像还是大啊”这类无语义原话；如果原话有价值，必须改写为失败模式或正向做法。\n"
 )
-CODEX_CLI_PROPOSAL_INSTRUCTIONS = (
+DEEPSEEK_PROPOSAL_INSTRUCTIONS = (
     "你是 EvoMind 的 skill 优化提案生成器。你只能分析我提供的案例、提示词规则和 skill 摘要，不要读取文件、不要运行命令、不要改代码。\n"
     "目标：把真实案例中的失败模式和正向范式，转成可审查、可验证、可回滚的 skill/AGENTS/docs 优化提案。\n\n"
     "要求：\n"
@@ -102,7 +102,7 @@ CODEX_CLI_PROPOSAL_INSTRUCTIONS = (
     "5. 不要自动宣布应该写入正式文件，只生成 proposal。\n"
     "6. 输出必须是 JSON 对象，不要 markdown 包裹。\n"
 )
-CODEX_CLI_CASE_CARD_INSTRUCTIONS = (
+DEEPSEEK_CASE_CARD_INSTRUCTIONS = (
     "你是 EvoMind 的案例卡结构化器。你只能分析我提供的案例素材，不要读取文件、不要运行命令、不要改代码。\n"
     "目标：把原始任务、AI 初始问题、用户纠正、最终范式整理成可学习的案例卡。\n\n"
     "最重要的要求：\n"
@@ -249,7 +249,7 @@ def _scanner_rule_hash(scan_rule_text: str | None = None) -> str:
             "meta_learning_pattern": META_LEARNING_PATTERN.pattern,
             "abstract_discussion_pattern": ABSTRACT_DISCUSSION_PATTERN.pattern,
             "reference_text_pattern": REFERENCE_TEXT_PATTERN.pattern,
-            "codex_cli_instructions": CODEX_CLI_SCAN_INSTRUCTIONS,
+            "deepseek_instructions": DEEPSEEK_SCAN_INSTRUCTIONS,
             "scan_rule_text": _compact_text(scan_rule_text or "", limit=12000),
         }
     )
@@ -813,7 +813,7 @@ def _normalize_case_card_payload(
     positive_patterns = _safe_string_list(raw.get("positive_patterns"), limit=8)
     inferred_rule = _compact_text(raw.get("inferred_rule") or "", limit=700)
     if not anti_patterns or not positive_patterns or not inferred_rule:
-        raise ValueError("codex-cli 案例卡结果缺少反面模式、正向范式或一句话规则")
+        raise ValueError("DeepSeek 案例卡结果缺少反面模式、正向范式或一句话规则")
 
     return {
         "id": _compact_text(raw.get("id") or case.get("id") or "case", limit=120),
@@ -845,7 +845,7 @@ def _build_codex_cli_case_card_prompt(
         "case_rule_text": _compact_text(case_rule_text or "", limit=12000),
     }
     return (
-        CODEX_CLI_CASE_CARD_INSTRUCTIONS
+        DEEPSEEK_CASE_CARD_INSTRUCTIONS
         + "\n"
         "返回 JSON 格式：\n"
         "{\n"
@@ -874,50 +874,18 @@ def _derive_case_card_with_codex_cli(
     *,
     case: dict[str, Any],
     case_rule_text: str | None = None,
-    timeout_seconds: int = CODEX_CLI_CASE_CARD_TIMEOUT_SECONDS,
+    timeout_seconds: int = EVOMIND_DEEPSEEK_CASE_CARD_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     prompt = _build_codex_cli_case_card_prompt(case=case, case_rule_text=case_rule_text)
-    codex_command = _codex_cli_executable()
-    output_path = ""
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as output_file:
-        output_path = output_file.name
     try:
-        result = subprocess.run(
-            [
-                codex_command,
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--ignore-rules",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "-C",
-                str(REPO_ROOT),
-                "-o",
-                output_path,
-                "-",
-            ],
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=timeout_seconds,
-            cwd=REPO_ROOT,
+        raw = _call_deepseek_json(
+            prompt,
+            system_prompt="你是 EvoMind 的案例卡结构化器，只返回 JSON。",
+            timeout_seconds=timeout_seconds,
         )
-        if result.returncode != 0:
-            stderr = _compact_text(result.stderr or result.stdout, limit=1200)
-            raise RuntimeError(f"codex-cli 案例卡生成失败：{stderr or '退出码 ' + str(result.returncode)}")
-        output_text = Path(output_path).read_text(encoding="utf-8", errors="replace")
-        raw = _extract_json_object(output_text or result.stdout)
-        return _normalize_case_card_payload(raw, case=case, generation_mode="codex_cli")
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"codex-cli 案例卡生成超时（{timeout_seconds}s）") from exc
-    finally:
-        if output_path:
-            Path(output_path).unlink(missing_ok=True)
+        return _normalize_case_card_payload(raw, case=case, generation_mode="deepseek")
+    except OllamaClientError as exc:
+        raise RuntimeError(f"DeepSeek 案例卡生成失败：{exc}") from exc
 
 
 def derive_evomind_case_card(
@@ -925,7 +893,7 @@ def derive_evomind_case_card(
     case: dict[str, Any],
     case_rule_text: str | None = None,
 ) -> dict[str, Any]:
-    """Use Codex CLI to turn case material into a readable, reviewable card."""
+    """Use DeepSeek to turn case material into a readable, reviewable card."""
 
     normalized_case = _normalize_case_for_proposal(case)
     return _derive_case_card_with_codex_cli(case=normalized_case, case_rule_text=case_rule_text)
@@ -1104,7 +1072,7 @@ def _build_codex_cli_proposal_prompt(
         "proposal_rule_text": _compact_text(proposal_rule_text or "", limit=12000),
     }
     return (
-        CODEX_CLI_PROPOSAL_INSTRUCTIONS
+        DEEPSEEK_PROPOSAL_INSTRUCTIONS
         + "\n"
         "只返回 JSON，字段：\n"
         "{\n"
@@ -1132,50 +1100,18 @@ def _generate_proposal_with_codex_cli(
     case: dict[str, Any],
     target: dict[str, Any],
     proposal_rule_text: str | None = None,
-    timeout_seconds: int = CODEX_CLI_PROPOSAL_TIMEOUT_SECONDS,
+    timeout_seconds: int = EVOMIND_DEEPSEEK_PROPOSAL_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     prompt = _build_codex_cli_proposal_prompt(case=case, target=target, proposal_rule_text=proposal_rule_text)
-    codex_command = _codex_cli_executable()
-    output_path = ""
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as output_file:
-        output_path = output_file.name
     try:
-        result = subprocess.run(
-            [
-                codex_command,
-                "exec",
-                "--ephemeral",
-                "--skip-git-repo-check",
-                "--ignore-rules",
-                "--sandbox",
-                "read-only",
-                "--color",
-                "never",
-                "-C",
-                str(REPO_ROOT),
-                "-o",
-                output_path,
-                "-",
-            ],
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            timeout=timeout_seconds,
-            cwd=REPO_ROOT,
+        raw = _call_deepseek_json(
+            prompt,
+            system_prompt="你是 EvoMind 的 skill 优化提案生成器，只返回 JSON。",
+            timeout_seconds=timeout_seconds,
         )
-        if result.returncode != 0:
-            stderr = _compact_text(result.stderr or result.stdout, limit=1200)
-            raise RuntimeError(f"codex-cli 提案生成失败：{stderr or '退出码 ' + str(result.returncode)}")
-        output_text = Path(output_path).read_text(encoding="utf-8", errors="replace")
-        raw = _extract_json_object(output_text or result.stdout)
-        return _normalize_proposal_payload(raw, case=case, target=target, generation_mode="codex_cli")
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"codex-cli 提案生成超时（{timeout_seconds}s）") from exc
-    finally:
-        if output_path:
-            Path(output_path).unlink(missing_ok=True)
+        return _normalize_proposal_payload(raw, case=case, target=target, generation_mode="deepseek")
+    except OllamaClientError as exc:
+        raise RuntimeError(f"DeepSeek 提案生成失败：{exc}") from exc
 
 
 def generate_evomind_rule_proposal(
@@ -1205,16 +1141,27 @@ def generate_evomind_rule_proposal(
                 case=normalized_case,
                 target=target_context,
                 generation_mode="heuristic_fallback",
-                warning=f"Codex CLI 未完成，已退回本地提案：{exc}",
+                warning=f"DeepSeek 未完成，已退回本地提案：{exc}",
             )
     return _generate_heuristic_proposal(case=normalized_case, target=target_context)
 
 
-def _codex_cli_executable() -> str:
-    command = shutil.which("codex.cmd") or shutil.which("codex.exe") or shutil.which("codex")
-    if not command:
-        raise RuntimeError("未找到 codex CLI，请先确保 codex 命令在 PATH 中可用")
-    return command
+def _call_deepseek_json(
+    prompt: str,
+    *,
+    system_prompt: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
+    response = chat_with_provider(
+        provider_id=EVOMIND_DEEPSEEK_PROVIDER_ID,
+        model=EVOMIND_DEEPSEEK_MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        system_prompt=system_prompt,
+        response_format="json",
+        temperature=0.2,
+        timeout_seconds=timeout_seconds,
+    )
+    return _extract_json_object(str(response.get("content") or ""))
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -1235,7 +1182,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
         parsed = json.loads(compact[start : end + 1])
         if isinstance(parsed, dict):
             return parsed
-    raise ValueError("codex-cli 未返回可解析的 JSON 对象")
+    raise ValueError("DeepSeek 未返回可解析的 JSON 对象")
 
 
 def _build_codex_cli_scan_prompt(
@@ -1272,7 +1219,7 @@ def _build_codex_cli_scan_prompt(
         )
 
     return (
-        CODEX_CLI_SCAN_INSTRUCTIONS
+        DEEPSEEK_SCAN_INSTRUCTIONS
         + custom_rule_block
         + "\n"
         "只返回 JSON，不要 markdown，不要解释。格式：\n"
@@ -1325,7 +1272,7 @@ def _merge_codex_cli_decisions(
     decisions: dict[str, dict[str, Any] | None] = {}
     raw_items = codex_payload.get("items")
     if not isinstance(raw_items, list):
-        raise ValueError("codex-cli JSON 缺少 items 数组")
+        raise ValueError("DeepSeek JSON 缺少 items 数组")
 
     for raw_item in raw_items:
         if not isinstance(raw_item, dict):
@@ -1341,7 +1288,7 @@ def _merge_codex_cli_decisions(
         item = dict(base)
         source = dict(item.get("source") or {})
         quality_score = max(0, min(100, int(raw_item.get("quality_score") or 0)))
-        source["codex_cli_quality_score"] = quality_score
+        source["deepseek_quality_score"] = quality_score
         source["score"] = max(int(source.get("score") or 0), quality_score + 140)
         item["source"] = source
 
@@ -1377,7 +1324,7 @@ def _refine_candidates_with_codex_cli(
     *,
     max_cases: int,
     candidate_limit: int,
-    timeout_seconds: int = CODEX_CLI_TIMEOUT_SECONDS,
+    timeout_seconds: int = EVOMIND_DEEPSEEK_SCAN_TIMEOUT_SECONDS,
     reset_cache: bool = False,
     scan_rule_text: str | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -1414,50 +1361,19 @@ def _refine_candidates_with_codex_cli(
         else:
             uncached_candidates.append(candidate)
 
-    codex_cli_invoked = False
+    semantic_ai_invoked = False
     if uncached_candidates:
         prompt = _build_codex_cli_scan_prompt(
             uncached_candidates,
             max_cases=max_cases,
             scan_rule_text=scan_rule_text,
         )
-        codex_command = _codex_cli_executable()
-
-        output_path = ""
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as output_file:
-            output_path = output_file.name
-
         try:
-            result = subprocess.run(
-                [
-                    codex_command,
-                    "exec",
-                    "--ephemeral",
-                    "--skip-git-repo-check",
-                    "--ignore-rules",
-                    "--sandbox",
-                    "read-only",
-                    "--color",
-                    "never",
-                    "-C",
-                    str(REPO_ROOT),
-                    "-o",
-                    output_path,
-                    "-",
-                ],
-                input=prompt,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                capture_output=True,
-                timeout=timeout_seconds,
-                cwd=REPO_ROOT,
+            codex_payload = _call_deepseek_json(
+                prompt,
+                system_prompt="你是 EvoMind 的真实案例扫描器，只返回 JSON。",
+                timeout_seconds=timeout_seconds,
             )
-            if result.returncode != 0:
-                stderr = _compact_text(result.stderr or result.stdout, limit=1200)
-                raise RuntimeError(f"codex-cli 扫描失败：{stderr or '退出码 ' + str(result.returncode)}")
-            output_text = Path(output_path).read_text(encoding="utf-8", errors="replace")
-            codex_payload = _extract_json_object(output_text or result.stdout)
             fresh_decisions = _merge_codex_cli_decisions(
                 heuristic_candidates=uncached_candidates,
                 codex_payload=codex_payload,
@@ -1474,12 +1390,9 @@ def _refine_candidates_with_codex_cli(
                     "cached_at": time.time(),
                 }
             _write_scan_cache(rule_hash, cache)
-            codex_cli_invoked = True
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"codex-cli 扫描超时（{timeout_seconds}s）") from exc
-        finally:
-            if output_path:
-                Path(output_path).unlink(missing_ok=True)
+            semantic_ai_invoked = True
+        except OllamaClientError as exc:
+            raise RuntimeError(f"DeepSeek 扫描失败：{exc}") from exc
 
     ordered_items = [
         cached_results.get(str(candidate.get("id") or ""))
@@ -1489,7 +1402,8 @@ def _refine_candidates_with_codex_cli(
     stats = {
         "cache_hit_count": cache_hit_count,
         "cache_miss_count": len(uncached_candidates),
-        "codex_cli_invoked": codex_cli_invoked,
+        "codex_cli_invoked": semantic_ai_invoked,
+        "deepseek_invoked": semantic_ai_invoked,
         "rule_hash": rule_hash,
         "cache_rule_mismatch": cache_rule_mismatch,
         "cache_reset": reset_cache,
@@ -1506,21 +1420,22 @@ def scan_evomind_cases_from_codex(
     min_score: int = 55,
     signal_type_filter: str | None = None,
     use_codex_cli: bool = False,
-    codex_cli_limit: int = CODEX_CLI_DEFAULT_CANDIDATE_LIMIT,
+    codex_cli_limit: int = EVOMIND_DEEPSEEK_DEFAULT_CANDIDATE_LIMIT,
     reset_cache: bool = False,
     scan_rule_text: str | None = None,
 ) -> dict[str, Any]:
     """Read local Codex threads and extract high-value EvoMind case candidates.
 
     The first pass is intentionally heuristic and read-only. When
-    ``use_codex_cli`` is true, the top candidates are passed to ``codex exec``
-    for semantic judgment and structured case extraction.
+    ``use_codex_cli`` is true, the top candidates are passed to DeepSeek for
+    semantic judgment and structured case extraction. The parameter name is
+    kept for frontend compatibility.
     """
 
     effective_max_threads = max(1, min(int(max_threads or 120), 500))
     effective_max_cases = max(1, min(int(max_cases or 40), 120))
     effective_min_score = max(0, int(min_score or 0))
-    effective_codex_cli_limit = max(1, min(int(codex_cli_limit or CODEX_CLI_DEFAULT_CANDIDATE_LIMIT), 120))
+    effective_codex_cli_limit = max(1, min(int(codex_cli_limit or EVOMIND_DEEPSEEK_DEFAULT_CANDIDATE_LIMIT), 120))
     effective_signal_type_filter = _normalize_signal_type_filter(signal_type_filter)
 
     overview = build_codex_overview(
@@ -1628,7 +1543,7 @@ def scan_evomind_cases_from_codex(
         "skipped_threads": skipped_threads,
         "scanned_messages": scanned_messages,
         "heuristic_candidate_count": heuristic_candidate_count,
-        "analysis_mode": "codex_cli" if codex_cli_invoked else "codex_cli_cache" if codex_cli_used else "heuristic",
+        "analysis_mode": "deepseek" if codex_cli_invoked else "deepseek_cache" if codex_cli_used else "heuristic",
         "codex_cli_used": codex_cli_used,
         "codex_cli_invoked": codex_cli_invoked,
         "cache_hit_count": cache_hit_count,

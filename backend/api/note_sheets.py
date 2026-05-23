@@ -12,23 +12,19 @@ import threading
 import time
 import re
 import uuid
-from math import ceil, isfinite
+from math import ceil, floor, isfinite
 from typing import Any, Literal, Optional
+from urllib.parse import quote
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlmodel import Session, delete, func, select
 
-from backend.core.ai_chat import (
-    CODEX_CLI_DEFAULT_COMMAND,
-    CODEX_CLI_DEFAULT_MODEL,
-    AiProviderConfig,
-    OllamaClientError,
-    chat_with_provider,
-)
+from backend.core.ai_chat import OllamaClientError, chat_with_provider
 from backend.core.auth import (
     extract_api_token,
     get_current_active_user,
@@ -44,6 +40,7 @@ from backend.core.feature_access_guard import ensure_feature_access
 from backend.core.settings import get_settings
 from backend.db import engine, get_session
 from backend.models import (
+    AppSetting,
     ResourceAccessGrant,
     SheetDocument,
     User,
@@ -72,7 +69,8 @@ router = APIRouter()
 DEFAULT_NOTE_SHEET_COLUMNS = ["列1", "列2", "列3"]
 DEFAULT_NOTE_SHEET_PAGE_SIZE = 50
 MAX_NOTE_SHEET_PAGE_SIZE = 1000
-NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "note-sheet-excel-import-codex"
+NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID = "deepseek"
+NOTE_SHEET_EXCEL_IMPORT_MODEL = "deepseek-v4-pro"
 NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS = 900
 NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES = 12 * 1024 * 1024
 NOTE_SHEET_EXCEL_IMPORT_MAX_SHEETS = 12
@@ -86,6 +84,8 @@ NOTE_SHEET_CELL_ACTION_EXCEL_IMPORT_RESET = "excel_import_reset"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_ORDER_MATCH = "registration_order_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH = "registration_user_match"
 NOTE_SHEET_CELL_ACTION_REGISTRATION_COMPOSITE_UPDATE = "registration_composite_update"
+NOTE_SHEET_CELL_ACTION_ATTENDANCE_EXPORT = "attendance_export"
+NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT = "clockin_link_detect"
 NOTE_SHEET_EXCEL_IMPORT_ACTION_TOKENS = ("导入excel", "导入Excel", "导入EXCEL")
 NOTE_SHEET_REGISTRATION_ORDER_COLUMNS = ["微信支付订单号", "订单日期", "商户订单号", "订单金额", "已返款"]
 NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS = ["姓名", "微信昵称", "手机号", "错误手机号", "用户ID", "匹配得分"]
@@ -118,6 +118,20 @@ NOTE_SHEET_REGISTRATION_USER_BROWSER_TIMEOUT_SECONDS = os.environ.get(
     "CODEYUN_NOTE_SHEET_USER_BROWSER_TIMEOUT_SECONDS",
     "900",
 )
+NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID = os.environ.get(
+    "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_PROVIDER_ID",
+    "deepseek",
+)
+NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL = os.environ.get(
+    "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_MODEL",
+    "deepseek-v4-flash",
+)
+NOTE_SHEET_CLOCKIN_LINK_DETECTION_TIMEOUT_SECONDS = os.environ.get(
+    "CODEYUN_NOTE_SHEET_CLOCKIN_LINK_TIMEOUT_SECONDS",
+    "600",
+)
+NOTE_SHEET_DEFINED_NAMES_KEY = "defined_names"
+NOTE_SHEET_WORKBOOK_DEFINED_NAMES_SETTING_PREFIX = "note_sheets.workbook.defined_names."
 NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS = {
     "禅客",
     "优秀学员评分",
@@ -128,6 +142,7 @@ NOTE_SHEET_ATTENDANCE_INITIAL_ZERO_COLUMNS = {
     "已返款",
     "当前应返款",
 }
+NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME = "返款周期"
 NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS = {
     "报名日期",
     "学号",
@@ -240,6 +255,8 @@ ATTENDANCE_COURSE_SCRIPT_FILE_EXTENSION_RE = re.compile(
 NATURAL_SORT_SPLIT_RE = re.compile(r"(\d+)")
 FORMULA_CELL_REFERENCE_RE = re.compile(r"(^|[^A-Za-z0-9_.$])(\$?)([A-Za-z]{1,3})(\$?)(\d+)(?![A-Za-z0-9_(!])")
 A1_CELL_REFERENCE_RE = re.compile(r"^\s*(?:[^!]+!)?\$?(?P<column>[A-Za-z]{1,3})\$?(?P<row>\d+)\s*$")
+R1C1_REFERENCE_RE = re.compile(r"^[Rr]\d*[Cc]\d*$")
+FORMULA_DEFINED_NAME_CACHE_KEY = (-1, -1)
 FORMULA_PUNCTUATION_TRANSLATION = str.maketrans({
     "，": ",",
     "（": "(",
@@ -418,6 +435,7 @@ class NoteSheetTableResponse(BaseModel):
     data_start_row: int = 0
     field_row_index: int = 0
     grid_rows: list[list[Any]] = Field(default_factory=list)
+    defined_name_values: dict[str, Any] = Field(default_factory=dict)
 
 
 class NoteSheetTablePatchOperation(BaseModel):
@@ -500,6 +518,39 @@ class NoteSheetRegistrationMatchRunResponse(BaseModel):
     warning_count: int = 0
     message: str = ""
     error_message: str | None = None
+    sheet: NoteSheetDetailResponse | None = None
+
+
+class NoteSheetClockinLinkDetectionRunRequest(BaseModel):
+    force_restart: bool = False
+    provider_id: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID
+    model: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL
+
+
+class NoteSheetClockinLinkDetectionRunResponse(BaseModel):
+    run_id: str = ""
+    action: str = NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT
+    sheet_id: int
+    workbook_id: int | None = None
+    status: Literal["idle", "pending", "running", "completed", "failed", "cancelled"] = "idle"
+    phase: str = ""
+    already_running: bool = False
+    cancel_requested: bool = False
+    queued_at: float | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    total_count: int = 0
+    processed_count: int = 0
+    updated_count: int = 0
+    skipped_count: int = 0
+    error_count: int = 0
+    warning_count: int = 0
+    message: str = ""
+    error_message: str | None = None
+    provider_id: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID
+    model: str = NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL
+    results: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
     sheet: NoteSheetDetailResponse | None = None
 
 
@@ -620,6 +671,7 @@ class WorkbookSummaryResponse(BaseModel):
 
 class WorkbookDetailResponse(WorkbookSummaryResponse):
     sheets: list[NoteSheetSummaryResponse] = Field(default_factory=list)
+    defined_names: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
 
 
 class NoteSheetTrashResponse(BaseModel):
@@ -662,6 +714,35 @@ class NoteSheetAccessUserOption(BaseModel):
 
 class NoteSheetAccessUserOptionsResponse(BaseModel):
     users: list[NoteSheetAccessUserOption] = Field(default_factory=list)
+
+
+class NoteSheetDefinedNameItem(BaseModel):
+    name: str = ""
+    formula: str = ""
+    comment: str = ""
+    scope: Literal["workbook", "worksheet"] | None = None
+
+
+class NoteSheetDefinedNameWorksheetScope(BaseModel):
+    sheet_id: int
+    sheet_title: str = ""
+    sheet_version: int | None = None
+    names: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
+
+
+class NoteSheetDefinedNamesUpdateRequest(BaseModel):
+    names: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
+    worksheets: list[NoteSheetDefinedNameWorksheetScope] = Field(default_factory=list)
+
+
+class NoteSheetDefinedNamesResponse(BaseModel):
+    workbook_id: int | None = None
+    sheet_id: int | None = None
+    sheet_version: int | None = None
+    workbook: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
+    worksheet: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
+    worksheets: list[NoteSheetDefinedNameWorksheetScope] = Field(default_factory=list)
+    effective: list[NoteSheetDefinedNameItem] = Field(default_factory=list)
 
 
 class WorkbookCreateRequest(BaseModel):
@@ -720,6 +801,194 @@ def _normalize_created_document_json(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict) or not value:
         return _create_default_sheet_document()
     return dict(value)
+
+
+def _is_defined_name_valid(name: str) -> bool:
+    text = str(name or "").strip()
+    if not text:
+        return False
+    first_char = text[0]
+    if not (first_char == "_" or first_char.isalpha()):
+        return False
+    if not all(char == "_" or char == "." or char.isalnum() for char in text[1:]):
+        return False
+    if A1_CELL_REFERENCE_RE.match(text):
+        return False
+    return not R1C1_REFERENCE_RE.match(text)
+
+
+def _normalize_defined_name_formula(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if text.startswith("=") else f"={text}"
+
+
+def _normalize_defined_names(
+    value: Any,
+    *,
+    scope: Literal["workbook", "worksheet"] | None = None,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        if strict and value not in (None, ""):
+            raise HTTPException(status_code=400, detail="名称管理器数据必须是列表")
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_item in value:
+        if isinstance(raw_item, NoteSheetDefinedNameItem):
+            raw = raw_item.model_dump()
+        elif isinstance(raw_item, dict):
+            raw = raw_item
+        else:
+            if strict:
+                raise HTTPException(status_code=400, detail="名称管理器条目必须是对象")
+            continue
+
+        name = str(raw.get("name") or "").strip()
+        formula = _normalize_defined_name_formula(raw.get("formula"))
+        comment = str(raw.get("comment") or "").strip()
+        if not name and not formula and not comment:
+            continue
+        if not name:
+            if strict:
+                raise HTTPException(status_code=400, detail="名称不能为空")
+            continue
+        if not _is_defined_name_valid(name):
+            if strict:
+                raise HTTPException(status_code=400, detail=f"名称不合法: {name}")
+            continue
+        key = name.lower()
+        if key in seen:
+            if strict:
+                raise HTTPException(status_code=400, detail=f"名称重复: {name}")
+            continue
+        seen.add(key)
+        item = {
+            "name": name,
+            "formula": formula,
+            "comment": comment,
+        }
+        if scope is not None:
+            item["scope"] = scope
+        normalized.append(item)
+    return normalized
+
+
+def _workbook_defined_names_setting_key(workbook: WorkbookDocument | int) -> str:
+    workbook_id = workbook if isinstance(workbook, int) else _require_workbook_numeric_id(workbook)
+    return f"{NOTE_SHEET_WORKBOOK_DEFINED_NAMES_SETTING_PREFIX}{int(workbook_id)}"
+
+
+def _get_workbook_defined_names(session: Session, workbook: WorkbookDocument | None) -> list[dict[str, Any]]:
+    if workbook is None:
+        return []
+    setting = session.get(AppSetting, _workbook_defined_names_setting_key(workbook))
+    value = setting.value if setting is not None and isinstance(setting.value, dict) else {}
+    return _normalize_defined_names(value.get("names"), scope="workbook")
+
+
+def _set_workbook_defined_names(
+    session: Session,
+    workbook: WorkbookDocument,
+    names: list[dict[str, Any]],
+) -> None:
+    key = _workbook_defined_names_setting_key(workbook)
+    setting = session.get(AppSetting, key)
+    normalized = _normalize_defined_names(names, strict=True)
+    if not normalized:
+        if setting is not None:
+            session.delete(setting)
+        return
+    if setting is None:
+        setting = AppSetting(key=key)
+    setting.value = {"names": normalized}
+    setting.updated_at = time.time()
+    session.add(setting)
+
+
+def _get_sheet_defined_names(document_json: dict[str, Any]) -> list[dict[str, Any]]:
+    return _normalize_defined_names(document_json.get(NOTE_SHEET_DEFINED_NAMES_KEY), scope="worksheet")
+
+
+def _list_workbook_defined_name_worksheets(
+    session: Session,
+    workbook: WorkbookDocument,
+    current_user: User | None = None,
+) -> list[dict[str, Any]]:
+    links = session.exec(
+        select(WorkbookSheetLink)
+        .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+        .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+    ).all()
+    sheet_ids = [link.sheet_id for link in links]
+    sheet_map = load_sheets_by_refs(session, sheet_ids)
+    result: list[dict[str, Any]] = []
+    seen_sheet_ids: set[str] = set()
+    for link in links:
+        document = sheet_map.get(str(link.sheet_id))
+        if document is None:
+            continue
+        document_key = str(document.id)
+        if document_key in seen_sheet_ids:
+            continue
+        seen_sheet_ids.add(document_key)
+        access = _resolve_sheet_resource_access(session, document, current_user, workbook=workbook)
+        if not access.capabilities.can_read:
+            continue
+        result.append({
+            "sheet_id": _require_sheet_numeric_id(document),
+            "sheet_title": document.title or "未命名工作表",
+            "sheet_version": int(document.version or 1),
+            "names": _get_sheet_defined_names(dict(document.document_json or {})),
+        })
+    return result
+
+
+def _replace_sheet_defined_names(document_json: dict[str, Any], names: list[dict[str, Any]]) -> dict[str, Any]:
+    next_document = dict(document_json)
+    normalized = _normalize_defined_names(names, strict=True)
+    if normalized:
+        next_document[NOTE_SHEET_DEFINED_NAMES_KEY] = normalized
+    else:
+        next_document.pop(NOTE_SHEET_DEFINED_NAMES_KEY, None)
+    return next_document
+
+
+def _merge_effective_defined_names(
+    workbook_names: list[dict[str, Any]],
+    worksheet_names: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    by_key: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+    for item in [*workbook_names, *worksheet_names]:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key not in by_key:
+            order.append(key)
+        by_key[key] = dict(item)
+    return [by_key[key] for key in order]
+
+
+def _defined_names_for_formula(
+    session: Session,
+    document: SheetDocument,
+    workbook: WorkbookDocument | None,
+) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for item in _merge_effective_defined_names(
+        _get_workbook_defined_names(session, workbook),
+        _get_sheet_defined_names(dict(document.document_json or {})),
+    ):
+        name = str(item.get("name") or "").strip()
+        formula = _normalize_defined_name_formula(item.get("formula"))
+        if name and formula:
+            names[name.lower()] = formula
+    return names
 
 
 def _get_note_sheet_perf_log_path() -> Path:
@@ -3369,6 +3638,7 @@ def _lookup_registration_users_with_remote_browser(
     current_user: User,
     *,
     course_name: str,
+    shop_id: int,
     items: list[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     if not items:
@@ -3379,7 +3649,7 @@ def _lookup_registration_users_with_remote_browser(
     payload = {
         "course_name": course_name,
         "course_product_name": "",
-        "shop_id": NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+        "shop_id": shop_id,
         "close_browser": True,
         "items": [
             {
@@ -3483,6 +3753,292 @@ def _lookup_registration_orders_with_remote_browser(
         row = rows[index] if index < len(rows) else {}
         result_rows.append(dict(row) if isinstance(row, dict) else {})
     return result_rows
+
+
+def _clockin_link_detection_timeout_seconds() -> float:
+    try:
+        return max(float(NOTE_SHEET_CLOCKIN_LINK_DETECTION_TIMEOUT_SECONDS), 30.0)
+    except (TypeError, ValueError):
+        return 600.0
+
+
+def _defined_name_literal_value(formula: Any) -> str:
+    text = _normalize_defined_name_formula(formula)
+    if text.startswith("="):
+        text = text[1:].strip()
+    return _unquote_formula_string(text).strip()
+
+
+def _get_effective_defined_name_literal(
+    session: Session,
+    document: SheetDocument,
+    workbook: WorkbookDocument | None,
+    name: str,
+) -> str:
+    target_key = _normalize_sheet_text(name).lower()
+    for item in reversed(_merge_effective_defined_names(
+        _get_workbook_defined_names(session, workbook),
+        _get_sheet_defined_names(dict(document.document_json or {})),
+    )):
+        if _normalize_sheet_text(item.get("name")).lower() == target_key:
+            return _defined_name_literal_value(item.get("formula"))
+    return ""
+
+
+def _normalize_clockin_target_name(value: Any) -> str:
+    text = re.sub(r"\s+", "", _normalize_sheet_text(value))
+    for suffix in ("打卡链接", "打卡数据", "打卡"):
+        if text.endswith(suffix):
+            text = text[: -len(suffix)]
+    return text
+
+
+def _clockin_config_column_indexes(columns: list[str]) -> dict[str, int]:
+    required = ["name", "url"]
+    missing: list[str] = []
+    indexes: dict[str, int] = {}
+    for header in required:
+        index = _find_column_index(columns, header)
+        if index is None:
+            missing.append(header)
+        else:
+            indexes[header] = index
+    if missing:
+        raise HTTPException(status_code=400, detail=f"打卡配置缺少字段：{', '.join(missing)}")
+    for optional in ("start_date", "end_date", "days", "clockin_user_num", "total_user_num"):
+        index = _find_column_index(columns, optional)
+        if index is not None:
+            indexes[optional] = index
+    return indexes
+
+
+def _extract_clockin_detection_targets(document_json: dict[str, Any]) -> list[dict[str, Any]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _clockin_config_column_indexes(columns)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    result: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows):
+        name = _normalize_sheet_text(row[indexes["name"]])
+        target = _normalize_clockin_target_name(name)
+        if not target:
+            continue
+        result.append({
+            "row_index": row_index,
+            "name": name,
+            "target": target,
+        })
+    return result
+
+
+def _detect_clockin_links_with_remote_browser(
+    session: Session,
+    current_user: User,
+    *,
+    root_url: str,
+    targets: list[str],
+    provider_id: str,
+    model: str,
+) -> dict[str, Any]:
+    entry = _resolve_registration_user_browser_device(session, current_user)
+    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
+    payload = {
+        "root_url": root_url,
+        "targets": targets,
+        "provider_id": provider_id,
+        "model": model,
+        "close_tabs": True,
+    }
+    try:
+        import requests
+
+        with requests.Session() as request_session:
+            request_session.trust_env = False
+            response = request_session.post(
+                f"{server_url}/api/device-control/attendance/clockin-links/detect",
+                json=payload,
+                headers=_build_remote_device_headers(entry),
+                timeout=_clockin_link_detection_timeout_seconds(),
+            )
+    except Exception as exc:
+        try:
+            return _detect_clockin_links_with_remote_python_run(
+                entry,
+                root_url=root_url,
+                targets=targets,
+                provider_id=provider_id,
+                model=model,
+            )
+        except HTTPException as fallback_exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"调用 {entry.name} 自动检测打卡链接失败：{exc}；python-run 兜底也失败：{fallback_exc.detail}",
+            ) from exc
+
+    if response.status_code in {404, 405}:
+        return _detect_clockin_links_with_remote_python_run(
+            entry,
+            root_url=root_url,
+            targets=targets,
+            provider_id=provider_id,
+            model=model,
+        )
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except Exception:
+            detail = response.text.strip()
+        raise HTTPException(status_code=502, detail=detail or f"{entry.name} 自动检测打卡链接失败，HTTP {response.status_code}")
+
+    try:
+        data = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{entry.name} 自动检测打卡链接返回了无法解析的响应") from exc
+    return dict(data) if isinstance(data, dict) else {}
+
+
+def _detect_clockin_links_with_remote_python_run(
+    entry: UserDevice,
+    *,
+    root_url: str,
+    targets: list[str],
+    provider_id: str,
+    model: str,
+) -> dict[str, Any]:
+    detector_path = Path(__file__).resolve().parents[1] / "core" / "clockin_link_detector.py"
+    try:
+        detector_source = detector_path.read_text(encoding="utf-8")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"无法读取打卡链接探测脚本：{exc}") from exc
+
+    script = (
+        "import json\n"
+        f"_source = {json.dumps(detector_source)}\n"
+        "_ns = {}\n"
+        "exec(_source, _ns)\n"
+        "result = _ns['detect_clockin_links_browser'](\n"
+        f"    root_url={json.dumps(root_url, ensure_ascii=False)},\n"
+        f"    targets={json.dumps(targets, ensure_ascii=False)},\n"
+        f"    provider_id={json.dumps(provider_id, ensure_ascii=False)},\n"
+        f"    model={json.dumps(model, ensure_ascii=False)},\n"
+        "    close_tabs=True,\n"
+        ")\n"
+        "print(json.dumps(result, ensure_ascii=False))\n"
+    )
+    server_url = _normalize_sheet_text(entry.server_url).rstrip("/")
+    try:
+        import requests
+
+        with requests.Session() as request_session:
+            request_session.trust_env = False
+            response = request_session.post(
+                f"{server_url}/api/device-control/python-runs",
+                json={
+                    "mode": "script",
+                    "script": script,
+                    "timeout": int(_clockin_link_detection_timeout_seconds()),
+                },
+                headers=_build_remote_device_headers(entry),
+                timeout=_clockin_link_detection_timeout_seconds() + 30,
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"调用 {entry.name} python-run 检测打卡链接失败：{exc}") from exc
+
+    if response.status_code >= 400:
+        try:
+            detail = response.json().get("detail")
+        except Exception:
+            detail = response.text.strip()
+        raise HTTPException(status_code=502, detail=detail or f"{entry.name} python-run 检测打卡链接失败，HTTP {response.status_code}")
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{entry.name} python-run 返回了无法解析的响应") from exc
+    if payload.get("status") != "completed" or payload.get("returncode") not in (0, None):
+        error = _normalize_sheet_text(payload.get("error")) or _normalize_sheet_text(payload.get("stderr"))
+        raise HTTPException(status_code=502, detail=error or f"{entry.name} python-run 检测打卡链接未成功")
+    stdout = _normalize_sheet_text(payload.get("stdout"))
+    try:
+        return json.loads(stdout)
+    except Exception as exc:
+        match = re.search(r"\{.*\}", stdout, re.S)
+        if match:
+            try:
+                return json.loads(match.group(0))
+            except Exception:
+                pass
+        raise HTTPException(status_code=502, detail=f"{entry.name} python-run 检测结果不是有效 JSON") from exc
+
+
+def _apply_clockin_link_detection_results(
+    document_json: dict[str, Any],
+    targets: list[dict[str, Any]],
+    detection_result: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    indexes = _clockin_config_column_indexes(columns)
+    rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
+    result_items = detection_result.get("results") if isinstance(detection_result.get("results"), list) else []
+    result_by_target = {
+        _normalize_clockin_target_name(item.get("target")): item
+        for item in result_items
+        if isinstance(item, dict) and _normalize_clockin_target_name(item.get("target"))
+    }
+
+    updated_count = 0
+    skipped_count = 0
+    error_count = 0
+    warnings: list[str] = []
+    written: list[dict[str, Any]] = []
+
+    for target in targets:
+        row_index = int(target["row_index"])
+        row = rows[row_index] if 0 <= row_index < len(rows) else None
+        if row is None:
+            skipped_count += 1
+            continue
+        target_name = _normalize_clockin_target_name(target.get("target"))
+        item = result_by_target.get(target_name)
+        if not item:
+            error_count += 1
+            warnings.append(f"未检测到 {target.get('name') or target_name} 的打卡链接")
+            continue
+        url = _normalize_sheet_text(item.get("url"))
+        if not url:
+            error_count += 1
+            warnings.append(f"{target.get('name') or target_name} 的检测结果没有 URL")
+            continue
+
+        before = list(row)
+        row[indexes["url"]] = url
+        for field in ("start_date", "end_date", "days"):
+            if field in indexes and item.get(field) not in (None, ""):
+                row[indexes[field]] = item.get(field)
+        if row != before:
+            updated_count += 1
+            rows[row_index] = row
+        else:
+            skipped_count += 1
+        written.append({
+            "row_index": row_index,
+            "name": target.get("name"),
+            "target": target_name,
+            "url": url,
+        })
+
+    next_document = _replace_document_data_rows(normalized, rows)
+    remote_warnings = [str(item) for item in (detection_result.get("warnings") or [])]
+    return next_document, {
+        "updated_count": updated_count,
+        "skipped_count": skipped_count,
+        "error_count": error_count,
+        "warning_count": len(warnings) + len(remote_warnings),
+        "warnings": [*warnings, *remote_warnings],
+        "written": written,
+    }
 
 
 def _order_info_has_fill_values(order_info: Any) -> bool:
@@ -3710,12 +4266,48 @@ def _get_registration_course_name(document: SheetDocument, workbook: WorkbookDoc
     return normalize_course_name(document.title)
 
 
+def _resolve_registration_shop_id(
+    session: Session,
+    document: SheetDocument,
+    workbook: WorkbookDocument | None,
+) -> int:
+    for name in ("店铺ID", "店铺编号", "shop_id"):
+        raw_value = _get_effective_defined_name_literal(session, document, workbook, name)
+        if raw_value:
+            try:
+                shop_id = int(float(raw_value))
+            except (TypeError, ValueError):
+                continue
+            if shop_id in {1, 2}:
+                return shop_id
+
+    shop_name = _get_effective_defined_name_literal(session, document, workbook, "店铺名")
+    if shop_name == "宗门学府":
+        return 2
+    if shop_name == "5034山中薪":
+        return 1
+
+    text = " ".join(
+        item
+        for item in [
+            _get_registration_course_name(document, workbook),
+            _normalize_sheet_text(workbook.title if workbook is not None else ""),
+            _normalize_sheet_text(document.title),
+        ]
+        if item
+    )
+    if "禅宗" in text or "修道班" in text:
+        return 2
+    return NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID
+
+
 def _update_registration_user_match_document(
     document_json: dict[str, Any],
     *,
     session: Session,
     current_user: User,
     course_name: str,
+    shop_id: int,
     use_browser_fallback: bool,
 ) -> tuple[dict[str, Any], dict[str, int]]:
     normalized = _normalize_document_json(document_json)
@@ -3781,7 +4373,7 @@ def _update_registration_user_match_document(
                 phones,
                 course_name=course_name,
                 course_product_name="",
-                shop_id=NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+                shop_id=shop_id,
                 return_mode=1,
                 kqdb=kqdb,
             )
@@ -3822,6 +4414,7 @@ def _update_registration_user_match_document(
                 session,
                 current_user,
                 course_name=course_name,
+                shop_id=shop_id,
                 items=[
                     {
                         "key": candidate["key"],
@@ -4015,6 +4608,13 @@ def _build_attendance_row_from_registration(
                 return text
         return ""
 
+    def source_order_amount() -> str:
+        merchant_order = _strip_legacy_text_prefix(source_value("商户订单号"))
+        amount = _parse_number_sort_value(source.get("订单金额"))
+        if merchant_order and amount is not None and amount > 0:
+            return _format_registration_match_cell(amount)
+        return "0"
+
     submitted_at = _format_registration_attendance_submitted_at(source.get(NOTE_SHEET_REGISTRATION_SUBMITTED_AT_COLUMN))
     next_row = _build_attendance_row_from_template(
         attendance_columns,
@@ -4042,7 +4642,7 @@ def _build_attendance_row_from_registration(
         elif header == "订单日期":
             next_row[index] = source_value("订单日期")
         elif header == "订单金额":
-            next_row[index] = source_value("订单金额")
+            next_row[index] = source_order_amount()
         elif header == "已返款" and not _is_formula_expression(next_row[index]):
             next_row[index] = "0"
         elif header == "用户ID":
@@ -4058,6 +4658,204 @@ def _build_attendance_row_from_registration(
         elif header == NOTE_SHEET_REGISTRATION_TRACKING_GROUP_COLUMN:
             next_row[index] = source_value(NOTE_SHEET_REGISTRATION_GROUP_COLUMN)
     return next_row
+
+
+def _extract_attendance_clockin_refund_period_reference(formula: Any) -> str:
+    text = _normalize_sheet_text(formula)
+    if NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME in text:
+        return NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME
+    match = re.search(r",\s*(\$?[A-Za-z]{1,3}\$?\d+)\s*\)\s*\*", text, re.I)
+    if match:
+        candidate = match.group(1).strip()
+        if candidate:
+            return candidate
+    return "$J$3"
+
+
+def _build_attendance_dual_clockin_refund_formula(
+    columns: list[str],
+    *,
+    row_number: int,
+    period_reference: str,
+) -> str | None:
+    study_index = _get_column_index(columns, "共学打卡")
+    practice_index = _get_column_index(columns, "共修打卡")
+    if study_index < 0 or practice_index < 0:
+        return None
+    study_ref = f"{_excel_column_label(study_index)}{row_number}"
+    practice_ref = f"{_excel_column_label(practice_index)}{row_number}"
+    period_ref = period_reference.strip() or "$J$3"
+    return (
+        f"=MIN(IFERROR(VALUE({study_ref}),0),{period_ref})*5"
+        f"+MIN(IFERROR(VALUE({practice_ref}),0),{period_ref})*5"
+    )
+
+
+def _build_attendance_total_refund_formula(
+    columns: list[str],
+    *,
+    row_number: int,
+    standard_amount_row_number: int,
+) -> str | None:
+    video_index = _get_column_index(columns, "视频应返款")
+    clockin_index = _get_column_index(columns, "打卡应返款")
+    order_amount_index = _get_column_index(columns, "订单金额")
+    if video_index < 0 or clockin_index < 0 or order_amount_index < 0:
+        return None
+    video_ref = f"{_excel_column_label(video_index)}{row_number}"
+    clockin_ref = f"{_excel_column_label(clockin_index)}{row_number}"
+    order_ref = f"{_excel_column_label(order_amount_index)}{row_number}"
+    standard_amount_ref = f"${_excel_column_label(order_amount_index)}${standard_amount_row_number}"
+    return f"=IFERROR({video_ref}+{clockin_ref}+{order_ref}-{standard_amount_ref},0)"
+
+
+def _find_attendance_standard_order_amount(rows: list[list[Any]], columns: list[str]) -> str:
+    order_amount_index = _get_column_index(columns, "订单金额")
+    if order_amount_index < 0:
+        return ""
+    for row in rows:
+        amount = _parse_number_sort_value(row[order_amount_index] if order_amount_index < len(row) else "")
+        if amount is not None and amount > 0:
+            return _format_registration_match_cell(amount)
+    return ""
+
+
+def _set_document_entity_cell_value(
+    document_json: dict[str, Any],
+    *,
+    document_row: int,
+    column_index: int,
+    value: Any,
+) -> dict[str, Any]:
+    entity_rows = _extract_document_entity_rows(document_json)
+    entity_columns = _extract_document_entity_columns(document_json)
+    if (
+        document_row < 0
+        or column_index < 0
+        or document_row >= len(entity_rows)
+        or column_index >= len(entity_columns)
+    ):
+        return document_json
+    row_id = _get_document_entity_row_id(entity_rows[document_row])
+    column_id = _get_document_entity_column_id(entity_columns[column_index])
+    if not row_id or not column_id:
+        return document_json
+
+    entity_cells = _extract_document_entity_cells(document_json)
+    row_cells = entity_cells.get(row_id)
+    next_row_cells = dict(row_cells) if isinstance(row_cells, dict) else {}
+    source_cell = next_row_cells.get(column_id)
+    next_cell = dict(source_cell) if isinstance(source_cell, dict) else {}
+    next_cell["value"] = value
+    if _is_formula_expression(value):
+        next_cell.pop("rich_text", None)
+        if next_cell.get("cell_type") == "rich_text":
+            next_cell.pop("cell_type", None)
+    if next_cell == source_cell:
+        return document_json
+
+    next_row_cells[column_id] = next_cell
+    next_entity_cells = dict(entity_cells)
+    next_entity_cells[row_id] = next_row_cells
+    next_document = dict(document_json)
+    next_document["entity_cells"] = next_entity_cells
+    return next_document
+
+
+def _normalize_attendance_dual_clockin_refund_formulas(
+    document_json: dict[str, Any],
+) -> tuple[dict[str, Any], int]:
+    normalized = _normalize_document_json(document_json)
+    columns = _normalize_document_columns(normalized)
+    refund_index = _get_column_index(columns, "打卡应返款")
+    total_index = _get_column_index(columns, "总应返款")
+    if refund_index < 0 or _get_column_index(columns, "共学打卡") < 0 or _get_column_index(columns, "共修打卡") < 0:
+        return document_json, 0
+
+    rows = [
+        _normalize_sheet_row(row, len(columns))
+        for row in _extract_document_rows(normalized)
+    ]
+    changed_formula_cells: list[tuple[int, int]] = []
+    row_reference_offset = _get_formula_reference_row_offset(normalized)
+    standard_amount_row_number = row_reference_offset if row_reference_offset > 0 else 3
+    for row_index, row in enumerate(rows):
+        row_number = row_reference_offset + row_index + 1
+        current_formula = row[refund_index]
+        if _is_formula_expression(current_formula):
+            next_formula = _build_attendance_dual_clockin_refund_formula(
+                columns,
+                row_number=row_number,
+                period_reference=_extract_attendance_clockin_refund_period_reference(current_formula),
+            )
+            if next_formula and next_formula != current_formula:
+                row[refund_index] = next_formula
+                changed_formula_cells.append((row_index, refund_index))
+
+        if total_index >= 0 and _is_formula_expression(row[total_index]):
+            next_total_formula = _build_attendance_total_refund_formula(
+                columns,
+                row_number=row_number,
+                standard_amount_row_number=standard_amount_row_number,
+            )
+            if next_total_formula and next_total_formula != row[total_index]:
+                row[total_index] = next_total_formula
+                changed_formula_cells.append((row_index, total_index))
+
+    changed_count = 0
+    next_document = normalized
+    if changed_formula_cells:
+        next_document = _replace_document_data_rows(next_document, rows)
+        data_start_row = _normalize_document_data_start_row(normalized)
+        for row_index, column_index in changed_formula_cells:
+            next_document = _set_document_entity_cell_value(
+                next_document,
+                document_row=data_start_row + row_index,
+                column_index=column_index,
+                value=rows[row_index][column_index],
+            )
+        changed_count += len(changed_formula_cells)
+
+    grid_rows = _extract_document_grid_rows(next_document)
+    config_row_index = _normalize_document_data_start_row(next_document) - 1
+    period_display_index = _get_column_index(columns, "已返款")
+    order_amount_index = _get_column_index(columns, "订单金额")
+    if grid_rows and 0 <= config_row_index < len(grid_rows):
+        next_grid_rows = [list(row) if isinstance(row, list) else [] for row in grid_rows]
+        config_row = _normalize_sheet_row(next_grid_rows[config_row_index], len(columns))
+        config_changed_cells: list[int] = []
+        if period_display_index >= 0:
+            period_label_formula = f'="第"&{NOTE_SHEET_ATTENDANCE_REFUND_PERIOD_NAME}&"周"'
+            if not _normalize_sheet_text(config_row[period_display_index]):
+                config_row[period_display_index] = period_label_formula
+                config_changed_cells.append(period_display_index)
+        standard_amount = _find_attendance_standard_order_amount(rows, columns)
+        if (
+            order_amount_index >= 0
+            and standard_amount
+            and (
+                not _normalize_sheet_text(config_row[order_amount_index])
+                or _is_formula_expression(config_row[order_amount_index])
+            )
+        ):
+            config_row[order_amount_index] = standard_amount
+            config_changed_cells.append(order_amount_index)
+        if config_changed_cells:
+            next_grid_rows[config_row_index] = config_row
+            next_document = dict(next_document)
+            next_document["grid_rows"] = next_grid_rows
+            for column_index in config_changed_cells:
+                next_document = _set_document_entity_cell_value(
+                    next_document,
+                    document_row=config_row_index,
+                    column_index=column_index,
+                    value=config_row[column_index],
+                )
+            changed_count += len(config_changed_cells)
+
+    if changed_count <= 0:
+        return document_json, 0
+    return next_document, changed_count
 
 
 def _merge_attendance_registration_defaults(
@@ -4086,6 +4884,15 @@ def _merge_attendance_registration_defaults(
                 or _parse_registration_submitted_at_datetime(current_value) is None
                 or _format_registration_attendance_submitted_at(current_value) != current_text
             )
+        elif header == "订单金额":
+            candidate_amount = _parse_number_sort_value(candidate_value)
+            current_amount = _parse_number_sort_value(current_value)
+            if candidate_amount is not None:
+                should_fill = (
+                    not current_text
+                    or current_amount is None
+                    or abs(candidate_amount - current_amount) > 1e-9
+                )
         elif header in NOTE_SHEET_ATTENDANCE_SOURCE_OVERLAY_COLUMNS:
             should_fill = not current_text
         if should_fill and current_value != candidate_value:
@@ -4094,16 +4901,29 @@ def _merge_attendance_registration_defaults(
     return next_row, changed
 
 
-def _attendance_cell_meta_template_column_limit(columns: list[str]) -> int:
-    clockin_count_index = _get_column_index(columns, "打卡数")
-    if clockin_count_index >= 0:
-        return clockin_count_index
+def _attendance_progress_style_start_column(columns: list[str]) -> int:
+    candidate_indexes = [
+        index
+        for header in ("打卡数", "共学打卡", "共修打卡")
+        for index in [_get_column_index(columns, header)]
+        if index >= 0
+    ]
+    if candidate_indexes:
+        return min(candidate_indexes)
+
+    current_refund_index = _get_column_index(columns, "当前应返款")
+    if current_refund_index >= 0:
+        return min(current_refund_index + 1, len(columns))
     return len(columns)
 
 
+def _attendance_cell_meta_template_column_limit(columns: list[str]) -> int:
+    return _attendance_progress_style_start_column(columns)
+
+
 def _attendance_progress_style_column_range(columns: list[str]) -> tuple[int, int]:
-    start_index = _get_column_index(columns, "打卡数")
-    if start_index < 0:
+    start_index = _attendance_progress_style_start_column(columns)
+    if start_index >= len(columns):
         return len(columns), len(columns)
     end_index = len(columns)
     for column_index in range(start_index + 1, len(columns)):
@@ -4302,6 +5122,12 @@ def _sync_registration_rows_to_attendance_document(
         _normalize_sheet_row(row, len(attendance_columns))
         for row in _extract_document_rows(attendance_document)
     ]
+    attendance_document, formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(attendance_document)
+    if formula_repaired_count:
+        attendance_rows = [
+            _normalize_sheet_row(row, len(attendance_columns))
+            for row in _extract_document_rows(attendance_document)
+        ]
     user_id_index = _get_column_index(attendance_columns, "用户ID")
     student_id_index = _get_column_index(attendance_columns, "学号")
     merchant_order_index = _get_column_index(attendance_columns, "商户订单号")
@@ -4431,7 +5257,7 @@ def _sync_registration_rows_to_attendance_document(
         for offset, row in enumerate(pending_registration_rows)
     ]
 
-    if not inserted_rows and repaired_count <= 0:
+    if not inserted_rows and repaired_count <= 0 and formula_repaired_count <= 0:
         return attendance_document, _build_registration_match_summary(skipped_count=skipped_count)
 
     if inserted_rows:
@@ -4493,11 +5319,11 @@ def _sync_registration_rows_to_attendance_document(
             )
         next_document["cell_meta"] = next_cell_meta
     return next_document, _build_registration_match_summary(
-        updated_count=len(inserted_rows) + repaired_count,
-        matched_count=len(inserted_rows) + repaired_count,
+        updated_count=len(inserted_rows) + repaired_count + formula_repaired_count,
+        matched_count=len(inserted_rows) + repaired_count + formula_repaired_count,
         skipped_count=skipped_count,
         inserted_count=len(inserted_rows),
-        repaired_count=repaired_count,
+        repaired_count=repaired_count + formula_repaired_count,
     )
 
 
@@ -4549,11 +5375,13 @@ def _run_registration_match_action(
         )
         message = _format_registration_order_match_message(summary)
     elif action == NOTE_SHEET_CELL_ACTION_REGISTRATION_USER_MATCH:
+        registration_shop_id = _resolve_registration_shop_id(session, document, workbook)
         next_document, summary = _update_registration_user_match_document(
             current_document,
             session=session,
             current_user=current_user,
             course_name=_get_registration_course_name(document, workbook),
+            shop_id=registration_shop_id,
             use_browser_fallback=use_browser_fallback,
         )
         message = _format_registration_user_match_message(summary)
@@ -4892,6 +5720,7 @@ def _run_registration_user_match_background(
             indexes = _find_required_registration_column_indexes(columns, NOTE_SHEET_REGISTRATION_USER_LOOKUP_COLUMNS)
             rows = [_normalize_sheet_row(row, len(columns)) for row in _extract_document_rows(normalized)]
             course_name = _get_registration_course_name(document, workbook)
+            registration_shop_id = _resolve_registration_shop_id(session, document, workbook)
             total_count = _count_registration_user_match_targets(normalized)
             _update_registration_match_run(run_id, total_count=total_count)
 
@@ -4943,7 +5772,7 @@ def _run_registration_user_match_background(
                         phones,
                         course_name=course_name,
                         course_product_name="",
-                        shop_id=NOTE_SHEET_REGISTRATION_DEFAULT_SHOP_ID,
+                        shop_id=registration_shop_id,
                         return_mode=1,
                         kqdb=kqdb,
                     )
@@ -4969,6 +5798,7 @@ def _run_registration_user_match_background(
                             session,
                             current_user,
                             course_name=course_name,
+                            shop_id=registration_shop_id,
                             items=[{"key": "0", "names": names, "phones": phones}],
                         )
                         result = result_map.get("0", {})
@@ -5124,6 +5954,7 @@ def _run_registration_composite_update_background(
                 session=session,
                 current_user=current_user,
                 course_name=_get_registration_course_name(document, workbook),
+                shop_id=_resolve_registration_shop_id(session, document, workbook),
                 use_browser_fallback=use_browser_fallback,
             )
             if current_document != next_document:
@@ -5292,6 +6123,310 @@ def _start_registration_match_run(
     return _serialize_registration_match_run(_get_registration_match_run_snapshot(run_id))
 
 
+_CLOCKIN_LINK_DETECTION_RUN_LOCK = threading.Lock()
+_CLOCKIN_LINK_DETECTION_RUNS: dict[str, dict[str, Any]] = {}
+_CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET: dict[int, str] = {}
+_CLOCKIN_LINK_DETECTION_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+_CLOCKIN_LINK_DETECTION_ACTIVE_STATUSES = {"pending", "running"}
+
+
+def _is_clockin_link_detection_run_active(run: dict[str, Any] | None) -> bool:
+    return bool(run and run.get("status") in _CLOCKIN_LINK_DETECTION_ACTIVE_STATUSES and not run.get("cancel_requested"))
+
+
+def _serialize_clockin_link_detection_run(
+    run: dict[str, Any] | None,
+    *,
+    sheet: NoteSheetDetailResponse | None = None,
+    already_running: bool = False,
+    sheet_id: int | None = None,
+    workbook_id: int | None = None,
+) -> NoteSheetClockinLinkDetectionRunResponse:
+    if run is None:
+        return NoteSheetClockinLinkDetectionRunResponse(
+            sheet_id=int(sheet_id or 0),
+            workbook_id=workbook_id,
+            sheet=sheet,
+        )
+    return NoteSheetClockinLinkDetectionRunResponse(
+        run_id=str(run.get("run_id") or ""),
+        action=NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT,
+        sheet_id=int(run.get("sheet_id") or 0),
+        workbook_id=run.get("workbook_id"),
+        status=run.get("status") or "idle",
+        phase=str(run.get("phase") or ""),
+        already_running=already_running,
+        cancel_requested=bool(run.get("cancel_requested")),
+        queued_at=run.get("queued_at"),
+        started_at=run.get("started_at"),
+        finished_at=run.get("finished_at"),
+        total_count=int(run.get("total_count") or 0),
+        processed_count=int(run.get("processed_count") or 0),
+        updated_count=int(run.get("updated_count") or 0),
+        skipped_count=int(run.get("skipped_count") or 0),
+        error_count=int(run.get("error_count") or 0),
+        warning_count=int(run.get("warning_count") or 0),
+        message=str(run.get("message") or ""),
+        error_message=run.get("error_message"),
+        provider_id=str(run.get("provider_id") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID),
+        model=str(run.get("model") or NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL),
+        results=list(run.get("results") or []),
+        warnings=list(run.get("warnings") or []),
+        sheet=sheet,
+    )
+
+
+def _get_clockin_link_detection_run_snapshot(run_id: str) -> dict[str, Any] | None:
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        return dict(run) if run else None
+
+
+def _get_active_clockin_link_detection_run_snapshot(sheet_id: int) -> dict[str, Any] | None:
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run_id = _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(int(sheet_id))
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id or "")
+        if _is_clockin_link_detection_run_active(run):
+            return dict(run)
+        if run_id and run and run.get("status") in _CLOCKIN_LINK_DETECTION_TERMINAL_STATUSES:
+            _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(int(sheet_id), None)
+        return None
+
+
+def _update_clockin_link_detection_run(run_id: str, **updates: Any) -> dict[str, Any] | None:
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        if run is None:
+            return None
+        run.update(updates)
+        return dict(run)
+
+
+def _request_cancel_clockin_link_detection_run(run_id: str) -> None:
+    now = time.time()
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        if run is None or run.get("status") in _CLOCKIN_LINK_DETECTION_TERMINAL_STATUSES:
+            return
+        run["cancel_requested"] = True
+        run["status"] = "cancelled"
+        run["finished_at"] = now
+        run["message"] = "已请求停止并准备重新开始"
+        sheet_id = int(run.get("sheet_id") or 0)
+        if _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id:
+            _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(sheet_id, None)
+
+
+def _is_clockin_link_detection_run_current(run_id: str) -> bool:
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        if not run or run.get("cancel_requested"):
+            return False
+        sheet_id = int(run.get("sheet_id") or 0)
+        return _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id
+
+
+def _finish_clockin_link_detection_run(
+    run_id: str,
+    status: str,
+    *,
+    message: str = "",
+    error_message: str | None = None,
+) -> None:
+    now = time.time()
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        run = _CLOCKIN_LINK_DETECTION_RUNS.get(run_id)
+        if run is None:
+            return
+        if run.get("status") == "cancelled" and status != "failed":
+            status = "cancelled"
+        run["status"] = status
+        run["finished_at"] = now
+        if message:
+            run["message"] = message
+        if error_message:
+            run["error_message"] = error_message
+        sheet_id = int(run.get("sheet_id") or 0)
+        if _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.get(sheet_id) == run_id:
+            _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET.pop(sheet_id, None)
+
+
+def _run_clockin_link_detection_background(
+    *,
+    run_id: str,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user_snapshot: dict[str, Any],
+    provider_id: str,
+    model: str,
+) -> None:
+    try:
+        _update_clockin_link_detection_run(
+            run_id,
+            status="running",
+            phase="read_config",
+            started_at=time.time(),
+            message="正在读取打卡配置",
+        )
+        with Session(engine) as session:
+            current_user = User(
+                id=int(current_user_snapshot.get("id") or 0),
+                username=str(current_user_snapshot.get("username") or ""),
+                hashed_password="",
+                is_active=True,
+                is_superuser=bool(current_user_snapshot.get("is_superuser")),
+            )
+            document, access, workbook = _get_note_sheet_or_404(
+                session,
+                current_user,
+                sheet_id,
+                required_role="editor",
+                workbook_id=workbook_id,
+            )
+            if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+                raise HTTPException(status_code=403, detail="没有执行打卡链接检测的权限")
+
+            current_document = _normalize_document_json(dict(document.document_json or {}))
+            root_url = _get_effective_defined_name_literal(session, document, workbook, "打卡根目录")
+            if not root_url:
+                raise HTTPException(status_code=400, detail="名称管理器缺少“打卡根目录”")
+            if not root_url.startswith(("http://", "https://")):
+                raise HTTPException(status_code=400, detail="“打卡根目录”不是有效 URL")
+
+            targets = _extract_clockin_detection_targets(current_document)
+            if not targets:
+                raise HTTPException(status_code=400, detail="打卡配置表没有可检测的打卡行")
+            _update_clockin_link_detection_run(
+                run_id,
+                total_count=len(targets),
+                phase="remote_detect",
+                message=f"正在调用 mi15 检测 {len(targets)} 个打卡链接",
+            )
+            if not _is_clockin_link_detection_run_current(run_id):
+                _finish_clockin_link_detection_run(run_id, "cancelled", message="自动检测打卡链接已停止")
+                return
+
+            detection_result = _detect_clockin_links_with_remote_browser(
+                session,
+                current_user,
+                root_url=root_url,
+                targets=[str(item["target"]) for item in targets],
+                provider_id=provider_id,
+                model=model,
+            )
+            result_items = detection_result.get("results") if isinstance(detection_result.get("results"), list) else []
+            _update_clockin_link_detection_run(
+                run_id,
+                processed_count=len(result_items),
+                results=[dict(item) for item in result_items if isinstance(item, dict)],
+                warnings=[str(item) for item in (detection_result.get("warnings") or [])],
+                phase="write_sheet",
+                message="正在写回打卡配置",
+            )
+            if not _is_clockin_link_detection_run_current(run_id):
+                _finish_clockin_link_detection_run(run_id, "cancelled", message="自动检测打卡链接已停止")
+                return
+
+            next_document, summary = _apply_clockin_link_detection_results(
+                current_document,
+                targets,
+                detection_result,
+            )
+            if next_document != current_document:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = current_user.id
+                document.updated_at = time.time()
+                session.add(document)
+                session.commit()
+            _update_clockin_link_detection_run(
+                run_id,
+                processed_count=len(targets),
+                updated_count=summary["updated_count"],
+                skipped_count=summary["skipped_count"],
+                error_count=summary["error_count"],
+                warning_count=summary["warning_count"],
+                warnings=summary["warnings"],
+            )
+            message = f"自动检测打卡链接完成：写入 {summary['updated_count']} 条"
+            if summary["error_count"]:
+                message += f"，{summary['error_count']} 条异常"
+            _finish_clockin_link_detection_run(run_id, "completed", message=message)
+    except Exception as exc:
+        _finish_clockin_link_detection_run(
+            run_id,
+            "failed",
+            message="自动检测打卡链接失败",
+            error_message=str(exc.detail if isinstance(exc, HTTPException) else exc),
+        )
+
+
+def _start_clockin_link_detection_run(
+    *,
+    sheet_id: int,
+    workbook_id: int | None,
+    current_user: User,
+    provider_id: str,
+    model: str,
+    force_restart: bool,
+) -> NoteSheetClockinLinkDetectionRunResponse:
+    active_run = _get_active_clockin_link_detection_run_snapshot(sheet_id)
+    if active_run:
+        if not force_restart:
+            return _serialize_clockin_link_detection_run(active_run, already_running=True)
+        _request_cancel_clockin_link_detection_run(str(active_run.get("run_id") or ""))
+
+    run_id = uuid.uuid4().hex
+    run = {
+        "run_id": run_id,
+        "action": NOTE_SHEET_CELL_ACTION_CLOCKIN_LINK_DETECT,
+        "sheet_id": int(sheet_id),
+        "workbook_id": workbook_id,
+        "status": "pending",
+        "phase": "",
+        "current_user_id": current_user.id,
+        "cancel_requested": False,
+        "queued_at": time.time(),
+        "started_at": None,
+        "finished_at": None,
+        "total_count": 0,
+        "processed_count": 0,
+        "updated_count": 0,
+        "skipped_count": 0,
+        "error_count": 0,
+        "warning_count": 0,
+        "message": "任务已排队",
+        "error_message": None,
+        "provider_id": provider_id,
+        "model": model,
+        "results": [],
+        "warnings": [],
+    }
+    with _CLOCKIN_LINK_DETECTION_RUN_LOCK:
+        _CLOCKIN_LINK_DETECTION_RUNS[run_id] = run
+        _CLOCKIN_LINK_DETECTION_ACTIVE_BY_SHEET[int(sheet_id)] = run_id
+
+    thread = threading.Thread(
+        target=_run_clockin_link_detection_background,
+        kwargs={
+            "run_id": run_id,
+            "sheet_id": sheet_id,
+            "workbook_id": workbook_id,
+            "current_user_snapshot": {
+                "id": current_user.id,
+                "username": current_user.username,
+                "is_superuser": current_user.is_superuser,
+            },
+            "provider_id": provider_id,
+            "model": model,
+        },
+        name=f"note-sheet-clockin-links-{run_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _serialize_clockin_link_detection_run(_get_clockin_link_detection_run_snapshot(run_id))
+
+
 def _extract_excel_workbook_payload(raw_bytes: bytes, filename: str) -> dict[str, Any]:
     if len(raw_bytes) > NOTE_SHEET_EXCEL_IMPORT_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Excel 文件过大，当前导入上限为 12MB")
@@ -5413,49 +6548,6 @@ def _build_note_sheet_excel_import_prompt(
     ])
 
 
-def _build_note_sheet_excel_import_response_schema(columns: list[str]) -> dict[str, Any]:
-    return {
-        "type": "object",
-        "required": ["rows"],
-        "properties": {
-            "extra_columns": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-            "rows": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": {"type": "string"},
-                    "properties": {column: {"type": "string"} for column in columns},
-                },
-            },
-            "warnings": {"type": "array", "items": {"type": "string"}},
-            "mapping_notes": {"type": "array", "items": {"type": "string"}},
-        },
-        "additionalProperties": False,
-    }
-
-
-def _build_note_sheet_excel_import_codex_provider() -> AiProviderConfig:
-    return AiProviderConfig(
-        id=NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID,
-        label="Codex CLI",
-        kind="codex_cli",
-        base_url=CODEX_CLI_DEFAULT_COMMAND,
-        default_model=CODEX_CLI_DEFAULT_MODEL,
-        timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
-        api_key="",
-        supports_stream=False,
-        supports_vision=False,
-        requires_api_key=False,
-        configured=True,
-        models=(CODEX_CLI_DEFAULT_MODEL,),
-        is_custom=False,
-        workspace_dir=os.fspath(Path(__file__).resolve().parents[2]),
-    )
-
-
 def _parse_note_sheet_excel_import_json(content: str) -> dict[str, Any]:
     text = content.strip()
     try:
@@ -5464,13 +6556,13 @@ def _parse_note_sheet_excel_import_json(content: str) -> dict[str, Any]:
         start = text.find("{")
         end = text.rfind("}")
         if start < 0 or end <= start:
-            raise HTTPException(status_code=502, detail="Codex CLI 未返回 JSON 对象")
+            raise HTTPException(status_code=502, detail="DeepSeek 未返回 JSON 对象")
         try:
             payload = json.loads(text[start:end + 1])
         except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=502, detail=f"Codex CLI 返回的 JSON 无法解析：{exc}") from exc
+            raise HTTPException(status_code=502, detail=f"DeepSeek 返回的 JSON 无法解析：{exc}") from exc
     if not isinstance(payload, dict):
-        raise HTTPException(status_code=502, detail="Codex CLI 返回 JSON 必须是对象")
+        raise HTTPException(status_code=502, detail="DeepSeek 返回 JSON 必须是对象")
     return payload
 
 
@@ -5536,7 +6628,7 @@ def _extract_note_sheet_excel_import_extra_columns(
 def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[str]) -> tuple[list[list[Any]], list[str]]:
     raw_rows = payload.get("rows")
     if not isinstance(raw_rows, list):
-        raise HTTPException(status_code=502, detail="Codex CLI 返回 JSON 缺少 rows 数组")
+        raise HTTPException(status_code=502, detail="DeepSeek 返回 JSON 缺少 rows 数组")
 
     extra_columns = _extract_note_sheet_excel_import_extra_columns(payload, columns, raw_rows)
     output_columns = [*columns, *extra_columns]
@@ -5563,7 +6655,7 @@ def _coerce_note_sheet_excel_import_rows(payload: dict[str, Any], columns: list[
             normalized_rows.append(row)
 
     if not normalized_rows:
-        raise HTTPException(status_code=422, detail="Codex CLI 没有识别到可导入的数据行")
+        raise HTTPException(status_code=422, detail="DeepSeek 没有识别到可导入的数据行")
     return normalized_rows, extra_columns
 
 
@@ -5573,7 +6665,7 @@ def _normalize_import_message_list(value: Any) -> list[str]:
     return [_normalize_sheet_text(item) for item in value if _normalize_sheet_text(item)]
 
 
-def _run_note_sheet_excel_import_codex(
+def _run_note_sheet_excel_import_deepseek(
     *,
     document_json: dict[str, Any],
     workbook_payload: dict[str, Any],
@@ -5592,11 +6684,11 @@ def _run_note_sheet_excel_import_codex(
     try:
         response = chat_with_provider(
             provider_id=NOTE_SHEET_EXCEL_IMPORT_PROVIDER_ID,
+            model=os.environ.get("CODEYUN_NOTE_SHEET_EXCEL_IMPORT_MODEL", NOTE_SHEET_EXCEL_IMPORT_MODEL),
             messages=[{"role": "user", "content": prompt}],
             system_prompt=NOTE_SHEET_EXCEL_IMPORT_SYSTEM_PROMPT,
-            response_format=_build_note_sheet_excel_import_response_schema(columns),
+            response_format="json",
             timeout_seconds=NOTE_SHEET_EXCEL_IMPORT_TIMEOUT_SECONDS,
-            extra_providers=(_build_note_sheet_excel_import_codex_provider(),),
         )
     except OllamaClientError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -8285,6 +9377,36 @@ def _split_formula_top_level(value: str, separator: str) -> list[str]:
     return parts
 
 
+def _split_formula_top_level_operators(value: str, operators: set[str]) -> tuple[list[str], list[str]]:
+    parts: list[str] = []
+    found_operators: list[str] = []
+    current: list[str] = []
+    depth = 0
+    in_string = False
+    for index, char in enumerate(value):
+        if char == '"':
+            in_string = not in_string
+        if not in_string:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth = max(depth - 1, 0)
+            elif char in operators and depth == 0 and current:
+                if char in "+-":
+                    previous = value[index - 1] if index > 0 else ""
+                    if previous in "+-*/(":
+                        current.append(char)
+                        continue
+                parts.append("".join(current).strip())
+                found_operators.append(char)
+                current = []
+                continue
+        current.append(char)
+    if found_operators:
+        parts.append("".join(current).strip())
+    return parts, found_operators
+
+
 def _strip_formula_outer_parentheses(value: str) -> str:
     text = value.strip()
     while text.startswith("(") and text.endswith(")"):
@@ -8326,6 +9448,10 @@ def _coerce_formula_number(value: Any) -> float | None:
         return float(int(value))
     if isinstance(value, int | float):
         return float(value)
+    if isinstance(value, datetime):
+        return float(value.toordinal())
+    if isinstance(value, date):
+        return float(value.toordinal())
     text = str(value or "").strip()
     if not text:
         return 0.0
@@ -8380,11 +9506,21 @@ def _parse_table_formula_range_reference(value: str) -> tuple[int, int, int, int
     )
 
 
+def _get_formula_defined_name_cache(cache: dict[tuple[int, int], Any]) -> dict[str, Any]:
+    value = cache.get(FORMULA_DEFINED_NAME_CACHE_KEY)
+    if isinstance(value, dict):
+        return value
+    value = {}
+    cache[FORMULA_DEFINED_NAME_CACHE_KEY] = value
+    return value
+
+
 def _get_formula_grid_cell(
     grid_rows: list[list[Any]],
     row_index: int,
     column_index: int,
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
 ) -> Any:
     if row_index < 0 or column_index < 0 or row_index >= len(grid_rows):
         return ""
@@ -8397,6 +9533,7 @@ def _get_formula_grid_cell(
         row_index=row_index,
         column_index=column_index,
         cache=cache,
+        defined_names=defined_names,
     )
 
 
@@ -8404,12 +9541,13 @@ def _get_formula_grid_range(
     grid_rows: list[list[Any]],
     range_ref: tuple[int, int, int, int],
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
 ) -> list[Any]:
     start_row, start_col, end_row, end_col = range_ref
     values: list[Any] = []
     for row_index in range(start_row, end_row + 1):
         for column_index in range(start_col, end_col + 1):
-            values.append(_get_formula_grid_cell(grid_rows, row_index, column_index, cache))
+            values.append(_get_formula_grid_cell(grid_rows, row_index, column_index, cache, defined_names))
     return values
 
 
@@ -8418,6 +9556,8 @@ def _evaluate_formula_comparison(
     *,
     grid_rows: list[list[Any]],
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
+    name_stack: tuple[str, ...] = (),
 ) -> bool | None:
     text = expr.strip()
     in_string = False
@@ -8444,8 +9584,20 @@ def _evaluate_formula_comparison(
         if depth == 0:
             for operator in operators:
                 if text.startswith(operator, index):
-                    left = _evaluate_table_formula_expr(text[:index], grid_rows=grid_rows, cache=cache)
-                    right = _evaluate_table_formula_expr(text[index + len(operator):], grid_rows=grid_rows, cache=cache)
+                    left = _evaluate_table_formula_expr(
+                        text[:index],
+                        grid_rows=grid_rows,
+                        cache=cache,
+                        defined_names=defined_names,
+                        name_stack=name_stack,
+                    )
+                    right = _evaluate_table_formula_expr(
+                        text[index + len(operator):],
+                        grid_rows=grid_rows,
+                        cache=cache,
+                        defined_names=defined_names,
+                        name_stack=name_stack,
+                    )
                     left_number = _coerce_formula_number(left)
                     right_number = _coerce_formula_number(right)
                     if left_number is not None and right_number is not None:
@@ -8475,47 +9627,60 @@ def _evaluate_formula_arithmetic(
     *,
     grid_rows: list[list[Any]],
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
+    name_stack: tuple[str, ...] = (),
 ) -> Any | None:
-    multiply_parts = _split_formula_top_level(expr, "*")
-    if len(multiply_parts) > 1:
-        result = 1.0
-        for part in multiply_parts:
-            value = _evaluate_table_formula_expr(part, grid_rows=grid_rows, cache=cache)
+    multiply_parts, multiply_operators = _split_formula_top_level_operators(expr, {"*", "/"})
+    if multiply_operators:
+        first = _evaluate_table_formula_expr(
+            multiply_parts[0],
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+            name_stack=name_stack,
+        )
+        result = _coerce_formula_number(first)
+        if result is None:
+            return None
+        for operator, part in zip(multiply_operators, multiply_parts[1:]):
+            value = _evaluate_table_formula_expr(
+                part,
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )
             number = _coerce_formula_number(value)
             if number is None:
                 return None
-            result *= number
+            if operator == "*":
+                result *= number
+            else:
+                if number == 0:
+                    return None
+                result /= number
         return _format_formula_number(result)
 
-    terms: list[str] = []
-    operators: list[str] = []
-    current: list[str] = []
-    depth = 0
-    in_string = False
-    for index, char in enumerate(expr):
-        if char == '"':
-            in_string = not in_string
-        if not in_string:
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth = max(depth - 1, 0)
-            elif char in "+-" and depth == 0 and index > 0:
-                previous = expr[index - 1]
-                if previous not in "+-*/(":
-                    terms.append("".join(current).strip())
-                    operators.append(char)
-                    current = []
-                    continue
-        current.append(char)
+    terms, operators = _split_formula_top_level_operators(expr, {"+", "-"})
     if operators:
-        terms.append("".join(current).strip())
-        first = _evaluate_table_formula_expr(terms[0], grid_rows=grid_rows, cache=cache)
+        first = _evaluate_table_formula_expr(
+            terms[0],
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+            name_stack=name_stack,
+        )
         result = _coerce_formula_number(first)
         if result is None:
             return None
         for operator, term in zip(operators, terms[1:]):
-            value = _evaluate_table_formula_expr(term, grid_rows=grid_rows, cache=cache)
+            value = _evaluate_table_formula_expr(
+                term,
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )
             number = _coerce_formula_number(value)
             if number is None:
                 return None
@@ -8529,6 +9694,8 @@ def _evaluate_table_formula_expr(
     *,
     grid_rows: list[list[Any]],
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
+    name_stack: tuple[str, ...] = (),
 ) -> Any:
     text = _strip_formula_outer_parentheses(expr)
     if not text:
@@ -8536,7 +9703,13 @@ def _evaluate_table_formula_expr(
 
     concat_parts = _split_formula_top_level(text, "&")
     if len(concat_parts) > 1:
-        return "".join(str(_evaluate_table_formula_expr(part, grid_rows=grid_rows, cache=cache)) for part in concat_parts)
+        return "".join(str(_evaluate_table_formula_expr(
+            part,
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+            name_stack=name_stack,
+        )) for part in concat_parts)
 
     literal = _parse_formula_string_literal(text)
     if literal is not None:
@@ -8549,14 +9722,16 @@ def _evaluate_table_formula_expr(
         return False
     if upper == "TODAY()":
         return date.today()
+    if upper == "NOW()":
+        return datetime.now()
 
     cell_ref = _parse_table_formula_cell_reference(text)
     if cell_ref is not None:
-        return _get_formula_grid_cell(grid_rows, cell_ref[0], cell_ref[1], cache)
+        return _get_formula_grid_cell(grid_rows, cell_ref[0], cell_ref[1], cache, defined_names)
 
     range_ref = _parse_table_formula_range_reference(text)
     if range_ref is not None:
-        return _get_formula_grid_range(grid_rows, range_ref, cache)
+        return _get_formula_grid_range(grid_rows, range_ref, cache, defined_names)
 
     try:
         numeric = float(text)
@@ -8565,11 +9740,39 @@ def _evaluate_table_formula_expr(
     if numeric is not None:
         return _format_formula_number(numeric)
 
-    comparison = _evaluate_formula_comparison(text, grid_rows=grid_rows, cache=cache)
+    name_key = text.lower()
+    if defined_names and name_key in defined_names and name_key not in name_stack:
+        name_cache = _get_formula_defined_name_cache(cache)
+        if name_key in name_cache:
+            return name_cache[name_key]
+        name_formula = defined_names[name_key]
+        result = _evaluate_table_formula_expr(
+            name_formula[1:] if name_formula.startswith("=") else name_formula,
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+            name_stack=(*name_stack, name_key),
+        )
+        name_cache[name_key] = result
+        return result
+
+    comparison = _evaluate_formula_comparison(
+        text,
+        grid_rows=grid_rows,
+        cache=cache,
+        defined_names=defined_names,
+        name_stack=name_stack,
+    )
     if comparison is not None:
         return comparison
 
-    arithmetic = _evaluate_formula_arithmetic(text, grid_rows=grid_rows, cache=cache)
+    arithmetic = _evaluate_formula_arithmetic(
+        text,
+        grid_rows=grid_rows,
+        cache=cache,
+        defined_names=defined_names,
+        name_stack=name_stack,
+    )
     if arithmetic is not None:
         return arithmetic
 
@@ -8577,29 +9780,87 @@ def _evaluate_table_formula_expr(
     if func is not None:
         name, args = func
         if name == "IF" and len(args) >= 2:
-            condition = bool(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache))
-            return _evaluate_table_formula_expr(args[1] if condition else (args[2] if len(args) > 2 else ""), grid_rows=grid_rows, cache=cache)
+            condition = bool(_evaluate_table_formula_expr(
+                args[0],
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            ))
+            return _evaluate_table_formula_expr(
+                args[1] if condition else (args[2] if len(args) > 2 else ""),
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )
         if name == "IFERROR" and args:
             try:
-                return _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+                return _evaluate_table_formula_expr(
+                    args[0],
+                    grid_rows=grid_rows,
+                    cache=cache,
+                    defined_names=defined_names,
+                    name_stack=name_stack,
+                )
             except Exception:
-                return _evaluate_table_formula_expr(args[1] if len(args) > 1 else "", grid_rows=grid_rows, cache=cache)
+                return _evaluate_table_formula_expr(
+                    args[1] if len(args) > 1 else "",
+                    grid_rows=grid_rows,
+                    cache=cache,
+                    defined_names=defined_names,
+                    name_stack=name_stack,
+                )
         if name == "AND":
-            return all(bool(_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)) for arg in args)
+            return all(bool(_evaluate_table_formula_expr(
+                arg,
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )) for arg in args)
         if name == "OR":
-            return any(bool(_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)) for arg in args)
+            return any(bool(_evaluate_table_formula_expr(
+                arg,
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            )) for arg in args)
         if name == "LEN" and args:
-            return len(str(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache) or ""))
-        if name == "TEXTJOIN" and len(args) >= 3:
-            delimiter = str(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache))
-            ignore_empty = bool(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache))
-            values = [_evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache) for arg in args[2:]]
+            return len(str(_evaluate_table_formula_expr(
+                args[0],
+                grid_rows=grid_rows,
+                cache=cache,
+                defined_names=defined_names,
+                name_stack=name_stack,
+            ) or ""))
+        if name == "INT" and args:
+            value = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            number = _coerce_formula_number(value)
+            return floor(number) if number is not None else text
+        if name == "VALUE" and args:
+            value = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            number = _coerce_formula_number(value)
+            return _format_formula_number(number) if number is not None else text
+        if name == "DATE" and len(args) >= 3:
+            year = int(_coerce_formula_number(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)) or 0)
+            month = int(_coerce_formula_number(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)) or 0)
+            day = int(_coerce_formula_number(_evaluate_table_formula_expr(args[2], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)) or 0)
+            return date(year, month, day)
+        if name in {"TEXTJOIN", "TEXTJOIN_COMPAT"} and len(args) >= 3:
+            delimiter = str(_evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack))
+            ignore_empty = bool(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack))
+            values = [
+                _evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+                for arg in args[2:]
+            ]
             parts = [str(value) for value in values if not ignore_empty or str(value) != ""]
             return delimiter.join(parts)
-        if name == "DATEDIF" and len(args) >= 3:
-            start_value = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
-            end_value = _evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache)
-            unit = str(_evaluate_table_formula_expr(args[2], grid_rows=grid_rows, cache=cache)).lower()
+        if name in {"DATEDIF", "DATEDIF_COMPAT"} and len(args) >= 3:
+            start_value = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            end_value = _evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            unit = str(_evaluate_table_formula_expr(args[2], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)).lower()
             start_date = date.fromisoformat(str(start_value))
             if isinstance(end_value, date):
                 end_date = end_value
@@ -8609,8 +9870,8 @@ def _evaluate_table_formula_expr(
                 return (end_date - start_date).days
             return text
         if name == "COUNTIF" and len(args) >= 2:
-            values = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
-            pattern = str(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache))
+            values = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            pattern = str(_evaluate_table_formula_expr(args[1], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack))
             needle = pattern.strip("*")
             if not isinstance(values, list):
                 values = [values]
@@ -8620,7 +9881,7 @@ def _evaluate_table_formula_expr(
         if name in {"MIN", "MAX", "SUM"} and args:
             numbers: list[float] = []
             for arg in args:
-                value = _evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache)
+                value = _evaluate_table_formula_expr(arg, grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
                 values = value if isinstance(value, list) else [value]
                 for item in values:
                     number = _coerce_formula_number(item)
@@ -8634,17 +9895,17 @@ def _evaluate_table_formula_expr(
                 return _format_formula_number(max(numbers))
             return _format_formula_number(sum(numbers))
         if name == "SWITCH" and len(args) >= 3:
-            target = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache)
+            target = _evaluate_table_formula_expr(args[0], grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
             pairs = args[1:]
             default_value = None
             if len(pairs) % 2 == 1:
                 default_value = pairs[-1]
                 pairs = pairs[:-1]
             for condition_expr, value_expr in zip(pairs[0::2], pairs[1::2]):
-                condition = _evaluate_table_formula_expr(condition_expr, grid_rows=grid_rows, cache=cache)
+                condition = _evaluate_table_formula_expr(condition_expr, grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
                 if condition == target:
-                    return _evaluate_table_formula_expr(value_expr, grid_rows=grid_rows, cache=cache)
-            return _evaluate_table_formula_expr(default_value, grid_rows=grid_rows, cache=cache) if default_value is not None else ""
+                    return _evaluate_table_formula_expr(value_expr, grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack)
+            return _evaluate_table_formula_expr(default_value, grid_rows=grid_rows, cache=cache, defined_names=defined_names, name_stack=name_stack) if default_value is not None else ""
 
     return text
 
@@ -8656,6 +9917,7 @@ def _evaluate_table_formula_text_value(
     row_index: int,
     column_index: int,
     cache: dict[tuple[int, int], Any],
+    defined_names: dict[str, str] | None = None,
 ) -> Any:
     if not _is_formula_expression(value):
         return value
@@ -8664,7 +9926,12 @@ def _evaluate_table_formula_text_value(
         return cache[key]
     cache[key] = ""
     try:
-        result = _evaluate_table_formula_expr(str(value)[1:], grid_rows=grid_rows, cache=cache)
+        result = _evaluate_table_formula_expr(
+            str(value)[1:],
+            grid_rows=grid_rows,
+            cache=cache,
+            defined_names=defined_names,
+        )
     except Exception:
         result = value
     cache[key] = result
@@ -8676,6 +9943,7 @@ def _build_table_text_grid(
     *,
     columns: list[str],
     rows: list[Any],
+    defined_names: dict[str, str] | None = None,
 ) -> list[list[Any]]:
     data_start_row = _normalize_document_data_start_row(normalized)
     raw_grid_rows = _extract_document_grid_rows(normalized)
@@ -8693,11 +9961,34 @@ def _build_table_text_grid(
                 row_index=row_index,
                 column_index=column_index,
                 cache=cache,
+                defined_names=defined_names,
             )
             for column_index, cell in enumerate(row)
         ]
         for row_index, row in enumerate(source_grid)
     ]
+
+
+def _build_table_defined_name_values(
+    *,
+    text_grid: list[list[Any]],
+    defined_names: dict[str, str] | None,
+) -> dict[str, Any]:
+    if not defined_names:
+        return {}
+    cache: dict[tuple[int, int], Any] = {}
+    values: dict[str, Any] = {}
+    for name in defined_names:
+        try:
+            values[name] = _evaluate_table_formula_expr(
+                name,
+                grid_rows=text_grid,
+                cache=cache,
+                defined_names=defined_names,
+            )
+        except Exception:
+            continue
+    return values
 
 
 def _build_note_sheet_table_response(
@@ -8706,6 +9997,7 @@ def _build_note_sheet_table_response(
     workbook: WorkbookDocument | None = None,
     include_grid: bool = False,
     value_mode: Literal["text", "raw"] = "text",
+    defined_names: dict[str, str] | None = None,
 ) -> NoteSheetTableResponse:
     normalized = _normalize_document_json(dict(document.document_json or {}))
     columns = _normalize_document_columns(normalized)
@@ -8715,8 +10007,10 @@ def _build_note_sheet_table_response(
     raw_grid_rows = _extract_document_grid_rows(normalized)
     response_rows = rows
     response_grid_rows = raw_grid_rows
+    defined_name_values: dict[str, Any] = {}
     if value_mode == "text":
-        text_grid = _build_table_text_grid(normalized, columns=columns, rows=rows)
+        text_grid = _build_table_text_grid(normalized, columns=columns, rows=rows, defined_names=defined_names)
+        defined_name_values = _build_table_defined_name_values(text_grid=text_grid, defined_names=defined_names)
         response_rows = text_grid[data_start_row:data_start_row + len(rows)]
         if raw_grid_rows:
             response_grid_rows = text_grid[:len(raw_grid_rows)]
@@ -8745,7 +10039,131 @@ def _build_note_sheet_table_response(
         data_start_row=data_start_row,
         field_row_index=field_row_index,
         grid_rows=grid_rows,
+        defined_name_values=defined_name_values,
     )
+
+
+def _resolve_workbook_for_sheet(
+    session: Session,
+    document: SheetDocument,
+    workbook: WorkbookDocument | None,
+) -> WorkbookDocument | None:
+    if workbook is not None:
+        return workbook
+    workbooks = _get_workbooks_for_sheet(session, document)
+    return workbooks[0] if workbooks else None
+
+
+def _build_registration_phone_map(registration_document: SheetDocument | None) -> dict[str, str]:
+    if registration_document is None:
+        return {}
+    registration_json = _normalize_document_json(dict(registration_document.document_json or {}))
+    registration_columns = _normalize_document_columns(registration_json)
+    sequence_index = _get_column_index(registration_columns, NOTE_SHEET_REGISTRATION_SEQUENCE_COLUMN)
+    phone_index = _get_column_index(registration_columns, "手机号")
+    if sequence_index < 0 or phone_index < 0:
+        return {}
+
+    phone_map: dict[str, str] = {}
+    for raw_row in _extract_document_rows(registration_json):
+        row = _normalize_sheet_row(raw_row, len(registration_columns))
+        student_id = _normalize_sheet_text(row[sequence_index])
+        phone = _strip_legacy_text_prefix(row[phone_index])
+        if student_id and phone:
+            phone_map[student_id] = phone
+    return phone_map
+
+
+def _attendance_export_columns(columns: list[str]) -> list[str]:
+    export_columns = [column for column in columns if column != "手机号"]
+    nickname_index = _get_column_index(export_columns, "昵称")
+    if nickname_index >= 0:
+        export_columns.insert(nickname_index + 1, "手机号")
+    return export_columns
+
+
+def _attendance_export_rows(
+    table: NoteSheetTableResponse,
+    *,
+    phone_map: dict[str, str],
+) -> list[list[Any]]:
+    source_columns = table.columns
+    export_columns = _attendance_export_columns(source_columns)
+    student_id_column = "学号"
+    rows: list[list[Any]] = []
+    for item in table.rows:
+        student_id = _normalize_sheet_text(item.get(student_id_column))
+        if not student_id and not _normalize_sheet_text(item.get("姓名")) and not _normalize_sheet_text(item.get("昵称")):
+            continue
+        row_values: list[Any] = []
+        for column in export_columns:
+            if column == "手机号":
+                value = phone_map.get(student_id, "")
+            else:
+                value = item.get(column, "")
+            row_values.append(value)
+        rows.append(row_values)
+    return rows
+
+
+def _normalize_attendance_export_cell(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int | float):
+        return value
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="seconds")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _build_attendance_export_workbook_bytes(
+    table: NoteSheetTableResponse,
+    *,
+    phone_map: dict[str, str],
+) -> bytes:
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:
+        raise HTTPException(status_code=500, detail="服务端缺少 openpyxl，无法导出 Excel") from exc
+
+    export_columns = _attendance_export_columns(table.columns)
+    export_rows = _attendance_export_rows(table, phone_map=phone_map)
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "考勤表"
+    header_fill = PatternFill(fill_type="solid", fgColor="D9E1F2")
+    for column_index, header in enumerate(export_columns, start=1):
+        cell = worksheet.cell(row=1, column=column_index, value=header)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+    for row_index, row in enumerate(export_rows, start=2):
+        for column_index, value in enumerate(row, start=1):
+            header = export_columns[column_index - 1]
+            cell = worksheet.cell(row=row_index, column=column_index, value=_normalize_attendance_export_cell(value))
+            if header in {"手机号", "学号", "微信支付订单号", "商户订单号"}:
+                cell.number_format = "@"
+
+    for column_index, header in enumerate(export_columns, start=1):
+        values = [header, *[str(row[column_index - 1] or "") for row in export_rows[:200]]]
+        width = min(max(max((len(value) for value in values), default=0) + 2, 10), 32)
+        worksheet.column_dimensions[get_column_letter(column_index)].width = width
+
+    stream = io.BytesIO()
+    workbook.save(stream)
+    return stream.getvalue()
+
+
+def _attendance_export_filename(workbook: WorkbookDocument | None, document: SheetDocument) -> str:
+    base_title = _normalize_sheet_text(workbook.title if workbook is not None else "") or _normalize_sheet_text(document.title)
+    safe_title = re.sub(r'[\\/:*?"<>|]+', "_", base_title).strip() or "考勤表"
+    suffix = "" if safe_title.endswith("考勤表") else "_考勤表"
+    return f"{safe_title}{suffix}.xlsx"
 
 
 def _ensure_table_data_row(rows: list[Any], row_index: int, columns: list[str]) -> None:
@@ -9130,6 +10548,7 @@ def _serialize_workbook_detail(
     return {
         **_serialize_workbook_summary(workbook, sheet_count=len(ordered_sheets), access=access),
         "sheets": ordered_sheets,
+        "defined_names": _get_workbook_defined_names(session, workbook),
     }
 
 
@@ -9636,6 +11055,66 @@ def get_note_sheet_table(
         workbook=workbook,
         include_grid=include_grid,
         value_mode=value_mode,
+        defined_names=_defined_names_for_formula(session, document, workbook),
+    )
+
+
+@router.get("/sheets/{sheet_id}/attendance-export")
+def export_note_sheet_attendance_table(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行表格动作的权限")
+
+    target_workbook = _resolve_workbook_for_sheet(session, document, workbook)
+    registration_document = (
+        _get_workbook_sheet_by_key_or_title(
+            session,
+            target_workbook,
+            sheet_key="registration",
+            title="报名表",
+        )
+        if target_workbook is not None
+        else None
+    )
+    if registration_document is not None:
+        registration_access = _resolve_sheet_resource_access(
+            session,
+            registration_document,
+            current_user,
+            workbook=target_workbook,
+        )
+        if not registration_access.capabilities.can_read:
+            raise HTTPException(status_code=403, detail="没有读取报名表的权限")
+
+    table = _build_note_sheet_table_response(
+        document,
+        workbook=target_workbook,
+        include_grid=False,
+        value_mode="text",
+        defined_names=_defined_names_for_formula(session, document, target_workbook),
+    )
+    raw_bytes = _build_attendance_export_workbook_bytes(
+        table,
+        phone_map=_build_registration_phone_map(registration_document),
+    )
+    filename = _attendance_export_filename(target_workbook, document)
+    return StreamingResponse(
+        io.BytesIO(raw_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}",
+        },
     )
 
 
@@ -9670,6 +11149,7 @@ def patch_note_sheet_table(
         current_document,
         payload.operations,
     )
+    next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
     if next_document != current_document:
         document.document_json = next_document
         document.version = max(int(document.version or 1), 1) + 1
@@ -9691,7 +11171,12 @@ def patch_note_sheet_table(
     )
     return NoteSheetTablePatchResponse(
         sheet=sheet,
-        table=_build_note_sheet_table_response(document, workbook=workbook, include_grid=False),
+        table=_build_note_sheet_table_response(
+            document,
+            workbook=workbook,
+            include_grid=False,
+            defined_names=_defined_names_for_formula(session, document, workbook),
+        ),
         updated_cell_count=updated_cell_count,
         updated_row_count=updated_row_count,
     )
@@ -9710,6 +11195,85 @@ def get_sheet_access(
         numeric_id=_require_sheet_numeric_id(document),
         resource_id=_sheet_resource_id(document),
         access=access,
+    )
+
+
+@router.get("/sheets/{sheet_id}/defined-names", response_model=NoteSheetDefinedNamesResponse)
+def get_sheet_defined_names_endpoint(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    document, _access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    workbook_names = _get_workbook_defined_names(session, workbook)
+    worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
+    return NoteSheetDefinedNamesResponse(
+        workbook_id=_require_workbook_numeric_id(workbook) if workbook is not None else None,
+        sheet_id=_require_sheet_numeric_id(document),
+        sheet_version=int(document.version or 1),
+        workbook=workbook_names,
+        worksheet=worksheet_names,
+        worksheets=[{
+            "sheet_id": _require_sheet_numeric_id(document),
+            "sheet_title": document.title or "未命名工作表",
+            "sheet_version": int(document.version or 1),
+            "names": worksheet_names,
+        }],
+        effective=_merge_effective_defined_names(workbook_names, worksheet_names),
+    )
+
+
+@router.put("/sheets/{sheet_id}/defined-names", response_model=NoteSheetDefinedNamesResponse)
+def update_sheet_defined_names_endpoint(
+    sheet_id: int,
+    payload: NoteSheetDefinedNamesUpdateRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_config:
+        raise HTTPException(status_code=403, detail="没有该资源权限")
+
+    current_document = dict(document.document_json or {})
+    next_document = _replace_sheet_defined_names(current_document, payload.names)
+    if next_document != current_document:
+        document.document_json = next_document
+        document.version = max(int(document.version or 1), 1) + 1
+        document.updated_by_user_id = current_user.id
+        document.updated_at = time.time()
+        session.add(document)
+        session.commit()
+        session.refresh(document)
+
+    workbook_names = _get_workbook_defined_names(session, workbook)
+    worksheet_names = _get_sheet_defined_names(dict(document.document_json or {}))
+    return NoteSheetDefinedNamesResponse(
+        workbook_id=_require_workbook_numeric_id(workbook) if workbook is not None else None,
+        sheet_id=_require_sheet_numeric_id(document),
+        sheet_version=int(document.version or 1),
+        workbook=workbook_names,
+        worksheet=worksheet_names,
+        worksheets=[{
+            "sheet_id": _require_sheet_numeric_id(document),
+            "sheet_title": document.title or "未命名工作表",
+            "sheet_version": int(document.version or 1),
+            "names": worksheet_names,
+        }],
+        effective=_merge_effective_defined_names(workbook_names, worksheet_names),
     )
 
 
@@ -9792,6 +11356,7 @@ def update_note_sheet(
 
     next_document = _strip_formula_cell_rich_text(next_document)
     next_document = _remove_orphan_document_entity_cells(next_document)
+    next_document, _formula_repaired_count = _normalize_attendance_dual_clockin_refund_formulas(next_document)
 
     if _is_attendance_questionnaire_data_sheet(document):
         next_document, _links_changed = _sync_attendance_questionnaire_course_links(session, next_document)
@@ -9862,7 +11427,7 @@ async def import_note_sheet_excel_reset(
     raw_bytes = await file.read()
     workbook_payload = _extract_excel_workbook_payload(raw_bytes, filename or "未命名.xlsx")
     current_document = _normalize_document_json(dict(document.document_json or {}))
-    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_codex(
+    import_rows, extra_columns, warnings, mapping_notes = _run_note_sheet_excel_import_deepseek(
         document_json=current_document,
         workbook_payload=workbook_payload,
         instruction=instruction,
@@ -9919,6 +11484,90 @@ async def import_note_sheet_excel_reset(
         warnings=warnings,
         mapping_notes=mapping_notes,
     )
+
+
+@router.post(
+    "/sheets/{sheet_id}/clockin/link-detection-runs",
+    response_model=NoteSheetClockinLinkDetectionRunResponse,
+)
+def start_note_sheet_clockin_link_detection_run(
+    sheet_id: int,
+    payload: NoteSheetClockinLinkDetectionRunRequest,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="editor",
+        workbook_id=workbook_id,
+    )
+    if not access.capabilities.can_edit_data or not access.capabilities.can_run_sheet_actions:
+        raise HTTPException(status_code=403, detail="没有执行打卡链接检测的权限")
+    if current_user.id is None:
+        raise HTTPException(status_code=403, detail="当前用户无效")
+    return _start_clockin_link_detection_run(
+        sheet_id=_require_sheet_numeric_id(document),
+        workbook_id=workbook_id,
+        current_user=current_user,
+        provider_id=payload.provider_id or NOTE_SHEET_CLOCKIN_LINK_DETECTION_PROVIDER_ID,
+        model=payload.model or NOTE_SHEET_CLOCKIN_LINK_DETECTION_MODEL,
+        force_restart=payload.force_restart,
+    )
+
+
+@router.get(
+    "/sheets/{sheet_id}/clockin/link-detection-runs/active",
+    response_model=NoteSheetClockinLinkDetectionRunResponse,
+)
+def get_note_sheet_active_clockin_link_detection_run(
+    sheet_id: int,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    run = _get_active_clockin_link_detection_run_snapshot(_require_sheet_numeric_id(document))
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
+    return _serialize_clockin_link_detection_run(
+        run,
+        sheet=sheet,
+        sheet_id=_require_sheet_numeric_id(document),
+        workbook_id=workbook_id,
+    )
+
+
+@router.get(
+    "/sheets/{sheet_id}/clockin/link-detection-runs/{run_id}",
+    response_model=NoteSheetClockinLinkDetectionRunResponse,
+)
+def get_note_sheet_clockin_link_detection_run(
+    sheet_id: int,
+    run_id: str,
+    workbook_id: int | None = Query(default=None, ge=1),
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    document, access, _workbook = _get_note_sheet_or_404(
+        session,
+        current_user,
+        sheet_id,
+        required_role="viewer",
+        workbook_id=workbook_id,
+    )
+    run = _get_clockin_link_detection_run_snapshot(run_id)
+    if run is None or int(run.get("sheet_id") or 0) != _require_sheet_numeric_id(document):
+        raise HTTPException(status_code=404, detail="打卡链接检测任务不存在")
+    sheet = _serialize_note_sheet_action_detail(session, document, access, current_user)
+    return _serialize_clockin_link_detection_run(run, sheet=sheet)
 
 
 @router.post(
@@ -10658,6 +12307,86 @@ def update_workbook(
     )
 
 
+@router.get("/workbooks/{workbook_id}/defined-names", response_model=NoteSheetDefinedNamesResponse)
+def get_workbook_defined_names_endpoint(
+    workbook_id: int,
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_optional_current_user_from_token),
+):
+    workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="viewer")
+    names = _get_workbook_defined_names(session, workbook)
+    worksheets = _list_workbook_defined_name_worksheets(session, workbook, current_user)
+    return NoteSheetDefinedNamesResponse(
+        workbook_id=_require_workbook_numeric_id(workbook),
+        workbook=names,
+        worksheets=worksheets,
+        effective=names,
+    )
+
+
+@router.put("/workbooks/{workbook_id}/defined-names", response_model=NoteSheetDefinedNamesResponse)
+def update_workbook_defined_names_endpoint(
+    workbook_id: int,
+    payload: NoteSheetDefinedNamesUpdateRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_active_user),
+):
+    workbook, _access = _get_workbook_or_404(session, current_user, workbook_id, required_role="editor")
+    names = _normalize_defined_names(payload.names, scope="workbook", strict=True)
+    _set_workbook_defined_names(session, workbook, names)
+
+    if payload.worksheets:
+        links = session.exec(
+            select(WorkbookSheetLink)
+            .where(WorkbookSheetLink.workbook_id.in_(workbook_ref_aliases(workbook)))
+            .order_by(WorkbookSheetLink.order_index, WorkbookSheetLink.created_at)
+        ).all()
+        sheet_ids = [link.sheet_id for link in links]
+        sheet_map = load_sheets_by_refs(session, sheet_ids)
+        workbook_sheets_by_numeric_id: dict[int, SheetDocument] = {}
+        for link in links:
+            document = sheet_map.get(str(link.sheet_id))
+            if document is None:
+                continue
+            workbook_sheets_by_numeric_id.setdefault(_require_sheet_numeric_id(document), document)
+
+        seen_payload_sheet_ids: set[int] = set()
+        for worksheet_payload in payload.worksheets:
+            payload_sheet_id = int(worksheet_payload.sheet_id)
+            if payload_sheet_id in seen_payload_sheet_ids:
+                raise HTTPException(status_code=400, detail=f"工作表作用域重复: {payload_sheet_id}")
+            seen_payload_sheet_ids.add(payload_sheet_id)
+            document = workbook_sheets_by_numeric_id.get(payload_sheet_id)
+            if document is None:
+                raise HTTPException(status_code=404, detail=f"工作簿中不存在该工作表: {payload_sheet_id}")
+            sheet_access = _resolve_sheet_resource_access(session, document, current_user, workbook=workbook)
+            if not sheet_access.capabilities.can_edit_config:
+                raise HTTPException(status_code=403, detail=f"没有权限修改工作表: {document.title or payload_sheet_id}")
+
+            current_document = dict(document.document_json or {})
+            next_document = _replace_sheet_defined_names(current_document, worksheet_payload.names)
+            if next_document != current_document:
+                document.document_json = next_document
+                document.version = max(int(document.version or 1), 1) + 1
+                document.updated_by_user_id = current_user.id
+                document.updated_at = time.time()
+                session.add(document)
+
+    workbook.updated_by_user_id = current_user.id
+    workbook.updated_at = time.time()
+    session.add(workbook)
+    session.commit()
+    session.refresh(workbook)
+    stored_names = _get_workbook_defined_names(session, workbook)
+    worksheets = _list_workbook_defined_name_worksheets(session, workbook, current_user)
+    return NoteSheetDefinedNamesResponse(
+        workbook_id=_require_workbook_numeric_id(workbook),
+        workbook=stored_names,
+        worksheets=worksheets,
+        effective=stored_names,
+    )
+
+
 @router.get("/workbooks/{workbook_id}/access", response_model=NoteSheetResourceAccessResponse)
 def get_workbook_access(
     workbook_id: int,
@@ -10738,6 +12467,7 @@ def save_as_workbook(
     session.add(workbook)
     session.flush()
     _ensure_workbook_identity(session, workbook)
+    _set_workbook_defined_names(session, workbook, _get_workbook_defined_names(session, source_workbook))
 
     for link in links:
         source_sheet = source_sheet_map.get(str(link.sheet_id))

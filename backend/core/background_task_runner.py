@@ -436,11 +436,11 @@ BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
         key="auto_git_commit",
         title="自动 Git 提交",
         category="Git",
-        description="凌晨检查 pyxllib、xlproject、codeyun；pyxllib/xlproject 先调用 Codex CLI review 和优化，codeyun 只用轻量状态摘要生成提交信息，大变更自动 checkpoint。",
+        description="凌晨检查 pyxllib、xlproject、codeyun；默认使用 DeepSeek v4-flash 生成提交信息，codeyun 只用轻量状态摘要，大变更自动 checkpoint。",
         schedule_label=f"每天 {AUTO_GIT_COMMIT_RUN_TIME}",
         retry_label="失败后 10 分钟重试",
         action=_enqueue_auto_git,
-        manual_warning="会调用 Codex CLI 处理 pyxllib/xlproject，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 不做提交前自动优化，超过阈值会直接 checkpoint。",
+        manual_warning="会使用 DeepSeek v4-flash 生成提交信息，并提交 pyxllib、xlproject、codeyun 的当前工作区变更；codeyun 超过阈值会直接 checkpoint。",
     ),
     BackgroundTaskSpec(
         key="note_metadata_feedback_optimization",

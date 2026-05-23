@@ -18,6 +18,8 @@ from backend.models import AppSetting, User
 AI_APP_NOTE_TAXONOMY = "note-taxonomy"
 AI_APP_GIT_COMMIT = "ai-git-commit"
 AI_APP_CODEX_DIARY = "codex-diary"
+AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = "deepseek"
+AI_APP_GIT_COMMIT_DEFAULT_MODEL = "deepseek-v4-flash"
 
 AI_APP_CONFIG_SETTING_KEY_PREFIX = "ai_app.config.user"
 LEGACY_AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
@@ -76,11 +78,19 @@ def _normalize_app_config_item(value: Any) -> dict[str, Any]:
 
 
 def _default_app_config(app_id: str) -> dict[str, Any]:
-    provider = "deepseek" if app_id == AI_APP_CODEX_DIARY else ""
+    if app_id == AI_APP_GIT_COMMIT:
+        provider = AI_APP_GIT_COMMIT_DEFAULT_PROVIDER
+        model = AI_APP_GIT_COMMIT_DEFAULT_MODEL
+    elif app_id == AI_APP_CODEX_DIARY:
+        provider = "deepseek"
+        model = ""
+    else:
+        provider = ""
+        model = ""
     return {
         "enabled": True,
         "provider": provider,
-        "model": "",
+        "model": model,
         "updated_at": None,
     }
 

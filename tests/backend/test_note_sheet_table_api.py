@@ -163,6 +163,74 @@ def test_note_sheet_table_api_defaults_to_text_values_and_can_read_raw(client, s
     assert raw_table["rows"][0]["返款配置"].startswith("=IF(")
 
 
+def test_note_sheet_table_api_returns_evaluated_defined_name_values(client, session, test_device):
+    workbook = WorkbookDocument(
+        numeric_id=13,
+        title="名称管理器计算值",
+    )
+    sheet = SheetDocument(
+        numeric_id=14,
+        scope="notes",
+        owner_type="user",
+        owner_key="1",
+        sheet_key="14",
+        title="考勤表",
+        document_json={
+            "columns": ["商户订单号", "当前应返款"],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "defined_names": [
+                {"name": "返款周期", "formula": "=3", "scope": "worksheet"},
+                {"name": "返款说明", "formula": '="测试第"&返款周期&"天返款"', "scope": "worksheet"},
+                {"name": "返款ID后缀", "formula": '="_day"&返款周期', "scope": "worksheet"},
+            ],
+            "grid_rows": [
+                ["商户订单号", "当前应返款"],
+                ["TEEEL7-0OZRE8O-9IA3", "=返款周期*10"],
+                ["", 20],
+                ["TZERO", 0],
+            ],
+            "rows": [
+                ["TEEEL7-0OZRE8O-9IA3", "=返款周期*10"],
+                ["", 20],
+                ["TZERO", 0],
+            ],
+        },
+        version=1,
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=10))
+    session.commit()
+
+    text_response = client.get(
+        "/api/note-sheets/sheets/14/table",
+        params={"workbook_id": 13, "include_grid": True},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert text_response.status_code == 200
+    text_table = text_response.json()
+    assert text_table["columns"] == ["商户订单号", "当前应返款"]
+    assert text_table["grid_rows"][0] == ["商户订单号", "当前应返款"]
+    assert text_table["rows"][0]["当前应返款"] == 30
+    assert text_table["defined_name_values"]["返款周期"] == 3
+    assert text_table["defined_name_values"]["返款说明"] == "测试第3天返款"
+    assert text_table["defined_name_values"]["返款id后缀"] == "_day3"
+
+    raw_response = client.get(
+        "/api/note-sheets/sheets/14/table",
+        params={"workbook_id": 13, "value_mode": "raw"},
+        headers={"X-Device-Token": test_device["token"]},
+    )
+
+    assert raw_response.status_code == 200
+    raw_table = raw_response.json()
+    assert raw_table["columns"] == ["商户订单号", "当前应返款"]
+    assert raw_table["defined_name_values"] == {}
+
+
 def test_note_sheet_table_api_evaluates_legacy_attendance_formulas(client, session, test_device):
     workbook = WorkbookDocument(
         numeric_id=6,
@@ -221,3 +289,133 @@ def test_note_sheet_table_api_evaluates_legacy_attendance_formulas(client, sessi
     assert row["视频应返款"] == 20
     assert row["总应返款"] == 25
     assert row["返款配置"] == "x,25"
+
+
+def test_note_sheet_defined_names_support_workbook_and_sheet_scope(client, session, auth_user):
+    workbook = WorkbookDocument(
+        numeric_id=9,
+        title="名称管理器测试",
+        owner_user_id=auth_user.id,
+        created_by_user_id=auth_user.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=10,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(auth_user.id),
+        sheet_key="10",
+        title="考勤表",
+        owner_user_id=auth_user.id,
+        created_by_user_id=auth_user.id,
+        document_json={
+            "columns": ["课程天数", "当前应返款"],
+            "data_start_row": 1,
+            "field_row_index": 0,
+            "grid_rows": [
+                ["课程天数", "当前应返款"],
+                ["=第几天", "=IF(第几天>0,第几天*10,0)"],
+            ],
+            "rows": [
+                ["=第几天", "=IF(第几天>0,第几天*10,0)"],
+            ],
+        },
+        version=1,
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.flush()
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=10))
+    session.commit()
+
+    workbook_response = client.put(
+        "/api/note-sheets/workbooks/9/defined-names",
+        json={"names": [{"name": "第几天", "formula": "=2", "comment": "工作簿默认"}]},
+    )
+    assert workbook_response.status_code == 200
+    assert workbook_response.json()["workbook"][0]["scope"] == "workbook"
+
+    sheet_response = client.put(
+        "/api/note-sheets/sheets/10/defined-names",
+        params={"workbook_id": 9},
+        json={"names": [{"name": "第几天", "formula": "=3", "comment": "工作表覆盖"}]},
+    )
+    assert sheet_response.status_code == 200
+    payload = sheet_response.json()
+    assert payload["workbook"][0]["formula"] == "=2"
+    assert payload["worksheet"][0]["formula"] == "=3"
+    assert payload["worksheets"][0]["sheet_id"] == 10
+    assert payload["worksheets"][0]["sheet_title"] == "考勤表"
+    assert payload["effective"][0]["formula"] == "=3"
+
+    workbook_scope_response = client.get("/api/note-sheets/workbooks/9/defined-names")
+    assert workbook_scope_response.status_code == 200
+    workbook_scope_payload = workbook_scope_response.json()
+    assert workbook_scope_payload["worksheets"][0]["sheet_id"] == 10
+    assert workbook_scope_payload["worksheets"][0]["names"][0]["formula"] == "=3"
+
+    workbook_scope_update_response = client.put(
+        "/api/note-sheets/workbooks/9/defined-names",
+        json={
+            "names": [{"name": "第几天", "formula": "=2", "comment": "工作簿默认"}],
+            "worksheets": [{
+                "sheet_id": 10,
+                "names": [{"name": "第几天", "formula": "=4", "comment": "工作表覆盖"}],
+            }],
+        },
+    )
+    assert workbook_scope_update_response.status_code == 200
+    assert workbook_scope_update_response.json()["worksheets"][0]["names"][0]["formula"] == "=4"
+
+    table_response = client.get(
+        "/api/note-sheets/sheets/10/table",
+        params={"workbook_id": 9},
+    )
+    assert table_response.status_code == 200
+    row = table_response.json()["rows"][0]
+    assert row["课程天数"] == 4
+    assert row["当前应返款"] == 40
+
+
+def test_note_sheet_formula_defined_names_are_cached_per_evaluation(monkeypatch):
+    from backend.api import note_sheets
+
+    original_evaluate = note_sheets._evaluate_table_formula_expr
+    formula_call_count = 0
+
+    def wrapped_evaluate(expr, **kwargs):
+        nonlocal formula_call_count
+        if str(expr).strip() == "1+2":
+            formula_call_count += 1
+        return original_evaluate(expr, **kwargs)
+
+    monkeypatch.setattr(note_sheets, "_evaluate_table_formula_expr", wrapped_evaluate)
+
+    result = note_sheets._evaluate_table_formula_expr(
+        "第几天+第几天",
+        grid_rows=[],
+        cache={},
+        defined_names={"第几天": "=1+2"},
+    )
+
+    assert result == 6
+    assert formula_call_count == 1
+
+
+def test_note_sheet_formula_defined_names_support_standard_attendance_periods():
+    from backend.api import note_sheets
+
+    result = note_sheets._evaluate_table_formula_expr(
+        'TEXTJOIN(",",TRUE,返款说明,"order"&返款ID后缀,第几周)',
+        grid_rows=[],
+        cache={},
+        defined_names={
+            "开始日期": '=DATE(2026,5,9)',
+            "第几天": '=DATEDIF(开始日期,"2026-05-23","d")',
+            "第几周": "=INT((第几天-1)/7)+1",
+            "返款周期": "=第几周",
+            "返款说明": '="测试第"&返款周期&"周返款"',
+            "返款id后缀": '="_week"&返款周期',
+        },
+    )
+
+    assert result == "测试第2周返款,order_week2,2"

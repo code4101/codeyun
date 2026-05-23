@@ -58,6 +58,15 @@ function canUseLocalStorage() {
 }
 
 function buildDefaultAppConfig(appId?: AiAppId): AiAppRuntimeConfig {
+  if (appId === 'ai-git-commit') {
+    return {
+      enabled: true,
+      provider: 'deepseek',
+      model: 'deepseek-v4-flash',
+      updatedAt: null,
+    }
+  }
+
   return {
     enabled: true,
     provider: appId === 'codex-diary' ? 'deepseek' : '',

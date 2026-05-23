@@ -178,7 +178,7 @@ class CodexDailySummaryResponse(BaseModel):
     date: str
     timezone: str
     generated_at: str | None = None
-    generated_by: Literal["codex_cli", "empty"]
+    generated_by: Literal["deepseek", "codex_cli", "empty"]
     model: str | None = None
     prompt_version: str
     summary_text: str
