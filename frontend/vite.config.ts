@@ -26,6 +26,10 @@ export default defineConfig({
   build: {
     chunkSizeWarningLimit: 900,
     rollupOptions: {
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        attendanceFeedback: path.resolve(__dirname, 'attendance-feedback/index.html'),
+      },
       output: {
         manualChunks(id) {
           const normalizedId = id.replace(/\\/g, '/')
@@ -71,7 +75,12 @@ export default defineConfig({
             return 'element-plus-core'
           }
 
-          if (normalizedId.includes('/node_modules/vue/') || normalizedId.includes('/node_modules/vue-router/') || normalizedId.includes('/node_modules/pinia/')) {
+          if (
+            normalizedId.includes('/node_modules/vue/')
+            || normalizedId.includes('/node_modules/@vue/')
+            || normalizedId.includes('/node_modules/vue-router/')
+            || normalizedId.includes('/node_modules/pinia/')
+          ) {
             return 'vue-vendor'
           }
 

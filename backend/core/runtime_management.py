@@ -32,6 +32,10 @@ from backend.core.ocr_service_runtime import (
     start_ocr_service,
     stop_ocr_service,
 )
+from backend.core.public_frontend_deploy import (
+    PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+    build_public_frontend_deploy_log_lines,
+)
 from backend.core.attendance_behavior_tree_service import (
     ATTENDANCE_BEHAVIOR_TREE_SERVICE_KEY,
     build_attendance_behavior_tree_log_lines,
@@ -887,7 +891,9 @@ def _collect_builtin_jobs(session: Session) -> dict[str, Any]:
 
 
 def _collect_builtin_services() -> dict[str, Any]:
-    items = [_serialize_ocr_service_item(get_ocr_service_status())]
+    items = [
+        _serialize_ocr_service_item(get_ocr_service_status()),
+    ]
     if is_attendance_behavior_tree_service_enabled():
         items.append(_serialize_attendance_behavior_tree_service_item())
     if is_fanxiu_behavior_tree_service_enabled():
@@ -1045,6 +1051,8 @@ def get_runtime_item_logs(
             "logs": (
                 _build_builtin_service_log_lines(item)
                 if item.get("kind") == "service"
+                else build_public_frontend_deploy_log_lines()
+                if normalized_key == PUBLIC_FRONTEND_DEPLOY_TASK_KEY
                 else _build_builtin_runtime_log_lines(item, records)
             ),
         }

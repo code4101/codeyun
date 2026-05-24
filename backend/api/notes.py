@@ -158,7 +158,7 @@ CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
 CODEX_DIARY_TIMEOUT_SECONDS = 900.0
 CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
-CODEX_DIARY_PROMPT_VERSION = "2026-05-04.codex-cli-diary-draft-v2"
+CODEX_DIARY_PROMPT_VERSION = "2026-05-24.deepseek-diary-draft-v3"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
 CODEX_DIARY_AUTO_IMPORT_CRON = "0 1 * * *"
 CODEX_DIARY_AUTO_IMPORT_TASK_NAME = "codex_diary_yesterday_import"
@@ -2735,6 +2735,11 @@ def _run_codex_diary_import_worker(
             _touch_codex_diary_run(session, run, status="running", stage="splitting", stage_label="按主题和时长拆分节点")
             blocks = _build_codex_diary_blocks(source, user_id=user_id, session=session)
 
+            draft_runtime = resolve_ai_app_runtime_config(
+                session=session,
+                current_user=user,
+                app_id=AI_APP_CODEX_DIARY,
+            )
             _touch_codex_diary_run(session, run, status="running", stage="drafting", stage_label="调用 AI 生成日记草案")
             blocks = _draft_codex_diary_blocks_in_batches(source, blocks, current_user=user, session=session, run=run)
 
@@ -2742,7 +2747,9 @@ def _run_codex_diary_import_worker(
             created_note_ids: list[str] = list(run.created_note_ids or [])
             run.result_json = {
                 "prompt_version": CODEX_DIARY_PROMPT_VERSION,
-                "draft_generator": "codex-cli-json-v1",
+                "draft_generator": "deepseek-json-v1",
+                "draft_provider": str(draft_runtime.get("provider") or ""),
+                "draft_model": str(draft_runtime.get("model") or ""),
                 "source": _build_codex_diary_source_result(run, source),
                 "blocks": _build_codex_diary_blocks_result(blocks),
             }

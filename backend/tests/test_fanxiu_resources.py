@@ -17,9 +17,24 @@ from backend.core.fanxiu_resources import (
     resolve_fanxiu_sprite_icon_path,
 )
 from backend.core.fanxiu_apk_static import (
+    _decode_dex_instruction_refs,
+    build_fanxiu_apk_dex_login_surface_probe,
     build_fanxiu_apk_download_config_report,
+    build_fanxiu_apk_gamelogin_bridge_probe,
+    build_fanxiu_apk_il2cpp_binary_boundary_probe,
+    build_fanxiu_apk_login_server_flow_probe,
+    build_fanxiu_apk_manifest_probe,
+    build_fanxiu_apk_network_stack_probe,
+    build_fanxiu_apk_phonehelper_login_context_probe,
     build_fanxiu_apk_runtime_entry_report,
     build_fanxiu_apk_static_index,
+    build_fanxiu_apk_unity_login_receiver_probe,
+    build_fanxiu_cpp2il_fileutil_post_loader_probe,
+    build_fanxiu_cpp2il_gamelogin_serverlist_bridge_probe,
+    build_fanxiu_cpp2il_login_lua_bridge_probe,
+    build_fanxiu_cpp2il_socket_proto_bridge_probe,
+    build_fanxiu_cpp2il_socket_receive_dispatch_probe,
+    build_fanxiu_lua_serverlist_response_flow_probe,
     build_fanxiu_resource_manifest_diff_report,
     build_fanxiu_resource_package_report,
 )
@@ -30,23 +45,93 @@ from backend.core.fanxiu_game_luaconfig import (
     get_fanxiu_lingjie_feature_card,
     search_fanxiu_lingjie_feature_cards,
 )
-from backend.core.fanxiu_il2cpp_metadata import build_fanxiu_il2cpp_hot_update_report, build_fanxiu_il2cpp_metadata_probe
+from backend.core.fanxiu_il2cpp_metadata import (
+    build_fanxiu_il2cpp_gameplay_symbol_report,
+    build_fanxiu_il2cpp_hot_update_report,
+    build_fanxiu_il2cpp_metadata_probe,
+)
 from backend.core.fanxiu_download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
 from backend.core.fanxiu_item_catalog import build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
 from backend.core.fanxiu_hot_update import (
+    build_fanxiu_bluestarsea_authority_boundary_probe,
     build_fanxiu_bluestarsea_catalog_probe,
+    build_fanxiu_bluestarsea_faze_effect_probe,
     build_fanxiu_bluestarsea_model_state_probe,
     build_fanxiu_bluestarsea_open_red_dot_probe,
+    build_fanxiu_bluestarsea_plan_reward_probe,
+    build_fanxiu_bluestarsea_protocol_semantics_probe,
+    build_fanxiu_bluestarsea_progression_probe,
     build_fanxiu_bluestarsea_purify_energy_probe,
     build_fanxiu_bluestarsea_runtime_probe,
+    build_fanxiu_bluestarsea_star_evolution_probe,
     build_fanxiu_bluestarsea_support_config_probe,
+    build_fanxiu_bluestarsea_tree_faze_usage_probe,
+    build_fanxiu_blld_authority_boundary_probe,
     build_fanxiu_blld_combat_mechanics_probe,
     build_fanxiu_blld_finish_flow_probe,
     build_fanxiu_blld_level_catalog_probe,
+    build_fanxiu_blld_protocol_semantics_probe,
     build_fanxiu_blld_reward_catalog_probe,
     build_fanxiu_blld_runtime_probe,
+    build_fanxiu_faze_authority_boundary_probe,
+    build_fanxiu_faze_effect_catalog_probe,
+    build_fanxiu_faze_effect_lua_usage_probe,
+    build_fanxiu_faze_effect_update_event_probe,
+    build_fanxiu_faze_protocol_semantics_probe,
+    build_fanxiu_faze_source_semantics_probe,
+    build_fanxiu_gongfa_homemake_detail_renderer_probe,
+    build_fanxiu_gongfa_homemake_detail_renderer_sample_probe,
+    build_fanxiu_gongfa_homemake_detail_view_probe,
+    build_fanxiu_gongfa_homemake_buff_field_semantics_probe,
+    build_fanxiu_gongfa_homemake_buff_combat_result_probe,
+    build_fanxiu_gongfa_homemake_buff_result_correlation_probe,
+    build_fanxiu_gongfa_homemake_cpp2il_buff_result_symbol_probe,
+    build_fanxiu_gongfa_homemake_buff_parameter_semantics_probe,
+    build_fanxiu_gongfa_homemake_mechanism_ownership_probe,
+    build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe,
+    build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
+    build_fanxiu_gongfa_homemake_mechanism_result_producer_probe,
+    build_fanxiu_fight_result_family_decoder_probe,
+    build_fanxiu_socket_primitive_decoder_probe,
+    build_fanxiu_typed_pool_runtime_observation_probe,
+    build_fanxiu_socket_raw_decoder_probe,
+    build_fanxiu_socket_compressed_int_codec_probe,
+    build_fanxiu_socket_capture_fixture_codec_calibration_probe,
+    build_fanxiu_combat_formula_authority_contrast_probe,
+    build_fanxiu_cpp2il_main_combat_formula_surface_probe,
+    get_fanxiu_gongfa_homemake_buff_parameter_semantics,
+    build_fanxiu_gongfa_homemake_learn_teach_probe,
+    build_fanxiu_gongfa_homemake_lifecycle_probe,
+    build_fanxiu_gongfa_homemake_mutation_ops_probe,
+    build_fanxiu_gongfa_homemake_page_list_probe,
+    build_fanxiu_gongfa_homemake_record_grid_light_probe,
+    build_fanxiu_gongfa_homemake_renderer_source_selection_probe,
+    build_fanxiu_gongfa_homemake_share_probe,
+    build_fanxiu_gongfa_homemake_share_href_probe,
+    build_fanxiu_gongfa_homemake_share_href_prefab_probe,
+    build_fanxiu_gongfa_homemake_share_href_registration_gap_probe,
+    build_fanxiu_gongfa_homemake_share_ui_probe,
+    build_fanxiu_gongfa_homemake_side_feature_semantics_probe,
+    build_fanxiu_gongfa_homemake_stage_star_timeline_boundary_probe,
+    build_fanxiu_gongfa_homemake_stage_star_timeline_config_probe,
+    build_fanxiu_gongfa_homemake_timeline_hurt_projection_probe,
+    build_fanxiu_gongfa_homemake_skillcastbridge_boundary_probe,
+    build_fanxiu_gongfa_homemake_static_renderer_coverage_probe,
+    build_fanxiu_gongfa_homemake_xianshu_battle_state_usage_probe,
+    build_fanxiu_gongfa_homemake_xianshu_cast_ack_consumer_probe,
+    build_fanxiu_gongfa_homemake_xianshu_cast_request_boundary_probe,
+    build_fanxiu_gongfa_homemake_xianshu_formula_catalog_probe,
+    build_fanxiu_gongfa_homemake_xianshu_formula_usage_probe,
+    build_fanxiu_gongfa_homemake_xianshu_static_gap_probe,
+    get_fanxiu_gongfa_homemake_xianshu_formula_catalog,
+    build_fanxiu_gongfa_program_equip_probe,
+    build_fanxiu_gongfa_protocol_semantics_probe,
+    build_fanxiu_gongfa_upgrade_times_flow_probe,
+    build_fanxiu_gongfa_view_snapshot_probe,
     build_fanxiu_hot_update_feature_probe,
     build_fanxiu_hot_update_lscripts_report,
+    render_fanxiu_gongfa_homemake_static_detail,
+    _parse_prefab_binder_variables_from_raw,
 )
 from backend.core.fanxiu_gongfa_catalog import build_fanxiu_gongfa_catalog, get_fanxiu_gongfa_card, search_fanxiu_gongfa_cards
 from backend.core.fanxiu_lua_config import (
@@ -58,7 +143,11 @@ from backend.core.fanxiu_lua_logic_index import (
     build_fanxiu_lingjie_gongfa_runtime_report,
     build_fanxiu_lua_logic_index,
 )
-from backend.core.fanxiu_lua_packet_index import build_fanxiu_lua_packet_index
+from backend.core.fanxiu_lua_packet_index import (
+    build_fanxiu_lua_login_socket_send_flow_probe,
+    build_fanxiu_lua_packet_index,
+)
+from backend.core.fanxiu_protocol_semantics import load_fanxiu_protocol_semantics
 from backend.core.fanxiu_wiki import (
     build_fanxiu_wiki_catalog,
     get_fanxiu_wiki_text_entry,
@@ -377,39 +466,6 @@ def test_fanxiu_wiki_media_path_must_stay_under_export_root(tmp_path, monkeypatc
         resolve_fanxiu_wiki_media_path(str(outside))
 
 
-def test_fanxiu_wiki_user_fields_persist_in_data_dir(tmp_path, monkeypatch):
-    from backend.core.fanxiu_wiki_user_fields import (
-        get_fanxiu_wiki_user_fields,
-        get_fanxiu_wiki_user_fields_storage_path,
-        save_fanxiu_wiki_user_fields,
-    )
-    from backend.core.settings import get_settings
-
-    data_dir = tmp_path / "data"
-    monkeypatch.setenv("CODEYUN_DATA_DIR", str(data_dir))
-    get_settings.cache_clear()
-    try:
-        saved = save_fanxiu_wiki_user_fields("gongfa", "476701", note="备注", source="来源")
-
-        assert saved["note"] == "备注"
-        assert saved["source"] == "来源"
-        assert get_fanxiu_wiki_user_fields_storage_path().is_file()
-        assert get_fanxiu_wiki_user_fields("gongfa", "476701")["source"] == "来源"
-        assert save_fanxiu_wiki_user_fields("item", "19030146", note="道具备注")["note"] == "道具备注"
-        assert get_fanxiu_wiki_user_fields("item", "19030146")["note"] == "道具备注"
-        assert save_fanxiu_wiki_user_fields("lingjie", "306101", source="灵界来源")["source"] == "灵界来源"
-        assert get_fanxiu_wiki_user_fields("lingjie", "306101")["source"] == "灵界来源"
-
-        with pytest.raises(FanxiuResourceError):
-            save_fanxiu_wiki_user_fields("../bad", "1")
-
-        cleared = save_fanxiu_wiki_user_fields("gongfa", "476701", note="", source="")
-        assert cleared["note"] == ""
-        assert get_fanxiu_wiki_user_fields("gongfa", "476701")["source"] == ""
-    finally:
-        get_settings.cache_clear()
-
-
 def test_fanxiu_sprite_icon_resolves_cached_export(tmp_path, monkeypatch):
     resource_root = tmp_path / "frxx_game_files"
     export_root = tmp_path / "exports"
@@ -467,6 +523,18 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
                     "subType": 1,
                     "quality": 6,
                     "effectValue": 6,
+                    "overlay": 1,
+                },
+                {
+                    "_row_key": 9900101,
+                    "id": 9900101,
+                    "name_plain": "未知品质匣",
+                    "descript_plain": "未配置品质的测试道具",
+                    "effDescript_plain": "用于验证品质未知筛选",
+                    "icon": "icon_unknown_quality",
+                    "type": 21,
+                    "subType": 1,
+                    "effectValue": 9900101,
                     "overlay": 1,
                 }
             ],
@@ -585,7 +653,7 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
 
     result = build_fanxiu_item_catalog(export_root=export_root)
     catalog = json.loads(Path(result["files"]["catalog"]).read_text(encoding="utf-8"))
-    assert catalog["schema_version"] == 9
+    assert catalog["schema_version"] == 10
     assert catalog["cards"][0]["quality_name"] == "红色品质"
     assert catalog["cards"][0]["type_name"] == "材料"
     assert catalog["cards"][0]["sub_type_key"] == "5:2"
@@ -605,6 +673,7 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
     assert {item["label"]: item["count"] for item in searched["quality_options"]} == {
         "紫色品质": 1,
         "红色品质": 1,
+        "品质未知": 1,
     }
     assert {item["value"]: item["label"] for item in searched["type_options"]}["5"] == "材料"
     assert searched["facet_index"]["rows"]["type_key"]["5"] == ["3020501"]
@@ -613,6 +682,9 @@ def test_fanxiu_item_catalog_links_quality_and_searches(tmp_path):
     assert filtered["total"] == 1
     assert filtered["items"][0]["id"] == 3000101
     assert search_fanxiu_item_cards(quality_name="上品功法", export_root=export_root)["total"] == 0
+    unknown_quality = search_fanxiu_item_cards(quality_name="品质未知", export_root=export_root)
+    assert unknown_quality["total"] == 1
+    assert unknown_quality["items"][0]["id"] == 9900101
     assert search_fanxiu_item_cards(type_key="5", export_root=export_root)["items"][0]["id"] == 3020501
     assert search_fanxiu_item_cards(sub_type_key="5:2", export_root=export_root)["items"][0]["id"] == 3020501
 
@@ -1767,6 +1839,10 @@ def test_fanxiu_lua_packet_index_extracts_message_ids_and_fields(tmp_path, monke
         "self:readMessageList2List(self.putUpList)\n"
         "return true\n"
         "end\n"
+        "function _M.writing(self)\n"
+        "self:writeList(self.putUpList)\n"
+        "return true\n"
+        "end\n"
         "function _M.getId(self)\n"
         "return 34006\n"
         "end\n"
@@ -1775,24 +1851,261 @@ def test_fanxiu_lua_packet_index_extracts_message_ids_and_fields(tmp_path, monke
         "end\n",
         encoding="utf-8",
     )
+    (text_dir / "FazeNetLogic.lua").write_text(
+        'local _SM_FazeEffect=require"GameSystem.Game.Message.module.player.faze.packet.SM_FazeEffect"\n'
+        'local _CM_FazePutUp=require"GameSystem.Game.Message.module.player.faze.packet.CM_FazePutUp"\n'
+        "function _M.FazeNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_FazeEffect:getId(),typeof(_SM_FazeEffect),function(msg)\n"
+        "self.SM_FazeEffectFun(msg)\n"
+        "end)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_FazePutUp:getId(),typeof(_CM_FazePutUp))\n"
+        "end\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv(FANXIU_RESOURCE_EXPORT_ROOT_ENV, str(export_root))
 
     result = build_fanxiu_lua_packet_index()
     packets_text = Path(result["files"]["packets_tsv"]).read_text(encoding="utf-8-sig")
     fields_text = Path(result["files"]["packet_fields_tsv"]).read_text(encoding="utf-8-sig")
+    wire_fields_text = Path(result["files"]["packet_wire_fields_tsv"]).read_text(encoding="utf-8-sig")
+    registrations_text = Path(result["files"]["packet_registrations_tsv"]).read_text(encoding="utf-8-sig")
+    protocol_text = Path(result["files"]["protocol_catalog_tsv"]).read_text(encoding="utf-8-sig")
+    canonical_protocol_text = Path(result["files"]["protocol_catalog_canonical_tsv"]).read_text(encoding="utf-8-sig")
+    faze_protocol_text = Path(result["files"]["feature_protocol_tsv"]["faze"]).read_text(encoding="utf-8-sig")
 
     assert result["stats"]["packet_count"] == 3
     assert result["stats"]["message_id_count"] == 3
     assert result["stats"]["faze_packet_count"] == 3
+    assert result["stats"]["registration_count"] == 2
+    assert result["stats"]["canonical_protocol_count"] == 3
+    assert result["stats"]["feature_protocol_counts"]["faze"] == 3
     assert result["stats"]["direction_counts"]["server_to_client"] == 2
     assert "34034\tSM_FazeEffect" in packets_text
     assert "34034\tSM_FazeEffect\t1\tfazeId\tInt" in fields_text
     assert "34034\tSM_FazeEffect\t4\treason\tInt" in fields_text
     assert "34036\tSM_UpFazeLevel\t1\tfazeInfoVO\tBean\tFazeInfoVO" in fields_text
     assert "34006\tCM_FazePutUp\t1\tputUpList\tMessageList2List" in fields_text
+    assert "34006\tCM_FazePutUp\twrite\t1\tputUpList\tList" in wire_fields_text
+    assert "34034\tSM_FazeEffect\tserver_to_client\tplayer.faze\tinline_function\tSM_FazeEffectFun" in registrations_text
+    assert "CM_FazePutUp\tclient_to_server\tplayer.faze\t1\tputUpList:MessageList2List\tputUpList:List\t1" in protocol_text
+    assert "CM_FazePutUp\tclient_to_server\tplayer.faze\t1\tputUpList:MessageList2List\tputUpList:List\t1" in canonical_protocol_text
+    assert "SM_FazeEffect" in faze_protocol_text
     assert "fazeInfoVO:Bean<FazeInfoVO>" in Path(result["files"]["faze_packets_tsv"]).read_text(
         encoding="utf-8-sig"
     )
+
+
+def test_fanxiu_lua_login_socket_send_flow_probe_traces_login_packets_to_native_send(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "login_flow" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    (text_dir / "VO_URL.lua").write_text(
+        "local _o={}\n"
+        "return {\n"
+        "['20001']=setmetatable({'20001','module.user.login.packet.CM_Login',},_o),\n"
+        "['20002']=setmetatable({'20002','module.user.login.packet.SM_Login',},_o),\n"
+        "['20009']=setmetatable({'20009','module.user.login.packet.CM_ReLogin',},_o),\n"
+        "['20010']=setmetatable({'20010','module.user.login.packet.SM_ReLogin',},_o),\n"
+        "['20013']=setmetatable({'20013','module.user.login.packet.CM_ProtoHash',},_o),\n"
+        "['20014']=setmetatable({'20014','module.user.login.packet.SM_ProtoHash',},_o),\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (text_dir / "MessagePool.lua").write_text(
+        "local _M={}\n"
+        "function _M:F_Register(id,messageClass,handlerClass)\n"
+        "self.messages:LuaDic_Add(id,messageClass)\n"
+        "self.handlers:LuaDic_Add(id,handlerClass)\n"
+        "SocketBridge.RegisterLuaPro(id)\n"
+        "end\n"
+        "function _M:F_GetMessage(pId)\n"
+        "return nil\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LoginNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_Login:getId(),typeof(_CM_Login))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_Login:getId(),typeof(_SM_Login),function(msg)\n"
+        "end)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_ProtoHash:getId(),typeof(_CM_ProtoHash))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_ProtoHash:getId(),typeof(_SM_ProtoHash),function(msg)\n"
+        "end)\n"
+        "end\n"
+        "function _M.CM_ProtoHashFun()\n"
+        "local CM_ProtoHash=SocketManager.Inst_get():GetMessageFromPools(_CM_ProtoHash)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_ProtoHash)\n"
+        "end\n"
+        "function _M.SM_ProtoHashFun(msg)\n"
+        "LoginMgr.Inst_get():ContinueLogin(msg)\n"
+        "end\n"
+        "function _M.CM_LoginFun(serverId,account,pid,channelPackage)\n"
+        "local CM_Login=SocketManager.Inst_get():GetMessageFromPools(_CM_Login)\n"
+        "CM_Login.serverId=serverId\n"
+        "CM_Login.account=account\n"
+        "CM_Login.pid=pid or\"\"\n"
+        "CM_Login.bundleVersion=PhoneHelper.F_GetPhoneVersion()or\"\"\n"
+        "CM_Login.sign=loginAccount and loginAccount.V_Token or\"\"\n"
+        "CM_Login.signTime=loginAccount and loginAccount.V_Time or 0\n"
+        "CM_Login.cid=(PhoneHelper.GetPid()or\"\")..\"\"\n"
+        "CM_Login.gid=(PhoneHelper.GetGameId()or\"\")..\"\"\n"
+        "CM_Login.device=PhoneHelper.F_GetOSType()or\"\"\n"
+        "CM_Login.bundleId=PhoneHelper.F_GetPackageName()or\"\"\n"
+        "CM_Login.devId=PhoneHelper.F_GetIMEI()or\"\"\n"
+        "CM_Login.pushToken=PhoneHelper.GetPushToken()or\"\"\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_Login)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.StartEnter_2(self)\n"
+        "LoginMgr.Inst_get():SetLoginingState(LoginType.StateType.GetVersion)\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_ProtoHashFun()\n"
+        "end\n"
+        "function _M.StartEnter_3(self,msg)\n"
+        "local hash=msg.hash\n"
+        "local version=LoginMgr.Inst_get().LoginModel.V_version\n"
+        "if hash==version or LuaGlobal.IsWebGL then\n"
+        "self:ContinueLogin()\n"
+        "end\n"
+        "end\n"
+        "function _M.ContinueLogin(self)\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_ReLoginHandler(curServerItem.account,curServerItem.serverId,curServerItem.token,curServerItem.pid,self.V_ChannelPackage)\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_LoginFun(curServerItem.serverId,curServerItem.account,curServerItem.pid,self.V_ChannelPackage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LoginMgr.lua").write_text(
+        "local _M={}\n"
+        "function _M.ContinueLogin(self,msg)\n"
+        "self.EnterGameInfo:StartEnter_3(msg)\n"
+        "end\n"
+        "function _M.LoginDataBack(self,msg)\n"
+        "self.EnterGameInfo:StartEnter_4(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SocketManager.lua").write_text(
+        "local _M={}\n"
+        "function _M.F_SendMsg(self,pSendInfo,clientData)\n"
+        "local pid=pSendInfo:getId()\n"
+        "_MessagePool.Inst_get():F_RegClientData(sn,{pid=pid,clientData=clientData})\n"
+        "self:DoSendMsg(so,pSendInfo,pid,sn)\n"
+        "self:Recycle_MessagePools(pSendInfo)\n"
+        "end\n"
+        "function _M.DoSendMsg(self,so,pSendInfo,pid,sn)\n"
+        "so:ResetWriteProtoStreamBuffer()\n"
+        "pSendInfo:write()\n"
+        "so:F_Send(pid,sn)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "BaseMessage.lua").write_text(
+        "local _M={}\n"
+        "function _M:write(buf)\n"
+        "self.m_buf=LusuoStreamWarp.new()\n"
+        "self:writing()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LusuoStreamWarp.lua").write_text(
+        "local _M={}\n"
+        "function _M.WriteInt(self,data)\n"
+        "ProtoBridge.WriteInt(data)\n"
+        "end\n"
+        "function _M.WriteBigString(self,strOut)\n"
+        "ProtoBridge.WriteBigString(strOut)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LuaSocket.lua").write_text(
+        "local _M={}\n"
+        "function _M.F_Send(self,proId,sn)\n"
+        "return SocketBridge.F_Send(proId,self.isMainSocket,sn)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "CM_ProtoHash.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.CM_ProtoHash"]=_M\n'
+        "function _M.reading(self) return true end\n"
+        "function _M.getId(self)\nreturn 20013\nend\n"
+        "function _M.getName(self)\nreturn\"CM_ProtoHash\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SM_ProtoHash.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.SM_ProtoHash"]=_M\n'
+        "function _M.reading(self)\n"
+        "self.hash=self:readInt()\n"
+        "self.version=self:readString()\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 20014\nend\n"
+        "function _M.getName(self)\nreturn\"SM_ProtoHash\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "CM_ReLogin.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.CM_ReLogin"]=_M\n'
+        "function _M.reading(self)\n"
+        "self.account=self:readString()\n"
+        "self.pid=self:readString()\n"
+        "self.serverId=self:readInt()\n"
+        "self.token=self:readString()\n"
+        "end\n"
+        "function _M.writing(self)\nself:writeString(self.token)\nend\n"
+        "function _M.getId(self)\nreturn 20009\nend\n"
+        "function _M.getName(self)\nreturn\"CM_ReLogin\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "CM_Login.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.CM_Login"]=_M\n'
+        "function _M.reading(self)\n"
+        "self.account=self:readString()\n"
+        "self.serverId=self:readInt()\n"
+        "self.pid=self:readString()\n"
+        "self.cid=self:readString()\n"
+        "self.gid=self:readString()\n"
+        "self.device=self:readString()\n"
+        "self.devId=self:readString()\n"
+        "self.pushToken=self:readString()\n"
+        "self.bundleId=self:readString()\n"
+        "self.bundleVersion=self:readString()\n"
+        "self.location=self:readString()\n"
+        "self.channelPackage=self:readInt()\n"
+        "self.signTime=self:readInt()\n"
+        "self.sign=self:readString()\n"
+        "end\n"
+        "function _M.writing(self)\n"
+        "self:writeString(self.account)\n"
+        "self:writeInt(self.serverId)\n"
+        "self:writeString(self.pid)\n"
+        "self:writeString(self.cid)\n"
+        "self:writeString(self.gid)\n"
+        "self:writeString(self.device)\n"
+        "self:writeString(self.devId)\n"
+        "self:writeString(self.pushToken)\n"
+        "self:writeString(self.bundleId)\n"
+        "self:writeString(self.bundleVersion)\n"
+        "self:writeString(self.location)\n"
+        "self:writeInt(self.channelPackage)\n"
+        "self:writeInt(self.signTime)\n"
+        "self:writeString(self.sign)\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 20001\nend\n"
+        "function _M.getName(self)\nreturn\"CM_Login\"\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_socket_send_flow_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_socket_send_flow_report.md").read_text(encoding="utf-8")
+    fields_text = (output_dir / "lua_login_socket_packet_fields.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["cm_login_fields"] == 14
+    assert "CM_Login" in report_text
+    assert "20001\tCM_Login\tclient_to_server\t14\tsign\tString" in fields_text
 
 
 def test_fanxiu_lingjie_gongfa_runtime_report_links_configs_packets_and_callsites(tmp_path, monkeypatch):
@@ -4314,6 +4627,1194 @@ def test_fanxiu_apk_download_config_report_extracts_local_url_config(tmp_path):
     assert "凡修 APK 下载配置报告" in markdown_text
 
 
+def test_fanxiu_apk_manifest_probe_extracts_permissions_components_and_intents(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    network_xml_dir = root / "res" / "xml"
+    network_xml_dir.mkdir(parents=True)
+    (root / "classes.dex").write_bytes(b"dex\n035\x00")
+    (root / "AndroidManifest.xml").write_text(
+        """<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+            package="com.example.frxx" android:versionName="1.2.3" android:versionCode="123">
+          <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="30" />
+          <uses-permission android:name="android.permission.INTERNET" />
+          <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+          <application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml/network_security_config">
+            <activity android:name="com.example.frxx.UnityPlayerActivity" android:exported="true">
+              <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+              </intent-filter>
+            </activity>
+            <provider android:name="com.example.frxx.FileProvider" android:authorities="com.example.frxx.fileprovider" />
+          </application>
+        </manifest>""",
+        encoding="utf-8",
+    )
+    (network_xml_dir / "network_security_config.xml").write_text(
+        """<network-security-config>
+          <base-config cleartextTrafficPermitted="true">
+            <trust-anchors>
+              <certificates src="user" />
+              <certificates src="system" />
+            </trust-anchors>
+          </base-config>
+        </network-security-config>""",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_manifest_probe(apk_root=root, export_root=tmp_path / "exports")
+    output_dir = Path(result["output_dir"])
+
+    assert result["summary"]["package"] == "com.example.frxx"
+    assert result["summary"]["uses_cleartext_traffic"] == "true"
+    assert result["counts"]["permissions"] == 2
+    assert result["counts"]["components"] == 2
+    components_text = (output_dir / "apk_manifest_components.tsv").read_text(encoding="utf-8")
+    intents_text = (output_dir / "apk_manifest_intents.tsv").read_text(encoding="utf-8")
+    network_text = (output_dir / "apk_manifest_network_security.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "apk_manifest_probe_report.md").read_text(encoding="utf-8")
+    assert "UnityPlayerActivity" in components_text
+    assert "game-launcher" in components_text
+    assert "android.intent.action.MAIN" in intents_text
+    assert "certificates" in network_text
+    assert "user" in network_text
+    assert "android.permission.INTERNET" in markdown_text
+
+
+def test_fanxiu_apk_network_stack_probe_merges_manifest_urls_and_symbols(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    network_xml_dir = root / "res" / "xml"
+    network_xml_dir.mkdir(parents=True)
+    (root / "AndroidManifest.xml").write_text(
+        """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.frxx">
+          <uses-permission android:name="android.permission.INTERNET" />
+          <application android:usesCleartextTraffic="true" android:networkSecurityConfig="@xml/network_security_config" />
+        </manifest>""",
+        encoding="utf-8",
+    )
+    (network_xml_dir / "network_security_config.xml").write_text(
+        """<network-security-config>
+          <base-config cleartextTrafficPermitted="true">
+            <trust-anchors><certificates src="user" /></trust-anchors>
+          </base-config>
+        </network-security-config>""",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "exports" / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "dex_strings.tsv").write_text(
+        "dex\tindex\tvalue\n"
+        "classes.dex\t1\tOkHttpClient CertificatePinner\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_runtime_entry_candidates.tsv").write_text(
+        "category\tconfidence\tsource\tkeyword\tname\tvalue\tnote\n"
+        "unity_runtime_symbol\t85\tglobalgamemanagers\tHttpDownload\tHttpDownload\tCoroutineHttpLoader\tHTTP 下载器\n"
+        "il2cpp_symbol\t70\tglobal-metadata.dat\tLua\tmethod\tLuaBridge_EngineBridge_SocketBridgeWrap.F_Send\tSocket bridge\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_download_config_entries.tsv").write_text(
+        "category\tsource\tkey\tvalue\tnote\n"
+        "bootstrap_url\tassets/version.txt\tconfig_url\thttps://prod-config-frxxz.akbing.com/config/android\t启动配置 URL\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_network_stack_probe(apk_root=root, export_root=tmp_path / "exports")
+    hits_text = (output_dir / "apk_network_stack_hits.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "apk_network_stack_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["by_category"]["manifest_network_policy"] >= 2
+    assert "unity_http_loader" in hits_text
+    assert "socket_bridge" in hits_text
+    assert "tls_cert" in hits_text
+    assert "prod-config-frxxz.akbing.com" in markdown_text
+
+
+def test_fanxiu_apk_login_server_flow_probe_traces_host_port_to_socket(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text(
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.frxx" />',
+        encoding="utf-8",
+    )
+    resource_root = tmp_path / "frxx_game_files"
+    resource_root.mkdir()
+    (resource_root / "setting.config").write_text(
+        "ServerListUrl=https://prod-login-frxxz.akbing.com/game/server\n"
+        "ServerCheckUrl=https://prod-login-frxxz.akbing.com/game/check_server\n"
+        "ImportServerUrl=https://prod-login-frxxz.akbing.com/sdk/mobi37/login/verify\n",
+        encoding="utf-8",
+    )
+    (resource_root / "luasetting.config").write_text(
+        "userName=secret-user\n"
+        "LoginId=secret-login\n"
+        "ip=1.2.3.4\n"
+        "port=8007\n"
+        "servername=测试服\n"
+        "serverId=22077\n",
+        encoding="utf-8",
+    )
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "apk_download_config_entries.tsv").write_text(
+        "category\tsource\tkey\tvalue\tnote\n",
+        encoding="utf-8",
+    )
+    lua_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gamelogin" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core" / "text_assets"
+    lua_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (lua_dir / "GetServerInfo.lua").write_text(
+        "function _M.GetSDKServerList(self,Pid,LoginToken)\n"
+        "local data={\n"
+        "pid=Pid,\n"
+        "token=LoginToken,\n"
+        "bundleId=PhoneHelper.F_GetPackageName(),\n"
+        "bundleVersion=PhoneHelper.F_GetPhoneVersion(),\n"
+        "gzip=isZip,\n"
+        "cid=PhoneHelper.GetPid(),\n"
+        "gid=PhoneHelper.GetGameId(),\n"
+        "}\n"
+        "GameLoginBridge.F_GetServerList(serverListCallbackId,jsonStr,isZip)\n"
+        "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.GET_SERVER_LIST_SUCCEED,jsonData)\n"
+        "end\n"
+        "function _M.ServerCheck(self,Pid,LoginToken,id,serverCheckCallback,ServerId)\n"
+        "local data={\n"
+        "server=ServerId,\n"
+        "}\n"
+        "GameLoginBridge.F_ServerStatusCheck(serverCheckCallbackId,jsonStr)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginModel.lua").write_text(
+        "function _M.SetServerListData(self,jsonStr)\n"
+        "self.V_LoginData=LuaUtil.decode(jsonStr,typeof(LoginData))\n"
+        "end\n"
+        "function _M.SetServerData(self,userName,serverId,serverIp,serverPort,serverName,pid,id,channelPackage)\n"
+        "serverItem.domain=serverIp\n"
+        "serverItem.port=serverPort\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "LoginData.lua").write_text(
+        "function _M.FillData(self,data)\n"
+        "self:ServerInfo(data.servers)\n"
+        "self:RoleInfo(data.roles)\n"
+        "self:GroupsInfo(data.groups)\n"
+        "self:MessageInfo(data.messages)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "LoginServer.lua").write_text(
+        "function _M.FillData(self,data)\n"
+        "self.V_Host=data.host\n"
+        "self.V_Port=data.port\n"
+        "self.V_Id=data.id\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginMgr.lua").write_text(
+        "function _M.AutoIntoGameInWebGL(self)\n"
+        "self:IntoGame(userName,serverId,sd.V_Host,sd.V_Port,sd.V_Name,loginAccount.V_PId or \"\",sd.V_Id,nil,channelPackage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "EnterGameInfo.lua").write_text(
+        "function _M.StartEnter_1(self,userName,serverId,serverIp,serverPort,serverName,pid,id,superToken,channelPackage)\n"
+        "LoginMgr.Inst_get():SetServerData(userName,serverId,serverIp,serverPort,serverName,pid,id,self.V_ChannelPackage)\n"
+        "self:SocketConnect()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "SocketManager.lua").write_text(
+        "function _M.F_InitSocketCon(self,pServer,pPort,pIslogin,isMainSocket)\n"
+        "so:F_Connect(pServer,pPort,pIslogin)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "LuaSocket.lua").write_text(
+        "function _M.F_Connect(self,pIp,pPort,pIslogin)\n"
+        "SocketBridge.F_Connect(pIp,pPort or 0,pIslogin,self.isMainSocket)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_login_server_flow_probe(
+        apk_root=root,
+        resource_root=resource_root,
+        export_root=export_root,
+    )
+    markdown_text = (output_dir / "apk_login_server_flow_report.md").read_text(encoding="utf-8")
+    config_text = (output_dir / "apk_login_server_config.tsv").read_text(encoding="utf-8")
+    schema_text = (output_dir / "apk_login_server_schema.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_login_server_flow_steps.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["config_rows"] >= 6
+    assert "https://prod-login-frxxz.akbing.com/game/server" in markdown_text
+    assert "servers[].host/port" in markdown_text
+    assert "secret-user" not in config_text
+    assert "<redacted>" in config_text
+    assert "V_Host\tdata.host" in schema_text
+    assert "connect_target\tpIp/pPort" in schema_text
+    assert "GameLoginBridge.F_GetServerList" in flow_text
+    assert "SocketBridge.F_Connect" in flow_text
+
+
+def test_fanxiu_apk_dex_login_surface_probe_collects_sdk_shell(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "classes.dex").write_bytes(b"dex\n035\x00")
+    (root / "AndroidManifest.xml").write_text(
+        """<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.frxx">
+          <application>
+            <activity android:name="com.flamePhoenix.plugin.activity.FlameUnityActivity" android:exported="true">
+              <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+              </intent-filter>
+            </activity>
+          </application>
+        </manifest>""",
+        encoding="utf-8",
+    )
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "dex_strings.tsv").write_text(
+        "dex\tindex\tvalue\n"
+        "classes.dex\t1\tLcom/flamePhoenix/plugin/activity/FlameUnityActivity;\n"
+        "classes.dex\t2\tSDKLogin成功: token:\n"
+        "classes.dex\t3\tcom.sqwan.msdk.SQwanCore\n"
+        "classes.dex\t4\thttps://open.weixin.qq.com/connect/sdk/qrconnect\n",
+        encoding="utf-8",
+    )
+    (output_dir / "dex_classes.tsv").write_text(
+        "dex\tindex\tdescriptor\tjava_name\tpackage\tshort_name\n"
+        "classes.dex\t1\tLcom/flamePhoenix/plugin/activity/FlameUnityActivity;\tcom.flamePhoenix.plugin.activity.FlameUnityActivity\tcom.flamePhoenix.plugin.activity\tFlameUnityActivity\n"
+        "classes.dex\t2\tLcom/sqwan/msdk/SQwanCore;\tcom.sqwan.msdk.SQwanCore\tcom.sqwan.msdk\tSQwanCore\n"
+        "classes.dex\t3\tLcom/mobile/auth/gatewayauth/PhoneNumberAuthHelper;\tcom.mobile.auth.gatewayauth.PhoneNumberAuthHelper\tcom.mobile.auth.gatewayauth\tPhoneNumberAuthHelper\n",
+        encoding="utf-8",
+    )
+    (output_dir / "dex_methods.tsv").write_text(
+        "dex\tindex\tclass_descriptor\tclass_name\tname\tqualified_name\n"
+        "classes.dex\t1\tLcom/flamePhoenix/plugin/activity/FlameUnityActivity;\tcom.flamePhoenix.plugin.activity.FlameUnityActivity\tSDKLogin\tcom.flamePhoenix.plugin.activity.FlameUnityActivity.SDKLogin\n"
+        "classes.dex\t2\tLcom/sqwan/msdk/SQwanCore;\tcom.sqwan.msdk.SQwanCore\tsetBackToGameLoginListener\tcom.sqwan.msdk.SQwanCore.setBackToGameLoginListener\n"
+        "classes.dex\t3\tLjava/lang/System;\tjava.lang.System\tloadLibrary\tjava.lang.System.loadLibrary\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_dex_login_surface_probe(apk_root=root, export_root=export_root, max_rows=100)
+    markdown_text = (output_dir / "apk_dex_login_surface_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_dex_login_surface_hits.tsv").read_text(encoding="utf-8")
+    packages_text = (output_dir / "apk_dex_login_surface_packages.tsv").read_text(encoding="utf-8")
+    zero_text = (output_dir / "apk_dex_login_surface_zero_terms.tsv").read_text(encoding="utf-8")
+    manifest_text = (output_dir / "apk_dex_login_surface_manifest.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["categories"]["shell_activity"] >= 1
+    assert result["counts"]["categories"]["sdk_login"] >= 1
+    assert result["counts"]["zero_terms"]["taptap"] == 0
+    assert result["counts"]["zero_terms"]["akbing"] == 0
+    assert "FlameUnityActivity" in markdown_text
+    assert "SDKLogin" in hits_text
+    assert "com.sqwan" in packages_text
+    assert "taptap\t0" in zero_text
+    assert "game-launcher" in manifest_text
+
+
+def test_fanxiu_dex_instruction_refs_decode_strings_calls_and_types():
+    refs = _decode_dex_instruction_refs(
+        [
+            0x001A,
+            0,
+            0x0071,
+            0,
+            0,
+            0x001C,
+            0,
+        ],
+        strings=["token"],
+        types=["Lcom/example/LoginCallback;"],
+        fields=[],
+        methods=[{"qualified_name": "com.example.SDKCallback.OnSDKLoginData"}],
+    )
+
+    assert [row["ref_kind"] for row in refs] == ["string", "call", "type"]
+    assert refs[0]["ref_value"] == "token"
+    assert refs[1]["ref_value"] == "com.example.SDKCallback.OnSDKLoginData"
+    assert refs[2]["ref_value"] == "com.example.LoginCallback"
+
+
+def test_fanxiu_apk_unity_login_receiver_probe_links_java_message_to_il2cpp_receiver(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "apk_dex_login_body_flow.tsv").write_text(
+        "step\tsource\ttarget\tconfidence\tnote\n"
+        "04-unity-bridge\tcom.flamePhoenix.plugin.plugin.SDKCallback.SendDataToUnity\tUnityPlayer.UnitySendMessage(GameEnter, event, data)\t95\t最终通过 UnitySendMessage 发到 GameEnter 对象。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_types.tsv").write_text(
+        "index\tname\tnamespace\tfull_name\tmethod_start\tmethod_count\tfield_start\tfield_count\ttoken\n"
+        "6846\tGameEnter\t\tGameEnter\t47932\t9\t30251\t5\t0x020001AB\n"
+        "8054\tPhoneMsgReceiver\tPhoneReceiver\tPhoneReceiver.PhoneMsgReceiver\t58271\t34\t36835\t2\t0x0200052D\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_methods.tsv").write_text(
+        "index\towner\tname\tqualified_name\tparameters\treturn_type\treturn_type_name\ttoken\n"
+        "47932\tGameEnter\tStart\tGameEnter.Start\t\t28578\tSystem.Void\t0x06000764\n"
+        "58277\tPhoneReceiver.PhoneMsgReceiver\tOnReceiveLogin\tPhoneReceiver.PhoneMsgReceiver.OnReceiveLogin\tdata:type#73\t28578\tSystem.Void\t0x06002D43\n"
+        "58280\tPhoneReceiver.PhoneMsgReceiver\tOnReceiveCancelLogin\tPhoneReceiver.PhoneMsgReceiver.OnReceiveCancelLogin\tdata:type#73\t28578\tSystem.Void\t0x06002D46\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_fields.tsv").write_text(
+        "index\towner\tname\tqualified_name\ttype_index\ttoken\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_strings.tsv").write_text(
+        "string_index\tvalue\n"
+        "880156\tGameEnter\n"
+        "1061339\tOnReceiveLogin\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_string_literals.tsv").write_text(
+        "index\tlength\tdata_index\tvalue\n"
+        "1\t20\t100\tGameEnter/EntityRoot\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_unity_login_receiver_probe(apk_root=root, export_root=export_root)
+    markdown_text = (output_dir / "apk_unity_login_receiver_report.md").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_unity_login_receiver_flow.tsv").read_text(encoding="utf-8")
+    methods_text = (output_dir / "apk_unity_login_receiver_methods.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["method_roles"]["unity_login_receiver"] == 1
+    assert result["counts"]["method_roles"]["unity_cancel_login_receiver"] == 1
+    assert "PhoneReceiver.PhoneMsgReceiver.OnReceiveLogin" in markdown_text
+    assert "UnityPlayer.UnitySendMessage" in flow_text
+    assert "unity_login_receiver" in methods_text
+
+
+def test_fanxiu_apk_gamelogin_bridge_probe_collects_methods_and_binary_boundary(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    lib_dir = root / "lib" / "arm64-v8a"
+    lib_dir.mkdir(parents=True)
+    (root / "AndroidManifest.xml").write_text(
+        '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.frxx" />',
+        encoding="utf-8",
+    )
+    (lib_dir / "libil2cpp.so").write_bytes(b"\x7fELF\x00UnityWebRequest\x00UnityWebRequest\x00")
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "il2cpp_methods.tsv").write_text(
+        "index\towner\tname\tqualified_name\tparameters\tdeclaring_type\treturn_type\tparameter_start\tparameter_count\tgeneric_container_index\ttoken\tflags\tiflags\tslot\treturn_type_name\n"
+        "1\tLuaBridge.Login.GameLoginBridge\tF_GetServerList\tLuaBridge.Login.GameLoginBridge.F_GetServerList\tcallbackid:type#169, jsonData:type#73, iszip:type#456\t8595\t28578\t73067\t3\t-1\t0x06003EFF\t150\t0\t65535\tSystem.Void\n"
+        "2\tLuaBridge.Login.GameLoginBridge\tF_ServerStatusCheck\tLuaBridge.Login.GameLoginBridge.F_ServerStatusCheck\tcallbackid:type#169, jsonData:type#73\t8595\t28578\t73076\t2\t-1\t0x06003F02\t150\t0\t65535\tSystem.Void\n"
+        "3\t<>c__DisplayClass0_0\t<F_GetServerList>b__0\t<>c__DisplayClass0_0.<F_GetServerList>b__0\twww:type#40108\t8596\t28578\t73084\t1\t-1\t0x06004F3F\t131\t0\t65535\tSystem.Void\n"
+        "4\t<>c__DisplayClass0_0\t<F_GetServerList>b__1\t<>c__DisplayClass0_0.<F_GetServerList>b__1\terror:type#73\t8596\t28578\t73085\t1\t-1\t0x06004F40\t131\t0\t65535\tSystem.Void\n"
+        "5\tCore.Net.Http.HttpManager\tRequestWebJsonData\tCore.Net.Http.HttpManager.RequestWebJsonData\turl:type#73, maxTryTime:type#30929\t8734\t73\t75174\t2\t-1\t0x060043DD\t150\t0\t65535\tSystem.String\n"
+        "6\tUnityEngine.Networking.UnityWebRequest\tGet\tUnityEngine.Networking.UnityWebRequest.Get\turi:type#73\t3534\t15168\t28697\t1\t-1\t0x06000051\t150\t0\t65535\tUnityWebRequest\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_types.tsv").write_text(
+        "index\tname\tnamespace\tfull_name\tdeclaring_type\tparent\tfield_start\tmethod_start\tevent_start\tproperty_start\tnested_types_start\tinterfaces_start\tvtable_start\tinterface_offsets_start\tmethod_count\tproperty_count\tfield_count\tevent_count\tnested_type_count\tvtable_count\tinterfaces_count\tinterface_offsets_count\ttoken\n"
+        "8595\tGameLoginBridge\tLuaBridge.Login\tLuaBridge.Login.GameLoginBridge\t-1\t-1\t-1\t1\t0\t0\t0\t0\t0\t0\t8\t0\t0\t0\t0\t0\t0\t0\t0x02002193\n"
+        "8596\t<>c__DisplayClass0_0\t\t<>c__DisplayClass0_0\t-1\t-1\t0\t3\t0\t0\t0\t0\t0\t0\t2\t0\t2\t0\t0\t0\t0\t0\t0x02002194\n"
+        "8734\tHttpManager\tCore.Net.Http\tCore.Net.Http.HttpManager\t-1\t-1\t2\t5\t0\t0\t0\t0\t0\t0\t1\t0\t1\t0\t0\t0\t0\t0\t0x0200221E\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_fields.tsv").write_text(
+        "index\towner\tname\tqualified_name\ttype_index\ttoken\n"
+        "0\t<>c__DisplayClass0_0\tiszip\t<>c__DisplayClass0_0.iszip\t456\t0x040038D2\n"
+        "1\t<>c__DisplayClass0_0\tcallbackid\t<>c__DisplayClass0_0.callbackid\t169\t0x040038D3\n"
+        "2\tCore.Net.Http.HttpManager\tm_headers\tCore.Net.Http.HttpManager.m_headers\t135\t0x040038D4\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_strings.tsv").write_text(
+        "string_index\tvalue\n"
+        "1\tGameLoginBridge\n"
+        "2\tF_GetServerList\n"
+        "3\tServerListUrl\n"
+        "4\tRequestWebJsonData\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_string_literals.tsv").write_text(
+        "index\tlength\tdata_index\tvalue\n"
+        "1\t47\t100\tLuaBridge.Login.GameLoginBridge.F_GetServerList\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_gamelogin_bridge_probe(apk_root=root, export_root=export_root)
+    markdown_text = (output_dir / "apk_gamelogin_bridge_report.md").read_text(encoding="utf-8")
+    methods_text = (output_dir / "apk_gamelogin_bridge_methods.tsv").read_text(encoding="utf-8")
+    binary_text = (output_dir / "apk_gamelogin_bridge_binary_strings.tsv").read_text(encoding="utf-8")
+    fields_text = (output_dir / "apk_gamelogin_bridge_fields.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["method_roles"]["bridge_api"] == 2
+    assert result["counts"]["method_roles"]["async_callback"] == 2
+    assert result["counts"]["fields"] == 3
+    assert "F_GetServerList(callbackid:int" in markdown_text
+    assert "成功/失败异步闭包" in markdown_text
+    assert "RequestWebJsonData" in methods_text
+    assert "iszip" in fields_text
+    assert "callbackid" in fields_text
+    assert "UnityWebRequest\t2" in binary_text
+    assert "GameLoginBridge\t0" in binary_text
+
+
+def test_fanxiu_apk_phonehelper_login_context_probe_links_lua_sdk_login_to_server_list(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    lua_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "login" / "text_assets"
+    lua_dir.mkdir(parents=True)
+    (lua_dir / "LoginAccount.lua").write_text(
+        'local PhoneHelper=require"GameSystem.Game.PhoneHelper.PhoneHelper"\n'
+        "PhoneHelper.SDKLogin()\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "GetServerInfo.lua").write_text(
+        "function GetSDKServerList(self,Pid,LoginToken)\n"
+        "  local request={pid=Pid,token=LoginToken,cid=PhoneHelper.GetPid(),gid=PhoneHelper.GetGameId(),bundleId=PhoneHelper.F_GetPackageName(),bundleVersion=PhoneHelper.F_GetPhoneVersion(),gzip=isZip}\n"
+        "  return GameLoginBridge.F_GetServerList(callbackid,json.encode(request),isZip)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_dex_login_body_flow.tsv").write_text(
+        "step\tsource\ttarget\tconfidence\tnote\n"
+        "01-sdk-login-entry\tcom.flamePhoenix.plugin.activity.FlameUnityActivity.SDKLogin\tcom.sqwan.msdk.SQwanCore.login\t95\tSDK 登录。\n"
+        "04-unity-bridge\tcom.flamePhoenix.plugin.plugin.SDKCallback.SendDataToUnity\tUnityPlayer.UnitySendMessage(GameEnter, OnReceiveLogin, data)\t95\t回灌 Unity。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_unity_login_receiver_flow.tsv").write_text(
+        "step\tsource\ttarget\tconfidence\tevidence\tnote\n"
+        "03-component-receiver\tGameEnter component candidates\tPhoneReceiver.PhoneMsgReceiver.OnReceiveLogin(data:string)\t90\til2cpp_methods.tsv\t接收登录。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_gamelogin_bridge_methods.tsv").write_text(
+        "role\tindex\tdeclaring_type\towner\tname\tqualified_name\tparameters\treturn_type\tparameter_start\tparameter_count\ttoken\tnote\n"
+        "bridge_api\t1\t8595\tLuaBridge.Login.GameLoginBridge\tF_GetServerList\tLuaBridge.Login.GameLoginBridge.F_GetServerList\tcallbackid:type#169, jsonData:type#73, iszip:type#456\tSystem.Void\t0\t3\t0x06003EFF\t服务器列表入口。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_types.tsv").write_text(
+        "index\tname\tnamespace\tfull_name\tmethod_start\tmethod_count\tfield_start\tfield_count\ttoken\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_methods.tsv").write_text(
+        "index\towner\tname\tqualified_name\tparameters\tdeclaring_type\treturn_type\treturn_type_name\ttoken\n"
+        "1\tLuaBridge.PhoneHelp.PhoneHelperBridge\tF_SDKLogin\tLuaBridge.PhoneHelp.PhoneHelperBridge.F_SDKLogin\t\t9001\t28578\tSystem.Void\t0x06001001\n"
+        "2\tLuaBridge.PhoneHelp.PhoneHelperBridge\tGetPid\tLuaBridge.PhoneHelp.PhoneHelperBridge.GetPid\t\t9001\t73\tSystem.String\t0x06001002\n"
+        "3\tLuaBridge.PhoneHelp.PhoneHelperBridge\tGetGameId\tLuaBridge.PhoneHelp.PhoneHelperBridge.GetGameId\t\t9001\t73\tSystem.String\t0x06001003\n"
+        "4\tLuaBridge.PhoneHelp.PhoneHelperBridge\tF_GetPackageName\tLuaBridge.PhoneHelp.PhoneHelperBridge.F_GetPackageName\t\t9001\t73\tSystem.String\t0x06001004\n"
+        "5\tLuaBridge.PhoneHelp.PhoneHelperBridge\tF_GetPhoneVersion\tLuaBridge.PhoneHelp.PhoneHelperBridge.F_GetPhoneVersion\t\t9001\t73\tSystem.String\t0x06001005\n"
+        "6\tMU.Tool.PhoneHelper\tF_SDKLogin\tMU.Tool.PhoneHelper.F_SDKLogin\t\t9002\t28578\tSystem.Void\t0x06002001\n"
+        "7\tPhoneReceiver.PhoneMsgReceiver\tOnReceiveLogin\tPhoneReceiver.PhoneMsgReceiver.OnReceiveLogin\tdata:type#73\t9003\t28578\tSystem.Void\t0x06003001\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_strings.tsv").write_text(
+        "string_index\tvalue\n"
+        "1\tPhoneHelper\n"
+        "2\tOnReceiveLogin\n",
+        encoding="utf-8",
+    )
+    (output_dir / "il2cpp_string_literals.tsv").write_text("index\tlength\tdata_index\tvalue\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_phonehelper_login_context_probe(apk_root=root, export_root=export_root)
+    markdown_text = (output_dir / "apk_phonehelper_login_context_report.md").read_text(encoding="utf-8")
+    lua_text = (output_dir / "apk_phonehelper_login_context_lua_refs.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_phonehelper_login_context_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["method_roles"]["phonehelper_bridge_api"] >= 5
+    assert result["counts"]["method_roles"]["phonehelper_sdk_login"] == 1
+    assert result["counts"]["lua_categories"]["lua_login_trigger"] == 1
+    assert "PhoneHelper.SDKLogin" in lua_text
+    assert "GameLoginBridge.F_GetServerList" in markdown_text
+    assert "PhoneReceiver.PhoneMsgReceiver.OnReceiveLogin" in flow_text
+
+
+def _minimal_elf64_with_dynsym() -> bytes:
+    shstr = b"\x00.dynsym\x00.dynstr\x00.text\x00il2cpp\x00.rodata\x00.shstrtab\x00"
+
+    def name_offset(name: bytes) -> int:
+        return shstr.index(name)
+
+    dynstr = b"\x00il2cpp_class_get_name\x00"
+    dynsym = b"\x00" * 24 + struct.pack("<IBBHQQ", 1, (1 << 4) | 2, 0, 3, 0x1000, 4)
+    parts = {
+        0x100: dynstr,
+        0x140: dynsym,
+        0x200: b"\x00" * 16,
+        0x220: b"\x00" * 16,
+        0x240: b"plain-runtime-string\x00",
+        0x280: shstr,
+    }
+    e_shoff = 0x300
+    e_shnum = 7
+    size = e_shoff + e_shnum * 64
+    data = bytearray(size)
+    for offset, value in parts.items():
+        data[offset : offset + len(value)] = value
+    ident = b"\x7fELF" + bytes([2, 1, 1, 0, 0]) + b"\x00" * 7
+    data[:64] = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        ident,
+        3,
+        183,
+        1,
+        0x1000,
+        0,
+        e_shoff,
+        0,
+        64,
+        56,
+        0,
+        64,
+        e_shnum,
+        6,
+    )
+    headers = [
+        (0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+        (name_offset(b".dynsym"), 11, 0, 0, 0x140, len(dynsym), 2, 1, 8, 24),
+        (name_offset(b".dynstr"), 3, 0, 0, 0x100, len(dynstr), 0, 0, 1, 0),
+        (name_offset(b".text"), 1, 6, 0x1000, 0x200, 16, 0, 0, 16, 0),
+        (name_offset(b"il2cpp"), 1, 6, 0x2000, 0x220, 16, 0, 0, 16, 0),
+        (name_offset(b".rodata"), 1, 2, 0x3000, 0x240, len(parts[0x240]), 0, 0, 1, 0),
+        (name_offset(b".shstrtab"), 3, 0, 0, 0x280, len(shstr), 0, 0, 1, 0),
+    ]
+    for index, header in enumerate(headers):
+        data[e_shoff + index * 64 : e_shoff + (index + 1) * 64] = struct.pack("<IIQQQQIIQQ", *header)
+    return bytes(data)
+
+
+def test_fanxiu_apk_il2cpp_binary_boundary_probe_reports_stripped_business_symbols(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    lib_dir = root / "lib" / "arm64-v8a"
+    lib_dir.mkdir(parents=True)
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    (lib_dir / "libil2cpp.so").write_bytes(_minimal_elf64_with_dynsym())
+    export_root = tmp_path / "exports"
+
+    result = build_fanxiu_apk_il2cpp_binary_boundary_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    markdown_text = (output_dir / "apk_il2cpp_binary_boundary_report.md").read_text(encoding="utf-8")
+    summary_text = (output_dir / "apk_il2cpp_binary_boundary_summary.tsv").read_text(encoding="utf-8")
+    symbols_text = (output_dir / "apk_il2cpp_binary_boundary_symbols.tsv").read_text(encoding="utf-8")
+    strings_text = (output_dir / "apk_il2cpp_binary_boundary_string_hits.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["libraries"] == 1
+    assert result["counts"]["business_symbols"] == 0
+    assert result["counts"]["has_symtab_libraries"] == 0
+    assert "arm64-v8a/libil2cpp.so" in summary_text
+    assert "il2cpp_class_get_name" in symbols_text
+    assert "PhoneMsgReceiver\t0" in strings_text
+    assert "Cpp2IL" in markdown_text
+
+
+def test_fanxiu_cpp2il_login_lua_bridge_probe_closes_login_server_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    cs_dir = output_dir / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp" / "Core" / "Managers"
+    isil_cs_dir = output_dir / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "Core" / "Managers"
+    isil_phone_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "PhoneReceiver"
+    )
+    lua_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gamelogin" / "text_assets"
+    cs_dir.mkdir(parents=True)
+    isil_cs_dir.mkdir(parents=True)
+    isil_phone_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+
+    (cs_dir / "CsCallLuaMgr.cs").write_text(
+        "private static LuaTable _LoginMgr; //Field offset: 0x20\n"
+        "public static void GetLoginTokenSucceed(string LoginToken, string GameId, string Pid, string Uid, string TimeStamp) { }\n",
+        encoding="utf-8",
+    )
+    (isil_cs_dir / "CsCallLuaMgr.txt").write_text(
+        "Method: System.Void GetLoginTokenSucceed(System.String LoginToken, System.String GameId, System.String Pid, System.String Uid, System.String TimeStamp)\n"
+        "041 Call LuaBaseRef.op_Inequality, X0, X1\n"
+        "064 Call LuaTable.get_Item, X0, X1\n"
+        "092 Call 0x1284E04, X0, X1, X2, X3, X4, X5\n",
+        encoding="utf-8",
+    )
+    (isil_phone_dir / "PhoneMsgReceiver.txt").write_text(
+        "Method: System.Void OnReceiveLoginData(System.String data)\n"
+        "048 Call String.Split, X0, X1, X2\n"
+        "252 Call CsCallLuaMgr.GetLoginTokenSucceed, X0, X1, X2, X3, X4\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginMgr.lua").write_text(
+        "function _M.GetLoginTokenSucceed(LoginToken,GameId,ChannelId,Uid,Timestamp)\n"
+        "LoginMgr.Inst_get():LoginCheck(LoginToken,GameId,ChannelId,Uid,Timestamp)\n"
+        "end\n"
+        "function _M.GetSDKServerInfo(self,Pid,Token)\n"
+        "self.GetServerInfo:GetSDKServerList(Pid,Token)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "GetServerInfo.lua").write_text(
+        "function _M.GetSDKServerList(self,Pid,LoginToken)\n"
+        "local data={\n"
+        "pid=Pid,\n"
+        "token=LoginToken,\n"
+        "cid=PhoneHelper.GetPid(),\n"
+        "gid=PhoneHelper.GetGameId(),\n"
+        "}\n"
+        "GameLoginBridge.F_GetServerList(serverListCallbackId,jsonStr,isZip)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_cpp2il_login_lua_bridge_probe(export_root=export_root)
+    report_text = (output_dir / "cpp2il_login_lua_bridge_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "cpp2il_login_lua_bridge_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["lua_calls_gamelogin_bridge"] is True
+    assert "GetServerInfo:GetSDKServerList(Pid, Token)" in report_text
+    assert "LoginMgr.Inst_get():LoginCheck" in evidence_text
+
+
+def test_fanxiu_cpp2il_gamelogin_serverlist_bridge_probe_closes_http_callback_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    bridge_cs_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Login"
+    )
+    setting_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "MU"
+        / "Define"
+    )
+    bridge_isil_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Login"
+    )
+    bridge_cs_dir.mkdir(parents=True)
+    setting_dir.mkdir(parents=True)
+    bridge_isil_dir.mkdir(parents=True)
+
+    (bridge_cs_dir / "GameLoginBridge.cs").write_text(
+        "public bool iszip; //Field offset: 0x10\n"
+        "public int callbackid; //Field offset: 0x14\n"
+        "public static void F_GetServerList(int callbackid, string jsonData, bool iszip) { }\n",
+        encoding="utf-8",
+    )
+    (setting_dir / "EM_SettingConstant.cs").write_text("ServerListUrl = 8,\n", encoding="utf-8")
+    (output_dir / "apk_download_config_entries.tsv").write_text(
+        "kind\tsource\tkey\tvalue\tnote\n"
+        "url_config\tsetting.config\tServerListUrl\thttps://prod-login-frxxz.akbing.com/game/server\tprod\n"
+        "url_config\tassets/bin/Data/bea4740b1585fe342a3e946e11fd04d3\tServerListUrl\thttps://frxxz-test1.eyugame.com/xiuxian-platform/game/server\tdefault\n",
+        encoding="utf-8",
+    )
+    (bridge_isil_dir / "GameLoginBridge.txt").write_text(
+        "Method: System.Void F_GetServerList(System.Int32 callbackid, System.String jsonData, System.Boolean iszip)\n"
+        "031 Move [X19+20], W22\n"
+        "032 Move [X19+16], W8\n"
+        "051 Or W1, W31, 8\n"
+        "053 Call GameInitSettingModel.F_GetSettingValue, X0, X1\n"
+        "067 Call String.Format, X0, X1, X2, X3\n"
+        "082 Call Debuger.UploadLog, X0\n"
+        "100 Move W1, 1200\n"
+        "102 Call PhoneHelper.F_UploadThinkingLaunchProcess, X0, X1, X2\n"
+        "111 Call UnityWebRequestDelegate..ctor, X0, X1, X2\n"
+        "138 Call FileUtil.F_LoadFilePost, X0, X1, X2, X3\n"
+        "140 Call CoroutineManager.StartCoroutine, X0\n",
+        encoding="utf-8",
+    )
+    (bridge_isil_dir / "GameLoginBridge_NestedType___c__DisplayClass0_0.txt").write_text(
+        "Method: System.Void <F_GetServerList>b__0(UnityEngine.Networking.DownloadHandler www)\n"
+        "026 Call DownloadHandler.get_data, X0\n"
+        "028 Call UtilCompress.DecompressFromGzip, X0\n"
+        "033 Call Encoding.get_UTF8\n"
+        "059 Move W1, 1201\n"
+        "099 Call DownloadHandler.get_text, X0\n"
+        "121 Call CallBackManager.CallStringDelegate, X0, X1\n"
+        "Method: System.Void <F_GetServerList>b__1(System.String error)\n"
+        "021 Call String.IsNullOrEmpty, X0\n"
+        "030 Call String.Concat, X0, X1\n"
+        "047 Call Debuger.LogError, X0, X1\n"
+        "063 Move W1, 1202\n"
+        "066 Call PhoneHelper.F_UploadThinkingLaunchProcess, X0, X1, X2\n"
+        "088 Call CallBackManager.CallStringDelegate, X0, X1\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_cpp2il_gamelogin_serverlist_bridge_probe(export_root=export_root)
+    report_text = (output_dir / "cpp2il_gamelogin_serverlist_bridge_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "cpp2il_gamelogin_serverlist_bridge_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["posts_via_fileutil"] is True
+    assert "FileUtil.F_LoadFilePost" in report_text
+    assert "UtilCompress.DecompressFromGzip" in evidence_text
+
+
+def test_fanxiu_cpp2il_fileutil_post_loader_probe_recovers_unitywebrequest_shape(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    fileutil_cs_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "MU"
+        / "Common"
+    )
+    fileutil_isil_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "MU"
+        / "Common"
+    )
+    fileutil_cs_dir.mkdir(parents=True)
+    fileutil_isil_dir.mkdir(parents=True)
+
+    (fileutil_cs_dir / "FileUtil.cs").write_text(
+        "private sealed class <F_LoadFilePost>d__7 : IEnumerator<Object>, IEnumerator, IDisposable\n"
+        "{\n"
+        "public string postData; //Field offset: 0x20\n"
+        "public string url; //Field offset: 0x28\n"
+        "public UnityWebRequestDelegate finishFunc; //Field offset: 0x30\n"
+        "public Action<String> error; //Field offset: 0x38\n"
+        "}\n"
+        "private sealed class <F_LoadFileTemp>d__6 : IEnumerator<Object>, IEnumerator, IDisposable\n"
+        "{\n"
+        "}\n"
+        "private const int timeout = 8; //Field offset: 0x0\n"
+        "private static Dictionary<String, Int32> tryNumDic; //Field offset: 0x8\n"
+        "public static IEnumerator F_LoadFilePost(string url, string postData, UnityWebRequestDelegate finishFunc, Action<String> error = null) { }\n",
+        encoding="utf-8",
+    )
+    (fileutil_isil_dir / "FileUtil.txt").write_text(
+        "Method: System.Collections.IEnumerator F_LoadFilePost(System.String url, System.String postData, UnityWebRequestDelegate finishFunc, System.Action`1<System.String> error = null)\n"
+        "032 Move [X23+32], X21\n"
+        "033 Move [X23+40], X22\n"
+        "034 Move [X23+48], X20\n"
+        "035 Move [X23+56], X19\n"
+        "044 Return X0\n",
+        encoding="utf-8",
+    )
+    (fileutil_isil_dir / "FileUtil_NestedType__F_LoadFilePost_d__7.txt").write_text(
+        "Method: System.Boolean MoveNext()\n"
+        "030 Call Encoding.get_UTF8\n"
+        "049 Call UnityWebRequest..ctor, X0, X1, X2\n"
+        "057 Call UploadHandlerRaw..ctor, X0, X1\n"
+        "064 Call UnityWebRequest.set_uploadHandler, X0, X1\n"
+        "071 Call CertificateHandler..ctor, X0\n"
+        "077 Call UnityWebRequest.set_certificateHandler, X0, X1\n"
+        "086 Call UnityWebRequest.SetRequestHeader, X0, X1, X2\n"
+        "093 Call DownloadHandlerBuffer..ctor, X0\n"
+        "099 Call UnityWebRequest.set_downloadHandler, X0, X1\n"
+        "106 Call UnityWebRequest.SendWebRequest, X0\n"
+        "116 Call UnityWebRequest.get_isDone, X0\n"
+        "128 Call UnityWebRequest.get_error, X0\n"
+        "130 Call String.IsNullOrEmpty, X0\n"
+        "185 Call UnityWebRequest.get_downloadHandler, X0\n"
+        "189 Call UnityWebRequestDelegate.Invoke, X0, X1\n"
+        "194 Move S0, 8\n"
+        "290 Call UnityWebRequest.get_error, X0\n"
+        "300 Call UnityWebRequest.Dispose, X0\n"
+        "352 Call Time.get_deltaTime\n"
+        "409 Call FileUtil.F_LoadFilePost, X0, X1, X2, X3\n"
+        "411 Call CoroutineManager.StartCoroutine, X0\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_cpp2il_fileutil_post_loader_probe(export_root=export_root)
+    report_text = (output_dir / "cpp2il_fileutil_post_loader_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "cpp2il_fileutil_post_loader_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["uses_raw_upload_body"] is True
+    assert "UploadHandlerRaw" in report_text
+    assert "UnityWebRequest.SetRequestHeader" in evidence_text
+
+
+def test_fanxiu_cpp2il_socket_proto_bridge_probe_recovers_frame_send_shape(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    isil_root = output_dir / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp"
+    diffable_root = output_dir / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp"
+    socketbridge_dir = isil_root / "LuaBridge" / "EngineBridge"
+    protobridge_dir = isil_root / "LuaBridge" / "Utils"
+    socket_isil_dir = isil_root / "Core" / "Net" / "Sockets"
+    net_isil_dir = isil_root / "Core" / "Net"
+    socket_diffable_dir = diffable_root / "Core" / "Net" / "Sockets"
+    net_diffable_dir = diffable_root / "Core" / "Net"
+    for path in (
+        socketbridge_dir,
+        protobridge_dir,
+        socket_isil_dir,
+        net_isil_dir,
+        socket_diffable_dir,
+        net_diffable_dir,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+
+    (protobridge_dir / "ProtoBridge.txt").write_text(
+        "Method: System.Void WriteInt(System.Int32 data)\n"
+        "039 Call LusuoStreamQuick.WriteInt, X0, X1\n"
+        "Method: System.Void WriteBigString(System.String strOut)\n"
+        "039 Call LusuoStreamQuick.WriteBigString, X0, X1\n",
+        encoding="utf-8",
+    )
+    (net_diffable_dir / "LusuoStreamQuick.cs").write_text(
+        "public class LusuoStreamQuick\n"
+        "private Byte[] mTempByteArray; //Field offset: 0x18\n"
+        "private int mCurrentLength; //Field offset: 0x20\n"
+        "private int mCurrentPosition; //Field offset: 0x24\n"
+        "public bool isCompress; //Field offset: 0x38\n"
+        "public bool IsLittleEndian; //Field offset: 0x39\n"
+        "public int Length\n",
+        encoding="utf-8",
+    )
+    (net_isil_dir / "LusuoStreamQuick.txt").write_text(
+        "Method: System.Void WriteInt(System.Int32 Num)\n"
+        "004 Call LusuoStreamQuick.WriteUInt, X0, X1\n"
+        "Method: System.Void WriteIntCompress(System.Int32 value)\n"
+        "043 Xor X9, X11, X9\n"
+        "048 Or W11, W9, 128\n"
+        "055 ShiftRight X9, 7\n"
+        "Method: System.Void WriteBigString(System.String strOut)\n"
+        "010 Call String.IsNullOrEmpty, X0\n"
+        "024 Call Encoding.get_UTF8\n"
+        "037 Call LusuoStreamQuick.WriteInt, X0, X1\n"
+        "044 Call LusuoStreamQuick.WriteBytes, X0, X1\n"
+        "Method: System.Void WriteNoCompress(System.Int32 num)\n"
+        "001 Call LusuoStreamQuick.WriteUInt, X0, X1\n"
+        "Method: System.Byte[] GetBuffer()\n"
+        "001 Move X0, [X0+24]\n"
+        "002 Return X0\n",
+        encoding="utf-8",
+    )
+    (socketbridge_dir / "SocketBridge.txt").write_text(
+        "Method: System.Boolean F_Send(System.Int32 proId, System.Boolean isMainSocket = True, System.Int32 sn = 0)\n"
+        "011 Call SocketManager.GetInstance\n"
+        "023 Call SocketManager.F_Send, X0, X1, X2, X3\n",
+        encoding="utf-8",
+    )
+    (socket_isil_dir / "SocketManager.txt").write_text(
+        "Method: System.Void ResetWriteProtoStreamBuffer()\n"
+        "033 Call LusuoStreamQuick.Reset, X0, X1\n"
+        "039 Move [X8+36], W31\n"
+        "Method: System.Boolean F_Send(System.Int32 proId, System.Boolean isMainSocket = True, System.Int32 sn = 0)\n"
+        "013 Call ByteSocket.F_Send, X0, X1, X2\n",
+        encoding="utf-8",
+    )
+    (socket_diffable_dir / "ByteSocket.cs").write_text(
+        "public class ByteSocket\n"
+        "private const int RPC_HEADER_LENGTH = 4; //Field offset: 0x0\n"
+        "public static bool isMessageCompress; //Field offset: 0x1\n"
+        "private Socket m_socket; //Field offset: 0x10\n"
+        "private bool m_IsMsgCompress; //Field offset: 0x58\n"
+        "private static ByteSocket() { }\n",
+        encoding="utf-8",
+    )
+    (socket_isil_dir / "ByteSocket.txt").write_text(
+        "Method: System.Boolean F_Send(System.Int32 proId, System.Int32 sn)\n"
+        "070 Add W25, W25, 12\n"
+        "076 Call LusuoStreamQuick..ctor, X0, X1, X2, X3\n"
+        "093 Call LusuoStreamQuick.WriteInt, X0, X1\n"
+        "104 Add W1, W9, W8\n"
+        "105 Call LusuoStreamQuick.WriteNoCompress, X0, X1\n"
+        "109 Call LusuoStreamQuick.WriteStream, X0, X1\n"
+        "136 Call Socket.BeginSend, X0, X1, X2, X3, X4, X5, X6\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_cpp2il_socket_proto_bridge_probe(export_root=export_root)
+    report_text = (output_dir / "cpp2il_socket_proto_bridge_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "cpp2il_socket_proto_bridge_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["bytesocket_builds_header_body_frame"] is True
+    assert result["checks"]["bytesocket_sends_with_begin_send"] is True
+    assert "Socket.BeginSend(packet_buffer, 0, packet_length" in report_text
+    assert "Call LusuoStreamQuick.WriteNoCompress" in evidence_text
+
+
+def test_fanxiu_cpp2il_socket_receive_dispatch_probe_recovers_receive_handler_chain(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    isil_root = output_dir / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp"
+    socket_isil_dir = isil_root / "Core" / "Net" / "Sockets"
+    net_isil_dir = isil_root / "Core" / "Net"
+    lua_core_dir = export_root / "by_source" / "lscripts" / "core" / "text_assets"
+    lua_login_dir = export_root / "by_source" / "lscripts" / "login" / "text_assets"
+    lua_message_dir = export_root / "by_source" / "lscripts" / "message" / "text_assets"
+    for path in (socket_isil_dir, net_isil_dir, lua_core_dir, lua_login_dir, lua_message_dir):
+        path.mkdir(parents=True, exist_ok=True)
+
+    (socket_isil_dir / "ByteSocket.txt").write_text(
+        "Method: System.Void ProcessReciveData()\n"
+        "025 Call Socket.get_Available, X0\n"
+        "039 Call Socket.Receive, X0, X1, X2, X3\n"
+        "071 Call ByteUtil.ReadInt, X0, X1, X2\n"
+        "126 Call Socket.Receive, X0, X1, X2, X3, X4\n"
+        "130 Call ByteSocket.ReadPackage, X0\n"
+        "Method: System.Void ReadPackage()\n"
+        "198 Call LusuoStreamQuick..ctor, X0, X1, X2, X3, X4\n"
+        "204 Call LusuoStreamQuick.ReadInt, X0, X1\n"
+        "238 Call PoolMessageManage.IsLuaMessage, X0\n"
+        "252 Call List`1<Int32>.Contains, X0, X1\n"
+        "305 Call PoolMessageManage.read, X0, X1\n"
+        "527 Call CSMessagePool.GetInstance\n"
+        "576 Call CSMessagePool.F_SendHandler, X0, X1, X2\n",
+        encoding="utf-8",
+    )
+    (net_isil_dir / "PoolMessageManage.txt").write_text(
+        "Method: System.Void reading(System.Int32 proId)\n"
+        "095 Call PoolMessageManage.SetData, X0\n"
+        "116 Call CSMessagePool.GetInstance\n"
+        "121 Call CSMessagePool.F_GetMessage, X0, X1\n"
+        "128 Call CSLusuoStreamWarp..ctor, X0\n"
+        "Method: System.Void read(Core.Net.LusuoStreamQuick val, System.Int32 proId)\n"
+        "036 Call PoolMessageManage.AddProId, X0\n"
+        "041 Call PoolMessageManage.IsLuaMessage, X0\n"
+        "057 Call PoolMessageManage.reading, X0\n"
+        "Method: System.Boolean IsLuaMessage(System.Int32 proId = 0)\n"
+        "007 Call CSMessagePool.GetInstance\n"
+        "012 Call CSMessagePool.IsCSMessage, X0, X1\n",
+        encoding="utf-8",
+    )
+    (net_isil_dir / "CSMessagePool.txt").write_text(
+        "Method: System.Void F_Register(System.Int32 id, System.Type messageClass, Core.Net.CSNetMessageCallback handlerClass)\n"
+        "039 Call 0x20B3824, X0, X1, X2\n"
+        "Method: Core.Proxy.CSMessage F_GetMessage(System.Int32 pId)\n"
+        "025 Call 0x1F15F08, X0, X1\n"
+        "036 Call 0x1F15B98, X0, X1\n"
+        "038 Call Activator.CreateInstance, X0\n"
+        "Method: System.Void F_SendHandler(System.Int32 pId, Core.Proxy.CSMessage pInfo)\n"
+        "027 Call 0x1F15F08, X0, X1\n"
+        "038 Call 0x1F15B98, X0, X1\n"
+        "041 Move X1, X19\n",
+        encoding="utf-8",
+    )
+    (lua_core_dir / "MessagePool.lua").write_text(
+        "function _M:F_Register(id,messageClass,handlerClass)\n"
+        "SocketBridge.RegisterLuaPro(id)\n"
+        "end\n"
+        "function _M:F_SendHandler(pId,pInfo)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_core_dir / "SocketManager.lua").write_text(
+        "function _M.GetMessageFromPools(self,pSendInfo)\n"
+        "msg=MessagePool.Inst_get():F_GetMessage(proId)\n"
+        "MessagePool.Inst:F_SendHandler(msg:getId(),msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_login_dir / "LoginNetLogic.lua").write_text(
+        "_MessagePool.Inst_get():F_Register(_SM_Login:getId(),typeof(_SM_Login),function(msg)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_ProtoHash:getId(),typeof(_SM_ProtoHash),function(msg)\n"
+        "function _M.SM_ProtoHashFun(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_message_dir / "SM_ProtoHash.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.hash=self:readInt()\n"
+        "self.version=self:readString()\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 20014\n",
+        encoding="utf-8",
+    )
+    (lua_message_dir / "SM_Login.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.accountId=self:readString()\n"
+        "self.token=self:readString()\n"
+        "self.timeZone=self:readInt()\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 20002\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_cpp2il_socket_receive_dispatch_probe(export_root=export_root)
+    report_text = (output_dir / "cpp2il_socket_receive_dispatch_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "cpp2il_socket_receive_dispatch_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["process_receive_reads_body_and_calls_readpackage"] is True
+    assert result["checks"]["lua_login_registers_sm_login_and_protohash"] is True
+    assert "Socket.Receive(4-byte length head)" in report_text
+    assert "return 20014" in evidence_text
+
+
+def test_fanxiu_lua_serverlist_response_flow_probe_closes_http_to_socket_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    lua_root = export_root / "by_source" / "lscripts" / "game" / "text_assets"
+    lua_root.mkdir(parents=True)
+
+    (lua_root / "CommonEventType.lua").write_text(
+        'local _M={}\n_M.GET_SERVER_LIST_SUCCEED="GET_SERVER_LIST_SUCCEED"\nreturn _M\n',
+        encoding="utf-8",
+    )
+    (lua_root / "GetServerInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.GetSDKServerList(self,Pid,LoginToken)\n"
+        "local serverListCallbackId\n"
+        "local callback=function(jsonData)\n"
+        "LuaCallBackMgr.RemoveCallBackStringDelegate(serverListCallbackId)\n"
+        "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.GET_SERVER_LIST_SUCCEED,jsonData)\n"
+        "end\n"
+        "serverListCallbackId=LuaCallBackMgr.AddCallBackStringDelegate(callback)\n"
+        "GameLoginBridge.F_GetServerList(serverListCallbackId,jsonStr,isZip)\n"
+        "end\n"
+        "function _M.GetLocalServerList(self)\n"
+        "local jsonData={code=0,data={roles={},servers={},groups={}}}\n"
+        "table.insert(jsonData.data.servers,self:FormatServerInfo(serverInfo))\n"
+        "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.GET_SERVER_LIST_SUCCEED,jsonStr)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "ServerGroupListView.lua").write_text(
+        "local _M={}\n"
+        "function _M.AddEvent(self)\n"
+        "self.F_ServerListUpdateFun=function(jsonStr)\n"
+        "self:ServerListData(jsonStr)\n"
+        "end\n"
+        "LuaEventMgr.Inst_get():AddEventHandler(CommonEventType.GET_SERVER_LIST_SUCCEED,self.F_ServerListUpdateFun)\n"
+        "end\n"
+        "function _M.ServerListData(self,jsonStr)\n"
+        "LoginMgr.Inst_get().LoginModel:SetServerListData(jsonStr)\n"
+        "self.V_Data=LoginMgr.Inst_get().LoginModel:GetServerData()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "LoginModel.lua").write_text(
+        "local _M={}\n"
+        "function _M.SetServerData(self,userName,serverId,serverIp,serverPort,serverName,pid,id,channelPackage)\n"
+        "serverItem.domain=serverIp\n"
+        "serverItem.port=serverPort\n"
+        "self.V_CurServerItem=serverItem\n"
+        "LuaGameSettingBridge.SaveEnterServerSetting(userName,serverIp,serverPort,serverName,serverId,id,channelPackage)\n"
+        "end\n"
+        "function _M.SetServerListData(self,jsonStr)\n"
+        'local LoginData=require"GameSystem.Game.Message.module.user.login.packet.vo.LoginData"\n'
+        "self.V_LoginData=LuaUtil.decode(jsonStr,typeof(LoginData))\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "LoginData.lua").write_text(
+        "local _M={}\n"
+        "function _M.FillData(self,data)\n"
+        "if data and data.code and data.data then\n"
+        "data=data.data\n"
+        "end\n"
+        "self:ServerInfo(data.servers)\n"
+        "self:RoleInfo(data.roles)\n"
+        "self:GroupsInfo(data.groups)\n"
+        "end\n"
+        "function _M.ServerVoInfo(self,list)\n"
+        'local LoginServer=require"GameSystem.Game.Message.module.user.login.packet.vo.LoginServer"\n'
+        "local loginGroup=LoginServer.new()\n"
+        "loginGroup:FillData(data)\n"
+        "self.V_ServerDic:LuaDic_AddOrSetItem(id,loginGroup)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "LoginServer.lua").write_text(
+        "local _M={}\n"
+        "function _M.FillData(self,data)\n"
+        "self.V_Name=data.name\n"
+        "self.V_Id=data.id\n"
+        "self.V_Server=data.server\n"
+        "self.V_Host=data.host\n"
+        "self.V_Port=data.port\n"
+        "self.V_Group=data.group\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "WinLogin.lua").write_text(
+        "local _M={}\n"
+        "function _M.Init(self)\n"
+        "self.V_SelectIP=self.V_AccountServerData.V_Host\n"
+        "end\n"
+        "function _M.IntoGame(self,userName)\n"
+        "local loginAccount=LoginMgr.Inst_get().LoginModel:GetLoginAccountData()\n"
+        "LoginMgr.Inst_get():IntoGame(userName,self.V_AccountServerData.V_Server or 1,self.V_SelectIP,self.V_SelectPort,self.V_SelectName,loginAccount.V_PId or\"\",self.V_AccountServerData.V_Id,self.V_SuperToken,self.V_ChannelPackage)\n"
+        "LoginMgr.Inst_get():IntoGame(userName,self.V_Id or 1,self.V_SelectIP,self.V_SelectPort,self.V_SelectName,self.V_PId or\"\",self.V_AccountServerData.V_Id,self.V_SuperToken,self.V_ChannelPackage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "LoginMgr.lua").write_text(
+        "local _M={}\n"
+        "function _M.AutoIntoGameInWebGL(self)\n"
+        "local sd=loginAccount.V_ServerData\n"
+        "self:IntoGame(userName,serverId,sd.V_Host,sd.V_Port,sd.V_Name,loginAccount.V_PId or\"\",sd.V_Id,nil,channelPackage)\n"
+        "end\n"
+        "function _M.IntoGame(self,userName,serverId,serverIp,serverPort,serverName,pid,id,superToken,channelPackage)\n"
+        "self.EnterGameInfo:StartEnter_1(userName,serverId,serverIp,serverPort,serverName,pid,id,superToken,channelPackage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.StartEnter_1(self,userName,serverId,serverIp,serverPort,serverName,pid,id,superToken,channelPackage)\n"
+        "LoginMgr.Inst_get():SetServerData(userName,serverId,serverIp,serverPort,serverName,pid,id,self.V_ChannelPackage)\n"
+        "self:SocketConnect()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "SocketManager.lua").write_text(
+        "local _M={}\n"
+        "function _M.F_InitSocketCon(self,pServer,pPort,pIslogin,isMainSocket)\n"
+        "local so=self:GetSocket(isMainSocket)\n"
+        "so:F_Connect(pServer,pPort,pIslogin)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_root / "LuaSocket.lua").write_text(
+        "local _M={}\n"
+        "function _M.F_Connect(self,pIp,pPort,pIslogin)\n"
+        'local SocketBridge=require"LuaBridge.EngineBridge.SocketBridge"\n'
+        "SocketBridge.F_Connect(pIp,pPort or 0,pIslogin,self.isMainSocket)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_serverlist_response_flow_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_serverlist_response_flow_report.md").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "lua_serverlist_response_flow_evidence.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["login_server_maps_host_port"] is True
+    assert "LuaUtil.decode" in report_text
+    assert "SocketBridge.F_Connect" in evidence_text
+
+
 def test_fanxiu_lua_download_bridge_report_collects_wrapper_and_calls(tmp_path):
     export_root = tmp_path / "exports"
     bridge_dir = export_root / "by_source" / "lscripts" / "core" / "text_assets"
@@ -4883,6 +6384,8 @@ def test_fanxiu_bluestarsea_support_config_probe_exports_small_tables_and_missin
             if isinstance(value, str):
                 pool.append(value)
                 return f"_A[{len(pool)}]"
+            if isinstance(value, dict):
+                return "{" + ",".join(f"{key}={value_expr(item)}" for key, item in value.items()) + "}"
             return str(value)
 
         key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
@@ -5286,6 +6789,5705 @@ def test_fanxiu_bluestarsea_purify_energy_probe_links_config_ui_packets_and_stat
     assert "purify_receive" in (output_dir / "hot_update_bluestarsea_purify_runtime_flows.tsv").read_text(encoding="utf-8")
     assert "rewardResults" in (output_dir / "hot_update_bluestarsea_purify_packet_fields.tsv").read_text(encoding="utf-8")
     assert "BlueStarSea 提纯能量链路探针" in (output_dir / "hot_update_bluestarsea_purify_energy_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_plan_reward_probe_links_plan_priority_and_optional_gifts(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_hash" / "text_assets"
+    blue_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "bluestarsea_hash" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    blue_cfg_dir.mkdir(parents=True)
+    item_dir.mkdir(parents=True)
+    blue_game_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        item_dir / "Item.lua",
+        ["id", "name", "effectValue"],
+        [
+            {"id": 29806, "name": "玄魔大法"},
+            {"id": 394007003, "name": "天道仙材随机匣", "effectValue": "98028001_24174"},
+            {"id": 1010004, "name": "星海之力"},
+            {"id": 1010005, "name": "仙伯战斗属性"},
+        ],
+    )
+    write_config(
+        item_dir / "OptionalGift.lua",
+        ["id", "groupID", "giftID", "number", "limitNumber", "career", "limitCondition", "limitConditionTip", "showCondition", "limitType", "showSort"],
+        [
+            {"id": 1, "groupID": "24174", "giftID": 1010004, "number": 20, "showSort": 1},
+            {"id": 2, "groupID": "24174", "giftID": 1010005, "number": 5, "showSort": 2},
+            {"id": 3, "groupID": "99999", "giftID": 1010005, "number": 99, "showSort": 3},
+        ],
+    )
+    write_config(
+        blue_cfg_dir / "BreakItem.lua",
+        ["id", "item", "filter", "sort", "energyConsume", "breakObtain"],
+        [{"id": 1, "item": 29806, "filter": 6, "sort": 1, "energyConsume": 150, "breakObtain": "Item|394007003_1"}],
+    )
+    write_config(blue_cfg_dir / "ConfigValue.lua", ["id", "value"], [{"id": "SCHEME_LIMIT", "value": "3"}])
+    (blue_game_dir / "BlueStarSeaData.lua").write_text(
+        "function _M.GetLocalSystemPlan(self)\n"
+        "local plan=BlueStarSeaPlanVO.new()\n"
+        "plan.planId=0\n"
+        "plan.systemPlan=true\n"
+        "plan.itemPriority=CList.new()\n"
+        "plan.itemPriority:Add(29806)\n"
+        "return plan\n"
+        "end\n"
+        "function _M.BuildPurifyItems(self)\n"
+        "local plan=self:GetAppliedPlan()\n"
+        "if plan and plan.itemPriority then local itemPriority=plan.itemPriority end\n"
+        "local vo=BlueStarSeaPurifyItemVO.new()\n"
+        "vo.itemId=29806\n"
+        "vo.count=1\n"
+        "return CList.new()\n"
+        "end\n"
+        "function _M.UnwrapChestItems(self,chestItemId,multiplier)\n"
+        "local itemCfg=ConfigManager.Inst_get():GetConfigData(ConfigName.Item_Item,chestItemId)\n"
+        "local list=string.split(itemCfg.effectValue,'_')\n"
+        "local rewards=BagitemMgr.Inst_get():GetOptionalGiftList(list[1])\n"
+        "return rewards\n"
+        "end\n"
+        "function _M.BuildObtainDisplayListByItems(self,items)\n"
+        "local cfg=self:GetBreakItemCfgMap()[29806]\n"
+        "local reward=cfg.breakObtain\n"
+        "self:UnwrapChestItems(394007003,1)\n"
+        "end\n"
+        "function _M.OnSavePlan(self,msg)\n"
+        "local plan=msg.plan\n"
+        "plan.applied=false\n"
+        "self._SyncInfo.vo.planList:Add(plan)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.SavePlan)\n"
+        "end\n"
+        "function _M.OnApplyPlan(self,msg)\n"
+        "local appliedPlanId=msg.appliedPlanId\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.ApplyPlan)\n"
+        "end\n"
+        "function _M.OnDeletePlan(self,msg)\n"
+        "local planId=msg.planId\n"
+        "self._SyncInfo.vo.planList:RemoveAt(1)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.DeletePlan)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaNetLogic.lua").write_text(
+        "function _M.CM_BlueStarSeaSavePlanFun(self,planId,name,itemPriority)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaSavePlan)\n"
+        "cm.planId=planId\n"
+        "cm.name=name\n"
+        "cm.itemPriority=itemPriority\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaSavePlanFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnSavePlan(msg) end\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaApplyPlanFun(self,planId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaApplyPlan)\n"
+        "cm.planId=planId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaApplyPlanFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnApplyPlan(msg) end\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaDeletePlanFun(self,planId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaDeletePlan)\n"
+        "cm.planId=planId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaDeletePlanFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnDeletePlan(msg) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaModel.lua").write_text(
+        "function _M.OnSavePlan(self,msg)\n"
+        "self.BlueStarSeaData:OnSavePlan(msg)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.SavePlan)\n"
+        "end\n"
+        "function _M.GetAppliedPlan(self)\n"
+        "return self.BlueStarSeaData:GetAppliedPlan()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaSetPlanItem.lua").write_text(
+        "function _M.OnSetBtnClick(self)\n"
+        "self._editItemPriority:Add(self.data.item)\n"
+        "self.priorityIndex=1\n"
+        "end\n"
+        "function _M.OnCancelBtnClick(self)\n"
+        "self._editItemPriority:RemoveAt(1)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaSetPlanView.lua").write_text(
+        "function _M.OnSaveClick(self)\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaSavePlanFun(self._planId,self._planName,self._editItemPriority)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaSelectPlanItem.lua").write_text(
+        "function _M.OnApplyClick(self)\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaApplyPlanFun(self._planId)\n"
+        "end\n"
+        "function _M.OnDeleteClick(self)\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaDeletePlanFun(self._planId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaSelectPlanView.lua").write_text(
+        "function _M.RefreshPlanList(self)\n"
+        "local limit=BlueStarSeaMgr.Inst_get().Model:GetSchemeLimit()\n"
+        "local planList=BlueStarSeaMgr.Inst_get().Model:GetAllPlanList()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "98014\tBlueStarSeaPlanVO\tvo\tplayer.bluestarsea\t5\tBaseVO\tmessage\tBlueStarSeaPlanVO.lua\tpath\tpkg\n"
+        "98015\tCM_BlueStarSeaSavePlan\tclient_to_server\tplayer.bluestarsea\t3\tBaseMessage\tmessage\tCM_BlueStarSeaSavePlan.lua\tpath\tpkg\n"
+        "98016\tSM_BlueStarSeaSavePlan\tserver_to_client\tplayer.bluestarsea\t2\tClientResult\tmessage\tSM_BlueStarSeaSavePlan.lua\tpath\tpkg\n"
+        "98017\tCM_BlueStarSeaDeletePlan\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaDeletePlan.lua\tpath\tpkg\n"
+        "98018\tSM_BlueStarSeaDeletePlan\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaDeletePlan.lua\tpath\tpkg\n"
+        "98019\tCM_BlueStarSeaApplyPlan\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaApplyPlan.lua\tpath\tpkg\n"
+        "98020\tSM_BlueStarSeaApplyPlan\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaApplyPlan.lua\tpath\tpkg\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\tline\n"
+        "98014\tBlueStarSeaPlanVO\t1\tplanId\tInt\t\tvo\tplayer.bluestarsea\tmessage\tBlueStarSeaPlanVO.lua\t14\n"
+        "98014\tBlueStarSeaPlanVO\t2\tname\tString\t\tvo\tplayer.bluestarsea\tmessage\tBlueStarSeaPlanVO.lua\t15\n"
+        "98014\tBlueStarSeaPlanVO\t3\titemPriority\tMessageList2List\t\tvo\tplayer.bluestarsea\tmessage\tBlueStarSeaPlanVO.lua\t16\n"
+        "98014\tBlueStarSeaPlanVO\t4\tsystemPlan\tBool\t\tvo\tplayer.bluestarsea\tmessage\tBlueStarSeaPlanVO.lua\t17\n"
+        "98014\tBlueStarSeaPlanVO\t5\tapplied\tBool\t\tvo\tplayer.bluestarsea\tmessage\tBlueStarSeaPlanVO.lua\t18\n"
+        "98015\tCM_BlueStarSeaSavePlan\t1\tplanId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaSavePlan.lua\t14\n"
+        "98015\tCM_BlueStarSeaSavePlan\t2\tname\tString\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaSavePlan.lua\t15\n"
+        "98015\tCM_BlueStarSeaSavePlan\t3\titemPriority\tMessageList2List\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaSavePlan.lua\t16\n"
+        "98016\tSM_BlueStarSeaSavePlan\t1\tplan\tBean\tBlueStarSeaPlanVO\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaSavePlan.lua\t17\n"
+        "98016\tSM_BlueStarSeaSavePlan\t2\tplanCount\tInt\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaSavePlan.lua\t18\n"
+        "98017\tCM_BlueStarSeaDeletePlan\t1\tplanId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaDeletePlan.lua\t14\n"
+        "98018\tSM_BlueStarSeaDeletePlan\t1\tplanId\tInt\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaDeletePlan.lua\t17\n"
+        "98019\tCM_BlueStarSeaApplyPlan\t1\tplanId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaApplyPlan.lua\t14\n"
+        "98020\tSM_BlueStarSeaApplyPlan\t1\tappliedPlanId\tInt\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaApplyPlan.lua\t17\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_plan_reward_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["default_priority"] == 1
+    assert result["counts"]["reward_chests"] == 1
+    assert result["counts"]["optional_gift_items"] == 2
+    assert result["counts"]["packet_fields"] >= 14
+    assert result["counts"]["runtime_flows"] >= 8
+    assert "玄魔大法" in (output_dir / "hot_update_bluestarsea_plan_default_priority.tsv").read_text(encoding="utf-8")
+    assert "星海之力x20" in (output_dir / "hot_update_bluestarsea_reward_chests.tsv").read_text(encoding="utf-8")
+    assert "仙伯战斗属性" in (output_dir / "hot_update_bluestarsea_optional_gift_items.tsv").read_text(encoding="utf-8")
+    assert "itemPriority" in (output_dir / "hot_update_bluestarsea_plan_packet_fields.tsv").read_text(encoding="utf-8")
+    assert "CM_BlueStarSeaSavePlanFun" in (output_dir / "hot_update_bluestarsea_plan_runtime_flows.tsv").read_text(encoding="utf-8")
+    assert "BlueStarSea 方案优先级与奖励展开探针" in (output_dir / "hot_update_bluestarsea_plan_reward_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_progression_probe_links_tree_startree_wake_and_packets(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_hash" / "text_assets"
+    blue_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "bluestarsea_hash" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    blue_cfg_dir.mkdir(parents=True)
+    item_dir.mkdir(parents=True)
+    blue_game_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        item_dir / "Item.lua",
+        ["id", "name"],
+        [
+            {"id": 29802, "name": "道则碎片·淬灵域"},
+            {"id": 29803, "name": "混沌本源·淬灵域"},
+            {"id": 29805, "name": "悟道果·淬灵域"},
+            {"id": 20432001, "name": "星海·淬灵域"},
+            {"id": 18011095, "name": "林轩"},
+        ],
+    )
+    write_config(
+        blue_cfg_dir / "Tree.lua",
+        ["id", "faqiId", "group", "level", "name", "cost", "des", "skill"],
+        [
+            {"id": 1, "faqiId": 2, "group": 1, "level": 1, "name": "灵海归元", "cost": "Item|29805_1", "des": "攻击资质+2%", "skill": "1001"},
+            {"id": 2, "faqiId": 2, "group": 1, "level": 2, "name": "灵海归元", "cost": "Item|29805_1", "des": "攻击资质+4%", "skill": "1002"},
+        ],
+    )
+    write_config(
+        blue_cfg_dir / "StarTree.lua",
+        ["id", "faqiId", "group", "item", "condition", "conditionDes", "reward", "quality"],
+        [{"id": 1, "faqiId": 2, "group": "1", "item": 18011095, "condition": "FashionLevel|1170_1", "conditionDes": "林轩1阶", "reward": "item|29803_3", "quality": 6}],
+    )
+    write_config(
+        blue_cfg_dir / "Wake.lua",
+        ["id", "faqiId", "Wake", "cost", "des", "faze", "skill"],
+        [{"id": 1, "faqiId": 2, "Wake": 1, "cost": "Item|20432001_1", "des": "淬灵域·进化点+14", "faze": "20010001", "skill": "魔源归尘"}],
+    )
+    (blue_game_dir / "BlueStarSeaData.lua").write_text(
+        "function _M.OnLevelUp(self,msg)\n"
+        "self._SyncInfo.vo.faqiList:Add(msg.faqi)\n"
+        "end\n"
+        "function _M.OnStarUp(self,msg)\n"
+        "self._SyncInfo.vo.faqiList:Add(msg.faqi)\n"
+        "end\n"
+        "function _M.OnActivateTalent(self,msg)\n"
+        "self._SyncInfo.vo.activatedTreeIds:Add(msg.treeId)\n"
+        "end\n"
+        "function _M.OnStarTreeActivated(self,msg)\n"
+        "self._SyncInfo.vo.claimedIds:Add(msg.starTreeId)\n"
+        "return msg.rewards\n"
+        "end\n"
+        "function _M.OnWakeUp(self,msg)\n"
+        "self._SyncInfo.vo.awakenedFaqiIds:Add(msg.faqi.faqiId)\n"
+        "end\n"
+        "function _M.GetTreeCfgById(self,faqiId,treeId)\n"
+        "return self.V_TreeById[treeId]\n"
+        "end\n"
+        "function _M.GetWakeCfgByRitualImplementId(self,ritualImplementId,wake)\n"
+        "return self.V_WakeCfg[wake]\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaModel.lua").write_text(
+        "function _M.OnActivateTalent(self,msg)\n"
+        "self.BlueStarSeaData:OnActivateTalent(msg)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.ActivateTalent,msg.treeId)\n"
+        "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.BlueStarSea_TreeActive)\n"
+        "end\n"
+        "function _M.OnStarTreeActivated(self,msg)\n"
+        "self.BlueStarSeaData:OnStarTreeActivated(msg)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.StarTreeActivated,msg.starTreeId)\n"
+        "end\n"
+        "function _M.OnWakeUp(self,msg)\n"
+        "self.BlueStarSeaData:OnWakeUp(msg)\n"
+        "RedDotMgr.Inst_get():RaiseRedDotEvent(RedDotID.BlueStarSea_Wake,true)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.WakeUp,msg.faqi)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaNetLogic.lua").write_text(
+        "function _M.CM_BlueStarSeaActivateTalentFun(self,treeId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaActivateTalent)\n"
+        "cm.treeId=treeId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaActivateTalentFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnActivateTalent(msg) end\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaStarTreeClaimFun(self,starTreeId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaStarTreeClaim)\n"
+        "cm.starTreeId=starTreeId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaStarTreeClaimFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnStarTreeActivated(msg) end\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaWakeFun(self,faqiId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaWake)\n"
+        "cm.faqiId=faqiId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaWakeFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnWakeUp(msg) end\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaLevelUpFun(self,faqiId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaLevelUp)\n"
+        "cm.faqiId=faqiId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.CM_BlueStarSeaStarUpFun(self,faqiId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaStarUp)\n"
+        "cm.faqiId=faqiId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaTreeDetailView.lua").write_text(
+        "function _M.OnClick(self)\n"
+        "if GameUtil.CheckCondition(self._NextCfg.condition) then\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaActivateTalentFun(self._NextCfg.id)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaDisplayItem.lua").write_text(
+        "function _M.OnClick(self)\n"
+        "if not BlueStarSeaMgr.Inst_get().Model:IsStarTreeActivated(self._Cfg.id) then\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaStarTreeClaimFun(self._Cfg.id)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaRitualImplementWakeView.lua").write_text(
+        "function _M.OnWakeClick(self)\n"
+        "if self.V_IsEnough and not self.V_IsMaxWake then\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaWakeFun(self.V_RitualImplementVO.faqiId)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "98006\tCM_BlueStarSeaLevelUp\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaLevelUp.lua\tpath\tpkg\n"
+        "98007\tSM_BlueStarSeaLevelUp\tserver_to_client\tplayer.bluestarsea\t2\tClientResult\tmessage\tSM_BlueStarSeaLevelUp.lua\tpath\tpkg\n"
+        "98008\tCM_BlueStarSeaStarUp\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaStarUp.lua\tpath\tpkg\n"
+        "98009\tSM_BlueStarSeaStarUp\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaStarUp.lua\tpath\tpkg\n"
+        "98010\tCM_BlueStarSeaActivateTalent\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaActivateTalent.lua\tpath\tpkg\n"
+        "98011\tSM_BlueStarSeaActivateTalent\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaActivateTalent.lua\tpath\tpkg\n"
+        "98012\tBlueStarSeaVO\tvalue_object\tplayer.bluestarsea\t3\tBaseVO\tmessage\tBlueStarSeaVO.lua\tpath\tpkg\n"
+        "98013\tBlueStarSeaFaqiVO\tvalue_object\tplayer.bluestarsea\t4\tBaseVO\tmessage\tBlueStarSeaFaqiVO.lua\tpath\tpkg\n"
+        "98024\tCM_BlueStarSeaStarTreeClaim\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaStarTreeClaim.lua\tpath\tpkg\n"
+        "98025\tSM_BlueStarSeaStarTreeClaim\tserver_to_client\tplayer.bluestarsea\t2\tClientResult\tmessage\tSM_BlueStarSeaStarTreeClaim.lua\tpath\tpkg\n"
+        "98026\tBlueStarSeaStarTreePointVO\tvalue_object\tplayer.bluestarsea\t3\tBaseVO\tmessage\tBlueStarSeaStarTreePointVO.lua\tpath\tpkg\n"
+        "98027\tCM_BlueStarSeaWake\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaWake.lua\tpath\tpkg\n"
+        "98028\tSM_BlueStarSeaWake\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaWake.lua\tpath\tpkg\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\tline\n"
+        "98006\tCM_BlueStarSeaLevelUp\t1\tfaqiId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaLevelUp.lua\t14\n"
+        "98007\tSM_BlueStarSeaLevelUp\t1\tfaqi\tBean\tBlueStarSeaFaqiVO\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaLevelUp.lua\t24\n"
+        "98008\tCM_BlueStarSeaStarUp\t1\tfaqiId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaStarUp.lua\t14\n"
+        "98009\tSM_BlueStarSeaStarUp\t1\tfaqi\tBean\tBlueStarSeaFaqiVO\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaStarUp.lua\t22\n"
+        "98010\tCM_BlueStarSeaActivateTalent\t1\ttreeId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaActivateTalent.lua\t14\n"
+        "98011\tSM_BlueStarSeaActivateTalent\t1\ttreeId\tInt\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaActivateTalent.lua\t14\n"
+        "98012\tBlueStarSeaVO\t1\tactivatedTreeIds\tMessageList2List\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaVO.lua\t30\n"
+        "98012\tBlueStarSeaVO\t2\tclaimedIds\tMessageList2List\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaVO.lua\t32\n"
+        "98012\tBlueStarSeaVO\t3\tawakenedFaqiIds\tMessageList2List\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaVO.lua\t33\n"
+        "98013\tBlueStarSeaFaqiVO\t1\tfaqiId\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t18\n"
+        "98013\tBlueStarSeaFaqiVO\t2\tlevel\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t19\n"
+        "98013\tBlueStarSeaFaqiVO\t3\tstar\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t20\n"
+        "98013\tBlueStarSeaFaqiVO\t4\twake\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t21\n"
+        "98024\tCM_BlueStarSeaStarTreeClaim\t1\tstarTreeId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaStarTreeClaim.lua\t14\n"
+        "98025\tSM_BlueStarSeaStarTreeClaim\t1\tstarTreeId\tInt\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaStarTreeClaim.lua\t16\n"
+        "98025\tSM_BlueStarSeaStarTreeClaim\t2\trewards\tMessageList2List\t\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaStarTreeClaim.lua\t17\n"
+        "98026\tBlueStarSeaStarTreePointVO\t1\tid\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaStarTreePointVO.lua\t16\n"
+        "98026\tBlueStarSeaStarTreePointVO\t2\tclaimed\tBool\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaStarTreePointVO.lua\t17\n"
+        "98026\tBlueStarSeaStarTreePointVO\t3\tconditionMet\tBool\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaStarTreePointVO.lua\t18\n"
+        "98027\tCM_BlueStarSeaWake\t1\tfaqiId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaWake.lua\t14\n"
+        "98028\tSM_BlueStarSeaWake\t1\tfaqi\tBean\tBlueStarSeaFaqiVO\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaWake.lua\t22\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_progression_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["tree_groups"] == 1
+    assert result["counts"]["tree_effect_curves"] == 1
+    assert result["counts"]["startree_sources"] == 1
+    assert result["counts"]["wake"] == 1
+    assert result["counts"]["packet_fields"] >= 21
+    assert result["counts"]["runtime_flows"] >= 8
+    assert "悟道果·淬灵域x2" in (output_dir / "hot_update_bluestarsea_progression_tree_groups.tsv").read_text(encoding="utf-8")
+    assert "2级=百分比:4%" in (output_dir / "hot_update_bluestarsea_progression_tree_effect_curves.tsv").read_text(encoding="utf-8")
+    assert "混沌本源·淬灵域x3" in (output_dir / "hot_update_bluestarsea_progression_startree_sources.tsv").read_text(encoding="utf-8")
+    assert "星海·淬灵域x1" in (output_dir / "hot_update_bluestarsea_progression_wake.tsv").read_text(encoding="utf-8")
+    assert "starTreeId" in (output_dir / "hot_update_bluestarsea_progression_packet_fields.tsv").read_text(encoding="utf-8")
+    assert "CM_BlueStarSeaWakeFun" in (output_dir / "hot_update_bluestarsea_progression_runtime_flows.tsv").read_text(encoding="utf-8")
+    assert "BlueStarSea 进化点、悟道树与觉醒探针" in (output_dir / "hot_update_bluestarsea_progression_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_star_evolution_probe_groups_star_rows_and_runtime(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_hash" / "text_assets"
+    blue_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "bluestarsea_hash" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    attribute_dir = export_root / "parsed_configs" / "Attribute"
+    blue_cfg_dir.mkdir(parents=True)
+    item_dir.mkdir(parents=True)
+    blue_game_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+    attribute_dir.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            if isinstance(value, dict):
+                body = ",".join(f"{key}={val}" for key, val in value.items())
+                return "{" + body + "}"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        item_dir / "Item.lua",
+        ["id", "name"],
+        [{"id": 29803, "name": "混沌本源·淬灵域"}],
+    )
+    write_config(
+        blue_cfg_dir / "Star.lua",
+        ["id", "faqiId", "group", "jie", "icon", "name", "star", "cost", "des", "faze", "attr"],
+        [
+            {"id": 1, "faqiId": 2, "group": 1, "jie": 1, "name": "鸿蒙洗髓", "star": 1, "cost": "Item|29803_1", "des": "【清浊】：星海之力+1%", "faze": "10190001", "attr": {"XINGHAI_ATK_RATE": 100}},
+            {"id": 2, "faqiId": 2, "group": 1, "jie": 2, "name": "鸿蒙洗髓", "star": 2, "cost": "Item|29803_1", "des": "【通脉】：每日首次提纯", "faze": "10190002", "attr": {"XINGHAI_ATK_RATE": 100}},
+            {"id": 31, "faqiId": 2, "group": 2, "jie": 1, "name": "万源铸本", "star": 31, "cost": "Item|29803_1", "des": "鸿蒙洗髓30阶后可激活；【万源】：星海之力+1%", "faze": "10200001", "attr": {"QUALIFICATIONS_RATE": 200}},
+        ],
+    )
+    (attribute_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"lua_symbol": "XINGHAI_ATK_RATE", "display_name": "星海之力", "group": "Ratio", "details": 15, "property_code": 2019, "sort": 1},
+                {"lua_symbol": "QUALIFICATIONS_RATE", "display_name": "天资加成", "group": "Ratio", "details": 7, "property_code": 96, "sort": 2},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaData.lua").write_text(
+        "function _M.OnStarUp(self,msg)\n"
+        "for _,faqi in Cipairs(self._SyncInfo.vo.faqiList)do\n"
+        "faqi.level=msg.faqi.level\n"
+        "faqi.star=msg.faqi.star\n"
+        "faqi.wake=msg.faqi.wake\n"
+        "end\n"
+        "end\n"
+        "function _M.GetStageCfgMap(self)\n"
+        "local cfgTb=DBMgr.Inst_get():GetConfigTable(ConfigName.BlueStarSea_Star)\n"
+        "return cfgTb\n"
+        "end\n"
+        "function _M.GetStageCfgByRitualImplementId(self,ritualImplementId,stage)\n"
+        "return self:GetStageListByRitualImplementId(ritualImplementId)[stage]\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaModel.lua").write_text(
+        "function _M.OnStarUp(self,msg)\n"
+        "self.BlueStarSeaData:OnStarUp(msg)\n"
+        "self:RaiseEvent(BlueStarSeaType.EventType.StarUp,msg.faqi)\n"
+        "end\n"
+        "function _M.GetStageCfgByRitualImplementId(self,id,stage)\n"
+        "return self.BlueStarSeaData:GetStageCfgByRitualImplementId(id,stage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaNetLogic.lua").write_text(
+        "function _M.CM_BlueStarSeaStarUpFun(self,faqiId)\n"
+        "local cm=SocketManager.Inst_get():GetMessageFromPools(_CM_BlueStarSeaStarUp)\n"
+        "cm.faqiId=faqiId\n"
+        "SocketManager.Inst_get():F_SendMsg(cm)\n"
+        "end\n"
+        "function _M.SM_BlueStarSeaStarUpFun(msg)\n"
+        "if msg.code==0 then BlueStarSeaMgr.Inst_get().Model:OnStarUp(msg) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaRitualImplementStageView.lua").write_text(
+        "function _M.UpdateStageUpPanel(self)\n"
+        "local starCfg=BlueStarSeaMgr.Inst_get().Model:GetStageCfgByRitualImplementId(self.V_RitualImplementVO.faqiId,currentStar+1)\n"
+        "local ItemCfg,costNum=GameUtil.GetItemIcon(starCfg.cost)\n"
+        "self.V_IsEnough=GameUtil.GetBackpackNumByItem(ItemCfg.id)>=costNum\n"
+        "end\n"
+        "function _M.UpdateSkills(self,currentStar)\n"
+        "local allStarCfgs=BlueStarSeaMgr.Inst_get().Model:GetStageListByRitualImplementId(self.V_RitualImplementVO.faqiId)\n"
+        "local unlockedCfg=nil\n"
+        "end\n"
+        "function _M.InitEvent(self)\n"
+        "BlueStarSeaMgr.Inst_get().NetLogic:CM_BlueStarSeaStarUpFun(self.V_RitualImplementVO.faqiId)\n"
+        "self:BinderEvent(BlueStarSeaMgr.Inst_get().Model,BlueStarSeaType.EventType.StarUp,self.F_OnStarUp)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaFaQiMainView.lua").write_text(
+        "function _M.SelectDefaultTab(self)\n"
+        "local starCfg=BlueStarSeaMgr.Inst_get().Model:GetStageCfgByRitualImplementId(self._FaqiId,1)\n"
+        "if starCfg then self.tabPanelGroup:ChangeToPanelByIndex(TabIndex.Stage) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (blue_game_dir / "BlueStarSeaSkillItem.lua").write_text(
+        "function _M.UpdateItem(self,cfg,unlocked)\n"
+        "self.Name:SetText(cfg.name)\n"
+        "self.Desc:SetText(cfg.des)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "98008\tCM_BlueStarSeaStarUp\tclient_to_server\tplayer.bluestarsea\t1\tBaseMessage\tmessage\tCM_BlueStarSeaStarUp.lua\tpath\tpkg\n"
+        "98009\tSM_BlueStarSeaStarUp\tserver_to_client\tplayer.bluestarsea\t1\tClientResult\tmessage\tSM_BlueStarSeaStarUp.lua\tpath\tpkg\n"
+        "98013\tBlueStarSeaFaqiVO\tvalue_object\tplayer.bluestarsea\t4\tBaseVO\tmessage\tBlueStarSeaFaqiVO.lua\tpath\tpkg\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\tline\n"
+        "98008\tCM_BlueStarSeaStarUp\t1\tfaqiId\tInt\t\tclient_to_server\tplayer.bluestarsea\tmessage\tCM_BlueStarSeaStarUp.lua\t14\n"
+        "98009\tSM_BlueStarSeaStarUp\t1\tfaqi\tBean\tBlueStarSeaFaqiVO\tserver_to_client\tplayer.bluestarsea\tmessage\tSM_BlueStarSeaStarUp.lua\t22\n"
+        "98013\tBlueStarSeaFaqiVO\t1\tfaqiId\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t18\n"
+        "98013\tBlueStarSeaFaqiVO\t2\tlevel\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t19\n"
+        "98013\tBlueStarSeaFaqiVO\t3\tstar\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t20\n"
+        "98013\tBlueStarSeaFaqiVO\t4\twake\tInt\t\tvalue_object\tplayer.bluestarsea\tmessage\tBlueStarSeaFaqiVO.lua\t21\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_star_evolution_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["groups"] == 2
+    assert result["counts"]["attr_curves"] == 2
+    assert result["counts"]["details"] == 3
+    assert result["counts"]["packet_fields"] >= 6
+    assert result["counts"]["runtime_flows"] >= 6
+    assert "混沌本源·淬灵域x2" in (output_dir / "hot_update_bluestarsea_star_evolution_groups.tsv").read_text(encoding="utf-8")
+    assert "星海之力=1%" in (output_dir / "hot_update_bluestarsea_star_evolution_groups.tsv").read_text(encoding="utf-8")
+    assert "天资加成\tRatio" in (output_dir / "hot_update_bluestarsea_star_attr_curves.tsv").read_text(encoding="utf-8")
+    assert "鸿蒙洗髓30阶后可激活" in (output_dir / "hot_update_bluestarsea_star_evolution_groups.tsv").read_text(encoding="utf-8")
+    assert "10190001" in (output_dir / "hot_update_bluestarsea_star_evolution_details.tsv").read_text(encoding="utf-8")
+    assert "faqiId" in (output_dir / "hot_update_bluestarsea_star_evolution_packet_fields.tsv").read_text(encoding="utf-8")
+    assert "CM_BlueStarSeaStarUpFun" in (output_dir / "hot_update_bluestarsea_star_evolution_runtime_flows.tsv").read_text(encoding="utf-8")
+    assert "BlueStarSea 吞噬进化 Star 探针" in (output_dir / "hot_update_bluestarsea_star_evolution_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_faze_effect_probe_links_resource_effects_and_runtime(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    faze_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_hash" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    faze_resource_dir = export_root / "parsed_configs" / "FazeResource"
+    faze_effect_dir = export_root / "parsed_configs" / "FazeEffectResource"
+    ani_effect_dir = export_root / "parsed_configs" / "AniEffect"
+    attribute_dir = export_root / "parsed_configs" / "Attribute"
+    for path in [blue_cfg_dir, faze_dir, packet_dir, faze_resource_dir, faze_effect_dir, ani_effect_dir, attribute_dir]:
+        path.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        blue_cfg_dir / "Star.lua",
+        ["id", "faqiId", "group", "jie", "name", "star", "des", "faze", "attr"],
+        [
+            {"id": 1, "faqiId": 2, "group": 1, "jie": 1, "name": "鸿蒙洗髓", "star": 1, "des": "额外获得道具", "faze": "10190001", "attr": {"XINGHAI_ATK_RATE": 100}},
+            {"id": 31, "faqiId": 2, "group": 2, "jie": 1, "name": "万源铸本", "star": 31, "des": "额外获得道具", "faze": "10200001", "attr": {"XINGHAI_ATK_RATE": 200}},
+        ],
+    )
+    write_config(blue_cfg_dir / "Tree.lua", ["id", "faqiId", "group", "level", "name", "des"], [])
+    write_config(
+        blue_cfg_dir / "Wake.lua",
+        ["id", "faqiId", "Wake", "des", "faze"],
+        [{"id": 1, "faqiId": 2, "Wake": 1, "des": "恢复速度提升", "faze": "10410001"}],
+    )
+    write_config(
+        blue_cfg_dir / "Charging.lua",
+        ["id", "times", "fazeId"],
+        [{"id": 1, "times": 1, "fazeId": "10230030"}],
+    )
+    (faze_resource_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 10190001, "name_plain": "蓝色星海升阶效果", "effects": 1019001, "tipStr_plain": "1413|鸿蒙洗髓：额外获得道具", "showCondition": "CL|999"},
+                {"id": 10200001, "name_plain": "蓝色星海升阶效果", "effects": 1020001, "tipStr_plain": "1293|万源铸本：额外获得道具", "showCondition": "CL|999"},
+                {"id": 10230030, "name_plain": "蓝色星海升阶效果", "effects": 1023030, "tipStr_plain": "1418|星海淬灵：额外获得道具", "showCondition": "CL|999"},
+                {"id": 10410001, "name_plain": "星海·淬灵域", "effects": 1041001, "tipStr_plain": "1265|星海·淬灵域：恢复速度提升;1430|【天凤传承】：获得额外道具奖励"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (faze_effect_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 1019001, "type": 823},
+                {"id": 1020001, "type": 824},
+                {"id": 1023030, "type": 825},
+                {"id": 1041001, "type": 843},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (ani_effect_dir / "rows.json").write_text(
+        json.dumps([{"reasonId": 1413, "baseId": [1], "effect": "demo_top_effect"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (attribute_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "lua_symbol": "XINGHAI_ATK_RATE",
+                    "display_name": "星海之力",
+                    "group": "Ratio",
+                    "details": 15,
+                    "property_code": 2019,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeNetLogic.lua").write_text(
+        "function _M.LuaFazeNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_FazeEffect:getId(),typeof(_SM_FazeEffect),self.SM_FazeEffectFun)\n"
+        "end\n"
+        "function _M.SM_FazeEffectFun(msg)\n"
+        "if msg.code==0 and msg.num>0 then FazeMgr.Inst_get().Model:FazeEffectTip(msg) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeModel.lua").write_text(
+        "function _M.FazeEffectTip(self,msg)\n"
+        "local cfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Gongfa_FazeResource,msg.fazeId)\n"
+        "FazeMgr.Inst_get():ShowTopSpecialEffect(msg.reason)\n"
+        "local tipsStrList=StringProxy.Split(cfg.tipStr,';')\n"
+        "FazeMgr.Inst_get().Model:RaiseEvent(FazeType.UpdateFazeEffect,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeData.lua").write_text(
+        "function _M.InitFazeAniEffect(self)\n"
+        "local cfgTb=DBMgr.Inst_get():GetConfigTable(ConfigName.Gongfa_AniEffect)\n"
+        "self.V_FazeAniEffect={}\n"
+        "end\n"
+        "function _M.GetFazeEffectCfgByReasonId(self,reasonId)\n"
+        "return self.V_FazeAniEffect[reasonId]\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeMgr.lua").write_text(
+        "function _M.CheckIsTalentFaze(self,fazeId)\n"
+        "local fazeResCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.Gongfa_FazeResource,fazeId)\n"
+        "local fazeResEffectCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.Gongfa_FazeEffectResource,fazeResCfg.effects)\n"
+        "if fazeResEffectCfg.type==FazeType.ServerFazeType.Talent then return true end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "34034\tSM_FazeEffect\tserver_to_client\tplayer.faze\t4\tClientResult\tmessage\tSM_FazeEffect.lua\tpath\tpkg\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\tline\n"
+        "34034\tSM_FazeEffect\t1\tfazeId\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t18\n"
+        "34034\tSM_FazeEffect\t2\teffectType\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t19\n"
+        "34034\tSM_FazeEffect\t3\tnum\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t20\n"
+        "34034\tSM_FazeEffect\t4\treason\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t21\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_faze_effect_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["links"] == 4
+    assert result["counts"]["effect_types"] == 4
+    assert result["counts"]["tip_codes"] == 5
+    assert result["counts"]["runtime_flows"] >= 4
+    assert result["counts"]["packet_fields"] == 4
+    assert "823" in (output_dir / "hot_update_bluestarsea_faze_effect_types.tsv").read_text(encoding="utf-8")
+    links_text = (output_dir / "hot_update_bluestarsea_faze_effect_links.tsv").read_text(encoding="utf-8")
+    types_text = (output_dir / "hot_update_bluestarsea_faze_effect_types.tsv").read_text(encoding="utf-8")
+    assert "鸿蒙洗髓：额外获得道具" in links_text
+    assert "XINGHAI_ATK_RATE" in links_text
+    assert "source_attr" in types_text
+    assert "XINGHAI_ATK_RATE=星海之力" in types_text
+    assert "demo_top_effect" in (output_dir / "hot_update_bluestarsea_faze_tip_codes.tsv").read_text(encoding="utf-8")
+    assert "SM_FazeEffect" in (output_dir / "hot_update_bluestarsea_faze_packet_fields.tsv").read_text(encoding="utf-8")
+    assert "FazeEffectTip" in (output_dir / "hot_update_bluestarsea_faze_runtime_flows.tsv").read_text(encoding="utf-8")
+    assert "BlueStarSea Faze 效果链路探针" in (output_dir / "hot_update_bluestarsea_faze_effect_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_faze_effect_catalog_probe_links_types_tips_and_config_refs(tmp_path):
+    export_root = tmp_path / "exports"
+    faze_resource_dir = export_root / "parsed_configs" / "FazeResource"
+    faze_effect_dir = export_root / "parsed_configs" / "FazeEffectResource"
+    ani_effect_dir = export_root / "parsed_configs" / "AniEffect"
+    special_dir = export_root / "parsed_configs" / "Special-GongfaJie"
+    for path in [faze_resource_dir, faze_effect_dir, ani_effect_dir, special_dir]:
+        path.mkdir(parents=True)
+
+    (faze_resource_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 101,
+                    "name_plain": "玄魔大法",
+                    "effects": 1001,
+                    "tipStr_plain": "1265|玄魔大法：真元自然恢复速度提升",
+                    "effectsDes_plain": "恢复速度+5%",
+                },
+                {
+                    "id": 102,
+                    "name_plain": "天凤妖元",
+                    "effects": 1002,
+                    "tipStr_plain": "1430|天凤妖元：获得额外道具奖励",
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (faze_effect_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 1001, "type": 804, "params": "P1"},
+                {"id": 1002, "type": 900, "attr": "A2"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (ani_effect_dir / "rows.json").write_text(
+        json.dumps([{"reasonId": 1265, "effect": "demo_top_effect"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (special_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "name_plain": "一重",
+                    "fazeId": 101,
+                    "feature": "1002",
+                    "describe_plain": "玄魔大法一重",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_effect_catalog_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["effect_types"] == 2
+    assert result["counts"]["faze_resources"] == 2
+    assert result["counts"]["tip_reasons"] == 2
+    assert result["counts"]["config_refs"] == 2
+    assert result["counts"]["by_target_kind"] == {"faze_resource": 1, "faze_effect_resource": 1}
+    assert "804" in (output_dir / "hot_update_faze_effect_catalog_types.tsv").read_text(encoding="utf-8")
+    assert "Special-GongfaJie" in (output_dir / "hot_update_faze_effect_catalog_config_refs.tsv").read_text(encoding="utf-8")
+    assert "demo_top_effect" in (output_dir / "hot_update_faze_effect_catalog_tip_reasons.tsv").read_text(encoding="utf-8")
+    assert "Faze 效果资源通用目录" in (output_dir / "hot_update_faze_effect_catalog_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_faze_source_semantics_probe_groups_direct_faze_sources(tmp_path):
+    export_root = tmp_path / "exports"
+    for table in ["FazeResource", "FazeEffectResource", "Item", "Special-GongfaJie", "FazeLevel", "WorshipReward", "GongfaUpgrade"]:
+        (export_root / "parsed_configs" / table).mkdir(parents=True)
+
+    (export_root / "parsed_configs" / "FazeResource" / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 101, "name_plain": "玄魔大法", "effects": 1001, "tipStr_plain": "1265|玄魔大法：恢复速度提升"},
+                {"id": 202, "name_plain": "膜拜法则", "effects": 2002, "tipStr_plain": "7|膜拜奖励提升"},
+                {"id": 303, "name_plain": "升级法则", "effects": 3003},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeEffectResource" / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 1001, "type": 804, "params": "P"},
+                {"id": 2002, "type": 13, "attr": {"FAZE_ATK_RATE": 200}},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "Item" / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 1, "name_plain": "玄魔石"},
+                {"id": 2, "name_plain": "膜拜礼"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "Special-GongfaJie" / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "gid": 10,
+                    "pin": 1,
+                    "jie": 1,
+                    "name_plain": "一重",
+                    "fazeId": 101,
+                    "consume": ["Item|1_2"],
+                    "describe_plain": "玄魔大法一重",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeLevel" / "rows.json").write_text(
+        json.dumps([{"id": 2, "fazeId": 303, "level": 1, "consume": "Item|1_1", "descript_plain": "升级"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "WorshipReward" / "rows.json").write_text(
+        json.dumps([{"id": 3, "fazeId": 202, "crossGroup": 2, "reward": "Item|2_1"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "GongfaUpgrade" / "rows.json").write_text(
+        json.dumps([{"id": 4, "gid": 20, "pin": 2, "fazeId": 999, "consume": ["Item|1_1"]}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_source_semantics_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rows_text = (output_dir / "hot_update_faze_source_semantics_rows.tsv").read_text(encoding="utf-8")
+    groups_text = (output_dir / "hot_update_faze_source_semantics_groups.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["source_rows"] == 4
+    assert result["counts"]["groups"] == 4
+    assert result["counts"]["unresolved_faze"] == 1
+    assert result["counts"]["unresolved_effect"] == 1
+    assert "玄魔石x2" in rows_text
+    assert "膜拜礼x1" in rows_text
+    assert "gongfa_jie_rule" in groups_text
+    assert "Faze 来源语义探针" in (output_dir / "hot_update_faze_source_semantics_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_tree_faze_usage_probe_keeps_unresolved_tree_ids_separate(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    blue_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "bluestarsea_hash" / "text_assets"
+    item_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_hash" / "text_assets"
+    for path in [
+        blue_cfg_dir,
+        blue_game_dir,
+        item_cfg_dir,
+        export_root / "parsed_configs" / "FazeResource",
+        export_root / "parsed_configs" / "FazeEffectResource",
+        export_root / "parsed_configs" / "Item",
+    ]:
+        path.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        blue_cfg_dir / "Tree.lua",
+        ["id", "faqiId", "group", "level", "name", "cost", "des", "faze"],
+        [
+            {"id": 6, "faqiId": 2, "group": 2, "level": 1, "name": "魔炁化魄", "cost": "Item|1_2", "des": "真实法则资源", "faze": "101"},
+            {"id": 16, "faqiId": 2, "group": 3, "level": 1, "name": "魔源归尘", "cost": "Item|1_3", "des": "未解析的树节点字段", "faze": "999"},
+        ],
+    )
+    write_config(
+        item_cfg_dir / "Item.lua",
+        ["id", "name", "descript"],
+        [{"id": 999, "name": "撞名道具", "descript": "用于验证未解析 Tree.faze 的跨表 ID 碰撞"}],
+    )
+    (blue_game_dir / "BlueStarSeaData.lua").write_text(
+        "function _M:GetTreeCfgById(id)\n"
+        "    return ConfigManager.Inst_get():GetCfg(ConfigName.BlueStarSea_Tree, id)\n"
+        "end\n"
+        "function _M:GetFazeEffect(userView)\n"
+        "    EntityMgr.Inst_get().EntityNetLogic:ReqSyncMotion(GameDefine.SyncMotionType.FaZeGetEff,userView.Entity.V_ID:ToString())\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeResource" / "rows.json").write_text(
+        json.dumps([{"id": 101, "name_plain": "树节点法则", "effects": 1001, "tipStr_plain": "7|树节点效果"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeEffectResource" / "rows.json").write_text(
+        json.dumps([{"id": 1001, "type": 787}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "Item" / "rows.json").write_text(
+        json.dumps([{"id": 1, "name_plain": "悟道果"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_tree_faze_usage_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rows_text = (output_dir / "hot_update_bluestarsea_tree_faze_usage_rows.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["tree_faze_rows"] == 2
+    assert result["counts"]["groups"] == 2
+    assert result["counts"]["resolved_faze_resource"] == 1
+    assert result["counts"]["unresolved_faze_resource"] == 1
+    assert result["counts"]["unresolved_config_refs"] == 1
+    assert result["counts"]["by_lua_usage_category"]["tree_config_flow"] >= 1
+    assert result["counts"]["by_lua_usage_category"]["faze_term"] >= 1
+    assert "tree_faze_field_read" not in result["counts"]["by_lua_usage_category"]
+    assert "悟道果x2" in rows_text
+    assert "unresolved_tree_local_or_external_id" in rows_text
+    assert "撞名道具" in (output_dir / "hot_update_bluestarsea_tree_faze_usage_unresolved_config_refs.tsv").read_text(encoding="utf-8")
+    assert "BlueStarSea Tree.faze 歧义探针" in (output_dir / "hot_update_bluestarsea_tree_faze_usage_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_faze_effect_update_event_probe_finds_subscribers_and_type_overlap(tmp_path):
+    export_root = tmp_path / "exports"
+    blue_cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "bluestarsea_hash" / "text_assets"
+    faze_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_hash" / "text_assets"
+    heaven_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "heaven_hash" / "text_assets"
+    for path in [
+        blue_cfg_dir,
+        faze_game_dir,
+        heaven_game_dir,
+        export_root / "parsed_configs" / "FazeResource",
+        export_root / "parsed_configs" / "FazeEffectResource",
+    ]:
+        path.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value)
+                return f"_A[{len(pool)}]"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("id", 1)
+            row_key = f"['{row_id}']" if isinstance(row_id, str) and not row_id.isdigit() else f"[{row_id}]"
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"{row_key}=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        blue_cfg_dir / "Star.lua",
+        ["id", "faqiId", "group", "jie", "star", "name", "des", "faze"],
+        [{"id": 1, "faqiId": 2, "group": 1, "jie": 1, "star": 1, "name": "鸿蒙洗髓", "des": "神通伤害", "faze": "101"}],
+    )
+    for name in ["Tree.lua", "Wake.lua", "Charging.lua"]:
+        write_config(blue_cfg_dir / name, ["id"], [])
+    (export_root / "parsed_configs" / "FazeResource" / "rows.json").write_text(
+        json.dumps([{"id": 101, "name_plain": "蓝色星海升阶效果", "effects": 1001}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeEffectResource" / "rows.json").write_text(
+        json.dumps([{"id": 1001, "type": 823}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (faze_game_dir / "FazeModel.lua").write_text(
+        "function _M.FazeEffectTip(self,msg)\n"
+        "    FazeMgr.Inst_get().Model:RaiseEvent(FazeType.UpdateFazeEffect,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (heaven_game_dir / "HeavenMgr.lua").write_text(
+        "local FA_ZE_EFFECT_TYPE_210=210\n"
+        "local FA_ZE_REASON_226=226\n"
+        "function _M.AddLocalEvent(self)\n"
+        "self._UpdateFazeEffect=function(msg)\n"
+        "if msg.effectType==FA_ZE_EFFECT_TYPE_210 then\n"
+        "if msg.reason==FA_ZE_REASON_226 then\n"
+        "self.Model:RaiseEvent(HeavenType.PlayFaZeOnceEff,UI_EFF_FA_ZE_DOUPO_HUOYU)\n"
+        "end\n"
+        "end\n"
+        "end\n"
+        "FazeMgr.Inst_get().Model:AddEventHandler(FazeType.UpdateFazeEffect,self._UpdateFazeEffect)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_effect_update_event_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    type_rows = (output_dir / "hot_update_faze_effect_update_event_types.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["listener_handlers"] == 1
+    assert result["counts"]["listener_registrations"] == 1
+    assert result["counts"]["raise_events"] == 1
+    assert result["counts"]["bluestarsea_effect_types"] == [823]
+    assert result["counts"]["overlap_bluestarsea_type_branches"] == 0
+    assert "210\tFalse" in type_rows
+    assert "FA_ZE_EFFECT_TYPE_210" in type_rows
+    assert "Faze UpdateFazeEffect 事件订阅探针" in (output_dir / "hot_update_faze_effect_update_event_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_faze_effect_lua_usage_probe_indexes_type_branches_and_params(tmp_path):
+    export_root = tmp_path / "exports"
+    faze_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_hash" / "text_assets"
+    role_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "role_hash" / "text_assets"
+    gongfa_game_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gongfanew_hash" / "text_assets"
+    for path in [
+        faze_game_dir,
+        role_game_dir,
+        gongfa_game_dir,
+        export_root / "parsed_configs" / "FazeResource",
+        export_root / "parsed_configs" / "FazeEffectResource",
+    ]:
+        path.mkdir(parents=True)
+
+    (faze_game_dir / "FazeType.lua").write_text(
+        "local _M={}\n"
+        "_M.ClientFazeType={Realm=1,PeakRace=2,LingShouZiZhi=9}\n"
+        "_M.ServerFazeType={Talent=11}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (role_game_dir / "RolePanelAttrItem.lua").write_text(
+        "function _M:SetFazeEffect(effectCfg,cfg)\n"
+        "if effectCfg and(effectCfg.type==755 and cfg.id=='ATTACK'or effectCfg.type==756 and cfg.id=='MAXHP')then\n"
+        "local rate=effectCfg.params\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (gongfa_game_dir / "GongFaRuleTipsView.lua").write_text(
+        "function _M:SetData()\n"
+        "local fazeEffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.Gongfa_FazeEffectResource,self.dataCfg.effects)\n"
+        "if self.dataCfg and self.dataCfg.type==FazeType.ClientFazeType.PeakRace then\n"
+        "local params=fazeEffCfg.params\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeEffectResource" / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 1001, "type": 755, "params": 1000},
+                {"id": 1002, "type": 756, "params": 2000},
+                {"id": 1003, "type": 2, "params": "1,2,3"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (export_root / "parsed_configs" / "FazeResource" / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 2001, "name_plain": "攻击加成", "effects": 1001},
+                {"id": 2002, "name_plain": "生命加成", "effects": 1002},
+                {"id": 2003, "name_plain": "巅峰赛红包", "effects": 1003},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_effect_lua_usage_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    type_rows = (output_dir / "hot_update_faze_effect_lua_usage_types.tsv").read_text(encoding="utf-8")
+    usage_rows = (output_dir / "hot_update_faze_effect_lua_usage_rows.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["usage_rows"] >= 4
+    assert result["counts"]["lua_used_effect_types"] >= 3
+    assert "type_branch" in result["counts"]["by_category"]
+    assert "\t755\t" not in type_rows
+    assert "755\t\tFalse" in type_rows
+    assert "756\t\tFalse" in type_rows
+    assert "2\t\tFalse" in type_rows
+    assert "params_use" in usage_rows
+    assert "FazeEffectResource Lua 使用覆盖探针" in (output_dir / "hot_update_faze_effect_lua_usage_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_bluestarsea_authority_boundary_probe_summarizes_client_intent_and_server_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_bluestarsea_net_packets.tsv").write_text(
+        "id\tname\tdirection\tfield_count\tfields\tregistered_callback\tnet_function\tclient_send_fields\tmsg_read_fields\tsource_file\tpackage\tpath\n"
+        "1\tCM_BlueStarSeaPurify\tclient_to_server\t1\t1:items:MessageList2List\t\tCM_BlueStarSeaPurifyFun\titems=items\t\tCM.lua\tpkg\tpath\n"
+        "2\tSM_BlueStarSeaPurify\tserver_to_client\t2\t1:energy:Int | 2:rewardResults:MessageList2List\tSM_BlueStarSeaPurifyFun\tSM_BlueStarSeaPurifyFun\t\trewardResults | energy\tSM.lua\tpkg\tpath\n"
+        "3\tSM_BlueStarSeaEnergyChange\tserver_to_client\t2\t1:energy:Int | 2:lastRecoverTime:Long\t\t\t\t\tSM_Energy.lua\tpkg\tpath\n"
+        "4\tBlueStarSeaPurifyItemVO\tvalue_object\t2\t1:itemId:Int | 2:count:Int\t\t\t\t\tVO.lua\tpkg\tpath\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_net_flows.tsv").write_text(
+        "flow_kind\tfunction\tpacket\targs\tassigned_fields\tvo_fields\tmsg_fields\tmodel_calls\tmgr_calls\tcode_guard\tsend_message\tcall_site_count\tstart_line\tend_line\tpath\n"
+        "send\tCM_BlueStarSeaPurifyFun\tCM_BlueStarSeaPurify\tself,items\titems=items\t\t\t\t\t\tCM_BlueStarSeaPurify\t2\t1\t5\tBlueStarSeaNetLogic.lua\n"
+        "receive\tSM_BlueStarSeaPurifyFun\tSM_BlueStarSeaPurify\tmsg\t\t\trewardResults | energy\tOnPurify(msg)\t\tmsg.code==0\t\t0\t6\t12\tBlueStarSeaNetLogic.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_model_events.tsv").write_text(
+        "function\tdata_calls\tevents\tred_dots\treward_calls\tmsg_fields\tstart_line\tend_line\tpath\n"
+        "OnPurify\tOnPurify(msg)\tPurify\t\tCommonRewardMgr:AddRewardResults(msg.rewardResults)\trewardResults | energy\t1\t5\tBlueStarSeaModel.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_data_state_updates.tsv").write_text(
+        "function\tcategory\ttarget\tsource\tline\ttext\tpath\n"
+        "OnPurify\tsync_field_write\tenergy\tmsg.energy\t10\tself._SyncInfo.vo.energy=msg.energy\tBlueStarSeaData.lua\n"
+        "OnPurify\tpurify_rewards\t\t\t11\tself._PurifyRewardResults=msg.rewardResults\tBlueStarSeaData.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_faze_packet_fields.tsv").write_text(
+        "packet\tdirection\tpacket_id\tfield_index\tfield_name\tread_method\ttype_hint\tfile\tline\n"
+        "SM_FazeEffect\tserver_to_client\t34034\t1\tfazeId\tInt\t\tSM_FazeEffect.lua\t18\n"
+        "SM_FazeEffect\tserver_to_client\t34034\t2\teffectType\tInt\t\tSM_FazeEffect.lua\t19\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_authority_boundary_probe(export_root=export_root)
+
+    assert result["counts"]["operations"] == 1
+    assert result["counts"]["gaps"] == 2
+    operations_text = (output_dir / "hot_update_bluestarsea_authority_operations.tsv").read_text(encoding="utf-8")
+    gaps_text = (output_dir / "hot_update_bluestarsea_authority_gaps.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_bluestarsea_authority_boundary_report.md").read_text(encoding="utf-8")
+    assert "server_reward_result" in operations_text
+    assert "rewardResults" in operations_text
+    assert "SM_BlueStarSeaEnergyChange" in gaps_text
+    assert "SM_FazeEffect" in gaps_text
+    assert "BlueStarSea 协议权威边界探针" in markdown_text
+
+
+def test_fanxiu_bluestarsea_protocol_semantics_probe_joins_packet_operation_and_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    output_dir.mkdir(parents=True)
+    protocol_dir.mkdir(parents=True)
+    (protocol_dir / "protocol_bluestarsea.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "98004\tCM_BlueStarSeaPurify\tclient_to_server\tplayer.bluestarsea\t1\titems:MessageList2List\titems:List\t1\t\tBlueStarSeaNetLogic\t1\tCM_BlueStarSeaPurify.lua\n"
+        "98005\tSM_BlueStarSeaPurify\tserver_to_client\tplayer.bluestarsea\t2\tenergy:Int, rewardResults:MessageList2List\tenergy:Int, rewardResults:List\t1\tSM_BlueStarSeaPurifyFun\tBlueStarSeaNetLogic\t1\tSM_BlueStarSeaPurify.lua\n"
+        "98021\tBlueStarSeaPurifyItemVO\tvalue_object\tplayer.bluestarsea\t2\titemId:Int, count:Int\titemId:Int, count:Int\t0\t\t\t1\tBlueStarSeaPurifyItemVO.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_authority_operations.tsv").write_text(
+        "operation\tclient_packet\tclient_fields\tclient_call_sites\tserver_packet\tserver_fields\tmodel_events\tstate_writes\traised_events\tred_dots\treward_calls\tauthority_class\tlocal_preview_note\n"
+        "Purify\tCM_BlueStarSeaPurify\titems=items\t2\tSM_BlueStarSeaPurify\t1:energy:Int | 2:rewardResults:MessageList2List\tOnPurify\tsync_field_write:energy<=msg.energy | purify_rewards\tPurify\t\tCommonRewardMgr:AddRewardResults(msg.rewardResults)\tserver_reward_result\t本地组装材料，结果由服务端回包确认。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_authority_packets.tsv").write_text(
+        "packet\tdirection\trole\tfields\tnet_function\tregistered_callback\n"
+        "CM_BlueStarSeaPurify\tclient_to_server\tclient_intent\t1:items:MessageList2List\tCM_BlueStarSeaPurifyFun\t\n"
+        "SM_BlueStarSeaPurify\tserver_to_client\tserver_state_or_result\t1:energy:Int | 2:rewardResults:MessageList2List\tSM_BlueStarSeaPurifyFun\tSM_BlueStarSeaPurifyFun\n"
+        "BlueStarSeaPurifyItemVO\tvalue_object\tvalue_object\t1:itemId:Int | 2:count:Int\t\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_authority_gaps.tsv").write_text(
+        "category\tsubject\tevidence\tmeaning\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_bluestarsea_net_flows.tsv").write_text(
+        "flow_kind\tfunction\tpacket\targs\tassigned_fields\tvo_fields\tmsg_fields\tmodel_calls\tmgr_calls\tcode_guard\tsend_message\tcall_site_count\tstart_line\tend_line\tpath\n"
+        "send\tCM_BlueStarSeaPurifyFun\tCM_BlueStarSeaPurify\tself,items\titems=items\t\t\t\t\t\tCM_BlueStarSeaPurify\t2\t1\t5\tBlueStarSeaNetLogic.lua\n"
+        "receive\tSM_BlueStarSeaPurifyFun\tSM_BlueStarSeaPurify\tmsg\t\t\trewardResults | energy\tOnPurify(msg)\t\tmsg.code==0\t\t0\t6\t12\tBlueStarSeaNetLogic.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_bluestarsea_protocol_semantics_probe(export_root=export_root)
+    semantics_text = (output_dir / "hot_update_bluestarsea_protocol_semantics.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_bluestarsea_protocol_semantic_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_bluestarsea_protocol_semantics_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["semantic_rows"] == 3
+    assert result["counts"]["edge_rows"] >= 4
+    assert result["counts"]["operations"] == 1
+    assert "CM_BlueStarSeaPurify" in semantics_text
+    assert "客户端提交 Purify 操作意图" in semantics_text
+    assert "SM_BlueStarSeaPurifyFun" in semantics_text
+    assert "server_reward_result" in semantics_text
+    assert "paired_with" in edges_text
+    assert "writes_state" in edges_text
+    assert "BlueStarSea 协议语义地图" in markdown_text
+
+
+def test_fanxiu_blld_authority_boundary_probe_marks_finish_summary_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_blld_net_packets.tsv").write_text(
+        "id\tname\tdirection\tfield_count\tfields\tregistered_callback\tnet_function\tclient_send_fields\tmsg_read_fields\tsource_file\tpackage\tpath\n"
+        "1\tCM_BlldFinishAndReward\tclient_to_server\t4\t1:levelId:Int | 2:findReward:MessageList2List | 3:success:Bool | 4:passRate:Int\t\tCM_BlldFinishAndRewardFun\tlevelId=levelId | findReward=findReward | success=success | passRate=passRate\t\tCM.lua\tpkg\tpath\n"
+        "2\tSM_BlldFinishAndReward\tserver_to_client\t3\t1:levelId:Int | 2:findResults:MessageList2List | 3:passResults:MessageList2List\tSM_BlldFinishAndRewardFun\tSM_BlldFinishAndRewardFun\t\tfindResults | passResults\tSM.lua\tpkg\tpath\n"
+        "3\tCM_BlldFind\tclient_to_server\t1\t1:levelId:Int\t\t\t\t\tCM_Find.lua\tpkg\tpath\n"
+        "4\tSM_BlldFind\tserver_to_client\t2\t1:levelId:Int | 2:hitRewardGroupId:MessageList2List\t\t\t\t\tSM_Find.lua\tpkg\tpath\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_net_flows.tsv").write_text(
+        "flow_kind\tfunction\tpacket\targs\tassigned_fields\tvo_fields\tmsg_fields\tmodel_calls\tmgr_calls\tcode_guard\tsend_message\tcall_site_count\tstart_line\tend_line\tpath\n"
+        "send\tCM_BlldFinishAndRewardFun\tCM_BlldFinishAndReward\tself,levelId,findReward,success\tlevelId=levelId | findReward=findReward | success=success | passRate=passRate\t\t\t\t\t\tCM_BlldFinishAndReward\t1\t1\t8\tBLLDNetLogic.lua\n"
+        "receive\tSM_BlldFinishAndRewardFun\tSM_BlldFinishAndReward\tmsg\t\t\tfindResults | passResults\tSetFinishAndReward(msg)\t\tmsg.code==0\t\t0\t9\t16\tBLLDNetLogic.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_runtime_anomalies.tsv").write_text(
+        "type\tsubject\tevidence\tpath\tline\n"
+        "packet_not_registered_in_netlogic\tCM_BlldFind\tpacket index 中存在，但 BLLDNetLogic.lua 未注册\tBLLDNetLogic.lua\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_finish_flow_summary.tsv").write_text(
+        "category\tevidence_count\tfiles\n"
+        "finish_send\t20\tBLLDMgr.lua\n"
+        "server_return\t37\tBLLDModel.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_blld_authority_boundary_probe(export_root=export_root)
+
+    assert result["counts"]["operations"] == 1
+    operations_text = (output_dir / "hot_update_blld_authority_operations.tsv").read_text(encoding="utf-8")
+    gaps_text = (output_dir / "hot_update_blld_authority_gaps.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_blld_authority_boundary_report.md").read_text(encoding="utf-8")
+    assert "client_battle_summary_server_reward" in operations_text
+    assert "findReward" in operations_text
+    assert "CM_BlldFind" in gaps_text
+    assert "BLLD 协议权威边界探针" in markdown_text
+
+
+def test_fanxiu_blld_protocol_semantics_probe_marks_finish_summary_fields(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    output_dir.mkdir(parents=True)
+    protocol_dir.mkdir(parents=True)
+    (protocol_dir / "protocol_blld.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "97336\tCM_BlldFinishAndReward\tclient_to_server\tworld.blld\t4\tlevelId:Int, findReward:MessageList2List, success:Bool, passRate:Int\tlevelId:Int, findReward:List, success:Bool, passRate:Int\t1\t\tBLLDNetLogic\t1\tCM_BlldFinishAndReward.lua\n"
+        "97337\tSM_BlldFinishAndReward\tserver_to_client\tworld.blld\t4\tlevelId:Int, findResults:MessageList2List, passResults:MessageList2List, success:Bool\tlevelId:Int, findResults:List, passResults:List, success:Bool\t1\tSM_BlldFinishAndRewardFun\tBLLDNetLogic\t1\tSM_BlldFinishAndReward.lua\n"
+        "97341\tBlldFindRewardItemVO\tvalue_object\tworld.blld\t2\trewardGroupId:Int, dropCount:Int\trewardGroupId:Int, dropCount:Int\t0\t\t\t1\tBlldFindRewardItemVO.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_authority_operations.tsv").write_text(
+        "operation\tclient_packet\tclient_fields\tclient_call_sites\tserver_packet\tserver_fields\tmsg_fields\tstate_sinks\tauthority_class\tlocal_preview_note\n"
+        "FinishAndReward\tCM_BlldFinishAndReward\tlevelId=levelId | success=success | passRate=passRate | findReward:Add()\t1\tSM_BlldFinishAndReward\t1:levelId:Int | 2:findResults:MessageList2List | 3:passResults:MessageList2List | 4:success:Bool\tcode\tSetFinishAndReward(msg) | RaiseEvent(BLLDType.EventType.FinishAndReward) | server_return_evidence=37\tclient_battle_summary_server_reward\t客户端提交 levelId/findReward/success/passRate 作为结算摘要。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_authority_packets.tsv").write_text(
+        "packet\tdirection\trole\tfields\tnet_function\tregistered_callback\n"
+        "CM_BlldFinishAndReward\tclient_to_server\tclient_intent\t1:levelId:Int | 2:findReward:MessageList2List | 3:success:Bool | 4:passRate:Int\tCM_BlldFinishAndRewardFun\t\n"
+        "SM_BlldFinishAndReward\tserver_to_client\tserver_state_or_result\t1:levelId:Int | 2:findResults:MessageList2List | 3:passResults:MessageList2List | 4:success:Bool\tSM_BlldFinishAndRewardFun\tSM_BlldFinishAndRewardFun\n"
+        "BlldFindRewardItemVO\tvalue_object\tvalue_object\t1:rewardGroupId:Int | 2:dropCount:Int\t\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_authority_gaps.tsv").write_text(
+        "category\tsubject\tevidence\tmeaning\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_net_flows.tsv").write_text(
+        "flow_kind\tfunction\tpacket\targs\tassigned_fields\tvo_fields\tmsg_fields\tmodel_calls\tmgr_calls\tcode_guard\tsend_message\tcall_site_count\tstart_line\tend_line\tpath\n"
+        "send\tCM_BlldFinishAndRewardFun\tCM_BlldFinishAndReward\tself,levelId,findReward,success\tlevelId=levelId | success=success | passRate=passRate | findReward:Add()\trewardGroupId=k | dropCount=v\t\tGetProgressVal()\t\t\tyes\t1\t167\t189\tBLLDNetLogic.lua\n"
+        "receive\tSM_BlldFinishAndRewardFun\tSM_BlldFinishAndReward\tmsg\t\t\tcode\tSetFinishAndReward(msg) | RaiseEvent(BLLDType.EventType.FinishAndReward)\tSceneMgr:ExitCurScene()\tmsg.code==0\t\t0\t132\t142\tBLLDNetLogic.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_blld_protocol_semantics_probe(export_root=export_root)
+    semantics_text = (output_dir / "hot_update_blld_protocol_semantics.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_blld_protocol_semantic_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_blld_protocol_semantics_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["semantic_rows"] == 3
+    assert result["counts"]["edge_rows"] >= 7
+    assert "client_battle_summary_server_reward" in semantics_text
+    assert "客户端提交本地战斗结算摘要" in semantics_text
+    assert "SM_BlldFinishAndRewardFun" in semantics_text
+    assert "submits_summary_field" in edges_text
+    assert "updates_or_triggers" in edges_text
+    assert "BLLD 协议语义地图" in markdown_text
+
+
+def test_fanxiu_faze_authority_boundary_probe_marks_server_rule_notification(tmp_path):
+    export_root = tmp_path / "exports"
+    faze_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_hash" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    faze_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+    (faze_dir / "FazeNetLogic.lua").write_text(
+        'local _CM_UpFazeLevel=require"GameSystem.Game.Message.module.player.faze.packet.CM_UpFazeLevel"\n'
+        'local _SM_UpFazeLevel=require"GameSystem.Game.Message.module.player.faze.packet.SM_UpFazeLevel"\n'
+        'local _SM_FazeEffect=require"GameSystem.Game.Message.module.player.faze.packet.SM_FazeEffect"\n'
+        "function _M.LuaFazeNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_UpFazeLevel:getId(),typeof(_CM_UpFazeLevel))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_UpFazeLevel:getId(),typeof(_SM_UpFazeLevel),self.SM_UpFazeLevelFun)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_FazeEffect:getId(),typeof(_SM_FazeEffect),self.SM_FazeEffectFun)\n"
+        "end\n"
+        "function _M.CM_UpFazeLevelFun(self,fazeId)\n"
+        "local CM_UpFazeLevel=SocketManager.Inst_get():GetMessageFromPools(_CM_UpFazeLevel)\n"
+        "CM_UpFazeLevel.fazeId=fazeId\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_UpFazeLevel)\n"
+        "end\n"
+        "function _M.SM_UpFazeLevelFun(msg)\n"
+        "if msg.code==0 then FazeMgr.Inst_get().Model.FazeData:UpdateFazeInfoVOS(msg.fazeInfoVO) end\n"
+        "end\n"
+        "function _M.SM_FazeEffectFun(msg)\n"
+        "if msg.code==0 and msg.num>0 then FazeMgr.Inst_get().Model:FazeEffectTip(msg) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazePanel.lua").write_text(
+        "function _M.Click(self,fazeId)\n"
+        "FazeMgr.Inst_get().NetLogic:CM_UpFazeLevelFun(fazeId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "34035\tCM_UpFazeLevel\tclient_to_server\tplayer.faze\t1\tBaseMessage\tmessage\tCM_UpFazeLevel.lua\tpath\tpkg\n"
+        "34036\tSM_UpFazeLevel\tserver_to_client\tplayer.faze\t1\tClientResult\tmessage\tSM_UpFazeLevel.lua\tpath\tpkg\n"
+        "34034\tSM_FazeEffect\tserver_to_client\tplayer.faze\t4\tClientResult\tmessage\tSM_FazeEffect.lua\tpath\tpkg\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\tline\n"
+        "34035\tCM_UpFazeLevel\t1\tfazeId\tInt\t\tclient_to_server\tplayer.faze\tmessage\tCM_UpFazeLevel.lua\t18\n"
+        "34036\tSM_UpFazeLevel\t1\tfazeInfoVO\tBean\tFazeInfoVO\tserver_to_client\tplayer.faze\tmessage\tSM_UpFazeLevel.lua\t18\n"
+        "34034\tSM_FazeEffect\t1\tfazeId\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t18\n"
+        "34034\tSM_FazeEffect\t2\teffectType\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t19\n"
+        "34034\tSM_FazeEffect\t3\tnum\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t20\n"
+        "34034\tSM_FazeEffect\t4\treason\tInt\t\tserver_to_client\tplayer.faze\tmessage\tSM_FazeEffect.lua\t21\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_authority_boundary_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["operations"] == 2
+    operations_text = (output_dir / "hot_update_faze_authority_operations.tsv").read_text(encoding="utf-8")
+    packets_text = (output_dir / "hot_update_faze_authority_packets.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_faze_authority_boundary_report.md").read_text(encoding="utf-8")
+    assert "server_rule_notification" in operations_text
+    assert "CM_UpFazeLevel" in operations_text
+    assert "server_push_or_notification" in packets_text
+    assert "Faze 法则协议权威边界探针" in markdown_text
+
+
+def test_fanxiu_faze_protocol_semantics_probe_expands_rule_notification_fields(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    output_dir.mkdir(parents=True)
+    protocol_dir.mkdir(parents=True)
+    (protocol_dir / "protocol_faze.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "34034\tSM_FazeEffect\tserver_to_client\tplayer.faze\t4\tfazeId:Int, effectType:Int, num:Int, reason:Int\tfazeId:Int, effectType:Int, num:Int, reason:Int\t1\tSM_FazeEffectFun\tFazeNetLogic\t1\tSM_FazeEffect.lua\n"
+        "34018\tFazeInfoVO\tvalue_object\tplayer.faze\t4\tfazeResId:Int, endTime:Long, npcId:Int, level:Int\tfazeResId:Int, endTime:Long, npcId:Int, level:Int\t0\t\t\t1\tFazeInfoVO.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_faze_authority_operations.tsv").write_text(
+        "operation\tclient_packet\tclient_fields\tclient_call_sites\tserver_packet\tserver_fields\tmsg_fields\tstate_sinks\tauthority_class\tlocal_note\n"
+        "FazeEffect\t\t\t\tSM_FazeEffect\t1:fazeId:Int | 2:effectType:Int | 3:num:Int | 4:reason:Int\tcode | num\tFazeEffectTip(msg)\tserver_rule_notification\t服务端主动下发规则效果触发。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_faze_authority_packets.tsv").write_text(
+        "packet\tdirection\trole\tfields\tnet_function\tregistered_callback\n"
+        "SM_FazeEffect\tserver_to_client\tserver_push_or_notification\t1:fazeId:Int | 2:effectType:Int | 3:num:Int | 4:reason:Int\tSM_FazeEffectFun\tSM_FazeEffectFun\n"
+        "FazeInfoVO\tvalue_object\tvalue_object\t1:fazeResId:Int | 2:endTime:Long | 3:npcId:Int | 4:level:Int\t\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_faze_authority_gaps.tsv").write_text(
+        "category\tsubject\tevidence\tmeaning\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_faze_net_flows.tsv").write_text(
+        "flow_kind\tfunction\tpacket\targs\tassigned_fields\tvo_fields\tmsg_fields\tmodel_calls\tmgr_calls\tcode_guard\tsend_message\tcall_site_count\tstart_line\tend_line\tpath\n"
+        "receive\tSM_FazeEffectFun\tSM_FazeEffect\tmsg\t\t\tcode | num\tFazeEffectTip(msg)\t\tmsg.code==0\t\t0\t136\t141\tFazeNetLogic.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_faze_protocol_semantics_probe(export_root=export_root)
+    semantics_text = (output_dir / "hot_update_faze_protocol_semantics.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_faze_protocol_semantic_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_faze_protocol_semantics_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["semantic_rows"] == 2
+    assert result["counts"]["edge_rows"] >= 6
+    assert "server_rule_notification" in semantics_text
+    assert "服务端主动下发规则效果触发" in semantics_text
+    assert "carries_rule_field" in edges_text
+    assert "effectType" in edges_text
+    assert "FazeEffectTip(msg)" in edges_text
+    assert "Faze 协议语义地图" in markdown_text
+
+
+def test_fanxiu_gongfa_protocol_semantics_probe_links_view_and_attr_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    protocol_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (protocol_dir / "protocol_gongfa.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "30740\tCM_GongFaView\tclient_to_server\tplayer.gongfa\t0\t\t\t1\t\tGongFaNewNetLogic\t1\tCM_GongFaView.lua\n"
+        "30741\tSM_GongFaView\tserver_to_client\tplayer.gongfa\t5\tactives:MessageMap2Dic, skillList:MessageList2List\tactives:Map, skillList:List\t1\tSM_GongFaViewFun\tGongFaNewNetLogic\t1\tSM_GongFaView.lua\n"
+        "30744\tCM_GongFaUpgrade\tclient_to_server\tplayer.gongfa\t3\ttype:Int, baseId:Int, times:Int\ttype:Int, baseId:Int, times:Int\t1\t\tGongFaNewNetLogic\t1\tCM_GongFaUpgrade.lua\n"
+        "30745\tSM_GongFaUpgrade\tserver_to_client\tplayer.gongfa\t2\tgongfa:Bean<GongFaItemVO>, attrs:Bean<ChangedAttrsVo>\tgongfa:Bean, attrs:Bean\t1\tSM_GongFaUpgradeFun\tGongFaNewNetLogic\t1\tSM_GongFaUpgrade.lua\n"
+        "30742\tGongFaItemVO\tvalue_object\tplayer.gongfa\t2\tgrade:Int, star:Int\tgrade:Int, star:Int\t0\t\t\t1\tGongFaItemVO.lua\n"
+        "35713\tCM_GongFaHomeMakeCombine\tclient_to_server\tplayer.gongfahomemake\t2\tmainId:Int, assist1:Int\tmainId:Int, assist1:Int\t1\t\tGongfahomemakeNetLogic\t1\tCM_GongFaHomeMakeCombine.lua\n"
+        "35714\tSM_GongFaHomeMakeCombine\tserver_to_client\tplayer.gongfahomemake\t1\thomeMakeVO:Bean<GongFaHomeMakeVO>\thomeMakeVO:Bean\t1\tSM_GongFaHomeMakeCombineFun\tGongfahomemakeNetLogic\t1\tSM_GongFaHomeMakeCombine.lua\n"
+        "35710\tGongFaHomeMakeVO\tvalue_object\tplayer.gongfahomemake\t2\tskillCommonVO:Bean, isLight:Bool\tskillCommonVO:Bean, isLight:Bool\t0\t\t\t1\tGongFaHomeMakeVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_gongfa_state.tsv").write_text(
+        "flow_stage\trow_kind\tpacket_name\tsource_file\tfile_name\tfunction_name\tline\tfield_refs\truntime_effect\tauthority_note\tcode\n"
+        "model_view_apply\tdispatch_view_to_model\tSM_GongFaView\tGongFaNewNetLogic.lua\tGongFaNewNetLogic.lua\tSM_GongFaViewFun\t10\tSM_GongFaView.actives\t把 SM_GongFaView 交给 GongFaNewModel:SetGongFaInfo。\t可见 Lua 证据\tGongFaNewMgr.Inst_get().Model:SetGongFaInfo(msg)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_gongfa_attr_change.tsv").write_text(
+        "flow_stage\trow_kind\tpacket_name\tsource_file\tfile_name\tfunction_name\tline\tfield_refs\truntime_effect\tauthority_note\tcode\n"
+        "single_gongfa_attr_apply\tupdate_gongfa_vo\tSM_GongFaUpgrade\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgrade\t20\tSM_GongFaUpgrade.gongfa\t写入升级后的 GongFaItemVO。\t可见 Lua 证据\tself.GongFaNewData:UpdateGongFaVo(msg.gongfa)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_packets.tsv").write_text(
+        "id\tname\tpacket_role\tdirection\tfield_count\tfields\tfile\trelative_path\n"
+        "35713\tCM_GongFaHomeMakeCombine\tcompose\tclient_to_server\t2\tmainId:Int, assist1:Int\tCM_GongFaHomeMakeCombine.lua\tpath\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_protocol_semantics_probe(export_root=export_root)
+    semantics_text = (output_dir / "hot_update_gongfa_protocol_semantics.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_protocol_semantic_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_protocol_semantics_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["semantic_rows"] == 8
+    assert result["counts"]["operations"] == 3
+    assert "server_snapshot" in semantics_text
+    assert "server_attr_or_progress_result" in semantics_text
+    assert "server_managed_custom_gongfa_state" in semantics_text
+    assert "SetGongFaInfo" in semantics_text
+    assert "updates_or_triggers" in edges_text
+    assert "carries_value_object" in edges_text
+    assert "Gongfa 协议语义地图" in markdown_text
+
+
+def test_fanxiu_gongfa_upgrade_times_flow_probe_marks_server_result_application(tmp_path):
+    export_root = tmp_path / "exports"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    lingjie_dir.mkdir(parents=True)
+    (lingjie_dir / "lingjie_runtime_gongfa_attr_change.tsv").write_text(
+        "flow_stage\trow_kind\tpacket_name\tsource_file\tfile_name\tfunction_name\tline\tfield_refs\truntime_effect\tauthority_note\tcode\n"
+        "client_request\tfill_request_field\tCM_GongFaUpgradeTimes\tGongFaNewNetLogic.lua\tGongFaNewNetLogic.lua\tCM_GongFaUpgradeTimesFun\t10\tCM_GongFaUpgradeTimes.upgradeList\t写入请求字段。\t可见 Lua 证据\tCM_GongFaUpgradeTimes.upgradeList=upgradeList\n"
+        "netlogic_response_dispatch\tdispatch_upgrade_times_to_model\tSM_GongFaUpgradeTimes\tGongFaNewNetLogic.lua\tGongFaNewNetLogic.lua\tSM_GongFaUpgradeTimesFun\t20\t\t把批量升级回包交给 GongFaNewModel:GongFaUpgradeTimes。\t可见 Lua 证据\tGongFaNewMgr.Inst_get().Model:GongFaUpgradeTimes(msg)\n"
+        "batch_gongfa_attr_apply\titerate_upgrade_result_list\tSM_GongFaUpgradeTimes\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgradeTimes\t30\tSM_GongFaUpgradeTimes.upgradeList\t遍历服务端批量升级结果列表。\t可见 Lua 证据\tfor k,v in Cipairs(msg.upgradeList)do\n"
+        "batch_gongfa_attr_apply\tupdate_batch_gongfa_vo\tSM_GongFaUpgradeTimes\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgradeTimes\t31\tSM_GongFaUpgradeTimes.upgradeList[].gongfa\t逐个写入升级后的 GongFaItemVO。\t可见 Lua 证据\tself.GongFaNewData:UpdateGongFaVo(v.gongfa)\n"
+        "batch_gongfa_attr_apply\tmerge_batch_add_attr\tSM_GongFaUpgradeTimes\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgradeTimes\t40\tChangedAttrsVo.addAttrs\t把多次 addAttrs 累加到聚合 VO。\t可见 Lua 证据\tallAttrs.addAttrs:LuaDic_AddOrSetItem(key,endNum)\n"
+        "batch_gongfa_attr_apply\ttake_last_final_attrs\tSM_GongFaUpgradeTimes\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgradeTimes\t41\tChangedAttrsVo.finalAttrs\t把最后一次升级的 finalAttrs 作为最终属性值。\t可见 Lua 证据\tallAttrs.finalAttrs=v.attrs.finalAttrs\n"
+        "batch_gongfa_attr_apply\tapply_batch_upgrade_attrs\tSM_GongFaUpgradeTimes\tGongFaNewModel.lua\tGongFaNewModel.lua\tGongFaUpgradeTimes\t50\tGameUtil.DealAttrChangeByModule\t把聚合 ChangedAttrsVo 交给角色属性通用写入链。\t可见 Lua 证据\tGameUtil.DealAttrChangeByModule(allAttrs,LusuoLong.FromNumber(exp))\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_upgrade_times_flow_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    flow_text = (output_dir / "hot_update_gongfa_upgrade_times_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_upgrade_times_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_upgrade_times_flow_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["flow_rows"] == 7
+    assert "CM_GongFaUpgradeTimes.upgradeList" in flow_text
+    assert "updates" in edges_text
+    assert "GongFaNewData:UpdateGongFaVo" in edges_text
+    assert "GameUtil.DealAttrChangeByModule" in edges_text
+    assert "客户端上行只提交批量升级请求列表" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_lifecycle_probe_links_packets_cache_and_make_id(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    protocol_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (protocol_dir / "protocol_gongfa.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "35715\tCM_GongFaHomeMakeList\tclient_to_server\tplayer.gongfahomemake\t2\ttype:Int, skillType:Int\ttype:Int, skillType:Int\t1\t\tGongfahomemakeNetLogic\t1\tCM_GongFaHomeMakeList.lua\n"
+        "35716\tSM_GongFaHomeMakeList\tserver_to_client\tplayer.gongfahomemake\t1\thomeMakeVOS:Map<GongFaHomeMakeScopeListVO>\thomeMakeVOS:Map\t1\tSM_GongFaHomeMakeListFun\tGongfahomemakeNetLogic\t1\tSM_GongFaHomeMakeList.lua\n"
+        "35714\tSM_GongFaHomeMakeCombine\tserver_to_client\tplayer.gongfahomemake\t1\thomeMakeVO:Bean<GongFaHomeMakeVO>\thomeMakeVO:Bean\t1\tSM_GongFaHomeMakeCombineFun\tGongfahomemakeNetLogic\t1\tSM_GongFaHomeMakeCombine.lua\n"
+        "35750\tSM_UpdateGongFaHomeMakeLearn\tserver_to_client\tplayer.gongfahomemake\t1\thomeMakeVO:Bean<GongFaHomeMakeVO>\thomeMakeVO:Bean\t1\tSM_UpdateGongFaHomeMakeLearnFun\tGongfahomemakeNetLogic\t1\tSM_UpdateGongFaHomeMakeLearn.lua\n"
+        "35710\tGongFaHomeMakeVO\tvalue_object\tplayer.gongfahomemake\t1\tskillCommonVO:Bean<CreateSkillCommonVO>\tskillCommonVO:Bean\t0\t\t\t1\tGongFaHomeMakeVO.lua\n"
+        "35711\tGongFaHomeMakeScopeListVO\tvalue_object\tplayer.gongfahomemake\t1\tskillTypeMap:Map<GongFaHomeMakeListVO>\tskillTypeMap:Map\t0\t\t\t1\tGongFaHomeMakeScopeListVO.lua\n"
+        "35712\tGongFaHomeMakeListVO\tvalue_object\tplayer.gongfahomemake\t1\thomeMakeVOList:List<GongFaHomeMakeVO>\thomeMakeVOList:List\t0\t\t\t1\tGongFaHomeMakeListVO.lua\n"
+        "35709\tCreateSkillCommonVO\tvalue_object\tplayer.gongfahomemake\t1\tid:Long\tid:Long\t0\t\t\t1\tCreateSkillCommonVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_packets.tsv").write_text(
+        "id\tname\tpacket_role\tdirection\tfield_count\tfields\tfile\trelative_path\n"
+        "35715\tCM_GongFaHomeMakeList\tlist_filter\tclient_to_server\t2\ttype:Int, skillType:Int\tCM_GongFaHomeMakeList.lua\tpath\n"
+        "35716\tSM_GongFaHomeMakeList\tlist_filter\tserver_to_client\t1\thomeMakeVOS:Map\tSM_GongFaHomeMakeList.lua\tpath\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_usage.tsv").write_text(
+        "source_name\tsource_direction\tsource_role\tfield_name\tread_method\ttarget_vo\tconfidence\tsource_file\n"
+        "SM_GongFaHomeMakeList\tserver_to_client\tlist_filter\thomeMakeVOS\tMessageMap2Dic\tGongFaHomeMakeScopeListVO\tinferred_list\tSM_GongFaHomeMakeList.lua\n"
+        "GongFaHomeMakeScopeListVO\tvalue_object\tlist_filter\tskillTypeMap\tMessageMap2Dic\tGongFaHomeMakeListVO\tinferred_list\tGongFaHomeMakeScopeListVO.lua\n"
+        "GongFaHomeMakeListVO\tvalue_object\tlist_filter\thomeMakeVOList\tMessageList2List\tGongFaHomeMakeVO\tinferred_list\tGongFaHomeMakeListVO.lua\n"
+        "GongFaHomeMakeVO\tvalue_object\tother\tskillCommonVO\tBean\tCreateSkillCommonVO\texact_bean\tGongFaHomeMakeVO.lua\n"
+        "SM_GongFaHomeMakeCombine\tserver_to_client\tcompose\thomeMakeVO\tBean\tGongFaHomeMakeVO\texact_bean\tSM_GongFaHomeMakeCombine.lua\n"
+        "SM_UpdateGongFaHomeMakeLearn\tserver_to_client\tlearn\thomeMakeVO\tBean\tGongFaHomeMakeVO\texact_bean\tSM_UpdateGongFaHomeMakeLearn.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "CreateSkillCommonVO\t1\tid\truntime_id\tLong\t\t1\t\t自创功法实例 id / make id\t25\tCreateSkillCommonVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_functions.tsv").write_text(
+        "packet_name\tpacket_role\tdirection\tnet_function\tline\tline_end\tfields_written\tsend_count\n"
+        "CM_GongFaHomeMakeList\tlist_filter\tclient_to_server\tCM_GongFaHomeMakeListFun\t340\t346\ttype、skillType\t1\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_call_sites.tsv").write_text(
+        "packet_name\tpacket_role\tnet_function\tfile_scope\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "CM_GongFaHomeMakeList\tlist_filter\tCM_GongFaHomeMakeListFun\tmanager_logic\tgongfahomemake\tGongfahomemakeMgr.lua\tpath\tInit\t31\tself.NetLogic:CM_GongFaHomeMakeListFun(1,2)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "home_make_cache\thome_make_cache\tgongfahomemake\tGongfahomemakeData.lua\tpath\tSetGongFaHomeMakeList\t579\tself.homeMakeDic=msg.homeMakeVOS\n"
+        "home_make_instance_update\thome_make_instance_update\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateGongFaHomeMakeLearn\t770\tself:AddNewMakeSkill(msg.homeMakeVO)\n"
+        "home_make_instance_update\thome_make_instance_update\tgongfahomemake\tGongfahomemakeData.lua\tpath\tGongFaHomeMakeCombineUpdate\t830\tself.V_CreatingSkillIdList[k]=msg.homeMakeVO\n"
+        "home_make_cache\thome_make_cache\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGetGongFaHomeMakeVoById\t601\tfunction _M.GetGongFaHomeMakeVoById(self,id)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_battle_refs.tsv").write_text(
+        "term\tcategory\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "makeId\tbattle_equip_ui\tgongfanew\tGongFaBattleCustomView.lua\tpath\tEquipSkill\t427\tlocal type,makeId\n"
+        "gongFaHomeMakeVO\tbattle_equip_ui\tgongfanew\tGongFaBattleCustomView.lua\tpath\tEquipSkill\t428\tif gongFaHomeMakeVO then\n"
+        "GetGongFaHomeMakeVoById\tbattle_equip_ui\tgongfanew\tSelfGongFaBattleItem.lua\tpath\tSetData\t77\tGetGongFaHomeMakeVoById(self.skillData.makeId)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_lifecycle_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_lifecycle_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_lifecycle_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 8
+    assert "homeMakeDic" in packets_text
+    assert "makeId" in packets_text
+    assert "GongFaHomeMakeVO" in packets_text
+    assert "replaces_cache" in edges_text
+    assert "GongfahomemakeData.homeMakeDic" in edges_text
+    assert "becomes_lookup_key" in edges_text
+    assert "resolves_via" in edges_text
+    assert "consumed_by" in edges_text
+    assert "carries_value_object" in edges_text
+    assert "GongFaHomeMake 自创功法生命周期" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_learn_teach_probe_maps_consult_and_teach_flows(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\tpacket_role\toperation\tfields\thandler_names\tnet_function\tnet_fields_written\tcall_sites\ttarget_vo_refs\tstate_evidence\tui_consumers\tsemantic_note\tsample_files\n"
+        "35723\tCM_GongFaHomeMakeLearn\tclient_to_server\tplayer.gongfahomemake\tlearn\tGongFaHomeMakeLearn\tid:Long, cost:Long, scopeType:Int\t\tCM_GongFaHomeMakeLearnFun\tid、cost、scopeType\tGongFaConsultPayView.lua:OnClickBtn:81:CM_GongFaHomeMakeLearnFun(data.skillCommonVO.id,cost,self.scopeType)\t\t\t\t客户端提交请教意图。\tCM_GongFaHomeMakeLearn.lua\n"
+        "35724\tSM_GongFaHomeMakeLearn\tserver_to_client\tplayer.gongfahomemake\tlearn\tGongFaHomeMakeLearn\titemVO:Bean\tSM_GongFaHomeMakeLearnFun\tSM_GongFaHomeMakeLearnFun\t\t\titemVO->GongFaLearnItemVO(Bean)\tGongfahomemakeData.lua:OnApplyConsultSucceed:370:self:UpdateLearnVO(msg.itemVO)\t\t服务端回写请教状态。\tSM_GongFaHomeMakeLearn.lua\n"
+        "35729\tCM_GongFaHomeMakeLearnList\tclient_to_server\tplayer.gongfahomemake\tlearn\tGongFaHomeMakeLearnList\tfilterVO:Bean\t\tCM_GongFaHomeMakeLearnListFun\tfilterVO.startIdx、filterVO.endIdx\tGongFaConsultView.lua:RequestData:336:CM_GongFaHomeMakeLearnListFun(...)\tfilterVO->HMFilterVO(Bean)\t\t\t客户端请求可请教列表。\tCM_GongFaHomeMakeLearnList.lua\n"
+        "35730\tSM_GongFaHomeMakeLearnList\tserver_to_client\tplayer.gongfahomemake\tlearn\tGongFaHomeMakeLearnList\tfilterVO:Bean, itemVOS:List\tSM_GongFaHomeMakeLearnListFun\tSM_GongFaHomeMakeLearnListFun\t\t\titemVOS->GongFaLearnItemVO(MessageList2List)\tGongfahomemakeData.lua:UpdateConsultList:259:function _M.UpdateConsultList(self,msg)\t\t服务端回写可请教列表。\tSM_GongFaHomeMakeLearnList.lua\n"
+        "35738\tSM_UpdateGongFaHomeMakeLearn\tserver_to_client\tplayer.gongfahomemake\tlearn\tUpdateGongFaHomeMakeLearn\thomeMakeVO:Bean\tSM_UpdateGongFaHomeMakeLearnFun\tSM_UpdateGongFaHomeMakeLearnFun\t\t\thomeMakeVO->GongFaHomeMakeVO(Bean)\tGongfahomemakeData.lua:UpdateGongFaHomeMakeLearn:762:function _M.UpdateGongFaHomeMakeLearn(self,msg)\t\t服务端推送已学到的完整自创对象。\tSM_UpdateGongFaHomeMakeLearn.lua\n"
+        "35721\tCM_GongFaHomeMakeUpload\tclient_to_server\tplayer.gongfahomemake\tupload\tGongFaHomeMakeUpload\tid:Long\t\tCM_GongFaHomeMakeUploadFun\tid\tGongFaChooseTeachViewItem.lua:OnClickBtn:96:CM_GongFaHomeMakeUploadFun(id,self.v_data)\t\t\t\t客户端上架可赐教技能。\tCM_GongFaHomeMakeUpload.lua\n"
+        "35727\tCM_GongFaHomeMakeTeach\tclient_to_server\tplayer.gongfahomemake\tteach\tGongFaHomeMakeTeach\tid:Long, rewardPlayerId:Long, scopeType:Int\t\tCM_GongFaHomeMakeTeachFun\tid、rewardPlayerId、scopeType\tGongFaTeachViewItem.lua:OnClickBtn:49:CM_GongFaHomeMakeTeachFun(playerId,self.v_skillType,self.v_scopeType)\t\t\t\t客户端选择玩家赐教。\tCM_GongFaHomeMakeTeach.lua\n"
+        "35728\tSM_GongFaHomeMakeTeach\tserver_to_client\tplayer.gongfahomemake\tteach\tGongFaHomeMakeTeach\tid:Long, rewardPlayerId:Long, rewardResults:List\tSM_GongFaHomeMakeTeachFun\tSM_GongFaHomeMakeTeachFun\t\t\t\t\t\t服务端回写赐教奖励。\tSM_GongFaHomeMakeTeach.lua\n"
+        "35732\tSM_GongFaHomeMakeTeachList\tserver_to_client\tplayer.gongfahomemake\tteach\tGongFaHomeMakeTeachList\titemVOS:List\tSM_GongFaHomeMakeTeachListFun\tSM_GongFaHomeMakeTeachListFun\t\t\titemVOS->GongFaTeachItemVO(MessageList2List)\tGongfahomemakeData.lua:UpdateTeachInfo:231:function _M.UpdateTeachInfo(self,msg)\t\t服务端回写赐教列表。\tSM_GongFaHomeMakeTeachList.lua\n"
+        "35709\tGongFaTeachItemVO\tvalue_object\tplayer.gongfahomemake\tteach\t\tscopeType:Int, skillType:Int, skillCommonVO:Bean, playerVOS:List\t\t\t\t\tplayerVOS->GongFaTeachPlayerVO(MessageList2List)\t\t\t赐教列表项。\tGongFaTeachItemVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_functions.tsv").write_text(
+        "packet_name\tpacket_role\tdirection\tnet_function\tline\tline_end\tfields_written\tsend_count\n"
+        "CM_GongFaHomeMakeLearn\tlearn\tclient_to_server\tCM_GongFaHomeMakeLearnFun\t394\t401\tid、cost、scopeType\t1\n"
+        "CM_GongFaHomeMakeLearnList\tlearn\tclient_to_server\tCM_GongFaHomeMakeLearnListFun\t445\t473\tfilterVO.startIdx、filterVO.endIdx\t1\n"
+        "CM_GongFaHomeMakeTeach\tteach\tclient_to_server\tCM_GongFaHomeMakeTeachFun\t429\t436\tid、rewardPlayerId、scopeType\t1\n"
+        "SM_GongFaHomeMakeTeach\tteach\tserver_to_client\tSM_GongFaHomeMakeTeachFun\t437\t444\t\t0\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_call_sites.tsv").write_text(
+        "packet_name\tpacket_role\tnet_function\tfile_scope\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "CM_GongFaHomeMakeLearn\tlearn\tCM_GongFaHomeMakeLearnFun\tui\tgongfahomemake\tGongFaConsultPayView.lua\tpath\tOnClickBtn\t81\tCM_GongFaHomeMakeLearnFun(data.skillCommonVO.id,LusuoLong.FromNumber(cost),self.scopeType)\n"
+        "CM_GongFaHomeMakeTeach\tteach\tCM_GongFaHomeMakeTeachFun\tui\tgongfahomemake\tGongFaTeachViewItem.lua\tpath\tOnClickBtn\t49\tCM_GongFaHomeMakeTeachFun(playerId,self.v_skillType,self.v_scopeType)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "consult_state\tlearn\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateConsultList\t259\tself.consultDic[msg.filterVO.type][msg.filterVO.skillType]=msg.itemVOS\n"
+        "consult_state\tlearn\tgongfahomemake\tGongfahomemakeData.lua\tpath\tOnApplyConsultSucceed\t370\tself:UpdateLearnVO(msg.itemVO)\n"
+        "learn_push\tlearn\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateGongFaHomeMakeLearn\t762\tself:AddNewMakeSkill(msg.homeMakeVO)\n"
+        "teach_state\tteach\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateTeachInfo\t231\tself.teachInfo[v.scopeType][v.skillType]=v\n"
+        "teach_push\tteach\tgongfahomemake\tGongfahomemakeData.lua\tpath\tAddTeachTed\t155\tself.teachRed[scopeType][skillType]=self.teachRed[scopeType][skillType]+1\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "GongFaLearnItemVO\t1\tskillCommonVO\t\tBean\tCreateSkillCommonVO\t1\t\t\t29\tGongFaLearnItemVO.lua\n"
+        "GongFaTeachItemVO\t3\tskillCommonVO\t\tBean\tCreateSkillCommonVO\t1\t\t\t30\tGongFaTeachItemVO.lua\n"
+        "GongFaTeachPlayerVO\t7\tpay\t\tLong\t\t1\t\t\t29\tGongFaTeachPlayerVO.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_learn_teach_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_learn_teach_packets.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_homemake_learn_teach_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_learn_teach_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_learn_teach_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 10
+    assert result["counts"]["flow_rows"] >= 14
+    assert "CM_GongFaHomeMakeLearn" in packets_text
+    assert "GongFaTeachItemVO" in packets_text
+    assert "GongfahomemakeData.consultDic" in edges_text
+    assert "id=GetTeachId" in edges_text
+    assert "rewardPlayerId=playerId" in edges_text
+    assert "UpdateConsultList" in flow_text
+    assert "UpdateTeachInfo" in flow_text
+    assert "GongFaHomeMake 请教 / 赐教链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_record_grid_light_probe_maps_dynamic_state(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\tpacket_role\toperation\tfields\thandler_names\tnet_function\tnet_fields_written\tcall_sites\ttarget_vo_refs\tstate_evidence\tui_consumers\tsemantic_note\tsample_files\n"
+        "35715\tCM_GongFaHomeMakeLightUp\tclient_to_server\tplayer.gongfahomemake\tlight_up\tGongFaHomeMakeLightUp\tid:Long\t\tCM_GongFaHomeMakeLightUpFun\tid\tLingJieSkillItem.lua:SkillBgClick:126:CM_GongFaHomeMakeLightUpFun(self.data.skillCommonVO.id,clientData)\t\t\t\t客户端提交点亮意图。\tCM_GongFaHomeMakeLightUp.lua\n"
+        "35716\tSM_GongFaHomeMakeLightUp\tserver_to_client\tplayer.gongfahomemake\tlight_up\tGongFaHomeMakeLightUp\tid:Long\tSM_GongFaHomeMakeLightUpFun\tSM_GongFaHomeMakeLightUpFun\t\t\t\tGongfahomemakeData.lua:GongFaHomeMakeLightUp:838:function _M.GongFaHomeMakeLightUp(self,msg)\t\t服务端确认点亮。\tSM_GongFaHomeMakeLightUp.lua\n"
+        "35736\tCM_GongFaHomeMakeGridList\tclient_to_server\tplayer.gongfahomemake\tascension_grid\tGongFaHomeMakeGridList\ttype:Int\t\tCM_GongFaHomeMakeGridListFun\ttype\tGongFaThunderTrialCreateView.lua:InitView:30:CM_GongFaHomeMakeGridListFun(GongfahomemakeType.ScopeType.LingJie)\t\t\t\t客户端请求飞升格子。\tCM_GongFaHomeMakeGridList.lua\n"
+        "35737\tSM_GongFaHomeMakeGridList\tserver_to_client\tplayer.gongfahomemake\tascension_grid\tGongFaHomeMakeGridList\ttype:Int\tSM_GongFaHomeMakeGridListFun\tSM_GongFaHomeMakeGridListFun\t\t\t\tGongfahomemakeData.lua:UpdateGridInfo:133:function _M.UpdateGridInfo(self,msg)\t\t服务端回写格子图。\tSM_GongFaHomeMakeGridList.lua\n"
+        "35733\tCM_GongFaHomeMakeRecordList\tclient_to_server\tplayer.gongfahomemake\trecord\tGongFaHomeMakeRecordList\ttype:Int, skillType:Int, scopeType:Int\t\tCM_GongFaHomeMakeRecordListFun\ttype、skillType、scopeType\tGongFaTACRecordView.lua:SetRecordType:83:CM_GongFaHomeMakeRecordListFun(recordType,skillType,scopeType)\t\t\t\t客户端请求记录列表。\tCM_GongFaHomeMakeRecordList.lua\n"
+        "35734\tSM_GongFaHomeMakeRecordList\tserver_to_client\tplayer.gongfahomemake\trecord\tGongFaHomeMakeRecordList\ttype:Int, skillType:Int, scopeType:Int, recordVOS:List\tSM_GongFaHomeMakeRecordListFun\tSM_GongFaHomeMakeRecordListFun\t\t\trecordVOS->GongFaHomeMakeRecordVO(MessageList2List)\tGongfahomemakeData.lua:UpdateTACRecord:411:function _M.UpdateTACRecord(self,msg)\t\t服务端回写记录列表。\tSM_GongFaHomeMakeRecordList.lua\n"
+        "35711\tGongFaHomeMakeRecordVO\tvalue_object\tplayer.gongfahomemake\trecord\t\tskillCommonVO:Bean, playerId:Long, server:Int, playerName:String, pay:Long, createServer:Int, createId:Long, createName:String\t\t\t\t\tskillCommonVO->CreateSkillCommonVO(Bean)\t\t\t记录 VO。\tGongFaHomeMakeRecordVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_functions.tsv").write_text(
+        "packet_name\tpacket_role\tdirection\tnet_function\tline\tline_end\tfields_written\tsend_count\n"
+        "CM_GongFaHomeMakeLightUp\tlight_up\tclient_to_server\tCM_GongFaHomeMakeLightUpFun\t353\t357\tid\t1\n"
+        "SM_GongFaHomeMakeLightUp\tlight_up\tserver_to_client\tSM_GongFaHomeMakeLightUpFun\t358\t366\t\t0\n"
+        "CM_GongFaHomeMakeGridList\tascension_grid\tclient_to_server\tCM_GongFaHomeMakeGridListFun\t535\t540\ttype\t1\n"
+        "SM_GongFaHomeMakeGridList\tascension_grid\tserver_to_client\tSM_GongFaHomeMakeGridListFun\t541\t546\t\t0\n"
+        "CM_GongFaHomeMakeRecordList\trecord\tclient_to_server\tCM_GongFaHomeMakeRecordListFun\t547\t554\ttype、skillType、scopeType\t1\n"
+        "SM_GongFaHomeMakeRecordList\trecord\tserver_to_client\tSM_GongFaHomeMakeRecordListFun\t555\t560\t\t0\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_call_sites.tsv").write_text(
+        "packet_name\tpacket_role\tnet_function\tfile_scope\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "CM_GongFaHomeMakeLightUp\tlight_up\tCM_GongFaHomeMakeLightUpFun\tui\tgongfahomemake\tLingJieSkillItem.lua\tpath\tSkillBgClick\t126\tCM_GongFaHomeMakeLightUpFun(self.data.skillCommonVO.id,clientData)\n"
+        "CM_GongFaHomeMakeGridList\tascension_grid\tCM_GongFaHomeMakeGridListFun\tui\tgongfahomemake\tGongFaThunderTrialCreateView.lua\tpath\tInitView\t30\tCM_GongFaHomeMakeGridListFun(GongfahomemakeType.ScopeType.LingJie)\n"
+        "CM_GongFaHomeMakeRecordList\trecord\tCM_GongFaHomeMakeRecordListFun\tui\tgongfahomemake\tGongFaTACRecordView.lua\tpath\tSetRecordType\t83\tCM_GongFaHomeMakeRecordListFun(recordType,skillType,scopeType)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "light_up\tlight_up\tgongfahomemake\tGongfahomemakeData.lua\tpath\tGongFaHomeMakeLightUp\t838\tdata.isLight=true\n"
+        "ascension_grid\tgrid\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateGridInfo\t133\tself.gridInfo=msg.gridMap\n"
+        "record\trecord\tgongfahomemake\tGongfahomemakeData.lua\tpath\tUpdateTACRecord\t411\tself.tacRecordDic[msg.scopeType][msg.type][msg.skillType]=msg.recordVOS\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "GongFaHomeMakeRecordVO\t1\tskillCommonVO\t\tBean\tCreateSkillCommonVO\t1\t\t\t23\tGongFaHomeMakeRecordVO.lua\n"
+        "GongFaHomeMakeRecordVO\t5\tpay\t\tLong\t\t1\t\t\t27\tGongFaHomeMakeRecordVO.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_record_grid_light_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_record_grid_light_packets.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_homemake_record_grid_light_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_record_grid_light_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_record_grid_light_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 7
+    assert result["counts"]["flow_rows"] >= 14
+    assert "CM_GongFaHomeMakeLightUp" in packets_text
+    assert "SM_GongFaHomeMakeGridList" in packets_text
+    assert "GongFaHomeMakeRecordVO" in packets_text
+    assert "ClientData.gongFaHomeMakeVO.isLight=true" in edges_text
+    assert "GongfahomemakeData.gridInfo" in edges_text
+    assert "tacRecordDic[scopeType][type][skillType]" in edges_text
+    assert "UpdateGridInfo" in flow_text
+    assert "UpdateTACRecord" in flow_text
+    assert "GongFaHomeMake 点亮 / 飞升格子 / 记录链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_mutation_ops_probe_maps_remaining_mutations(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\tpacket_role\toperation\tfields\thandler_names\tnet_function\tnet_fields_written\tcall_sites\ttarget_vo_refs\tstate_evidence\tui_consumers\tsemantic_note\tsample_files\n"
+        "35713\tCM_GongFaHomeMakeCombine\tclient_to_server\tplayer.gongfahomemake\tcompose\tGongFaHomeMakeCombine\tmainId:Int, assist1:Int, assist2:Int, lingJieMainId:Long, xianGongFaId:Int\t\tCM_GongFaHomeMakeCombineFun\tmainId、assist1、assist2、lingJieMainId、xianGongFaId\tLingJieComposeSkillItem.lua:StartEpiphany:214:CM_GongFaHomeMakeCombineFun(...)\t\t\t\t客户端提交单次组合。\tCM_GongFaHomeMakeCombine.lua\n"
+        "35714\tSM_GongFaHomeMakeCombine\tserver_to_client\tplayer.gongfahomemake\tcompose\tGongFaHomeMakeCombine\thomeMakeVO:Bean\tSM_GongFaHomeMakeCombineFun\tSM_GongFaHomeMakeCombineFun\t\t\thomeMakeVO->GongFaHomeMakeVO(Bean)\tGongfahomemakeData.lua:GongFaHomeMakeCombineUpdate:830:self:AddNewMakeSkill(msg.homeMakeVO)\t\t服务端回写组合结果。\tSM_GongFaHomeMakeCombine.lua\n"
+        "35748\tCM_GongFaHomeMakeCombineList\tclient_to_server\tplayer.gongfahomemake\tcompose\tGongFaHomeMakeCombineList\tcombine:Bean, num:Int\t\tCM_GongFaHomeMakeCombineListFun\tnum、combine.mainId、combine.assist1\tLingJieComposeSkillItem.lua:StartEpiphany:208:CM_GongFaHomeMakeCombineListFun(...)\tcombine->CM_GongFaHomeMakeCombine(Bean)\t\t\t客户端提交批量组合。\tCM_GongFaHomeMakeCombineList.lua\n"
+        "35749\tSM_GongFaHomeMakeCombineList\tserver_to_client\tplayer.gongfahomemake\tcompose\tGongFaHomeMakeCombineList\tcombineList:List\tSM_GongFaHomeMakeCombineListFun\tSM_GongFaHomeMakeCombineListFun\t\t\tcombineList->SM_GongFaHomeMakeCombine(MessageList2List)\tGongfahomemakeModel.lua:GongFaHomeMakeCombineList:459:self.GongfahomemakeData:GongFaHomeMakeCombineUpdate(v)\t\t服务端回写批量组合结果。\tSM_GongFaHomeMakeCombineList.lua\n"
+        "35743\tCM_GongFaCheckName\tclient_to_server\tplayer.gongfahomemake\tname\tGongFaCheckName\tname:String\t\tCM_GongFaCheckNameFun\tname\tGongfahomemakeMgr.lua:CheckNameCanUse:993:CM_GongFaCheckNameFun(name,data)\t\t\t\t客户端检查名称可用性。\tCM_GongFaCheckName.lua\n"
+        "35744\tSM_GongFaCheckName\tserver_to_client\tplayer.gongfahomemake\tname\tGongFaCheckName\tname:String\tSM_GongFaCheckNameFun\tSM_GongFaCheckNameFun\t\t\t\tGongfahomemakeNetLogic.lua:SM_GongFaCheckNameFun:312:callBackFun(msg.code==0)\t\t服务端返回名称检查结果。\tSM_GongFaCheckName.lua\n"
+        "35719\tCM_GongFaHomeMakeChangeName\tclient_to_server\tplayer.gongfahomemake\tname\tGongFaHomeMakeChangeName\tid:Long, name:String, mark:String, icon:Int, iconBg:Int, isCost:Bool\t\tCM_GongFaHomeMakeChangeNameFun\tid、name、mark、icon、iconBg、isCost\tGongfahomemakeMgr.lua:SendChangeSkillName:1002:CM_GongFaHomeMakeChangeNameFun(...)\t\t\t\t客户端提交改名和图标。\tCM_GongFaHomeMakeChangeName.lua\n"
+        "35720\tSM_GongFaHomeMakeChangeName\tserver_to_client\tplayer.gongfahomemake\tname\tGongFaHomeMakeChangeName\thomeMakeVO:Bean\tSM_GongFaHomeMakeChangeNameFun\tSM_GongFaHomeMakeChangeNameFun\t\t\thomeMakeVO->GongFaHomeMakeVO(Bean)\tGongfahomemakeData.lua:GongFaHomeMakeChangeName:872:v.skillCommonVO.skillName=homeMakeVO.skillCommonVO.skillName\t\t服务端回写改名结果。\tSM_GongFaHomeMakeChangeName.lua\n"
+        "35750\tCM_GongFaHomeMakeChangeNameList\tclient_to_server\tplayer.gongfahomemake\tname\tGongFaHomeMakeChangeNameList\tchangeNameList:List\t\tCM_GongFaHomeMakeChangeNameListFun\tchangeNameList\tLingJieCreateTenView.lua:OnNextBtn:102:CM_GongFaHomeMakeChangeNameListFun(changeNameList)\t\t\t\t客户端提交批量改名。\tCM_GongFaHomeMakeChangeNameList.lua\n"
+        "35751\tSM_GongFaHomeMakeChangeNameList\tserver_to_client\tplayer.gongfahomemake\tname\tGongFaHomeMakeChangeNameList\tchangeNameList:List\tSM_GongFaHomeMakeChangeNameListFun\tSM_GongFaHomeMakeChangeNameListFun\t\t\tchangeNameList->SM_GongFaHomeMakeChangeName(MessageList2List)\tGongfahomemakeModel.lua:GongFaHomeMakeChangeNameList:453:self.GongfahomemakeData:GongFaHomeMakeCombineUpdate(v)\t\t服务端回写批量改名结果。\tSM_GongFaHomeMakeChangeNameList.lua\n"
+        "35746\tCM_GongFaCheck\tclient_to_server\tplayer.gongfahomemake\tcheck\tGongFaCheck\tid:Long, isCheck:Bool\t\tCM_GongFaCheckFun\tid、isCheck\tCreateSkillDetailView.lua:ToggleChange:88:CM_GongFaCheckFun(id,isCheck,makeVo)\t\t\t\t客户端切换关注。\tCM_GongFaCheck.lua\n"
+        "35747\tSM_GongFaCheck\tserver_to_client\tplayer.gongfahomemake\tcheck\tGongFaCheck\tid:Long, isCheck:Bool\tSM_GongFaCheckFun\tSM_GongFaCheckFun\t\t\t\tGongfahomemakeData.lua:GongFaCheck:861:data.isCheck=msg.isCheck\t\t服务端确认关注状态。\tSM_GongFaCheck.lua\n"
+        "35752\tCM_GongFaTenCreateCheck\tclient_to_server\tplayer.gongfahomemake\tcheck\tGongFaTenCreateCheck\ttype:Int, isCheck:Bool\t\tCM_GongFaTenCreateCheckFun\ttype、isCheck\tLingJieCreateTenView.lua:ToggleChange:64:CM_GongFaTenCreateCheckFun(isCheck,type)\t\t\t\t客户端切换十连检查。\tCM_GongFaTenCreateCheck.lua\n"
+        "35753\tSM_GongFaTenCreateCheck\tserver_to_client\tplayer.gongfahomemake\tcheck\tGongFaTenCreateCheck\ttype:Int, isCheck:Bool\tSM_GongFaTenCreateCheckFun\tSM_GongFaTenCreateCheckFun\t\t\t\tGongfahomemakeModel.lua:GongFaTenCreateCheck:442:SetGongFaTenCreateCheck(msg.isCheck)\t\t服务端确认十连检查。\tSM_GongFaTenCreateCheck.lua\n"
+        "35741\tCM_GongFaExchange\tclient_to_server\tplayer.gongfahomemake\texchange\tGongFaExchange\tfromId:Int, toId:Int\t\tCM_GongFaExchangeFun\tfromId、toId\tLingJieGongFaExchangeView.lua:SureBtnClick:125:CM_GongFaExchangeFun(fromId,toId)\t\t\t\t客户端提交兑换。\tCM_GongFaExchange.lua\n"
+        "35742\tSM_GongFaExchange\tserver_to_client\tplayer.gongfahomemake\texchange\tGongFaExchange\tfromItemVO:Bean, toItemVO:Bean\tSM_GongFaExchangeFun\tSM_GongFaExchangeFun\t\t\tfromItemVO->GongFaItemVO(Bean) | toItemVO->GongFaItemVO(Bean)\tGongfahomemakeModel.lua:GongFaExchange:413:UpdateGongFaVoEx(msg.fromItemVO)\t\t服务端回写兑换物品。\tSM_GongFaExchange.lua\n"
+        "35754\tCM_GongFaSelectCareer\tclient_to_server\tplayer.gongfahomemake\tcareer\tGongFaSelectCareer\tid:Long, career:Int\t\tCM_GongFaSelectCareerFun\tid、career\tXianFaSelectEffectView.lua:OnClickBtn:91:CM_GongFaSelectCareerFun(id,career)\t\t\t\t客户端提交职业选择。\tCM_GongFaSelectCareer.lua\n"
+        "35755\tSM_GongFaSelectCareer\tserver_to_client\tplayer.gongfahomemake\tcareer\tGongFaSelectCareer\tid:Long, career:Int\tSM_GongFaSelectCareerFun\tSM_GongFaSelectCareerFun\t\t\t\tGongfahomemakeModel.lua:GongFaSelectCareer:421:RaiseEvent(GongFaSelectCareer,msg)\t\t服务端确认职业选择。\tSM_GongFaSelectCareer.lua\n"
+        "35710\tGongFaHomeMakeVO\tvalue_object\tplayer.gongfahomemake\tvalue_object\t\tskillCommonVO:Bean, isCheck:Bool, scopeType:Int, skillType:Int\t\t\t\t\tskillCommonVO->CreateSkillCommonVO(Bean)\t\t\t自创功法完整对象。\tGongFaHomeMakeVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_functions.tsv").write_text(
+        "packet_name\tpacket_role\tdirection\tnet_function\tline\tline_end\tfields_written\tsend_count\n"
+        "CM_GongFaHomeMakeCombine\tcompose\tclient_to_server\tCM_GongFaHomeMakeCombineFun\t258\t267\tmainId、assist1、assist2、lingJieMainId、xianGongFaId\t1\n"
+        "CM_GongFaHomeMakeCombineList\tcompose\tclient_to_server\tCM_GongFaHomeMakeCombineListFun\t243\t252\tnum、combine.mainId、combine.assist1\t1\n"
+        "CM_GongFaCheckName\tname\tclient_to_server\tCM_GongFaCheckNameFun\t306\t310\tname\t1\n"
+        "CM_GongFaHomeMakeChangeName\tname\tclient_to_server\tCM_GongFaHomeMakeChangeNameFun\t316\t329\tid、name、mark、icon、iconBg、isCost\t1\n"
+        "CM_GongFaCheck\tcheck\tclient_to_server\tCM_GongFaCheckFun\t284\t290\tid、isCheck\t1\n"
+        "CM_GongFaTenCreateCheck\tcheck\tclient_to_server\tCM_GongFaTenCreateCheckFun\t222\t232\ttype、isCheck\t1\n"
+        "CM_GongFaExchange\texchange\tclient_to_server\tCM_GongFaExchangeFun\t295\t301\tfromId、toId\t1\n"
+        "CM_GongFaSelectCareer\tcareer\tclient_to_server\tCM_GongFaSelectCareerFun\t191\t200\tid、career\t1\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_call_sites.tsv").write_text(
+        "packet_name\tpacket_role\tnet_function\tfile_scope\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "CM_GongFaHomeMakeCombine\tcompose\tCM_GongFaHomeMakeCombineFun\tui\tgongfahomemake\tLingJieComposeSkillItem.lua\tpath\tStartEpiphany\t214\tCM_GongFaHomeMakeCombineFun(mainId,assist1,assist2,lingJieMainId,xianGongFaId)\n"
+        "CM_GongFaHomeMakeChangeName\tname\tCM_GongFaHomeMakeChangeNameFun\tmanager_logic\tgongfahomemake\tGongfahomemakeMgr.lua\tpath\tSendChangeSkillName\t1002\tCM_GongFaHomeMakeChangeNameFun(id,name,mark,icon,iconBg,clientData,isCostValue)\n"
+        "CM_GongFaCheck\tcheck\tCM_GongFaCheckFun\tui\tgongfahomemake\tCreateSkillDetailView.lua\tpath\tToggleChange\t88\tCM_GongFaCheckFun(id,isCheck,makeVo)\n"
+        "CM_GongFaExchange\texchange\tCM_GongFaExchangeFun\tui\tgongfahomemake\tLingJieGongFaExchangeView.lua\tpath\tSureBtnClick\t125\tCM_GongFaExchangeFun(fromId,toId)\n"
+        "CM_GongFaSelectCareer\tcareer\tCM_GongFaSelectCareerFun\tui\tgongfahomemake\tXianFaSelectEffectView.lua\tpath\tOnClickBtn\t91\tCM_GongFaSelectCareerFun(id,career)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "compose\tcompose\tgongfahomemake\tGongfahomemakeData.lua\tpath\tGongFaHomeMakeCombineUpdate\t830\tself:AddNewMakeSkill(msg.homeMakeVO)\n"
+        "compose\tcompose\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaHomeMakeCombineList\t466\tself.GongfahomemakeData:SetLastId(v.homeMakeVO,msg.ClientData and msg.ClientData.xianGongFaId,msg.ClientData and msg.ClientData.lingJieMakeVo)\n"
+        "rename\tname\tgongfahomemake\tGongfahomemakeData.lua\tpath\tGongFaHomeMakeChangeName\t872\tv.skillCommonVO.skillName=homeMakeVO.skillCommonVO.skillName\n"
+        "check\tcheck\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaCheck\t428\tself.GongfahomemakeData:CheckUpdateNum(makeVo.scopeType,makeVo.skillType,msg.isCheck)\n"
+        "check\tcheck\tgongfahomemake\tGongfahomemakeData.lua\tpath\tGongFaCheck\t861\tdata.isCheck=msg.isCheck\n"
+        "ten_check\tcheck\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaTenCreateCheck\t442\tself.GongfahomemakeData:SetGongFaTenCreateCheck(msg.isCheck)\n"
+        "exchange\texchange\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaExchange\t413\tGongFaNewMgr.Inst_get().Model.GongFaNewData:UpdateGongFaVoEx(msg.fromItemVO)\n"
+        "exchange\texchange\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaExchange\t417\tself.GongfahomemakeData:SetResetGongFaMsg(msg.toItemVO)\n"
+        "career\tcareer\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaSelectCareer\t421\tself:RaiseEvent(GongfahomemakeType.GongFaSelectCareer,msg)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "GongFaHomeMakeVO\t1\tskillCommonVO\t\tBean\tCreateSkillCommonVO\t1\t\t\t23\tGongFaHomeMakeVO.lua\n"
+        "CreateSkillCommonVO\t1\tid\tidentity\tLong\t\t1\t\t\t20\tCreateSkillCommonVO.lua\n"
+        "GongFaItemVO\t1\tbaseId\tidentity\tInt\t\t1\t\t\t18\tGongFaItemVO.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_mutation_ops_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_mutation_ops_packets.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_homemake_mutation_ops_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_mutation_ops_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_mutation_ops_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] >= 18
+    assert result["counts"]["flow_rows"] >= 20
+    assert "CM_GongFaHomeMakeCombine" in packets_text
+    assert "SM_GongFaHomeMakeChangeName" in packets_text
+    assert "CM_GongFaExchange" in packets_text
+    assert "GongFaHomeMakeCombineUpdate" in flow_text
+    assert "UpdateGongFaVoEx" in flow_text
+    assert "SetGongFaTenCreateCheck" in flow_text
+    assert "CM_GongFaHomeMakeChangeName(id,name,mark,icon,iconBg,isCost)" in edges_text
+    assert "GongfahomemakeData.homeMakeDic[msg.id].isCheck" in edges_text
+    assert "GongFaNewData:UpdateGongFaVoEx" in edges_text
+    assert "GongFaHomeMake 自创功法变更操作链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_page_list_probe_maps_filter_and_page_cache(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\tpacket_role\toperation\tfields\thandler_names\tnet_function\tnet_fields_written\tcall_sites\ttarget_vo_refs\tstate_evidence\tui_consumers\tsemantic_note\tsample_files\n"
+        "35717\tCM_GongFaHomeMakeList\tclient_to_server\tplayer.gongfahomemake\tlist_filter\tGongFaHomeMakeList\ttype:Int, skillType:Int\t\tCM_GongFaHomeMakeListFun\ttype、skillType\tGongfahomemakeMgr.lua:Init:31:CM_GongFaHomeMakeListFun(1,2)\t\t\t\t客户端请求全量自创缓存。\tCM_GongFaHomeMakeList.lua\n"
+        "35718\tSM_GongFaHomeMakeList\tserver_to_client\tplayer.gongfahomemake\tlist_filter\tGongFaHomeMakeList\thomeMakeVOS:Map\tSM_GongFaHomeMakeListFun\tSM_GongFaHomeMakeListFun\t\t\thomeMakeVOS->GongFaHomeMakeScopeListVO(MessageMap2Dic)\tGongfahomemakeData.lua:SetGongFaHomeMakeList:579:self.homeMakeDic=msg.homeMakeVOS\t\t服务端回写全量自创缓存。\tSM_GongFaHomeMakeList.lua\n"
+        "35775\tCM_GongFaHomeMakePageList\tclient_to_server\tplayer.gongfahomemake\tlist_filter\tGongFaHomeMakePageList\tfilterVO:Bean\t\tCM_GongFaHomeMakePageListFun\tfilterVO.startIdx、filterVO.endIdx、filterVO.type、filterVO.skillType、filterVO.isNotLightUp\tHomeMakeHandler.lua:GetHomeMakeListData:198:CM_GongFaHomeMakePageListFun(startIndex,endIndex,...)\tfilterVO->HMFilterVO(Bean)\t\t\t客户端请求分页筛选列表。\tCM_GongFaHomeMakePageList.lua\n"
+        "35776\tSM_GongFaHomeMakePageList\tserver_to_client\tplayer.gongfahomemake\tlist_filter\tGongFaHomeMakePageList\tfilterVO:Bean, homeMakeVOS:List, totalNum:Int\tSM_GongFaHomeMakePageListFun\tSM_GongFaHomeMakePageListFun\t\t\tfilterVO->HMFilterVO(Bean) | homeMakeVOS->GongFaHomeMakeVO(MessageList2List)\tGongfahomemakeModel.lua:GongFaHomeMakePageList:440:self:RaiseEvent(GongfahomemakeType.GongFaHomeMakePageList,msg)\t\t服务端回写分页筛选结果。\tSM_GongFaHomeMakePageList.lua\n"
+        "35777\tGongFaHomeMakeScopeListVO\tvalue_object\tplayer.gongfahomemake\tlist_filter\t\tskillTypeMap:Map\t\t\t\t\tskillTypeMap->GongFaHomeMakeListVO(MessageMap2Dic)\t\t\t全量缓存按 skillType 分桶。\tGongFaHomeMakeScopeListVO.lua\n"
+        "35778\tGongFaHomeMakeListVO\tvalue_object\tplayer.gongfahomemake\tlist_filter\t\thomeMakeVOList:List\t\t\t\t\thomeMakeVOList->GongFaHomeMakeVO(MessageList2List)\t\t\t全量缓存列表桶。\tGongFaHomeMakeListVO.lua\n"
+        "35779\tHMFilterVO\tvalue_object\tplayer.gongfahomemake\tother\t\tstartIdx:Int, endIdx:Int, type:Int, skillType:Int, isNotLightUp:Bool, careers:List, mainSkills:List, assistSkills:List, threeSet:List, mainXianSkills:List, xianThreeSet:List\t\t\t\t\t\t\t分页筛选 VO。\tHMFilterVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_functions.tsv").write_text(
+        "packet_name\tpacket_role\tdirection\tnet_function\tline\tline_end\tfields_written\tsend_count\n"
+        "CM_GongFaHomeMakePageList\tlist_filter\tclient_to_server\tCM_GongFaHomeMakePageListFun\t202\t216\tfilterVO.startIdx、filterVO.endIdx、filterVO.type、filterVO.skillType、filterVO.isNotLightUp、filterVO.careers、filterVO.mainSkills、filterVO.mainXianSkills、filterVO.threeSet、filterVO.xianThreeSet、filterVO.assistSkills\t1\n"
+        "SM_GongFaHomeMakePageList\tlist_filter\tserver_to_client\tSM_GongFaHomeMakePageListFun\t217\t221\t\t0\n"
+        "CM_GongFaHomeMakeList\tlist_filter\tclient_to_server\tCM_GongFaHomeMakeListFun\t340\t346\ttype、skillType\t1\n"
+        "SM_GongFaHomeMakeList\tlist_filter\tserver_to_client\tSM_GongFaHomeMakeListFun\t347\t352\t\t0\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_net_call_sites.tsv").write_text(
+        "packet_name\tpacket_role\tnet_function\tfile_scope\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "CM_GongFaHomeMakePageList\tlist_filter\tCM_GongFaHomeMakePageListFun\tother\tgongfahomemake\tHomeMakeHandler.lua\tpath\tGetHomeMakeListData\t198\tCM_GongFaHomeMakePageListFun(startIndex,endIndex,self.gongfaType,self.skillType,self.isNotLightUp,careers,self.mainSkills,self.mainXianSkills,self.threeSet,self.xianThreeSet,self.viewType,self.lingAssistSkills)\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "home_make_cache\thome_make_cache\tgongfahomemake\tGongfahomemakeData.lua\tpath\tSetGongFaHomeMakeList\t579\tself.homeMakeDic=msg.homeMakeVOS\n"
+        "page_event\tpage\tgongfahomemake\tGongfahomemakeModel.lua\tpath\tGongFaHomeMakePageList\t440\tself:RaiseEvent(GongfahomemakeType.GongFaHomeMakePageList,msg)\n"
+        "handler_cache\tpage\tgongfahomemake\tHomeMakeHandler.lua\tpath\tSetHomeMakeListVO\t43\tself.totalNum=pageListData and pageListData.totalNum or 0\n"
+        "handler_cache\tpage\tgongfahomemake\tHomeMakeHandler.lua\tpath\tUpdateHomeMakeData\t145\tfor k,v in Cipairs(pageListData.homeMakeVOS)do\n"
+        "handler_cache\tpage\tgongfahomemake\tHomeMakeHandler.lua\tpath\tHomeMakeDicUpdate\t206\tdic:LuaDic_AddOrSetItem(index,v)\n"
+        "handler_cache\tpage\tgongfahomemake\tHomeMakeHandler.lua\tpath\tGetHomeMakeListData\t191\tlocal startIndex=pageIndex*self.V_PageShow\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "HMFilterVO\t1\tstartIdx\tpage_start\tInt\t\t1\t\t分页起点\t30\tHMFilterVO.lua\n"
+        "HMFilterVO\t2\tendIdx\tpage_end\tInt\t\t1\t\t分页终点\t31\tHMFilterVO.lua\n"
+        "HMFilterVO\t3\ttype\tscope_filter\tInt\t\t1\t\t列表筛选的功法域\t32\tHMFilterVO.lua\n"
+        "HMFilterVO\t4\tskillType\tbattle_type_filter\tInt\t\t1\t\t列表筛选的战斗类型\t33\tHMFilterVO.lua\n"
+        "HMFilterVO\t5\tisNotLightUp\tunlocked_filter\tBool\t\t1\t\t是否只请求未点亮/可请教项\t34\tHMFilterVO.lua\n"
+        "HMFilterVO\t6\tcareers\tcareer_filter\tMessageList2List\t\t1\t\t职业/流派过滤列表\t35\tHMFilterVO.lua\n"
+        "HMFilterVO\t7\tmainSkills\tmain_skill_filter\tMessageList2List\t\t1\t\t灵界主技能过滤列表\t36\tHMFilterVO.lua\n"
+        "HMFilterVO\t8\tassistSkills\tassist_skill_filter\tMessageList2List\t\t1\t\t灵界副技能过滤列表\t37\tHMFilterVO.lua\n"
+        "HMFilterVO\t9\tthreeSet\tassist_set_filter\tMessageList2List\t\t1\t\t灵界三件套/副词条组合过滤列表\t38\tHMFilterVO.lua\n"
+        "HMFilterVO\t10\tmainXianSkills\txian_main_filter\tMessageList2List\t\t1\t\t仙界主技能过滤列表\t39\tHMFilterVO.lua\n"
+        "HMFilterVO\t11\txianThreeSet\txian_assist_set_filter\tMessageList2List\t\t1\t\t仙界副词条组合过滤列表\t40\tHMFilterVO.lua\n"
+        "GongFaHomeMakeScopeListVO\t1\tskillTypeMap\tlist_bucket\tMessageMap2Dic\tGongFaHomeMakeListVO\t0\t\t按 skillType 分桶\t20\tGongFaHomeMakeScopeListVO.lua\n"
+        "GongFaHomeMakeListVO\t1\thomeMakeVOList\tlist_values\tMessageList2List\tGongFaHomeMakeVO\t0\t\t全量列表桶\t21\tGongFaHomeMakeListVO.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_page_list_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_page_list_packets.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_homemake_page_list_flow.tsv").read_text(encoding="utf-8")
+    filter_text = (output_dir / "hot_update_gongfa_homemake_page_list_filter_fields.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_page_list_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_page_list_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 7
+    assert result["counts"]["filter_rows"] == 13
+    assert result["counts"]["flow_rows"] >= 10
+    assert "CM_GongFaHomeMakePageList" in packets_text
+    assert "HMFilterVO" in packets_text
+    assert "startIdx" in filter_text
+    assert "mainXianSkills" in filter_text
+    assert "HomeMakeHandler.V_DataList" in edges_text
+    assert "ClientData.viewType" in edges_text
+    assert "SetGongFaHomeMakeList" in flow_text
+    assert "GongFaHomeMake PageList / HMFilterVO 列表筛选链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_share_probe_maps_chat_share_wrapper(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    output_dir.mkdir(parents=True)
+    lingjie_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_lifecycle_packets.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\tpacket_role\toperation\tfields\thandler_names\tnet_function\tnet_fields_written\tcall_sites\ttarget_vo_refs\tstate_evidence\tui_consumers\tsemantic_note\tsample_files\n"
+        "35740\tCreateSkillCommonVO\tvalue_object\tplayer.gongfahomemake\tother\t\tid:Long, mainId:Int, skillName:String\t\t\t\t\t\t\t\t自创功法核心字段。\tCreateSkillCommonVO.lua\n"
+        "35710\tGongFaHomeMakeVO\tvalue_object\tplayer.gongfahomemake\tother\t\tskillCommonVO:Bean, fromPlayerName:String, scopeType:Int, skillType:Int\t\t\t\t\tskillCommonVO->CreateSkillCommonVO(Bean)\t\t\t自创功法核心值对象。\tGongFaHomeMakeVO.lua\n"
+        "35745\tGongFaHomeMakeShareVO\tvalue_object\tplayer.gongfahomemake\tother\t\thomeMakeVO:Bean\t\t\t\t\thomeMakeVO->GongFaHomeMakeVO(Bean)\t\t\t自创功法分享值对象。\tGongFaHomeMakeShareVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_packets.tsv").write_text(
+        "id\tname\tpacket_role\tdirection\tfield_count\tfields\tfile\trelative_path\n"
+        "35740\tCreateSkillCommonVO\tother\tvalue_object\t3\tid:Long, mainId:Int, skillName:String\tCreateSkillCommonVO.lua\tpath\n"
+        "35710\tGongFaHomeMakeVO\tother\tvalue_object\t4\tskillCommonVO:Bean<CreateSkillCommonVO>, fromPlayerName:String, scopeType:Int, skillType:Int\tGongFaHomeMakeVO.lua\tpath\n"
+        "35745\tGongFaHomeMakeShareVO\tother\tvalue_object\t2\thomeMakeVO:Bean<GongFaHomeMakeVO>, itemVOMap:MessageMap2Dic\tGongFaHomeMakeShareVO.lua\tpath\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_vo_fields.tsv").write_text(
+        "vo_name\tfield_index\tfield_name\tfield_role\tread_method\ttype_hint\tclient_writes\twire_note\tsemantics\tline\tfile\n"
+        "CreateSkillCommonVO\t1\tid\truntime_id\tLong\t\t1\t\t自创功法实例 id\t25\tCreateSkillCommonVO.lua\n"
+        "CreateSkillCommonVO\t2\tmainId\tmain_skill_id\tInt\t\t1\t\t主技能 id\t26\tCreateSkillCommonVO.lua\n"
+        "GongFaHomeMakeVO\t1\tskillCommonVO\tcommon_payload\tBean\tCreateSkillCommonVO\t1\t\t自创功法核心字段\t31\tGongFaHomeMakeVO.lua\n"
+        "GongFaHomeMakeVO\t2\tfromPlayerName\towner_name\tString\t\t1\t\t创建玩家名\t32\tGongFaHomeMakeVO.lua\n"
+        "GongFaHomeMakeShareVO\t1\thomeMakeVO\t\tBean\tGongFaHomeMakeVO\t1\t\t完整自创对象\t24\tGongFaHomeMakeShareVO.lua\n"
+        "GongFaHomeMakeShareVO\t2\titemVOMap\t\tMessageMap2Dic\t\t0\tserver_read_only_in_client_class\t基础功法展示补充 map\t25\tGongFaHomeMakeShareVO.lua\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_config_refs.tsv").write_text(
+        "table\tpurpose\ttopic\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "LingjieGongfa_ConfigValue\t读取渠道常量\tmanager_logic\tgongfahomemake\tGongfahomemakeMgr.lua\tpath\tGetShareList\t902\tlocal shareValue=DBMgr.Inst_get():GetConfigTableById(ConfigName.LingjieGongfa_ConfigValue,\"SHARE_CHANNEL_LIST\")\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_function_refs.tsv").write_text(
+        "term\tpurpose\ttopic\tfile\tfunction_name\tcount\tfirst_line\n"
+        "LingjieGongfa_ConfigValue\t读取渠道常量\tmanager_logic\tGongfahomemakeMgr.lua\tGetShareList\t1\t902\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_battle_refs.tsv").write_text(
+        "term\tstage\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "itemVOMap\tmessage_schema\tmessage\tGongFaHomeMakeShareVO.lua\tpath\treading\t25\tself:readMessageMap2Dic(self.itemVOMap)\n"
+        "homeMakeVO\tmessage_schema\tmessage\tGongFaHomeMakeShareVO.lua\tpath\twriting\t30\tself:writeBean(self.homeMakeVO)\n",
+        encoding="utf-8",
+    )
+    game_root = export_root / "by_source" / "lscripts" / "gamesystem" / "game"
+    for module in ("gongfahomemake_mock", "gongfanew_mock", "chat_mock", "message_mock"):
+        (game_root / module / "text_assets").mkdir(parents=True)
+    (game_root / "gongfahomemake_mock" / "text_assets" / "GongfahomemakeMgr.lua").write_text(
+        "function _M.GetShareList(self)\n"
+        "local shareValue=DBMgr.Inst_get():GetConfigTableById(ConfigName.LingjieGongfa_ConfigValue,\"SHARE_CHANNEL_LIST\")\n"
+        "self.reportShareList=StringProxy.Split(shareValue.value,\",\")\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "gongfanew_mock" / "text_assets" / "CreateSkillDetailView.lua").write_text(
+        "local list=GongfahomemakeMgr.Inst_get():GetShareList()\n"
+        "ChatMgr.Inst_get():OpenShareToChatView(list,function(channelType,subId)\n"
+        "data.content=\"{0;9:0;}\"\n"
+        "data.params:Add({key=ChatType.ChatParamType.LING_JIE_GONGFA,id=self.data.skillCommonVO.id:ToString(),value=self.data.skillCommonVO.id:ToString()})\n"
+        "ChatMgr.Inst_get():SendChat(data)\n"
+        "local gongFaVo=self.data.itemVOMap:LuaDic_GetItem(gongFaId)\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatMgr.lua").write_text(
+        "self._ChatShareTypeDic:LuaDic_Add(_ChatType.ChatShareType.LingJieSkill,{_ChatType.ChatRegexType.Chat_Share_32,_ChatType.ChatRegexType.Chat_Share_33,self.GetShareLingJieSkillInfo})\n"
+        "return{key=_ChatType.ChatParamType.LING_JIE_GONGFA,id=skillVo.skillCommonVO.id:ToString(),value=skillVo.skillCommonVO.id:ToString()},true\n"
+        "function _M.GetShareLingJieSkillInfo(self,data,createTime)\n"
+        "self.Model:SaveChatShareLingJieSkillInfo(createTime,data)\n"
+        "local share=LuaLocalization.Format(\"Chat_Share_16\",\"66|\"..info,color,data.homeMakeVO.skillCommonVO.skillName)\n"
+        "return LuaLocalization.Format(\"Chat_Share_17\",color,share,addSpace),data.homeMakeVO.skillCommonVO.skillName\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatData.lua").write_text(
+        "elseif v.key==_ChatType.ChatParamType.LING_JIE_GONGFA then\n"
+        "data.value.effectMap=CList.new()\n"
+        "data.value.xianEffectMap=CList.new()\n"
+        "data.value.itemVOMap=CList.new()\n"
+        "function _M.SaveChatShareLingJieSkillInfo(self,createTime,vo) end\n",
+        encoding="utf-8",
+    )
+    (game_root / "message_mock" / "text_assets" / "GongFaHomeMakeShareVO.lua").write_text(
+        "self:readMessageMap2Dic(self.itemVOMap)\n"
+        "self:writeBean(self.homeMakeVO)\n"
+        "return\"GongFaHomeMakeShareVO\"\n",
+        encoding="utf-8",
+    )
+    (game_root / "message_mock" / "text_assets" / "I18nParam2LingJieGongFa.lua").write_text(
+        "local GongFaHomeMakeShareVO=require\"GameSystem.Game.Message.module.player.gongfahomemake.packet.GongFaHomeMakeShareVO\"\n"
+        "self.value=GongFaHomeMakeShareVO.new()\n"
+        "self:writeBean(self.value)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_share_probe(export_root=export_root)
+    packets_text = (output_dir / "hot_update_gongfa_homemake_share_packets.tsv").read_text(encoding="utf-8")
+    fields_text = (output_dir / "hot_update_gongfa_homemake_share_fields.tsv").read_text(encoding="utf-8")
+    config_text = (output_dir / "hot_update_gongfa_homemake_share_config.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_homemake_share_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_share_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_share_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 4
+    assert result["counts"]["field_rows"] == 7
+    assert result["counts"]["config_rows"] == 1
+    assert result["counts"]["flow_rows"] >= 15
+    assert "I18nParam2LingJieGongFa" in packets_text
+    assert "itemVOMap:MessageMap2Dic" in packets_text
+    assert "server_read_only_in_client_class" in fields_text
+    assert "SHARE_CHANNEL_LIST" in config_text
+    assert "OpenShareToChatView" in flow_text
+    assert "LING_JIE_GONGFA" in flow_text
+    assert "SaveChatShareLingJieSkillInfo" in flow_text
+    assert "ChatData LING_JIE_GONGFA branch" in edges_text
+    assert "GongFaHomeMake ShareVO / 聊天分享包装链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_share_ui_probe_marks_picker_render_and_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    game_root = export_root / "by_source" / "lscripts" / "gamesystem" / "game"
+    for module in ("chat_mock", "gongfanew_mock"):
+        (game_root / module / "text_assets").mkdir(parents=True)
+    (game_root / "chat_mock" / "text_assets" / "ChatMgr.lua").write_text(
+        "self._ChatShareTypeDic:LuaDic_Add(_ChatType.ChatShareType.LingJieSkill,{_ChatType.ChatRegexType.Chat_Share_32,_ChatType.ChatRegexType.Chat_Share_33,self.GetShareLingJieSkillInfo})\n"
+        "function _M.DecryptionHyper(self,str,param,createTime)\n"
+        "for _ in string.gmatch(str,_ChatType.ChatRegexType.Chat_Share_12)do\n"
+        "getValue,dealName=v[3](self,param[dataIndex].value,createTime,addSpace,isSelfSend,bubbleFrame)\n"
+        "end\n"
+        "end\n"
+        "function _M.GetShareLingJieSkillInfo(self,data,createTime)\n"
+        "self.Model:SaveChatShareLingJieSkillInfo(createTime,data)\n"
+        "local share=LuaLocalization.Format(\"Chat_Share_16\",\"66|\"..createTime,color,data.homeMakeVO.skillCommonVO.skillName)\n"
+        "return LuaLocalization.Format(\"Chat_Share_17\",color,share,addSpace),data.homeMakeVO.skillCommonVO.skillName\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatData.lua").write_text(
+        "self._ChatShareItemDic=Dictionary.new()\n"
+        "self._ChatShareItemDic:LuaDic_Add(_ChatType.ChatShareType.GongFa,self.GetGongFaItemList)\n"
+        "function _M.GetChatShareItemList(self,shareType,channelType,tabType)\n"
+        "local item=self._ChatShareItemDic:LuaDic_GetItem(shareType)\n"
+        "end\n"
+        "function _M.GetGongFaItemList(self,channelType,tabType)\n"
+        "return GongFaNewMgr.Inst_get():GetShareChatList(channelType,tabType)\n"
+        "end\n"
+        "function _M.SaveChatShareLingJieSkillInfo(self,createTime,vo)\n"
+        "self._ChatLingJieSkillShareMap:LuaDic_AddOrSetItem(createTime,vo)\n"
+        "end\n"
+        "function _M.GetChatShareLingJieSkillInfo(self,createTime)\n"
+        "return self._ChatLingJieSkillShareMap:LuaDic_GetItem(createTime)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatModel.lua").write_text(
+        "function _M.GetChatShareLingJieSkillInfo(self,createTime)\n"
+        "return self.ChatData:GetChatShareLingJieSkillInfo(createTime)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatSharedItemContent.lua").write_text(
+        "self._ScrollViewDic:LuaDic_Add(_ChatType.ChatShareType.LingJieSkill,{go=self.LingJieSkillItem,luaClass=lingJieSkillItemClass,instCallback=self.LingJieSkillInstCallback})\n"
+        "function _M.LingJieSkillInstCallback(self,ItemClass,itemData,index)\n"
+        "ItemClass:UpdateItem(itemData,true)\n"
+        "ItemClass:SetItemCallback(function()\n"
+        "self:SetItemCallback(index,_ChatType.ChatShareType.LingJieSkill)\n"
+        "end)\n"
+        "end\n"
+        "ChatMgr.Inst_get().Model:RaiseEvent(_ChatType.ChatShareItemSelect,itemData,shareType)\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatOnlineView.lua").write_text(
+        "self._OnChatShareItemSelect=function(data,shareType)\n"
+        "self:SelectShareItem(data,shareType)\n"
+        "end\n"
+        "function _M.SelectShareItem(self,data,shareType)\n"
+        "local value,count=ChatMgr.Inst_get():EncryptionShare(inputTxt,data,shareType)\n"
+        "self:StartSendChatInfo(value)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatType.lua").write_text(
+        "LingJieSkill=9,\n"
+        "Chat_Share_32=\"%s{%d;9:%s;}\",\n"
+        "Chat_Share_33=\"{{0};9:[%d_.]*;}\",\n"
+        "Chat_Href_1='<href=[(%d+)|_.-{\",}]*>',\n",
+        encoding="utf-8",
+    )
+    (game_root / "chat_mock" / "text_assets" / "ChatLabelChatCell.lua").write_text(
+        "ChatMgr.Inst_get():OnChatContentLongPress(self._Data.channel,self.labelContent:position(),self._Data.chatHref)\n",
+        encoding="utf-8",
+    )
+    (game_root / "gongfanew_mock" / "text_assets" / "CreateSkillDetailView.lua").write_text(
+        "ChatMgr.Inst_get():OpenShareToChatView(list,function(channelType,subId)\n"
+        "data.content=\"{0;9:0;}\"\n"
+        "data.params:Add({key=ChatType.ChatParamType.LING_JIE_GONGFA,id=self.data.skillCommonVO.id:ToString(),value=self.data.skillCommonVO.id:ToString()})\n"
+        "ChatMgr.Inst_get():SendChat(data)\n"
+        "self.LingJieSkillItem:UpdateItemByOther(self.data,false)\n",
+        encoding="utf-8",
+    )
+    (game_root / "gongfanew_mock" / "text_assets" / "LingJieSkillItem.lua").write_text(
+        "function _M.UpdateItemByOther(self,data,canClick)\n"
+        "local gongFaVo=self.data.itemVOMap:LuaDic_GetItem(gongFaId)\n"
+        "end\n"
+        "GongfahomemakeMgr.Inst_get():OpenCreateSkillDetailView(self.data,self.isOther,self.checkRed)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_share_ui_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    flow_text = (output_dir / "hot_update_gongfa_homemake_share_ui_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_share_ui_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_share_ui_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["flow_rows"] >= 20
+    assert "direct_send" in flow_text
+    assert "DecryptionHyper" in flow_text
+    assert "GetShareLingJieSkillInfo" in flow_text
+    assert "ChatShareItemSelect" in flow_text
+    assert "UpdateItemByOther" in flow_text
+    assert "does_not_register_currently" in edges_text
+    assert "GongFaHomeMake 聊天分享 UI 消费链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_share_href_probe_maps_text_ex_callback_and_lingjie_dispatch(tmp_path):
+    export_root = tmp_path / "exports"
+    game_root = export_root / "by_source" / "lscripts" / "gamesystem" / "game"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    common_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "common_mock" / "text_assets"
+    chat_dir = game_root / "chat_mock" / "text_assets"
+    for path in (core_dir, common_dir, chat_dir):
+        path.mkdir(parents=True)
+    core_dir.joinpath("LuaTextEx.lua").write_text(
+        "function _M.AddHyperClickEvent(self,callback)\n"
+        "self.callid=LuaCallBackMgr.AddCallBackStringDelegate(callback)\n"
+        "TextExBridge.AddHyperClickListener(self.FatherId,self.ComponentId,self.callid)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    core_dir.joinpath("LuaCallBackMgr.lua").write_text(
+        "_M._stringDelegateDic=Dictionary.new()\n"
+        "function _M.AddCallBackStringDelegate(action) end\n"
+        "function _M.CallStringDelegate(id,param) end\n",
+        encoding="utf-8",
+    )
+    core_dir.joinpath("LuaGlobal.lua").write_text(
+        "function _M.OnHyperLink(str)\n"
+        "HyperLinkMgr.Inst_get():DealWithHyperLinkStr(str)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    common_dir.joinpath("HyperLinkMgr.lua").write_text(
+        "self._HyperLinkCallDic=Dictionary.new()\n"
+        "self._HyperLinkCallDic:LuaDic_Add(_PostType.HyperLinkType.LingJieSkill,self.DealWithLingJieSkill)\n"
+        "function _M.DealWithHyperLinkStr(self,contentStr)\n"
+        "local s=StringProxy.Split(contentStr,\"|\")\n"
+        "local item=self._HyperLinkCallDic:LuaDic_GetItem(tonumber(s[0]))\n"
+        "item(self,s)\n"
+        "end\n"
+        "function _M.DealWithLingJieSkill(self,data)\n"
+        "local list=StringProxy.Split(data[1],\"_\")\n"
+        "local GongFaHomeMakeVO=ChatMgr.Inst_get().Model:GetChatShareLingJieSkillInfo(list[0])\n"
+        "GongfahomemakeMgr.Inst_get():OpenCreateSkillDetailView(GongFaHomeMakeVO,true)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatMgr.lua").write_text(
+        "function _M.GetShareLingJieSkillInfo(self,data,createTime)\n"
+        "self.Model:SaveChatShareLingJieSkillInfo(createTime,data)\n"
+        "local share=LuaLocalization.Format(\"Chat_Share_16\",\"66|\"..createTime,color,data.homeMakeVO.skillCommonVO.skillName)\n"
+        "return LuaLocalization.Format(\"Chat_Share_17\",color,share,addSpace),data.homeMakeVO.skillCommonVO.skillName\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatData.lua").write_text(
+        "function _M.SaveChatShareLingJieSkillInfo(self,createTime,vo) end\n"
+        "function _M.GetChatShareLingJieSkillInfo(self,createTime) end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatModel.lua").write_text(
+        "function _M.GetChatShareLingJieSkillInfo(self,createTime)\n"
+        "return self.ChatData:GetChatShareLingJieSkillInfo(createTime)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatType.lua").write_text(
+        "Chat_Share_16=\"%s{%d;5:%s;}\"\n"
+        "Chat_Share_17=\"{{0};5:[%d_.]*;}\"\n"
+        "Chat_Href_1='<href=[(%d+)|_.-{\",}]*>'\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatLabelChatCell.lua").write_text(
+        "self.labelContent=self:SetComponent(LuaTextEx,1)\n"
+        "self.AllianceCheck:AddHyperClickEvent(function() end)\n"
+        "self:AddLongPressEvent(self.labelContent,self._OnLongPressClick)\n"
+        "self.labelContent:SetText(data.chatHref or data.lightChatHref)\n",
+        encoding="utf-8",
+    )
+
+    isil_root = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp"
+    cs_root = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp"
+    for path in (
+        isil_root,
+        isil_root / "LuaBridge" / "UIBridge",
+        isil_root / "Core" / "Managers",
+        cs_root,
+        cs_root / "LuaBridge" / "UIBridge",
+        cs_root / "Core" / "Managers",
+    ):
+        path.mkdir(parents=True)
+    isil_root.joinpath("TextEx.txt").write_text(
+        "AddHyperClickListener(System.Int32 callId)\n"
+        "Move [X0+332], W1 ; clickHyperCallId\n"
+        "TextEx.OnPointerClick(PointerEventData eventData)\n"
+        "CallBackManager.CallStringDelegate(clickHyperCallId, HrefInfo.m_Content)\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("HrefInfo.txt").write_text(
+        "HrefInfo.CheckClick(Vector2 lp)\n"
+        "read boxes and m_Content\n",
+        encoding="utf-8",
+    )
+    (isil_root / "Core" / "Managers" / "CallBackManager.txt").write_text(
+        "CallBackManager.CallStringDelegate(System.Int32 id, System.String param)\n"
+        "CallStringDelegateList\n",
+        encoding="utf-8",
+    )
+    (isil_root / "LuaBridge" / "UIBridge" / "TextExBridge.txt").write_text(
+        "TextExBridge.AddHyperClickListener(fatherId, componentId, callId)\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("LuaBridge_UIBridge_TextExBridgeWrap.txt").write_text(
+        "LuaDLL.luaL_checknumber(L, 3)\n"
+        "TextExBridge.AddHyperClickListener\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("TextEx.cs").write_text(
+        "private int clickHyperCallId;\n"
+        "public override void OnPointerClick(PointerEventData eventData) { CallBackManager.CallStringDelegate(clickHyperCallId, info.m_Content); }\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("HrefInfo.cs").write_text(
+        "public string m_Content;\n"
+        "public bool CheckClick(Vector2 lp) => boxes.Count > 0;\n",
+        encoding="utf-8",
+    )
+    (cs_root / "Core" / "Managers" / "CallBackManager.cs").write_text(
+        "public static void CallStringDelegate(int id, string param) {}\n",
+        encoding="utf-8",
+    )
+    (cs_root / "LuaBridge" / "UIBridge" / "TextExBridge.cs").write_text(
+        "public static void AddHyperClickListener(int fatherId, int[] componentId, int callId) {}\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("LuaBridge_UIBridge_TextExBridgeWrap.cs").write_text(
+        "CheckNumberArray(L, 2);\n"
+        "TextExBridge.AddHyperClickListener(fatherId, componentId, callId);\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_share_href_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    flow_text = (output_dir / "hot_update_gongfa_homemake_share_href_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_share_href_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_share_href_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["flow_rows"] >= 24
+    assert "LuaTextEx.lua" in flow_text
+    assert "TextExBridge.AddHyperClickListener" in flow_text
+    assert "CallBackManager.CallStringDelegate" in flow_text
+    assert "LuaGlobal.lua" in flow_text
+    assert "DealWithLingJieSkill" in flow_text
+    assert "GetChatShareLingJieSkillInfo" in flow_text
+    assert "ChatLabelChatCell.lua" in flow_text
+    assert "dispatches_raw_href_content" in edges_text
+    assert "consumes_66_createTime" in edges_text
+    assert "visible_gap_chat_label_callback_registration" in edges_text
+    assert "GongFaHomeMake 聊天 href 点击链路" in markdown_text
+
+
+def test_fanxiu_prefab_binder_variable_parser_reads_alias_gameobject_and_type():
+    def i32(value: int) -> bytes:
+        return int(value).to_bytes(4, "little", signed=True)
+
+    def i64(value: int) -> bytes:
+        return int(value).to_bytes(8, "little", signed=True)
+
+    def aligned_string(value: str) -> bytes:
+        raw = value.encode("utf-8")
+        pad = (4 - (len(raw) % 4)) % 4
+        return i32(len(raw)) + raw + (b"\x00" * pad)
+
+    raw = b"".join(
+        [
+            i32(0),
+            i64(101),
+            b"\x01\x00\x00\x00",
+            i32(0),
+            i64(202),
+            aligned_string(""),
+            i32(2),
+            i32(1),
+            aligned_string("labelContent"),
+            i32(0),
+            i64(303),
+            aligned_string("TextEx"),
+            i32(5),
+            aligned_string("AllianceCheck"),
+            i32(0),
+            i64(404),
+            aligned_string("TextEx"),
+        ]
+    )
+
+    rows = _parse_prefab_binder_variables_from_raw(raw)
+
+    assert callable(build_fanxiu_gongfa_homemake_share_href_prefab_probe)
+    assert rows == [
+        {
+            "variable_id": 1,
+            "alias": "labelContent",
+            "game_object_file_id": 0,
+            "game_object_path_id": 303,
+            "type_name": "TextEx",
+        },
+        {
+            "variable_id": 5,
+            "alias": "AllianceCheck",
+            "game_object_file_id": 0,
+            "game_object_path_id": 404,
+            "type_name": "TextEx",
+        },
+    ]
+
+
+def test_fanxiu_gongfa_homemake_share_href_registration_gap_probe_marks_visible_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    core_dir = export_root / "by_source" / "lscripts" / "core_abc" / "text_assets"
+    chat_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "chat_def" / "text_assets"
+    isil_root = export_root / "apk_static_index" / "cpp2il_mock_isil" / "IsilDump" / "Assembly-CSharp"
+    cs_root = export_root / "apk_static_index" / "cpp2il_mock_diffable_cs" / "DiffableCs" / "Assembly-CSharp"
+    core_dir.mkdir(parents=True)
+    chat_dir.mkdir(parents=True)
+    isil_root.joinpath("LuaBridge", "UIBridge").mkdir(parents=True)
+    cs_root.joinpath("LuaBridge", "UIBridge").mkdir(parents=True)
+
+    core_dir.joinpath("LuaTextEx.lua").write_text(
+        "function _M.AddHyperClickEvent(self,callback)\n"
+        "self.callid=LuaCallBackMgr.AddCallBackStringDelegate(callback)\n"
+        "TextExBridge.AddHyperClickListener(self.FatherId,self.ComponentId,self.callid)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    core_dir.joinpath("LuaUIText.lua").write_text(
+        "function _M.SetText(self,str_data)\n"
+        "UITextBridge.SetTextSimple(self.FatherId,self.OrginComponentId,str_data)\n"
+        "UITextBridge.SetText(self.FatherId,self.ComponentId,str_data)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatContentBase.lua").write_text(
+        "function _M.DoUpdateContent(self,contentType,isActive,data,param)\n"
+        "content:setBinderId(findId,nil,0)\n"
+        "content:RefreshData(taskInfo.data,taskInfo.param)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatLabelChatCell.lua").write_text(
+        "self.labelContent=self:SetComponent(LuaTextEx,1)\n"
+        "self.AllianceCheck:AddHyperClickEvent(function() end)\n"
+        "self:AddLongPressEvent(self.labelContent,self._OnLongPressClick)\n"
+        "local showValue=(isSelf and not isDark)and data.chatHref or data.lightChatHref\n"
+        "self.labelContent:SetText(showValue)\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatSystemCell.lua").write_text(
+        "self.Content=self:SetComponent(LuaTextEx,1)\n"
+        "self:AddLongPressEvent(self.Content,self._OnLongPressClick)\n"
+        "self.Content:SetText(data.content)\n",
+        encoding="utf-8",
+    )
+    chat_dir.joinpath("ChatModel.lua").write_text(
+        "function _M.DealWithHyperLinkStr(str,isCalc,repStr)\n"
+        "result=string.gsub(result,_ChatType.ChatRegexType.Chat_Href_1,\"\")\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("TextEx.txt").write_text(
+        "private int clickHyperCallId;\n"
+        "public bool m_Href;\n"
+        "0x00FD2B38 LDR W19, [X19 + 0x14C]\n"
+        "0x00FD2B3C CMP W19, 0x1\n"
+        "0x00FD2B40 B.LT 0xFD2B78\n"
+        "181 Call CallBackManager.CallStringDelegate, X0, X1\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("LuaBridge", "UIBridge", "TextExBridge.txt").write_text(
+        "Method: System.Void AddHyperClickListener(System.Int32 fatherId, System.Int32[] componentId, System.Int32 callId)\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("LuaBridge_UIBridge_TextExBridgeWrap.txt").write_text(
+        "CheckNumberArray(L, 2)\nTextExBridge.AddHyperClickListener\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("TextEx.cs").write_text(
+        "public bool m_Href;\nprivate int clickHyperCallId;\nCallBackManager.CallStringDelegate(clickHyperCallId, href.m_Content);\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("LuaBridge", "UIBridge", "TextExBridge.cs").write_text(
+        "public static void AddHyperClickListener(int fatherId, int[] componentId, int callId) {}\n",
+        encoding="utf-8",
+    )
+    cs_root.joinpath("LuaBridge_UIBridge_TextExBridgeWrap.cs").write_text(
+        "CheckNumberArray(L, 2);\nTextExBridge.AddHyperClickListener(fatherId, componentId, callId);\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_share_href_registration_gap_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    evidence_text = (output_dir / "hot_update_gongfa_homemake_share_href_registration_gap_evidence.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_share_href_registration_gap_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_share_href_registration_gap_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["visible_label_content_registration_found"] is False
+    assert result["counts"]["evidence_rows"] >= 20
+    assert "ChatLabelChatCell.lua" in evidence_text
+    assert "ChatContentBase.lua" in evidence_text
+    assert "LuaUIText.lua" in evidence_text
+    assert "CMP W19, 0x1" in evidence_text
+    assert "no_visible_label_content_registration" in edges_text
+    assert "may_be_display_or_copy_markup" in edges_text
+    assert "GongFaHomeMake 聊天 href 注册缺口复核" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_detail_view_probe_maps_vo_to_detail_renderer(tmp_path):
+    export_root = tmp_path / "exports"
+    homemake_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gongfahomemake_mock" / "text_assets"
+    gongfanew_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gongfanew_mock" / "text_assets"
+    protocol_dir = export_root / "parsed_configs" / "lua_packet_index"
+    homemake_dir.mkdir(parents=True)
+    gongfanew_dir.mkdir(parents=True)
+    protocol_dir.mkdir(parents=True)
+
+    homemake_dir.joinpath("GongfahomemakeMgr.lua").write_text(
+        "function _M.GetScopeType(self,skillCommonVO)\n"
+        "if skillCommonVO.xianEffectMap and skillCommonVO.xianEffectMap:LuaDic_Count()>0 then return GongFaNewType.GongFaType.XianJie end\n"
+        "return GongFaNewType.GongFaType.LingJie\n"
+        "end\n"
+        "function _M.OpenCreateSkillDetailView(self,data,isOther,isBagClick)\n"
+        "homeMakeVO=data.homeMakeVO\n"
+        "homeMakeVO=data\n"
+        "UIShowMgr.Inst_get():F_ShowWin(Window.XianShuCreateSkillDetailView,function(panel) panel:UpdateView(data,isOther,isBagClick) end)\n"
+        "UIShowMgr.Inst_get():F_ShowWin(Window.CreateSkillDetailView,function(panel) panel:UpdateView(data,isOther,isBagClick) end)\n"
+        "end\n"
+        "function _M.GetIconShowImg(self,skillCommonVO)\n"
+        "local icon=skillCommonVO.icon\n"
+        "local iconBg=skillCommonVO.iconBg\n"
+        "end\n"
+        "function _M.GetCreateQualityCfg(self,scopeType,skillId,xianEffectMap) end\n"
+        "function _M.GetXianShuQualityCfg(self,xianEffectMap) end\n"
+        "function _M.GetMainDes(self,pinCfg,starCfg,jieCfg,gongFaId)\n"
+        "self:GetOneTongXuanMainDesc(tongxuan,gongFaId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    homemake_dir.joinpath("GongFaConsultViewItem.lua").write_text(
+        "local name=GongfahomemakeMgr.Inst_get():GetGongFaName(info.skillName,info.mainId,true,self.scopeType,data.skillCommonVO.xianEffectMap)\n"
+        "GongfahomemakeMgr.Inst_get():OpenCreateSkillDetailView(self.v_data)\n",
+        encoding="utf-8",
+    )
+    homemake_dir.joinpath("GongFaChooseTeachViewItem.lua").write_text(
+        "local str1,str2=GongfahomemakeMgr.Inst_get():GetXianEffectStr(self.v_data)\n"
+        "local name1,name2,name3=GongfahomemakeMgr.Inst_get():GetNames(info.mainId,info.effectMap,true,true)\n"
+        "GongfahomemakeMgr.Inst_get():OpenCreateSkillDetailView(self.v_data)\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("CreateSkillDetailView.lua").write_text(
+        "function _M.ShareBtnClick(self)\n"
+        "ChatMgr.Inst_get():OpenShareToChatView(list,function(channelType,subId) end)\n"
+        "data.params:Add({key=ChatType.ChatParamType.LING_JIE_GONGFA,id=self.data.skillCommonVO.id:ToString()})\n"
+        "end\n"
+        "function _M.ToggleChange(self,value)\n"
+        "GongfahomemakeMgr.Inst_get().NetLogic:CM_GongFaCheckFun(self.data.skillCommonVO.id,value,self.data)\n"
+        "self.toggle:SetValue(data.isCheck)\n"
+        "self.changNameBtn:SetActive(isSelf)\n"
+        "end\n"
+        "function _M.UpdateViewBySelf(self)\n"
+        "self.createNameTxt:SetText(LuaLocalization.Format(\"GongFa_LingJie_14\",serverName,self.data.fromPlayerName))\n"
+        "local desStr=GongfahomemakeMgr.Inst_get():GetMainDes(pinCfg,starCfg,jieCfg,gongFaId)\n"
+        "self.mainDesTxt:SetText(desStr)\n"
+        "for k,v in Kpairs(self.data.skillCommonVO.effectMap)do\n"
+        "local mainFeatureCfg=GongfahomemakeMgr.Inst_get().Model:GetMainFeatureCfgById(k,v)\n"
+        "describe=LuaLocalization.Format(\"GongFa_LingJie_100\",qualityCfg.color,pinCfg.name,\"322722\",pinCfg.describe)\n"
+        "describe=LuaLocalization.Format(\"GongFa_LingJie_101\",gongFaId,1,qualityCfg.color,pinCfg.name,\"74746c\",pinCfg.describe)\n"
+        "local sideCfg=GongfahomemakeMgr.Inst_get().Model:GetSideFeatureJieCfgById(k,v)\n"
+        "local sidePinCfg=GongfahomemakeMgr.Inst_get().Model:GetSideFeaturePinCfgById(k,v)\n"
+        "describe=describe..LuaLocalization.Format(\"GongFa_LingJie_106\",qualityCfg.color,\"322722\",sidePinCfg.describe)\n"
+        "describe=describe..LuaLocalization.Format(\"GongFa_LingJie_131\",qualityCfg.color,\"322722\",secDescribe)\n"
+        "self.showList:Add({sort=-1,describe=describe,isActive=isActive})\n"
+        "assistList:Add({sort=gongFaVo.cfg.id,describe=describe,isActive=isActive})\n"
+        "end\n"
+        "end\n"
+        "function _M.UpdateViewByOther(self)\n"
+        "local gongFaVo=self.data.itemVOMap:LuaDic_GetItem(gongFaId)\n"
+        "local star=gongFaVo and gongFaVo.star or 1\n"
+        "local jie=gongFaVo and gongFaVo.jie or 1\n"
+        "local pin=gongFaVo and gongFaVo.pin or 1\n"
+        "local tongxuan=gongFaVo and gongFaVo.tongxuan or 0\n"
+        "for k,v in Kpairs(self.data.homeMakeVO.skillCommonVO.effectMap)do end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("XianShuCreateSkillDetailView.lua").write_text(
+        "function _M.UpdateViewBySelf(self)\n"
+        "self.showList:Add({itemType=1,title=LuaLocalization.Get(\"XianShu_3\")})\n"
+        "for k,v in Kpairs(self.data.skillCommonVO.xianEffectMap)do\n"
+        "local cfg=GongfahomemakeMgr.Inst_get().Model:GetMainFeatureCfgById(v,k)\n"
+        "local ljgfStarLo=GongfahomemakeMgr.Inst_get().Model:GetXianjieGongfaStarCfgEx(featureBaseCfg.featureGroup,1)\n"
+        "xianFa1Msg={itemType=2,sort=gongFaVoEx.cfg.id,describe=describe,isActive=isActive}\n"
+        "xianFa2Msg={itemType=2,sort=gongFaVoEx.cfg.id,describe=describe,isActive=isActive}\n"
+        "end\n"
+        "self.showList:Add({itemType=1,title=LuaLocalization.Get(\"XianShu_2\")})\n"
+        "for k,v in Kpairs(self.data.skillCommonVO.effectMap)do end\n"
+        "end\n"
+        "function _M.UpdateViewByOther(self)\n"
+        "for k,v in Kpairs(self.data.homeMakeVO.skillCommonVO.xianEffectMap)do end\n"
+        "for k,v in Kpairs(self.data.homeMakeVO.skillCommonVO.effectMap)do end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("LingJieSkillItem.lua").write_text(
+        "local qualityCfg=GongfahomemakeMgr.Inst_get():GetCreateQualityCfg(self.data.scopeType,self.data.skillCommonVO.mainId,self.data.skillCommonVO.xianEffectMap)\n"
+        "qualityCfg=GongfahomemakeMgr.Inst_get():GetXianShuQualityCfg(self.data.homeMakeVO.skillCommonVO.xianEffectMap)\n"
+        "local iconPath,icon,iconBgPath,iconBg=GongfahomemakeMgr.Inst_get():GetIconShowImg(self.data.skillCommonVO)\n"
+        "self.nameTxt:SetText(GameUtil.GetQualityText(self.data.skillCommonVO.skillName,qualityCfg.id,true))\n"
+        "self.skillTypeTxt:SetText(self.data.skillCommonVO.mark)\n"
+        "if self.data.isLight then self:CheckQualityEffect() end\n",
+        encoding="utf-8",
+    )
+    protocol_dir.joinpath("protocol_gongfa.tsv").write_text(
+        "id\tname\tkind\tmodule\tfield_count\tfields\n"
+        "35710\tGongFaHomeMakeVO\tvalue_object\tplayer.gongfahomemake\t10\tskillCommonVO:Bean<CreateSkillCommonVO>, fromPlayerName:String, fromPlayerServer:Int\n"
+        "35740\tCreateSkillCommonVO\tvalue_object\tplayer.gongfahomemake\t10\tid:Long, mainId:Int, skillName:String, mark:String, icon:Int, iconBg:Int, effectMap:MessageMap2Dic, xianEffectMap:MessageMap2Dic\n"
+        "35745\tGongFaHomeMakeShareVO\tvalue_object\tplayer.gongfahomemake\t2\thomeMakeVO:Bean<GongFaHomeMakeVO>, itemVOMap:MessageMap2Dic\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_detail_view_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    flow_text = (output_dir / "hot_update_gongfa_homemake_detail_view_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_homemake_detail_view_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_detail_view_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["entry_scope_branch_closed"] is True
+    assert result["verdict"]["lingjie_detail_render_closed"] is True
+    assert result["verdict"]["xianshu_detail_render_closed"] is True
+    assert result["verdict"]["share_snapshot_context_found"] is True
+    assert result["counts"]["flow_rows"] >= 40
+    assert "CreateSkillCommonVO" in flow_text
+    assert "XianShuCreateSkillDetailView.lua" in flow_text
+    assert "renders_xian_effects_then_lingjie_effects" in edges_text
+    assert "GongFaHomeMake 详情页渲染链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_detail_renderer_probe_maps_templates_and_config_schema(tmp_path):
+    export_root = tmp_path / "exports"
+    localization_dir = export_root / "by_source" / "localization" / "chinese" / "localization_mock" / "text"
+    cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "lingjiegongfa_mock" / "text_assets"
+    quality_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "quality_mock" / "text_assets"
+    homemake_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gongfahomemake_mock" / "text_assets"
+    gongfanew_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gongfanew_mock" / "text_assets"
+    localization_dir.mkdir(parents=True)
+    cfg_dir.mkdir(parents=True)
+    quality_dir.mkdir(parents=True)
+    homemake_dir.mkdir(parents=True)
+    gongfanew_dir.mkdir(parents=True)
+
+    localization_dir.joinpath("localization.txt").write_text(
+        "GongFa_LingJie_58,0,(受<href=29|%s><color=#%s>%s</color></href>升阶和融合影响)\n"
+        "GongFa_LingJie_60,0,(受<color=#%s>%s</color>升阶和融合影响)\n"
+        "GongFa_LingJie_100,0,<color=#%s>%s:</color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_101,0,<href=67|%s_%s><color=#9e1e09>(未激活)</color></href><color=#%s>%s:</color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_102,0,<href=67|%s_%s><color=#9e1e09>(未激活)</color></href><color=#%s>%s</color>\n"
+        "GongFa_LingJie_106,0,<color=#%s>(悟境):</color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_128,0,(受<href=29|%s><color=#%s>%s</color></href>升阶、融合、通玄影响)\n"
+        "GongFa_LingJie_129,0,(受<color=#%s>%s</color>融合、通玄影响)\n"
+        "GongFa_LingJie_131,0,<color=#%s></color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_132,0,<color=#9e1e09>(未激活)</color><color=#74746c>%s</color>\n"
+        "XianShu_2,0,灵书词缀：\n"
+        "XianShu_3,0,仙书词缀：\n",
+        encoding="utf-8",
+    )
+
+    schemas = {
+        "FeatureBase.lua": "local _key2index={id=1,group=2,keyFeature=3,weighted=4,featureGroup=5,quality=6}\n",
+        "MainFeature.lua": "local _key2index={id=1,gongfaId=2,groups=3,featureType=4,condition=5,describe=6}\n",
+        "MainFeaturePin.lua": "local _key2index={id=1,gongfaId=2,pin=3,quality=4,featureGroup=5,feature=6,sortValue=7,name=8,describe=9}\n",
+        "SideFeatureJie.lua": "local _key2index={id=1,featureGroup=2,jie=3,feature=4,sortValue=5,name=6,param=7,describe=8}\n",
+        "SideFeaturePin.lua": "local _key2index={id=1,featureGroup=2,pin=3,quality=4,feature=5,name=6,describe=7}\n",
+        "LingjieGongfaStar.lua": "local _key2index={id=1,gongfaId=2,star=3,quality=4,param=5,describe=6}\n",
+        "LingjieGongfaJie.lua": "local _key2index={id=1,gongfaId=2,jie=3,param=4,describe=5}\n",
+        "XianjieGongfaStar.lua": "local _key2index={id=1,featureGroup=2,star=3,quality=4,param=5,describe=6}\n",
+    }
+    for name, text in schemas.items():
+        cfg_dir.joinpath(name).write_text(text, encoding="utf-8")
+    quality_dir.joinpath("Quality.lua").write_text(
+        "local _key2index={id=1,name=2,color=3,color1=4,skillFrame=5,skillCorner=6}\n",
+        encoding="utf-8",
+    )
+
+    homemake_dir.joinpath("GongfahomemakeModel.lua").write_text(
+        "function _M.GetMainFeatureCfgById(self,skillId,id)\n"
+        "local featureBaseCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.LingjieGongfa_FeatureBase,id)\n"
+        "return self:GetMainFeatureCfgEx(gongFaId,featureBaseCfg.group)\n"
+        "end\n"
+        "function _M.GetMainFeaturePinCfgBySkillId(self,skillId) end\n"
+        "function _M.GetMainFeaturePinCfgEx(self,gongfaId,pin) end\n"
+        "function _M.GetSideFeatureJieCfgById(self,skillId,id,jie,gongFaVo) return self:GetSideFeatureJieCfgEx(cfg.featureGroup,jie) end\n"
+        "function _M.GetSideFeaturePinCfgById(self,skillId,id,pin) return self:GetSideFeaturePinCfgEx(cfg.featureGroup,pin) end\n"
+        "function _M.GetXianjieGongfaStarCfgEx(self,featureGroup,star) end\n"
+        "function _M.GetLingjieGongfaStarCfgEx(self,gongfaId,star) end\n"
+        "function _M.GetLingjieGongfaJieCfgEx(self,gongfaId,jie) end\n",
+        encoding="utf-8",
+    )
+    homemake_dir.joinpath("GongfahomemakeMgr.lua").write_text(
+        "function _M.GetMainDes(self,pinCfg,starCfg,jieCfg,gongFaId)\n"
+        "array=_M.TabelAddTabel(array,starCfg.param)\n"
+        "array=_M.TabelAddTabel(array,jieCfg.param)\n"
+        "desStr=string.format(starCfg.describe,unpack(array))\n"
+        "str=LuaLocalization.Format(\"GongFa_LingJie_58\",gongFaId,showColor,gongFaVo.cfg.name)\n"
+        "str=LuaLocalization.Format(\"GongFa_LingJie_60\",showColor,gongFaVo.cfg.name)\n"
+        "str=LuaLocalization.Format(\"GongFa_LingJie_128\",gongFaId,tongxuanQualityCfg.color,gongFaVo.cfg.name)\n"
+        "str=LuaLocalization.Format(\"GongFa_LingJie_129\",tongxuanQualityCfg.color,gongFaVo.cfg.name)\n"
+        "tongxuanStr=LuaLocalization.Format(\"GongFa_LingJie_132\",tongxuanStr)\n"
+        "return PostMgr.Inst_get():StringFormatColorType(desStr,colorType)\n"
+        "end\n"
+        "function _M.GetOneTongXuanMainDesc(self,tongxuan,originId,colorType) return tongxuanCfg.mainDescribe end\n"
+        "function _M.GetOneTongXuanSecDesc(self,tongxuan,originId,colorType) return tongxuanCfg.secDescribe end\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("GongFaNewModel.lua").write_text(
+        "function _M.CheckGongFaBookTongXuanIsShow(self,gongfaId,featureGroup,isMain) end\n"
+        "function _M.GetGongfaTongXuanCfgByIdTongXuan(self,gongfaId,tongxuan) end\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("CreateSkillDetailView.lua").write_text(
+        "describe=LuaLocalization.Format(\"GongFa_LingJie_100\",qualityCfg.color,pinCfg.name,\"322722\",pinCfg.describe)\n"
+        "describe=LuaLocalization.Format(\"GongFa_LingJie_101\",gongFaId,1,qualityCfg.color,pinCfg.name,\"74746c\",pinCfg.describe)\n"
+        "describe=describe..LuaLocalization.Format(\"GongFa_LingJie_106\",qualityCfgSide.color,\"322722\",sidePinCfg.describe)\n"
+        "describe=describe..LuaLocalization.Format(\"GongFa_LingJie_102\",gongFaVo.cfg.id,1,\"74746c\",sidePinCfg.describe)\n"
+        "describe=describe..LuaLocalization.Format(\"GongFa_LingJie_131\",qualityCfgSide.color,\"322722\",secDescribe)\n"
+        "local isActive=GongfahomemakeMgr.Inst_get():IsActiveEffect(k,mainFeatureCfg.condition)\n"
+        "local isActive2=GongFaNewMgr.Inst_get().Model:GetGongFaIsLearn(gongFaVo.cfg.id)\n"
+        "local isPinActive=GongfahomemakeMgr.Inst_get().Model:GetSideFeaturePinIsActive(gongFaVo)\n",
+        encoding="utf-8",
+    )
+    gongfanew_dir.joinpath("XianShuCreateSkillDetailView.lua").write_text(
+        "self.showList:Add({itemType=1,title=LuaLocalization.Get(\"XianShu_3\")})\n"
+        "for k,v in Kpairs(self.data.skillCommonVO.xianEffectMap)do\n"
+        "local cfg=GongfahomemakeMgr.Inst_get().Model:GetMainFeatureCfgById(v,k)\n"
+        "local sideJieCfg=GongfahomemakeMgr.Inst_get().Model:GetSideFeatureJieCfgById(v,k)\n"
+        "local sidePinCfg=GongfahomemakeMgr.Inst_get().Model:GetSideFeaturePinCfgById(v,k)\n"
+        "local star=GongfahomemakeMgr.Inst_get().Model:GetXianjieGongfaStarCfgEx(featureBaseCfg.featureGroup,1)\n"
+        "xianFa1Msg={itemType=2,describe=describe}\n"
+        "xianFa2Msg={itemType=2,describe=describe}\n"
+        "end\n"
+        "self.showList:Add({itemType=1,title=LuaLocalization.Get(\"XianShu_2\")})\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_detail_renderer_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    templates_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_templates.tsv").read_text(
+        encoding="utf-8"
+    )
+    schema_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_config_schema.tsv").read_text(
+        encoding="utf-8"
+    )
+    edges_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["all_target_templates_found"] is True
+    assert result["verdict"]["config_schema_found"] is True
+    assert result["verdict"]["renderer_mapping_closed"] is True
+    assert "GongFa_LingJie_100" in templates_text
+    assert "<href=67|%s_%s>" in templates_text
+    assert "MainFeaturePin" in schema_text
+    assert "name, describe" in schema_text
+    assert "formats_inactive_effect_or_appendix" in edges_text
+    assert "maps_effect_id_to_groups" in edges_text
+    assert "GongFaHomeMake 详情页模板与配置渲染链路" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_detail_renderer_sample_probe_builds_vo_shaped_text(tmp_path):
+    export_root = tmp_path / "exports"
+    localization_dir = export_root / "by_source" / "localization" / "chinese" / "localization_mock" / "text"
+    localization_dir.mkdir(parents=True)
+    localization_dir.joinpath("localization.txt").write_text(
+        "GongFa_LingJie_100,0,<color=#%s>%s:</color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_101,0,<href=67|%s_%s><color=#9e1e09>(未激活)</color></href><color=#%s>%s:</color><color=#%s>%s</color>\n"
+        "GongFa_LingJie_102,0,<href=67|%s_%s><color=#9e1e09>(未激活)</color></href><color=#%s>%s</color>\n"
+        "GongFa_LingJie_106,0,<color=#%s>(悟境):</color><color=#%s>%s</color>\n",
+        encoding="utf-8",
+    )
+
+    def write_rows(name: str, rows: list[dict[str, object]]) -> None:
+        out_dir = export_root / "parsed_configs" / name
+        out_dir.mkdir(parents=True)
+        out_dir.joinpath("rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows("Gongfa", [{"id": 306101, "name": "千锋聚灵剑", "name_plain": "千锋聚灵剑"}])
+    write_rows("GongfaSkill", [{"id": "358101000_1", "originId": 306101}])
+    write_rows(
+        "FeatureBase",
+        [
+            {"id": 100, "group": 101, "featureGroup": 101, "quality": 6},
+            {"id": 2500, "group": 10001, "keyFeature": 306101, "featureGroup": 10001, "quality": 6},
+        ],
+    )
+    write_rows("MainFeature", [{"id": 101, "gongfaId": 306101, "groups": [101], "condition": "8|2"}])
+    write_rows(
+        "MainFeaturePin",
+        [
+            {
+                "id": 30610101,
+                "gongfaId": 306101,
+                "pin": 1,
+                "quality": 6,
+                "featureGroup": 101,
+                "name": "【惊神剑光】",
+                "describe": "每段攻击提升<color=#2a4b10>20%</color>神通伤害加成",
+            }
+        ],
+    )
+    write_rows(
+        "SideFeatureJie",
+        [
+            {
+                "id": 100001,
+                "featureGroup": 10001,
+                "jie": 1,
+                "quality": 6,
+                "name": "【天衰灵涸】(专属)",
+                "describe": "治疗量降低<color=#2a4b10>31%</color>",
+            }
+        ],
+    )
+    write_rows(
+        "SideFeaturePin",
+        [
+            {
+                "id": 200001,
+                "featureGroup": 10001,
+                "pin": 1,
+                "quality": 6,
+                "describe": "悟境补充<color=#2a4b10>14%</color>",
+            }
+        ],
+    )
+    write_rows(
+        "LingjieGongfaStar",
+        [
+            {
+                "id": 1,
+                "gongfaId": 306101,
+                "star": 1,
+                "skill": 358101000,
+                "describe": "基础伤害<color=#2a4b10>%s%%</color>，补正%s/%s",
+                "param": [1500, 0, 0],
+            }
+        ],
+    )
+    write_rows("LingjieGongfaJie", [{"id": 10001, "gongfaId": 306101, "jie": 1, "param": [0, 7, 1400]}])
+    write_rows("Quality", [{"id": 6, "color": "9e1e09"}])
+
+    result = build_fanxiu_gongfa_homemake_detail_renderer_sample_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    samples_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_samples.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_detail_renderer_sample_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["verdict"]["sample_renderer_ready"] is True
+    assert result["verdict"]["has_side_effect_sample"] is True
+    assert result["sample"]["gongfa_id"] == 306101
+    assert "main_description" in samples_text
+    assert "基础伤害" in samples_text
+    assert "【惊神剑光】" in samples_text
+    assert "【天衰灵涸】" in samples_text
+    assert "悟境补充" in samples_text
+    assert "(未激活)" in samples_text
+    assert "VO-shaped 样例" in markdown_text
+
+    detail = render_fanxiu_gongfa_homemake_static_detail(306101, export_root=export_root)
+    detail_text = "\n".join(str(row.get("plain_text") or "") for row in detail["rows"])
+    assert detail["source"] == "static_gongfa_catalog"
+    assert detail["card"]["name"] == "千锋聚灵剑"
+    assert detail["counts"]["rows"] >= 5
+    assert "基础伤害" in detail_text
+    assert "【惊神剑光】" in detail_text
+    assert "【天衰灵涸】" in detail_text
+    assert any(row["active_state"] == "inactive" for row in detail["rows"])
+
+
+def test_fanxiu_gongfa_homemake_renderer_source_selection_probe_recommends_static_source(tmp_path):
+    export_root = tmp_path / "exports"
+    catalog_dir = export_root / "parsed_configs" / "gongfa_catalog"
+    catalog_dir.mkdir(parents=True)
+    catalog_dir.joinpath("gongfa_catalog.json").write_text(
+        json.dumps(
+            {
+                "stats": {
+                    "gongfa_count": 2,
+                    "skill_count": 5,
+                    "cards_with_skills": 2,
+                },
+                "cards": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def write_rows(name: str, rows: list[dict[str, object]]) -> None:
+        out_dir = export_root / "parsed_configs" / name
+        out_dir.mkdir(parents=True)
+        out_dir.joinpath("rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows("Gongfa", [{"id": 306101}])
+    write_rows("GongfaSkill", [{"id": "358101000_1", "originId": 306101}])
+    write_rows("FeatureBase", [{"id": 100, "group": 101, "featureGroup": 101, "quality": 6}])
+    write_rows("MainFeature", [{"id": 101, "gongfaId": 306101, "groups": [101]}])
+    write_rows("MainFeaturePin", [{"id": 30610101, "gongfaId": 306101, "pin": 1, "quality": 6}])
+    write_rows("SideFeatureJie", [{"id": 100001, "featureGroup": 10001, "jie": 1}])
+    write_rows("SideFeaturePin", [{"id": 200001, "featureGroup": 10001, "pin": 1, "quality": 6}])
+    write_rows("LingjieGongfaStar", [{"id": 1, "gongfaId": 306101, "star": 1}])
+    write_rows("LingjieGongfaJie", [{"id": 10001, "gongfaId": 306101, "jie": 1}])
+    write_rows("Quality", [{"id": 6, "color": "9e1e09"}])
+
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    output_dir.joinpath("hot_update_gongfa_homemake_detail_renderer_report.json").write_text(
+        json.dumps({"counts": {"templates": 12}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    output_dir.joinpath("hot_update_gongfa_homemake_detail_renderer_sample_report.json").write_text(
+        json.dumps({"counts": {"sample_rows": 5}, "sample": {"sample_name": "千锋聚灵剑"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    output_dir.joinpath("hot_update_gongfa_homemake_lifecycle_report.json").write_text(
+        json.dumps({"counts": {"packet_rows": 54, "edge_rows": 144}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_renderer_source_selection_probe(export_root=export_root)
+    candidates_text = (output_dir / "hot_update_gongfa_homemake_renderer_source_selection.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (
+        output_dir / "hot_update_gongfa_homemake_renderer_source_selection_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert result["verdict"]["can_start_static_wiki_renderer"] is True
+    assert result["verdict"]["runtime_vo_capture_available"] is False
+    assert result["verdict"]["needs_user_intervention_now"] is False
+    assert result["selection"]["recommended_first_source"] == "static_gongfa_catalog"
+    assert "static_gongfa_catalog" in candidates_text
+    assert "vo_shaped_renderer_sample" in candidates_text
+    assert "captured_or_shared_gongfa_homemake_vo" in candidates_text
+    assert "not_available_yet" in candidates_text
+    assert "CodeYun wiki 现在可以先接静态配置图鉴源" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_static_renderer_coverage_probe_flags_gaps(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_rows(name: str, rows: list[dict[str, object]]) -> None:
+        out_dir = export_root / "parsed_configs" / name
+        out_dir.mkdir(parents=True)
+        out_dir.joinpath("rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows(
+        "Gongfa",
+        [
+            {"id": 306101, "name_plain": "千锋聚灵剑", "icon": "icon_skill_zw_0021", "quality": 401, "skillType": 2},
+            {"id": 999001, "name_plain": "缺表功法"},
+        ],
+    )
+    write_rows("MainFeature", [{"id": 10, "gongfaId": 306101, "groups": [101]}])
+    write_rows(
+        "FeatureBase",
+        [
+            {"id": 100, "group": 101, "featureGroup": 101, "quality": 6},
+            {"id": 2500, "keyFeature": 306101, "featureGroup": 10001, "quality": 6},
+        ],
+    )
+    write_rows("MainFeaturePin", [{"id": 30610101, "gongfaId": 306101, "pin": 1, "quality": 6}])
+    write_rows("SideFeatureJie", [{"id": 100001, "featureGroup": 10001, "jie": 1}])
+    write_rows("SideFeaturePin", [{"id": 200001, "featureGroup": 10001, "pin": 1, "quality": 6}])
+    write_rows("LingjieGongfaStar", [{"id": 1, "gongfaId": 306101, "star": 1, "describe": "基础%s"}])
+    write_rows("LingjieGongfaJie", [{"id": 10001, "gongfaId": 306101, "jie": 1, "param": [1500]}])
+
+    result = build_fanxiu_gongfa_homemake_static_renderer_coverage_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    coverage_text = (output_dir / "hot_update_gongfa_homemake_static_renderer_coverage.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (
+        output_dir / "hot_update_gongfa_homemake_static_renderer_coverage_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert result["counts"]["gongfa"] == 2
+    assert result["counts"]["status"]["ready"] == 1
+    assert result["counts"]["status"]["zero_rows"] == 1
+    assert result["counts"]["warnings"]["missing MainFeaturePin"] == 1
+    assert "千锋聚灵剑" in coverage_text
+    assert "缺表功法" in coverage_text
+    assert "zero_rows" in coverage_text
+    assert "静态 renderer 覆盖率审计" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_xianshu_gap_probe_and_skill_fallback(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_rows(name: str, rows: list[dict[str, object]]) -> None:
+        out_dir = export_root / "parsed_configs" / name
+        out_dir.mkdir(parents=True)
+        out_dir.joinpath("rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    def write_numbered_lua(path: Path, anchors: dict[int, list[str]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        max_line = max(start + len(block) - 1 for start, block in anchors.items())
+        lines = [f"-- filler {line_no}" for line_no in range(1, max_line + 1)]
+        for start, block in anchors.items():
+            for offset, line in enumerate(block):
+                lines[start + offset - 1] = line
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    write_rows(
+        "Gongfa",
+        [
+            {
+                "id": 400101,
+                "name_plain": "须弥感应篇",
+                "scopeType": 2,
+                "skillType": 2,
+                "quality": 4001,
+            }
+        ],
+    )
+    write_rows(
+        "GongfaSkill",
+        [
+            {
+                "id": "307501000_1",
+                "originId": 400101,
+                "pin": 1,
+                "sort": 1,
+                "describe": "主技能说明<color=#2a4b10>1600%</color>",
+            },
+            {
+                "id": "316104000_1",
+                "group": 316104,
+                "skillName_plain": "破妄剑意",
+                "jieId": [316104001],
+                "describe_plain": "每次召唤剑气时，对目标额外造成600%攻击力的伤害",
+            }
+        ],
+    )
+    write_rows("MainFeature", [{"id": 30001, "gongfaId": 400101, "groups": [30001, 3001], "featureType": 1}])
+    write_rows(
+        "FeatureBase",
+        [
+            {"id": 102, "group": 30001, "keyFeature": 400101, "featureGroup": 3000101, "quality": 6},
+            {"id": 502, "group": 3001, "featureGroup": 3000701, "quality": 6},
+        ],
+    )
+    write_rows(
+        "SideFeatureJie",
+        [
+            {
+                "id": 300001,
+                "featureGroup": 3000101,
+                "jie": 1,
+                "feature": 38600101,
+                "name": "【洞微剑天】",
+                "param": [0, 5, 500],
+            },
+            {
+                "id": 300351,
+                "featureGroup": 3000701,
+                "jie": 1,
+                "feature": 38600701,
+                "name": "【无量劫火】",
+                "param": [0, 10000],
+            },
+        ],
+    )
+    write_rows("SideFeaturePin", [])
+    write_rows("MainFeaturePin", [])
+    write_rows("LingjieGongfaStar", [])
+    write_rows("LingjieGongfaJie", [])
+    write_rows("Quality", [{"id": 6, "color": "9e1e09"}])
+    write_rows(
+        "BuffResource",
+        [
+            {
+                "id": 386001010,
+                "name_plain": "洞微剑气",
+                "desc_plain": "每秒造成伤害并降低神识招架率",
+                "type": "FUNNEL",
+                "buffContinued": 316104001,
+                "duration": 16000,
+                "periodicTime": 1000,
+                "layer": 1,
+                "relationType": 7,
+            },
+            {
+                "id": 386007010,
+                "name_plain": "幽煌魔躯",
+                "desc_plain": "每秒添加煌陨且状态结束时造成高额伤害",
+                "duration": 8000,
+                "periodicTime": 1000,
+                "layer": 1,
+            },
+            {
+                "id": 386007011,
+                "name_plain": "煌陨",
+                "desc_plain": "对目标造成伤害",
+                "duration": 500,
+                "layer": 1,
+            },
+        ],
+    )
+    write_rows("Skill", [{"id": 386001000, "name_plain": "测试技能一"}])
+    write_rows(
+        "Renjie-GongfaJie",
+        [
+            {
+                "id": 316104001,
+                "gid": 316104,
+                "name_plain": "1重",
+                "describe_plain": "第6重激活",
+            }
+        ],
+    )
+    write_rows(
+        "FazeLevel",
+        [
+            {
+                "id": 300,
+                "fazeId": 2000000,
+                "level": 100,
+                "descript_plain": "【无量劫火】：战斗开始时获得幽煌魔躯",
+            }
+        ],
+    )
+    timeline_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "luaconfig_mock" / "text_assets"
+    timeline_dir.mkdir(parents=True)
+    timeline_dir.joinpath("316104001.lua").write_text(
+        "return {ResPath='skill/eff_man_skill_bullet_jian_08_mx', TrackName='剑气浮游炮'}\n",
+        encoding="utf-8",
+    )
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    fight_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "fight_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    xianjie_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "lingjiegongfa_mock" / "text_assets"
+    xianjie_dir.mkdir(parents=True)
+    xianjie_dir.joinpath("XianjieGongfaStar.lua").write_text(
+        "\n".join(
+            [
+                "local _A={",
+                "[1]='本神通共附加<color=#2a4b10>%s%%</color>攻击力神识伤害。剑气降低<color=#2a4b10>%s%%</color>神识招架并造成<color=#2a4b10>%s%%</color>攻击力神识伤害',",
+                "}",
+                "local _B={",
+                "[1]={4000,0,0},",
+                "}",
+                "local _C={",
+                "[1]='0秒',",
+                "}",
+                "return {",
+                "[1]=setmetatable({[1]=1,[2]=3000101,[3]=1,[4]=38400001,[5]=8,[6]=_A[1],[7]=_B[1],[8]=1500,[9]=_C[1]},_P),",
+                "}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    write_numbered_lua(
+        battle_dir / "BuffType.lua",
+        {
+            37: [
+                "_M.BuffClientLogic={",
+                "[_M.BuffType.WEAK]=\"Weak\",",
+                "[_M.BuffType.SAFE_AREA]=\"SafeArea\",",
+                "[_M.BuffType.STEALTH]=\"Stealth\",",
+                "[_M.BuffType.FUNNEL]=\"Funnel\",",
+            ]
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "Buff.lua",
+        {
+            145: [
+                "if buffCfg.buffContinued and buffCfg.buffContinued>0 then",
+                "PresentationMgr.Inst_get():PlayElement(entityView.Entity.V_ID,PresentationTargetType.Atk,buffCfg.buffContinued,buff:GetBuffTargetList(),",
+                "buffId,configId,sex,nil,finishCallback)",
+                "end",
+                "local LogicType=BuffType.BuffClientLogic[self.V_Type]",
+                "if LogicType~=nil then",
+                "local path=string.format(\"GameSystem.Game.Battle.Buff.BuffClientLogic.%sLogic\",LogicType)",
+            ]
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "FunnelLogic.lua",
+        {
+            12: [
+                "function _M.DoAddBuffLogic(self,entityView,buff)",
+                "end",
+                "function _M.DoRemoveBuffLogic(self,entityView,buff)",
+                "local funnelView=EntityMgr.Inst_get():GetFunnelView(buff.V_ID)",
+                "entityView:RemoveFunnelFromEntity(funnelView.Entity.V_ID)",
+                "EntityMgr.Inst_get():DeleteFunnel(funnelView.Entity.V_ID)",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "FunnelSkillActor.lua",
+        {
+            22: [
+                "function _M.SetSM_FightResult4RunTimeSkill(self,msg)",
+                "local skill=self:GetSkill(msg.skillId)",
+                "if skill then",
+                "skill:SetSM_FightResult(msg)",
+                "end",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "SkillBase.lua",
+        {
+            399: [
+                "for _,v in Cipairs(msg.results)do",
+                "local resultVo=v",
+                "local hurtData=HurtPool.Inst_get():CreateHurtData()",
+                "local damage_num=Mathf.Floor(resultVo.damage)*percent*0.01",
+                "local tmpDamageView=Mathf.Floor(resultVo.damageView)",
+                "local damage_view=Mathf.Floor(resultVo.damageView)*tmpPercent*0.01",
+                "local recover_num=Mathf.Floor(resultVo.recoverHp)*percent*0.01",
+                "local damage_reflect=Mathf.Floor(resultVo.damageReflect)*percent*0.01",
+                "local mpDamage_num=Mathf.Floor(resultVo.mpAddDamage)*percent*0.01",
+                "local mpDamage_view=Mathf.Floor(resultVo.mpAddDamageView)*percent*0.01",
+                "local mpDamageAbsorb_num=Mathf.Floor(resultVo.mpDamageAbsorb)*percent*0.01",
+                "local key=resultVo.targetId:ToString()",
+                "hurtData:SetData(entityId,resultVo.targetId,resultVo.fightEffect:ToNum(),damage_view,damage_reflect,mpDamage_view,recover_num,0,0,",
+                "self.temp_cur_damage[key],self.temp_cur_recover[key],mpDamageAbsorb_num,shieldAbsorb_num,raise_event,self.entityView.Entity.V_EntityType,self.skillId)",
+                "self.hurtFrameVo:Add4HurtDataListDic(time_ms,list)",
+            ]
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "HurtData.lua",
+        {
+            79: [
+                "function _M.SetData(self,casterId,targetId,fightEffect,damage_num,reflect_damage,mp_damage,recoverHp_num,",
+                "recoverMp_num,reducedMp_num,total_damage,total_recover,mpDamageAbsorb_num,shieldAbsorb_num,raise_event,entityType,skillId)",
+                "self.casterId=casterId",
+                "self.targetId=targetId",
+                "self.fightEffect=fightEffect",
+                "self.damage_num=damage_num or 0",
+                "self.recoverHp_num=recoverHp_num or 0",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        fight_dir / "FightNetLogic.lua",
+        {
+            86: [
+                "_MessagePool.Inst_get():F_Register(_SM_FightResult:getId(),typeof(_SM_FightResult),self.SM_FightResultFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightResultTalisman:getId(),typeof(_SM_FightResultTalisman),self.SM_FightResultTalismanFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightResultPet:getId(),typeof(_SM_FightResultPet),self.SM_FightResultPetFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightResultFunnel:getId(),typeof(_SM_FightResultFunnel),self.SM_FightResultFunnelFun)",
+            ],
+            246: [
+                "function _M.SM_FightResultFunnelFun(msg)",
+                "local funnelView=EntityMgr.Inst_get():GetFunnelView(msg.buffId)",
+                "if funnelView then",
+                "funnelView.SkillActor:SetSM_FightResult4RunTimeSkill(msg)",
+                "end",
+                "end",
+            ],
+            381: [
+                "function _M.SM_FightCastFunnelFun(msg)",
+                "local funnelView=EntityMgr.Inst_get():GetFunnelView(msg.buffId)",
+                "local skillId=msg.skillId",
+                "local targetId=msg.targetId",
+                "local dir=msg.dir",
+                "local pos=msg.pos",
+                "local movePos=msg.movePos",
+                "FightMgr.Inst_get():ReleaseSkillExecute(skillId,msg.buffId,targetId,dir,pos,movePos)",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightCastFunnel.lua",
+        {
+            1: [
+                "local SM_FightCast=require\"GameSystem.Game.Message.module.scene.fight.packet.SM_FightCast\"",
+                "_M=class(SM_FightCast,_M)",
+                "function _M._init_(self)",
+                "self.buffId=0",
+                "end",
+                "function _M.reading(self)",
+                "self.buffId=self:readLong()",
+                "_M._super_.reading(self)",
+                "return true",
+                "end",
+                "function _M.getId(self)",
+                "return 60053",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightCast.lua",
+        {
+            33: [
+                "self.id=self:readLong()",
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.jie=self:readShort()",
+                "self.star=self:readShort()",
+                "self.cdTime=self:readInt()",
+                "self.attackPerSecond=self:readInt()",
+                "local SkillEffectVO=require\"GameSystem.Game.Message.module.scene.fight.packet.vo.SkillEffectVO\"",
+                "self.fightCastVO=_AS_(self:readBean(typeof(SkillEffectVO)),SkillEffectVO)",
+                "local Grid3DVO=require\"GameSystem.Game.Message.module.scene.map.packet.bean.Grid3DVO\"",
+                "self.currPos=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self.castingSpeed=self:readInt()",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "FightCastVO.lua",
+        {
+            28: [
+                "self.selectTargetId=self:readLong()",
+                "local Grid3DVO=require\"GameSystem.Game.Message.module.scene.map.packet.bean.Grid3DVO\"",
+                "self.selectPos=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "local Grid3DVO=require\"GameSystem.Game.Message.module.scene.map.packet.bean.Grid3DVO\"",
+                "self.selectDir=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self.castType=self:readByte()",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightResultFunnel.lua",
+        {
+            1: [
+                "local SM_FightResult=require\"GameSystem.Game.Message.module.scene.fight.packet.SM_FightResult\"",
+                "_M=class(SM_FightResult,_M)",
+                "function _M._init_(self)",
+                "self.buffId=0",
+                "end",
+                "function _M.reading(self)",
+                "self.buffId=self:readLong()",
+                "_M._super_.reading(self)",
+                "return true",
+                "end",
+                "function _M.getId(self)",
+                "return 60054",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightResult.lua",
+        {
+            19: [
+                "self.casterId=self:readLong()",
+                "self.lockId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self:readMessageList2List(self.results)",
+                "self.delayTime=self:readShort()",
+            ],
+            31: [
+                "self:writeList(self.results)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "FightResultVO.lua",
+        {
+            23: [
+                "self.targetId=self:readLong()",
+                "self.fightEffect=self:readLong()",
+                "self.damage=self:readDouble()",
+                "self.damageView=self:readDouble()",
+                "self.mpAddDamage=self:readDouble()",
+                "self.mpAddDamageView=self:readDouble()",
+                "self.damageTimes=self:readByte()",
+                "self.recoverHp=self:readDouble()",
+                "self.damageReflect=self:readDouble()",
+                "self.mpDamageAbsorb=self:readDouble()",
+            ]
+        },
+    )
+
+    detail = render_fanxiu_gongfa_homemake_static_detail(400101, include_inactive=False, export_root=export_root)
+    detail_text = "\n".join(str(row.get("plain_text") or "") for row in detail["rows"])
+    assert "主技能说明1600%" in detail_text
+    assert "【洞微剑天】" in detail_text
+    assert "【无量劫火】" in detail_text
+    assert detail["counts"]["side_effect_sources"] == 2
+
+    result = build_fanxiu_gongfa_homemake_xianshu_static_gap_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rows_text = (output_dir / "hot_update_gongfa_homemake_xianshu_static_gap.tsv").read_text(encoding="utf-8")
+    markdown_text = (
+        output_dir / "hot_update_gongfa_homemake_xianshu_static_gap_report.md"
+    ).read_text(encoding="utf-8")
+    assert result["counts"]["gongfa"] == 1
+    assert result["counts"]["rows"] == 2
+    assert result["verdict"]["main_skill_description_fallback_available"] is True
+    assert result["verdict"]["needs_feature_semantics_decode"] is True
+    assert "side_feature_description_missing" in rows_text
+    assert "xianEffectMap" in markdown_text
+
+    semantics = build_fanxiu_gongfa_homemake_side_feature_semantics_probe(export_root=export_root)
+    semantics_dir = Path(semantics["output_dir"])
+    semantics_text = (
+        semantics_dir / "hot_update_gongfa_homemake_side_feature_semantics.tsv"
+    ).read_text(encoding="utf-8")
+    semantics_md = (
+        semantics_dir / "hot_update_gongfa_homemake_side_feature_semantics_report.md"
+    ).read_text(encoding="utf-8")
+    assert semantics["counts"]["rows"] == 2
+    assert semantics["verdict"]["feature_is_direct_display_text"] is False
+    assert semantics["verdict"]["buff_prefix_candidates_available"] is True
+    assert semantics["verdict"]["faze_level_name_candidates_available"] is True
+    assert "每秒造成伤害并降低神识招架率" in semantics_text
+    assert "战斗开始时获得幽煌魔躯" in semantics_text
+    assert "候选语义" in semantics_md
+
+    buff_fields = build_fanxiu_gongfa_homemake_buff_field_semantics_probe(export_root=export_root)
+    buff_fields_dir = Path(buff_fields["output_dir"])
+    buff_fields_text = (
+        buff_fields_dir / "hot_update_gongfa_homemake_buff_field_semantics.tsv"
+    ).read_text(encoding="utf-8")
+    buff_fields_md = (
+        buff_fields_dir / "hot_update_gongfa_homemake_buff_field_semantics_report.md"
+    ).read_text(encoding="utf-8")
+    assert buff_fields["counts"]["buff_rows"] == 3
+    assert buff_fields["verdict"]["buff_fields_decode_display_lifecycle"] is True
+    assert buff_fields["verdict"]["damage_formula_fully_static"] is False
+    assert "持续 16s" in buff_fields_text
+    assert "每秒造成伤害并降低神识招架率" in buff_fields_text
+    assert "字段语义" in buff_fields_md
+
+    combat_result = build_fanxiu_gongfa_homemake_buff_combat_result_probe(export_root=export_root)
+    combat_dir = Path(combat_result["output_dir"])
+    combat_text = (
+        combat_dir / "hot_update_gongfa_homemake_buff_combat_result_flow.tsv"
+    ).read_text(encoding="utf-8")
+    combat_md = (
+        combat_dir / "hot_update_gongfa_homemake_buff_combat_result_report.md"
+    ).read_text(encoding="utf-8")
+    assert combat_result["counts"]["candidate_buff_rows"] == 3
+    assert combat_result["verdict"]["buff_result_values_are_server_packet_fields"] is True
+    assert combat_result["verdict"]["lua_computes_buff_damage_formula"] is False
+    assert "BuffResultVO" in combat_text
+    assert "服务端下发" in combat_md
+
+    correlation = build_fanxiu_gongfa_homemake_buff_result_correlation_probe(export_root=export_root)
+    correlation_dir = Path(correlation["output_dir"])
+    correlation_text = (
+        correlation_dir / "hot_update_gongfa_homemake_buff_result_correlation.tsv"
+    ).read_text(encoding="utf-8")
+    field_usage_text = (
+        correlation_dir / "hot_update_gongfa_homemake_buff_result_field_usage.tsv"
+    ).read_text(encoding="utf-8")
+    correlation_md = (
+        correlation_dir / "hot_update_gongfa_homemake_buff_result_correlation_report.md"
+    ).read_text(encoding="utf-8")
+    assert correlation["counts"]["candidate_buff_rows"] == 3
+    assert correlation["verdict"]["buff_vo_config_id_links_buff_resource"] is True
+    assert correlation["verdict"]["buff_result_has_direct_config_id"] is False
+    assert correlation["verdict"]["can_static_correlate_result_to_candidate_buff"] is False
+    assert "no_direct_buffresource_link_in_visible_lua" in correlation_text
+    assert "BuffResultVO.modelId" in field_usage_text
+    assert "不能把一条 `BuffResultVO` 结果精确回连" in correlation_md
+
+    cs_root = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_test_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "Core"
+    )
+    isil_root = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_test_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "Core"
+    )
+    cs_root.mkdir(parents=True)
+    isil_root.mkdir(parents=True)
+    cs_root.joinpath("Plot.cs").write_text(
+        "public static void ShowPlotModelView(int modelId) { }\n",
+        encoding="utf-8",
+    )
+    isil_root.joinpath("Plot.txt").write_text(
+        "Method: System.Void ShowPlotModelView(System.Int32 modelId)\n",
+        encoding="utf-8",
+    )
+    cpp2il_symbols = build_fanxiu_gongfa_homemake_cpp2il_buff_result_symbol_probe(export_root=export_root)
+    cpp2il_dir = Path(cpp2il_symbols["output_dir"])
+    cpp2il_terms = (
+        cpp2il_dir / "hot_update_gongfa_homemake_cpp2il_buff_result_symbol_terms.tsv"
+    ).read_text(encoding="utf-8")
+    cpp2il_md = (
+        cpp2il_dir / "hot_update_gongfa_homemake_cpp2il_buff_result_symbol_report.md"
+    ).read_text(encoding="utf-8")
+    assert cpp2il_symbols["verdict"]["cpp2il_has_buff_result_business_symbols"] is False
+    assert cpp2il_symbols["verdict"]["cpp2il_modelid_hits_are_generic_visual_model"] is True
+    assert "missing_business_symbol" in cpp2il_terms
+    assert "generic_visual_model_hits_only" in cpp2il_terms
+    assert "没有命中 `BuffResultVO`" in cpp2il_md
+
+    parameter_semantics = build_fanxiu_gongfa_homemake_buff_parameter_semantics_probe(export_root=export_root)
+    parameter_dir = Path(parameter_semantics["output_dir"])
+    parameter_rows_text = (
+        parameter_dir / "hot_update_gongfa_homemake_buff_parameter_semantics.tsv"
+    ).read_text(encoding="utf-8")
+    parameter_groups_text = (
+        parameter_dir / "hot_update_gongfa_homemake_buff_parameter_semantics_groups.tsv"
+    ).read_text(encoding="utf-8")
+    parameter_links_text = (
+        parameter_dir / "hot_update_gongfa_homemake_buff_parameter_semantics_links.tsv"
+    ).read_text(encoding="utf-8")
+    parameter_md = (
+        parameter_dir / "hot_update_gongfa_homemake_buff_parameter_semantics_report.md"
+    ).read_text(encoding="utf-8")
+    assert parameter_semantics["counts"]["candidate_rows"] == 3
+    assert parameter_semantics["counts"]["populated_fields"]["buffContinued"] == 1
+    assert parameter_semantics["verdict"]["buffresource_contains_complete_formula_parameters"] is False
+    assert parameter_semantics["verdict"]["buffcontinued_links_external_context"] is True
+    assert "buffContinued" in parameter_rows_text
+    assert "group_" in parameter_groups_text
+    assert "Renjie-GongfaJie" in parameter_links_text
+    assert "GongfaSkill" in parameter_links_text
+    assert "target_gongfa_id" in parameter_links_text
+    assert "316104" in parameter_links_text
+    assert "316104001.lua" in parameter_links_text
+    assert "通用参数字段大多为空" in parameter_md
+
+    semantics_view = get_fanxiu_gongfa_homemake_buff_parameter_semantics(
+        gongfa_id=400101,
+        export_root=export_root,
+    )
+    assert semantics_view["counts"]["candidate_rows"] == 3
+    assert semantics_view["counts"]["groups"] == 3
+    assert semantics_view["items"][0]["matching_rows"] >= 1
+    assert any(item["buff_name"] == "洞微剑气" for item in semantics_view["items"])
+    dongwei = next(item for item in semantics_view["items"] if item["buff_name"] == "洞微剑气")
+    assert dongwei["link_count"] >= 3
+    assert any(link["target_table"] == "GongfaSkill" for link in dongwei["links"])
+    assert any(
+        link["target_table"] == "GongfaSkill" and link["target_gongfa_id"] == "316104"
+        for link in dongwei["links"]
+    )
+
+    ownership = build_fanxiu_gongfa_homemake_mechanism_ownership_probe(export_root=export_root)
+    ownership_dir = Path(ownership["output_dir"])
+    ownership_drilldown = (
+        ownership_dir / "hot_update_gongfa_homemake_mechanism_ownership_drilldown.tsv"
+    ).read_text(encoding="utf-8")
+    ownership_funnel_flow = (
+        ownership_dir / "hot_update_gongfa_homemake_mechanism_ownership_funnel_flow.tsv"
+    ).read_text(encoding="utf-8")
+    ownership_md = (
+        ownership_dir / "hot_update_gongfa_homemake_mechanism_ownership_report.md"
+    ).read_text(encoding="utf-8")
+    assert ownership["counts"]["evidence_rows"] == 7
+    assert ownership["verdict"]["origin_to_buffresource_closed"] is True
+    assert ownership["verdict"]["funnel_type_detected"] is True
+    assert ownership["verdict"]["funnel_packets_carry_buff_id"] is True
+    assert ownership["verdict"]["funnel_result_ownership_closed"] is True
+    assert ownership["verdict"]["client_formula_found"] is False
+    assert ownership["verdict"]["cpp2il_business_symbols_found"] is False
+    assert "洞微剑气" in ownership_drilldown
+    assert "SM_FightResultFunnel" in ownership_funnel_flow
+    assert "ReleaseSkillExecute" in ownership_funnel_flow
+    assert "结果数值仍按服务端回包理解" in ownership_md
+
+    formula_surface = build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe(export_root=export_root)
+    formula_dir = Path(formula_surface["output_dir"])
+    formula_surface_text = (
+        formula_dir / "hot_update_gongfa_homemake_mechanism_formula_surface.tsv"
+    ).read_text(encoding="utf-8")
+    formula_slots_text = (
+        formula_dir / "hot_update_gongfa_homemake_mechanism_formula_slots.tsv"
+    ).read_text(encoding="utf-8")
+    formula_md = (
+        formula_dir / "hot_update_gongfa_homemake_mechanism_formula_surface_report.md"
+    ).read_text(encoding="utf-8")
+    assert formula_surface["verdict"]["client_visible_formula_template_found"] is True
+    assert formula_surface["verdict"]["side_feature_params_found"] is True
+    assert formula_surface["verdict"]["star_params_found"] is True
+    assert formula_surface["verdict"]["side_feature_params_fill_template"] is True
+    assert formula_surface["verdict"]["formula_is_display_surface_not_runtime_authority"] is True
+    assert formula_surface["verdict"]["runtime_formula_found"] is False
+    assert "[4000, 5, 500]" in formula_surface_text
+    assert "500%攻击力神识伤害" in formula_surface_text
+    assert "spirit_parry_reduction_percent" in formula_slots_text
+    assert "展示的百分比文案" in formula_md
+
+    formula_catalog = build_fanxiu_gongfa_homemake_xianshu_formula_catalog_probe(export_root=export_root)
+    formula_catalog_dir = Path(formula_catalog["output_dir"])
+    formula_catalog_text = (
+        formula_catalog_dir / "hot_update_gongfa_homemake_xianshu_formula_catalog.tsv"
+    ).read_text(encoding="utf-8")
+    formula_catalog_groups = (
+        formula_catalog_dir / "hot_update_gongfa_homemake_xianshu_formula_groups.tsv"
+    ).read_text(encoding="utf-8")
+    formula_catalog_md = (
+        formula_catalog_dir / "hot_update_gongfa_homemake_xianshu_formula_catalog_report.md"
+    ).read_text(encoding="utf-8")
+    assert formula_catalog["counts"]["catalog_rows"] == 1
+    assert formula_catalog["counts"]["group_rows"] == 1
+    assert formula_catalog["verdict"]["xianshu_formula_catalog_available"] is True
+    assert formula_catalog["verdict"]["buff_candidates_partially_linked"] is True
+    assert formula_catalog["verdict"]["formula_is_display_surface_not_runtime_authority"] is True
+    assert "洞微剑气" in formula_catalog_text
+    assert "[4000, 5, 500]" in formula_catalog_text
+    assert "3000101" in formula_catalog_groups
+    assert "客户端展示公式目录" in formula_catalog_md
+    formula_catalog_view = get_fanxiu_gongfa_homemake_xianshu_formula_catalog(
+        gongfa_id=400101,
+        export_root=export_root,
+    )
+    assert formula_catalog_view["total"] == 1
+    assert formula_catalog_view["counts"]["feature_groups"] == 1
+    assert formula_catalog_view["items"][0]["gongfa_names"] == "须弥感应篇"
+    assert "洞微剑天" in formula_catalog_view["groups"][0]["side_feature_names"]
+    assert "4000%攻击力神识伤害" in formula_catalog_view["items"][0]["rendered_plain"]
+
+    result_packet = build_fanxiu_gongfa_homemake_mechanism_result_packet_probe(export_root=export_root)
+    result_packet_dir = Path(result_packet["output_dir"])
+    result_packet_fields = (
+        result_packet_dir / "hot_update_gongfa_homemake_mechanism_result_packet_fields.tsv"
+    ).read_text(encoding="utf-8")
+    result_hurtdata = (
+        result_packet_dir / "hot_update_gongfa_homemake_mechanism_result_hurtdata_mapping.tsv"
+    ).read_text(encoding="utf-8")
+    result_packet_md = (
+        result_packet_dir / "hot_update_gongfa_homemake_mechanism_result_packet_report.md"
+    ).read_text(encoding="utf-8")
+    assert result_packet["verdict"]["funnel_result_extends_common_result"] is True
+    assert result_packet["verdict"]["result_values_are_server_packet_fields"] is True
+    assert result_packet["verdict"]["fight_result_vo_has_buff_config_id"] is False
+    assert result_packet["verdict"]["skillbase_projects_result_to_hurtdata"] is True
+    assert result_packet["verdict"]["client_formula_found"] is False
+    assert "FightResultVO\tdamageView\treadDouble" in result_packet_fields
+    assert "SM_FightResultFunnel\tbuffId\treadLong" in result_packet_fields
+    assert "damage_num" in result_hurtdata
+    assert "服务端结果包" in result_packet_md
+
+    result_producer = build_fanxiu_gongfa_homemake_mechanism_result_producer_probe(export_root=export_root)
+    result_producer_dir = Path(result_producer["output_dir"])
+    result_producer_checks = (
+        result_producer_dir / "hot_update_gongfa_homemake_mechanism_result_producer_checks.tsv"
+    ).read_text(encoding="utf-8")
+    result_producer_surface = (
+        result_producer_dir / "hot_update_gongfa_homemake_mechanism_result_producer_surface.tsv"
+    ).read_text(encoding="utf-8")
+    result_producer_md = (
+        result_producer_dir / "hot_update_gongfa_homemake_mechanism_result_producer_report.md"
+    ).read_text(encoding="utf-8")
+    assert result_producer["verdict"]["visible_client_result_producer_found"] is False
+    assert result_producer["verdict"]["visible_client_result_send_found"] is False
+    assert result_producer["verdict"]["fight_result_vo_client_construction_found"] is False
+    assert result_producer["verdict"]["server_to_client_registration_found"] is True
+    assert result_producer["verdict"]["client_consumers_found"] is True
+    assert result_producer["verdict"]["generated_writers_exist_but_are_not_send_evidence"] is True
+    assert result_producer["verdict"]["likely_server_produced_client_consumed"] is True
+    assert "client_pool_create_sm_fight_result" in result_producer_checks
+    assert "not_found" in result_producer_checks
+    assert "SM_FightResultFunnelFun" in result_producer_surface
+    assert "服务端生产、客户端消费" in result_producer_md
+
+    homemake_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "gongfahomemake_mock"
+        / "text_assets"
+    )
+    gongfanew_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "gongfanew_mock"
+        / "text_assets"
+    )
+    write_numbered_lua(
+        homemake_dir / "GongfahomemakeData.lua",
+        {
+            373: [
+                "if msg.itemVO.skillCommonVO.xianEffectMap and msg.itemVO.skillCommonVO.xianEffectMap:LuaDic_Count()>0 then",
+                "end",
+            ],
+            453: [
+                "function _M.GetXianjieGongfaStarCfgEx(self)",
+                "self.xianjieGongfaStarCfgEx={}",
+                "local lingjieGongfaStarCfg=DBMgr.Inst_get():GetConfigTable(ConfigName.LingjieGongfa_XianjieGongfaStar)",
+                "for _,v in Kpairs(lingjieGongfaStarCfg)do",
+                "self.xianjieGongfaStarCfgEx[v.featureGroup]=self.xianjieGongfaStarCfgEx[v.featureGroup] or {}",
+                "self.xianjieGongfaStarCfgEx[v.featureGroup][v.star]=v",
+                "end",
+                "DBMgr.Inst_get():UninstallConfigTable(ConfigName.LingjieGongfa_XianjieGongfaStar)",
+                "return self.xianjieGongfaStarCfgEx",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        homemake_dir / "GongfahomemakeModel.lua",
+        {
+            157: [
+                "function _M.GetXianjieGongfaStarCfgEx(self,featureGroup,star)",
+                "star=star or 1",
+                "local allCfg=self.GongfahomemakeData:GetXianjieGongfaStarCfgEx()",
+                "return allCfg[featureGroup] and allCfg[featureGroup][star]",
+                "end",
+                "function _M.GetMainFeatureCfgById(self,id)",
+                "end",
+                "function _M.GetSideFeatureJieCfgById(self,id,jie)",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        homemake_dir / "GongfahomemakeMgr.lua",
+        {
+            36: [
+                "for k,v in Kpairs(gongFaHomeMakeVO.skillCommonVO.xianEffectMap)do",
+                "local ljgfStarLo=GongfahomemakeMgr.Inst_get().Model:GetXianjieGongfaStarCfgEx(featureBaseCfg.featureGroup,gongFaVo.vo.star or 1)",
+                "local str=GongfahomemakeMgr.Inst_get():GetMainDes(nil,ljgfStarLo,sideJieCfg,gongFaVo.cfg.id,false,nil,GameDefine.QualityColorType.Bright)",
+                "end",
+            ],
+            1024: [
+                "function _M.GetMainDes(self,pinCfg,starCfg,jieCfg,gongFaId,addActive,notClick,colorType,quality,tongxuan,checkActiveTongXuan)",
+                "return LuaLocalization.Format(starCfg.describe,unpack(TableUtil.AddTable(starCfg.param,jieCfg.param)))",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        gongfanew_dir / "XianShuCreateSkillDetailView.lua",
+        {
+            274: [
+                "for k,v in Kpairs(self.data.skillCommonVO.xianEffectMap)do",
+                "local featureBaseCfg=GongfahomemakeMgr.Inst_get().Model:GetMainFeatureCfgById(v,k)",
+                "local sideJieCfg=GongfahomemakeMgr.Inst_get().Model:GetSideFeatureJieCfgById(v,k)",
+                "local ljgfStarLo=GongfahomemakeMgr.Inst_get().Model:GetXianjieGongfaStarCfgEx(featureBaseCfg.featureGroup,gongFaVoEx.vo.star or 1)",
+                "local str=GongfahomemakeMgr.Inst_get():GetMainDes(nil,ljgfStarLo,sideJieCfg,gongFaVoEx.cfg.id,false,nil,GameDefine.QualityColorType.Bright)",
+                "self.desTxt:SetText(str)",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CreateSkillCommonVO.lua",
+        {
+            20: [
+                "self.xianEffectMap=Dictionary.new()",
+            ],
+            32: [
+                "self:readMessageMap2Dic(self.xianEffectMap)",
+            ],
+        },
+    )
+    logic_index_dir = export_root / "parsed_configs" / "lua_logic_index"
+    logic_index_dir.mkdir(parents=True, exist_ok=True)
+    (logic_index_dir / "config_refs.tsv").write_text(
+        "config_name\tbundle\tfile\trelative_path\tref_count\tlines\n"
+        "LingjieGongfa_XianjieGongfaStar\tgongfahomemake_mock\tGongfahomemakeData.lua\tby_source/lscripts/gamesystem/game/gongfahomemake_mock/text_assets/GongfahomemakeData.lua\t2\t456、462\n",
+        encoding="utf-8",
+    )
+    (logic_index_dir / "functions.tsv").write_text(
+        "function_name\tbundle\tfile\trelative_path\tline\n"
+        "GetXianjieGongfaStarCfgEx\tgongfahomemake_mock\tGongfahomemakeData.lua\tby_source/lscripts/gamesystem/game/gongfahomemake_mock/text_assets/GongfahomemakeData.lua\t453\n"
+        "GetXianjieGongfaStarCfgEx\tgongfahomemake_mock\tGongfahomemakeModel.lua\tby_source/lscripts/gamesystem/game/gongfahomemake_mock/text_assets/GongfahomemakeModel.lua\t157\n"
+        "GetMainDes\tgongfahomemake_mock\tGongfahomemakeMgr.lua\tby_source/lscripts/gamesystem/game/gongfahomemake_mock/text_assets/GongfahomemakeMgr.lua\t1024\n",
+        encoding="utf-8",
+    )
+    formula_usage = build_fanxiu_gongfa_homemake_xianshu_formula_usage_probe(export_root=export_root)
+    formula_usage_dir = Path(formula_usage["output_dir"])
+    formula_usage_text = (
+        formula_usage_dir / "hot_update_gongfa_homemake_xianshu_formula_usage.tsv"
+    ).read_text(encoding="utf-8")
+    formula_usage_checks = (
+        formula_usage_dir / "hot_update_gongfa_homemake_xianshu_formula_usage_checks.tsv"
+    ).read_text(encoding="utf-8")
+    formula_usage_md = (
+        formula_usage_dir / "hot_update_gongfa_homemake_xianshu_formula_usage_report.md"
+    ).read_text(encoding="utf-8")
+    assert formula_usage["verdict"]["detail_renderer_uses_formula_template"] is True
+    assert formula_usage["verdict"]["xian_effect_map_is_server_payload_state"] is True
+    assert formula_usage["verdict"]["combat_or_protocol_formula_config_usage_found"] is False
+    assert formula_usage["verdict"]["supports_display_surface_not_runtime_authority"] is True
+    assert "GongfahomemakeData.lua" in formula_usage_text
+    assert "XianShuCreateSkillDetailView.lua" in formula_usage_text
+    assert "readMessageMap2Dic(self.xianEffectMap)" in formula_usage_text
+    assert "formula_config_combat_or_protocol_refs\t0\tnot_found" in formula_usage_checks
+    assert "展示渲染" in formula_usage_md
+
+    write_numbered_lua(
+        battle_dir / "UserSkillActor.lua",
+        {
+            96: [
+                "if not SkillMgr.Inst_get():IsSkillConflict(skillVo)then",
+                "self:ReleaseSkill(skillVo)",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        export_root / "by_source" / "lscripts" / "core_mock" / "text_assets" / "AutoFightComponent.lua",
+        {
+            459: [
+                "if SkillMgr.Inst_get():IsSkillConflict(skillVo)then",
+                "return",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "SkillMgr.lua",
+        {
+            463: [
+                "function _M.IsSkillConflict(self,skillVo)",
+                "if skillVo.type==GongfahomemakeType.SkillType.Create then",
+                "local gongFaHomeVo=GongfahomemakeMgr.Inst_get().Model:GetGongFaHomeMakeVoById(skillVo.makeId)",
+                "local gongFaId=GongfahomemakeMgr.Inst_get():GetGongFaIdBySkillId(gongFaHomeVo.skillCommonVO.mainId)",
+                "local GongFaIdArr=GongFaNewMgr.Inst_get():GetGongFaIdArrCompare(GongFaNewType.BattleType.ShenTong,gongFaId,gongFaHomeVo.skillCommonVO.effectMap,gongFaHomeVo.skillCommonVO.id,gongFaHomeVo.skillCommonVO.xianEffectMap)",
+                "local hasSame,_,isMain=GongfahomemakeMgr.Inst_get():GetHaveSameEffect(GongFaIdArr)",
+                "if hasSame and isMain==0 then",
+                "return true",
+                "end",
+                "end",
+                "return false",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        gongfanew_dir / "GongFaNewMgr.lua",
+        {
+            1457: [
+                "function _M.GetGongFaIdArrCompare(self,typeValue,originId,effectMap,skillId,xianEffectMap)",
+                "local GongFaIdArr={}",
+                "GongFaIdArr[0]=skillId",
+                "GongFaIdArr[1]=originId",
+                "local index=2",
+                "if xianEffectMap then",
+                "for k,v in Kpairs(xianEffectMap)do",
+                "local gongFaId=GongfahomemakeMgr.Inst_get():GetGongFaIdBySkillId(v)",
+                "GongFaIdArr[index]=gongFaId",
+                "index=index+1",
+                "end",
+                "end",
+                "return GongFaIdArr",
+                "end",
+            ],
+            1526: [
+                "param.GongFaIdArr=self:GetGongFaIdArrCompare(GongFaNewType.BattleType.ShenTong,skillCfg.originId,data.skillCommonVO.effectMap,data.skillCommonVO.id,data.skillCommonVO.xianEffectMap)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        homemake_dir / "GongfahomemakeMgr.lua",
+        {
+            697: [
+                "function _M.CompareGongFaIdArr(self,equipGongFaIdArr,GongFaIdArr,pos,assistGongFaId,onlyCompareXian)",
+                "for i,v in pairs(equipGongFaIdArr)do",
+                "for k,j in pairs(GongFaIdArr)do",
+                "if v==j then return true,pos,0,j end",
+                "end",
+                "end",
+                "return false,pos,0,nil",
+                "end",
+            ],
+            781: [
+                "function _M.GetHaveSameEffect(self,equipGongFaIdArr,tempGongFaId,typeValue,skillChangeGroup,onlyCompareXian)",
+                "return self:CompareGongFaIdArr(equipGongFaIdArr,{})",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        gongfanew_dir / "GongFaBattleItem.lua",
+        {
+            321: [
+                "self.GongFaIdArr=GongFaNewMgr.Inst_get():GetGongFaIdArrCompare(GongFaNewType.BattleType.ShenTong,originId,homeMakeVo.skillCommonVO.effectMap,homeMakeVo.skillCommonVO.id,homeMakeVo.skillCommonVO.xianEffectMap)",
+            ]
+        },
+    )
+    write_numbered_lua(
+        gongfanew_dir / "LingJieCreateTipsView.lua",
+        {
+            60: [
+                "local GongFaIdArr=GongFaNewMgr.Inst_get():GetGongFaIdArrCompare(GongFaNewType.BattleType.ShenTong,gongFaVo.cfg.id,data.skillCommonVO.effectMap,data.skillCommonVO.id,data.skillCommonVO.xianEffectMap)",
+                "local hasSame,posId,isMain=GongfahomemakeMgr.Inst_get():GetHaveSameEffect(GongFaIdArr,gongFaVo.cfg.id,typeValue)",
+            ]
+        },
+    )
+    battle_state = build_fanxiu_gongfa_homemake_xianshu_battle_state_usage_probe(export_root=export_root)
+    battle_state_dir = Path(battle_state["output_dir"])
+    battle_state_flow = (
+        battle_state_dir / "hot_update_gongfa_homemake_xianshu_battle_state_usage_flow.tsv"
+    ).read_text(encoding="utf-8")
+    battle_state_checks = (
+        battle_state_dir / "hot_update_gongfa_homemake_xianshu_battle_state_usage_checks.tsv"
+    ).read_text(encoding="utf-8")
+    battle_state_md = (
+        battle_state_dir / "hot_update_gongfa_homemake_xianshu_battle_state_usage_report.md"
+    ).read_text(encoding="utf-8")
+    assert battle_state["verdict"]["battle_consumes_xian_effect_map"] is True
+    assert battle_state["verdict"]["battle_usage_is_conflict_guard"] is True
+    assert battle_state["verdict"]["xian_effect_map_projected_to_gongfa_id_array"] is True
+    assert battle_state["verdict"]["battle_formula_config_lookup_found"] is False
+    assert battle_state["verdict"]["supports_state_consumer_not_formula_authority"] is True
+    assert "SkillMgr.lua" in battle_state_flow
+    assert "identity_mapping_not_formula" in battle_state_flow
+    assert "battle_formula_config_lookup\t0\tnot_found" in battle_state_checks
+    assert "释放前" in battle_state_md
+
+    write_numbered_lua(
+        battle_dir / "UserSkillActor.lua",
+        {
+            324: [
+                "function _M.ReleaseSkill4User(self,skillVo,targetId,dir,pos,bAutoUse)",
+                "local skillInfo=self:GetSkill(skillVo.skillId)",
+                "local move_pos,target_move_dis=self:GetSkillMoveTargetPosition(skillInfo,nil)",
+                "local result=FightMgr.Inst_get().NetLogic.CM_FightBySkill(skillInfo,self.entityFightView.Entity.V_ID,targetId,",
+                "dir,pos,move_pos,target_move_dis,true,skillVo.jie,skillVo.star,skillVo.makeId)",
+                "return result",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        fight_dir / "FightNetLogic.lua",
+        {
+            635: [
+                "function _M.CM_FightBySkill(skillInfo,casterId,targetId,dir_euler,pos,movePos,target_move_dis,break_skill_move,stage,star,makeId)",
+                "local casterView=EntityMgr.Inst_get():GetEntityFightInBattleView(casterId)",
+                "if FightMgr.Inst_get():ReleaseSkillExecute(skillInfo.skillId,casterId,targetId,dir_euler,pos,movePos,target_move_dis,",
+                "nil,nil,nil,nil,stage,star,makeId)then",
+                "return _M.SendFightMessage(skillInfo,casterView,targetId,dir_euler,pos,movePos,break_skill_move)",
+                "end",
+                "return false",
+                "end",
+            ],
+            660: [
+                "function _M.SendFightMessage(skillInfo,casterView,targetId,dir_euler,pos,movePos,break_skill_move)",
+                "if skillInfo.point_type==SkillDefine.PointType.TARGET then",
+                "_M.CM_FightByTarget(skillInfo.skillId,casterView.Entity.V_ID,targetId,movePos,break_skill_move)",
+                "elseif skillInfo.point_type==SkillDefine.PointType.POS then",
+                "_M.CM_FightByPosition(skillInfo.skillId,casterView.Entity.V_ID,pos,movePos,break_skill_move)",
+                "elseif skillInfo.point_type==SkillDefine.PointType.DIR then",
+                "_M.CM_FightByDir(skillInfo.skillId,casterView.Entity.V_ID,dir_euler,movePos,break_skill_move)",
+                "end",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        fight_dir / "FightMgr.lua",
+        {
+            229: [
+                "function _M.ReleaseSkillExecute(self,skillId,casterId,targetId,dir_euler,pos,movePos,target_move_dis,attackSpeed,skillMoveSpeed,location,slotResult,jie,star,makeId)",
+                "_TempSkillParam.Stage=jie",
+                "_TempSkillParam.Star=star",
+                "local skillInfo=SkillConfig.GetSkillInfo(skillId)or{}",
+                "if makeId and skillInfo.lingjie and skillInfo.lingjie==1 then",
+                "local makeVo=GongfahomemakeMgr.Inst_get().Model:GetGongFaHomeMakeVoById(makeId)",
+                "TipsMgr.Inst_get():ShowSkillTips(casterView,makeVo.skillCommonVO.skillName)",
+                "end",
+                "return true",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CM_FightByTarget.lua",
+        {
+            32: [
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.targetId=self:readLong()",
+            ],
+            43: [
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeLong(self.targetId)",
+                "self:writeBean(self.movePos)",
+                "self:writeBean(self.currPos)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CM_FightByDir.lua",
+        {
+            39: [
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.selectDir=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+            ],
+            51: [
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeBean(self.selectDir)",
+                "self:writeBean(self.movePos)",
+                "self:writeBean(self.currPos)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CM_FightByPosition.lua",
+        {
+            39: [
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.selectPos=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+            ],
+            51: [
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeBean(self.selectPos)",
+                "self:writeBean(self.currPos)",
+                "self:writeBean(self.movePos)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CM_FightByTargets.lua",
+        {
+            49: [
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.selectDir=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self:readLongList2List(self.selectTargetIds)",
+            ],
+            64: [
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeBean(self.selectDir)",
+                "self:writeBean(self.selectPos)",
+                "self:writeLongList(self.selectTargetIds)",
+                "self:writeBean(self.movePos)",
+                "self:writeBean(self.currPos)",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightCast.lua",
+        {
+            37: [
+                "self.id=self:readLong()",
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.jie=self:readShort()",
+                "self.star=self:readShort()",
+                "self.cdTime=self:readInt()",
+                "self.attackPerSecond=self:readInt()",
+                "self.fightCastVO=_AS_(self:readBean(typeof(SkillEffectVO)),SkillEffectVO)",
+                "self.currPos=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self.castingSpeed=self:readInt()",
+            ],
+            53: [
+                "self:writeLong(self.id)",
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeShort(self.jie)",
+                "self:writeShort(self.star)",
+                "self:writeInt(self.cdTime)",
+            ],
+        },
+    )
+    cast_boundary = build_fanxiu_gongfa_homemake_xianshu_cast_request_boundary_probe(export_root=export_root)
+    cast_boundary_dir = Path(cast_boundary["output_dir"])
+    cast_boundary_fields = (
+        cast_boundary_dir / "hot_update_gongfa_homemake_xianshu_cast_request_packet_fields.tsv"
+    ).read_text(encoding="utf-8")
+    cast_boundary_checks = (
+        cast_boundary_dir / "hot_update_gongfa_homemake_xianshu_cast_request_checks.tsv"
+    ).read_text(encoding="utf-8")
+    cast_boundary_md = (
+        cast_boundary_dir / "hot_update_gongfa_homemake_xianshu_cast_request_boundary_report.md"
+    ).read_text(encoding="utf-8")
+    assert cast_boundary["verdict"]["client_release_passes_make_id_to_netlogic"] is True
+    assert cast_boundary["verdict"]["make_id_consumed_by_local_preplay"] is True
+    assert cast_boundary["verdict"]["cm_request_carries_skill_id"] is True
+    assert cast_boundary["verdict"]["cm_request_carries_make_id_or_stage"] is False
+    assert cast_boundary["verdict"]["cm_request_carries_formula_or_xian_state"] is False
+    assert cast_boundary["verdict"]["server_cast_ack_carries_jie_star"] is True
+    assert cast_boundary["verdict"]["supports_cast_intent_not_formula_authority"] is True
+    assert "CM_FightByTarget\tclient_to_server\twriting\tskillId\twriteInt" in cast_boundary_fields
+    assert "SM_FightCast\tserver_to_client\treading\tjie\treadShort" in cast_boundary_fields
+    assert "CM_FightByTarget\tclient_to_server\twriting\tmakeId" not in cast_boundary_fields
+    assert "cm_fight_request_make_id_or_stage_fields\t0\tnot_found" in cast_boundary_checks
+    assert "技能释放意图" in cast_boundary_md
+
+    write_numbered_lua(
+        fight_dir / "FightNetLogic.lua",
+        {
+            96: [
+                "_MessagePool.Inst_get():F_Register(_SM_FightCast:getId(),typeof(_SM_FightCast),self.SM_FightCastFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightCastTalisman:getId(),typeof(_SM_FightCastTalisman),self.SM_FightCastTalismanFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightCastPet:getId(),typeof(_SM_FightCastPet),self.SM_FightCastPetFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightCastPassive:getId(),typeof(_SM_FightCastPassive),self.SM_FightCastPassiveFun)",
+                "_MessagePool.Inst_get():F_Register(_SM_FightCastFunnel:getId(),typeof(_SM_FightCastFunnel),self.SM_FightCastFunnelFun)",
+            ],
+            326: [
+                "function _M.SM_FightCastFun(msg)",
+                "FightMgr.Inst_get():EntityFightCast(msg)",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        fight_dir / "FightMgr.lua",
+        {
+            362: [
+                "function _M.EntityFightCast(self,msg)",
+                "local fightCastVO=msg.fightCastVO",
+                "local attackSpeed=msg.attackPerSecond*0.0001",
+                "local casterView=EntityMgr.Inst_get():GetEntityFightInBattleView(msg.casterId)",
+                "local targetView=EntityMgr.Inst_get():GetEntityFightInBattleView(fightCastVO.selectTargetId)",
+                "if not casterView.Entity:IsUser()then",
+                "self:OnEntityCast(casterView,targetView,msg.skillId,nil,fightCastVO.selectPos,msg.currPos,fightCastVO.movePos,attackSpeed,msg.castingSpeed,msg.jie,msg.star,msg)",
+                "else",
+                "self:OnUserCast(msg.skillId,msg.cdTime,attackSpeed,fightCastVO.movePos,msg.castingSpeed,fightCastVO.selectDir,fightCastVO.selectPos,fightCastVO.selectTargetId,msg.jie,msg.star)",
+                "end",
+                "end",
+            ],
+            388: [
+                "function _M.OnEntityCast(self,casterView,targetView,skillId,dir,pos,curPos,movePos,attackSpeed,skillMoveSpeed,jie,star)",
+                "local action=SkillEndActionMgr.Inst_get():AddSkillEndAction(casterView.Entity.V_ID,SkillEndActionType.DoSkillAction)",
+                "action:InitData(skillId,casterView.Entity.V_ID,targetView.Entity.V_ID,dir,pos,movePos,attackSpeed,skillMoveSpeed,jie,star)",
+                "self:ReleaseSkillExecute(skillId,casterView.Entity.V_ID,targetView.Entity.V_ID,dir,pos,movePos,nil,attackSpeed,skillMoveSpeed,nil,nil,jie,star)",
+                "end",
+            ],
+            484: [
+                "function _M.OnUserCast(self,skillId,cdTime,attackSpeed,movePos,skillMoveSpeed,dir,selectPos,targetId,jie,star)",
+                "userView.SkillActor:ToCDStart(skillId,cdTime)",
+                "if skillInfo.skill_type==SkillDefine.SkillType.MagicalSkill then",
+                "self:ReleaseMagicSkill(userView,skillId,dir,selectPos,movePos,targetId,jie,star)",
+                "end",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        battle_dir / "DoSkillAction.lua",
+        {
+            49: [
+                "if not FightMgr.Inst_get():ReleaseMagicSkill(casterView,self.skillId,self.dir,self.pos,self.movePos,self.targetId,self.curSkillStage,self.curSkillStar)then",
+                "FightMgr.Inst_get():ReleaseSkillExecute(self.skillId,self.casterId,self.targetId,self.dir,self.pos,self.movePos,nil,self.attackSpeed,self.skillMoveSpeed,nil,nil,self.curSkillStage,self.curSkillStar)",
+                "end",
+            ],
+            56: [
+                "function _M.InitData(self,skillId,casterId,targetId,dir,pos,movePos,attackSpeed,skillMoveSpeed,jie,star)",
+                "self.skillId=skillId",
+                "self.casterId=casterId",
+                "self.targetId=targetId",
+                "self.curSkillStage=jie",
+                "self.curSkillStar=star",
+                "end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "SM_FightCastFunnel.lua",
+        {
+            13: [
+                "self.buffId=0",
+            ],
+            14: [
+                "_M._super_.reading(self)",
+                "self.buffId=self:readLong()",
+            ],
+        },
+    )
+    cast_ack = build_fanxiu_gongfa_homemake_xianshu_cast_ack_consumer_probe(export_root=export_root)
+    cast_ack_dir = Path(cast_ack["output_dir"])
+    cast_ack_flow = (
+        cast_ack_dir / "hot_update_gongfa_homemake_xianshu_cast_ack_consumer_flow.tsv"
+    ).read_text(encoding="utf-8")
+    cast_ack_checks = (
+        cast_ack_dir / "hot_update_gongfa_homemake_xianshu_cast_ack_consumer_checks.tsv"
+    ).read_text(encoding="utf-8")
+    cast_ack_md = (
+        cast_ack_dir / "hot_update_gongfa_homemake_xianshu_cast_ack_consumer_report.md"
+    ).read_text(encoding="utf-8")
+    assert cast_ack["verdict"]["server_cast_handler_registered"] is True
+    assert cast_ack["verdict"]["server_cast_ack_carries_jie_star"] is True
+    assert cast_ack["verdict"]["entity_fight_cast_forwards_jie_star"] is True
+    assert cast_ack["verdict"]["remote_or_delayed_cast_reaches_release_execute"] is True
+    assert cast_ack["verdict"]["delayed_action_preserves_jie_star"] is True
+    assert cast_ack["verdict"]["make_id_absent_from_cast_ack_chain"] is True
+    assert cast_ack["verdict"]["supports_server_ack_stage_star_presentation_chain"] is True
+    assert "msg.jie,msg.star" in cast_ack_flow
+    assert "cast_ack_make_id_surface\t0\tnot_found" in cast_ack_checks
+    assert "释放回包消费" in cast_ack_md
+
+
+def test_fanxiu_gongfa_homemake_skillcastbridge_boundary_probe_traces_geometry_bridge(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_numbered_lua(path: Path, anchors: dict[int, list[str]]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        max_line = max(start + len(block) - 1 for start, block in anchors.items())
+        lines = [f"-- filler {line_no}" for line_no in range(1, max_line + 1)]
+        for start, block in anchors.items():
+            for offset, line in enumerate(block):
+                lines[start + offset - 1] = line
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    fight_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "fight_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    write_numbered_lua(
+        battle_dir / "SkillCastBridge.lua",
+        {
+            1: [
+                "local _M={}",
+                "package.loaded[\"GameSystem.Game.Battle.SkillComponent.Skill.SkillCastBridge\"]=_M",
+                "SkillCastBridge=_M",
+                "function _M.SectorCastAll(originEntityId,targetId,radius,angle4Sight,layerMask)",
+                "local SkillCastBridge=require\"LuaBridge.Skill.SkillCastBridge\"",
+                "return SkillCastBridge.SectorCastAll(originEntityId:ToCsLong(),targetId:ToCsLong(),radius,angle4Sight or 360,layerMask)",
+                "end",
+                "function _M.LineCastAll(originEntityId,targetId,width,distance,layerMask)",
+                "local SkillCastBridge=require\"LuaBridge.Skill.SkillCastBridge\"",
+                "return SkillCastBridge.LineCastAll(originEntityId:ToCsLong(),targetId:ToCsLong(),width,distance,layerMask)",
+                "end",
+                "function _M.RectangleCastAll(originEntityId,targetId,posX,posY,posZ,dirX,dirY,dirZ,rotateX,rotateY,rotateZ,width,height,depth,layerMask)",
+                "local SkillCastBridge=require\"LuaBridge.Skill.SkillCastBridge\"",
+                "return SkillCastBridge.RectangleCastAll(originEntityId:ToCsLong(),targetId:ToCsLong(),posX,posY,posZ,dirX,dirY,dirZ,rotateX,rotateY,rotateZ,width,height,depth,layerMask)",
+                "end",
+                "function _M.CircleCastAll(originEntityId,targetId,posX,posY,posZ,dirX,dirY,dirZ,radius,angle4Sight,layerMask)",
+                "local SkillCastBridge=require\"LuaBridge.Skill.SkillCastBridge\"",
+                "return SkillCastBridge.CircleCastAll(originEntityId:ToCsLong(),targetId:ToCsLong(),posX,posY,posZ,dirX,dirY,dirZ,radius,angle4Sight or 360,layerMask)",
+                "end",
+            ]
+        },
+    )
+    write_numbered_lua(
+        fight_dir / "FightNetLogic.lua",
+        {
+            567: [
+                "function _M.CM_CheckFightByTargets(casterId,targetId,skillInfo,targetIds,dir_euler,pos,movePos,break_skill_move)",
+                "for i=0,targetIds.Length-1 do",
+                "_TempTargetList:Add(LusuoLong.FromInt64(targetIds[i]))",
+                "end",
+                "_M.CM_FightByTargets(skillInfo.skillId,casterId,_TempTargetList,dir_euler,pos,movePos,break_skill_move)",
+                "return true",
+                "end",
+            ],
+            664: [
+                "local SkillCastBridge=require\"GameSystem.Game.Battle.SkillComponent.Skill.SkillCastBridge\"",
+                "if skillInfo.scope_param.type==SkillDefine.ScopeType.Rectangle then",
+                "targetIds=SkillCastBridge.RectangleCastAll(casterView.Entity.V_ID,targetId,pos.x,pos.y,pos.z,dirX,dirY,dirZ,rotate.x,rotate.y,rotate.z,width,1,depth,layer)",
+                "elseif skillInfo.scope_param.type==SkillDefine.ScopeType.Circle then",
+                "targetIds=SkillCastBridge.CircleCastAll(casterView.Entity.V_ID,targetId,pos.x,pos.y,pos.z,dirX,dirY,dirZ,radius,360,layer)",
+                "elseif skillInfo.scope_param.type==SkillDefine.ScopeType.Sector then",
+                "targetIds=SkillCastBridge.SectorCastAll(casterView.Entity.V_ID,targetId,radius,skillInfo.scope_param.angle,layer)",
+                "elseif skillInfo.scope_param.type==SkillDefine.ScopeType.Line then",
+                "targetIds=SkillCastBridge.LineCastAll(casterView.Entity.V_ID,targetId,width,distance,layer)",
+                "end",
+                "if _M.CM_CheckFightByTargets(casterView.Entity.V_ID,targetId,skillInfo,targetIds,dir_euler,pos,movePos,break_skill_move)then return true end",
+            ],
+        },
+    )
+    write_numbered_lua(
+        message_dir / "CM_FightByTargets.lua",
+        {
+            49: [
+                "self.casterId=self:readLong()",
+                "self.skillId=self:readInt()",
+                "self.selectDir=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self.selectPos=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)",
+                "self:readLongList2List(self.selectTargetIds)",
+            ],
+            64: [
+                "self:writeLong(self.casterId)",
+                "self:writeInt(self.skillId)",
+                "self:writeBean(self.selectDir)",
+                "self:writeBean(self.selectPos)",
+                "self:writeLongList(self.selectTargetIds)",
+                "self:writeBean(self.movePos)",
+                "self:writeBean(self.currPos)",
+            ],
+        },
+    )
+    cpp2il_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Skill"
+    )
+    cpp2il_dir.mkdir(parents=True, exist_ok=True)
+    (cpp2il_dir / "SkillCastBridge.cs").write_text(
+        "namespace LuaBridge.Skill;\n"
+        "public class SkillCastBridge\n"
+        "{\n"
+        "private static Collider[] tempColliderArray;\n"
+        "private static RaycastHit[] tempRaycastArray;\n"
+        "private static Vector3 tempStartPosition;\n"
+        "public static Int64[] CircleCastAll(long originEntityId, long targetId, float posX, float posY, float posZ, float dirX, float dirY, float dirZ, float radius, float angle4Sight, int layerMask) { }\n"
+        "public static Int64[] LineCastAll(long originEntityId, long targetId, float width, float distance, int layerMask) { }\n"
+        "public static Int64[] RectangleCastAll(long originEntityId, long targetId, float posX, float posY, float posZ, float dirX, float dirY, float dirZ, float rotateX, float rotateY, float rotateZ, float width, float height, float depth, int layerMask) { }\n"
+        "public static Int64[] SectorCastAll(long originEntityId, long targetId, float radius, float angle4Sight, int layerMask) { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    isil_dir = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Skill"
+    )
+    isil_dir.mkdir(parents=True, exist_ok=True)
+    (isil_dir / "SkillCastBridge.txt").write_text(
+        "Type: LuaBridge.Skill.SkillCastBridge\n"
+        "Method: System.Int64[] CircleCastAll(System.Int64 originEntityId, System.Int64 targetId, System.Single radius)\n",
+        encoding="utf-8",
+    )
+    index_dir = export_root / "apk_static_index"
+    index_dir.mkdir(parents=True, exist_ok=True)
+    (index_dir / "il2cpp_methods.tsv").write_text(
+        "index\towner\tname\tqualified_name\tparameters\tdeclaring_type\treturn_type\tparameter_start\tparameter_count\tgeneric_container_index\ttoken\tflags\tiflags\tslot\n"
+        "62326\tLuaBridge.Skill.SkillCastBridge\tLineCastAll\tLuaBridge.Skill.SkillCastBridge.LineCastAll\toriginEntityId:type#370, targetId:type#370, width:type#1027, distance:type#1027, layerMask:type#169\t8560\t17306\t71495\t5\t-1\t0x06003C76\t150\t0\t65535\n"
+        "62327\tLuaBridge.Skill.SkillCastBridge\tRectangleCastAll\tLuaBridge.Skill.SkillCastBridge.RectangleCastAll\toriginEntityId:type#370, targetId:type#370\t8560\t17306\t71500\t15\t-1\t0x06003C77\t150\t0\t65535\n"
+        "62329\tLuaBridge.Skill.SkillCastBridge\tSectorCastAll\tLuaBridge.Skill.SkillCastBridge.SectorCastAll\toriginEntityId:type#370, targetId:type#370, radius:type#1027, angle4Sight:type#1027, layerMask:type#169\t8560\t17306\t71519\t5\t-1\t0x06003C79\t150\t0\t65535\n"
+        "62330\tLuaBridge.Skill.SkillCastBridge\tCircleCastAll\tLuaBridge.Skill.SkillCastBridge.CircleCastAll\toriginEntityId:type#370, targetId:type#370\t8560\t17306\t71524\t11\t-1\t0x06003C7A\t150\t0\t65535\n"
+        "49100\tLuaBridge_Skill_SkillCastBridgeWrap\tLineCastAll\tLuaBridge_Skill_SkillCastBridgeWrap.LineCastAll\tL:type#792\t6903\t169\t57015\t1\t-1\t0x06000BCD\t145\t0\t65535\n",
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_fields.tsv").write_text(
+        "index\towner\tname\tqualified_name\ttype_index\ttoken\n"
+        "39186\tLuaBridge.Skill.SkillCastBridge\ttempColliderArray\tLuaBridge.Skill.SkillCastBridge.tempColliderArray\t55108\t0x0400281C\n"
+        "39187\tLuaBridge.Skill.SkillCastBridge\ttempRaycastArray\tLuaBridge.Skill.SkillCastBridge.tempRaycastArray\t55109\t0x0400281D\n"
+        "39188\tLuaBridge.Skill.SkillCastBridge\ttempStartPosition\tLuaBridge.Skill.SkillCastBridge.tempStartPosition\t51641\t0x0400281E\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_skillcastbridge_boundary_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    flow_text = (output_dir / "hot_update_gongfa_homemake_skillcastbridge_boundary_flow.tsv").read_text(encoding="utf-8")
+    cpp2il_text = (output_dir / "hot_update_gongfa_homemake_skillcastbridge_cpp2il_surface.tsv").read_text(
+        encoding="utf-8"
+    )
+    packet_text = (output_dir / "hot_update_gongfa_homemake_skillcastbridge_packet_fields.tsv").read_text(
+        encoding="utf-8"
+    )
+    checks_text = (output_dir / "hot_update_gongfa_homemake_skillcastbridge_checks.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_skillcastbridge_boundary_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["lua_wrapper_to_luabridge_found"] is True
+    assert result["verdict"]["fightnetlogic_uses_shape_casts"] is True
+    assert result["verdict"]["cm_fight_by_targets_sends_selected_ids"] is True
+    assert result["verdict"]["cpp2il_shape_cast_methods_found"] is True
+    assert result["verdict"]["cpp2il_geometry_temp_fields_found"] is True
+    assert result["verdict"]["skillcastbridge_formula_terms_found"] is False
+    assert result["verdict"]["supports_geometry_target_selection_not_formula_authority"] is True
+    assert "lua_wrapper_to_luabridge" in flow_text
+    assert "LuaBridge.Skill.SkillCastBridge\tLineCastAll" in cpp2il_text
+    assert "CM_FightByTargets\tclient_to_server\twriting\tselectTargetIds\twriteLongList" in packet_text
+    assert "skillcastbridge_formula_terms\t0\tnot_found" in checks_text
+    assert "范围/目标选择" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_stage_star_timeline_boundary_probe_traces_playback_context(tmp_path):
+    export_root = tmp_path / "exports"
+    by_source = export_root / "by_source" / "lscripts"
+    fight_dir = by_source / "gamesystem" / "game" / "fight_test" / "text_assets"
+    battle_dir = by_source / "gamesystem" / "game" / "battle_test" / "text_assets"
+    core_dir = by_source / "core_test" / "text_assets"
+    fight_dir.mkdir(parents=True)
+    battle_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (fight_dir / "FightMgr.lua").write_text(
+        "function _M.ReleaseSkillExecute(self,skillId,casterId,targetId,dir_euler,pos,movePos,target_move_dis,attackSpeed,skillMoveSpeed,location,slotResult,jie,star,makeId)\n"
+        "_TempSkillParam.SkillId=skillId\n"
+        "_TempSkillParam.TargetId=targetId\n"
+        "_TempSkillParam.Stage=jie\n"
+        "_TempSkillParam.Star=star\n"
+        "if not casterView:SetState(StateType.Skill,_TempSkillParam)then\n"
+        "casterView:SetState(StateType.FightIdle)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "StateSkill.lua").write_text(
+        "function _M.Enter(self,tParam)\n"
+        "local skillId=tParam.SkillId\n"
+        "local targetId=tParam.TargetId\n"
+        "local stage=tParam.Stage\n"
+        "local star=tParam.Star\n"
+        "local makeId=tParam.MakeId\n"
+        "local tParam={\n"
+        "stage=stage,\n"
+        "star=star,\n"
+        "makeId=makeId,\n"
+        "}\n"
+        "skillActor:ReleaseSkill(skillId,targetId,tParam)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "SkillActor.lua").write_text(
+        "function _M.ReleaseSkill(self,skillId,targetId,tParam)\n"
+        "local runtimeSkill=self:GetRuntimeSkill()\n"
+        "runtimeSkill=self:GetSkill(skillId)\n"
+        "runtimeSkill:Start(targetId,tParam,function(id) end,function(id) end,function(id) end)\n"
+        "end\n"
+        "function _M.ReleaseMagicSkill(self,skillId,selectDir,selectPos,movePos,selectTargetId,jie,star)\n"
+        "local tParam={\n"
+        "stage=jie,\n"
+        "star=star,\n"
+        "}\n"
+        "skillInfo:Start(selectTargetId,tParam,nil,function() end,function() end)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "SkillBase.lua").write_text(
+        "function _M.UpdateTimelineData(self,stage,star)\n"
+        "if not self.timeline_id then\n"
+        "self.timeline_id=SkillConfig.GetTimelineIdBySkillId(self.skillId,self.entitySex or 1,stage,star)\n"
+        "end\n"
+        "self.Cfg_Hurts=baseConfig.q_hurt_events\n"
+        "end\n"
+        "function _M.Start(self,targetId,tParam,fun_skillStart,fun_castFinish,fun_skillFinish,isPassiveSkill)\n"
+        "if tParam.star and(not self.curSkillStar or self.curSkillStar~=tParam.star)then\n"
+        "self.curSkillStar=tParam.star\n"
+        "self:UpdateTimelineData(tParam.stage,self.curSkillStar)\n"
+        "end\n"
+        "if tParam.stage and(not self.curSkillStage or self.curSkillStage~=tParam.stage)then\n"
+        "self.curSkillStage=tParam.stage\n"
+        "self:UpdateTimelineData(self.curSkillStage)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "DoSkillAction.lua").write_text(
+        "function _M.CheckAction(self,fun_StopPreSkill)\n"
+        "if not FightMgr.Inst_get():ReleaseMagicSkill(casterView,self.skillId,self.dir,self.pos,self.movePos,self.targetId,self.curSkillStage,self.curSkillStar)then\n"
+        "FightMgr.Inst_get():ReleaseSkillExecute(self.skillId,self.casterId,self.targetId,self.dir,self.pos,self.movePos,nil,self.attackSpeed,self.skillMoveSpeed,nil,nil,self.curSkillStage,self.curSkillStar)\n"
+        "end\n"
+        "end\n"
+        "function _M.InitData(self,skillId,casterId,targetId,dir,pos,movePos,attackSpeed,skillMoveSpeed,jie,star)\n"
+        "self.curSkillStage=jie\n"
+        "self.curSkillStar=star\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "PreLoadMgr.lua").write_text(
+        "function _M.AddEffectPathList4User(self,skillEffectList,aniResList,skillVo,sex)\n"
+        "local timeline_id=SkillConfig.GetTimelineIdBySkillId(skillVo.skillId,EntityMgr.Inst_get().UserView.Entity.sex,skillVo.jie,skillVo.star)\n"
+        "self:AddDisplayEffectRes(timeline_id,skillEffectList,aniResList,skillDisplayInfo.timeline_data.attack_track_datas,skillDisplayInfo.timeline_data.suffer_track_datas,sex)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_stage_star_timeline_boundary_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    flow_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_flow.tsv").read_text(
+        encoding="utf-8"
+    )
+    surface_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_surface.tsv").read_text(
+        encoding="utf-8"
+    )
+    authority_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_authority_terms.tsv").read_text(
+        encoding="utf-8"
+    )
+    checks_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_checks.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["stage_star_stored_in_temp_skill_param"] is True
+    assert result["verdict"]["state_skill_maps_stage_star_to_runtime_params"] is True
+    assert result["verdict"]["skill_actor_forwards_tparam_to_skillbase"] is True
+    assert result["verdict"]["skillbase_selects_timeline_by_stage_star"] is True
+    assert result["verdict"]["delayed_action_preserves_stage_star"] is True
+    assert result["verdict"]["preload_uses_stage_star_for_timeline_assets"] is True
+    assert result["verdict"]["timeline_hurt_event_timing_surface_found"] is True
+    assert result["verdict"]["authority_formula_terms_near_stage_star_found"] is False
+    assert result["verdict"]["supports_stage_star_timeline_selection_not_formula_authority"] is True
+    assert "state_skill_maps_uppercase_to_runtime_param" in flow_text
+    assert "timeline_hit_timing_surface\tCfg_Hurts" in surface_text
+    assert "authority_formula_terms_near_stage_star\t0\tnot_found" in checks_text
+    assert "FightResult" not in authority_text
+    assert "timeline/presentation" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_stage_star_timeline_config_probe_resolves_variant_timelines(tmp_path):
+    export_root = tmp_path / "exports"
+    lua_config_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "luaconfig_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    skill_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "skill_mock" / "text_assets"
+    lua_config_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    skill_dir.mkdir(parents=True)
+
+    (lua_config_dir / "SkillConfig.lua").write_text(
+        "local GFType={SWORD=1,CELESTIAL=2,DEMON=3,EVIL=4}\n"
+        "function _M.GetTimelineIdBySkillId(skillId,sex,stage,star)\n"
+        "local key=\"timelineId\"\n"
+        "if star and star>0 then\n"
+        "if star==GFType.SWORD then key=\"jian_timelineId\"\n"
+        "elseif star==GFType.CELESTIAL then key=\"xian_timelineId\"\n"
+        "elseif star==GFType.DEMON then key=\"mo_timelineId\"\n"
+        "elseif star==GFType.EVIL then key=\"sha_timelineId\" end\n"
+        "elseif stage then\n"
+        "local maxRank=DBMgr.Inst_get():GetConfigTableById(ConfigName.Skill_ConfigValue,\"CHANGE_TIMELINE_MIXRANK\")\n"
+        "if CHANGE_TIMELINE_MAX_STAR and stage>=CHANGE_TIMELINE_MAX_STAR then key=\"maxRankTimelineId\" end\n"
+        "end\n"
+        "local timelineIds=_M.GetSkillInfoByKey(skillId,key)or{}\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "ReadSkillConfig.lua").write_text(
+        "function _M.SetSkillTimeLineConfig(self,time_line_data,data)\n"
+        "local attack_track_str=data[\"q_timeline_attacktrack\"]\n"
+        "local suffer_track_str=data[\"q_timeline_suffertrack\"]\n"
+        "attack_track_datas=self:ReadJson(attack_track_str)\n"
+        "suffer_track_datas=self:ReadJson(suffer_track_str)\n"
+        "time_line_data:SetTrackDatas(attack_track_datas,suffer_track_datas)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "Skill.lua").write_text(
+        "local _key2index={id=1,name=2,timelineId=3,maxRankTimelineId=4,jian_timelineId=5,xian_timelineId=6,mo_timelineId=7,sha_timelineId=8}\n"
+        "local _key2type={}\n"
+        "local _A={}\n"
+        "local _B={}\n"
+        "local _C={}\n"
+        "local _P={}\n"
+        "local _M={\n"
+        "[9001]=setmetatable({9001,'测试技能',{'1|1001','2|1002'},{'1|1099'},{'1|1101'},{'1|1201'},{'1|1301'},{'1|1401'}},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "ConfigValue.lua").write_text(
+        "local _key2index={id=1,value=2}\n"
+        "local _key2type={}\n"
+        "local _A={}\n"
+        "local _B={}\n"
+        "local _C={}\n"
+        "local _P={}\n"
+        "local _M={\n"
+        "['CHANGE_TIMELINE_MIXRANK']=setmetatable({'CHANGE_TIMELINE_MIXRANK','10'},_P),\n"
+        "}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    def lua_string(value: str) -> str:
+        return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    def track_json(timeline_id: int, frame: int, effect: str) -> tuple[str, str]:
+        attack = json.dumps(
+            [
+                json.dumps(
+                    {
+                        "TrackName": "特效通道",
+                        "TrackValue": json.dumps(
+                            {
+                                "ParentName": "AttackTrack",
+                                "TracType": 2,
+                                "FrameCount": 60,
+                                "TotalTime": 2.0,
+                                "ClipDataList": [
+                                    {
+                                        "ClipType": 2,
+                                        "Start_Frame": 0,
+                                        "End_Frame": 60,
+                                        "args": {"res_Name": effect},
+                                    },
+                                    {
+                                        "ClipType": 1,
+                                        "Start_Frame": 0,
+                                        "End_Frame": 30,
+                                        "args": {"Sound_Id": 201010001},
+                                    },
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+            ensure_ascii=False,
+        )
+        suffer = json.dumps(
+            [
+                json.dumps(
+                    {
+                        "TrackName": "Hit帧",
+                        "TrackValue": json.dumps(
+                            {
+                                "ParentName": "SufferTrack",
+                                "TracType": 7,
+                                "FrameCount": 60,
+                                "TotalTime": 2.0,
+                                "ClipDataList": [
+                                    {
+                                        "ClipType": 7,
+                                        "Start_Frame": frame,
+                                        "End_Frame": 60,
+                                        "args": {"Frame": frame, "Hurt_Precent": 100, "Hurt_Index": 1},
+                                    }
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            ],
+            ensure_ascii=False,
+        )
+        return attack, suffer
+
+    for timeline_id, frame, effect in [
+        (1001, 30, "skill/default"),
+        (1002, 31, "skill/default_female"),
+        (1099, 32, "skill/max_rank"),
+        (1101, 33, "skill/sword"),
+        (1201, 34, "skill/celestial"),
+        (1301, 35, "skill/demon"),
+        (1401, 36, "skill/evil"),
+    ]:
+        attack, suffer = track_json(timeline_id, frame, effect)
+        (lua_config_dir / f"{timeline_id}.lua").write_text(
+            "local _key2index={q_skillID=1,q_type=2,q_desc=3,q_hurt_events=4,q_keyframe_events=5,q_track_time=6,q_timeline_displayName=7,q_timeline_attacktrack=8,q_timeline_suffertrack=9}\n"
+            "local _key2type={}\n"
+            "local _A={}\n"
+            "local _B={}\n"
+            "local _C={}\n"
+            "local _P={}\n"
+            "local _M={\n"
+            f"[{timeline_id}]=setmetatable({{{timeline_id},'type','Timeline {timeline_id}',{{{{{frame},100,0,1}}}},{{0,0,0}},2300,'TL{timeline_id}',{lua_string(attack)},{lua_string(suffer)}}},_P),\n"
+            "}\n"
+            "return _M\n",
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_gongfa_homemake_stage_star_timeline_config_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rules_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_rules.tsv").read_text(
+        encoding="utf-8"
+    )
+    resolution_text = (
+        output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_resolution.tsv"
+    ).read_text(encoding="utf-8")
+    files_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_files.tsv").read_text(
+        encoding="utf-8"
+    )
+    checks_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_checks.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["skillconfig_maps_star_to_variant_fields"] is True
+    assert result["verdict"]["read_skill_config_decodes_tracks"] is True
+    assert result["verdict"]["timeline_track_json_decoded"] is True
+    assert result["verdict"]["supports_config_resolution_to_timeline_playback_not_formula_authority"] is True
+    assert "star_sword\tjian_timelineId" in rules_text
+    assert "9001\t测试技能\tstar_sword" in resolution_text
+    assert "1101\tTrue" in files_text
+    assert "frame=33,percent=100,index=1" in resolution_text
+    assert "skill/sword" in resolution_text
+    assert "timeline_track_json_decoded\t7\tfound" in checks_text
+    assert "star `1/2/3/4`" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_timeline_hurt_projection_probe_traces_display_projection(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    output_dir.mkdir(parents=True)
+    battle_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_stage_star_timeline_config_files.tsv").write_text(
+        "timeline_id\texists\ttimeline_file\tdisplay_name\tdescription\thurt_events\ttrack_time\tattack_track_count\tsuffer_track_count\tclip_count\ttrack_names\tclip_types\thit_frames\teffect_paths\tsound_ids\tfields\terror\n"
+        "1101\tTrue\tpath\tTL1101\tTimeline 1101\t[[333,100,0,1]]\t2300\t1\t1\t2\tHit帧\t7\tframe=11,percent=100,index=1 | hurt_event=333,100,0,1\tskill/sword\t201010001\tq_hurt_events\t\n",
+        encoding="utf-8",
+    )
+    (core_dir / "ReadSkillConfig.lua").write_text(
+        "function _M.ReadJsonData(self,json_data_str)\n"
+        "local clip_data=ClipData.new()\n"
+        "clip_data.clip_type=clip_json.ClipType\n"
+        "clip_data.args=AnalyzeArgsStruct:GetArgs(clip_json.args)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "SkillBase.lua").write_text(
+        "function _M.UpdateTimelineData(self,stage,star)\n"
+        "local baseConfig=SkillConfigMgr.GetInstance():GetSkillInfo(self.timeline_id)\n"
+        "self.Cfg_Hurts=baseConfig.q_hurt_events\n"
+        "table.sort(self.Cfg_Hurts,compare)\n"
+        "end\n"
+        "function _M.SetSM_FightResult(self,msg)\n"
+        "self.temp_cur_damage={}\n"
+        "self.temp_cur_recover={}\n"
+        "for _,hurt_event in ipairs(self.Cfg_Hurts)do\n"
+        "local time_ms=hurt_event[1]or 0\n"
+        "local percent=hurt_event[2]or 100\n"
+        "local isTrajectoryHit=hurt_event[3]==1\n"
+        "local trajectoryIndex=hurt_event[4]\n"
+        "local list=CList.new()\n"
+        "for _,v in Cipairs(msg.results)do\n"
+        "local resultVo=v\n"
+        "local hurtData=HurtPool.Inst_get():CreateHurtData()\n"
+        "local damage_num=Mathf.Floor(resultVo.damage)*percent*0.01\n"
+        "local damage_view=Mathf.Floor(resultVo.damageView)*percent*0.01\n"
+        "local recover_num=Mathf.Floor(resultVo.recoverHp)*percent*0.01\n"
+        "local damage_reflect=Mathf.Floor(resultVo.damageReflect)*percent*0.01\n"
+        "local mpDamage_num=Mathf.Floor(resultVo.mpAddDamage)*percent*0.01\n"
+        "local mpDamage_view=Mathf.Floor(resultVo.mpAddDamageView)*percent*0.01\n"
+        "hurtData:SetData(entityId,resultVo.targetId,resultVo.fightEffect:ToNum(),damage_view,damage_reflect,mpDamage_view,recover_num,0,0,self.temp_cur_damage[key],self.temp_cur_recover[key],0,0,false,self.entityView.Entity.V_EntityType,self.skillId)\n"
+        "list:Add(hurtData)\n"
+        "end\n"
+        "if not isTrajectoryHit then\n"
+        "self.hurtFrameVo:Add4HurtDataListDic(time_ms,list)\n"
+        "else\n"
+        "bullet:AddHurtData(trajectoryIndex,list)\n"
+        "end\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "HurtFrameVo.lua").write_text(
+        "function _M.Add4HurtDataListDic(self,time,hurtDataList)\n"
+        "self.hurtDataListDic:LuaDic_AddOrSetItem(time,hurtDataList)\n"
+        "end\n"
+        "function _M.CheckHurt(self,elapseTime,isTrajectoryHurt)\n"
+        "for time,hurtDataList in Kpairs(self.hurtDataListDic)do\n"
+        "if isTrajectoryHurt or elapseTime>=time*0.001 then\n"
+        "self:ExecuteHurtDataList(time,hurtDataList)\n"
+        "end\n"
+        "end\n"
+        "end\n"
+        "function _M.ExecuteHurtDataList(self,time,hurtDataList)\n"
+        "for i,v in Cipairs(hurtDataList)do v:Execute() end\n"
+        "end\n"
+        "function _M.SeparateHurtData(self,time,hurtDataList,hurtCount,duration)\n"
+        "for _,hurtData in Cipairs(hurtDataList)do\n"
+        "for j=1,hurtCount do\n"
+        "local damage_num=hurtData.damage_num/hurtCount\n"
+        "separateHurtData:SetData(hurtData.casterId,hurtData.targetId,hurtData.fightEffect,damage_num,0,0,0,0,(damage_num)*j,0,0,false,rangeLimit)\n"
+        "end\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "HurtData.lua").write_text(
+        "function _M.SetData(self,casterId,targetId,fightEffect,damage_num,reflect_damage,mp_damage,recoverHp_num,recoverMp_num,reducedMp_num,total_damage,total_recover,mpDamageAbsorb_num,shieldAbsorb_num,raise_event,entityType,skillId)\n"
+        "self.casterId=casterId\n"
+        "self.targetId=targetId\n"
+        "self.damage_num=damage_num or 0\n"
+        "self.recoverHp_num=recoverHp_num or 0\n"
+        "end\n"
+        "function _M.Execute(self)\n"
+        "self:NormalExecute()\n"
+        "end\n"
+        "function _M.NormalExecute(self)\n"
+        "fightView:OnTriggerFight(self.casterId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_timeline_hurt_projection_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    flow_text = (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_flow.tsv").read_text(
+        encoding="utf-8"
+    )
+    samples_text = (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_samples.tsv").read_text(
+        encoding="utf-8"
+    )
+    checks_text = (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_checks.tsv").read_text(
+        encoding="utf-8"
+    )
+    formula_text = (
+        output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_formula_terms.tsv"
+    ).read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["timeline_samples_include_hit_frames"] is True
+    assert result["verdict"]["skillbase_loads_q_hurt_events"] is True
+    assert result["verdict"]["fight_result_values_split_by_percent"] is True
+    assert result["verdict"]["hurtdata_scheduled_by_time_or_trajectory"] is True
+    assert result["verdict"]["hurtframe_executes_by_elapsed_time"] is True
+    assert result["verdict"]["formula_authority_terms_in_focused_excerpt_found"] is False
+    assert result["verdict"]["supports_timeline_hurt_projection_not_formula_authority"] is True
+    assert "server_results_split_by_timeline_percent" in flow_text
+    assert "frame=11,percent=100,index=1" in samples_text
+    assert "fight_result_values_split_by_percent" in checks_text
+    assert "BuffResource" not in formula_text
+    assert "hit-frame/display projection" in markdown_text
+
+
+def test_fanxiu_fight_result_family_decoder_probe_maps_packet_variants(tmp_path):
+    export_root = tmp_path / "exports"
+    fight_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "fight_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    fight_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    battle_dir.mkdir(parents=True)
+    (fight_dir / "FightNetLogic.lua").write_text(
+        "function _M.SM_FightResultFun(msg)\n"
+        "fightView.SkillActor:SetSM_FightResult4RunTimeSkill(msg)\n"
+        "end\n"
+        "function _M.SM_FightResultTalismanFun(msg)\n"
+        "talismanView.SkillActor:SetSM_FightResult4RunTimeSkill(msg)\n"
+        "end\n"
+        "function _M.SM_FightResultPetFun(msg)\n"
+        "partView.SkillActor:SetSM_FightResult4RunTimeSkill(msg)\n"
+        "end\n"
+        "function _M.SM_FightResultFunnelFun(msg)\n"
+        "local funnelView=EntityMgr.Inst_get():GetFunnelView(msg.buffId)\n"
+        "funnelView.SkillActor:SetSM_FightResult4RunTimeSkill(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_FightResult.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.casterId=self:readLong()\n"
+        "self.lockId=self:readLong()\n"
+        "self.skillId=self:readInt()\n"
+        "self:readMessageList2List(self.results)\n"
+        "self.delayTime=self:readShort()\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 60005\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    for file_name, packet_id in [
+        ("SM_FightResultTalisman.lua", 60041),
+        ("SM_FightResultPet.lua", 60055),
+        ("SM_FightResultFunnel.lua", 60054),
+    ]:
+        prefix = (
+            "local SM_FightResult=require\"GameSystem.Game.Message.module.scene.fight.packet.SM_FightResult\"\n"
+            "_M=class(SM_FightResult,_M)\n"
+            "function _M.reading(self)\n"
+        )
+        body = ""
+        if file_name == "SM_FightResultFunnel.lua":
+            body += "self.buffId=self:readLong()\n"
+        body += "_M._super_.reading(self)\nend\n"
+        suffix = f"function _M.getId(self)\nreturn {packet_id}\nend\n"
+        (message_dir / file_name).write_text(prefix + body + suffix, encoding="utf-8")
+    (message_dir / "FightResultVO.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.targetId=self:readLong()\n"
+        "self.fightEffect=self:readLong()\n"
+        "self.damage=self:readDouble()\n"
+        "self.damageView=self:readDouble()\n"
+        "self.mpAddDamage=self:readDouble()\n"
+        "self.mpAddDamageView=self:readDouble()\n"
+        "self.damageTimes=self:readByte()\n"
+        "self.recoverHp=self:readDouble()\n"
+        "self.damageReflect=self:readDouble()\n"
+        "self.mpDamageAbsorb=self:readDouble()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    for file_name in ["SkillActor.lua", "UserSkillActor.lua", "TalismanSkillActor.lua", "FunnelSkillActor.lua"]:
+        (battle_dir / file_name).write_text(
+            "function _M.SetSM_FightResult4RunTimeSkill(self,msg)\n"
+            "local skill=self:GetSkill(msg.skillId)\n"
+            "skill:SetSM_FightResult(msg)\n"
+            "end\n",
+            encoding="utf-8",
+        )
+    (battle_dir / "SkillBase.lua").write_text(
+        "function _M.SetSM_FightResult(self,msg)\n"
+        "for _,resultVo in Cipairs(msg.results)do\n"
+        "hurtData:SetData(entityId,resultVo.targetId,resultVo.fightEffect:ToNum(),resultVo.damageView)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_fight_result_family_decoder_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    family_text = (output_dir / "hot_update_fight_result_family_decoder_family.tsv").read_text(encoding="utf-8")
+    schema_text = (output_dir / "hot_update_fight_result_family_decoder_schema.tsv").read_text(encoding="utf-8")
+    handlers_text = (output_dir / "hot_update_fight_result_family_decoder_handlers.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_fight_result_family_decoder_report.md").read_text(encoding="utf-8")
+    assert result["verdict"]["supports_result_family_decoder_map"] is True
+    assert result["counts"]["packet_ids"]["SM_FightResult"] == "60005"
+    assert result["counts"]["packet_ids"]["SM_FightResultFunnel"] == "60054"
+    assert "SM_FightResultFunnel\t60054\tSM_FightResult" in family_text
+    assert "SM_FightResult\t4\tresults\treadMessageList2List\tFightResultVO" in schema_text
+    assert "FightResultVO" in schema_text
+    assert "damageTimes" in schema_text
+    assert "buffId" in schema_text
+    assert "SM_FightResultFunnelFun" in handlers_text
+    assert "Decode Order" in markdown_text
+
+
+def test_fanxiu_socket_primitive_decoder_probe_maps_typed_pools(tmp_path):
+    export_root = tmp_path / "exports"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    isil_core_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "Core"
+    cs_core_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp" / "Core"
+    core_dir.mkdir(parents=True)
+    (isil_core_dir / "Net" / "Sockets").mkdir(parents=True)
+    (isil_core_dir / "Managers").mkdir(parents=True)
+    (cs_core_dir / "Net").mkdir(parents=True)
+
+    def write_numbered(path: Path, anchors: dict[int, list[str]]) -> None:
+        max_line = max(start + len(lines) for start, lines in anchors.items()) + 2
+        content = [""] * max_line
+        for start, lines in anchors.items():
+            for offset, line in enumerate(lines):
+                content[start - 1 + offset] = line
+        path.write_text("\n".join(content), encoding="utf-8")
+
+    write_numbered(
+        core_dir / "BaseMessage.lua",
+        {
+            150: [
+                "function _M:readLong()",
+                "local high=SocketPoolData.GetCurUIntVal()",
+                "local low=SocketPoolData.GetCurUIntVal()",
+                "local lusuoLong=LusuoLong.new(low,high)",
+                "return lusuoLong",
+                "end",
+            ],
+            180: [
+                "function _M:readBool()",
+                "local intVal=SocketPoolData.GetCurIntVal()",
+                "end",
+                "function _M:readDouble()",
+                "local doubleVal=SocketPoolData.GetCurDoubleVal()",
+                "end",
+                "function _M:readInt()",
+                "local intVal=SocketPoolData.GetCurIntVal()",
+                "end",
+                "function _M:readString()",
+                "local stringVal=SocketPoolData.GetCurStringVal()",
+                "end",
+                "function _M:readByte()",
+                "local byteVal=SocketPoolData.GetCurIntVal()",
+                "end",
+                "function _M:readFloat()",
+                "local floatVal=SocketPoolData.GetCurFloatVal()",
+                "end",
+            ],
+            353: [
+                "function _M:readMessageList2List(msgList)",
+                "local msgLen=self:readInt()",
+                "if self:readByte()==1 then",
+                "proId=self:readInt()",
+                "end",
+                "end",
+            ],
+        },
+    )
+    write_numbered(
+        core_dir / "SocketPoolData.lua",
+        {
+            70: [
+                "function _M.GetCurUIntVal()",
+                "_M.poolUIntList[_M.uintListIndex]",
+                "end",
+                "function _M.GetCurIntVal()",
+                "_M.poolIntList[_M.intListIndex]",
+                "end",
+                "function _M.GetCurDoubleVal()",
+                "_M.poolDoubleList[_M.doubleListIndex]",
+                "end",
+            ],
+            150: [
+                "function _M.SetCurPoolDataLength()",
+                "_M.curPoolIntDataLength=_M.poolTypeDataLength[0]",
+                "_M.curPoolFloatDataLength=_M.poolTypeDataLength[0]",
+                "_M.curPoolStringDataLength=_M.poolTypeDataLength[0]",
+                "end",
+            ],
+        },
+    )
+    write_numbered(
+        core_dir / "SocketManager.lua",
+        {
+            160: [
+                "function _M.ReceiveSocketMessage(intListLength,stringListLength,floatListLength,poolTypeDataLengt,uintListLength,snListLength,doubleListLength)",
+                "SocketPoolData.Init(intListLength,stringListLength,floatListLength,poolTypeDataLengt,uintListLength,snListLength,doubleListLength)",
+                "SocketPoolData.SetCurPoolDataLength()",
+                "proId=SocketPoolData.GetCurIntVal()",
+                "msg:read()",
+                "end",
+            ]
+        },
+    )
+    write_numbered(
+        core_dir / "LusuoStreamWarp.lua",
+        {
+            38: [
+                "function _M.WriteLusuoLong(self,value)",
+                "ProtoBridge.WriteLusuoLong(value._low,value._internalHigh)",
+                "end",
+                "function _M.ReadLusuoLong(self)",
+                "return ProtoBridge.ReadLusuoLong()",
+                "end",
+            ]
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Net" / "PoolMessageManage.txt",
+        {
+            1325: ["Call LusuoStreamQuick.ReadLusuoLong, X0", "Call CCSocketPoolData.UIntListAdd, X0, X1"],
+            1840: ["Call LusuoStreamQuick.ReadInt, X0, X1", "Call CCSocketPoolData.IntListAdd, X0, X1"],
+            2225: ["Call LusuoStreamQuick.ReadBigStringByte, X0", "Call CCSocketPoolData.StringListAdd, X0, X1"],
+            3400: ["Call LusuoStreamQuick.ReadFloat, X0", "Call CCSocketPoolData.FloatListAdd, X0, V0"],
+            3720: ["Call LusuoStreamQuick.ReadDouble, X0", "Call CCSocketPoolData.DoubleListAdd, X0, V0"],
+            6880: ["Call CCSocketPoolData.UpdatePoolDataLengthList, X0"],
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Net" / "Sockets" / "ByteSocket.txt",
+        {
+            4228: [
+                "Call CsCallLuaMgr.ReceiveSocketMessage, X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12",
+                "Call CCSocketPoolData.Reset, X0",
+            ]
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Managers" / "CsCallLuaMgr.txt",
+        {
+            1213: [
+                "Method: System.Void ReceiveSocketMessage(System.Collections.Generic.List`1<System.Int32> intList, System.Collections.Generic.List`1<System.Byte[]> strList, System.Collections.Generic.List`1<System.Single> floatList, System.Int32 intListLength, System.Int32 stringListLength, System.Int32 floatListLength, System.Collections.Generic.List`1<System.Int32> poolTypeDataLength, System.Collections.Generic.List`1<System.UInt32> uintList, System.Int32 uintListLength, System.Collections.Generic.List`1<System.Int32> snList, System.Int32 snListLength, System.Collections.Generic.List`1<System.Double> doubleList, System.Int32 doubleListLength)"
+            ]
+        },
+    )
+    (cs_core_dir / "Net" / "LusuoStreamQuick.cs").write_text(
+        "public LusuoStreamQuick(Byte[] bytes, int length, bool pIsLittleEndian = false, bool isMsgCompress = false) { }\n"
+        "public int ReadInt(bool isIntForceNotCompress = false) { }\n"
+        "public double ReadDouble() { }\n",
+        encoding="utf-8",
+    )
+    (cs_core_dir / "Net" / "CCSocketPoolData.cs").write_text(
+        "public List<Int32> intArrList; public List<Double> doubleArrList; public List<Int32> poolTypeDataLength;\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_socket_primitive_decoder_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rules_text = (output_dir / "hot_update_socket_primitive_decoder_rules.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_socket_primitive_decoder_flow.tsv").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "hot_update_socket_primitive_decoder_evidence.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_socket_primitive_decoder_report.md").read_text(encoding="utf-8")
+    assert result["verdict"]["supports_typed_pool_decoder_strategy"] is True
+    assert "BaseMessage.readLong" in rules_text
+    assert "SocketPoolData.GetCurUIntVal twice" in rules_text
+    assert "typed value pools" in flow_text
+    assert "native_to_lua_delivery" in evidence_text
+    assert "typed pools" in markdown_text
+
+
+def test_fanxiu_typed_pool_runtime_observation_probe_builds_safe_plan(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_fight_result_family_decoder_schema.tsv").write_text(
+        "packet\torder\tfield\tread_method\tnested_type\tline\tinherited_from\tsource_file\trole\n"
+        "SM_FightResult\t1\tcasterId\treadLong\t\t1\t\tSM_FightResult.lua\tcommon actor id\n"
+        "SM_FightResult\t2\tlockId\treadLong\t\t2\t\tSM_FightResult.lua\tlock target id\n"
+        "SM_FightResult\t3\tskillId\treadInt\t\t3\t\tSM_FightResult.lua\tskill id\n"
+        "SM_FightResult\t4\tresults\treadMessageList2List\tFightResultVO\t4\t\tSM_FightResult.lua\tresult list\n"
+        "SM_FightResultFunnel\t1\tbuffId\treadLong\t\t1\tSM_FightResult\tSM_FightResultFunnel.lua\tfunnel buff id\n"
+        "FightResultVO\t1\ttargetId\treadLong\t\t1\t\tFightResultVO.lua\ttarget id\n"
+        "FightResultVO\t2\tfightEffect\treadLong\t\t2\t\tFightResultVO.lua\teffect flags\n"
+        "FightResultVO\t3\tdamageView\treadDouble\t\t3\t\tFightResultVO.lua\tdisplay damage\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_socket_primitive_decoder_rules.tsv").write_text(
+        "consumer\tpool_source\tnative_source\tdecode_note\n"
+        "BaseMessage.readInt\tSocketPoolData.GetCurIntVal\tPoolMessageManage.readInt\tConsumes int pool\n"
+        "BaseMessage.readLong\tSocketPoolData.GetCurUIntVal twice\tPoolMessageManage.readLong\tConsumes two uint values\n"
+        "BaseMessage.readDouble\tSocketPoolData.GetCurDoubleVal\tPoolMessageManage.readDouble\tConsumes double pool\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_typed_pool_runtime_observation_probe(export_root=export_root)
+    capture_text = (output_dir / "hot_update_typed_pool_runtime_observation_capture_points.tsv").read_text(
+        encoding="utf-8"
+    )
+    reconstruction_text = (output_dir / "hot_update_typed_pool_runtime_observation_reconstruction.tsv").read_text(
+        encoding="utf-8"
+    )
+    sample_text = (output_dir / "hot_update_typed_pool_runtime_observation_sample_shape.tsv").read_text(
+        encoding="utf-8"
+    )
+    privacy_text = (output_dir / "hot_update_typed_pool_runtime_observation_privacy.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_typed_pool_runtime_observation_report.md").read_text(encoding="utf-8")
+    assert result["verdict"]["supports_typed_pool_runtime_observation_plan"] is True
+    assert "CsCallLuaMgr.ReceiveSocketMessage" in capture_text
+    assert "poolTypeDataLength" in reconstruction_text
+    assert "message.results[].damageView" in sample_text
+    assert "never persist" in privacy_text
+    assert "hook, inject, patch, or modify" in markdown_text
+
+
+def test_fanxiu_socket_raw_decoder_probe_maps_frame_outline(tmp_path):
+    export_root = tmp_path / "exports"
+    cs_core_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp" / "Core"
+    isil_core_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "Core"
+    (cs_core_dir / "Net" / "Sockets").mkdir(parents=True)
+    (cs_core_dir / "Net").mkdir(parents=True, exist_ok=True)
+    (cs_core_dir / "Proxy").mkdir(parents=True)
+    (isil_core_dir / "Net" / "Sockets").mkdir(parents=True)
+    (isil_core_dir / "Net").mkdir(parents=True, exist_ok=True)
+    (isil_core_dir / "Proxy").mkdir(parents=True)
+
+    def write_numbered(path: Path, anchors: dict[int, list[str]]) -> None:
+        max_line = max(start + len(lines) for start, lines in anchors.items()) + 2
+        content = [""] * max_line
+        for start, lines in anchors.items():
+            for offset, line in enumerate(lines):
+                content[start - 1 + offset] = line
+        path.write_text("\n".join(content), encoding="utf-8")
+
+    (cs_core_dir / "Net" / "Sockets" / "ByteSocket.cs").write_text(
+        "private const int RPC_HEADER_LENGTH = 4;\n"
+        "private int m_RecvMsgBodyLen;\n"
+        "private Byte[] m_ReceiveMsgHead;\n"
+        "private Byte[] m_PackContent;\n",
+        encoding="utf-8",
+    )
+    (cs_core_dir / "Net" / "LusuoStreamQuick.cs").write_text(
+        "public bool isCompress;\npublic bool IsLittleEndian;\n",
+        encoding="utf-8",
+    )
+    (cs_core_dir / "Proxy" / "ByteUtil.cs").write_text(
+        "public static int ReadInt(Byte[] sm, ref int pos, bool IsLittleEndian) { }\n"
+        "public static int ReadIntCompress(Byte[] bytes, ref int pos) { }\n",
+        encoding="utf-8",
+    )
+    write_numbered(
+        isil_core_dir / "Net" / "Sockets" / "ByteSocket.txt",
+        {
+            1560: [
+                "Call Socket.Receive, X0, X1, X2, X3",
+                "Call ByteUtil.ReadInt, X0, X1, X2",
+                "Call Socket.Receive, X0, X1, X2, X3, X4",
+                "Call ByteSocket.ReadPackage, X0",
+            ],
+            1940: [
+                "Call LusuoStreamQuick.WriteInt, X0, X1",
+                "Call LusuoStreamQuick.WriteInt, X0, X1",
+                "Call LusuoStreamQuick.WriteNoCompress, X0, X1",
+                "Call LusuoStreamQuick.WriteStream, X0, X1",
+                "Call LusuoStreamQuick.WriteStream, X0, X1",
+                "Call Socket.BeginSend, X0, X1, X2, X3, X4, X5, X6",
+            ],
+            2516: [
+                "Call LusuoStreamQuick..ctor, X0, X1, X2, X3, X4",
+                "Or W1, W31, 1",
+                "Call LusuoStreamQuick.ReadInt, X0, X1",
+                "Call LusuoStreamQuick.ReadInt, X0, X1",
+                "Call LusuoStreamQuick.ReadInt, X0, X1",
+                "Call PoolMessageManage.IsLuaMessage, X0",
+                "Call CCSocketPoolData.SnListAdd, X0, X1",
+                "Call PoolMessageManage.read, X0, X1",
+            ],
+            3225: [
+                "Call PoolMessageManage.read, X0, X1",
+                "Call LusuoStreamQuick.Reset, X0, X1",
+            ],
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Net" / "LusuoStreamQuick.txt",
+        {
+            1427: ["Method: System.Void WriteUInt(System.UInt32 Num)", "STRB W19, [X8 + 0x20]"],
+            3297: ["Method: System.Void WriteNoCompress(System.Int32 num)", "Call LusuoStreamQuick.WriteUInt, X0, X1"],
+            3492: ["Method: System.UInt32 ReadUInt()", "Move W15, [X0+57]"],
+            3596: [
+                "Method: System.Int32 ReadIntCompress()",
+                "Call ByteUtil.ReadIntCompress, X0, X1",
+                "Method: System.Int32 ReadInt(System.Boolean isIntForceNotCompress = False)",
+                "Call ByteUtil.ReadIntCompress, X0, X1",
+                "Call LusuoStreamQuick.ReadUInt, X0",
+            ],
+            4516: [
+                "Method: System.String ReadBigString()",
+                "Call LusuoStreamQuick.ReadInt, X0, X1",
+                "Call LusuoStreamQuick.ReadBytesNoReverse, X0, X1",
+                "Call Encoding.get_UTF8",
+            ],
+            4616: [
+                "Method: System.Byte[] ReadBigStringByte()",
+                "Call LusuoStreamQuick.ReadInt, X0, X1",
+                "Call LusuoStreamQuick.ReadBytesNoReverse, X0, X1",
+            ],
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Proxy" / "ByteUtil.txt",
+        {
+            3: ["Method: System.Int32 ReadInt(System.Byte[] sm, ref System.Int32 pos, System.Boolean IsLittleEndian)", "LDRB W0, [X10 + 0x20]"],
+            94: ["Method: System.Int32 ReadIntCompress(System.Byte[] mTempByteArray, ref System.Int32 mCurrentPosition)", "Xor W0, W8, W9"],
+        },
+    )
+
+    result = build_fanxiu_socket_raw_decoder_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    frames_text = (output_dir / "hot_update_socket_raw_decoder_frames.tsv").read_text(encoding="utf-8")
+    primitives_text = (output_dir / "hot_update_socket_raw_decoder_primitives.tsv").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "hot_update_socket_raw_decoder_evidence.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_socket_raw_decoder_report.md").read_text(encoding="utf-8")
+    assert result["verdict"]["supports_raw_socket_decoder_outline"] is True
+    assert "outer_receive_header" in frames_text
+    assert "send_frame_symmetry" in frames_text
+    assert "ByteUtil.ReadIntCompress" in primitives_text
+    assert "read_package_header" in evidence_text
+    assert "does not capture live traffic" in markdown_text
+
+
+def test_fanxiu_socket_compressed_int_codec_probe_builds_candidate(tmp_path):
+    export_root = tmp_path / "exports"
+    isil_core_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "Core"
+    (isil_core_dir / "Net").mkdir(parents=True)
+    (isil_core_dir / "Proxy").mkdir(parents=True)
+
+    def write_numbered(path: Path, anchors: dict[int, list[str]]) -> None:
+        max_line = max(start + len(lines) for start, lines in anchors.items()) + 2
+        content = [""] * max_line
+        for start, lines in anchors.items():
+            for offset, line in enumerate(lines):
+                content[start - 1 + offset] = line
+        path.write_text("\n".join(content), encoding="utf-8")
+
+    write_numbered(
+        isil_core_dir / "Net" / "LusuoStreamQuick.txt",
+        {
+            1203: [
+                "Method: System.Void WriteIntCompress(System.Int32 value)",
+                "ORR W11, W9, 0x80",
+                "UBFM X9, X9, 0x7, 0x3F",
+                "STRB W11, [X8 + 0x20]",
+            ],
+            1413: ["Method: System.Int32 shiftSign32(System.Int32 n)", "ShiftRight W8, 31"],
+            3596: [
+                "Method: System.Int32 ReadIntCompress()",
+                "Call ByteUtil.ReadIntCompress, X0, X1",
+                "Call LusuoStreamQuick.ReadUInt, X0",
+            ],
+        },
+    )
+    write_numbered(
+        isil_core_dir / "Proxy" / "ByteUtil.txt",
+        {
+            94: ["Method: System.Int32 ReadIntCompress(System.Byte[] mTempByteArray, ref System.Int32 mCurrentPosition)", "INVALID", "Xor W0, W8, W9"],
+            539: ["Method: System.Int32 revertSign32(System.Int32 n)", "AND W8, W0, 0x1", "EOR W0, W8, W0, 0x1"],
+        },
+    )
+
+    result = build_fanxiu_socket_compressed_int_codec_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rules_text = (output_dir / "hot_update_socket_compressed_int_codec_rules.tsv").read_text(encoding="utf-8")
+    samples_text = (output_dir / "hot_update_socket_compressed_int_codec_samples.tsv").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "hot_update_socket_compressed_int_codec_evidence.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_socket_compressed_int_codec_report.md").read_text(encoding="utf-8")
+    assert result["verdict"]["supports_candidate_compressed_int_codec"] is True
+    assert result["counts"]["roundtrip_ok"] == result["counts"]["sample_rows"]
+    assert "zigzag_encode_int32" in rules_text
+    assert "-1\t01\t1\t-1\t1\tTrue" in samples_text
+    assert "revert_sign32" in evidence_text
+    assert "static-derived candidate" in markdown_text
+
+
+def test_fanxiu_socket_capture_fixture_codec_calibration_probe_redacts_payload_values(tmp_path):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    decoded_path = capture_dir / "sample.codeyun_decoded.json"
+    decoded_path.write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "direction": "c2s",
+                        "offset": 0,
+                        "frame_len": 4,
+                        "sn": 1,
+                        "pro_id": 20011,
+                        "name": "CM_SyncTime",
+                        "payload_len": 0,
+                        "zlib": False,
+                        "parsed": {"_class": "CM_SyncTime"},
+                        "remain": 0,
+                    },
+                    {
+                        "direction": "c2s",
+                        "offset": 8,
+                        "frame_len": 13,
+                        "sn": 298,
+                        "pro_id": 40001,
+                        "name": "CM_ChangeMap",
+                        "payload_len": 8,
+                        "zlib": False,
+                        "parsed": {"_class": "CM_ChangeMap", "token": "secret-value"},
+                        "remain": 0,
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_socket_capture_fixture_codec_calibration_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    frames_text = (output_dir / "hot_update_socket_capture_fixture_codec_calibration_frames.tsv").read_text(
+        encoding="utf-8"
+    )
+    protocol_text = (
+        output_dir / "hot_update_socket_capture_fixture_codec_calibration_protocol_counts.tsv"
+    ).read_text(encoding="utf-8")
+    sensitive_text = (
+        output_dir / "hot_update_socket_capture_fixture_codec_calibration_sensitive_keys.tsv"
+    ).read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["supports_capture_fixture_codec_calibration"] is True
+    assert result["counts"]["matched_frame_body_lengths"] == 2
+    assert "CM_ChangeMap" in protocol_text
+    assert "\t0\t" in frames_text
+    assert "token" in sensitive_text
+    assert "secret-value" not in frames_text
+    assert "secret-value" not in markdown_text
+
+
+def test_fanxiu_combat_formula_authority_contrast_probe_separates_local_formula_and_server_results(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_blld_combat_formula_evidence.tsv").write_text(
+        "source_file\tline\tcategory\tcode\n"
+        "BLLDFightComponent.lua\t120\tdamage_formula\tfinalDamage=attack*rate\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_combat_mechanics_report.md").write_text(
+        "BLLDFightComponent:AddDamageResult exposes local formula evidence.",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_authority_operations.tsv").write_text(
+        "operation\tclient_packet\tclient_fields\tclient_call_sites\tserver_packet\tserver_fields\tmsg_fields\tstate_sinks\tauthority_class\tlocal_preview_note\n"
+        "FinishAndReward\tCM_BlldFinishAndReward\tlevelId | success\t1\tSM_BlldFinishAndReward\tfindResults | passResults\tcode\tSetFinishAndReward\tclient_battle_summary_server_reward\t客户端提交摘要，服务端返回最终奖励。\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_mechanism_result_producer_checks.tsv").write_text(
+        "check\thit_count\tstatus\tinterpretation\n"
+        "client_pool_create_sm_fight_result\t0\tnot_found\tabsent\n"
+        "client_send_sm_fight_result\t0\tnot_found\tabsent\n"
+        "client_new_fight_result_vo\t0\tnot_found\tabsent\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_mechanism_result_producer_report.md").write_text(
+        "未找到 `GetMessageFromPools(_SM_FightResult...)`；客户端消费服务端结果。",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_formula_terms.tsv").write_text(
+        "stage\tsource_file\tlines\tterm\tinterpretation\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_timeline_hurt_projection_report.md").write_text(
+        "This is a hit-frame/display projection layer, not numeric formula authority.",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json").write_text(
+        json.dumps(
+            {
+                "counts": {
+                    "frame_rows": 86,
+                    "matched_frame_body_lengths": 86,
+                    "mismatched_frame_body_lengths": 0,
+                    "fight_result_family_frames": 0,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_combat_formula_authority_contrast_probe(export_root=export_root)
+    contrast_text = (output_dir / "hot_update_combat_formula_authority_contrast.tsv").read_text(encoding="utf-8")
+    evidence_text = (output_dir / "hot_update_combat_formula_authority_evidence.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_combat_formula_authority_contrast_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["supports_combat_formula_authority_contrast"] is True
+    assert result["verdict"]["socket_fixture_lacks_fight_result_family"] is True
+    assert "BLLD local mini-game combat" in contrast_text
+    assert "server_to_client_SM_FightResult_family" in contrast_text
+    assert "client_sm_fight_result_producer_absent\tTrue" in evidence_text
+    assert "not confused with main fight result authority" in markdown_text
+
+
+def test_fanxiu_cpp2il_main_combat_formula_surface_probe_reports_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    cs_root = (
+        export_root
+        / "apk_static_index"
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+    )
+    (cs_root / "Core" / "Battle").mkdir(parents=True)
+    (cs_root / "LuaBridge" / "Skill").mkdir(parents=True)
+    (cs_root / "Skill").mkdir(parents=True)
+    (cs_root / "Core" / "Battle" / "BattleMgr.cs").write_text(
+        "public bool V_InBattle { get; set; }\npublic float V_PresentationSpeed { get; set; }\nprivate bool isPause;\n",
+        encoding="utf-8",
+    )
+    (cs_root / "LuaBridge" / "Skill" / "SkillCastBridge.cs").write_text(
+        "public static Int64[] CircleCastAll() { }\n"
+        "public static Int64[] LineCastAll() { }\n"
+        "public static Int64[] RectangleCastAll() { }\n"
+        "public static Int64[] SectorCastAll() { }\n"
+        "public static void ShowSkillDamageRangeDebug() { }\n",
+        encoding="utf-8",
+    )
+    (cs_root / "SkillBaseConfig.cs").write_text(
+        "public string q_hurt_events;\npublic string q_keyframe_events;\npublic float q_track_time;\n",
+        encoding="utf-8",
+    )
+    (cs_root / "Skill" / "HurtEventTrack.cs").write_text(
+        "[TrackClipType]\npublic int RefreshClipCount() { }\npublic void UpdateDuration() { }\n",
+        encoding="utf-8",
+    )
+    (cs_root / "HurtEventData.cs").write_text(
+        "public static void AddHurtEventTrackClip() { }\n"
+        "public static void AddPlayableConfigInfo() { }\n"
+        "public static void SetHurtEventTrack() { }\n",
+        encoding="utf-8",
+    )
+    (cs_root / "HurtScriptTable.cs").write_text("public List<ScriptTableCurveInfo> CurveList;\n", encoding="utf-8")
+
+    result = build_fanxiu_cpp2il_main_combat_formula_surface_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    roles_text = (output_dir / "hot_update_cpp2il_main_combat_formula_surface_roles.tsv").read_text(
+        encoding="utf-8"
+    )
+    hits_text = (output_dir / "hot_update_cpp2il_main_combat_formula_surface_hits.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_cpp2il_main_combat_formula_surface_report.md").read_text(
+        encoding="utf-8"
+    )
+    assert result["verdict"]["supports_cpp2il_main_combat_formula_surface_boundary"] is True
+    assert result["counts"]["strong_hits_outside_known_geometry"] == 0
+    assert "skill_target_geometry_bridge" in roles_text
+    assert "q_hurt_events" in roles_text
+    assert "ShowSkillDamageRangeDebug" in hits_text
+    assert "does not expose a strong main-combat local formula surface" in markdown_text
+
+
+def test_fanxiu_gongfa_view_snapshot_probe_separates_snapshot_and_vo_overlay(tmp_path):
+    export_root = tmp_path / "exports"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    lingjie_dir.mkdir(parents=True)
+    (lingjie_dir / "lingjie_runtime_gongfa_state.tsv").write_text(
+        "flow_stage\trow_kind\tpacket_name\tsource_file\tfile_name\tfunction_name\tline\tfield_refs\truntime_effect\tauthority_note\tcode\n"
+        "data_static_catalog_init\tload_gongfa_config\t\tpath\tGongFaNewData.lua\tLuaGongFaNewData\t39\tConfigName.Gongfa_Gongfa\t读取 Gongfa_Gongfa 静态功法表。\t可见 Lua 证据\tself.gongFaCfg=DBMgr.Inst_get():GetConfigTable(ConfigName.Gongfa_Gongfa)\n"
+        "data_static_catalog_init\tstore_static_gongfa_vo\t\tpath\tGongFaNewData.lua\tSetGongFaDic\t1027\tGongFaVo\t按 Gongfa_Gongfa.id 存入 gongFaDic。\t可见 Lua 证据\tself.gongFaDic:LuaDic_AddOrSetItem(v.id,gongFaVo)\n"
+        "netlogic_registration\troute_view_response_handler\t\tpath\tGongFaNewNetLogic.lua\tLuaGongFaNewNetLogic\t42\t\tSM_GongFaView 回包进入 SM_GongFaViewFun。\t可见 Lua 证据\tself.SM_GongFaViewFun(msg)\n"
+        "model_view_apply\tstore_active_map\t\tpath\tGongFaNewModel.lua\tSetGongFaInfo\t554\tactives\t保存 SM_GongFaView.actives 到 GongFaNewData。\t可见 Lua 证据\tself.GongFaNewData:SetGongFaInfo(info.actives)\n"
+        "model_view_apply\tstore_faze_putup_list\t\tpath\tGongFaNewModel.lua\tSetGongFaInfo\t558\tfazePutUpList\t保存法则/法则上阵列表。\t可见 Lua 证据\tFazeMgr.Inst_get().Model:SaveFazePutUpPanelData(info.fazePutUpList)\n"
+        "data_vo_overlay\tlookup_gongfa_by_base_id\tGongFaItemVO\tpath\tGongFaNewData.lua\tUpdateGongFaVo\t1059\tGongFaItemVO.baseId\t按 GongFaItemVO.baseId 定位本地图鉴项。\t可见 Lua 证据\tlocal gongFaVo=self.gongFaDic:LuaDic_GetItem(data.baseId)\n"
+        "model_incremental_update\tupdate_single_gongfa_vo\tSM_GongFaUpgrade\tpath\tGongFaNewModel.lua\tUpgradeRefresh\t637\tSM_GongFaUpgrade.gongfa、GongFaVo\t学习/单次升级回包用 msg.gongfa 覆盖单个功法状态。\t可见 Lua 证据\tself.GongFaNewData:UpdateGongFaVo(msg.gongfa)\n"
+        "packet_schema\tpacket_field\tSM_GongFaView\tpath\tSM_GongFaView.lua\treading\t23\tSM_GongFaView.actives\t功法相关已激活字典。\t协议字段定义\tactives:MessageMap2Dic\n"
+        "packet_schema_source\tinherit_simple_item_vo\t\tpath\tGongFaItemVO.lua\t\t5\tSimpleItemVO.baseId/id/num\tGongFaItemVO 继承 SimpleItemVO。\t可见 Lua 证据\t_M=class(SimpleItemVO,_M)\n"
+        "visible_callsite_probe\tvisible_gap_no_set_gongfa_vo_caller\tGongFaItemVO\t\t\t\t\tGongFaItemVO.baseId;GongFaNewModel:SetGongFaVo\t当前可读 Lua 未发现 Model:SetGongFaVo(infoList) 的外部调用点。\t缺口行\t\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_view_snapshot_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    flow_text = (output_dir / "hot_update_gongfa_view_snapshot_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_view_snapshot_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_view_snapshot_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["flow_rows"] == 10
+    assert "SM_GongFaView.actives" in flow_text
+    assert "GongFaItemVO.baseId" in flow_text
+    assert "requests_snapshot" in edges_text
+    assert "SM_GongFaView.skillList" in edges_text
+    assert "GongFaNewData.gongFaDic" in edges_text
+    assert "incrementally_updates" in edges_text
+    assert "caller_not_visible_in_current_lua" in edges_text
+    assert "GongFaView 功法页快照链路" in markdown_text
+
+
+def test_fanxiu_gongfa_program_equip_probe_links_program_xinfa_and_make_id(tmp_path):
+    export_root = tmp_path / "exports"
+    lingjie_dir = export_root / "parsed_configs" / "lingjie_feature_catalog"
+    lingjie_dir.mkdir(parents=True)
+    (lingjie_dir / "lingjie_runtime_equip_packets.tsv").write_text(
+        "id\tname\tmodule\tdirection\tpacket_role\tfield_count\tfields\tclient_read_only_maps\tnote\tfile\trelative_path\n"
+        "35410\tCM_GongFaSaveProgram\tplayer.gongfa\tclient_to_server\tequip_program\t1\tprogramVO:Bean<GongFaProgramVO>\t\t保存整套功法方案。\tCM_GongFaSaveProgram.lua\tpath\n"
+        "35411\tSM_GongFaSaveProgram\tplayer.gongfa\tserver_to_client\tequip_program\t1\tprogramVO:Bean<GongFaProgramVO>\t\t服务端确认方案。\tSM_GongFaSaveProgram.lua\tpath\n"
+        "35412\tGongFaProgramVO\tplayer.gongfa\tvalue_object\tequip_program\t3\tid:Int, name:String, skillList:MessageList2List\t\t方案对象。\tGongFaProgramVO.lua\tpath\n"
+        "35413\tSkillProgramVO\tplayer.gongfa\tvalue_object\tequip_program\t2\thomeMakeVO:Bean<GongFaHomeMakeVO>, skillInfoVO:Bean<SkillInfoVO>\t\t同时保存展示对象和槽位引用。\tSkillProgramVO.lua\tpath\n"
+        "35414\tCM_XinFaPutUp\tplayer.gongfa\tclient_to_server\txinfa_putup\t1\tputUpList:MessageList2List\t\t心法上阵请求。\tCM_XinFaPutUp.lua\tpath\n"
+        "35415\tSM_XinFaPutUp\tplayer.gongfa\tserver_to_client\txinfa_putup\t1\tputUpList:MessageList2List\t\t心法上阵回包。\tSM_XinFaPutUp.lua\tpath\n"
+        "35416\tXinFaVO\tplayer.gongfa\tvalue_object\txinfa_putup\t2\tidx:Int, xinFaId:Bean<SkillInfoVO>\t\t心法槽位对象。\tXinFaVO.lua\tpath\n"
+        "35417\tSkillInfoVO\tplayer.gongfa\tvalue_object\tself_make_id\t5\tskillId:Int, jie:Short, star:Short, type:Int, makeId:Long\t\t轻量技能引用。\tSkillInfoVO.lua\tpath\n"
+        "35418\tCM_ReplaceSkill\tplayer.skill\tclient_to_server\tdirect_replace\t5\tskillId:Int, type:Int, makeId:Long, groupId:Int, index:Int\t\t直接替换神通/绝招。\tCM_ReplaceSkill.lua\tpath\n"
+        "35419\tHomeMakeXinFaVO\tplayer.gongfahomemake\tvalue_object\thome_make_xinfa\t3\tmakeId:Long, effectMap:Map, xianEffectMap:Map\teffectMap、xianEffectMap\t客户端读取词条 map。\tHomeMakeXinFaVO.lua\tpath\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_equip_flow.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "program_save_send\tGongFaSaveProgram\tgongfanew\tGongFaNewNetLogic.lua\tpath\tCM_GongFaSaveProgramFun\t31\tCM_GongFaSaveProgram.programVO=programVO\n"
+        "program_object_bridge\tSkillProgramVO\tgongfanew\tGongFaProgramView.lua\tpath\tSaveProgram\t42\tSkillProgramVO.homeMakeVO=homeMakeVO; SkillProgramVO.skillInfoVO=skillInfoVO\n"
+        "xinfa_putup_send\tXinFaPutUp\tgongfanew\tGongFaNewNetLogic.lua\tpath\tCM_XinFaPutUpFun\t51\tCM_XinFaPutUp.putUpList=putUpList\n"
+        "self_make_id_bridge\tmakeId\tgongfanew\tSelfGongFaBattleItem.lua\tpath\tSetData\t62\tlocal makeId=skillInfoVO.makeId\n"
+        "direct_replace_send\tCM_ReplaceSkill\tgongfanew\tGongFaBattleCustomView.lua\tpath\tReplaceSkill\t73\tCM_ReplaceSkill.skillId=skillId; CM_ReplaceSkill.makeId=makeId\n"
+        "home_make_vo_bridge\tGongFaHomeMakeVO\tgongfanew\tGongFaProgramView.lua\tpath\tBuildProgram\t84\tvo.homeMakeVO=gongFaHomeMakeVO\n",
+        encoding="utf-8",
+    )
+    (lingjie_dir / "lingjie_runtime_state_updates.tsv").write_text(
+        "stage\tterms\tbundle\tfile\trelative_path\tfunction_name\tline\tcode\n"
+        "program_state\tGongFaSaveProgram\tgongfanew\tGongFaNewModel.lua\tpath\tGongFaSaveProgram\t100\tself.GongFaNewData:AddGongFaProgram(msg.programVO)\n"
+        "program_state\tGongFaNewData.programDic\tgongfanew\tGongFaNewData.lua\tpath\tAddGongFaProgram\t101\tself.programDic:LuaDic_AddOrSetItem(programVO.id,programVO)\n"
+        "xinfa_equip_state\tSetXinFaInfo\tgongfanew\tGongFaNewModel.lua\tpath\tSM_XinFaPutUpFun\t120\tself.GongFaNewData:SetXinFaInfo(msg.putUpList)\n"
+        "xinfa_equip_state\tGongFaNewData.xinFaPutUpList\tgongfanew\tGongFaNewData.lua\tpath\tSetXinFaInfo\t121\tself.xinFaPutUpList=putUpList\n"
+        "xinfa_refresh_event\tCHANGE_BATTLE_XIN_FA\tgongfanew\tGongFaNewModel.lua\tpath\tSM_XinFaPutUpFun\t122\tself:RaiseEvent(GongFaNewType.CHANGE_BATTLE_XIN_FA)\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_program_equip_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    packets_text = (output_dir / "hot_update_gongfa_program_equip_packets.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_program_equip_flow.tsv").read_text(encoding="utf-8")
+    edges_text = (output_dir / "hot_update_gongfa_program_equip_edges.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_gongfa_program_equip_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["packet_rows"] == 10
+    assert result["counts"]["flow_rows"] == 11
+    assert "SkillProgramVO" in packets_text
+    assert "homeMakeVO:Bean<GongFaHomeMakeVO>" in packets_text
+    assert "skillInfoVO:Bean<SkillInfoVO>" in packets_text
+    assert "CM_ReplaceSkill" in packets_text
+    assert "client_reads_but_does_not_generate_maps" in edges_text
+    assert "GongFaNewData.programDic" in edges_text
+    assert "GongFaNewData.xinFaPutUpList" in edges_text
+    assert "SkillInfoVO.makeId" in edges_text
+    assert "GongFaNewData:SetXinFaInfo" in flow_text
+    assert "Gongfa 方案保存与心法上阵链路" in markdown_text
+
+
+def test_fanxiu_protocol_semantics_loader_filters_rows_and_edges(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_blld_protocol_semantics.tsv").write_text(
+        "id\tpacket\tdirection\tmodule\toperation\toperation_side\trole\tread_fields\twrite_fields\thandler_names\tlogic_names\tnet_function\tflow_kind\tassigned_fields\tmsg_fields\tstate_sinks\tauthority_class\tgap_category\tsemantic_note\tsource_file_count\tsample_files\n"
+        "97336\tCM_BlldFinishAndReward\tclient_to_server\tworld.blld\tFinishAndReward\tclient\tclient_intent\tlevelId:Int\tlevelId:Int\t\tBLLDNetLogic\tCM_BlldFinishAndRewardFun\tsend\tlevelId=levelId\t\t\tclient_battle_summary_server_reward\t\t客户端提交本地战斗结算摘要。\t1\tCM.lua\n"
+        "97337\tSM_BlldFinishAndReward\tserver_to_client\tworld.blld\tFinishAndReward\tserver\tserver_state_or_result\tfindResults:List\tfindResults:List\tSM_BlldFinishAndRewardFun\tBLLDNetLogic\tSM_BlldFinishAndRewardFun\treceive\t\tcode\tSetFinishAndReward(msg)\tclient_battle_summary_server_reward\t\t服务端返回最终探索/通关奖励。\t1\tSM.lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_blld_protocol_semantic_edges.tsv").write_text(
+        "source_type\tsource\tedge\ttarget_type\ttarget\tevidence\n"
+        "operation\tFinishAndReward\tsends\tclient_packet\tCM_BlldFinishAndReward\tlevelId=levelId\n"
+        "client_packet\tCM_BlldFinishAndReward\tsubmits_summary_field\tclient_field\tpassRate=passRate\tFinishAndReward\n"
+        "server_packet\tSM_BlldFinishAndReward\tdispatches\thandler\tSM_BlldFinishAndRewardFun\tfindResults\n",
+        encoding="utf-8",
+    )
+
+    result = load_fanxiu_protocol_semantics(
+        feature="blld",
+        query="passRate",
+        export_root=export_root,
+    )
+
+    assert result["feature"] == "blld"
+    assert result["counts"]["rows"] == 2
+    assert result["counts"]["filtered_edges"] == 1
+    assert result["edges"][0]["edge"] == "submits_summary_field"
+    role_result = load_fanxiu_protocol_semantics(feature="blld", role="server_state_or_result", export_root=export_root)
+    assert len(role_result["items"]) == 1
+    assert role_result["items"][0]["packet"] == "SM_BlldFinishAndReward"
 
 
 def test_fanxiu_blld_runtime_probe_links_packets_and_netlogic(tmp_path):
@@ -5798,3 +13000,52 @@ def test_fanxiu_il2cpp_hot_update_report_groups_matching_types(tmp_path):
     assert "Game.Player.Move" in (output_dir / "hot_update_methods.tsv").read_text(encoding="utf-8")
     assert "Hello" in (output_dir / "hot_update_strings.tsv").read_text(encoding="utf-8")
     assert "Game.Player" in (output_dir / "hot_update_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_il2cpp_gameplay_symbol_report_marks_missing_business_symbols(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    index_dir.mkdir(parents=True)
+    (index_dir / "il2cpp_metadata_summary.json").write_text(
+        json.dumps({"metadata_path": "global-metadata.dat"}),
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_types.tsv").write_text(
+        "index\tnamespace\tname\tfull_name\tflags\tbitfield\ttoken\tfield_start\tfield_count\tmethod_start\tmethod_count\tparent_index\tbyval_type_index\tbyref_type_index\telement_type_index\n"
+        "1\t\tLuaBridge_Skill_SkillCastBridgeWrap\tLuaBridge_Skill_SkillCastBridgeWrap\t\t\t0x0201\t0\t0\t0\t2\t-1\t501\t502\t501\n",
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_methods.tsv").write_text(
+        "index\towner\tname\tqualified_name\tparameters\tdeclaring_type\treturn_type\tparameter_start\tparameter_count\ttoken\tflags\tslot\n"
+        "1\tLuaBridge_Skill_SkillCastBridgeWrap\tRegister\tLuaBridge_Skill_SkillCastBridgeWrap.Register\tL:type#20540\t1\t28578\t0\t1\t0x0601\t\t\n",
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_fields.tsv").write_text(
+        "index\towner\tname\tqualified_name\ttype_index\ttoken\n",
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_strings.tsv").write_text(
+        "string_index\tvalue\n"
+        "10\tinterfaze\n",
+        encoding="utf-8",
+    )
+    (index_dir / "il2cpp_string_literals.tsv").write_text(
+        "index\tlength\tdata_index\tvalue\n"
+        "1\t9\t0\tLuaBridge\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_il2cpp_gameplay_symbol_report(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+
+    assert result["counts"]["types"] == 1
+    assert "FazeEffect" in result["missing_business_keywords"]
+    assert "BlueStarSea" in result["missing_business_keywords"]
+    assert "LuaBridge_Skill_SkillCastBridgeWrap" in (output_dir / "il2cpp_gameplay_symbol_types.tsv").read_text(
+        encoding="utf-8"
+    )
+    terms_text = (output_dir / "il2cpp_gameplay_symbol_terms.tsv").read_text(encoding="utf-8")
+    assert "FazeEffect" in terms_text
+    assert "凡修 IL2CPP 业务符号边界报告" in (output_dir / "il2cpp_gameplay_symbol_report.md").read_text(
+        encoding="utf-8"
+    )

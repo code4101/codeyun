@@ -99,6 +99,19 @@ const routes: Array<RouteRecordRaw> = [
     ],
   },
   {
+    path: '/fanxiu-resource/:resourceType/:resourceId',
+    component: StandaloneLayout,
+    meta: { requiresAuth: false, skipFeatureAccess: true },
+    children: [
+      {
+        path: '',
+        name: 'FanxiuResource',
+        component: () => import('@/standard/fanxiu/resource-view/page.vue'),
+        meta: { requiresAuth: false, skipFeatureAccess: true },
+      },
+    ],
+  },
+  {
     path: STANDALONE_PREFIX,
     component: StandaloneLayout,
     meta: { requiresAuth: false },

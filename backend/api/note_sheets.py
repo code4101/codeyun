@@ -8955,10 +8955,37 @@ def _get_sheet_by_numeric_id_or_404(
     return document
 
 
-def _is_superuser_or_owner(current_user: User | None, owner_user_id: int | None) -> bool:
-    return bool(
-        current_user is not None
-        and (current_user.is_superuser or owner_user_id == current_user.id)
+def _is_superuser_or_user_id(current_user: User | None, *user_ids: int | None) -> bool:
+    if current_user is None:
+        return False
+    if current_user.is_superuser:
+        return True
+    return any(user_id == current_user.id for user_id in user_ids if user_id is not None)
+
+
+def _is_workbook_resource_principal(current_user: User | None, workbook: WorkbookDocument) -> bool:
+    return _is_superuser_or_user_id(
+        current_user,
+        workbook.owner_user_id,
+        workbook.created_by_user_id,
+    )
+
+
+def _sheet_owner_key_user_id(document: SheetDocument) -> int | None:
+    if document.owner_type != "user":
+        return None
+    try:
+        return int(str(document.owner_key).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_sheet_resource_principal(current_user: User | None, document: SheetDocument) -> bool:
+    return _is_superuser_or_user_id(
+        current_user,
+        document.owner_user_id,
+        document.created_by_user_id,
+        _sheet_owner_key_user_id(document),
     )
 
 
@@ -8967,7 +8994,7 @@ def _resolve_workbook_resource_access(
     workbook: WorkbookDocument,
     current_user: User | None,
 ) -> NoteSheetResourceAccess:
-    if _is_superuser_or_owner(current_user, workbook.owner_user_id):
+    if _is_workbook_resource_principal(current_user, workbook):
         return _build_resource_access("manager")
 
     role = _resolve_subject_grant_role(
@@ -8984,12 +9011,12 @@ def _resolve_sheet_resource_access(
     *,
     workbook: WorkbookDocument | None = None,
 ) -> NoteSheetResourceAccess:
-    if _is_superuser_or_owner(current_user, document.owner_user_id):
+    if _is_sheet_resource_principal(current_user, document):
         return _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)
-    if workbook is not None and _is_superuser_or_owner(current_user, workbook.owner_user_id):
+    if workbook is not None and _is_workbook_resource_principal(current_user, workbook):
         return _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)
     if workbook is None and any(
-        _is_superuser_or_owner(current_user, item.owner_user_id)
+        _is_workbook_resource_principal(current_user, item)
         for item in _get_workbooks_for_sheet(session, document)
     ):
         return _apply_sheet_specific_access_capabilities(_build_resource_access("manager"), document)

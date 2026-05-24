@@ -19,7 +19,6 @@ from backend.core.fanxiu_timeline import (
     first_timeline_hint,
     sort_timeline_hints,
 )
-from backend.core.fanxiu_wiki_user_fields import get_fanxiu_wiki_user_fields
 
 
 DEFAULT_GONGFA_ROWS = Path("parsed_configs/Gongfa/rows.json")
@@ -1362,7 +1361,6 @@ def get_fanxiu_gongfa_card(
                 "quality_grade_name": _gongfa_quality_grade_name(card),
                 "quality_family_name": _gongfa_quality_family_name(card),
                 "terms": _card_terms(card, limit=20),
-                "user_fields": get_fanxiu_wiki_user_fields("gongfa", requested),
             },
         }
     raise FanxiuResourceError(f"没有找到功法：{gongfa_id}")
