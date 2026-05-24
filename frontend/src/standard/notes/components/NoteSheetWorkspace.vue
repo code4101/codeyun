@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { HotTable } from '@handsontable/vue3'
 import type Handsontable from 'handsontable/base'
 
 import AttendanceFeedbackHistoryList from '@/components/attendance/AttendanceFeedbackHistoryList.vue'
@@ -62,17 +61,26 @@ import {
   type StableVisualColorOptions,
   type StableVisualToken,
 } from '@/utils/stableVisualColor'
-import { registerCodeyunHandsontableModules } from '@/utils/handsontableSetup'
 import {
   buildCodeyunUrlVariant,
   openUrlInNewWindow,
   type CodeyunLinkVariant,
 } from '@/utils/codeyunLinks'
 
-import 'handsontable/styles/handsontable.css'
-import 'handsontable/styles/ht-theme-main.css'
+const HotTable = defineAsyncComponent(async () => {
+  const [
+    hotTableModule,
+    handsontableSetupModule,
+  ] = await Promise.all([
+    import('@handsontable/vue3'),
+    import('@/utils/handsontableSetup'),
+    import('handsontable/styles/handsontable.css'),
+    import('handsontable/styles/ht-theme-main.css'),
+  ])
 
-registerCodeyunHandsontableModules()
+  handsontableSetupModule.registerCodeyunHandsontableModules()
+  return hotTableModule.HotTable
+})
 
 const DEFAULT_SHEET_COLUMNS = ['列1', '列2', '列3'] as const
 const CUSTOM_COLUMN_PREFIX = '自定义字段'

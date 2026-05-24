@@ -20,6 +20,9 @@ AI_APP_GIT_COMMIT = "ai-git-commit"
 AI_APP_CODEX_DIARY = "codex-diary"
 AI_APP_GIT_COMMIT_DEFAULT_PROVIDER = "deepseek"
 AI_APP_GIT_COMMIT_DEFAULT_MODEL = "deepseek-v4-flash"
+AI_APP_CODEX_DIARY_DEFAULT_PROVIDER = "deepseek"
+AI_APP_CODEX_DIARY_DEFAULT_MODEL = "deepseek-v4-pro"
+_CODEX_CLI_PROVIDER_ALIASES = {"codex", "codex-cli", "custom-codex-cli"}
 
 AI_APP_CONFIG_SETTING_KEY_PREFIX = "ai_app.config.user"
 LEGACY_AI_GIT_COMMIT_CONFIG_SETTING_KEY_PREFIX = "ai_git_commit.config.user"
@@ -77,13 +80,40 @@ def _normalize_app_config_item(value: Any) -> dict[str, Any]:
     }
 
 
+def _is_codex_cli_provider(value: Any) -> bool:
+    normalized = str(value or "").strip().lower().replace("_", "-")
+    return normalized in _CODEX_CLI_PROVIDER_ALIASES or normalized.endswith("-codex-cli")
+
+
+def _coerce_app_config_for_app(app_id: str, item: dict[str, Any]) -> dict[str, Any]:
+    if app_id == AI_APP_GIT_COMMIT and _is_codex_cli_provider(item.get("provider")):
+        return {
+            **item,
+            "provider": AI_APP_GIT_COMMIT_DEFAULT_PROVIDER,
+            "model": AI_APP_GIT_COMMIT_DEFAULT_MODEL,
+        }
+    if app_id == AI_APP_CODEX_DIARY:
+        if _is_codex_cli_provider(item.get("provider")):
+            return {
+                **item,
+                "provider": AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
+                "model": AI_APP_CODEX_DIARY_DEFAULT_MODEL,
+            }
+        if item.get("provider") == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER and not item.get("model"):
+            return {
+                **item,
+                "model": AI_APP_CODEX_DIARY_DEFAULT_MODEL,
+            }
+    return item
+
+
 def _default_app_config(app_id: str) -> dict[str, Any]:
     if app_id == AI_APP_GIT_COMMIT:
         provider = AI_APP_GIT_COMMIT_DEFAULT_PROVIDER
         model = AI_APP_GIT_COMMIT_DEFAULT_MODEL
     elif app_id == AI_APP_CODEX_DIARY:
-        provider = "deepseek"
-        model = ""
+        provider = AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
+        model = AI_APP_CODEX_DIARY_DEFAULT_MODEL
     else:
         provider = ""
         model = ""
@@ -152,6 +182,7 @@ def get_user_ai_app_config(session: Session, user_id: int, app_id: str) -> dict[
         item = _load_legacy_ai_git_commit_config(session, user_id)
     if item is None:
         item = _default_app_config(normalized_app_id)
+    item = _coerce_app_config_for_app(normalized_app_id, item)
     return {
         "id": normalized_app_id,
         **item,
@@ -186,6 +217,7 @@ def save_user_ai_app_config(
         "model": model.strip(),
         "updated_at": now,
     }
+    apps[normalized_app_id] = _coerce_app_config_for_app(normalized_app_id, apps[normalized_app_id])
     _save_app_config_map(session, user_id, apps)
     return {
         "id": normalized_app_id,

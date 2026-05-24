@@ -4,6 +4,7 @@ import csv
 import json
 import os
 import struct
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -88,6 +89,48 @@ IL2CPP_HOT_UPDATE_STRING_KEYWORDS = (
     "version",
     "zip",
     "cdn",
+)
+
+IL2CPP_GAMEPLAY_KEYWORDS = (
+    "BlueStarSea",
+    "StarSea",
+    "BLLD",
+    "Blld",
+    "Gongfa",
+    "GongFa",
+    "GongFaNew",
+    "FazeEffect",
+    "FazeResource",
+    "FazeType",
+    "FazeMgr",
+    "SM_FazeEffect",
+    "CM_BlueStarSea",
+    "SM_BlueStarSea",
+    "CM_Blld",
+    "SM_Blld",
+    "DBMgr",
+    "ConfigName",
+    "LuaBridge_Skill_SkillCastBridgeWrap",
+    "LuaBridge_EngineBridge_SocketBridgeWrap",
+    "LuaBridge_Load_GameResDownloadBridgeWrap",
+)
+IL2CPP_GAMEPLAY_BUSINESS_KEYWORDS = (
+    "BlueStarSea",
+    "StarSea",
+    "BLLD",
+    "Blld",
+    "Gongfa",
+    "GongFa",
+    "GongFaNew",
+    "FazeEffect",
+    "FazeResource",
+    "FazeType",
+    "FazeMgr",
+    "SM_FazeEffect",
+    "CM_BlueStarSea",
+    "SM_BlueStarSea",
+    "CM_Blld",
+    "SM_Blld",
 )
 
 
@@ -554,6 +597,175 @@ def _write_hot_update_markdown(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _gameplay_symbol_role(value: str) -> str:
+    lower = value.lower()
+    if any(keyword.lower() in lower for keyword in IL2CPP_GAMEPLAY_BUSINESS_KEYWORDS):
+        return "gameplay-business"
+    if "socketbridge" in lower:
+        return "network-bridge"
+    if "gameresdownloadbridge" in lower:
+        return "resource-download-bridge"
+    if "luabridge" in lower or lower.endswith("bridgewrap"):
+        return "lua-bridge"
+    if "dbmgr" in lower or "configname" in lower:
+        return "config-bridge"
+    return "candidate"
+
+
+def _first_matched_keyword(value: str, keywords: tuple[str, ...]) -> str:
+    lower = value.lower()
+    for keyword in keywords:
+        if keyword.lower() in lower:
+            return keyword
+    return ""
+
+
+def _count_keyword_hits_by_kind(
+    *,
+    keywords: tuple[str, ...],
+    type_rows: list[dict[str, str]],
+    method_rows: list[dict[str, str]],
+    field_rows: list[dict[str, str]],
+    string_rows: list[dict[str, str]],
+    literal_rows: list[dict[str, str]],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for keyword in keywords:
+        lower = keyword.lower()
+        counts = {
+            "types": sum(1 for row in type_rows if lower in row.get("full_name", "").lower()),
+            "methods": sum(1 for row in method_rows if lower in row.get("qualified_name", "").lower()),
+            "fields": sum(1 for row in field_rows if lower in row.get("qualified_name", "").lower()),
+            "metadata_strings": sum(1 for row in string_rows if lower in row.get("value", "").lower()),
+            "string_literals": sum(1 for row in literal_rows if lower in row.get("value", "").lower()),
+        }
+        rows.append(
+            {
+                "keyword": keyword,
+                **counts,
+                "total": sum(counts.values()),
+                "role": _gameplay_symbol_role(keyword),
+            }
+        )
+    return rows
+
+
+def _write_gameplay_symbol_markdown(
+    path: Path,
+    *,
+    summary: dict[str, Any],
+    term_rows: list[dict[str, object]],
+    type_rows: list[dict[str, str]],
+    method_rows: list[dict[str, str]],
+    field_rows: list[dict[str, str]],
+    string_rows: list[dict[str, str]],
+    missing_business_keywords: list[str],
+) -> None:
+    by_role = Counter(str(row.get("role", "")) for row in type_rows + method_rows + field_rows)
+    lines = [
+        "# 凡修 IL2CPP 业务符号边界报告",
+        "",
+        f"- 生成时间：{summary['generated_at']}",
+        f"- metadata：`{summary['metadata_path']}`",
+        f"- 类型命中：{summary['counts']['types']}",
+        f"- 方法命中：{summary['counts']['methods']}",
+        f"- 字段命中：{summary['counts']['fields']}",
+        f"- 字符串命中：{summary['counts']['strings']}",
+        "- 说明：本报告只使用 `global-metadata.dat` 已导出的名字表；能证明符号名是否裸露，不能还原 IL2CPP 方法体。",
+        "",
+    ]
+    if missing_business_keywords:
+        lines.extend(
+            [
+                "## 业务关键字缺口",
+                "",
+                "以下业务关键字在 IL2CPP metadata 的类型、方法、字段和字符串里没有命中，说明当前可读 APK 壳没有直接暴露这些玩法名：",
+                "",
+                ", ".join(f"`{item}`" for item in missing_business_keywords),
+                "",
+            ]
+        )
+
+    lines.extend(["## 关键字计数", "", "| keyword | role | total | types | methods | fields | strings | literals |", "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |"])
+    for row in term_rows:
+        lines.append(
+            "| "
+            f"{_clean_tsv_cell(row.get('keyword'))} | "
+            f"{_clean_tsv_cell(row.get('role'))} | "
+            f"{row.get('total')} | "
+            f"{row.get('types')} | "
+            f"{row.get('methods')} | "
+            f"{row.get('fields')} | "
+            f"{row.get('metadata_strings')} | "
+            f"{row.get('string_literals')} |"
+        )
+
+    if by_role:
+        lines.extend(["", "## 命中角色分布", "", "| role | count |", "| --- | ---: |"])
+        for role, count in by_role.most_common():
+            lines.append(f"| {_clean_tsv_cell(role)} | {count} |")
+
+    if type_rows:
+        lines.extend(["", "## 类型命中", "", "| role | keyword | full_name | methods | fields | token |", "| --- | --- | --- | ---: | ---: | --- |"])
+        for row in type_rows[:120]:
+            lines.append(
+                "| "
+                f"{_clean_tsv_cell(row.get('role'))} | "
+                f"{_clean_tsv_cell(row.get('matched_keyword'))} | "
+                f"{_clean_tsv_cell(row.get('full_name'))} | "
+                f"{row.get('method_count', '')} | "
+                f"{row.get('field_count', '')} | "
+                f"{_clean_tsv_cell(row.get('token'))} |"
+            )
+
+    if method_rows:
+        lines.extend(["", "## 方法命中", "", "| role | keyword | owner | method | parameters | return_type |", "| --- | --- | --- | --- | --- | --- |"])
+        for row in method_rows[:180]:
+            lines.append(
+                "| "
+                f"{_clean_tsv_cell(row.get('role'))} | "
+                f"{_clean_tsv_cell(row.get('matched_keyword'))} | "
+                f"{_clean_tsv_cell(row.get('owner'))} | "
+                f"{_clean_tsv_cell(row.get('name'))} | "
+                f"{_clean_tsv_cell(row.get('parameters'))} | "
+                f"{_clean_tsv_cell(row.get('return_type'))} |"
+            )
+
+    if field_rows:
+        lines.extend(["", "## 字段命中", "", "| role | keyword | owner | field | type_index |", "| --- | --- | --- | --- | --- |"])
+        for row in field_rows[:160]:
+            lines.append(
+                "| "
+                f"{_clean_tsv_cell(row.get('role'))} | "
+                f"{_clean_tsv_cell(row.get('matched_keyword'))} | "
+                f"{_clean_tsv_cell(row.get('owner'))} | "
+                f"{_clean_tsv_cell(row.get('name'))} | "
+                f"{_clean_tsv_cell(row.get('type_index'))} |"
+            )
+
+    if string_rows:
+        lines.extend(["", "## 字符串命中", "", "| kind | keyword | index | value |", "| --- | --- | ---: | --- |"])
+        for row in string_rows[:180]:
+            lines.append(
+                "| "
+                f"{_clean_tsv_cell(row.get('kind'))} | "
+                f"{_clean_tsv_cell(row.get('matched_keyword'))} | "
+                f"{_clean_tsv_cell(row.get('index'))} | "
+                f"{_clean_tsv_cell(row.get('value'), limit=240)} |"
+            )
+
+    lines.extend(
+        [
+            "",
+            "## 判断",
+            "",
+            "- 若业务关键字缺口为空，说明 APK/IL2CPP 侧至少裸露了相关类型或字符串，可继续追对应类。",
+            "- 若只剩 `LuaBridge_*`、`SocketBridge`、下载桥等命中，说明玩法逻辑主要还在 Lua 热更资源或服务端规则里；继续看 IL2CPP 方法体需要把 `global-metadata.dat` 与 `libil2cpp.so` 用专用工具对齐。",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def build_fanxiu_il2cpp_metadata_probe(
     *,
     metadata_path: str | os.PathLike[str] | None = None,
@@ -855,6 +1067,208 @@ def build_fanxiu_il2cpp_hot_update_report(
         string_rows=selected_strings,
     )
     (output_dir / "hot_update_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def build_fanxiu_il2cpp_gameplay_symbol_report(
+    *,
+    metadata_path: str | os.PathLike[str] | None = None,
+    apk_root: str | os.PathLike[str] | None = None,
+    export_root: str | os.PathLike[str] | None = None,
+    keywords: Iterable[str] | None = None,
+    string_keywords: Iterable[str] | None = None,
+    row_limit: int = 1000,
+) -> dict[str, Any]:
+    output_base = resolve_fanxiu_export_root(export_root)
+    output_dir = (output_base / "apk_static_index").resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    required_tables = [
+        output_dir / "il2cpp_types.tsv",
+        output_dir / "il2cpp_methods.tsv",
+        output_dir / "il2cpp_fields.tsv",
+        output_dir / "il2cpp_strings.tsv",
+        output_dir / "il2cpp_string_literals.tsv",
+    ]
+    if not all(path.is_file() for path in required_tables):
+        build_fanxiu_il2cpp_metadata_probe(
+            metadata_path=metadata_path,
+            apk_root=apk_root,
+            export_root=output_base,
+            keywords=keywords or IL2CPP_GAMEPLAY_KEYWORDS,
+            keyword_hit_limit=max(1000, row_limit * 10),
+        )
+
+    normalized_keywords = tuple(dict.fromkeys(str(item) for item in (keywords or IL2CPP_GAMEPLAY_KEYWORDS) if str(item).strip()))
+    normalized_string_keywords = tuple(
+        dict.fromkeys(str(item) for item in (string_keywords or normalized_keywords) if str(item).strip())
+    )
+    business_keywords = [item for item in normalized_keywords if any(item.lower() == key.lower() for key in IL2CPP_GAMEPLAY_BUSINESS_KEYWORDS)]
+
+    all_types = _read_tsv(output_dir / "il2cpp_types.tsv")
+    all_methods = _read_tsv(output_dir / "il2cpp_methods.tsv")
+    all_fields = _read_tsv(output_dir / "il2cpp_fields.tsv")
+    all_strings = _read_tsv(output_dir / "il2cpp_strings.tsv")
+    all_literals = _read_tsv(output_dir / "il2cpp_string_literals.tsv")
+
+    term_rows = _count_keyword_hits_by_kind(
+        keywords=normalized_keywords,
+        type_rows=all_types,
+        method_rows=all_methods,
+        field_rows=all_fields,
+        string_rows=all_strings,
+        literal_rows=all_literals,
+    )
+    term_totals = {str(row["keyword"]): int(row["total"]) for row in term_rows}
+    missing_business_keywords = [keyword for keyword in business_keywords if not term_totals.get(keyword, 0)]
+
+    type_rows: list[dict[str, str]] = []
+    type_names: set[str] = set()
+    for row in all_types:
+        value = row.get("full_name", "")
+        matched = _first_matched_keyword(value, normalized_keywords)
+        if not matched:
+            continue
+        item = dict(row)
+        item["matched_keyword"] = matched
+        item["role"] = _gameplay_symbol_role(value)
+        type_rows.append(item)
+        type_names.add(value)
+        if len(type_rows) >= row_limit:
+            break
+
+    method_rows: list[dict[str, str]] = []
+    for row in all_methods:
+        value = row.get("qualified_name", "")
+        matched = _first_matched_keyword(value, normalized_keywords)
+        if not matched and row.get("owner", "") not in type_names:
+            continue
+        item = dict(row)
+        item["matched_keyword"] = matched or "<owner>"
+        item["role"] = _gameplay_symbol_role(value or row.get("owner", ""))
+        method_rows.append(item)
+        if len(method_rows) >= row_limit:
+            break
+
+    field_rows: list[dict[str, str]] = []
+    for row in all_fields:
+        value = row.get("qualified_name", "")
+        matched = _first_matched_keyword(value, normalized_keywords)
+        if not matched and row.get("owner", "") not in type_names:
+            continue
+        item = dict(row)
+        item["matched_keyword"] = matched or "<owner>"
+        item["role"] = _gameplay_symbol_role(value or row.get("owner", ""))
+        field_rows.append(item)
+        if len(field_rows) >= row_limit:
+            break
+
+    string_rows: list[dict[str, str]] = []
+    for kind, rows, index_field in (
+        ("metadata_string", all_strings, "string_index"),
+        ("string_literal", all_literals, "index"),
+    ):
+        for row in rows:
+            value = row.get("value", "")
+            matched = _first_matched_keyword(value, normalized_string_keywords)
+            if not matched:
+                continue
+            string_rows.append(
+                {
+                    "kind": kind,
+                    "index": row.get(index_field, row.get("index", "")),
+                    "matched_keyword": matched,
+                    "role": _gameplay_symbol_role(value),
+                    "value": value,
+                }
+            )
+            if len(string_rows) >= row_limit:
+                break
+        if len(string_rows) >= row_limit:
+            break
+
+    type_fields = [
+        "role",
+        "matched_keyword",
+        "index",
+        "namespace",
+        "name",
+        "full_name",
+        "token",
+        "method_start",
+        "method_count",
+        "field_start",
+        "field_count",
+    ]
+    method_fields = [
+        "role",
+        "matched_keyword",
+        "index",
+        "owner",
+        "name",
+        "qualified_name",
+        "token",
+        "parameters",
+        "parameter_start",
+        "parameter_count",
+        "return_type",
+    ]
+    field_fields = ["role", "matched_keyword", "index", "owner", "name", "qualified_name", "token", "type_index"]
+    string_fields = ["kind", "role", "matched_keyword", "index", "value"]
+    term_fields = ["keyword", "role", "types", "methods", "fields", "metadata_strings", "string_literals", "total"]
+
+    type_count = _write_tsv(output_dir / "il2cpp_gameplay_symbol_types.tsv", type_fields, type_rows)
+    method_count = _write_tsv(output_dir / "il2cpp_gameplay_symbol_methods.tsv", method_fields, method_rows)
+    field_count = _write_tsv(output_dir / "il2cpp_gameplay_symbol_fields.tsv", field_fields, field_rows)
+    string_count = _write_tsv(output_dir / "il2cpp_gameplay_symbol_strings.tsv", string_fields, string_rows)
+    term_count = _write_tsv(output_dir / "il2cpp_gameplay_symbol_terms.tsv", term_fields, term_rows)
+
+    summary_path = output_dir / "il2cpp_metadata_summary.json"
+    metadata_summary = json.loads(summary_path.read_text(encoding="utf-8")) if summary_path.is_file() else {}
+    metadata_file = metadata_summary.get("metadata_path", "")
+    if not metadata_file:
+        metadata_file = str(resolve_fanxiu_il2cpp_metadata_path(metadata_path=metadata_path, apk_root=apk_root)) if metadata_path or apk_root else ""
+
+    result = {
+        "metadata_path": metadata_file,
+        "export_root": str(output_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "keywords": list(normalized_keywords),
+        "string_keywords": list(normalized_string_keywords),
+        "missing_business_keywords": missing_business_keywords,
+        "counts": {
+            "terms": term_count,
+            "types": type_count,
+            "methods": method_count,
+            "fields": field_count,
+            "strings": string_count,
+            "by_role": dict(Counter(str(row.get("role", "")) for row in type_rows + method_rows + field_rows).most_common()),
+        },
+        "outputs": {
+            "summary": str(output_dir / "il2cpp_gameplay_symbol_report.json"),
+            "markdown": str(output_dir / "il2cpp_gameplay_symbol_report.md"),
+            "terms": str(output_dir / "il2cpp_gameplay_symbol_terms.tsv"),
+            "types": str(output_dir / "il2cpp_gameplay_symbol_types.tsv"),
+            "methods": str(output_dir / "il2cpp_gameplay_symbol_methods.tsv"),
+            "fields": str(output_dir / "il2cpp_gameplay_symbol_fields.tsv"),
+            "strings": str(output_dir / "il2cpp_gameplay_symbol_strings.tsv"),
+        },
+    }
+    _write_gameplay_symbol_markdown(
+        output_dir / "il2cpp_gameplay_symbol_report.md",
+        summary=result,
+        term_rows=term_rows,
+        type_rows=type_rows,
+        method_rows=method_rows,
+        field_rows=field_rows,
+        string_rows=string_rows,
+        missing_business_keywords=missing_business_keywords,
+    )
+    (output_dir / "il2cpp_gameplay_symbol_report.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

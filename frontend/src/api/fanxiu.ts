@@ -262,6 +262,68 @@ export interface FanxiuPacketProxyEvent {
   signal_reason: string;
 }
 
+export interface FanxiuProtocolSemanticFeature {
+  key: string;
+  title: string;
+}
+
+export interface FanxiuProtocolSemanticRow {
+  id: string;
+  packet: string;
+  direction: string;
+  module: string;
+  operation: string;
+  operation_side: string;
+  role: string;
+  read_fields: string;
+  write_fields: string;
+  handler_names: string;
+  logic_names: string;
+  net_function: string;
+  flow_kind: string;
+  assigned_fields: string;
+  msg_fields: string;
+  state_sinks: string;
+  authority_class: string;
+  gap_category: string;
+  semantic_note: string;
+  source_file_count: string;
+  sample_files: string;
+}
+
+export interface FanxiuProtocolSemanticEdge {
+  source_type: string;
+  source: string;
+  edge: string;
+  target_type: string;
+  target: string;
+  evidence: string;
+}
+
+export interface FanxiuProtocolSemanticResponse {
+  feature: string;
+  title: string;
+  export_root: string;
+  outputs: {
+    semantics: string;
+    edges: string;
+    report: string;
+  };
+  available_features: FanxiuProtocolSemanticFeature[];
+  counts: {
+    rows: number;
+    edges: number;
+    filtered_rows: number;
+    filtered_edges: number;
+    by_role: Record<string, number>;
+    by_operation: Record<string, number>;
+  };
+  items: FanxiuProtocolSemanticRow[];
+  edges: FanxiuProtocolSemanticEdge[];
+  roles: string[];
+  operations: string[];
+}
+
 export interface FanxiuPacketProxyEventListResponse {
   items: FanxiuPacketProxyEvent[];
   status: FanxiuPacketProxyStatus;
@@ -1104,15 +1166,23 @@ export interface FanxiuTimelineHint {
   evidences?: string[];
 }
 
-export interface FanxiuWikiUserFields {
-  object_type: string;
-  object_id: string;
-  note: string;
-  source: string;
-  updated_at?: string;
+export interface FanxiuWikiLinkIndexItem {
+  alias: string;
+  tab: 'item' | 'gongfa' | 'lingjie';
+  id: string | number;
+  title?: string;
+  preview?: string;
+  effect_text_preview?: string;
+  effect_preview?: string;
+  reward_preview?: string;
+  kind?: string;
+  priority?: number;
 }
 
-export type FanxiuGongfaUserFields = FanxiuWikiUserFields;
+export interface FanxiuWikiLinkIndexResponse {
+  items: FanxiuWikiLinkIndexItem[];
+  total: number;
+}
 
 export interface FanxiuGongfaProgressionRow {
   row_key?: string;
@@ -1181,7 +1251,6 @@ export interface FanxiuGongfaCard {
   time_hints?: FanxiuTimelineHint[];
   first_time_hint?: FanxiuTimelineHint | null;
   terms?: string[];
-  user_fields?: FanxiuWikiUserFields;
 }
 
 export interface FanxiuGongfaSearchItem {
@@ -1268,6 +1337,162 @@ export interface FanxiuGongfaCardResponse {
   card: FanxiuGongfaCard;
 }
 
+export interface FanxiuGongfaHomeMakeStaticDetailRow {
+  section: string;
+  active_state: string;
+  effect_id?: string | number;
+  template_key: string;
+  source_tables: string;
+  config_keys: string;
+  sort?: string | number;
+  rich_text: string;
+  plain_text: string;
+}
+
+export interface FanxiuGongfaHomeMakeStaticDetailResponse {
+  source: string;
+  export_root: string;
+  params: {
+    gongfa_id: number;
+    star: number;
+    jie: number;
+    pin: number;
+    include_inactive: boolean;
+  };
+  card: {
+    id: string | number;
+    name: string;
+    icon?: string;
+    quality?: string | number;
+    skill_type?: string | number;
+    description?: string;
+    description_rich?: string;
+    skill_id?: string | number;
+  };
+  rows: FanxiuGongfaHomeMakeStaticDetailRow[];
+  warnings: string[];
+  counts: {
+    rows: number;
+    side_effect_sources: number;
+  };
+}
+
+export interface FanxiuGongfaHomeMakeBuffParameterLink {
+  gongfa_id: string;
+  side_jie_name: string;
+  buff_id: string;
+  buff_name: string;
+  field: string;
+  field_value: string;
+  token: string;
+  target_table: string;
+  target_role: string;
+  target_id: string;
+  target_gongfa_id: string;
+  target_name: string;
+  target_description: string;
+  source_file: string;
+}
+
+export interface FanxiuGongfaHomeMakeBuffParameterGroup {
+  group_key: string;
+  row_count: string | number;
+  unique_buff_count: string | number;
+  buff_ids: string;
+  gongfa_names: string;
+  side_jie_names: string;
+  buff_name: string;
+  buff_desc: string;
+  desc_category: string;
+  effect_type: string;
+  buff_type: string;
+  duration: string;
+  duration_seconds: string;
+  periodic_time: string;
+  periodic_seconds: string;
+  relation_type: string;
+  layer: string;
+  populated_parameter_fields: string;
+  linked_targets: string;
+  matching_rows: number;
+  matching_buff_ids: string;
+  link_count: number;
+  links: FanxiuGongfaHomeMakeBuffParameterLink[];
+}
+
+export interface FanxiuGongfaHomeMakeBuffParameterSemanticsResponse {
+  export_root: string;
+  source: string;
+  params: {
+    gongfa_id: string;
+    query: string;
+    limit: number;
+  };
+  total: number;
+  items: FanxiuGongfaHomeMakeBuffParameterGroup[];
+  counts: {
+    candidate_rows: number;
+    groups: number;
+    links: number;
+    unique_buff_ids: number;
+    populated_fields: Record<string, number>;
+  };
+  outputs: Record<string, string>;
+}
+
+export interface FanxiuGongfaHomeMakeXianShuFormulaItem {
+  side_feature_id: string;
+  side_feature_name: string;
+  feature_group: string;
+  jie: string;
+  side_feature: string;
+  star: string;
+  xianjie_star_id: string;
+  star_feature: string;
+  buff_ids: string;
+  buff_names: string;
+  star_params: string;
+  side_feature_params: string;
+  combined_params: string;
+  placeholder_count: string;
+  rendered_plain: string;
+  source_file: string;
+  source_line: string;
+  gongfa_ids: string;
+  gongfa_names: string;
+}
+
+export interface FanxiuGongfaHomeMakeXianShuFormulaGroup {
+  feature_group: string;
+  rows: string | number;
+  star_rows: string | number;
+  side_feature_names: string;
+  buff_names: string;
+  sample_rendered_plain: string;
+  gongfa_ids: string;
+  gongfa_names: string;
+}
+
+export interface FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse {
+  export_root: string;
+  source: string;
+  params: {
+    gongfa_id: string;
+    query: string;
+    limit: number;
+    star: number;
+  };
+  total: number;
+  items: FanxiuGongfaHomeMakeXianShuFormulaItem[];
+  groups: FanxiuGongfaHomeMakeXianShuFormulaGroup[];
+  counts: {
+    rows: number;
+    feature_groups: number;
+    rows_with_buff_candidates: number;
+  };
+  outputs: Record<string, string>;
+}
+
 export interface FanxiuItemStats {
   item_count?: number;
   quality_count?: number;
@@ -1290,6 +1515,7 @@ export interface FanxiuItemCard {
   small_icon?: string;
   description?: string;
   effect_description?: string;
+  show_effect?: string;
   type?: string | number;
   type_key?: string;
   type_name?: string;
@@ -1311,7 +1537,6 @@ export interface FanxiuItemCard {
   first_time_hint?: FanxiuTimelineHint | null;
   source_row_key?: string | number;
   terms?: string[];
-  user_fields?: FanxiuWikiUserFields;
 }
 
 export interface FanxiuItemSearchItem {
@@ -1382,6 +1607,216 @@ export interface FanxiuItemSearchResponse {
 export interface FanxiuItemCardResponse {
   catalog_path: string;
   card: FanxiuItemCard;
+}
+
+export interface FanxiuActivityStats {
+  activity_count?: number;
+  activity_gift_count?: number;
+  activity_free_gift_count?: number;
+  activity_signin_count?: number;
+  activity_list_reward_count?: number;
+  activity_fund_count?: number;
+  activity_battle_pass_count?: number;
+  activity_loop_count?: number;
+  activity_boss_count?: number;
+  active_task_count?: number;
+  open_function_count?: number;
+  subpackage_reward_count?: number;
+  catalog_card_count?: number;
+  current_card_count?: number;
+  stale_card_count?: number;
+  activity_with_time_hint_count?: number;
+  activity_with_reward_count?: number;
+  activity_with_loop_count?: number;
+  activity_with_jump_target_count?: number;
+  activity_kind_count?: number;
+  activity_type_count?: number;
+  time_kind_count?: number;
+}
+
+export interface FanxiuActivityOption {
+  value: string;
+  label: string;
+  count: number;
+  activity_type?: string | number;
+}
+
+export interface FanxiuActivityRewardRow {
+  source?: string;
+  row_key?: string | number;
+  title?: string;
+  meta?: string;
+  costs?: string[];
+  reward_items?: FanxiuGongfaLinkedItem[];
+  raw_rewards?: string[];
+  condition?: string;
+}
+
+export interface FanxiuActivityRewardSection {
+  key: string;
+  title: string;
+  count: number;
+  rows: FanxiuActivityRewardRow[];
+}
+
+export interface FanxiuActivityLoopEntry {
+  loop_id?: string | number;
+  day?: string | number;
+  activity_id?: string | number;
+  activity_name?: string;
+}
+
+export interface FanxiuActivityJumpTarget {
+  id?: string | number;
+  name?: string;
+  description?: string;
+  condition?: unknown;
+  unlock?: string;
+  lua_path?: string;
+  window_id?: string | number;
+  icon?: string;
+}
+
+export interface FanxiuActivityParsedTimeItem {
+  kind?: string;
+  token?: string;
+  raw?: string;
+  date?: string;
+  time?: string;
+  day?: string | number;
+  time_code?: string;
+  text?: string;
+}
+
+export interface FanxiuActivityParsedTimeField {
+  field: string;
+  label: string;
+  raw?: string;
+  summary?: string;
+  items?: FanxiuActivityParsedTimeItem[];
+}
+
+export interface FanxiuActivityParsedConditionItem {
+  token?: string;
+  label?: string;
+  value?: string;
+  raw?: string;
+  date?: string;
+  dates?: string[];
+  text?: string;
+}
+
+export interface FanxiuActivityParsedConditionGroup {
+  join?: string;
+  summary?: string;
+  items?: FanxiuActivityParsedConditionItem[];
+}
+
+export interface FanxiuActivityParsedConditionField {
+  field: string;
+  label: string;
+  raw?: string;
+  summary?: string;
+  raw_summary?: string;
+  description?: string;
+  code_summary?: string;
+  groups?: FanxiuActivityParsedConditionGroup[];
+}
+
+export interface FanxiuActivityCard {
+  id: string | number;
+  name: string;
+  little_name?: string;
+  title_name?: string;
+  activity_type?: string | number;
+  base_id?: string | number;
+  group_id?: string | number;
+  parent_activity_id?: string | number;
+  sub_type?: string | number;
+  reward_group?: string | number;
+  icon?: string;
+  sort?: string | number;
+  mainui_pos?: string | number;
+  jump?: string | number;
+  prepare_time?: unknown;
+  start_time?: unknown;
+  end_time?: unknown;
+  reward_time?: unknown;
+  close_panel_time?: unknown;
+  open_condition?: unknown;
+  join_condition?: unknown;
+  show_condition?: unknown;
+  force_hide_condition?: unknown;
+  join_condition_description?: string;
+  description?: string;
+  time_fields?: FanxiuActivityParsedTimeField[];
+  condition_fields?: FanxiuActivityParsedConditionField[];
+  kind_keys?: string[];
+  kind_names?: string[];
+  time_kind?: string;
+  time_kind_name?: string;
+  time_hints?: FanxiuTimelineHint[];
+  first_time_hint?: FanxiuTimelineHint | null;
+  reward_sections?: FanxiuActivityRewardSection[];
+  reward_preview?: string;
+  loop_entries?: FanxiuActivityLoopEntry[];
+  jump_target?: FanxiuActivityJumpTarget | null;
+  source_row_key?: string | number;
+  source_table?: string;
+  presence_status?: string;
+  is_stale?: boolean;
+  last_seen_at?: string;
+  missing_since?: string;
+  terms?: string[];
+}
+
+export interface FanxiuActivitySearchItem {
+  id: string | number;
+  name: string;
+  little_name?: string;
+  title_name?: string;
+  activity_type?: string | number;
+  base_id?: string | number;
+  icon?: string;
+  kind_keys?: string[];
+  kind_names?: string[];
+  time_kind?: string;
+  time_kind_name?: string;
+  description_preview?: string;
+  reward_preview?: string;
+  first_time_hint?: FanxiuTimelineHint | null;
+  loop_entries?: FanxiuActivityLoopEntry[];
+  source_table?: string;
+  presence_status?: string;
+  is_stale?: boolean;
+  last_seen_at?: string;
+  missing_since?: string;
+  terms?: string[];
+  score?: number;
+}
+
+export interface FanxiuActivitySearchResponse {
+  query: string;
+  kind_key?: string;
+  time_kind?: string;
+  activity_type?: string;
+  sort_by?: string;
+  sort_order?: string;
+  limit: number;
+  offset: number;
+  total: number;
+  stats: FanxiuActivityStats;
+  catalog_path: string;
+  kind_options?: FanxiuActivityOption[];
+  time_options?: FanxiuActivityOption[];
+  activity_type_options?: FanxiuActivityOption[];
+  facet_index?: FanxiuFacetIndex;
+  items: FanxiuActivitySearchItem[];
+}
+
+export interface FanxiuActivityCardResponse {
+  catalog_path: string;
+  card: FanxiuActivityCard;
 }
 
 export interface FanxiuLingjieFeatureStats {
@@ -1547,7 +1982,6 @@ export interface FanxiuLingjieFeatureCard {
   jie_rows?: FanxiuLingjieCompactRow[];
   star_rows?: FanxiuLingjieCompactRow[];
   runtime_summary?: FanxiuLingjieRuntimeSummary;
-  user_fields?: FanxiuWikiUserFields;
 }
 
 export interface FanxiuLingjieFeatureSearchItem {
@@ -1781,6 +2215,10 @@ export const getFanxiuWikiCatalog = () => {
   return api.get<FanxiuWikiCatalog>('/fanxiu/resources/wiki/catalog').then(res => res.data);
 };
 
+export const getFanxiuWikiLinkIndex = () => {
+  return api.get<FanxiuWikiLinkIndexResponse>('/fanxiu/resources/wiki/link-index').then(res => res.data);
+};
+
 export const searchFanxiuWikiTexts = (params: {
   query?: string;
   asset?: string;
@@ -1816,6 +2254,19 @@ export const getFanxiuWikiMediaUrl = (path: string) => {
   return `/api/fanxiu/resources/wiki/media?path=${encodeURIComponent(path)}`;
 };
 
+export const getFanxiuProtocolSemantics = (params: {
+  feature?: string;
+  query?: string;
+  role?: string;
+  operation?: string;
+  limit?: number;
+  edge_limit?: number;
+} = {}) => {
+  return api
+    .get<FanxiuProtocolSemanticResponse>('/fanxiu/resources/protocol-semantics', { params, timeout: 60000 })
+    .then(res => res.data);
+};
+
 export const getFanxiuResourceIconUrl = (name: string | null | undefined) => {
   const iconName = String(name || '').trim();
   return iconName ? `/api/fanxiu/resources/icon?name=${encodeURIComponent(iconName)}` : '';
@@ -1841,22 +2292,54 @@ export const getFanxiuGongfaCard = (gongfaId: string | number) => {
     .then(res => res.data);
 };
 
-export const updateFanxiuWikiUserFields = (
-  objectType: string,
-  objectId: string | number,
-  payload: { note?: string; source?: string },
+export const getFanxiuGongfaHomeMakeStaticDetail = (
+  gongfaId: string | number,
+  params: { star?: number; jie?: number; pin?: number; include_inactive?: boolean } = {}
 ) => {
   return api
-    .put<FanxiuWikiUserFields>('/fanxiu/resources/wiki/user-fields', payload, {
-      params: { object_type: objectType, object_id: objectId },
+    .get<FanxiuGongfaHomeMakeStaticDetailResponse>('/fanxiu/resources/gongfa/homemake-static-detail', {
+      params: { gongfa_id: gongfaId, ...params }
     })
     .then(res => res.data);
 };
 
-export const updateFanxiuGongfaUserFields = (
-  gongfaId: string | number,
-  payload: { note?: string; source?: string },
-) => updateFanxiuWikiUserFields('gongfa', gongfaId, payload);
+export const getFanxiuGongfaHomeMakeBuffParameterSemantics = (
+  gongfaId?: string | number | null,
+  params: { query?: string; limit?: number } = {}
+) => {
+  const requestParams: Record<string, string | number | undefined> = { ...params };
+  if (gongfaId !== undefined && gongfaId !== null && String(gongfaId).trim()) {
+    requestParams.gongfa_id = gongfaId;
+  }
+  return api
+    .get<FanxiuGongfaHomeMakeBuffParameterSemanticsResponse>(
+      '/fanxiu/resources/gongfa/homemake-buff-parameter-semantics',
+      {
+        params: requestParams,
+        timeout: 60000,
+      }
+    )
+    .then(res => res.data);
+};
+
+export const getFanxiuGongfaHomeMakeXianShuFormulaCatalog = (
+  gongfaId?: string | number | null,
+  params: { query?: string; limit?: number; star?: number } = {}
+) => {
+  const requestParams: Record<string, string | number | undefined> = { ...params };
+  if (gongfaId !== undefined && gongfaId !== null && String(gongfaId).trim()) {
+    requestParams.gongfa_id = gongfaId;
+  }
+  return api
+    .get<FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse>(
+      '/fanxiu/resources/gongfa/homemake-xianshu-formula-catalog',
+      {
+        params: requestParams,
+        timeout: 60000,
+      }
+    )
+    .then(res => res.data);
+};
 
 export const searchFanxiuItemCards = (params: {
   query?: string;
@@ -1874,6 +2357,25 @@ export const searchFanxiuItemCards = (params: {
 export const getFanxiuItemCard = (itemId: string | number) => {
   return api
     .get<FanxiuItemCardResponse>('/fanxiu/resources/items/card', { params: { item_id: itemId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuActivityCards = (params: {
+  query?: string;
+  kind_key?: string;
+  time_kind?: string;
+  activity_type?: string;
+  sort_by?: string;
+  sort_order?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api.get<FanxiuActivitySearchResponse>('/fanxiu/resources/activities/cards', { params }).then(res => res.data);
+};
+
+export const getFanxiuActivityCard = (activityId: string | number) => {
+  return api
+    .get<FanxiuActivityCardResponse>('/fanxiu/resources/activities/card', { params: { activity_id: activityId } })
     .then(res => res.data);
 };
 

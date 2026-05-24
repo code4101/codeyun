@@ -15,6 +15,7 @@ import magicTreasureHallPage from './magic-treasure-hall'
 import magicTreasureFormationsPage from './magic-treasure-formations'
 import fanxiuModaoInvasionPage from './modao-invasion'
 import fanxiuPacketCapturePage from './packet-capture'
+import fanxiuProtocolSemanticsPage from './protocol-semantics'
 import fanxiuQijiZhumoPage from './qiji-zhumo'
 import fanxiuRegionDataPage from './region-data'
 import fanxiuRechargePage from './recharge'
@@ -30,6 +31,7 @@ const pages: AppPageDefinition[] = [
   fanxiuTaskStatusPage,
   fanxiuGameWindowPage,
   fanxiuPacketCapturePage,
+  fanxiuProtocolSemanticsPage,
   fanxiuWikiPage,
   fanxiuGameWindow2Page,
   fanxiuActivityListPage,

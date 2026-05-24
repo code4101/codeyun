@@ -1,20 +1,54 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft, ArrowRight, Refresh, Search } from '@element-plus/icons-vue'
 
 import {
+  buildFanxiuResourceHref,
+  buildFanxiuLinkTargetGroups,
+  buildFanxiuRewardPreview,
+  cleanFanxiuDisplayText,
+  cleanFanxiuPreview,
+  escapeFanxiuHtml,
+  renderFanxiuRichText,
+  sameFanxiuPreview,
+  type FanxiuResourceType,
+  type FanxiuResourceLinkTarget,
+} from '../resourceRenderer'
+import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
+import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
+
+import {
+  getFanxiuActivityCard,
   getFanxiuGongfaCard,
+  getFanxiuGongfaHomeMakeBuffParameterSemantics,
+  getFanxiuGongfaHomeMakeStaticDetail,
+  getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
+  getFanxiuProtocolSemantics,
   getFanxiuResourceIconUrl,
+  getFanxiuWikiLinkIndex,
+  searchFanxiuActivityCards,
   searchFanxiuGongfaCards,
   searchFanxiuItemCards,
   searchFanxiuLingjieFeatureCards,
-  updateFanxiuWikiUserFields,
+  type FanxiuActivityCard,
+  type FanxiuActivityOption,
+  type FanxiuActivityRewardRow,
+  type FanxiuActivityRewardSection,
+  type FanxiuActivitySearchItem,
+  type FanxiuActivityStats,
   type FanxiuFacetIndex,
   type FanxiuGongfaCard,
+  type FanxiuGongfaHomeMakeBuffParameterGroup,
+  type FanxiuGongfaHomeMakeBuffParameterLink,
+  type FanxiuGongfaHomeMakeBuffParameterSemanticsResponse,
+  type FanxiuGongfaHomeMakeStaticDetailResponse,
+  type FanxiuGongfaHomeMakeStaticDetailRow,
+  type FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse,
+  type FanxiuGongfaHomeMakeXianShuFormulaGroup,
   type FanxiuGongfaLinkedItem,
   type FanxiuGongfaProgressionRow,
   type FanxiuGongfaProgressionSection,
@@ -38,17 +72,32 @@ import {
   type FanxiuLingjieRuntimeDamageFamily,
   type FanxiuLingjieRuntimeSummary,
   type FanxiuLingjieRuntimeTimelineSample,
+  type FanxiuProtocolSemanticEdge,
+  type FanxiuProtocolSemanticFeature,
+  type FanxiuProtocolSemanticResponse,
+  type FanxiuProtocolSemanticRow,
   type FanxiuTimelineHint,
-  type FanxiuWikiUserFields,
 } from '@/api/fanxiu'
 
 const PAGE_CONFIG_STORAGE_KEY = 'fanxiu:wiki:object-page-config'
+const SEARCH_HISTORY_STORAGE_KEY = 'fanxiu:wiki:search-history'
+const FACET_OPTION_DISPLAY_LIMIT = 100
+const SEARCH_HISTORY_LIMIT = 12
 const PAGE_SIZE_OPTIONS = [30, 50, 80, 120]
 const WIKI_TABS = [
   { key: 'item', label: '道具' },
+  { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
   { key: 'lingjie', label: '灵界词条' },
+  { key: 'protocol', label: '协议' },
 ] as const
+
+const DEFAULT_PROTOCOL_FEATURES: FanxiuProtocolSemanticFeature[] = [
+  { key: 'bluestarsea', title: 'BlueStarSea' },
+  { key: 'blld', title: 'BLLD' },
+  { key: 'faze', title: 'Faze' },
+  { key: 'gongfa', title: 'Gongfa' },
+]
 type SortMode = 'default' | 'time_asc' | 'time_desc'
 const SORT_MODE_ORDER: SortMode[] = ['default', 'time_asc', 'time_desc']
 const SORT_MODE_LABELS: Record<SortMode, string> = {
@@ -101,6 +150,8 @@ const lightRichColorMap: Record<string, string> = {
   '#9e1e09': '#c83b22',
 }
 
+const WIKI_LINK_ALIAS_BLACKLIST = new Set(['攻击'])
+
 type PageConfig = {
   activeTab?: WikiTab
   query?: string
@@ -111,36 +162,50 @@ type PageConfig = {
   itemQualityFilter?: string
   itemTypeFilter?: string
   itemSubTypeFilter?: string
+  activityKindFilter?: string
+  activityTimeFilter?: string
+  activityTypeFilter?: string
+  protocolFeature?: string
+  protocolRoleFilter?: string
+  protocolOperationFilter?: string
   qualityFilter?: string
   sortMode?: SortMode
   page?: number
   pageSize?: number
   selectedId?: string
+  expandedFacetRows?: Record<string, boolean>
 }
 
 type WikiTab = typeof WIKI_TABS[number]['key']
-type WikiUserFieldsTarget = {
-  objectType: string
-  objectId: string
-  userFields?: FanxiuWikiUserFields | null
-}
 type WikiLinkedItem = FanxiuGongfaLinkedItem | FanxiuLingjieFeatureItem
+type WikiLinkTarget = FanxiuResourceLinkTarget
 
 const activeTab = ref<WikiTab>('item')
 const query = ref('')
+const searchHistory = ref<Record<WikiTab, string[]>>({ item: [], activity: [], gongfa: [], lingjie: [], protocol: [] })
+const searchHistoryVisible = ref(false)
 const gongfaQualityGradeFilter = ref('')
 const gongfaQualityFamilyFilter = ref('')
 const gongfaSkillTypeFilter = ref('')
 const itemQualityFilter = ref('')
 const itemTypeFilter = ref('')
 const itemSubTypeFilter = ref('')
+const activityKindFilter = ref('')
+const activityTimeFilter = ref('')
+const activityTypeFilter = ref('')
+const protocolFeature = ref('bluestarsea')
+const protocolRoleFilter = ref('')
+const protocolOperationFilter = ref('')
+const expandedFacetRows = ref<Record<string, boolean>>({})
 const sortMode = ref<SortMode>('default')
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
 const stats = ref<FanxiuGongfaStats>({})
 const itemStats = ref<FanxiuItemStats>({})
+const activityStats = ref<FanxiuActivityStats>({})
 const lingjieStats = ref<FanxiuLingjieFeatureStats>({})
+const protocolResponse = ref<FanxiuProtocolSemanticResponse | null>(null)
 const catalogPath = ref('')
 const gongfaQualityGradeOptions = ref<FanxiuGongfaQualityPartOption[]>([])
 const gongfaQualityFamilyOptions = ref<FanxiuGongfaQualityPartOption[]>([])
@@ -148,32 +213,60 @@ const gongfaSkillTypeOptions = ref<FanxiuGongfaSkillTypeOption[]>([])
 const itemQualityOptions = ref<FanxiuItemQualityOption[]>([])
 const itemTypeOptions = ref<FanxiuItemTypeOption[]>([])
 const itemSubTypeOptions = ref<FanxiuItemTypeOption[]>([])
+const activityKindOptions = ref<FanxiuActivityOption[]>([])
+const activityTimeOptions = ref<FanxiuActivityOption[]>([])
+const activityTypeOptions = ref<FanxiuActivityOption[]>([])
 const gongfaFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const itemFacetIndex = ref<FanxiuFacetIndex | null>(null)
+const activityFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const gongfaItems = ref<FanxiuGongfaSearchItem[]>([])
 const itemItems = ref<FanxiuItemSearchItem[]>([])
+const activityItems = ref<FanxiuActivitySearchItem[]>([])
 const lingjieItems = ref<FanxiuLingjieFeatureSearchItem[]>([])
 const selectedId = ref('')
 const selectedCard = ref<FanxiuGongfaCard | null>(null)
 const selectedItem = ref<FanxiuItemCard | null>(null)
+const selectedActivity = ref<FanxiuActivityCard | null>(null)
 const selectedLingjieCard = ref<FanxiuLingjieFeatureCard | null>(null)
+const selectedHomeMakeStaticDetail = ref<FanxiuGongfaHomeMakeStaticDetailResponse | null>(null)
+const selectedHomeMakeBuffParameterSemantics = ref<FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>(null)
+const selectedHomeMakeXianShuFormulaCatalog = ref<FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse | null>(null)
+const homeMakeBuffOverview = ref<FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>(null)
+const homeMakeBuffParameterQuery = ref('')
+const homeMakeFormulaQuery = ref('')
+const homeMakeBuffOverviewQuery = ref('')
 const selectedProgressionType = ref('')
-const wikiUserNoteDraft = ref('')
-const wikiUserSourceDraft = ref('')
-const wikiUserFieldsSaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+const wikiLinkIndexItems = ref<WikiLinkTarget[]>([])
+const contextMenu = ref({
+  visible: false,
+  x: 0,
+  y: 0,
+  href: '',
+})
 const loadingList = ref(false)
 const loadingDetail = ref(false)
+const loadingHomeMakeStaticDetail = ref(false)
+const loadingHomeMakeBuffParameterSemantics = ref(false)
+const loadingHomeMakeFormulaCatalog = ref(false)
+const loadingHomeMakeBuffOverview = ref(false)
 const gongfaDetailCache = new Map<string, FanxiuGongfaCard>()
+const gongfaHomeMakeStaticDetailCache = new Map<string, FanxiuGongfaHomeMakeStaticDetailResponse | null>()
+const gongfaHomeMakeBuffParameterSemanticsCache = new Map<string, FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>()
+const gongfaHomeMakeFormulaCatalogCache = new Map<string, FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse | null>()
 const itemDetailCache = new Map<string, FanxiuItemCard>()
+const activityDetailCache = new Map<string, FanxiuActivityCard>()
 const lingjieDetailCache = new Map<string, FanxiuLingjieFeatureCard>()
 const route = useRoute()
 const router = useRouter()
 let listRequestSeq = 0
 let detailRequestSeq = 0
-let wikiUserFieldsSaveSeq = 0
-let wikiUserFieldsSaveTimer: ReturnType<typeof setTimeout> | null = null
+let homeMakeStaticDetailRequestSeq = 0
+let homeMakeBuffParameterSemanticsRequestSeq = 0
+let homeMakeFormulaCatalogRequestSeq = 0
+let homeMakeBuffOverviewRequestSeq = 0
 let applyingRouteState = false
 let internalTabNavigation = false
+let searchHistoryHideTimer: ReturnType<typeof setTimeout> | null = null
 
 function normalizeWikiTab(value: unknown): WikiTab | null {
   const text = Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
@@ -187,7 +280,9 @@ function queryValue(value: unknown) {
 
 function applyRouteState() {
   const routeTab = normalizeWikiTab(route.query.tab)
+  const hasRouteId = Object.prototype.hasOwnProperty.call(route.query, 'id')
   const routeId = queryValue(route.query.id)
+  const routeSearch = queryValue(route.query.q)
   let changed = false
   applyingRouteState = true
   try {
@@ -195,8 +290,15 @@ function applyRouteState() {
       activeTab.value = routeTab
       changed = true
     }
-    if (routeId && selectedId.value !== routeId) {
+    if (routeSearch && query.value !== routeSearch) {
+      query.value = routeSearch
+      changed = true
+    }
+    if (hasRouteId && selectedId.value !== routeId) {
       selectedId.value = routeId
+      changed = true
+    } else if (routeTab && !hasRouteId && selectedId.value) {
+      selectedId.value = ''
       changed = true
     }
   } finally {
@@ -213,6 +315,11 @@ function syncRouteState() {
     nextQuery.id = selectedId.value
   } else {
     delete nextQuery.id
+  }
+  if (queryValue(route.query.q) && query.value) {
+    nextQuery.q = query.value
+  } else {
+    delete nextQuery.q
   }
   if (queryValue(route.query.tab) === activeTab.value && queryValue(route.query.id) === selectedId.value) return
   void router.replace({ query: nextQuery }).catch(() => {})
@@ -237,6 +344,99 @@ function normalizeSortMode(value: unknown): SortMode {
   return text === 'time_asc' || text === 'time_desc' ? text : 'default'
 }
 
+function createEmptySearchHistory(): Record<WikiTab, string[]> {
+  return { item: [], activity: [], gongfa: [], lingjie: [], protocol: [] }
+}
+
+function normalizeSearchQuery(value: unknown) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function normalizeSearchHistoryList(value: unknown) {
+  if (!Array.isArray(value)) return []
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const item of value) {
+    const text = normalizeSearchQuery(item)
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    list.push(text)
+    if (list.length >= SEARCH_HISTORY_LIMIT) break
+  }
+  return list
+}
+
+function loadSearchHistory() {
+  if (!canUseLocalStorage()) return
+  try {
+    const raw = window.localStorage.getItem(SEARCH_HISTORY_STORAGE_KEY)
+    if (!raw) return
+    const data = JSON.parse(raw) as Partial<Record<WikiTab, unknown>>
+    const next = createEmptySearchHistory()
+    for (const tab of WIKI_TABS) {
+      next[tab.key] = normalizeSearchHistoryList(data?.[tab.key])
+    }
+    searchHistory.value = next
+  } catch (error) {
+    console.warn('Failed to load Fanxiu wiki search history:', error)
+    window.localStorage.removeItem(SEARCH_HISTORY_STORAGE_KEY)
+  }
+}
+
+function persistSearchHistory() {
+  if (!canUseLocalStorage()) return
+  try {
+    window.localStorage.setItem(SEARCH_HISTORY_STORAGE_KEY, JSON.stringify(searchHistory.value))
+  } catch (error) {
+    console.warn('Failed to persist Fanxiu wiki search history:', error)
+  }
+}
+
+function recordSearchHistory(value = query.value) {
+  const text = normalizeSearchQuery(value)
+  if (!text) return
+  const current = searchHistory.value[activeTab.value] ?? []
+  searchHistory.value = {
+    ...searchHistory.value,
+    [activeTab.value]: [
+      text,
+      ...current.filter(item => item !== text),
+    ].slice(0, SEARCH_HISTORY_LIMIT),
+  }
+  persistSearchHistory()
+}
+
+function openSearchHistory() {
+  if (searchHistoryHideTimer) {
+    clearTimeout(searchHistoryHideTimer)
+    searchHistoryHideTimer = null
+  }
+  searchHistoryVisible.value = visibleSearchHistory.value.length > 0
+}
+
+function scheduleCloseSearchHistory() {
+  if (searchHistoryHideTimer) clearTimeout(searchHistoryHideTimer)
+  searchHistoryHideTimer = setTimeout(() => {
+    searchHistoryHideTimer = null
+    searchHistoryVisible.value = false
+  }, 120)
+}
+
+function chooseSearchHistory(text: string) {
+  query.value = text
+  searchHistoryVisible.value = false
+  executeSearchFromFirstPage()
+}
+
+function clearCurrentSearchHistory() {
+  searchHistory.value = {
+    ...searchHistory.value,
+    [activeTab.value]: [],
+  }
+  searchHistoryVisible.value = false
+  persistSearchHistory()
+}
+
 function loadPageConfig() {
   if (!canUseLocalStorage()) return
   try {
@@ -253,10 +453,19 @@ function loadPageConfig() {
     itemQualityFilter.value = String(config.itemQualityFilter ?? '')
     itemTypeFilter.value = String(config.itemTypeFilter ?? '')
     itemSubTypeFilter.value = String(config.itemSubTypeFilter ?? '')
+    activityKindFilter.value = String(config.activityKindFilter ?? '')
+    activityTimeFilter.value = String(config.activityTimeFilter ?? '')
+    activityTypeFilter.value = String(config.activityTypeFilter ?? '')
+    protocolFeature.value = String(config.protocolFeature ?? 'bluestarsea') || 'bluestarsea'
+    protocolRoleFilter.value = String(config.protocolRoleFilter ?? '')
+    protocolOperationFilter.value = String(config.protocolOperationFilter ?? '')
     sortMode.value = normalizeSortMode(config.sortMode)
     page.value = normalizePage(config.page, 1)
     pageSize.value = normalizePageSize(config.pageSize, 50)
     selectedId.value = String(config.selectedId ?? '')
+    expandedFacetRows.value = config.expandedFacetRows && typeof config.expandedFacetRows === 'object'
+      ? { ...config.expandedFacetRows }
+      : {}
   } catch (error) {
     console.warn('Failed to load persisted Fanxiu wiki object page config:', error)
     window.localStorage.removeItem(PAGE_CONFIG_STORAGE_KEY)
@@ -275,10 +484,17 @@ function persistPageConfig() {
       itemQualityFilter: itemQualityFilter.value,
       itemTypeFilter: itemTypeFilter.value,
       itemSubTypeFilter: itemSubTypeFilter.value,
+      activityKindFilter: activityKindFilter.value,
+      activityTimeFilter: activityTimeFilter.value,
+      activityTypeFilter: activityTypeFilter.value,
+      protocolFeature: protocolFeature.value,
+      protocolRoleFilter: protocolRoleFilter.value,
+      protocolOperationFilter: protocolOperationFilter.value,
       sortMode: sortMode.value,
       page: page.value,
       pageSize: pageSize.value,
       selectedId: selectedId.value,
+      expandedFacetRows: expandedFacetRows.value,
     }))
   } catch (error) {
     console.warn('Failed to persist Fanxiu wiki object page config:', error)
@@ -287,6 +503,14 @@ function persistPageConfig() {
 
 const pageCount = computed(() => {
   return Math.max(1, Math.ceil(Math.max(total.value, 0) / Math.max(pageSize.value, 1)))
+})
+
+const activeSearchHistory = computed(() => searchHistory.value[activeTab.value] ?? [])
+
+const visibleSearchHistory = computed(() => {
+  const needle = normalizeSearchQuery(query.value)
+  const list = activeSearchHistory.value
+  return needle ? list.filter(item => item.includes(needle)) : list
 })
 
 type FacetFilterMap = Record<string, string>
@@ -343,19 +567,39 @@ const itemFacetFilters = computed<FacetFilterMap>(() => ({
   sub_type_key: itemSubTypeFilter.value,
 }))
 
+const activityFacetFilters = computed<FacetFilterMap>(() => ({
+  kind_key: activityKindFilter.value,
+  time_kind: activityTimeFilter.value,
+  activity_type: activityTypeFilter.value,
+}))
+
 const selectedListItem = computed(() => {
   if (activeTab.value === 'item') {
     return itemItems.value.find(item => String(item.id) === selectedId.value) ?? null
   }
+  if (activeTab.value === 'activity') {
+    return activityItems.value.find(item => String(item.id) === selectedId.value) ?? null
+  }
   if (activeTab.value === 'lingjie') {
     return lingjieItems.value.find(item => String(item.gongfa_id) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'protocol') {
+    return null
   }
   return gongfaItems.value.find(item => String(item.id) === selectedId.value) ?? null
 })
 
+const contextMenuStyle = computed(() => ({
+  left: `${contextMenu.value.x}px`,
+  top: `${contextMenu.value.y}px`,
+}))
+
 const selectedTerms = computed(() => {
   if (activeTab.value === 'item') {
     return selectedItem.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
+  }
+  if (activeTab.value === 'activity') {
+    return selectedActivity.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
   }
   if (activeTab.value === 'lingjie') {
     return uniqueLabels([
@@ -364,33 +608,10 @@ const selectedTerms = computed(() => {
       ...(selectedLingjieCard.value?.items ?? []).map(item => item.name),
     ]).slice(0, 12)
   }
+  if (activeTab.value === 'protocol') {
+    return []
+  }
   return selectedCard.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
-})
-
-const selectedWikiUserFieldsTarget = computed<WikiUserFieldsTarget | null>(() => {
-  if (activeTab.value === 'item' && selectedItem.value) {
-    return { objectType: 'item', objectId: String(selectedItem.value.id), userFields: selectedItem.value.user_fields }
-  }
-  if (activeTab.value === 'lingjie' && selectedLingjieCard.value) {
-    return {
-      objectType: 'lingjie',
-      objectId: String(selectedLingjieCard.value.gongfa_id),
-      userFields: selectedLingjieCard.value.user_fields,
-    }
-  }
-  if (activeTab.value === 'gongfa' && selectedCard.value) {
-    return { objectType: 'gongfa', objectId: String(selectedCard.value.id), userFields: selectedCard.value.user_fields }
-  }
-  return null
-})
-
-const wikiUserFieldsSaveLabel = computed(() => {
-  const target = selectedWikiUserFieldsTarget.value
-  if (!target) return ''
-  if (wikiUserFieldsSaveState.value === 'saving') return '保存中'
-  if (wikiUserFieldsSaveState.value === 'saved') return '已保存'
-  if (wikiUserFieldsSaveState.value === 'error') return '保存失败'
-  return target.userFields?.updated_at ? '已保存' : ''
 })
 
 const objectStats = computed(() => {
@@ -403,12 +624,42 @@ const objectStats = computed(() => {
       { label: '时间线索', value: itemStats.value.item_with_time_hint_count },
     ].filter(item => Number.isFinite(Number(item.value)))
   }
+  if (activeTab.value === 'activity') {
+    const staleCount = Number(activityStats.value.stale_card_count)
+    return [
+      { label: '对象', value: activityStats.value.catalog_card_count },
+      ...(Number.isFinite(staleCount) && staleCount > 0
+        ? [
+            { label: '当前', value: activityStats.value.current_card_count },
+            { label: '旧版保留', value: activityStats.value.stale_card_count },
+          ]
+        : []),
+      { label: '活动', value: activityStats.value.activity_count },
+      { label: '轮换', value: activityStats.value.activity_loop_count },
+      { label: '首领', value: activityStats.value.activity_boss_count },
+      { label: '任务', value: activityStats.value.active_task_count },
+      { label: '礼包', value: activityStats.value.activity_gift_count },
+      { label: '签到', value: activityStats.value.activity_signin_count },
+      { label: '榜单奖励', value: activityStats.value.activity_list_reward_count },
+      { label: '时间线索', value: activityStats.value.activity_with_time_hint_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
   if (activeTab.value === 'lingjie') {
     return [
       { label: '功法', value: lingjieStats.value.gongfa_count },
       { label: '词条组', value: lingjieStats.value.linked_feature_group_count },
       { label: '道具', value: lingjieStats.value.linked_item_count },
     ].filter(item => Number.isFinite(Number(item.value)))
+  }
+  if (activeTab.value === 'protocol') {
+    const counts = protocolCounts.value
+    return [
+      { label: '协议', value: protocolResponse.value?.title || protocolFeature.value },
+      { label: '行', value: counts?.filtered_rows },
+      { label: '总行', value: counts?.rows },
+      { label: '边', value: counts?.filtered_edges },
+      { label: '总边', value: counts?.edges },
+    ].filter(item => item.value !== undefined && item.value !== '')
   }
   const values = [
     { label: '功法', value: stats.value.gongfa_count },
@@ -421,12 +672,14 @@ const objectStats = computed(() => {
 
 const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
+  if (activeTab.value === 'activity') return '搜索活动 / 奖励 / 条件 / ID'
   if (activeTab.value === 'lingjie') return '搜索灵界功法 / 道具 / 主词条 / 侧词条 / Feature'
+  if (activeTab.value === 'protocol') return '搜索 packet / handler / 字段 / 语义'
   return '搜索功法 / 技能 / 效果 / 条件'
 })
 
 const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() => {
-  if (activeTab.value === 'lingjie' || sortMode.value === 'default') return {}
+  if (activeTab.value === 'lingjie' || activeTab.value === 'protocol' || sortMode.value === 'default') return {}
   if (sortMode.value === 'time_desc') return { sort_by: 'time', sort_order: 'desc' }
   return { sort_by: 'time', sort_order: 'asc' }
 })
@@ -441,12 +694,14 @@ const nextSortModeLabel = computed(() => {
 
 const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
+  if (activeTab.value === 'activity') return '活动'
   if (activeTab.value === 'lingjie') return '灵界词条'
+  if (activeTab.value === 'protocol') return '协议'
   return '功法'
 })
 
 const selectedProgressionSource = computed(() => {
-  if (activeTab.value === 'lingjie') return {}
+  if (activeTab.value === 'lingjie' || activeTab.value === 'protocol') return {}
   return activeTab.value === 'item'
     ? selectedItem.value?.progression ?? {}
     : selectedCard.value?.progression ?? {}
@@ -466,6 +721,73 @@ const progressionTabs = computed(() => {
 const selectedProgressionRows = computed(() => {
   const key = selectedProgressionType.value || progressionTabs.value[0]?.key || ''
   return selectedProgressionSource.value?.[key] ?? []
+})
+
+const homeMakeStaticRows = computed(() => selectedHomeMakeStaticDetail.value?.rows ?? [])
+
+const homeMakeStaticWarnings = computed(() => selectedHomeMakeStaticDetail.value?.warnings ?? [])
+
+const homeMakeBuffParameterRawGroups = computed(() => selectedHomeMakeBuffParameterSemantics.value?.items ?? [])
+
+const homeMakeBuffParameterGroups = computed(() => {
+  const text = normalizeSearchQuery(homeMakeBuffParameterQuery.value).toLowerCase()
+  if (!text) return homeMakeBuffParameterRawGroups.value
+  const tokens = text.split(' ').filter(Boolean)
+  return homeMakeBuffParameterRawGroups.value.filter(group => {
+    const haystack = getHomeMakeBuffSearchText(group).toLowerCase()
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const homeMakeBuffParameterCounts = computed(() => selectedHomeMakeBuffParameterSemantics.value?.counts ?? null)
+
+const homeMakeBuffParameterCountText = computed(() => {
+  if (homeMakeBuffParameterQuery.value.trim()) {
+    return `${homeMakeBuffParameterGroups.value.length}/${homeMakeBuffParameterRawGroups.value.length} 组`
+  }
+  const counts = homeMakeBuffParameterCounts.value
+  return counts ? `${counts.groups} 组 · ${counts.candidate_rows} 条` : ''
+})
+
+const homeMakeFormulaRawGroups = computed(() => selectedHomeMakeXianShuFormulaCatalog.value?.groups ?? [])
+
+const homeMakeFormulaGroups = computed(() => {
+  const text = normalizeSearchQuery(homeMakeFormulaQuery.value).toLowerCase()
+  if (!text) return homeMakeFormulaRawGroups.value
+  const tokens = text.split(' ').filter(Boolean)
+  return homeMakeFormulaRawGroups.value.filter(group => {
+    const haystack = getHomeMakeFormulaSearchText(group).toLowerCase()
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const homeMakeFormulaCountText = computed(() => {
+  const counts = selectedHomeMakeXianShuFormulaCatalog.value?.counts
+  if (homeMakeFormulaQuery.value.trim()) {
+    return `${homeMakeFormulaGroups.value.length}/${homeMakeFormulaRawGroups.value.length} 组`
+  }
+  return counts ? `${counts.feature_groups} 组 · ${counts.rows} 阶` : ''
+})
+
+const homeMakeBuffOverviewRawGroups = computed(() => homeMakeBuffOverview.value?.items ?? [])
+
+const homeMakeBuffOverviewGroups = computed(() => {
+  const text = normalizeSearchQuery(homeMakeBuffOverviewQuery.value).toLowerCase()
+  if (!text) return homeMakeBuffOverviewRawGroups.value
+  const tokens = text.split(' ').filter(Boolean)
+  return homeMakeBuffOverviewRawGroups.value.filter(group => {
+    const haystack = getHomeMakeBuffSearchText(group).toLowerCase()
+    return tokens.every(token => haystack.includes(token))
+  })
+})
+
+const homeMakeBuffOverviewCountText = computed(() => {
+  const counts = homeMakeBuffOverview.value?.counts
+  if (!counts) return ''
+  if (homeMakeBuffOverviewQuery.value.trim()) {
+    return `${homeMakeBuffOverviewGroups.value.length}/${homeMakeBuffOverviewRawGroups.value.length} 组`
+  }
+  return `${counts.groups} 组 · ${counts.candidate_rows} 条 · ${counts.unique_buff_ids} Buff`
 })
 
 const progressionDisplayGroups = computed(() => buildProgressionDisplayGroups(selectedProgressionRows.value))
@@ -534,6 +856,69 @@ const itemSubTypeFacetOptions = computed(() => {
   ).filter(option => option.count > 0 || itemSubTypeFilter.value === option.value)
 })
 
+const activityKindFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    activityKindOptions.value,
+    activityFacetIndex.value,
+    'kind_key',
+    activityFacetFilters.value,
+  )
+})
+
+const activityTimeFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    activityTimeOptions.value,
+    activityFacetIndex.value,
+    'time_kind',
+    activityFacetFilters.value,
+  )
+})
+
+const activityTypeFacetOptions = computed(() => {
+  return withDynamicFacetCounts(
+    activityTypeOptions.value,
+    activityFacetIndex.value,
+    'activity_type',
+    activityFacetFilters.value,
+  )
+})
+
+const protocolFeatures = computed(() => {
+  return protocolResponse.value?.available_features?.length
+    ? protocolResponse.value.available_features
+    : DEFAULT_PROTOCOL_FEATURES
+})
+
+const protocolRows = computed(() => protocolResponse.value?.items ?? [])
+const protocolEdges = computed(() => protocolResponse.value?.edges ?? [])
+const protocolCounts = computed(() => protocolResponse.value?.counts ?? null)
+
+const selectedProtocolRow = computed(() => {
+  return protocolRows.value.find(item => item.packet === selectedId.value) ?? protocolRows.value[0] ?? null
+})
+
+const selectedProtocolEdges = computed(() => {
+  const row = selectedProtocolRow.value
+  if (!row) return protocolEdges.value
+  const packet = row.packet
+  const operation = row.operation
+  return protocolEdges.value.filter(edge => {
+    return edge.source === packet
+      || edge.target === packet
+      || (!!operation && (edge.source === operation || edge.evidence === operation))
+  })
+})
+
+const protocolRoleFacetOptions = computed(() => {
+  const stats = protocolCounts.value?.by_role ?? {}
+  return Object.entries(stats).map(([value, count]) => ({ value, label: value, count }))
+})
+
+const protocolOperationFacetOptions = computed(() => {
+  const stats = protocolCounts.value?.by_operation ?? {}
+  return Object.entries(stats).map(([value, count]) => ({ value, label: value, count }))
+})
+
 const primarySkill = computed(() => {
   return selectedCard.value?.skills?.find(skill => getSkillText(skill)) ?? null
 })
@@ -549,6 +934,8 @@ type WikiObjectItem =
   FanxiuGongfaCard |
   FanxiuItemSearchItem |
   FanxiuItemCard |
+  FanxiuActivitySearchItem |
+  FanxiuActivityCard |
   FanxiuLingjieFeatureSearchItem |
   FanxiuLingjieFeatureCard
 
@@ -665,28 +1052,199 @@ function getObjectIconUrl(item: WikiObjectItem | null) {
   return getFanxiuResourceIconUrl(item?.icon)
 }
 
-function getLinkedItemIconUrl(item: WikiLinkedItem | null | undefined) {
-  return getFanxiuResourceIconUrl(item?.icon || (item as FanxiuGongfaLinkedItem | null | undefined)?.small_icon)
-}
-
-function getLinkedItemText(item: WikiLinkedItem) {
-  const count = (item as FanxiuGongfaLinkedItem).count
-  const countText = count === null || count === undefined || count === '' ? '' : ` x${count}`
-  return `${item.name || item.id || '道具'}${countText}`
-}
-
 function getLinkedItemId(item: WikiLinkedItem | null | undefined) {
   const id = String(item?.id ?? '').trim()
   return id
 }
 
-function canOpenLinkedItem(item: WikiLinkedItem | null | undefined) {
-  return Boolean(getLinkedItemId(item))
+function cleanWikiLinkAlias(value: unknown) {
+  return String(value ?? '').replace(/\s+/g, ' ').trim()
 }
 
-function getLinkedItemDescription(item: WikiLinkedItem | null | undefined) {
-  return String(item?.description || '').trim()
+const cleanWikiLinkPreview = cleanFanxiuPreview
+const cleanWikiLinkDisplayText = cleanFanxiuDisplayText
+const sameWikiLinkPreview = sameFanxiuPreview
+const buildWikiLinkRewardPreview = buildFanxiuRewardPreview
+
+function getGongfaCardLinkPreview(card: FanxiuGongfaCard | null | undefined) {
+  if (!card) return ''
+  const description = cleanWikiLinkDisplayText(card.description_rich || card.description)
+  if (description) return description
+  const skill = card.skills?.find(item => item.describe_rich || item.describe || item.effect_describe_rich || item.effect_describe || item.additional_describe_rich || item.additional_describe)
+  return cleanWikiLinkDisplayText(skill?.describe_rich || skill?.describe || skill?.effect_describe_rich || skill?.effect_describe || skill?.additional_describe_rich || skill?.additional_describe)
 }
+
+function getGongfaCardLinkEffectTextPreview(card: FanxiuGongfaCard | null | undefined) {
+  if (!card) return ''
+  const skill = card.skills?.find(item => item.describe_rich || item.describe || item.effect_describe_rich || item.effect_describe || item.additional_describe_rich || item.additional_describe)
+  const effect = cleanWikiLinkDisplayText(skill?.describe_rich || skill?.describe || skill?.effect_describe_rich || skill?.effect_describe || skill?.additional_describe_rich || skill?.additional_describe)
+  return sameWikiLinkPreview(effect, card.description_rich || card.description) ? '' : effect
+}
+
+function getItemCardLinkPreview(card: FanxiuItemCard | null | undefined) {
+  return cleanWikiLinkDisplayText(card?.description || card?.effect_description)
+}
+
+function getItemCardLinkEffectTextPreview(card: FanxiuItemCard | null | undefined) {
+  const effect = cleanWikiLinkDisplayText(card?.effect_description)
+  return sameWikiLinkPreview(effect, card?.description) ? '' : effect
+}
+
+function getItemCardLinkEffectPreview(card: FanxiuItemCard | null | undefined) {
+  return cleanWikiLinkPreview(card?.show_effect)
+}
+
+function getLinkedItemLinkPreview(item: WikiLinkedItem | null | undefined) {
+  return cleanWikiLinkDisplayText(item?.description)
+}
+
+function addWikiLinkTarget(
+  targets: WikiLinkTarget[],
+  seen: Set<string>,
+  target: Omit<WikiLinkTarget, 'alias'> & { alias: unknown },
+) {
+  const alias = cleanWikiLinkAlias(target.alias)
+  const id = String(target.id ?? '').trim()
+  if (alias.length < 2 || WIKI_LINK_ALIAS_BLACKLIST.has(alias) || !id) return
+  const key = `${alias}|${target.tab}|${id}`
+  if (seen.has(key)) return
+  seen.add(key)
+  targets.push({ ...target, alias, id })
+}
+
+function addLinkedItemTarget(targets: WikiLinkTarget[], seen: Set<string>, item: WikiLinkedItem | null | undefined) {
+  const id = getLinkedItemId(item)
+  if (!id) return
+  addWikiLinkTarget(targets, seen, {
+    alias: item?.name,
+    tab: 'item',
+    id,
+    title: item?.name,
+    preview: getLinkedItemLinkPreview(item),
+    kind: 'linked_item',
+    priority: 120,
+  })
+}
+
+const wikiLinkTargets = computed(() => {
+  const targets: WikiLinkTarget[] = []
+  const seen = new Set<string>()
+  for (const item of wikiLinkIndexItems.value) {
+    addWikiLinkTarget(targets, seen, {
+      alias: item.alias,
+      tab: item.tab,
+      id: item.id,
+      title: item.title,
+      preview: item.preview,
+      effect_text_preview: item.effect_text_preview,
+      effect_preview: item.effect_preview,
+      reward_preview: item.reward_preview,
+      kind: item.kind,
+      priority: item.priority ?? 0,
+    })
+  }
+
+  if (selectedCard.value) {
+    addWikiLinkTarget(targets, seen, {
+      alias: selectedCard.value.name,
+      tab: 'gongfa',
+      id: selectedCard.value.id,
+      title: selectedCard.value.name,
+      preview: getGongfaCardLinkPreview(selectedCard.value),
+      effect_text_preview: getGongfaCardLinkEffectTextPreview(selectedCard.value),
+      kind: 'current_gongfa',
+      priority: 130,
+    })
+    for (const prefix of [selectedCard.value.quality_family_name, selectedCard.value.quality_grade_name]) {
+      const prefixText = cleanWikiLinkAlias(prefix)
+      const name = cleanWikiLinkAlias(selectedCard.value.name)
+      if (prefixText && name && !name.startsWith(`${prefixText}·`)) {
+        addWikiLinkTarget(targets, seen, {
+          alias: `${prefixText}·${name}`,
+          tab: 'gongfa',
+          id: selectedCard.value.id,
+          title: selectedCard.value.name,
+          preview: getGongfaCardLinkPreview(selectedCard.value),
+          effect_text_preview: getGongfaCardLinkEffectTextPreview(selectedCard.value),
+          kind: 'current_gongfa_alias',
+          priority: 140,
+        })
+      }
+    }
+    for (const item of [...(selectedCard.value.consume_items ?? []), ...(selectedCard.value.show_condition_items ?? [])]) {
+      addLinkedItemTarget(targets, seen, item)
+    }
+    for (const rows of Object.values(selectedCard.value.progression ?? {})) {
+      for (const row of rows ?? []) {
+        for (const item of row.consume_items ?? []) addLinkedItemTarget(targets, seen, item)
+        const fazeResource = row.faze_resource
+        if (fazeResource) {
+          for (const alias of [fazeResource.name, fazeResource.head_name]) {
+            addWikiLinkTarget(targets, seen, {
+              alias,
+              tab: 'gongfa',
+              id: selectedCard.value.id,
+              title: selectedCard.value.name,
+              preview: cleanWikiLinkDisplayText(fazeResource.tip_str) || getGongfaCardLinkPreview(selectedCard.value),
+              kind: 'current_faze_resource',
+              priority: 150,
+            })
+          }
+        }
+      }
+    }
+  }
+
+  if (selectedItem.value) {
+    addWikiLinkTarget(targets, seen, {
+      alias: selectedItem.value.name,
+      tab: 'item',
+      id: selectedItem.value.id,
+      title: selectedItem.value.name,
+      preview: getItemCardLinkPreview(selectedItem.value),
+      effect_text_preview: getItemCardLinkEffectTextPreview(selectedItem.value),
+      effect_preview: getItemCardLinkEffectPreview(selectedItem.value),
+      reward_preview: buildWikiLinkRewardPreview(selectedItem.value.optional_gift_rewards),
+      kind: 'current_item',
+      priority: 130,
+    })
+    for (const item of selectedItem.value.optional_gift_rewards ?? []) addLinkedItemTarget(targets, seen, item)
+    for (const rows of Object.values(selectedItem.value.progression ?? {})) {
+      for (const row of rows ?? []) {
+        for (const item of row.consume_items ?? []) addLinkedItemTarget(targets, seen, item)
+      }
+    }
+  }
+
+  if (selectedActivity.value) {
+    for (const item of getActivityLinkedItems(selectedActivity.value)) addLinkedItemTarget(targets, seen, item)
+  }
+
+  if (selectedLingjieCard.value) {
+    addWikiLinkTarget(targets, seen, {
+      alias: selectedLingjieCard.value.name,
+      tab: 'lingjie',
+      id: selectedLingjieCard.value.gongfa_id,
+      title: selectedLingjieCard.value.name,
+      preview: cleanWikiLinkDisplayText(selectedLingjieCard.value.description),
+      kind: 'current_lingjie',
+      priority: 120,
+    })
+    for (const item of selectedLingjieCard.value.items ?? []) addLinkedItemTarget(targets, seen, item)
+  }
+
+  return targets.sort((left, right) => {
+    const lengthDelta = String(right.alias).length - String(left.alias).length
+    if (lengthDelta) return lengthDelta
+    const priorityDelta = Number(right.priority ?? 0) - Number(left.priority ?? 0)
+    if (priorityDelta) return priorityDelta
+    return String(left.alias).localeCompare(String(right.alias), 'zh-Hans-CN')
+  })
+})
+
+const wikiLinkTargetsByFirstChar = computed(() => {
+  return buildFanxiuLinkTargetGroups(wikiLinkTargets.value)
+})
 
 function normalizeIconName(value: unknown) {
   return String(value ?? '').trim().toLowerCase()
@@ -742,6 +1300,18 @@ function getItemMeta(item: FanxiuItemSearchItem | FanxiuItemCard | null | undefi
     getProgressionSummary(item),
   ]
   return values.filter(Boolean).join(' · ')
+}
+
+function getActivityKindText(item: FanxiuActivitySearchItem | FanxiuActivityCard | null | undefined) {
+  return uniqueLabels(item?.kind_names ?? []).slice(0, 3).join(' · ')
+}
+
+function getActivityMeta(item: FanxiuActivitySearchItem | FanxiuActivityCard | null | undefined) {
+  return [
+    getActivityKindText(item),
+    item?.activity_type ? `玩法 ${item.activity_type}` : '',
+    item?.base_id ? `Base ${item.base_id}` : '',
+  ].filter(Boolean).join(' · ')
 }
 
 function getItemCategoryLabel(item: FanxiuItemSearchItem | FanxiuItemCard | null | undefined) {
@@ -837,6 +1407,133 @@ function getFirstTimelineShortLabel(item: TimelineCarrier) {
   return hint?.date || ''
 }
 
+function getActivityTimeRows(activity: FanxiuActivityCard | null | undefined) {
+  if (!activity) return []
+  const parsedRows = (activity.time_fields ?? [])
+    .map(field => ({
+      label: String(field.label || field.field || ''),
+      value: String(field.summary || field.raw || '').trim(),
+      raw: String(field.raw || '').trim(),
+    }))
+    .filter(item => item.label && item.value)
+  if (parsedRows.length) return parsedRows
+  return [
+    ['准备', activity.prepare_time],
+    ['开始', activity.start_time],
+    ['结束', activity.end_time],
+    ['领奖', activity.reward_time],
+    ['关闭面板', activity.close_panel_time],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value), raw: formatRawValue(value) })).filter(item => item.value)
+}
+
+function getActivityConditionRows(activity: FanxiuActivityCard | null | undefined) {
+  if (!activity) return []
+  const parsedRows = (activity.condition_fields ?? [])
+    .map(field => ({
+      label: String(field.label || field.field || ''),
+      value: String(field.summary || field.raw || '').trim(),
+      raw: String(field.raw || '').trim(),
+    }))
+    .filter(item => item.label && item.value)
+  if (parsedRows.length) return parsedRows
+  return [
+    ['开启条件', activity.open_condition],
+    ['参与条件', activity.join_condition],
+    ['显示条件', activity.show_condition],
+    ['强制隐藏', activity.force_hide_condition],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value), raw: formatRawValue(value) })).filter(item => item.value)
+}
+
+function getActivityDescriptionRows(activity: FanxiuActivityCard | null | undefined) {
+  if (!activity) return []
+  const description = String(activity.description || '').trim()
+  const join = String(activity.join_condition_description || '').trim()
+  return [
+    { label: '简介', value: description },
+    { label: '参与说明', value: join && join !== description ? join : '' },
+  ].filter(item => item.value)
+}
+
+function getActivityLoopRows(activity: FanxiuActivityCard | null | undefined) {
+  return (activity?.loop_entries ?? [])
+    .map(entry => ({
+      key: `${entry.loop_id ?? ''}-${entry.day ?? ''}-${entry.activity_id ?? ''}`,
+      label: `轮换 ${entry.loop_id ?? '-'}`,
+      value: `第 ${entry.day ?? '-'} 天`,
+    }))
+}
+
+function getActivityJumpTargetRows(activity: FanxiuActivityCard | null | undefined) {
+  const target = activity?.jump_target
+  if (!target) return []
+  return [
+    ['入口功能', target.name],
+    ['功能 ID', target.id],
+    ['解锁', target.unlock],
+    ['条件', target.condition],
+    ['窗口', target.window_id],
+    ['Lua', target.lua_path],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value) })).filter(item => item.value)
+}
+
+function getActivityFieldRows(activity: FanxiuActivityCard | null | undefined) {
+  if (!activity) return []
+  return [
+    ['来源表', activity.source_table],
+    ['活动 ID', activity.id],
+    ['玩法', activity.activity_type],
+    ['Base', activity.base_id],
+    ['奖励组', activity.reward_group],
+    ['父活动', activity.parent_activity_id],
+    ['子类型', activity.sub_type],
+    ['入口', activity.jump],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value) })).filter(item => item.value)
+}
+
+function displayProtocolText(value: unknown, fallback = '-') {
+  const text = String(value ?? '').trim()
+  return text || fallback
+}
+
+function compactProtocolFields(row: FanxiuProtocolSemanticRow | null | undefined) {
+  if (!row) return ''
+  return row.write_fields || row.read_fields || row.assigned_fields || row.msg_fields || ''
+}
+
+function getProtocolEdgeLabel(edge: FanxiuProtocolSemanticEdge) {
+  return `${edge.source_type}:${edge.source} -> ${edge.target_type}:${edge.target}`
+}
+
+function getProtocolRowMeta(row: FanxiuProtocolSemanticRow) {
+  return [row.operation, row.role, row.authority_class].filter(Boolean).join(' · ')
+}
+
+function getProtocolRowPreview(row: FanxiuProtocolSemanticRow) {
+  return compactText(row.semantic_note || row.state_sinks || compactProtocolFields(row), 110)
+}
+
+function getActivityRewardRowKey(section: FanxiuActivityRewardSection, row: FanxiuActivityRewardRow, index: number) {
+  return `${section.key}-${row.source || ''}-${row.row_key || ''}-${index}`
+}
+
+function getActivityRewardRowTitle(row: FanxiuActivityRewardRow, index: number) {
+  return String(row.title || row.source || `奖励 ${index + 1}`)
+}
+
+function getActivityRewardRowMeta(row: FanxiuActivityRewardRow) {
+  return [row.meta, row.condition ? `条件 ${row.condition}` : ''].filter(Boolean).join(' / ')
+}
+
+function getActivityRawRewardText(row: FanxiuActivityRewardRow) {
+  return (row.raw_rewards ?? []).filter(Boolean).join('；')
+}
+
+function getActivityLinkedItems(activity: FanxiuActivityCard | null | undefined) {
+  return (activity?.reward_sections ?? []).flatMap(section => (
+    section.rows ?? []
+  ).flatMap(row => row.reward_items ?? []))
+}
+
 function uniqueLabels(values: Array<unknown>) {
   return Array.from(new Set(
     values
@@ -876,14 +1573,6 @@ function getLingjieMeta(item: FanxiuLingjieFeatureSearchItem | FanxiuLingjieFeat
     formatCountLabel(item?.jie_count, '进阶'),
     formatCountLabel(item?.star_count, '升星'),
   ].filter(Boolean).join(' · ')
-}
-
-function getLingjieItemIconUrl(item: FanxiuLingjieFeatureItem | null | undefined) {
-  return getFanxiuResourceIconUrl(item?.icon)
-}
-
-function getLingjieItemText(item: FanxiuLingjieFeatureItem) {
-  return String(item.name || item.id || '道具')
 }
 
 function getLingjieFeatureTypeName(feature: FanxiuLingjieMainFeature | null | undefined) {
@@ -1131,16 +1820,120 @@ function getSkillText(skill: FanxiuGongfaSkill | null | undefined) {
   ).trim()
 }
 
+function stripFanxiuRichTags(value: string) {
+  return String(value || '')
+    .replace(/<color=#[0-9a-fA-F]{3,8}>/gi, '')
+    .replace(/<\/color>/gi, '')
+    .replace(/<size=[0-9]{1,3}>/gi, '')
+    .replace(/<\/size>/gi, '')
+    .trim()
+}
+
+function getSectionTitleKey(value: string) {
+  return stripFanxiuRichTags(value).replace(/\s+/g, '')
+}
+
+function isProgressionSectionTitleLine(value: string, fallbackTitleKeys: Set<string>) {
+  const text = stripFanxiuRichTags(value)
+  if (!text) return false
+  const key = getSectionTitleKey(text)
+  if (fallbackTitleKeys.has(key)) return true
+  return /^[一二三四五六七八九十百千万0-9]+[阶重星级]效果[:：]/.test(text)
+    || /^【[^】]{1,30}】$/.test(text)
+}
+
+function trimTrailingBlankSectionLines(section: FanxiuGongfaProgressionSection) {
+  while (section.lines?.length && !section.lines[section.lines.length - 1]?.trim()) {
+    section.lines.pop()
+  }
+  while (section.rich_lines?.length && !section.rich_lines[section.rich_lines.length - 1]?.trim()) {
+    section.rich_lines.pop()
+  }
+}
+
+function splitProgressionSectionsFromText(
+  plainValue: string | undefined,
+  richValue: string | undefined,
+  fallbackSections: FanxiuGongfaProgressionSection[] | undefined,
+) {
+  const richText = String(richValue || plainValue || '').trim()
+  const plainText = String(plainValue || richValue || '').trim()
+  if (!richText && !plainText) return []
+
+  const fallbackTitleKeys = new Set(
+    (fallbackSections ?? [])
+      .map(section => getProgressionSectionTitle(section))
+      .map(getSectionTitleKey)
+      .filter(Boolean),
+  )
+  const richLines = (richText || plainText).replace(/\r\n/g, '\n').split('\n')
+  const plainLines = (plainText || richText).replace(/\r\n/g, '\n').split('\n')
+  const sections: FanxiuGongfaProgressionSection[] = []
+  let current: FanxiuGongfaProgressionSection | null = null
+
+  const flush = () => {
+    if (!current) return
+    trimTrailingBlankSectionLines(current)
+    if (getProgressionSectionTitle(current) || getProgressionSectionLines(current).length) {
+      sections.push(current)
+    }
+    current = null
+  }
+
+  richLines.forEach((rawRichLine, index) => {
+    const rawPlainLine = plainLines[index] ?? stripFanxiuRichTags(rawRichLine)
+    const richLine = String(rawRichLine || '').trim()
+    const plainLine = String(rawPlainLine || '').trim()
+    const titleCandidate = richLine || plainLine
+
+    if (isProgressionSectionTitleLine(titleCandidate, fallbackTitleKeys)) {
+      flush()
+      current = {
+        title: plainLine,
+        title_rich: richLine,
+        lines: [],
+        rich_lines: [],
+      }
+      return
+    }
+
+    if (!current) {
+      current = { title: '', title_rich: '', lines: [], rich_lines: [] }
+    }
+
+    if (!plainLine && !richLine) {
+      if (current.lines?.length || current.rich_lines?.length) {
+        const previousLine = current.rich_lines?.[current.rich_lines.length - 1] ?? current.lines?.[current.lines.length - 1] ?? ''
+        if (previousLine.trim()) {
+          current.lines?.push('')
+          current.rich_lines?.push('')
+        }
+      }
+      return
+    }
+
+    current.lines?.push(plainLine)
+    current.rich_lines?.push(richLine)
+  })
+  flush()
+
+  const hasStructuredShape = Boolean(fallbackSections?.length) || sections.some(section => getProgressionSectionTitle(section))
+  return hasStructuredShape ? sections : []
+}
+
 function getSkillSections(skill: FanxiuGongfaSkill | null | undefined) {
   if (!skill) return []
   if ((skill.describe_rich || skill.describe) && skill.describe_sections?.length) {
-    return skill.describe_sections
+    const sections = splitProgressionSectionsFromText(skill.describe, skill.describe_rich, skill.describe_sections)
+    return sections.length ? sections : skill.describe_sections
   }
   if ((skill.effect_describe_rich || skill.effect_describe) && skill.effect_describe_sections?.length) {
-    return skill.effect_describe_sections
+    const sections = splitProgressionSectionsFromText(skill.effect_describe, skill.effect_describe_rich, skill.effect_describe_sections)
+    return sections.length ? sections : skill.effect_describe_sections
   }
   if ((skill.additional_describe_rich || skill.additional_describe) && skill.additional_describe_sections?.length) {
-    return skill.additional_describe_sections
+    const sections = splitProgressionSectionsFromText(skill.additional_describe, skill.additional_describe_rich, skill.additional_describe_sections)
+    return sections.length ? sections : skill.additional_describe_sections
   }
   return []
 }
@@ -1173,9 +1966,11 @@ function getProgressionRichText(row: FanxiuGongfaProgressionRow) {
 }
 
 function normalizeProgressionTextList(values: string[] | undefined) {
-  return Array.isArray(values)
-    ? values.map(value => String(value || '').trim()).filter(Boolean)
-    : []
+  if (!Array.isArray(values)) return []
+  const lines = values.map(value => String(value || '').trim())
+  while (lines.length && !lines[0]) lines.shift()
+  while (lines.length && !lines[lines.length - 1]) lines.pop()
+  return lines
 }
 
 function getProgressionSectionTitle(section: FanxiuGongfaProgressionSection) {
@@ -1188,7 +1983,14 @@ function getProgressionSectionLines(section: FanxiuGongfaProgressionSection) {
 }
 
 function getProgressionSections(row: FanxiuGongfaProgressionRow | null | undefined) {
-  return (row?.describe_sections ?? []).filter(section => getProgressionSectionTitle(section) || getProgressionSectionLines(section).length)
+  if (!row) return []
+  const sections = splitProgressionSectionsFromText(getProgressionText(row), getProgressionRichText(row), row.describe_sections)
+  const source = sections.length ? sections : row.describe_sections ?? []
+  return source.filter(section => getProgressionSectionTitle(section) || getProgressionSectionLines(section).length)
+}
+
+function isBlankProgressionLine(line: string) {
+  return !String(line || '').trim()
 }
 
 function getProgressionMeta(row: FanxiuGongfaProgressionRow) {
@@ -2198,38 +3000,35 @@ function getProgressionSummary(item: { progression_counts?: Record<string, numbe
     .join(' · ')
 }
 
-function escapeHtml(value: string) {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;')
-}
+const escapeHtml = escapeFanxiuHtml
 
-function highlightFormulaVariables(value: string) {
-  return value.replace(/[xXyYzZ]/g, (match, offset, source) => {
-    const before = source[offset - 1] ?? ''
-    const after = source[offset + 1] ?? ''
-    const isFormulaEdge = /[0-9=+\-*/×()（）]/.test(before) || /[0-9=+\-*/×()（）]/.test(after)
-    return isFormulaEdge ? `<span class="wiki-variable">${match}</span>` : match
-  })
+function renderFanxiuTextSegment(value: string) {
+  return renderFanxiuRichText(value, wikiLinkTargetsByFirstChar.value)
 }
 
 function renderFanxiuText(value: string, options: { mapColors?: boolean; tone?: 'dark' | 'light' } = {}) {
   const colorMap = options.tone === 'light' ? lightRichColorMap : richColorMap
-  return escapeHtml(value || '')
-    .replace(/&lt;color=(#[0-9a-fA-F]{3,8})&gt;/g, (_match, color) => {
+  const raw = String(value || '')
+  const tagRe = /<color=(#[0-9a-fA-F]{3,8})>|<\/color>|<size=([0-9]{1,3})>|<\/size>/g
+  let output = ''
+  let lastIndex = 0
+  for (const match of raw.matchAll(tagRe)) {
+    output += renderFanxiuTextSegment(raw.slice(lastIndex, match.index))
+    if (match[1]) {
+      const color = match[1]
       const mapped = options.mapColors === false ? color : colorMap[String(color).toLowerCase()] ?? color
-      return `<span style="color:${mapped}">`
-    })
-    .replace(/&lt;\/color&gt;/g, '</span>')
-    .replace(/&lt;size=([0-9]{1,3})&gt;/g, '<span>')
-    .replace(/&lt;\/size&gt;/g, '</span>')
-    .replace(/【([^】]{1,30})】/g, '<span class="wiki-term">【$1】</span>')
-    .replace(/(^|>)([^<]+)/g, (_match, prefix, text) => `${prefix}${highlightFormulaVariables(text)}`)
-    .replace(/([+＋]\s*\d+(?:\.\d+)?%?)/g, '<span class="wiki-number">$1</span>')
-    .replace(/\n/g, '<br>')
+      output += `<span class="wiki-rich-color" style="color:${escapeHtml(mapped)}">`
+    } else if (match[0] === '</color>') {
+      output += '</span>'
+    } else if (match[2]) {
+      output += '<span>'
+    } else {
+      output += '</span>'
+    }
+    lastIndex = (match.index ?? 0) + match[0].length
+  }
+  output += renderFanxiuTextSegment(raw.slice(lastIndex))
+  return output.replace(/\n/g, '<br>')
 }
 
 function compactText(value: string | undefined, limit = 120) {
@@ -2240,7 +3039,8 @@ function compactText(value: string | undefined, limit = 120) {
 type FacetOption = (
   FanxiuGongfaQualityPartOption |
   FanxiuGongfaSkillTypeOption |
-  FanxiuItemQualityOption
+  FanxiuItemQualityOption |
+  FanxiuActivityOption
 ) & {
   rich_label?: string;
   color?: string;
@@ -2271,125 +3071,311 @@ function isFacetOptionDisabled(option: FacetCountOption, activeValue: string) {
   return option.count <= 0 && activeValue !== option.value
 }
 
+function isFacetRowExpanded(rowKey: string) {
+  return Boolean(expandedFacetRows.value[rowKey])
+}
+
+function getDisplayableFacetOptions<T extends FacetCountOption>(options: T[], activeValue = '') {
+  return options.filter(option => option.count > 0 || option.value === activeValue)
+}
+
+function getVisibleFacetOptions<T extends FacetCountOption>(rowKey: string, options: T[], activeValue = '') {
+  const displayableOptions = getDisplayableFacetOptions(options, activeValue)
+  if (displayableOptions.length <= FACET_OPTION_DISPLAY_LIMIT || isFacetRowExpanded(rowKey)) return displayableOptions
+  const visible = displayableOptions.slice(0, FACET_OPTION_DISPLAY_LIMIT)
+  if (activeValue && !visible.some(option => option.value === activeValue)) {
+    const activeOption = displayableOptions.find(option => option.value === activeValue)
+    if (activeOption) return [...visible, activeOption]
+  }
+  return visible
+}
+
+function getFacetHiddenCount(options: FacetCountOption[], activeValue = '') {
+  return Math.max(0, getDisplayableFacetOptions(options, activeValue).length - FACET_OPTION_DISPLAY_LIMIT)
+}
+
+function shouldShowFacetToggle(rowKey: string, options: FacetCountOption[], activeValue = '') {
+  return getDisplayableFacetOptions(options, activeValue).length > FACET_OPTION_DISPLAY_LIMIT || isFacetRowExpanded(rowKey)
+}
+
+function getFacetToggleLabel(rowKey: string, options: FacetCountOption[], activeValue = '') {
+  return isFacetRowExpanded(rowKey) ? '收起' : `更多 ${getFacetHiddenCount(options, activeValue)}`
+}
+
+function toggleFacetRow(rowKey: string) {
+  expandedFacetRows.value = {
+    ...expandedFacetRows.value,
+    [rowKey]: !isFacetRowExpanded(rowKey),
+  }
+  persistPageConfig()
+}
+
 function formatRawValue(value: unknown) {
   if (value === null || value === undefined || value === '') return ''
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
 }
 
-function getWikiUserFieldsTargetKey(target = selectedWikiUserFieldsTarget.value) {
-  return target ? `${target.objectType}:${target.objectId}` : ''
+function getHomeMakeStaticSectionTitle(row: FanxiuGongfaHomeMakeStaticDetailRow) {
+  if (row.section === 'main_description') return '描述'
+  if (row.section === 'main_effect') return '主词条'
+  if (row.section === 'side_effect') return '副词条'
+  return row.section || '效果'
 }
 
-function isCurrentWikiUserFieldsTarget(target: WikiUserFieldsTarget) {
-  const current = selectedWikiUserFieldsTarget.value
-  return Boolean(current && current.objectType === target.objectType && current.objectId === target.objectId)
+function getHomeMakeStaticRowMeta(row: FanxiuGongfaHomeMakeStaticDetailRow) {
+  const values = [
+    row.active_state === 'base' ? '基础' : row.active_state === 'active' ? '已激活' : row.active_state,
+    row.effect_id ? `Effect ${row.effect_id}` : '',
+  ]
+  return values.filter(Boolean).join(' / ')
 }
 
-function normalizeWikiUserFields(target: WikiUserFieldsTarget | null | undefined): FanxiuWikiUserFields {
-  return {
-    object_type: target?.objectType ?? '',
-    object_id: target?.objectId ?? '',
-    note: String(target?.userFields?.note ?? ''),
-    source: String(target?.userFields?.source ?? ''),
-    updated_at: String(target?.userFields?.updated_at ?? ''),
+function getHomeMakeBuffTiming(group: FanxiuGongfaHomeMakeBuffParameterGroup) {
+  return [group.duration_seconds, group.periodic_seconds].filter(Boolean).join(' / ')
+}
+
+function getHomeMakeBuffCategoryLabel(value: string) {
+  const labels: Record<string, string> = {
+    damage: '伤害',
+    recovery: '恢复',
+    attribute_gain: '增益',
+    attribute_debuff: '削弱',
+    summon_or_auxiliary: '召唤',
+    periodic_or_triggered: '周期',
+    control_or_state: '状态',
+    display_or_unknown: '展示',
   }
+  return String(value || '')
+    .split(',')
+    .map(part => labels[part] ?? part)
+    .filter(Boolean)
+    .join(' / ')
 }
 
-function syncWikiUserFieldDrafts(target: WikiUserFieldsTarget | null | undefined) {
-  const fields = normalizeWikiUserFields(target)
-  wikiUserNoteDraft.value = fields.note
-  wikiUserSourceDraft.value = fields.source
-  wikiUserFieldsSaveState.value = 'idle'
+function getHomeMakeBuffTags(group: FanxiuGongfaHomeMakeBuffParameterGroup) {
+  const tags = [
+    getHomeMakeBuffCategoryLabel(group.desc_category),
+    group.buff_type && group.buff_type !== 'empty' ? group.buff_type : '',
+    getHomeMakeBuffTiming(group),
+    group.layer ? `层 ${group.layer}` : '',
+    group.populated_parameter_fields ? '关联技能' : '',
+  ]
+  return tags.filter(Boolean).slice(0, 6)
 }
 
-function hasWikiUserFieldDraftChanged(target: WikiUserFieldsTarget | null | undefined) {
-  if (!target) return false
-  const fields = normalizeWikiUserFields(target)
-  return wikiUserNoteDraft.value !== fields.note || wikiUserSourceDraft.value !== fields.source
+function getHomeMakeBuffSearchText(group: FanxiuGongfaHomeMakeBuffParameterGroup) {
+  const linkText = (group.links ?? [])
+    .flatMap(link => [
+      getHomeMakeBuffLinkLabel(link),
+      getHomeMakeBuffLinkMeta(link),
+      link.target_description,
+      link.target_id,
+      link.token,
+      link.source_file,
+    ])
+    .join(' ')
+  return [
+    group.buff_name,
+    group.gongfa_names,
+    group.side_jie_names,
+    cleanFanxiuDisplayText(group.buff_desc),
+    getHomeMakeBuffTags(group).join(' '),
+    group.matching_buff_ids,
+    group.populated_parameter_fields,
+    linkText,
+  ]
+    .filter(Boolean)
+    .join(' ')
 }
 
-function applySavedWikiUserFields(target: WikiUserFieldsTarget, fields: FanxiuWikiUserFields) {
-  if (target.objectType === 'gongfa') {
-    const cached = gongfaDetailCache.get(target.objectId)
-    if (cached) {
-      gongfaDetailCache.set(target.objectId, { ...cached, user_fields: fields })
-    }
-    if (selectedCard.value && String(selectedCard.value.id) === target.objectId) {
-      selectedCard.value = { ...selectedCard.value, user_fields: fields }
-    }
+function getHomeMakeFormulaTags(group: FanxiuGongfaHomeMakeXianShuFormulaGroup) {
+  return [
+    group.rows ? `${group.rows} 阶` : '',
+    group.star_rows ? `${group.star_rows} 星级行` : '',
+    group.feature_group ? `FG ${group.feature_group}` : '',
+    group.gongfa_names,
+  ]
+    .filter(Boolean)
+    .slice(0, 6)
+}
+
+function getHomeMakeFormulaSearchText(group: FanxiuGongfaHomeMakeXianShuFormulaGroup) {
+  return [
+    group.feature_group,
+    group.side_feature_names,
+    group.buff_names,
+    group.gongfa_ids,
+    group.gongfa_names,
+    cleanFanxiuDisplayText(group.sample_rendered_plain),
+    getHomeMakeFormulaTags(group).join(' '),
+  ]
+    .filter(Boolean)
+    .join(' ')
+}
+
+function getHomeMakeBuffLinkLabel(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  return link.target_name || link.target_id || link.token || link.target_table
+}
+
+function getHomeMakeBuffLinkMeta(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  const tableLabels: Record<string, string> = {
+    'Renjie-GongfaJie': '重数',
+    GongfaSkill: '技能',
+    lua_file: '表现文件',
+  }
+  return tableLabels[link.target_table] ?? link.target_table
+}
+
+function getHomeMakeBuffLinkGongfaId(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  return String(link.target_gongfa_id || '').trim()
+}
+
+function canNavigateHomeMakeBuffLink(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  return Boolean(getHomeMakeBuffLinkGongfaId(link))
+}
+
+async function navigateHomeMakeBuffLink(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  const gongfaId = getHomeMakeBuffLinkGongfaId(link)
+  if (!gongfaId) return
+  homeMakeBuffParameterQuery.value = ''
+  homeMakeFormulaQuery.value = ''
+  activeTab.value = 'gongfa'
+  selectedId.value = gongfaId
+  selectedCard.value = null
+  query.value = gongfaId
+  gongfaQualityGradeFilter.value = ''
+  gongfaQualityFamilyFilter.value = ''
+  gongfaSkillTypeFilter.value = ''
+  page.value = 1
+  await loadGongfaCards({ keepSelection: true })
+}
+
+function getHomeMakeBuffLinkTitle(link: FanxiuGongfaHomeMakeBuffParameterLink) {
+  return [link.target_description, link.source_file].filter(Boolean).join('\n')
+}
+
+function clearHomeMakeStaticDetail() {
+  homeMakeStaticDetailRequestSeq += 1
+  homeMakeBuffParameterSemanticsRequestSeq += 1
+  homeMakeFormulaCatalogRequestSeq += 1
+  selectedHomeMakeStaticDetail.value = null
+  selectedHomeMakeBuffParameterSemantics.value = null
+  selectedHomeMakeXianShuFormulaCatalog.value = null
+  loadingHomeMakeStaticDetail.value = false
+  loadingHomeMakeBuffParameterSemantics.value = false
+  loadingHomeMakeFormulaCatalog.value = false
+}
+
+async function loadHomeMakeStaticDetail(gongfaId: string | number) {
+  const nextId = String(gongfaId)
+  const requestSeq = ++homeMakeStaticDetailRequestSeq
+  selectedHomeMakeStaticDetail.value = null
+  const cached = gongfaHomeMakeStaticDetailCache.get(nextId)
+  if (cached !== undefined) {
+    selectedHomeMakeStaticDetail.value = cached
+    loadingHomeMakeStaticDetail.value = false
     return
   }
 
-  if (target.objectType === 'item') {
-    const cached = itemDetailCache.get(target.objectId)
-    if (cached) {
-      itemDetailCache.set(target.objectId, { ...cached, user_fields: fields })
-    }
-    if (selectedItem.value && String(selectedItem.value.id) === target.objectId) {
-      selectedItem.value = { ...selectedItem.value, user_fields: fields }
-    }
-    return
-  }
-
-  if (target.objectType === 'lingjie') {
-    const cached = lingjieDetailCache.get(target.objectId)
-    if (cached) {
-      lingjieDetailCache.set(target.objectId, { ...cached, user_fields: fields })
-    }
-    if (selectedLingjieCard.value && String(selectedLingjieCard.value.gongfa_id) === target.objectId) {
-      selectedLingjieCard.value = { ...selectedLingjieCard.value, user_fields: fields }
-    }
-  }
-}
-
-async function saveWikiUserFieldsForTarget(target: WikiUserFieldsTarget, note: string, source: string) {
-  const requestSeq = ++wikiUserFieldsSaveSeq
-  if (isCurrentWikiUserFieldsTarget(target)) {
-    wikiUserFieldsSaveState.value = 'saving'
-  }
+  loadingHomeMakeStaticDetail.value = true
   try {
-    const fields = await updateFanxiuWikiUserFields(target.objectType, target.objectId, { note, source })
-    if (requestSeq !== wikiUserFieldsSaveSeq) return
-    applySavedWikiUserFields(target, fields)
-    if (isCurrentWikiUserFieldsTarget(target)) {
-      wikiUserFieldsSaveState.value = 'saved'
-    }
-  } catch (error: any) {
-    if (requestSeq === wikiUserFieldsSaveSeq && isCurrentWikiUserFieldsTarget(target)) {
-      wikiUserFieldsSaveState.value = 'error'
-      ElMessage.error(error?.response?.data?.detail || error?.message || '保存图鉴备注失败')
+    const response = await getFanxiuGongfaHomeMakeStaticDetail(nextId, { include_inactive: false })
+    if (requestSeq !== homeMakeStaticDetailRequestSeq) return
+    gongfaHomeMakeStaticDetailCache.set(nextId, response)
+    selectedHomeMakeStaticDetail.value = response
+  } catch (error) {
+    if (requestSeq !== homeMakeStaticDetailRequestSeq) return
+    gongfaHomeMakeStaticDetailCache.set(nextId, null)
+    selectedHomeMakeStaticDetail.value = null
+    console.warn('Failed to load Fanxiu GongFaHomeMake static detail:', error)
+  } finally {
+    if (requestSeq === homeMakeStaticDetailRequestSeq) {
+      loadingHomeMakeStaticDetail.value = false
     }
   }
 }
 
-function scheduleWikiUserFieldsSave() {
-  const target = selectedWikiUserFieldsTarget.value
-  if (!target || !hasWikiUserFieldDraftChanged(target)) return
-  const note = wikiUserNoteDraft.value
-  const source = wikiUserSourceDraft.value
-  if (wikiUserFieldsSaveTimer) {
-    clearTimeout(wikiUserFieldsSaveTimer)
+async function loadHomeMakeBuffParameterSemantics(gongfaId: string | number) {
+  const nextId = String(gongfaId)
+  const requestSeq = ++homeMakeBuffParameterSemanticsRequestSeq
+  selectedHomeMakeBuffParameterSemantics.value = null
+  const cached = gongfaHomeMakeBuffParameterSemanticsCache.get(nextId)
+  if (cached !== undefined) {
+    selectedHomeMakeBuffParameterSemantics.value = cached
+    loadingHomeMakeBuffParameterSemantics.value = false
+    return
   }
-  wikiUserFieldsSaveTimer = setTimeout(() => {
-    wikiUserFieldsSaveTimer = null
-    void saveWikiUserFieldsForTarget(target, note, source)
-  }, 700)
+
+  loadingHomeMakeBuffParameterSemantics.value = true
+  try {
+    const response = await getFanxiuGongfaHomeMakeBuffParameterSemantics(nextId, { limit: 80 })
+    if (requestSeq !== homeMakeBuffParameterSemanticsRequestSeq) return
+    gongfaHomeMakeBuffParameterSemanticsCache.set(nextId, response)
+    selectedHomeMakeBuffParameterSemantics.value = response
+  } catch (error) {
+    if (requestSeq !== homeMakeBuffParameterSemanticsRequestSeq) return
+    gongfaHomeMakeBuffParameterSemanticsCache.set(nextId, null)
+    selectedHomeMakeBuffParameterSemantics.value = null
+    console.warn('Failed to load Fanxiu GongFaHomeMake buff parameter semantics:', error)
+  } finally {
+    if (requestSeq === homeMakeBuffParameterSemanticsRequestSeq) {
+      loadingHomeMakeBuffParameterSemantics.value = false
+    }
+  }
 }
 
-function flushWikiUserFieldsSave() {
-  const target = selectedWikiUserFieldsTarget.value
-  if (!target || !hasWikiUserFieldDraftChanged(target)) return
-  if (wikiUserFieldsSaveTimer) {
-    clearTimeout(wikiUserFieldsSaveTimer)
-    wikiUserFieldsSaveTimer = null
+async function loadHomeMakeFormulaCatalog(gongfaId: string | number) {
+  const nextId = String(gongfaId)
+  const requestSeq = ++homeMakeFormulaCatalogRequestSeq
+  selectedHomeMakeXianShuFormulaCatalog.value = null
+  const cached = gongfaHomeMakeFormulaCatalogCache.get(nextId)
+  if (cached !== undefined) {
+    selectedHomeMakeXianShuFormulaCatalog.value = cached
+    loadingHomeMakeFormulaCatalog.value = false
+    return
   }
-  void saveWikiUserFieldsForTarget(target, wikiUserNoteDraft.value, wikiUserSourceDraft.value)
+
+  loadingHomeMakeFormulaCatalog.value = true
+  try {
+    const response = await getFanxiuGongfaHomeMakeXianShuFormulaCatalog(nextId, { limit: 200, star: 1 })
+    if (requestSeq !== homeMakeFormulaCatalogRequestSeq) return
+    gongfaHomeMakeFormulaCatalogCache.set(nextId, response)
+    selectedHomeMakeXianShuFormulaCatalog.value = response
+  } catch (error) {
+    if (requestSeq !== homeMakeFormulaCatalogRequestSeq) return
+    gongfaHomeMakeFormulaCatalogCache.set(nextId, null)
+    selectedHomeMakeXianShuFormulaCatalog.value = null
+    console.warn('Failed to load Fanxiu GongFaHomeMake xianshu formula catalog:', error)
+  } finally {
+    if (requestSeq === homeMakeFormulaCatalogRequestSeq) {
+      loadingHomeMakeFormulaCatalog.value = false
+    }
+  }
+}
+
+async function loadHomeMakeBuffOverview(options: { force?: boolean } = {}) {
+  if (homeMakeBuffOverview.value && !options.force) return
+  const requestSeq = ++homeMakeBuffOverviewRequestSeq
+  loadingHomeMakeBuffOverview.value = true
+  try {
+    const response = await getFanxiuGongfaHomeMakeBuffParameterSemantics(null, { limit: 200 })
+    if (requestSeq !== homeMakeBuffOverviewRequestSeq) return
+    homeMakeBuffOverview.value = response
+  } catch (error) {
+    if (requestSeq !== homeMakeBuffOverviewRequestSeq) return
+    console.warn('Failed to load Fanxiu GongFaHomeMake buff overview:', error)
+  } finally {
+    if (requestSeq === homeMakeBuffOverviewRequestSeq) {
+      loadingHomeMakeBuffOverview.value = false
+    }
+  }
 }
 
 async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
+  void loadHomeMakeBuffOverview()
   try {
     const response = await searchFanxiuGongfaCards({
       query: query.value,
@@ -2418,8 +3404,10 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
 
     gongfaItems.value = response.items
     itemItems.value = []
+    activityItems.value = []
     lingjieItems.value = []
     selectedItem.value = null
+    selectedActivity.value = null
     selectedLingjieCard.value = null
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
@@ -2438,6 +3426,7 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
       selectedId.value = ''
       selectedCard.value = null
       selectedItem.value = null
+      clearHomeMakeStaticDetail()
     }
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
@@ -2481,9 +3470,12 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
 
     itemItems.value = response.items
     gongfaItems.value = []
+    activityItems.value = []
     lingjieItems.value = []
     selectedCard.value = null
+    selectedActivity.value = null
     selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
       if (!selectedItem.value || String(selectedItem.value.id) !== selectedId.value) {
@@ -2500,10 +3492,75 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     } else {
       selectedId.value = ''
       selectedItem.value = null
+      clearHomeMakeStaticDetail()
     }
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取道具图鉴失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuActivityCards({
+      query: query.value,
+      kind_key: activityKindFilter.value,
+      time_kind: activityTimeFilter.value,
+      activity_type: activityTypeFilter.value,
+      ...objectSortParams.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    activityStats.value = response.stats
+    catalogPath.value = response.catalog_path
+    activityKindOptions.value = response.kind_options ?? []
+    activityTimeOptions.value = response.time_options ?? []
+    activityTypeOptions.value = response.activity_type_options ?? []
+    activityFacetIndex.value = response.facet_index ?? null
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadActivityCards(options)
+      return
+    }
+
+    activityItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    lingjieItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedLingjieCard.value = null
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      if (!selectedActivity.value || String(selectedActivity.value.id) !== selectedId.value) {
+        void selectActivity(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    if (first) {
+      selectedId.value = String(first.id)
+      selectedActivity.value = null
+      void selectActivity(first.id)
+    } else {
+      selectedId.value = ''
+      selectedActivity.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动表失败')
     }
   } finally {
     if (requestSeq === listRequestSeq) {
@@ -2536,8 +3593,11 @@ async function loadLingjieFeatureCards(options: { keepSelection?: boolean } = {}
     lingjieItems.value = response.items
     gongfaItems.value = []
     itemItems.value = []
+    activityItems.value = []
     selectedCard.value = null
     selectedItem.value = null
+    selectedActivity.value = null
+    clearHomeMakeStaticDetail()
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
       if (!selectedLingjieCard.value || String(selectedLingjieCard.value.gongfa_id) !== selectedId.value) {
@@ -2554,6 +3614,7 @@ async function loadLingjieFeatureCards(options: { keepSelection?: boolean } = {}
     } else {
       selectedId.value = ''
       selectedLingjieCard.value = null
+      clearHomeMakeStaticDetail()
     }
   } catch (error: any) {
     if (requestSeq === listRequestSeq) {
@@ -2566,12 +3627,69 @@ async function loadLingjieFeatureCards(options: { keepSelection?: boolean } = {}
   }
 }
 
+async function loadProtocolSemantics(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const response = await getFanxiuProtocolSemantics({
+      feature: protocolFeature.value,
+      query: query.value.trim(),
+      role: protocolRoleFilter.value,
+      operation: protocolOperationFilter.value,
+      limit: 2000,
+      edge_limit: 3000,
+    })
+    if (requestSeq !== listRequestSeq) return
+    protocolResponse.value = response
+    catalogPath.value = response.outputs?.semantics ?? ''
+    total.value = response.counts?.filtered_rows ?? response.items.length
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
+
+    const current = options.keepSelection ? selectedId.value : ''
+    selectedId.value = response.items.some(item => item.packet === current)
+      ? current
+      : response.items[0]?.packet ?? ''
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取协议语义失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadWikiLinkIndex() {
+  try {
+    const response = await getFanxiuWikiLinkIndex()
+    wikiLinkIndexItems.value = response.items ?? []
+  } catch (error) {
+    console.warn('Failed to load Fanxiu wiki link index:', error)
+  }
+}
+
 function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   if (activeTab.value === 'item') {
     return loadItemCards(options)
   }
+  if (activeTab.value === 'activity') {
+    return loadActivityCards(options)
+  }
   if (activeTab.value === 'lingjie') {
     return loadLingjieFeatureCards(options)
+  }
+  if (activeTab.value === 'protocol') {
+    return loadProtocolSemantics(options)
   }
   return loadGongfaCards(options)
 }
@@ -2581,15 +3699,19 @@ async function selectGongfa(gongfaId: string | number) {
   selectedId.value = nextId
   const requestSeq = ++detailRequestSeq
   const cached = gongfaDetailCache.get(nextId)
-    if (cached) {
-      selectedCard.value = cached
-      selectedItem.value = null
-      selectedLingjieCard.value = null
-      const tabs = progressionTabs.value
-      if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
-        selectedProgressionType.value = tabs[0]?.key ?? ''
+  if (cached) {
+    selectedCard.value = cached
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    const tabs = progressionTabs.value
+    if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
+      selectedProgressionType.value = tabs[0]?.key ?? ''
     }
     loadingDetail.value = false
+    void loadHomeMakeStaticDetail(nextId)
+    void loadHomeMakeBuffParameterSemantics(nextId)
+    void loadHomeMakeFormulaCatalog(nextId)
     return
   }
   loadingDetail.value = true
@@ -2599,11 +3721,15 @@ async function selectGongfa(gongfaId: string | number) {
     gongfaDetailCache.set(nextId, response.card)
     selectedCard.value = response.card
     selectedItem.value = null
+    selectedActivity.value = null
     selectedLingjieCard.value = null
     const tabs = progressionTabs.value
     if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
       selectedProgressionType.value = tabs[0]?.key ?? ''
     }
+    void loadHomeMakeStaticDetail(nextId)
+    void loadHomeMakeBuffParameterSemantics(nextId)
+    void loadHomeMakeFormulaCatalog(nextId)
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取功法详情失败')
@@ -2620,12 +3746,14 @@ async function selectItem(itemId: string | number) {
   selectedId.value = nextId
   const requestSeq = ++detailRequestSeq
   const cached = itemDetailCache.get(nextId)
-    if (cached) {
-      selectedItem.value = cached
-      selectedCard.value = null
-      selectedLingjieCard.value = null
-      loadingDetail.value = false
-      return
+  if (cached) {
+    selectedItem.value = cached
+    selectedCard.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
   }
   loadingDetail.value = true
   try {
@@ -2634,7 +3762,9 @@ async function selectItem(itemId: string | number) {
     itemDetailCache.set(nextId, response.card)
     selectedItem.value = response.card
     selectedCard.value = null
+    selectedActivity.value = null
     selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
     const tabs = progressionTabs.value
     if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
       selectedProgressionType.value = tabs[0]?.key ?? ''
@@ -2642,6 +3772,41 @@ async function selectItem(itemId: string | number) {
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取道具详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function selectActivity(activityId: string | number) {
+  const nextId = String(activityId)
+  selectedId.value = nextId
+  const requestSeq = ++detailRequestSeq
+  const cached = activityDetailCache.get(nextId)
+  if (cached) {
+    selectedActivity.value = cached
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await getFanxiuActivityCard(nextId)
+    if (requestSeq !== detailRequestSeq) return
+    activityDetailCache.set(nextId, response.card)
+    selectedActivity.value = response.card
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedLingjieCard.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取活动详情失败')
     }
   } finally {
     if (requestSeq === detailRequestSeq) {
@@ -2659,6 +3824,8 @@ async function selectLingjieFeature(gongfaId: string | number) {
     selectedLingjieCard.value = cached
     selectedCard.value = null
     selectedItem.value = null
+    selectedActivity.value = null
+    clearHomeMakeStaticDetail()
     loadingDetail.value = false
     return
   }
@@ -2670,6 +3837,8 @@ async function selectLingjieFeature(gongfaId: string | number) {
     selectedLingjieCard.value = card
     selectedCard.value = null
     selectedItem.value = null
+    selectedActivity.value = null
+    clearHomeMakeStaticDetail()
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取灵界词条详情失败')
@@ -2696,6 +3865,10 @@ function openWikiObject(tab: WikiTab, objectId: string | number, options: { rese
         itemQualityFilter.value = ''
         itemTypeFilter.value = ''
         itemSubTypeFilter.value = ''
+      } else if (tab === 'activity') {
+        activityKindFilter.value = ''
+        activityTimeFilter.value = ''
+        activityTypeFilter.value = ''
       } else if (tab === 'gongfa') {
         gongfaQualityGradeFilter.value = ''
         gongfaQualityFamilyFilter.value = ''
@@ -2711,15 +3884,114 @@ function openWikiObject(tab: WikiTab, objectId: string | number, options: { rese
   }
 }
 
-function openLinkedItem(item: WikiLinkedItem | null | undefined) {
-  const id = getLinkedItemId(item)
-  if (!id) return
-  openWikiObject('item', id, { resetListContext: true })
+function searchWikiObject(tab: WikiTab, text: string) {
+  const nextQuery = cleanWikiLinkAlias(text)
+  if (!nextQuery) return
+  internalTabNavigation = true
+  try {
+    activeTab.value = tab
+    selectedId.value = ''
+    query.value = nextQuery
+    page.value = 1
+    sortMode.value = 'default'
+    void loadCurrentCards()
+    void router.replace({ query: { ...route.query, tab, q: nextQuery } }).catch(() => {})
+  } finally {
+    window.setTimeout(() => {
+      internalTabNavigation = false
+    }, 0)
+  }
+}
+
+function getWikiTabFromTabElement(element: HTMLElement | null) {
+  if (!element) return null
+  const idValue = element.id.startsWith('tab-') ? element.id.slice(4) : ''
+  const controlsValue = element.getAttribute('aria-controls') ?? ''
+  const paneValue = controlsValue.startsWith('pane-') ? controlsValue.slice(5) : ''
+  return normalizeWikiTab(idValue || paneValue)
+}
+
+function buildWikiTabHref(tab: WikiTab) {
+  const nextQuery = { ...route.query, tab }
+  delete nextQuery.id
+  return router.resolve({ path: route.path, query: nextQuery }).href
+}
+
+function buildStandaloneWikiTabHref(tab: WikiTab) {
+  const nextQuery = { ...route.query, tab }
+  delete nextQuery.id
+  return router.resolve({ path: '/standalone/fanxiu/wiki', query: nextQuery }).href
+}
+
+function getIndependentResourceType(tab: WikiTab): FanxiuResourceType | null {
+  if (tab === 'gongfa' || tab === 'item' || tab === 'lingjie') return tab
+  return null
+}
+
+function showContextMenu(event: MouseEvent, href: string) {
+  if (!href) return
+  event.preventDefault()
+  event.stopPropagation()
+  const menuWidth = 154
+  const menuHeight = 38
+  contextMenu.value = {
+    visible: true,
+    x: Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8)),
+    y: Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8)),
+    href,
+  }
+}
+
+function closeContextMenu() {
+  if (!contextMenu.value.visible) return
+  contextMenu.value = { ...contextMenu.value, visible: false }
+}
+
+function openContextMenuTarget() {
+  const href = contextMenu.value.href
+  closeContextMenu()
+  if (href) window.open(href, '_blank', 'noopener')
+}
+
+function handleGlobalContextMenuKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeContextMenu()
+}
+
+function handleWikiTabHeaderClick(event: MouseEvent) {
+  if (event.button !== 0 || (!event.ctrlKey && !event.metaKey)) return
+  const tabElement = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('.el-tabs__item')
+    : null
+  const tab = getWikiTabFromTabElement(tabElement)
+  if (!tab) return
+  event.preventDefault()
+  event.stopPropagation()
+  window.open(buildWikiTabHref(tab), '_blank', 'noopener')
+}
+
+function handleWikiTabHeaderContextMenu(event: MouseEvent) {
+  const tabElement = event.target instanceof Element
+    ? event.target.closest<HTMLElement>('.el-tabs__item')
+    : null
+  const tab = getWikiTabFromTabElement(tabElement)
+  if (!tab) return
+  showContextMenu(event, buildStandaloneWikiTabHref(tab))
+}
+
+function handleObjectContextMenu(event: MouseEvent, objectId: string | number) {
+  const resourceType = getIndependentResourceType(activeTab.value)
+  if (!resourceType) return
+  selectObject(objectId)
+  showContextMenu(event, buildFanxiuResourceHref(resourceType, objectId))
 }
 
 function selectObject(objectId: string | number) {
+  closeContextMenu()
   if (activeTab.value === 'item') {
     return selectItem(objectId)
+  }
+  if (activeTab.value === 'activity') {
+    return selectActivity(objectId)
   }
   if (activeTab.value === 'lingjie') {
     return selectLingjieFeature(objectId)
@@ -2730,6 +4002,24 @@ function selectObject(objectId: string | number) {
 function reloadFromFirstPage() {
   page.value = 1
   loadCurrentCards()
+}
+
+function refreshCurrentCards() {
+  if (activeTab.value === 'gongfa') {
+    void loadHomeMakeBuffOverview({ force: true })
+  }
+  loadCurrentCards({ keepSelection: true })
+}
+
+function executeSearchFromFirstPage() {
+  recordSearchHistory()
+  reloadFromFirstPage()
+  searchHistoryVisible.value = false
+}
+
+function handleQueryClear() {
+  reloadFromFirstPage()
+  void nextTick(() => openSearchHistory())
 }
 
 function handlePageChange(nextPage: number) {
@@ -2756,14 +4046,21 @@ function cycleSortMode() {
 }
 
 function handleTabChange() {
+  closeContextMenu()
   if (internalTabNavigation) return
   page.value = 1
+  sortMode.value = activeTab.value === 'protocol' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
   selectedItem.value = null
+  selectedActivity.value = null
   selectedLingjieCard.value = null
   loadCurrentCards()
+}
+
+function selectProtocolRow(row: FanxiuProtocolSemanticRow) {
+  selectedId.value = row.packet
 }
 
 function applyGongfaQualityGradeFilter(value: string) {
@@ -2797,6 +4094,38 @@ function applyItemSubTypeFilter(value: string) {
   reloadFromFirstPage()
 }
 
+function applyActivityKindFilter(value: string) {
+  activityKindFilter.value = value
+  reloadFromFirstPage()
+}
+
+function applyActivityTimeFilter(value: string) {
+  activityTimeFilter.value = value
+  reloadFromFirstPage()
+}
+
+function applyActivityTypeFilter(value: string) {
+  activityTypeFilter.value = value
+  reloadFromFirstPage()
+}
+
+function applyProtocolFeature(value: string) {
+  protocolFeature.value = value || 'bluestarsea'
+  protocolRoleFilter.value = ''
+  protocolOperationFilter.value = ''
+  reloadFromFirstPage()
+}
+
+function applyProtocolRoleFilter(value: string) {
+  protocolRoleFilter.value = value
+  reloadFromFirstPage()
+}
+
+function applyProtocolOperationFilter(value: string) {
+  protocolOperationFilter.value = value
+  reloadFromFirstPage()
+}
+
 watch([
   activeTab,
   query,
@@ -2806,6 +4135,12 @@ watch([
   itemQualityFilter,
   itemTypeFilter,
   itemSubTypeFilter,
+  activityKindFilter,
+  activityTimeFilter,
+  activityTypeFilter,
+  protocolFeature,
+  protocolRoleFilter,
+  protocolOperationFilter,
   sortMode,
   page,
   pageSize,
@@ -2813,25 +4148,34 @@ watch([
 ], persistPageConfig)
 watch([activeTab, selectedId], syncRouteState)
 watch(
-  () => [route.query.tab, route.query.id],
+  () => [route.query.tab, route.query.id, route.query.q],
   () => {
     if (applyRouteState()) {
       void loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
     }
   },
 )
-watch(() => getWikiUserFieldsTargetKey(), () => syncWikiUserFieldDrafts(selectedWikiUserFieldsTarget.value), { immediate: true })
-watch([wikiUserNoteDraft, wikiUserSourceDraft], scheduleWikiUserFieldsSave)
-
 onMounted(() => {
+  window.addEventListener('keydown', handleGlobalContextMenuKeydown)
+  window.addEventListener('scroll', closeContextMenu, true)
+  window.addEventListener('resize', closeContextMenu)
   loadPageConfig()
+  loadSearchHistory()
   applyRouteState()
+  void loadWikiLinkIndex()
   loadCurrentCards({ keepSelection: Boolean(selectedId.value) })
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleGlobalContextMenuKeydown)
+  window.removeEventListener('scroll', closeContextMenu, true)
+  window.removeEventListener('resize', closeContextMenu)
 })
 </script>
 
 <template>
-  <div class="fanxiu-wiki-page">
+  <FanxiuResourceHoverScope>
+  <div class="fanxiu-wiki-page" @click="closeContextMenu">
     <header class="page-header">
       <div>
         <h2>凡修图鉴</h2>
@@ -2840,26 +4184,55 @@ onMounted(() => {
           <span v-if="catalogPath">{{ catalogPath }}</span>
         </div>
       </div>
-      <el-button :icon="Refresh" :loading="loadingList" @click="loadCurrentCards({ keepSelection: true })">刷新</el-button>
+      <el-button :icon="Refresh" :loading="loadingList || loadingHomeMakeBuffOverview" @click="refreshCurrentCards">刷新</el-button>
     </header>
 
-    <el-tabs v-model="activeTab" class="wiki-tabs" @tab-change="handleTabChange">
-      <el-tab-pane v-for="tab in WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
-    </el-tabs>
+    <div @click.capture="handleWikiTabHeaderClick" @contextmenu.capture="handleWikiTabHeaderContextMenu">
+      <el-tabs v-model="activeTab" class="wiki-tabs" @tab-change="handleTabChange">
+        <el-tab-pane v-for="tab in WIKI_TABS" :key="tab.key" :label="tab.label" :name="tab.key" />
+      </el-tabs>
+    </div>
 
     <div class="toolbar">
-      <el-input
-        v-model="query"
-        class="query-input"
-        clearable
-        :placeholder="searchPlaceholder"
-        :prefix-icon="Search"
-        @keyup.enter="reloadFromFirstPage"
-        @clear="reloadFromFirstPage"
-      />
-      <el-button type="primary" :icon="Search" :loading="loadingList" @click="reloadFromFirstPage">搜索</el-button>
+      <el-popover
+        v-model:visible="searchHistoryVisible"
+        trigger="manual"
+        placement="bottom-start"
+        :width="420"
+        popper-class="fanxiu-search-history-popover"
+      >
+        <template #reference>
+          <el-input
+            v-model="query"
+            class="query-input"
+            clearable
+            :placeholder="searchPlaceholder"
+            :prefix-icon="Search"
+            @focus="openSearchHistory"
+            @click="openSearchHistory"
+            @blur="scheduleCloseSearchHistory"
+            @input="openSearchHistory"
+            @keyup.enter="executeSearchFromFirstPage"
+            @clear="handleQueryClear"
+          />
+        </template>
+        <div class="search-history-panel" @mousedown.prevent>
+          <div class="search-history-header">
+            <span>最近搜索</span>
+            <button type="button" @click="clearCurrentSearchHistory">清空</button>
+          </div>
+          <button
+            v-for="text in visibleSearchHistory"
+            :key="text"
+            class="search-history-item"
+            type="button"
+            @click="chooseSearchHistory(text)"
+          >{{ text }}</button>
+        </div>
+      </el-popover>
+      <el-button type="primary" :icon="Search" :loading="loadingList" @click="executeSearchFromFirstPage">搜索</el-button>
       <el-button
-        v-if="activeTab !== 'lingjie'"
+        v-if="activeTab !== 'lingjie' && activeTab !== 'protocol'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -2880,7 +4253,7 @@ onMounted(() => {
               @click="applyGongfaQualityGradeFilter('')"
             >全部</button>
             <button
-              v-for="option in gongfaQualityGradeFacetOptions"
+              v-for="option in getVisibleFacetOptions('gongfa:quality-grade', gongfaQualityGradeFacetOptions, gongfaQualityGradeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: gongfaQualityGradeFilter === option.value }"
@@ -2892,6 +4265,12 @@ onMounted(() => {
               <span class="facet-option-label" v-html="renderFacetOptionLabel(option)"></span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('gongfa:quality-grade', gongfaQualityGradeFacetOptions, gongfaQualityGradeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('gongfa:quality-grade')"
+            >{{ getFacetToggleLabel('gongfa:quality-grade', gongfaQualityGradeFacetOptions, gongfaQualityGradeFilter) }}</button>
           </span>
         </div>
         <div class="facet-row">
@@ -2904,7 +4283,7 @@ onMounted(() => {
               @click="applyGongfaQualityFamilyFilter('')"
             >全部</button>
             <button
-              v-for="option in gongfaQualityFamilyFacetOptions"
+              v-for="option in getVisibleFacetOptions('gongfa:quality-family', gongfaQualityFamilyFacetOptions, gongfaQualityFamilyFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: gongfaQualityFamilyFilter === option.value }"
@@ -2916,6 +4295,12 @@ onMounted(() => {
               <span class="facet-option-label" v-html="renderFacetOptionLabel(option)"></span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('gongfa:quality-family', gongfaQualityFamilyFacetOptions, gongfaQualityFamilyFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('gongfa:quality-family')"
+            >{{ getFacetToggleLabel('gongfa:quality-family', gongfaQualityFamilyFacetOptions, gongfaQualityFamilyFilter) }}</button>
           </span>
         </div>
         <div class="facet-row">
@@ -2928,7 +4313,7 @@ onMounted(() => {
               @click="applyGongfaSkillTypeFilter('')"
             >全部</button>
             <button
-              v-for="option in gongfaSkillTypeFacetOptions"
+              v-for="option in getVisibleFacetOptions('gongfa:skill-type', gongfaSkillTypeFacetOptions, gongfaSkillTypeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: gongfaSkillTypeFilter === option.value }"
@@ -2940,6 +4325,101 @@ onMounted(() => {
               <span class="facet-option-label" v-html="renderFacetOptionLabel(option)"></span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('gongfa:skill-type', gongfaSkillTypeFacetOptions, gongfaSkillTypeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('gongfa:skill-type')"
+            >{{ getFacetToggleLabel('gongfa:skill-type', gongfaSkillTypeFacetOptions, gongfaSkillTypeFilter) }}</button>
+          </span>
+        </div>
+      </template>
+      <template v-else-if="activeTab === 'activity'">
+        <div class="facet-row">
+          <span class="facet-label">形态</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !activityKindFilter }"
+              type="button"
+              @click="applyActivityKindFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('activity:kind', activityKindFacetOptions, activityKindFilter)"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: activityKindFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, activityKindFilter)"
+              type="button"
+              @click="applyActivityKindFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('activity:kind', activityKindFacetOptions, activityKindFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('activity:kind')"
+            >{{ getFacetToggleLabel('activity:kind', activityKindFacetOptions, activityKindFilter) }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">时间</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !activityTimeFilter }"
+              type="button"
+              @click="applyActivityTimeFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('activity:time', activityTimeFacetOptions, activityTimeFilter)"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: activityTimeFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, activityTimeFilter)"
+              type="button"
+              @click="applyActivityTimeFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('activity:time', activityTimeFacetOptions, activityTimeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('activity:time')"
+            >{{ getFacetToggleLabel('activity:time', activityTimeFacetOptions, activityTimeFilter) }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">玩法</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !activityTypeFilter }"
+              type="button"
+              @click="applyActivityTypeFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('activity:type', activityTypeFacetOptions, activityTypeFilter)"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: activityTypeFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, activityTypeFilter)"
+              type="button"
+              @click="applyActivityTypeFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('activity:type', activityTypeFacetOptions, activityTypeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('activity:type')"
+            >{{ getFacetToggleLabel('activity:type', activityTypeFacetOptions, activityTypeFilter) }}</button>
           </span>
         </div>
       </template>
@@ -2954,7 +4434,7 @@ onMounted(() => {
               @click="applyItemQualityFilter('')"
             >全部</button>
             <button
-              v-for="option in itemQualityFacetOptions"
+              v-for="option in getVisibleFacetOptions('item:quality', itemQualityFacetOptions, itemQualityFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: itemQualityFilter === option.value }"
@@ -2966,6 +4446,12 @@ onMounted(() => {
               <span class="facet-option-label" v-html="renderFacetOptionLabel(option)"></span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('item:quality', itemQualityFacetOptions, itemQualityFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('item:quality')"
+            >{{ getFacetToggleLabel('item:quality', itemQualityFacetOptions, itemQualityFilter) }}</button>
           </span>
         </div>
         <div class="facet-row">
@@ -2978,7 +4464,7 @@ onMounted(() => {
               @click="applyItemTypeFilter('')"
             >全部</button>
             <button
-              v-for="option in itemTypeFacetOptions"
+              v-for="option in getVisibleFacetOptions('item:type', itemTypeFacetOptions, itemTypeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: itemTypeFilter === option.value }"
@@ -2989,6 +4475,12 @@ onMounted(() => {
               <span class="facet-option-label">{{ option.label }}</span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('item:type', itemTypeFacetOptions, itemTypeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('item:type')"
+            >{{ getFacetToggleLabel('item:type', itemTypeFacetOptions, itemTypeFilter) }}</button>
           </span>
         </div>
         <div class="facet-row">
@@ -3001,7 +4493,7 @@ onMounted(() => {
               @click="applyItemSubTypeFilter('')"
             >全部</button>
             <button
-              v-for="option in itemSubTypeFacetOptions"
+              v-for="option in getVisibleFacetOptions('item:sub-type', itemSubTypeFacetOptions, itemSubTypeFilter)"
               :key="option.value"
               class="facet-option"
               :class="{ active: itemSubTypeFilter === option.value }"
@@ -3012,12 +4504,146 @@ onMounted(() => {
               <span class="facet-option-label">{{ option.label }}</span>
               <small>{{ option.count }}</small>
             </button>
+            <button
+              v-if="shouldShowFacetToggle('item:sub-type', itemSubTypeFacetOptions, itemSubTypeFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('item:sub-type')"
+            >{{ getFacetToggleLabel('item:sub-type', itemSubTypeFacetOptions, itemSubTypeFilter) }}</button>
+          </span>
+        </div>
+      </template>
+      <template v-else-if="activeTab === 'protocol'">
+        <div class="facet-row">
+          <span class="facet-label">协议</span>
+          <span class="facet-options">
+            <button
+              v-for="option in protocolFeatures"
+              :key="option.key"
+              class="facet-option"
+              :class="{ active: protocolFeature === option.key }"
+              type="button"
+              @click="applyProtocolFeature(option.key)"
+            >{{ option.title }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">角色</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !protocolRoleFilter }"
+              type="button"
+              @click="applyProtocolRoleFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('protocol:role', protocolRoleFacetOptions, protocolRoleFilter)"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: protocolRoleFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, protocolRoleFilter)"
+              type="button"
+              @click="applyProtocolRoleFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('protocol:role', protocolRoleFacetOptions, protocolRoleFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('protocol:role')"
+            >{{ getFacetToggleLabel('protocol:role', protocolRoleFacetOptions, protocolRoleFilter) }}</button>
+          </span>
+        </div>
+        <div class="facet-row">
+          <span class="facet-label">操作</span>
+          <span class="facet-options">
+            <button
+              class="facet-option"
+              :class="{ active: !protocolOperationFilter }"
+              type="button"
+              @click="applyProtocolOperationFilter('')"
+            >全部</button>
+            <button
+              v-for="option in getVisibleFacetOptions('protocol:operation', protocolOperationFacetOptions, protocolOperationFilter)"
+              :key="option.value"
+              class="facet-option"
+              :class="{ active: protocolOperationFilter === option.value }"
+              :disabled="isFacetOptionDisabled(option, protocolOperationFilter)"
+              type="button"
+              @click="applyProtocolOperationFilter(option.value)"
+            >
+              <span class="facet-option-label">{{ option.label }}</span>
+              <small>{{ option.count }}</small>
+            </button>
+            <button
+              v-if="shouldShowFacetToggle('protocol:operation', protocolOperationFacetOptions, protocolOperationFilter)"
+              class="facet-option facet-more-option"
+              type="button"
+              @click="toggleFacetRow('protocol:operation')"
+            >{{ getFacetToggleLabel('protocol:operation', protocolOperationFacetOptions, protocolOperationFilter) }}</button>
           </span>
         </div>
       </template>
     </div>
 
-    <div class="object-workspace">
+    <section
+      v-if="activeTab === 'gongfa' && (loadingHomeMakeBuffOverview || homeMakeBuffOverviewRawGroups.length)"
+      class="homemake-overview"
+    >
+      <div class="homemake-overview-head">
+        <h3>仙书机制总览</h3>
+        <span v-if="homeMakeBuffOverviewCountText">{{ homeMakeBuffOverviewCountText }}</span>
+        <span v-else-if="loadingHomeMakeBuffOverview">解析中</span>
+        <el-input
+          v-model="homeMakeBuffOverviewQuery"
+          :prefix-icon="Search"
+          clearable
+          class="homemake-overview-filter"
+          placeholder="筛机制 / 功法 / 技能"
+        />
+      </div>
+      <div v-if="loadingHomeMakeBuffOverview" class="homemake-overview-loading">正在读取机制分组...</div>
+      <div v-else-if="homeMakeBuffOverviewGroups.length" class="homemake-overview-list">
+        <article
+          v-for="group in homeMakeBuffOverviewGroups"
+          :key="`overview-${group.group_key}`"
+          class="homemake-overview-row"
+        >
+          <div class="homemake-overview-main">
+            <div class="homemake-overview-title">
+              <strong>{{ group.buff_name }}</strong>
+              <span v-if="group.side_jie_names">{{ group.side_jie_names }}</span>
+            </div>
+            <div class="homemake-overview-desc" v-html="renderFanxiuText(group.buff_desc)" />
+            <div class="homemake-overview-meta">
+              <span v-if="group.gongfa_names">{{ group.gongfa_names }}</span>
+              <span v-for="tag in getHomeMakeBuffTags(group)" :key="`${group.group_key}-${tag}`">{{ tag }}</span>
+            </div>
+          </div>
+          <div v-if="group.links.length" class="homemake-overview-links">
+            <button
+              v-for="link in group.links.slice(0, 4)"
+              :key="`${group.group_key}-overview-${link.field}-${link.target_table}-${link.target_id}`"
+              type="button"
+              class="homemake-buff-link-chip"
+              :class="{ actionable: canNavigateHomeMakeBuffLink(link) }"
+              :disabled="!canNavigateHomeMakeBuffLink(link)"
+              :title="getHomeMakeBuffLinkTitle(link)"
+              @click.stop="void navigateHomeMakeBuffLink(link)"
+            >
+              <b>{{ getHomeMakeBuffLinkLabel(link) }}</b>
+              <small>{{ getHomeMakeBuffLinkMeta(link) }}</small>
+            </button>
+            <em v-if="group.link_count > 4">+{{ group.link_count - 4 }}</em>
+          </div>
+        </article>
+      </div>
+      <div v-else class="homemake-overview-empty">没有匹配机制</div>
+    </section>
+
+    <div class="object-workspace" :class="{ 'protocol-workspace': activeTab === 'protocol' }">
       <aside class="object-list" v-loading="loadingList">
         <div class="object-list-scroll">
           <template v-if="activeTab === 'gongfa'">
@@ -3028,6 +4654,7 @@ onMounted(() => {
               :class="{ selected: String(item.id) === selectedId }"
               type="button"
               @click="selectObject(item.id)"
+              @contextmenu="handleObjectContextMenu($event, item.id)"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
@@ -3055,6 +4682,37 @@ onMounted(() => {
             </button>
             <div v-if="!loadingList && !gongfaItems.length" class="empty-state">没有匹配功法</div>
           </template>
+          <template v-else-if="activeTab === 'activity'">
+            <button
+              v-for="item in activityItems"
+              :key="item.id"
+              class="object-row"
+              :class="{ selected: String(item.id) === selectedId, stale: item.is_stale }"
+              type="button"
+              @click="selectObject(item.id)"
+            >
+              <span class="object-row-icon">
+                <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
+                <img
+                  v-if="getObjectIconUrl(item)"
+                  :src="getObjectIconUrl(item)"
+                  :alt="item.name"
+                  loading="lazy"
+                  @error="hideBrokenIcon"
+                >
+              </span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ item.name }}</span>
+                <span class="object-row-meta">
+                  {{ getActivityMeta(item) }}
+                  <template v-if="getFirstTimelineShortLabel(item)"> · {{ getFirstTimelineShortLabel(item) }}</template>
+                  <template v-if="item.is_stale"> · 旧版保留</template>
+                </span>
+                <span class="object-row-preview">{{ compactText(item.reward_preview || item.description_preview, 96) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !activityItems.length" class="empty-state">没有匹配活动</div>
+          </template>
           <template v-else-if="activeTab === 'lingjie'">
             <button
               v-for="item in lingjieItems"
@@ -3063,6 +4721,7 @@ onMounted(() => {
               :class="{ selected: String(item.gongfa_id) === selectedId }"
               type="button"
               @click="selectObject(item.gongfa_id)"
+              @contextmenu="handleObjectContextMenu($event, item.gongfa_id)"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
@@ -3084,7 +4743,7 @@ onMounted(() => {
             </button>
             <div v-if="!loadingList && !lingjieItems.length" class="empty-state">没有匹配灵界词条</div>
           </template>
-          <template v-else>
+          <template v-else-if="activeTab === 'item'">
             <button
               v-for="item in itemItems"
               :key="item.id"
@@ -3092,6 +4751,7 @@ onMounted(() => {
               :class="{ selected: String(item.id) === selectedId }"
               type="button"
               @click="selectObject(item.id)"
+              @contextmenu="handleObjectContextMenu($event, item.id)"
             >
               <span class="object-row-icon">
                 <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
@@ -3114,9 +4774,24 @@ onMounted(() => {
             </button>
             <div v-if="!loadingList && !itemItems.length" class="empty-state">没有匹配道具</div>
           </template>
+          <template v-else-if="activeTab === 'protocol'">
+            <button
+              v-for="item in protocolRows"
+              :key="item.packet"
+              class="protocol-row"
+              :class="{ selected: item.packet === selectedId }"
+              type="button"
+              @click="selectProtocolRow(item)"
+            >
+              <span class="protocol-row-title">{{ item.packet }}</span>
+              <span class="protocol-row-meta">{{ getProtocolRowMeta(item) }}</span>
+              <span class="protocol-row-preview">{{ getProtocolRowPreview(item) }}</span>
+            </button>
+            <div v-if="!loadingList && !protocolRows.length" class="empty-state">没有匹配协议</div>
+          </template>
         </div>
 
-        <div v-if="total > 0" class="object-pagination">
+        <div v-if="total > 0 && activeTab !== 'protocol'" class="object-pagination">
           <el-select
             v-model="pageSize"
             class="page-size-select"
@@ -3186,102 +4861,22 @@ onMounted(() => {
             v-if="getDisplayLinkedItems(selectedCard.consume_items).length || getDisplayLinkedItems(selectedCard.show_condition_items).length"
             class="linked-item-strip detail-items"
           >
-            <el-popover
+            <FanxiuLinkedItemChip
               v-for="item in getDisplayLinkedItems(selectedCard.consume_items)"
               :key="`consume-${item.id}-${item.count}`"
-              trigger="hover"
-              placement="top-start"
-              :width="320"
-              popper-class="fanxiu-linked-item-popover"
-            >
-              <template #reference>
-                <button class="linked-item clickable" type="button" @click="openLinkedItem(item)">
-                  <span class="linked-item-icon">
-                    <img
-                      v-if="getLinkedItemIconUrl(item)"
-                      :src="getLinkedItemIconUrl(item)"
-                      :alt="item.name"
-                      loading="lazy"
-                      @error="hideBrokenIcon"
-                    >
-                  </span>
-                  <span>{{ getLinkedItemText(item) }}</span>
-                </button>
-              </template>
-              <div class="linked-item-popover-card">
-                <strong>{{ getLinkedItemText(item) }}</strong>
-                <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-              </div>
-            </el-popover>
-            <el-popover
+              :item="item"
+            />
+            <FanxiuLinkedItemChip
               v-for="item in getDisplayLinkedItems(selectedCard.show_condition_items)"
               :key="`show-${item.id}-${item.count}`"
-              trigger="hover"
-              placement="top-start"
-              :width="320"
-              popper-class="fanxiu-linked-item-popover"
-            >
-              <template #reference>
-                <button class="linked-item muted clickable" type="button" @click="openLinkedItem(item)">
-                  <span class="linked-item-icon">
-                    <img
-                      v-if="getLinkedItemIconUrl(item)"
-                      :src="getLinkedItemIconUrl(item)"
-                      :alt="item.name"
-                      loading="lazy"
-                      @error="hideBrokenIcon"
-                    >
-                  </span>
-                  <span>{{ getLinkedItemText(item) }}</span>
-                </button>
-              </template>
-              <div class="linked-item-popover-card">
-                <strong>{{ getLinkedItemText(item) }}</strong>
-                <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-              </div>
-            </el-popover>
+              :item="item"
+              muted
+            />
           </div>
 
           <div v-if="selectedTerms.length" class="term-strip">
             <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
           </div>
-
-          <section v-if="selectedWikiUserFieldsTarget" class="object-section user-fields-section">
-            <div v-if="wikiUserFieldsSaveLabel" class="user-fields-status-row">
-              <span
-                class="user-fields-save-state"
-                :class="`state-${wikiUserFieldsSaveState}`"
-              >
-                {{ wikiUserFieldsSaveLabel }}
-              </span>
-            </div>
-            <div class="user-fields-grid">
-              <label class="user-field">
-                <span>来源</span>
-                <el-input
-                  v-model="wikiUserSourceDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 5 }"
-                  resize="none"
-                  placeholder="获取渠道"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-              <label class="user-field">
-                <span>备注</span>
-                <el-input
-                  v-model="wikiUserNoteDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 6 }"
-                  resize="none"
-                  placeholder="备注"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-            </div>
-          </section>
 
           <div v-if="getTimelineValueHints(selectedCard).length" class="time-hint-strip">
             <strong>时间线索</strong>
@@ -3297,6 +4892,139 @@ onMounted(() => {
           <section v-if="getCardDescriptionText(selectedCard)" class="object-section intro-section">
             <h4>简介</h4>
             <div class="plain-rich-text" v-html="renderFanxiuText(getCardDescriptionText(selectedCard), { tone: 'light' })" />
+          </section>
+
+          <section
+            v-if="loadingHomeMakeStaticDetail || homeMakeStaticRows.length || homeMakeStaticWarnings.length"
+            class="object-section homemake-static-section"
+          >
+            <div class="section-row">
+              <h4>功法效果</h4>
+              <span v-if="selectedHomeMakeStaticDetail" class="section-count">
+                {{ selectedHomeMakeStaticDetail.counts.rows }} 条 · {{ selectedHomeMakeStaticDetail.source }}
+              </span>
+              <span v-else-if="loadingHomeMakeStaticDetail" class="section-count">解析中</span>
+            </div>
+            <div v-if="loadingHomeMakeStaticDetail" class="homemake-static-loading">正在读取静态配置...</div>
+            <div v-if="homeMakeStaticWarnings.length" class="homemake-static-warnings">
+              <span v-for="warning in homeMakeStaticWarnings" :key="warning">{{ warning }}</span>
+            </div>
+            <div v-if="homeMakeStaticRows.length" class="homemake-static-list">
+              <article
+                v-for="(row, rowIndex) in homeMakeStaticRows"
+                :key="`${row.section}-${row.active_state}-${row.effect_id || rowIndex}`"
+                class="homemake-static-row"
+                :class="`state-${row.active_state || 'unknown'}`"
+              >
+                <div class="homemake-static-label">
+                  <strong>{{ getHomeMakeStaticSectionTitle(row) }}</strong>
+                  <span v-if="getHomeMakeStaticRowMeta(row)">{{ getHomeMakeStaticRowMeta(row) }}</span>
+                </div>
+                <div class="homemake-static-text" v-html="renderFanxiuText(row.rich_text)" />
+              </article>
+            </div>
+          </section>
+
+          <section
+            v-if="loadingHomeMakeFormulaCatalog || homeMakeFormulaRawGroups.length"
+            class="object-section homemake-formula-section"
+          >
+            <div class="section-row">
+              <h4>仙书公式</h4>
+              <span v-if="homeMakeFormulaCountText" class="section-count">{{ homeMakeFormulaCountText }}</span>
+              <span v-else-if="loadingHomeMakeFormulaCatalog" class="section-count">解析中</span>
+            </div>
+            <el-input
+              v-if="homeMakeFormulaRawGroups.length > 8"
+              v-model="homeMakeFormulaQuery"
+              :prefix-icon="Search"
+              clearable
+              class="homemake-formula-filter"
+              placeholder="筛公式 / 机制 / Buff"
+            />
+            <div v-if="loadingHomeMakeFormulaCatalog" class="homemake-static-loading">正在读取公式目录...</div>
+            <div v-if="homeMakeFormulaGroups.length" class="homemake-formula-list">
+              <article
+                v-for="group in homeMakeFormulaGroups"
+                :key="`formula-${group.feature_group}`"
+                class="homemake-formula-row"
+              >
+                <div class="homemake-formula-head">
+                  <strong>{{ group.side_feature_names || `特性组 ${group.feature_group}` }}</strong>
+                  <span v-if="group.buff_names">{{ group.buff_names }}</span>
+                </div>
+                <div class="homemake-formula-text" v-html="renderFanxiuText(group.sample_rendered_plain)" />
+                <div v-if="getHomeMakeFormulaTags(group).length" class="homemake-formula-tags">
+                  <span v-for="tag in getHomeMakeFormulaTags(group)" :key="`${group.feature_group}-${tag}`">{{ tag }}</span>
+                </div>
+              </article>
+            </div>
+            <div
+              v-else-if="homeMakeFormulaRawGroups.length && homeMakeFormulaQuery"
+              class="homemake-buff-empty"
+            >
+              没有匹配公式
+            </div>
+          </section>
+
+          <section
+            v-if="loadingHomeMakeBuffParameterSemantics || homeMakeBuffParameterRawGroups.length"
+            class="object-section homemake-buff-section"
+          >
+            <div class="section-row">
+              <h4>仙书机制</h4>
+              <span v-if="homeMakeBuffParameterCountText" class="section-count">{{ homeMakeBuffParameterCountText }}</span>
+              <span v-else-if="loadingHomeMakeBuffParameterSemantics" class="section-count">解析中</span>
+            </div>
+            <el-input
+              v-if="homeMakeBuffParameterRawGroups.length > 8"
+              v-model="homeMakeBuffParameterQuery"
+              :prefix-icon="Search"
+              clearable
+              class="homemake-buff-filter"
+              placeholder="筛机制 / 技能 / 标签"
+            />
+            <div v-if="loadingHomeMakeBuffParameterSemantics" class="homemake-static-loading">正在读取机制分组...</div>
+            <div v-if="homeMakeBuffParameterGroups.length" class="homemake-buff-list">
+              <article
+                v-for="group in homeMakeBuffParameterGroups"
+                :key="group.group_key"
+                class="homemake-buff-row"
+              >
+                <div class="homemake-buff-main">
+                  <div class="homemake-buff-head">
+                    <strong>{{ group.buff_name }}</strong>
+                    <span v-if="group.side_jie_names">{{ group.side_jie_names }}</span>
+                  </div>
+                  <div class="homemake-buff-desc" v-html="renderFanxiuText(group.buff_desc)" />
+                  <div v-if="getHomeMakeBuffTags(group).length" class="homemake-buff-tags">
+                    <span v-for="tag in getHomeMakeBuffTags(group)" :key="tag">{{ tag }}</span>
+                  </div>
+                </div>
+                <div v-if="group.links.length" class="homemake-buff-links">
+                  <button
+                    v-for="link in group.links.slice(0, 5)"
+                    :key="`${group.group_key}-${link.field}-${link.target_table}-${link.target_id}`"
+                    type="button"
+                    class="homemake-buff-link-chip"
+                    :class="{ actionable: canNavigateHomeMakeBuffLink(link) }"
+                    :disabled="!canNavigateHomeMakeBuffLink(link)"
+                    :title="getHomeMakeBuffLinkTitle(link)"
+                    @click.stop="void navigateHomeMakeBuffLink(link)"
+                  >
+                    <b>{{ getHomeMakeBuffLinkLabel(link) }}</b>
+                    <small>{{ getHomeMakeBuffLinkMeta(link) }}</small>
+                  </button>
+                  <em v-if="group.link_count > 5">+{{ group.link_count - 5 }}</em>
+                </div>
+              </article>
+            </div>
+            <div
+              v-else-if="homeMakeBuffParameterRawGroups.length && homeMakeBuffParameterQuery"
+              class="homemake-buff-empty"
+            >
+              没有匹配机制
+            </div>
           </section>
 
           <section v-if="primarySkill" class="object-section">
@@ -3317,6 +5045,7 @@ onMounted(() => {
                   <p
                     v-for="(line, lineIndex) in getProgressionSectionLines(section)"
                     :key="`primary-skill-section-${sectionIndex}-line-${lineIndex}`"
+                    :class="{ empty: isBlankProgressionLine(line) }"
                     v-html="renderFanxiuText(line)"
                   />
                 </div>
@@ -3348,6 +5077,7 @@ onMounted(() => {
                       <p
                         v-for="(line, lineIndex) in getProgressionSectionLines(section)"
                         :key="`${skill.row_key ?? skill.id ?? index}-section-${sectionIndex}-line-${lineIndex}`"
+                        :class="{ empty: isBlankProgressionLine(line) }"
                         v-html="renderFanxiuText(line)"
                       />
                     </div>
@@ -3402,34 +5132,12 @@ onMounted(() => {
                   </span>
                 </div>
                 <div v-if="shouldShowProgressionItems(group.first, group.startIndex)" class="linked-item-strip progression-items">
-                    <el-popover
+                    <FanxiuLinkedItemChip
                       v-for="item in getProgressionDisplayItems(group.first)"
                       :key="`${group.key}-${item.id}-${item.count}`"
-                      trigger="hover"
-                      placement="top-start"
-                      :width="320"
-                      popper-class="fanxiu-linked-item-popover"
-                    >
-                      <template #reference>
-                        <button class="linked-item compact clickable" type="button" @click="openLinkedItem(item)">
-                          <span class="linked-item-icon">
-                            <img
-                              v-if="getLinkedItemIconUrl(item)"
-                              :src="getLinkedItemIconUrl(item)"
-                              :alt="item.name"
-                              loading="lazy"
-                              @error="hideBrokenIcon"
-                            >
-                          </span>
-                          <span>{{ getLinkedItemText(item) }}</span>
-                        </button>
-                      </template>
-                      <div class="linked-item-popover-card">
-                        <strong>{{ getLinkedItemText(item) }}</strong>
-                        <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                        <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-                      </div>
-                    </el-popover>
+                      :item="item"
+                      compact
+                    />
                   </div>
                 <div v-if="shouldRenderProgressionSections(group)" class="progression-section-list">
                   <div
@@ -3446,6 +5154,7 @@ onMounted(() => {
                       <p
                         v-for="(line, lineIndex) in getProgressionSectionLines(section)"
                         :key="`${group.key}-section-${sectionIndex}-line-${lineIndex}`"
+                        :class="{ empty: isBlankProgressionLine(line) }"
                         v-html="renderFanxiuText(line)"
                       />
                     </div>
@@ -3493,6 +5202,152 @@ onMounted(() => {
             </dl>
           </details>
         </template>
+        <template v-else-if="selectedActivity">
+          <section class="detail-head" :class="{ stale: selectedActivity.is_stale }">
+            <div class="object-icon">
+              <span class="icon-fallback">{{ getObjectIconText(selectedActivity) }}</span>
+              <img
+                v-if="getObjectIconUrl(selectedActivity)"
+                :src="getObjectIconUrl(selectedActivity)"
+                :alt="selectedActivity.name"
+                @error="hideBrokenIcon"
+              >
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedActivity.name }}</h3>
+              <div class="detail-meta">
+                <span>ID {{ selectedActivity.id }}</span>
+                <span v-if="getActivityMeta(selectedActivity)">{{ getActivityMeta(selectedActivity) }}</span>
+                <span v-if="selectedActivity.time_kind_name">{{ selectedActivity.time_kind_name }}</span>
+                <span v-if="getFirstTimelineLabel(selectedActivity)">{{ getFirstTimelineLabel(selectedActivity) }}</span>
+                <span v-if="selectedActivity.is_stale" class="stale-badge">旧版保留</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <div v-if="getTimelineValueHints(selectedActivity).length" class="time-hint-strip">
+            <strong>时间线索</strong>
+            <span
+              v-for="hint in getTimelineValueHints(selectedActivity)"
+              :key="`${hint.date}-${hint.time}-${hint.time_code}-${hint.source}-${hint.activity_id}-${hint.relation}`"
+              :title="getTimelineHintTitle(hint)"
+            >
+              {{ getTimelineHintLabel(hint) }}
+            </span>
+          </div>
+
+          <div v-if="getActivityLoopRows(selectedActivity).length" class="time-hint-strip">
+            <strong>轮换日程</strong>
+            <span
+              v-for="row in getActivityLoopRows(selectedActivity)"
+              :key="row.key"
+            >
+              {{ row.label }} · {{ row.value }}
+            </span>
+          </div>
+
+          <section v-if="getActivityDescriptionRows(selectedActivity).length" class="object-section intro-section">
+            <div class="activity-text-list">
+              <article v-for="row in getActivityDescriptionRows(selectedActivity)" :key="row.label">
+                <h4>{{ row.label }}</h4>
+                <div class="plain-rich-text" v-html="renderFanxiuText(row.value, { tone: 'light' })" />
+              </article>
+            </div>
+          </section>
+
+          <section
+            v-if="getActivityTimeRows(selectedActivity).length || getActivityConditionRows(selectedActivity).length"
+            class="object-section"
+          >
+            <h4>时程 / 条件</h4>
+            <dl class="object-field-list">
+              <template v-for="row in getActivityTimeRows(selectedActivity)" :key="`time-${row.label}`">
+                <dt>{{ row.label }}</dt>
+                <dd :title="row.raw || row.value">{{ row.value }}</dd>
+              </template>
+              <template v-for="row in getActivityConditionRows(selectedActivity)" :key="`condition-${row.label}`">
+                <dt>{{ row.label }}</dt>
+                <dd :title="row.raw || row.value">{{ row.value }}</dd>
+              </template>
+            </dl>
+          </section>
+
+          <section v-if="getActivityJumpTargetRows(selectedActivity).length" class="object-section item-field-section">
+            <h4>入口功能</h4>
+            <dl class="object-field-list">
+              <template v-for="row in getActivityJumpTargetRows(selectedActivity)" :key="row.label">
+                <dt>{{ row.label }}</dt>
+                <dd>{{ row.value }}</dd>
+              </template>
+            </dl>
+          </section>
+
+          <section
+            v-for="section in selectedActivity.reward_sections ?? []"
+            :key="section.key"
+            class="object-section"
+          >
+            <div class="section-row">
+              <h4>{{ section.title }}</h4>
+              <span class="section-count">{{ section.count }} 条</span>
+            </div>
+            <div class="skill-list activity-reward-list">
+              <article
+                v-for="(row, index) in section.rows"
+                :key="getActivityRewardRowKey(section, row, index)"
+                class="skill-item activity-reward-row"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ getActivityRewardRowTitle(row, index) }}</strong>
+                  <span>{{ getActivityRewardRowMeta(row) }}</span>
+                </div>
+                <div v-if="row.costs?.length" class="feature-effects">
+                  <span v-for="cost in row.costs" :key="cost">消耗 {{ cost }}</span>
+                </div>
+                <div v-if="row.reward_items?.length" class="linked-item-strip progression-items">
+                  <FanxiuLinkedItemChip
+                    v-for="item in row.reward_items"
+                    :key="`${section.key}-${row.row_key}-${item.id}-${item.count}`"
+                    :item="item"
+                    compact
+                  />
+                </div>
+                <div
+                  v-if="getActivityRawRewardText(row)"
+                  class="feature-static-text activity-raw-reward"
+                >
+                  {{ getActivityRawRewardText(row) }}
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="getActivityFieldRows(selectedActivity).length" class="object-section item-field-section">
+            <h4>字段</h4>
+            <dl class="object-field-list">
+              <template v-for="row in getActivityFieldRows(selectedActivity)" :key="row.label">
+                <dt>{{ row.label }}</dt>
+                <dd>{{ row.value }}</dd>
+              </template>
+            </dl>
+          </section>
+
+          <details class="source-details">
+            <summary>来源</summary>
+            <dl>
+              <dt>活动 ID</dt>
+              <dd>{{ selectedActivity.id }}</dd>
+              <dt>配置行</dt>
+              <dd>{{ selectedActivity.source_row_key || '-' }}</dd>
+              <dt>目录</dt>
+              <dd>{{ catalogPath }}</dd>
+            </dl>
+          </details>
+        </template>
         <template v-else-if="selectedLingjieCard">
           <section class="detail-head">
             <div class="object-icon">
@@ -3514,74 +5369,16 @@ onMounted(() => {
           </section>
 
           <div v-if="selectedLingjieCard.items?.length" class="linked-item-strip detail-items">
-            <el-popover
+            <FanxiuLinkedItemChip
               v-for="item in selectedLingjieCard.items"
               :key="String(item.id ?? item.row_key ?? item.name)"
-              trigger="hover"
-              placement="top-start"
-              :width="320"
-              popper-class="fanxiu-linked-item-popover"
-            >
-              <template #reference>
-                <button class="linked-item clickable" type="button" @click="openLinkedItem(item)">
-                  <span class="linked-item-icon">
-                    <img
-                      v-if="getLingjieItemIconUrl(item)"
-                      :src="getLingjieItemIconUrl(item)"
-                      :alt="item.name"
-                      loading="lazy"
-                      @error="hideBrokenIcon"
-                    >
-                  </span>
-                  <span>{{ getLingjieItemText(item) }}</span>
-                </button>
-              </template>
-              <div class="linked-item-popover-card">
-                <strong>{{ getLingjieItemText(item) }}</strong>
-                <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-              </div>
-            </el-popover>
+              :item="item"
+            />
           </div>
 
           <div v-if="selectedTerms.length" class="term-strip">
             <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
           </div>
-
-          <section v-if="selectedWikiUserFieldsTarget" class="object-section user-fields-section">
-            <div v-if="wikiUserFieldsSaveLabel" class="user-fields-status-row">
-              <span
-                class="user-fields-save-state"
-                :class="`state-${wikiUserFieldsSaveState}`"
-              >
-                {{ wikiUserFieldsSaveLabel }}
-              </span>
-            </div>
-            <div class="user-fields-grid">
-              <label class="user-field">
-                <span>来源</span>
-                <el-input
-                  v-model="wikiUserSourceDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 5 }"
-                  resize="none"
-                  placeholder="获取渠道"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-              <label class="user-field">
-                <span>备注</span>
-                <el-input
-                  v-model="wikiUserNoteDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 6 }"
-                  resize="none"
-                  placeholder="备注"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-            </div>
-          </section>
 
           <section v-if="selectedLingjieCard.description" class="object-section intro-section">
             <h4>简介</h4>
@@ -3672,6 +5469,7 @@ onMounted(() => {
                       <p
                         v-for="(line, lineIndex) in getProgressionSectionLines(section)"
                         :key="`${group.key}-section-${sectionIndex}-line-${lineIndex}`"
+                        :class="{ empty: isBlankProgressionLine(line) }"
                         v-html="renderFanxiuText(line)"
                       />
                     </div>
@@ -3820,6 +5618,88 @@ onMounted(() => {
             </dl>
           </details>
         </template>
+        <template v-else-if="activeTab === 'protocol' && selectedProtocolRow">
+          <section class="protocol-detail-head">
+            <div class="detail-title">
+              <h3>{{ selectedProtocolRow.packet }}</h3>
+              <div class="detail-meta">
+                <span>ID {{ selectedProtocolRow.id || '-' }}</span>
+                <span v-if="selectedProtocolRow.operation">操作 {{ selectedProtocolRow.operation }}</span>
+                <span v-if="selectedProtocolRow.role">角色 {{ selectedProtocolRow.role }}</span>
+                <span v-if="selectedProtocolRow.authority_class">边界 {{ selectedProtocolRow.authority_class }}</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="protocol-detail-grid">
+            <div>
+              <span>方向</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.direction) }}</strong>
+            </div>
+            <div>
+              <span>操作</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.operation) }}</strong>
+            </div>
+            <div>
+              <span>角色</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.role) }}</strong>
+            </div>
+            <div>
+              <span>边界</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.authority_class) }}</strong>
+            </div>
+            <div>
+              <span>handler</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.handler_names || selectedProtocolRow.net_function) }}</strong>
+            </div>
+            <div>
+              <span>flow</span>
+              <strong>{{ displayProtocolText(selectedProtocolRow.flow_kind) }}</strong>
+            </div>
+          </section>
+
+          <section class="object-section protocol-section">
+            <h4>字段</h4>
+            <p>{{ displayProtocolText(compactProtocolFields(selectedProtocolRow)) }}</p>
+          </section>
+
+          <section
+            v-if="selectedProtocolRow.state_sinks || selectedProtocolRow.semantic_note"
+            class="object-section protocol-section"
+          >
+            <h4>状态与语义</h4>
+            <p>{{ displayProtocolText(selectedProtocolRow.state_sinks || selectedProtocolRow.semantic_note) }}</p>
+            <p v-if="selectedProtocolRow.state_sinks && selectedProtocolRow.semantic_note" class="protocol-note">
+              {{ selectedProtocolRow.semantic_note }}
+            </p>
+          </section>
+
+          <section class="object-section protocol-section">
+            <h4>相关边 {{ selectedProtocolEdges.length }}</h4>
+            <div v-if="selectedProtocolEdges.length" class="protocol-edge-list">
+              <article v-for="edge in selectedProtocolEdges" :key="`${edge.source}-${edge.edge}-${edge.target}-${edge.evidence}`">
+                <strong>{{ edge.edge }}</strong>
+                <span>{{ getProtocolEdgeLabel(edge) }}</span>
+                <em v-if="edge.evidence">{{ edge.evidence }}</em>
+              </article>
+            </div>
+            <p v-else>没有相关边</p>
+          </section>
+
+          <details class="source-details">
+            <summary>来源</summary>
+            <dl>
+              <dt>协议</dt>
+              <dd>{{ protocolResponse?.title || protocolFeature }}</dd>
+              <dt>Packet</dt>
+              <dd>{{ selectedProtocolRow.packet }}</dd>
+              <dt>语义表</dt>
+              <dd>{{ protocolResponse?.outputs?.semantics || '-' }}</dd>
+              <dt>边表</dt>
+              <dd>{{ protocolResponse?.outputs?.edges || '-' }}</dd>
+            </dl>
+          </details>
+        </template>
         <template v-else-if="selectedItem">
           <section class="detail-head">
             <div class="object-icon">
@@ -3851,41 +5731,6 @@ onMounted(() => {
             <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
           </div>
 
-          <section v-if="selectedWikiUserFieldsTarget" class="object-section user-fields-section">
-            <div v-if="wikiUserFieldsSaveLabel" class="user-fields-status-row">
-              <span
-                class="user-fields-save-state"
-                :class="`state-${wikiUserFieldsSaveState}`"
-              >
-                {{ wikiUserFieldsSaveLabel }}
-              </span>
-            </div>
-            <div class="user-fields-grid">
-              <label class="user-field">
-                <span>来源</span>
-                <el-input
-                  v-model="wikiUserSourceDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 5 }"
-                  resize="none"
-                  placeholder="获取渠道"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-              <label class="user-field">
-                <span>备注</span>
-                <el-input
-                  v-model="wikiUserNoteDraft"
-                  type="textarea"
-                  :autosize="{ minRows: 2, maxRows: 6 }"
-                  resize="none"
-                  placeholder="备注"
-                  @blur="flushWikiUserFieldsSave"
-                />
-              </label>
-            </div>
-          </section>
-
           <div v-if="getTimelineValueHints(selectedItem).length" class="time-hint-strip">
             <strong>时间线索</strong>
             <span
@@ -3906,34 +5751,11 @@ onMounted(() => {
             <h4>效果</h4>
             <div v-if="selectedItem.effect_description" class="game-rich-text" v-html="renderFanxiuText(selectedItem.effect_description)" />
             <div v-if="selectedItem.optional_gift_rewards?.length" class="linked-item-strip detail-items optional-gift-items">
-              <el-popover
+              <FanxiuLinkedItemChip
                 v-for="item in getDisplayLinkedItems(selectedItem.optional_gift_rewards)"
                 :key="`optional-gift-${item.id}-${item.count}`"
-                trigger="hover"
-                placement="top-start"
-                :width="320"
-                popper-class="fanxiu-linked-item-popover"
-              >
-                <template #reference>
-                  <button class="linked-item clickable" type="button" @click="openLinkedItem(item)">
-                    <span class="linked-item-icon">
-                      <img
-                        v-if="getLinkedItemIconUrl(item)"
-                        :src="getLinkedItemIconUrl(item)"
-                        :alt="item.name"
-                        loading="lazy"
-                        @error="hideBrokenIcon"
-                      >
-                    </span>
-                    <span>{{ getLinkedItemText(item) }}</span>
-                  </button>
-                </template>
-                <div class="linked-item-popover-card">
-                  <strong>{{ getLinkedItemText(item) }}</strong>
-                  <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                  <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-                </div>
-              </el-popover>
+                :item="item"
+              />
             </div>
           </section>
 
@@ -3981,34 +5803,12 @@ onMounted(() => {
                   </span>
                 </div>
                 <div v-if="shouldShowProgressionItems(group.first, group.startIndex)" class="linked-item-strip progression-items">
-                  <el-popover
+                  <FanxiuLinkedItemChip
                     v-for="item in getProgressionDisplayItems(group.first)"
                     :key="`${group.key}-${item.id}-${item.count}`"
-                    trigger="hover"
-                    placement="top-start"
-                    :width="320"
-                    popper-class="fanxiu-linked-item-popover"
-                  >
-                    <template #reference>
-                      <button class="linked-item compact clickable" type="button" @click="openLinkedItem(item)">
-                        <span class="linked-item-icon">
-                          <img
-                            v-if="getLinkedItemIconUrl(item)"
-                            :src="getLinkedItemIconUrl(item)"
-                            :alt="item.name"
-                            loading="lazy"
-                            @error="hideBrokenIcon"
-                          >
-                        </span>
-                        <span>{{ getLinkedItemText(item) }}</span>
-                      </button>
-                    </template>
-                    <div class="linked-item-popover-card">
-                      <strong>{{ getLinkedItemText(item) }}</strong>
-                      <span v-if="getLinkedItemId(item)">ID {{ getLinkedItemId(item) }}</span>
-                      <div v-if="getLinkedItemDescription(item)" v-html="renderFanxiuText(getLinkedItemDescription(item), { tone: 'light' })" />
-                    </div>
-                  </el-popover>
+                    :item="item"
+                    compact
+                  />
                 </div>
                 <div v-if="group.displayText" class="plain-rich-text compact" v-html="renderFanxiuText(group.displayText)" />
                 <div v-if="hasFeatureLink(group.first)" class="feature-link">
@@ -4084,7 +5884,18 @@ onMounted(() => {
         <div v-else class="empty-state">未选择{{ activeObjectLabel }}</div>
       </main>
     </div>
+
+    <div
+      v-if="contextMenu.visible"
+      class="wiki-context-menu"
+      :style="contextMenuStyle"
+      @click.stop
+      @contextmenu.prevent
+    >
+      <button type="button" @click="openContextMenuTarget">在独立页面打开</button>
+    </div>
   </div>
+  </FanxiuResourceHoverScope>
 </template>
 
 <style scoped>
@@ -4135,6 +5946,34 @@ onMounted(() => {
   background: #dfe4ec;
 }
 
+.wiki-context-menu {
+  position: fixed;
+  z-index: 3200;
+  min-width: 146px;
+  padding: 4px;
+  background: #ffffff;
+  border: 1px solid #d0d5dd;
+  box-shadow: 0 10px 24px rgba(16, 24, 40, 0.16);
+}
+
+.wiki-context-menu button {
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  color: #172033;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.wiki-context-menu button:hover {
+  color: #0b63ce;
+  background: #eef5ff;
+}
+
 .toolbar {
   flex: 0 0 auto;
   display: flex;
@@ -4145,6 +5984,56 @@ onMounted(() => {
 
 .query-input {
   width: min(420px, 42vw);
+}
+
+:global(.fanxiu-search-history-popover) {
+  padding: 6px !important;
+}
+
+.search-history-panel {
+  display: grid;
+  gap: 2px;
+}
+
+.search-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px 6px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.search-history-header button {
+  padding: 0;
+  border: 0;
+  color: #8a6728;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.search-history-header button:hover {
+  color: #5e461b;
+}
+
+.search-history-item {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  color: #344054;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search-history-item:hover {
+  background: #fff6dc;
 }
 
 .sort-mode-button {
@@ -4160,17 +6049,25 @@ onMounted(() => {
 
 .facet-panel {
   flex: 0 0 auto;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 4px;
-  padding: 2px 0 12px;
+  box-sizing: border-box;
+  max-height: clamp(198px, 36vh, 390px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 2px 6px 12px 0;
   border-bottom: 1px solid #eef1f5;
 }
 
 .facet-row {
+  flex: 0 0 auto;
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   align-items: start;
-  min-height: 30px;
+  min-height: auto;
   column-gap: 12px;
 }
 
@@ -4232,18 +6129,163 @@ onMounted(() => {
   font-weight: 500;
 }
 
+.facet-more-option {
+  color: #8a6728;
+  background: rgba(255, 246, 220, 0.62);
+  box-shadow: inset 0 0 0 1px rgba(174, 128, 38, 0.24);
+}
+
+.facet-more-option:hover {
+  background: rgba(255, 238, 190, 0.92);
+}
+
 .result-count {
   color: #667085;
   font-size: 13px;
 }
 
+.homemake-overview {
+  flex: 0 0 auto;
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  background:
+    linear-gradient(90deg, rgba(255, 251, 238, 0.96), rgba(247, 240, 223, 0.9)),
+    #f7f0df;
+  border: 1px solid rgba(176, 132, 44, 0.32);
+}
+
+.homemake-overview-head {
+  display: grid;
+  grid-template-columns: auto auto minmax(220px, 320px);
+  align-items: center;
+  gap: 10px 14px;
+  margin-bottom: 10px;
+}
+
+.homemake-overview-head h3 {
+  margin: 0;
+  color: #6b480d;
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.homemake-overview-head > span {
+  color: #8d6b2c;
+  font-size: 13px;
+}
+
+.homemake-overview-filter {
+  justify-self: end;
+  width: 100%;
+}
+
+.homemake-overview-loading,
+.homemake-overview-empty {
+  color: rgba(79, 60, 22, 0.72);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.homemake-overview-list {
+  max-height: clamp(190px, 24vh, 300px);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 8px;
+  overflow: auto;
+  padding-right: 4px;
+  scrollbar-gutter: stable;
+}
+
+.homemake-overview-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 9px 10px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(176, 132, 44, 0.22);
+}
+
+.homemake-overview-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.homemake-overview-title {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.homemake-overview-title strong {
+  color: #202532;
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.homemake-overview-title span {
+  color: #a36a00;
+  font-size: 12px;
+}
+
+.homemake-overview-desc {
+  overflow: hidden;
+  color: #463b29;
+  font-size: 14px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.homemake-overview-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.homemake-overview-meta span,
+.homemake-overview-links em {
+  max-width: 100%;
+  padding: 2px 6px;
+  overflow: hidden;
+  color: #8a5a00;
+  background: rgba(255, 251, 238, 0.82);
+  border: 1px solid rgba(176, 132, 44, 0.28);
+  font-size: 12px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.homemake-overview-links {
+  max-width: 210px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: start;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
+.homemake-overview-links em {
+  font-style: normal;
+}
+
 .object-workspace {
-  flex: 1;
+  flex: 1 1 420px;
   min-height: 0;
   display: grid;
   grid-template-columns: clamp(320px, 25%, 420px) minmax(0, 1fr);
+  overflow: hidden;
   border: 1px solid #dfe4ec;
   background: #f7f1dc;
+}
+
+.object-workspace.protocol-workspace {
+  grid-template-columns: clamp(460px, 42%, 660px) minmax(0, 1fr);
 }
 
 .object-list {
@@ -4280,6 +6322,29 @@ onMounted(() => {
 .object-row.selected {
   background: #fff8e7;
   box-shadow: inset 3px 0 0 #c28b2c;
+}
+
+.object-row.stale {
+  background: #f6f6f4;
+}
+
+.object-row.stale:hover {
+  background: #eeeeeb;
+}
+
+.object-row.stale.selected {
+  background: #f3eee2;
+}
+
+.object-row.stale .object-row-icon,
+.detail-head.stale .object-icon {
+  filter: grayscale(1);
+}
+
+.object-row.stale .object-row-title,
+.object-row.stale .object-row-meta,
+.object-row.stale .object-row-preview {
+  color: #8a8f98;
 }
 
 .object-row-icon,
@@ -4347,6 +6412,56 @@ onMounted(() => {
   color: #4b5563;
   font-size: 13px;
   line-height: 1.42;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.protocol-row {
+  width: 100%;
+  display: grid;
+  gap: 5px;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 1px solid #e5e7eb;
+  background: transparent;
+  color: #28384f;
+  text-align: left;
+  cursor: pointer;
+}
+
+.protocol-row:hover {
+  background: #f3f4f6;
+}
+
+.protocol-row.selected {
+  background: #eaf2ff;
+  box-shadow: inset 3px 0 0 #3f92f5;
+}
+
+.protocol-row-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #152238;
+  font-size: 14px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-row-meta {
+  overflow: hidden;
+  color: #6a4f2a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-row-preview {
+  color: #5d6b80;
+  font-size: 12px;
+  line-height: 1.45;
   display: -webkit-box;
   overflow: hidden;
   -webkit-line-clamp: 2;
@@ -4466,6 +6581,91 @@ onMounted(() => {
   font-size: 13px;
 }
 
+.stale-badge {
+  color: #737985;
+}
+
+.protocol-detail-head {
+  width: min(100%, 1080px);
+  margin: 0 auto 14px;
+}
+
+.protocol-detail-grid {
+  width: min(100%, 1080px);
+  margin: 0 auto 14px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 14px;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  color: #243044;
+  background: rgba(255, 252, 242, 0.74);
+  border: 1px solid rgba(193, 164, 92, 0.48);
+}
+
+.protocol-detail-grid div {
+  min-width: 0;
+}
+
+.protocol-detail-grid span {
+  display: block;
+  color: #7d8491;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.protocol-detail-grid strong {
+  display: block;
+  overflow: hidden;
+  color: #101828;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-section p {
+  margin: 0;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.protocol-note {
+  margin-top: 10px !important;
+  color: #d8d0bd;
+}
+
+.protocol-edge-list {
+  display: grid;
+  gap: 8px;
+}
+
+.protocol-edge-list article {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr) minmax(120px, 220px);
+  gap: 12px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.protocol-edge-list strong,
+.protocol-edge-list span,
+.protocol-edge-list em {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.protocol-edge-list strong {
+  color: #f4dc8a;
+}
+
+.protocol-edge-list em {
+  color: #b8c4d6;
+  font-style: normal;
+}
+
 .term-strip {
   width: min(100%, 1080px);
   margin: 0 auto 14px;
@@ -4577,31 +6777,6 @@ onMounted(() => {
   object-fit: cover;
 }
 
-:global(.fanxiu-linked-item-popover) {
-  padding: 0 !important;
-  border-color: rgba(180, 136, 54, 0.48) !important;
-  box-shadow: 0 16px 34px rgba(42, 31, 16, 0.22) !important;
-}
-
-:global(.fanxiu-linked-item-popover .linked-item-popover-card) {
-  display: grid;
-  gap: 7px;
-  padding: 12px 14px;
-  color: #4c3b24;
-  line-height: 1.62;
-  background: #fffaf0;
-}
-
-:global(.fanxiu-linked-item-popover .linked-item-popover-card strong) {
-  color: #0f7480;
-  font-size: 15px;
-}
-
-:global(.fanxiu-linked-item-popover .linked-item-popover-card span) {
-  color: #8a6a35;
-  font-size: 12px;
-}
-
 .object-section {
   --wiki-term-color: #ffd45f;
   --wiki-number-color: #b9f08f;
@@ -4642,6 +6817,291 @@ onMounted(() => {
   border-bottom-color: rgba(138, 107, 51, 0.36);
 }
 
+.homemake-static-section {
+  background: rgba(57, 58, 66, 0.97);
+}
+
+.homemake-buff-section {
+  background: #f7f0df;
+  border-color: rgba(176, 132, 44, 0.28);
+}
+
+.homemake-formula-section {
+  background: #fbf7eb;
+  border-color: rgba(176, 132, 44, 0.28);
+}
+
+.homemake-buff-section h4,
+.homemake-formula-section h4 {
+  color: #8a6b33;
+  border-bottom-color: rgba(138, 107, 51, 0.36);
+}
+
+.homemake-buff-section .section-count,
+.homemake-formula-section .section-count {
+  color: rgba(79, 60, 22, 0.68);
+}
+
+.homemake-buff-filter,
+.homemake-formula-filter {
+  max-width: 320px;
+  margin: -2px 0 12px;
+}
+
+.homemake-static-list {
+  display: grid;
+  gap: 14px;
+}
+
+.homemake-static-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid rgba(226, 204, 138, 0.18);
+}
+
+.homemake-static-row:last-child {
+  border-bottom: 0;
+}
+
+.homemake-static-row.state-base .homemake-static-label strong {
+  color: #efe2ad;
+}
+
+.homemake-static-row.state-active .homemake-static-label strong {
+  color: #35e0e0;
+}
+
+.homemake-static-label {
+  display: grid;
+  gap: 4px;
+  color: rgba(247, 240, 223, 0.58);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.homemake-static-label strong {
+  color: #efe2ad;
+  font-size: 17px;
+  font-weight: 780;
+}
+
+.homemake-static-label span {
+  overflow-wrap: anywhere;
+}
+
+.homemake-static-text {
+  color: #f7f0df;
+  font-size: 19px;
+  line-height: 1.62;
+  word-break: break-word;
+}
+
+.homemake-static-loading,
+.homemake-static-warnings {
+  color: rgba(247, 240, 223, 0.72);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.homemake-static-warnings {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+  color: #ffd45f;
+}
+
+.homemake-buff-section .homemake-static-loading,
+.homemake-formula-section .homemake-static-loading {
+  color: rgba(79, 60, 22, 0.72);
+}
+
+.homemake-buff-list {
+  display: grid;
+  gap: 10px;
+}
+
+.homemake-buff-empty {
+  color: rgba(79, 60, 22, 0.72);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.homemake-buff-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 28%);
+  gap: 14px;
+  align-items: start;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid rgba(176, 132, 44, 0.22);
+}
+
+.homemake-buff-row:last-child {
+  border-bottom: 0;
+}
+
+.homemake-buff-main {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.homemake-buff-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.homemake-buff-head strong {
+  color: #262633;
+  font-size: 18px;
+  font-weight: 780;
+}
+
+.homemake-buff-head span {
+  color: #a36a00;
+  font-size: 13px;
+}
+
+.homemake-buff-desc {
+  color: #3f3a30;
+  font-size: 16px;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.homemake-buff-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.homemake-buff-tags span,
+.homemake-buff-link-chip,
+.homemake-buff-links em {
+  border: 1px solid rgba(176, 132, 44, 0.32);
+  background: rgba(255, 251, 238, 0.82);
+  color: #8a5a00;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.homemake-buff-tags span {
+  padding: 3px 7px;
+}
+
+.homemake-buff-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.homemake-buff-link-chip {
+  appearance: none;
+  display: grid;
+  gap: 2px;
+  max-width: 190px;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.homemake-buff-link-chip.actionable {
+  cursor: pointer;
+  border-color: rgba(176, 132, 44, 0.52);
+}
+
+.homemake-buff-link-chip.actionable:hover {
+  background: #fff4ca;
+}
+
+.homemake-buff-link-chip:disabled {
+  cursor: default;
+}
+
+.homemake-buff-link-chip b {
+  overflow: hidden;
+  color: #654000;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.homemake-buff-link-chip small {
+  overflow: hidden;
+  color: rgba(101, 64, 0, 0.66);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.homemake-buff-links em {
+  align-self: start;
+  padding: 5px 7px;
+  font-style: normal;
+}
+
+.homemake-formula-list {
+  display: grid;
+  gap: 10px;
+}
+
+.homemake-formula-row {
+  display: grid;
+  gap: 7px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid rgba(176, 132, 44, 0.2);
+}
+
+.homemake-formula-row:last-child {
+  border-bottom: 0;
+}
+
+.homemake-formula-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.homemake-formula-head strong {
+  color: #262633;
+  font-size: 18px;
+  font-weight: 780;
+}
+
+.homemake-formula-head span {
+  color: #9b5a00;
+  font-size: 13px;
+}
+
+.homemake-formula-text {
+  color: #3f3a30;
+  font-size: 16px;
+  line-height: 1.58;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.homemake-formula-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.homemake-formula-tags span {
+  border: 1px solid rgba(176, 132, 44, 0.32);
+  background: rgba(255, 251, 238, 0.82);
+  color: #8a5a00;
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .section-row {
   display: flex;
   flex-wrap: wrap;
@@ -4658,65 +7118,6 @@ onMounted(() => {
 .section-count {
   color: rgba(247, 240, 223, 0.62);
   font-size: 13px;
-}
-
-.user-fields-section {
-  padding-top: 14px;
-  padding-bottom: 16px;
-}
-
-.user-fields-status-row {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
-}
-
-.user-fields-grid {
-  display: grid;
-  grid-template-columns: minmax(220px, 0.9fr) minmax(300px, 1.2fr);
-  gap: 12px;
-}
-
-.user-field {
-  display: grid;
-  gap: 6px;
-}
-
-.user-field > span {
-  color: #efd98f;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.user-field :deep(.el-textarea__inner) {
-  color: #f7f0df;
-  line-height: 1.5;
-  background: rgba(255, 255, 255, 0.055);
-  border-color: rgba(239, 217, 143, 0.28);
-  border-radius: 2px;
-  box-shadow: none;
-}
-
-.user-field :deep(.el-textarea__inner:focus) {
-  border-color: rgba(68, 214, 223, 0.68);
-  box-shadow: 0 0 0 1px rgba(68, 214, 223, 0.22);
-}
-
-.user-field :deep(.el-textarea__inner::placeholder) {
-  color: rgba(247, 240, 223, 0.36);
-}
-
-.user-fields-save-state {
-  color: rgba(247, 240, 223, 0.62);
-  font-size: 12px;
-}
-
-.user-fields-save-state.state-saving {
-  color: #44d6df;
-}
-
-.user-fields-save-state.state-error {
-  color: #ff8f8f;
 }
 
 .skill-meta,
@@ -4769,7 +7170,7 @@ onMounted(() => {
 .rich-section-list,
 .progression-section-list {
   display: grid;
-  gap: 9px;
+  gap: 14px;
   margin-top: 10px;
 }
 
@@ -4804,6 +7205,11 @@ onMounted(() => {
   word-break: break-word;
 }
 
+.rich-section-body p.empty,
+.progression-section-body p.empty {
+  min-height: 1.35em;
+}
+
 .skill-section-list {
   padding-top: 12px;
 }
@@ -4823,6 +7229,16 @@ onMounted(() => {
 .lingjie-group-list {
   display: grid;
   gap: 10px;
+}
+
+.activity-text-list {
+  display: grid;
+  gap: 18px;
+}
+
+.activity-text-list article {
+  display: grid;
+  gap: 4px;
 }
 
 .item-field-section {
@@ -4951,17 +7367,20 @@ onMounted(() => {
   font-weight: 700;
 }
 
-:global(.fanxiu-inherit-tooltip .wiki-term) {
+:global(.fanxiu-inherit-tooltip .wiki-term),
+:global(.fanxiu-inherit-tooltip .fanxiu-rich-term) {
   color: #ffd45f;
   font-weight: 700;
 }
 
-:global(.fanxiu-inherit-tooltip .wiki-number) {
+:global(.fanxiu-inherit-tooltip .wiki-number),
+:global(.fanxiu-inherit-tooltip .fanxiu-rich-number) {
   color: #b9f08f;
   font-weight: 700;
 }
 
-:global(.fanxiu-inherit-tooltip .wiki-variable) {
+:global(.fanxiu-inherit-tooltip .wiki-variable),
+:global(.fanxiu-inherit-tooltip .fanxiu-rich-variable) {
   color: #44d6df;
   font-weight: 800;
 }
@@ -5028,6 +7447,18 @@ onMounted(() => {
   color: rgba(247, 240, 223, 0.84);
   font-size: 13px;
   line-height: 1.45;
+}
+
+.activity-reward-row {
+  display: grid;
+  gap: 8px;
+}
+
+.activity-raw-reward {
+  padding-top: 4px;
+  color: rgba(247, 240, 223, 0.64);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
 }
 
 .runtime-stat-grid {
@@ -5135,19 +7566,49 @@ onMounted(() => {
   color: #ffd45f;
 }
 
-:deep(.wiki-term) {
+:deep(.wiki-term),
+:deep(.fanxiu-rich-term) {
   color: var(--wiki-term-color, #ffd45f);
   font-weight: 700;
 }
 
-:deep(.wiki-number) {
+:deep(.wiki-number),
+:deep(.fanxiu-rich-number) {
   color: var(--wiki-number-color, #b9f08f);
   font-weight: 700;
 }
 
-:deep(.wiki-variable) {
+:deep(.wiki-variable),
+:deep(.fanxiu-rich-variable) {
   color: var(--wiki-variable-color, #44d6df);
   font-weight: 800;
+}
+
+:deep(.wiki-resource-link),
+:deep(.fanxiu-resource-link) {
+  color: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  text-decoration-color: rgba(68, 214, 223, 0.65);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+:deep(.wiki-resource-link:hover),
+:deep(.fanxiu-resource-link:hover) {
+  color: #44d6df;
+  text-decoration-color: currentColor;
+}
+
+:deep(.wiki-rich-color .wiki-term),
+:deep(.wiki-rich-color .wiki-number),
+:deep(.wiki-rich-color .wiki-variable),
+:deep(.wiki-rich-color .fanxiu-rich-term),
+:deep(.wiki-rich-color .fanxiu-rich-number),
+:deep(.wiki-rich-color .fanxiu-rich-variable) {
+  color: inherit;
+  font-weight: inherit;
 }
 
 .source-details {
@@ -5221,6 +7682,32 @@ onMounted(() => {
     gap: 2px 12px;
   }
 
+  .facet-panel {
+    max-height: clamp(168px, 33vh, 300px);
+  }
+
+  .homemake-overview-head {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .homemake-overview-filter {
+    justify-self: stretch;
+  }
+
+  .homemake-overview-list {
+    grid-template-columns: 1fr;
+  }
+
+  .homemake-overview-row {
+    grid-template-columns: 1fr;
+  }
+
+  .homemake-overview-links {
+    max-width: none;
+    justify-content: flex-start;
+  }
+
   .object-workspace {
     grid-template-columns: 1fr;
   }
@@ -5249,8 +7736,22 @@ onMounted(() => {
     padding: 16px 18px 20px;
   }
 
-  .user-fields-grid {
+  .homemake-static-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .homemake-buff-row {
     grid-template-columns: 1fr;
   }
+
+  .homemake-buff-links {
+    justify-content: flex-start;
+  }
+
+  .homemake-static-text {
+    font-size: 17px;
+  }
+
 }
 </style>

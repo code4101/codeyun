@@ -22,14 +22,13 @@ from backend.core.fanxiu_timeline import (
     first_timeline_hint,
 )
 from backend.core.fanxiu_lua_config import parse_fanxiu_generated_lua_config
-from backend.core.fanxiu_wiki_user_fields import get_fanxiu_wiki_user_fields
 
 
 DEFAULT_ITEM_ROWS = Path("parsed_configs/Item/rows.json")
 DEFAULT_QUALITY_ROWS = Path("parsed_configs/Quality/rows.json")
 DEFAULT_ITEM_CATALOG = Path("parsed_configs/item_catalog/item_catalog.json")
 DEFAULT_GONGFA_FEATURE_LINKS = Path("parsed_configs/gongfa_feature_probe/feature_links.tsv")
-ITEM_CATALOG_SCHEMA_VERSION = 9
+ITEM_CATALOG_SCHEMA_VERSION = 10
 _WHITESPACE_RE = re.compile(r"\s+")
 _BRACKET_TERM_RE = re.compile(r"【([^】]{1,30})】")
 _UNKNOWN_ITEM_CATEGORY_KEY = "__missing__"
@@ -563,6 +562,7 @@ def _compact_item_row(
         "small_icon": row.get("smallIcon"),
         "description": _text_value(row, "descript"),
         "effect_description": effect_text,
+        "show_effect": _text_value(row, "showEffect"),
         "type": row.get("type"),
         "sub_type": row.get("subType"),
         "overlay": row.get("overlay"),
@@ -716,7 +716,7 @@ def _build_item_search_doc(card: dict[str, Any], index: int) -> dict[str, Any]:
         "effect_description": effect_description,
         "progression_text": progression_text,
         "optional_gift_text": optional_gift_text,
-        "quality_values": tuple(str(value or "").strip() for value in (card.get("quality_name"), card.get("quality_tab"), card.get("quality"))),
+        "quality_values": _item_quality_filter_values(card),
         "type_values": tuple(str(value or "").strip() for value in (card.get("type_key"), card.get("type"), card.get("type_name"))),
         "sub_type_values": tuple(
             str(value or "").strip()
@@ -893,10 +893,7 @@ def _build_item_progression_for_gid(
 def _build_item_quality_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for card in cards:
-        label = str(card.get("quality_name") or "").strip()
-        if not label:
-            quality = card.get("quality")
-            label = f"品质 {quality}" if quality not in (None, "") else "品质未知"
+        label = _item_quality_filter_label(card)
         item = grouped.setdefault(
             label,
             {
@@ -910,6 +907,24 @@ def _build_item_quality_options(cards: list[dict[str, Any]]) -> list[dict[str, A
         )
         item["count"] += 1
     return sorted(grouped.values(), key=lambda item: (_sort_value(item.get("quality")), str(item.get("label") or "")))
+
+
+def _item_quality_filter_label(card: dict[str, Any]) -> str:
+    label = str(card.get("quality_name") or "").strip()
+    if label:
+        return label
+    quality = card.get("quality")
+    return f"品质 {quality}" if quality not in (None, "") else "品质未知"
+
+
+def _item_quality_filter_values(card: dict[str, Any]) -> tuple[str, ...]:
+    values = {
+        str(card.get("quality_name") or "").strip(),
+        str(card.get("quality_tab") or "").strip(),
+        str(card.get("quality") or "").strip(),
+        _item_quality_filter_label(card),
+    }
+    return tuple(value for value in values if value)
 
 
 def _build_item_type_options(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1014,10 +1029,7 @@ def _build_item_facet_index(scored_rows: list[tuple[int, int, dict[str, Any], di
         if not object_id:
             continue
         object_ids.append(object_id)
-        label = str(card.get("quality_name") or "").strip()
-        if not label:
-            quality = card.get("quality")
-            label = f"品质 {quality}" if quality not in (None, "") else "品质未知"
+        label = _item_quality_filter_label(card)
         rows["quality_name"].setdefault(label, []).append(object_id)
         type_key = str(card.get("type_key") or _UNKNOWN_ITEM_CATEGORY_KEY)
         sub_type_key = str(card.get("sub_type_key") or _item_sub_type_pair_key(type_key, _UNKNOWN_ITEM_CATEGORY_KEY))
@@ -1139,7 +1151,6 @@ def get_fanxiu_item_card(
                 **card,
                 "progression": progression,
                 "terms": _card_terms(card, limit=20),
-                "user_fields": get_fanxiu_wiki_user_fields("item", requested),
             },
         }
     raise FanxiuResourceError(f"没有找到道具：{item_id}")

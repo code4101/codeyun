@@ -5,6 +5,8 @@ from sqlmodel import Session, create_engine
 
 from backend.core.ai_app_config import (
     AI_APP_CODEX_DIARY,
+    AI_APP_CODEX_DIARY_DEFAULT_MODEL,
+    AI_APP_CODEX_DIARY_DEFAULT_PROVIDER,
     AI_APP_GIT_COMMIT,
     AI_APP_GIT_COMMIT_DEFAULT_MODEL,
     AI_APP_GIT_COMMIT_DEFAULT_PROVIDER,
@@ -81,6 +83,31 @@ def test_ai_git_commit_default_uses_deepseek_flash():
         assert runtime["model"] == AI_APP_GIT_COMMIT_DEFAULT_MODEL
 
 
+def test_ai_git_commit_codex_cli_saved_config_is_coerced_to_deepseek_flash():
+    engine = _build_engine()
+    with Session(engine) as session:
+        user = _create_user(session)
+        save_user_ai_app_config(
+            session,
+            user.id,
+            AI_APP_GIT_COMMIT,
+            provider="custom-codex-cli",
+            model="gpt-5.5",
+        )
+
+        app_config = get_user_ai_app_config(session, user.id, AI_APP_GIT_COMMIT)
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_GIT_COMMIT,
+        )
+
+        assert app_config["provider"] == AI_APP_GIT_COMMIT_DEFAULT_PROVIDER
+        assert app_config["model"] == AI_APP_GIT_COMMIT_DEFAULT_MODEL
+        assert runtime["provider"] == AI_APP_GIT_COMMIT_DEFAULT_PROVIDER
+        assert runtime["model"] == AI_APP_GIT_COMMIT_DEFAULT_MODEL
+
+
 def test_ai_git_commit_compat_save_writes_app_config():
     engine = _build_engine()
     with Session(engine) as session:
@@ -151,13 +178,45 @@ def test_resolve_ai_app_runtime_config_falls_back_to_provider_preferred_model():
         assert runtime["model"] == "deepseek-preferred"
 
 
-def test_codex_diary_default_keeps_deepseek_provider():
+def test_codex_diary_default_uses_deepseek_pro():
     engine = _build_engine()
     with Session(engine) as session:
         user = _create_user(session)
 
         app_config = get_user_ai_app_config(session, user.id, AI_APP_CODEX_DIARY)
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_CODEX_DIARY,
+        )
 
         assert app_config["enabled"] is True
-        assert app_config["provider"] == "deepseek"
-        assert app_config["model"] == ""
+        assert app_config["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
+        assert app_config["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
+        assert runtime["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
+        assert runtime["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
+
+
+def test_codex_diary_codex_cli_saved_config_is_coerced_to_deepseek_pro():
+    engine = _build_engine()
+    with Session(engine) as session:
+        user = _create_user(session)
+        save_user_ai_app_config(
+            session,
+            user.id,
+            AI_APP_CODEX_DIARY,
+            provider="custom-codex-cli",
+            model="gpt-5.5",
+        )
+
+        app_config = get_user_ai_app_config(session, user.id, AI_APP_CODEX_DIARY)
+        runtime = resolve_ai_app_runtime_config(
+            session=session,
+            current_user=user,
+            app_id=AI_APP_CODEX_DIARY,
+        )
+
+        assert app_config["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
+        assert app_config["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL
+        assert runtime["provider"] == AI_APP_CODEX_DIARY_DEFAULT_PROVIDER
+        assert runtime["model"] == AI_APP_CODEX_DIARY_DEFAULT_MODEL

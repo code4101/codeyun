@@ -1,13 +1,232 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      if (window.location.pathname === '/attendance-feedback') {
+        window.location.replace(`/attendance-feedback/${window.location.search}${window.location.hash}`)
+      }
+    </script>
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CodeYun</title>
+    <style>
+      :root {
+        color: #213547;
+        background: #ffffff;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #ffffff;
+      }
+
+      .app-shell-loading {
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        box-sizing: border-box;
+        color: #4b5563;
+      }
+
+      .app-shell-loading__panel {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        max-width: 320px;
+      }
+
+      .app-shell-loading__mark {
+        width: 28px;
+        height: 28px;
+        border: 2px solid #d7dee8;
+        border-top-color: #409eff;
+        border-radius: 999px;
+        animation: app-shell-loading-spin 0.9s linear infinite;
+        flex: 0 0 auto;
+      }
+
+      .app-shell-loading__title {
+        margin: 0;
+        color: #1f2937;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.35;
+      }
+
+      .app-shell-loading__text {
+        margin: 3px 0 0;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .app-shell-loading__progress {
+        width: min(260px, 66vw);
+        height: 3px;
+        margin-top: 12px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e5eaf2;
+      }
+
+      .app-shell-loading__progress::before {
+        content: "";
+        display: block;
+        width: 44%;
+        height: 100%;
+        border-radius: inherit;
+        background: #409eff;
+        animation: app-shell-loading-progress 1.3s ease-in-out infinite;
+      }
+
+      .app-shell-loading__meta {
+        margin: 8px 0 0;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+
+      .app-shell-loading__detail {
+        margin: 4px 0 0;
+        color: #6b7280;
+        font-size: 12px;
+        line-height: 1.45;
+        overflow-wrap: anywhere;
+      }
+
+      @keyframes app-shell-loading-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+
+      @keyframes app-shell-loading-progress {
+        0% {
+          transform: translateX(-110%);
+        }
+
+        100% {
+          transform: translateX(230%);
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="app">
+      <div class="app-shell-loading" role="status" aria-live="polite">
+        <div class="app-shell-loading__panel">
+          <div class="app-shell-loading__mark" aria-hidden="true"></div>
+          <div>
+            <p class="app-shell-loading__title">CodeYun 正在连接</p>
+            <p id="app-shell-loading-text" class="app-shell-loading__text">正在加载核心资源。</p>
+            <div class="app-shell-loading__progress" aria-hidden="true"></div>
+            <p id="app-shell-loading-meta" class="app-shell-loading__meta">正在监听资源加载。</p>
+            <p id="app-shell-loading-detail" class="app-shell-loading__detail"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <noscript>
+      <div class="app-shell-loading">
+        <div class="app-shell-loading__panel">
+          <div>
+            <p class="app-shell-loading__title">需要启用 JavaScript</p>
+            <p class="app-shell-loading__text">CodeYun 需要浏览器支持 JavaScript 后才能使用。</p>
+          </div>
+        </div>
+      </div>
+    </noscript>
+    <script>
+      (() => {
+        const text = document.getElementById('app-shell-loading-text');
+        const meta = document.getElementById('app-shell-loading-meta');
+        const detail = document.getElementById('app-shell-loading-detail');
+        const resourceState = {
+          count: 0,
+          transferred: 0,
+          lastName: '',
+          lastDuration: 0,
+          lastKind: '',
+        };
+
+        const formatBytes = value => {
+          if (!value) return '缓存/未知大小';
+          if (value < 1024) return `${Math.round(value)} B`;
+          if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
+          return `${(value / 1024 / 1024).toFixed(1)} MB`;
+        };
+
+        const resourceKind = entry => {
+          if (entry.initiatorType === 'script') return '脚本';
+          if (entry.initiatorType === 'link' || entry.name.endsWith('.css')) return '样式';
+          if (entry.initiatorType === 'fetch' || entry.initiatorType === 'xmlhttprequest') return '接口';
+          if (entry.initiatorType === 'img') return '图片';
+          return '资源';
+        };
+
+        const resourceLabel = name => {
+          try {
+            const url = new URL(name, window.location.href);
+            const parts = url.pathname.split('/').filter(Boolean);
+            return parts.slice(-2).join('/');
+          } catch {
+            return name;
+          }
+        };
+
+        const renderResourceState = () => {
+          if (text) text.textContent = '正在加载核心资源。';
+          if (meta) {
+            meta.textContent = `已完成 ${resourceState.count} 个资源，传输 ${formatBytes(resourceState.transferred)}`;
+          }
+          if (detail && resourceState.lastName) {
+            detail.textContent = `最近完成：${resourceState.lastKind} ${resourceState.lastName}，耗时 ${Math.round(resourceState.lastDuration)} ms`;
+          }
+        };
+
+        const handleResource = entry => {
+          const kind = resourceKind(entry);
+          const isUsefulResource = ['脚本', '样式', '接口'].includes(kind);
+          if (!isUsefulResource) return;
+
+          resourceState.count += 1;
+          resourceState.transferred += entry.transferSize || 0;
+          resourceState.lastKind = kind;
+          resourceState.lastName = resourceLabel(entry.name);
+          resourceState.lastDuration = entry.duration || 0;
+          renderResourceState();
+        };
+
+        if ('PerformanceObserver' in window) {
+          try {
+            const observer = new PerformanceObserver(list => {
+              list.getEntries().forEach(handleResource);
+            });
+            observer.observe({ type: 'resource', buffered: true });
+            window.addEventListener('codeyun:app-mounted', () => observer.disconnect(), { once: true });
+          } catch {
+            if (meta) meta.textContent = '浏览器无法提供资源明细，正在等待应用启动。';
+          }
+        } else if (meta) {
+          meta.textContent = '当前浏览器不支持资源明细，正在等待应用启动。';
+        }
+
+        window.addEventListener('codeyun:module-loaded', () => {
+          if (text) text.textContent = '资源已加载，正在启动应用。';
+          if (detail) detail.textContent = '入口脚本已完成下载，正在执行前端应用。';
+        }, { once: true });
+        window.addEventListener('error', event => {
+          const target = event.target;
+          const isScriptError = target instanceof Element && target.tagName === 'SCRIPT';
+          if (!isScriptError) return;
+          if (text) text.textContent = '资源加载失败，请刷新页面重试。';
+          if (meta) meta.textContent = '如果多次失败，可能是网络或服务器暂时不可用。';
+          if (detail) detail.textContent = target.src ? `失败资源：${resourceLabel(target.src)}` : '';
+        }, true);
+      })();
+    </script>
+    <script type="module" src="/src/main.ts" onload="window.dispatchEvent(new Event('codeyun:module-loaded'))"></script>
   </body>
 </html>

@@ -2422,9 +2422,60 @@ def test_note_sheet_resource_access_acl_flow(client, session):
 
     _override_user(superuser)
     try:
+        superuser_workbook_response = client.get("/api/note-sheets/workbooks/2")
+        assert superuser_workbook_response.status_code == 200
+        assert superuser_workbook_response.json()["access"]["role"] == "manager"
+
         superuser_response = client.get("/api/note-sheets/sheets/4")
         assert superuser_response.status_code == 200
         assert superuser_response.json()["access"]["role"] == "manager"
+    finally:
+        _clear_user_override()
+
+
+def test_note_sheet_resource_creator_is_implicit_manager_when_owner_missing(client, session):
+    creator = _create_user(session, username="note-sheet-creator-principal")
+
+    workbook = WorkbookDocument(
+        numeric_id=2,
+        title="迁移工作簿",
+        owner_user_id=None,
+        created_by_user_id=creator.id,
+        updated_by_user_id=creator.id,
+    )
+    sheet = SheetDocument(
+        numeric_id=4,
+        scope="notes",
+        owner_type="user",
+        owner_key=str(creator.id),
+        sheet_key="4",
+        title="迁移工作表",
+        owner_user_id=None,
+        created_by_user_id=creator.id,
+        updated_by_user_id=creator.id,
+        document_json={
+            "schema_version": 1,
+            "columns": ["姓名"],
+            "rows": [["时秋菊"]],
+        },
+    )
+    session.add(workbook)
+    session.add(sheet)
+    session.commit()
+    session.refresh(workbook)
+    session.refresh(sheet)
+    session.add(WorkbookSheetLink(workbook_id=workbook.id, sheet_id=sheet.id, order_index=0))
+    session.commit()
+
+    _override_user(creator)
+    try:
+        workbook_response = client.get("/api/note-sheets/workbooks/2")
+        assert workbook_response.status_code == 200
+        assert workbook_response.json()["access"]["role"] == "manager"
+
+        sheet_response = client.get("/api/note-sheets/sheets/4")
+        assert sheet_response.status_code == 200
+        assert sheet_response.json()["access"]["role"] == "manager"
     finally:
         _clear_user_override()
 

@@ -92,6 +92,11 @@
                   </el-select>
                 </div>
                 <div class="control-field">
+                  <span class="control-label">显示</span>
+                  <el-input-number v-model="displayScale" class="scale-input" size="small" :min="20" :max="100" :step="5" controls-position="right" @change="syncCanvasSoon" />
+                  <span class="control-label">%</span>
+                </div>
+                <div class="control-field">
                   <span class="control-label">FPS</span>
                   <el-input-number v-model="fps" class="number-input" size="small" :min="1" :max="30" controls-position="right" @change="restartStream" />
                 </div>
@@ -111,14 +116,22 @@
                 />
               </div>
               <div class="switch-field">
-                <el-checkbox
-                  v-model="controlEnabled"
-                  class="compact-checkbox"
-                  :disabled="!selectedEntryId || !streamEnabled"
+                <span class="control-label">模式</span>
+                <el-select
+                  v-model="windowViewMode"
+                  class="mode-select"
+                  size="small"
+                  :disabled="!selectedEntryId"
+                  @change="handleWindowViewModeChange"
                 >
-                  交互操作
-                </el-checkbox>
-                <el-tooltip content="支持在画面中用鼠标远程操作" placement="top">
+                  <el-option
+                    v-for="mode in windowViewModes"
+                    :key="mode.value"
+                    :label="mode.label"
+                    :value="mode.value"
+                  />
+                </el-select>
+                <el-tooltip content="直播只显示画面；交互可在画面中点击/拖拽；关闭会停止当前页面取流。" placement="top">
                   <span class="help-mark">?</span>
                 </el-tooltip>
               </div>
@@ -130,12 +143,18 @@
       <div class="workspace">
         <div class="viewer-pane">
           <div class="live-workspace">
-            <div ref="imageWrapRef" class="image-wrap" :class="{ 'is-control-enabled': controlEnabled }">
+            <div
+              v-show="windowViewMode !== 'off'"
+              ref="imageWrapRef"
+              class="image-wrap"
+              :class="{ 'is-control-enabled': controlEnabled }"
+            >
               <img
                 v-if="streamEnabled && streamUrl"
                 ref="streamImageRef"
                 class="stream-image"
                 :src="streamUrl"
+                :style="streamImageStyle"
                 alt="凡修云手机窗口"
                 draggable="false"
                 @load="handleImageLoad"
@@ -524,9 +543,10 @@ interface ControlClickState {
   startedAt: number;
 }
 
-type WindowSceneKey = 'star-cloud-phone' | 'sunlogin';
+type WindowSceneKey = 'star-cloud-phone' | 'sunlogin' | 'mumu';
 type CaptureArea = 'outer' | 'client';
 type RotateDegrees = '0' | '90' | '180' | '270';
+type WindowViewMode = 'live' | 'control' | 'off';
 
 interface WindowSceneDefaults {
   targetTitle: string;
@@ -537,6 +557,7 @@ interface WindowSceneDefaults {
   fps: number;
   quality: number;
   autoDismissPopup: boolean;
+  displayScale: number;
 }
 
 interface WindowSceneConfig {
@@ -545,6 +566,7 @@ interface WindowSceneConfig {
   fps: number;
   quality: number;
   autoDismissPopup: boolean;
+  displayScale: number;
 }
 
 interface WindowScene {
@@ -607,6 +629,11 @@ const WINDOW_CONFIG_STORAGE_PREFIX = 'fanxiu.gameWindow2.windowConfig';
 const SCREENSHOT_SELECTION_STORAGE_PREFIX = 'fanxiu.gameWindow2.screenshotFilename';
 const LEGACY_CODE_CARDS_STORAGE_KEY = 'fanxiu.gameWindow2.codeCards';
 const GAME_WINDOW_SERVICE_KEY = 'fanxiu-game-window';
+const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
+  { value: 'live', label: '直播' },
+  { value: 'control', label: '交互' },
+  { value: 'off', label: '关闭' },
+];
 const codeCardScopes: CodeCardScopeInfo[] = [
   { scope: 'guard', label: '守护', emptyText: '暂无守护' },
   { scope: 'action', label: '动作', emptyText: '暂无动作' },
@@ -624,6 +651,7 @@ const windowScenes: WindowScene[] = [
       fps: 12,
       quality: 82,
       autoDismissPopup: false,
+      displayScale: 100,
     },
   },
   {
@@ -638,6 +666,22 @@ const windowScenes: WindowScene[] = [
       fps: 10,
       quality: 80,
       autoDismissPopup: true,
+      displayScale: 100,
+    },
+  },
+  {
+    key: 'mumu',
+    label: 'MuMu模拟器',
+    defaults: {
+      targetTitle: 'MuMu模拟器',
+      cropText: '0,60,0,0',
+      trimBorderText: '0,0,0,0',
+      captureArea: 'client',
+      rotateDegrees: '0',
+      fps: 12,
+      quality: 82,
+      autoDismissPopup: false,
+      displayScale: 60,
     },
   },
 ];
@@ -651,6 +695,7 @@ const connectionLoading = ref(false);
 
 const trimBorderText = ref('0,0,0,0');
 const rotateDegrees = ref<RotateDegrees>('0');
+const displayScale = ref(100);
 const fps = ref(12);
 const quality = ref(82);
 const autoDismissPopup = ref(false);
@@ -661,6 +706,7 @@ const streamToken = ref('');
 const streamTokenExpiresAt = ref(0);
 const streamTokenLoading = ref(false);
 const layerVisible = ref(true);
+const windowViewMode = ref<WindowViewMode>('live');
 const controlEnabled = ref(false);
 const saveFrameLoading = ref(false);
 const screenshotPanelOpen = ref(true);
@@ -797,8 +843,14 @@ const naturalSizeText = computed(() => {
   if (!naturalWidth.value || !naturalHeight.value) return '等待画面';
   return `${naturalHeight.value} x ${naturalWidth.value}`;
 });
+const streamImageStyle = computed(() => {
+  if (!naturalWidth.value) return {};
+  const width = Math.max(1, Math.round(naturalWidth.value * displayScale.value / 100));
+  return { width: `${width}px` };
+});
 const placeholderText = computed(() => {
   if (!selectedEntryId.value) return '选择设备';
+  if (windowViewMode.value === 'off') return '直播已关闭';
   if (!streamEnabled.value) return '画面已暂停';
   if (!streamToken.value) return '正在准备画面流';
   return '等待画面';
@@ -1029,6 +1081,7 @@ const startPseudoCode = async () => {
 };
 
 const streamUrl = computed(() => {
+  if (windowViewMode.value === 'off') return '';
   if (!selectedEntryId.value || !streamToken.value) return '';
   const params = new URLSearchParams({
     token: streamToken.value,
@@ -1058,6 +1111,7 @@ const connectionReady = computed(() => Boolean(
 const connectionButtonLoading = computed(() => connectionLoading.value || streamTokenLoading.value);
 const connectionButtonType = computed(() => (connectionReady.value ? 'success' : 'info'));
 const connectionButtonText = computed(() => {
+  if (windowViewMode.value === 'off') return '已关闭';
   if (connectionReady.value) return '运行中';
   if (connectionButtonLoading.value || (streamEnabled.value && streamToken.value && !streamError.value)) return '连接中';
   return '连接';
@@ -1116,6 +1170,7 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
   const rotate = raw.rotateDegrees;
   const nextFps = Number(raw.fps ?? fallback.fps);
   const nextQuality = Number(raw.quality ?? fallback.quality);
+  const nextDisplayScale = Number(raw.displayScale ?? fallback.displayScale);
   return {
     trimBorderText: raw.trimBorderText || fallback.trimBorderText,
     rotateDegrees: rotate === '0' || rotate === '90' || rotate === '180' || rotate === '270'
@@ -1124,6 +1179,7 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
     fps: Number.isFinite(nextFps) ? Math.min(Math.max(Math.round(nextFps), 1), 30) : fallback.fps,
     quality: Number.isFinite(nextQuality) ? Math.min(Math.max(Math.round(nextQuality), 1), 100) : fallback.quality,
     autoDismissPopup: typeof raw.autoDismissPopup === 'boolean' ? raw.autoDismissPopup : fallback.autoDismissPopup,
+    displayScale: Number.isFinite(nextDisplayScale) ? Math.min(Math.max(Math.round(nextDisplayScale), 20), 100) : fallback.displayScale,
   };
 };
 
@@ -1167,6 +1223,7 @@ const currentWindowConfig = (): WindowSceneConfig => ({
   fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
   quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
   autoDismissPopup: autoDismissPopup.value,
+  displayScale: Number(displayScale.value) || selectedWindowScene.value.defaults.displayScale,
 });
 
 const persistWindowConfig = () => {
@@ -1180,6 +1237,7 @@ const applyWindowConfig = () => {
   const config = readWindowConfig(selectedEntryId.value, selectedWindowKey.value);
   trimBorderText.value = config.trimBorderText;
   rotateDegrees.value = config.rotateDegrees;
+  displayScale.value = config.displayScale;
   fps.value = config.fps;
   quality.value = config.quality;
   autoDismissPopup.value = config.autoDismissPopup;
@@ -1213,7 +1271,7 @@ const persistWindowSelection = () => {
 
 const refreshStreamToken = async () => {
   const entryId = selectedEntryId.value;
-  if (!entryId) {
+  if (!entryId || windowViewMode.value === 'off') {
     streamToken.value = '';
     streamTokenExpiresAt.value = 0;
     return;
@@ -1237,14 +1295,16 @@ const refreshStreamToken = async () => {
 };
 
 const ensureStreamToken = async () => {
+  if (windowViewMode.value === 'off') return;
   if (streamToken.value && streamTokenExpiresAt.value > Date.now() + 60_000) return;
   await refreshStreamToken();
 };
 
 const loadRuntimeStatus = async (silent = false) => {
   const entryId = selectedEntryId.value;
-  if (!entryId) {
+  if (!entryId || windowViewMode.value === 'off') {
     runtimeStatus.value = null;
+    runtimeLoading.value = false;
     return;
   }
   runtimeLoading.value = !silent;
@@ -1271,7 +1331,9 @@ const handleEntryChange = async () => {
   clearMatchResults();
   persistEntrySelection(selectedEntryId.value);
   applyWindowConfig();
-  await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+  if (windowViewMode.value !== 'off') {
+    await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+  }
   if (screenshotPanelOpen.value) await loadScreenshotList();
   restartStream();
 };
@@ -1285,6 +1347,22 @@ const handleWindowChange = async () => {
   clearMatchResults();
   persistWindowSelection();
   applyWindowConfig();
+  await restartStream();
+};
+
+const handleWindowViewModeChange = async () => {
+  controlClickState.value = null;
+  if (windowViewMode.value === 'off') {
+    streamError.value = '';
+    streamEnabled.value = false;
+    controlEnabled.value = false;
+    runtimeStatus.value = null;
+    streamToken.value = '';
+    streamTokenExpiresAt.value = 0;
+    if (streamImageRef.value) streamImageRef.value.src = '';
+    await nextTick(syncCanvas);
+    return;
+  }
   await restartStream();
 };
 
@@ -1378,6 +1456,10 @@ const syncCanvas = () => {
   canvas.style.width = `${rect.width}px`;
   canvas.style.height = `${rect.height}px`;
   drawOverlay();
+};
+
+const syncCanvasSoon = () => {
+  void nextTick(syncCanvas);
 };
 
 const drawScreenshotBox = (
@@ -1518,6 +1600,7 @@ const handleImageLoad = () => {
 };
 
 const handleStreamError = () => {
+  if (windowViewMode.value === 'off') return;
   const message = '未获取到画面，检查设备入口、画面流服务和窗口场景。';
   streamError.value = message;
   ElMessage.error(message);
@@ -1525,7 +1608,18 @@ const handleStreamError = () => {
 
 const restartStream = async () => {
   streamError.value = '';
+  if (windowViewMode.value === 'off') {
+    streamEnabled.value = false;
+    controlEnabled.value = false;
+    runtimeStatus.value = null;
+    streamToken.value = '';
+    streamTokenExpiresAt.value = 0;
+    if (streamImageRef.value) streamImageRef.value.src = '';
+    await nextTick(syncCanvas);
+    return;
+  }
   streamEnabled.value = true;
+  controlEnabled.value = windowViewMode.value === 'control';
   await ensureStreamToken();
   streamNonce.value = Date.now();
   void nextTick(syncCanvas);
@@ -1533,6 +1627,15 @@ const restartStream = async () => {
 
 const connectWindow = async () => {
   if (!selectedEntryId.value) return;
+  if (windowViewMode.value === 'off') {
+    streamEnabled.value = false;
+    controlEnabled.value = false;
+    runtimeStatus.value = null;
+    streamToken.value = '';
+    streamTokenExpiresAt.value = 0;
+    if (streamImageRef.value) streamImageRef.value.src = '';
+    return;
+  }
   connectionLoading.value = true;
   try {
     if (!serviceActive.value) {
@@ -2549,6 +2652,7 @@ const handleWindowResize = () => {
 const startPolling = () => {
   stopPolling();
   pollTimer = window.setInterval(() => {
+    if (windowViewMode.value === 'off') return;
     void loadRuntimeStatus(true);
   }, 5000);
 };
@@ -2563,9 +2667,10 @@ const stopPolling = () => {
 watch(layerVisible, drawOverlay);
 watch(boxes, drawOverlay, { deep: true });
 watch(
-  [trimBorderText, rotateDegrees, fps, quality, autoDismissPopup],
+  [trimBorderText, rotateDegrees, displayScale, fps, quality, autoDismissPopup],
   persistWindowConfig,
 );
+watch(displayScale, syncCanvasSoon);
 
 onMounted(async () => {
   window.addEventListener('keydown', handleKeydown);
@@ -2582,7 +2687,9 @@ onMounted(async () => {
   if (selectedEntryId.value) {
     persistEntrySelection(selectedEntryId.value);
     persistWindowSelection();
-    await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+    if (windowViewMode.value !== 'off') {
+      await Promise.all([refreshStreamToken(), loadRuntimeStatus()]);
+    }
     if (screenshotPanelOpen.value) void loadScreenshotList();
   }
   startPolling();
@@ -2731,6 +2838,10 @@ onBeforeUnmount(() => {
   width: 126px;
 }
 
+.mode-select {
+  width: 76px;
+}
+
 .connection-button {
   min-width: 74px;
 }
@@ -2747,13 +2858,24 @@ onBeforeUnmount(() => {
   width: 58px;
 }
 
+.scale-input {
+  width: 66px;
+}
+
 .number-input :deep(.el-input__wrapper) {
   padding-left: 6px;
   padding-right: 24px;
 }
 
+.scale-input :deep(.el-input__wrapper) {
+  padding-left: 6px;
+  padding-right: 24px;
+}
+
 .number-input :deep(.el-input-number__increase),
-.number-input :deep(.el-input-number__decrease) {
+.number-input :deep(.el-input-number__decrease),
+.scale-input :deep(.el-input-number__increase),
+.scale-input :deep(.el-input-number__decrease) {
   width: 18px;
 }
 

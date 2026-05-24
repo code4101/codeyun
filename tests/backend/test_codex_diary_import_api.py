@@ -399,6 +399,9 @@ def test_codex_diary_import_creates_notes_from_all_active_devices(
     assert completed["source_turn_count"] == 2
     assert completed["created_note_count"] == 1
     assert all(isinstance(note_id, int) for note_id in completed["created_note_ids"])
+    assert completed["result"]["draft_generator"] == "deepseek-json-v1"
+    assert completed["result"]["draft_provider"] == "deepseek"
+    assert completed["result"]["draft_model"] == "deepseek-v4-pro"
     assert len(captured_entry_specs[0]) == 2
 
     notes = _notes_by_public_ids(session, completed["created_note_ids"])

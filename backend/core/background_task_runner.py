@@ -28,6 +28,10 @@ from backend.core.fanxiu_slimming import (
     enqueue_fanxiu_slimming,
     is_fanxiu_slimming_allowed_host,
 )
+from backend.core.public_frontend_deploy import (
+    PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+    run_public_frontend_deploy_check,
+)
 from backend.core.settings import get_settings
 from backend.core.weekly_note_scheduler import RUANYF_WEEKLY_TASK_NAME, enqueue_ruanyf_weekly_note_job
 from backend.models import AppSetting
@@ -431,7 +435,22 @@ def _enqueue_market_quote_refresh() -> str | None:
     return task_id
 
 
+def _enqueue_public_frontend_deploy() -> str | None:
+    task_id, _ = background_task_queue.enqueue_once(PUBLIC_FRONTEND_DEPLOY_TASK_KEY, run_public_frontend_deploy_check)
+    return task_id
+
+
 BACKGROUND_TASK_SPECS: tuple[BackgroundTaskSpec, ...] = (
+    BackgroundTaskSpec(
+        key=PUBLIC_FRONTEND_DEPLOY_TASK_KEY,
+        title="公网前端发布",
+        category="部署",
+        description="每半小时检查前端源文件指纹，有变化才构建 dist；只有构建、上传和 yun 软链接切换全部成功后，公网才更新到新版本。",
+        schedule_label="未配置自动触发",
+        retry_label="失败后 10 分钟重试",
+        action=_enqueue_public_frontend_deploy,
+        manual_warning="会执行前端生产构建，并在成功后把 dist 上传到 yun 的静态站点目录；失败不会影响当前公网版本。",
+    ),
     BackgroundTaskSpec(
         key="auto_git_commit",
         title="自动 Git 提交",

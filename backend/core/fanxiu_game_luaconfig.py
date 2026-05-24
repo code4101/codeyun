@@ -11,7 +11,6 @@ from typing import Any
 from backend.core.fanxiu_lua_config import parse_fanxiu_generated_lua_config
 from backend.core.fanxiu_resources import FanxiuResourceError, resolve_fanxiu_export_root
 from backend.core.fanxiu_wiki import strip_fanxiu_rich_text
-from backend.core.fanxiu_wiki_user_fields import get_fanxiu_wiki_user_fields
 
 
 DEFAULT_LINGJIE_GONGFA_JIE_ROWS = Path("parsed_configs/Lingjie-GongfaJie/rows.json")
@@ -1381,7 +1380,6 @@ def get_fanxiu_lingjie_feature_card(
     runtime_summary = runtime.get("runtime_by_gongfa", {}).get(str(gongfa_id))
     if runtime_summary:
         result["runtime_summary"] = runtime_summary
-    result["user_fields"] = get_fanxiu_wiki_user_fields("lingjie", str(gongfa_id))
     return result
 
 
