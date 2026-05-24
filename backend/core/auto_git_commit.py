@@ -29,8 +29,6 @@ AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT = 80
 AUTO_GIT_COMMIT_CRON_LOOKBACK_DAYS = 32
 AUTO_GIT_COMMIT_STALE_HEARTBEAT_SECONDS = 2700
 AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS = ("codeyun",)
-AUTO_GIT_CHECKPOINT_FILE_THRESHOLD = 50
-AUTO_GIT_CHECKPOINT_LINE_THRESHOLD = 3000
 
 auto_git_commit_scheduler = BackgroundScheduler()
 
@@ -481,25 +479,6 @@ def _uses_lightweight_draft(candidate: AutoGitCommitCandidate) -> bool:
     return _normalize_repo_key(candidate.name) in AUTO_GIT_LIGHTWEIGHT_DRAFT_REPO_KEYS
 
 
-def _changed_line_count_from_inspect(inspect_payload: dict[str, Any]) -> int:
-    return int(inspect_payload.get("added_line_count") or 0) + int(inspect_payload.get("deleted_line_count") or 0)
-
-
-def _checkpoint_reason(inspect_payload: dict[str, Any]) -> str | None:
-    changed_file_count = len(inspect_payload.get("changed_files") or [])
-    changed_line_count = _changed_line_count_from_inspect(inspect_payload)
-    reasons: list[str] = []
-    if changed_file_count > AUTO_GIT_CHECKPOINT_FILE_THRESHOLD:
-        reasons.append(f"变更文件数 {changed_file_count} > {AUTO_GIT_CHECKPOINT_FILE_THRESHOLD}")
-    if changed_line_count > AUTO_GIT_CHECKPOINT_LINE_THRESHOLD:
-        reasons.append(f"估算变更行数 {changed_line_count} > {AUTO_GIT_CHECKPOINT_LINE_THRESHOLD}")
-    return "；".join(reasons) if reasons else None
-
-
-def _should_checkpoint_commit(candidate: AutoGitCommitCandidate, inspect_payload: dict[str, Any]) -> bool:
-    return _uses_lightweight_draft(candidate) and _checkpoint_reason(inspect_payload) is not None
-
-
 def _format_auto_git_diff_stat(value: Any, *, line_limit: int = AUTO_GIT_COMMIT_CHANGED_PATH_LIMIT) -> str:
     lines = [line.rstrip() for line in str(value or "").splitlines() if line.strip()]
     if len(lines) <= line_limit:
@@ -585,7 +564,7 @@ def _build_lightweight_reduction_input(
             "生成要求：",
             "- 只根据工作区状态、路径和 diff 统计生成提交信息。",
             "- 不要展开或臆测具体代码实现细节。",
-            "- 如果主题混杂，标题要概括为 checkpoint 或整体维护性质。",
+            "- 如果主题混杂，标题要概括主要业务范围或整体维护性质，不要使用固定 checkpoint 占位标题。",
         ]
     )
 
@@ -604,32 +583,6 @@ def _build_lightweight_reduction_input(
         "source_unit_truncated_count": int(omitted_path_count > 0),
         "lightweight": True,
     }
-
-
-def _build_checkpoint_commit_draft(
-    candidate: AutoGitCommitCandidate,
-    inspect_payload: dict[str, Any],
-) -> dict[str, Any]:
-    changed_file_count = len(inspect_payload.get("changed_files") or [])
-    added_line_count = int(inspect_payload.get("added_line_count") or 0)
-    deleted_line_count = int(inspect_payload.get("deleted_line_count") or 0)
-    reason = _checkpoint_reason(inspect_payload) or "变更规模较大"
-    group_lines = _format_auto_git_split_groups(inspect_payload)
-    body = [
-        "大规模变更自动降级为轻量 checkpoint，未调用 AI 展开完整 diff。",
-        f"变更规模：{changed_file_count} 个文件，约 +{added_line_count}/-{deleted_line_count} 行。",
-    ]
-    if group_lines:
-        body.append("主要范围：" + "；".join(line.removeprefix("- ") for line in group_lines[:3]))
-    return {
-        "subject": f"chore: checkpoint {candidate.name} changes",
-        "body": body,
-        "model": "local-checkpoint-policy",
-        "needs_split": True,
-        "reason": reason,
-        "strategy": "checkpoint",
-    }
-
 
 def _sync_run(session: Session, run: AutoGitCommitRun, results: list[dict[str, Any]]) -> None:
     run.repo_count = len(results)
@@ -796,45 +749,39 @@ def _run_one_repo(
         _auto_git_summary_only_reason(candidate)
     )
 
-    if _should_checkpoint_commit(candidate, inspect_payload):
-        draft = _build_checkpoint_commit_draft(candidate, inspect_payload)
-        provider_id = "local-policy"
-        model = str(draft.get("model") or provider_id)
-        extra_providers: tuple[AiProviderConfig, ...] = ()
+    user = session.get(User, candidate.user_id)
+    if user is None:
+        result.update({"status": "failed", "error_message": "关联用户不存在"})
+        return result
+
+    runtime_config = resolve_ai_runtime_config(
+        session=session,
+        current_user=user,
+        provider=None,
+        base_url=None,
+        api_key=None,
+        model=None,
+    )
+    if len(runtime_config) == 4:
+        provider_id, base_url, api_key, extra_providers = runtime_config
+        model = None
     else:
-        user = session.get(User, candidate.user_id)
-        if user is None:
-            result.update({"status": "failed", "error_message": "关联用户不存在"})
-            return result
+        provider_id, base_url, api_key, model, extra_providers = runtime_config
 
-        runtime_config = resolve_ai_runtime_config(
-            session=session,
-            current_user=user,
-            provider=None,
-            base_url=None,
-            api_key=None,
-            model=None,
-        )
-        if len(runtime_config) == 4:
-            provider_id, base_url, api_key, extra_providers = runtime_config
-            model = None
-        else:
-            provider_id, base_url, api_key, model, extra_providers = runtime_config
-
-        draft_kwargs: dict[str, Any] = {
-            "cwd": candidate.cwd,
-            "provider_id": provider_id,
-            "base_url": base_url,
-            "api_key": api_key,
-            "model": model,
-            "style": "summary",
-            "include_body": True,
-            "extra_providers": extra_providers,
-            "branch_factor": AUTO_GIT_COMMIT_BRANCH_FACTOR,
-        }
-        if _uses_lightweight_draft(candidate):
-            draft_kwargs["reduction_input"] = _build_lightweight_reduction_input(candidate, inspect_payload)
-        draft = draft_generator(**draft_kwargs)
+    draft_kwargs: dict[str, Any] = {
+        "cwd": candidate.cwd,
+        "provider_id": provider_id,
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "style": "summary",
+        "include_body": True,
+        "extra_providers": extra_providers,
+        "branch_factor": AUTO_GIT_COMMIT_BRANCH_FACTOR,
+    }
+    if _uses_lightweight_draft(candidate):
+        draft_kwargs["reduction_input"] = _build_lightweight_reduction_input(candidate, inspect_payload)
+    draft = draft_generator(**draft_kwargs)
 
     subject = str(draft.get("subject") or "").strip()
     if not subject:

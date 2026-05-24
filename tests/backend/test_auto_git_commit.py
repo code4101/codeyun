@@ -308,7 +308,7 @@ def test_auto_git_commit_worker_commits_dirty_repo_and_skips_clean_repo(session,
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
-def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, auth_user, tmp_path, monkeypatch):
+def test_auto_git_commit_worker_uses_lightweight_ai_for_large_codeyun(session, auth_user, tmp_path, monkeypatch):
     dirty_repo = tmp_path / "large-codeyun-repo"
     _init_git_repo(dirty_repo)
     for index in range(51):
@@ -324,16 +324,25 @@ def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, au
 
     monkeypatch.setattr(
         "backend.core.auto_git_commit.resolve_ai_runtime_config",
-        lambda **_: (_ for _ in ()).throw(AssertionError("checkpoint should not resolve AI config")),
+        lambda **_: ("ollama", None, None, ()),
     )
 
-    def unexpected_draft_generator(**kwargs):
-        raise AssertionError("large codeyun checkpoint should not call AI draft generation")
+    draft_calls = []
+
+    def fake_draft_generator(**kwargs):
+        draft_calls.append(kwargs)
+        return {
+            "subject": "汇总 codeyun 大规模变更",
+            "body": ["根据轻量摘要提交 codeyun 的大规模变更。"],
+            "model": "fake-model",
+            "needs_split": True,
+            "reason": "变更规模较大，建议后续拆分",
+        }
 
     run_auto_git_commit_worker(
         session.get_bind(),
         run.id,
-        draft_generator=unexpected_draft_generator,
+        draft_generator=fake_draft_generator,
     )
 
     session.expire_all()
@@ -344,12 +353,19 @@ def test_auto_git_commit_worker_checkpoints_large_codeyun_without_ai(session, au
     assert updated.failed_repo_count == 0
     repo_result = updated.result_json["repos"][0]
     assert repo_result["status"] == "committed"
-    assert repo_result["commit_strategy"] == "checkpoint"
-    assert repo_result["provider"] == "local-policy"
-    assert repo_result["model"] == "local-checkpoint-policy"
+    assert repo_result["commit_strategy"] == "lightweight_ai"
+    assert repo_result["provider"] == "ollama"
+    assert repo_result["model"] == "fake-model"
     assert repo_result["needs_split"] is True
-    assert "变更文件数 51 > 50" in repo_result["split_reason"]
-    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "chore: checkpoint codeyun changes"
+    assert repo_result["split_reason"] == "变更规模较大，建议后续拆分"
+    assert len(draft_calls) == 1
+    reduction_input = draft_calls[0]["reduction_input"]
+    assert reduction_input["lightweight"] is True
+    lightweight_content = reduction_input["source_units"][0]["content"]
+    assert "feature_00.txt" in lightweight_content
+    assert "new feature 0" not in lightweight_content
+    assert "不要使用固定 checkpoint 占位标题" in lightweight_content
+    assert _run_git(dirty_repo, "log", "-1", "--pretty=%s") == "汇总 codeyun 大规模变更"
     assert _run_git(dirty_repo, "status", "--short") == ""
 
 
