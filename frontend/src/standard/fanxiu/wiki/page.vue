@@ -18,19 +18,36 @@ import {
 } from '../resourceRenderer'
 import FanxiuResourceHoverScope from '../FanxiuResourceHoverScope.vue'
 import FanxiuLinkedItemChip from '../FanxiuLinkedItemChip.vue'
+import {
+  getHiddenFanxiuPacketProtocols,
+  isFanxiuPacketProtocolVisible,
+  setFanxiuPacketProtocolVisible,
+} from '../packetProtocolVisibility'
 
 import {
   getFanxiuActivityCard,
+  getFanxiuDigitDoorCharacterCard,
+  getFanxiuDigitDoorEnhanceGroup,
+  getFanxiuDigitDoorLevelConfig,
+  getFanxiuDoupoTDPartnerCard,
+  getFanxiuDoupoTDRewardConfig,
   getFanxiuGongfaCard,
   getFanxiuGongfaHomeMakeBuffParameterSemantics,
   getFanxiuGongfaHomeMakeStaticDetail,
   getFanxiuGongfaHomeMakeXianShuFormulaCatalog,
+  getFanxiuGongfaSpecialFazeCatalog,
   getFanxiuItemCard,
   getFanxiuLingjieFeatureCard,
   getFanxiuProtocolSemantics,
   getFanxiuResourceIconUrl,
   getFanxiuWikiLinkIndex,
+  listFanxiuTcpBusinessEntries,
   searchFanxiuActivityCards,
+  searchFanxiuDigitDoorCharacterCards,
+  searchFanxiuDigitDoorEnhanceGroups,
+  searchFanxiuDigitDoorLevelConfigs,
+  searchFanxiuDoupoTDPartnerCards,
+  searchFanxiuDoupoTDRewardConfigs,
   searchFanxiuGongfaCards,
   searchFanxiuItemCards,
   searchFanxiuLingjieFeatureCards,
@@ -40,6 +57,47 @@ import {
   type FanxiuActivityRewardSection,
   type FanxiuActivitySearchItem,
   type FanxiuActivityStats,
+  type FanxiuDigitDoorBuffRuntime,
+  type FanxiuDigitDoorCharacterCard,
+  type FanxiuDigitDoorCharacterSearchItem,
+  type FanxiuDigitDoorDoorEffect,
+  type FanxiuDigitDoorDoorEffectOption,
+  type FanxiuDigitDoorDoorEffectPool,
+  type FanxiuDigitDoorDoorRefreshPoint,
+  type FanxiuDigitDoorEnhance,
+  type FanxiuDigitDoorEnhanceGroup,
+  type FanxiuDigitDoorEnhanceGroupSearchItem,
+  type FanxiuDigitDoorEnhanceRef,
+  type FanxiuDigitDoorLevelMilestone,
+  type FanxiuDigitDoorLevelConfig,
+  type FanxiuDigitDoorLevelSearchItem,
+  type FanxiuDigitDoorMonsterRefreshMonster,
+  type FanxiuDigitDoorMonsterRefreshPoint,
+  type FanxiuDigitDoorMonsterSkill,
+  type FanxiuDigitDoorRewardItem,
+  type FanxiuDigitDoorStageOption,
+  type FanxiuDigitDoorStageReward,
+  type FanxiuDigitDoorLogicSkill,
+  type FanxiuDigitDoorSkill,
+  type FanxiuDigitDoorSkillEnhanceEffect,
+  type FanxiuDigitDoorStats,
+  type FanxiuDoupoTDAttrEntry,
+  type FanxiuDoupoTDComposeCard,
+  type FanxiuDoupoTDComposeProgressReward,
+  type FanxiuDoupoTDComposeQualitySource,
+  type FanxiuDoupoTDDrawSource,
+  type FanxiuDoupoTDPartnerCard,
+  type FanxiuDoupoTDPartnerSearchItem,
+  type FanxiuDoupoTDRewardConfigRewardItem,
+  type FanxiuDoupoTDRewardConfigSearchItem,
+  type FanxiuDoupoTDRewardConfigStats,
+  type FanxiuDoupoTDRewardItem,
+  type FanxiuDoupoTDBuffFlowFunction,
+  type FanxiuDoupoTDBuffRuntime,
+  type FanxiuDoupoTDLogicSkill,
+  type FanxiuDoupoTDSkill,
+  type FanxiuDoupoTDSkillStrength,
+  type FanxiuDoupoTDStats,
   type FanxiuFacetIndex,
   type FanxiuGongfaCard,
   type FanxiuGongfaHomeMakeBuffParameterGroup,
@@ -57,6 +115,10 @@ import {
   type FanxiuGongfaSkill,
   type FanxiuGongfaSkillTypeOption,
   type FanxiuGongfaStats,
+  type FanxiuGongfaSpecialFazeCatalogResponse,
+  type FanxiuGongfaSpecialFazeEffectType,
+  type FanxiuGongfaSpecialFazeReason,
+  type FanxiuGongfaSpecialFazeStage,
   type FanxiuItemCard,
   type FanxiuItemQualityOption,
   type FanxiuItemSearchItem,
@@ -76,6 +138,10 @@ import {
   type FanxiuProtocolSemanticFeature,
   type FanxiuProtocolSemanticResponse,
   type FanxiuProtocolSemanticRow,
+  type FanxiuTcpBusinessEntry,
+  type FanxiuTcpBusinessCategorySummary,
+  type FanxiuTcpBusinessProtocolSample,
+  type FanxiuTcpBusinessProtocolSummary,
   type FanxiuTimelineHint,
 } from '@/api/fanxiu'
 
@@ -89,6 +155,12 @@ const WIKI_TABS = [
   { key: 'activity', label: '活动' },
   { key: 'gongfa', label: '功法' },
   { key: 'lingjie', label: '灵界词条' },
+  { key: 'digitdoor', label: '数字门角色' },
+  { key: 'digitdoor_level', label: '数字门关卡' },
+  { key: 'digitdoor_enhance', label: '数字门强化' },
+  { key: 'doupotd', label: '斗破角色' },
+  { key: 'doupotd_reward', label: '斗破奖励' },
+  { key: 'packet', label: '抓包' },
   { key: 'protocol', label: '协议' },
 ] as const
 
@@ -165,6 +237,7 @@ type PageConfig = {
   activityKindFilter?: string
   activityTimeFilter?: string
   activityTypeFilter?: string
+  digitDoorStageFilter?: string
   protocolFeature?: string
   protocolRoleFilter?: string
   protocolOperationFilter?: string
@@ -179,10 +252,28 @@ type PageConfig = {
 type WikiTab = typeof WIKI_TABS[number]['key']
 type WikiLinkedItem = FanxiuGongfaLinkedItem | FanxiuLingjieFeatureItem
 type WikiLinkTarget = FanxiuResourceLinkTarget
+type PacketSampleTable = {
+  title: string
+  columns: Array<{ key: string; label: string }>
+  rows: Array<Record<string, string>>
+  fieldLabels?: Record<string, Record<string, string>>
+}
 
 const activeTab = ref<WikiTab>('item')
 const query = ref('')
-const searchHistory = ref<Record<WikiTab, string[]>>({ item: [], activity: [], gongfa: [], lingjie: [], protocol: [] })
+const searchHistory = ref<Record<WikiTab, string[]>>({
+  item: [],
+  activity: [],
+  gongfa: [],
+  lingjie: [],
+  digitdoor: [],
+  digitdoor_level: [],
+  digitdoor_enhance: [],
+  doupotd: [],
+  doupotd_reward: [],
+  protocol: [],
+  packet: [],
+})
 const searchHistoryVisible = ref(false)
 const gongfaQualityGradeFilter = ref('')
 const gongfaQualityFamilyFilter = ref('')
@@ -193,6 +284,7 @@ const itemSubTypeFilter = ref('')
 const activityKindFilter = ref('')
 const activityTimeFilter = ref('')
 const activityTypeFilter = ref('')
+const digitDoorStageFilter = ref('')
 const protocolFeature = ref('bluestarsea')
 const protocolRoleFilter = ref('')
 const protocolOperationFilter = ref('')
@@ -205,7 +297,19 @@ const stats = ref<FanxiuGongfaStats>({})
 const itemStats = ref<FanxiuItemStats>({})
 const activityStats = ref<FanxiuActivityStats>({})
 const lingjieStats = ref<FanxiuLingjieFeatureStats>({})
+const digitDoorStats = ref<FanxiuDigitDoorStats>({})
+const digitDoorLevelStats = ref<FanxiuDigitDoorStats>({})
+const digitDoorEnhanceStats = ref<FanxiuDigitDoorStats>({})
+const doupoTDStats = ref<FanxiuDoupoTDStats>({})
+const doupoTDRewardStats = ref<FanxiuDoupoTDRewardConfigStats>({})
 const protocolResponse = ref<FanxiuProtocolSemanticResponse | null>(null)
+const protocolBusinessCategories = ref<FanxiuTcpBusinessCategorySummary[]>([])
+const packetProtocolDetails = ref<FanxiuTcpBusinessProtocolSummary[]>([])
+const hiddenPacketProtocols = ref<string[]>(getHiddenFanxiuPacketProtocols())
+const expandedPacketProtocol = ref('')
+const packetProtocolSamples = ref<FanxiuTcpBusinessEntry[]>([])
+const packetProtocolSamplesLoading = ref(false)
+const selectedPacketCategory = ref('')
 const catalogPath = ref('')
 const gongfaQualityGradeOptions = ref<FanxiuGongfaQualityPartOption[]>([])
 const gongfaQualityFamilyOptions = ref<FanxiuGongfaQualityPartOption[]>([])
@@ -216,6 +320,7 @@ const itemSubTypeOptions = ref<FanxiuItemTypeOption[]>([])
 const activityKindOptions = ref<FanxiuActivityOption[]>([])
 const activityTimeOptions = ref<FanxiuActivityOption[]>([])
 const activityTypeOptions = ref<FanxiuActivityOption[]>([])
+const digitDoorStageOptions = ref<FanxiuDigitDoorStageOption[]>([])
 const gongfaFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const itemFacetIndex = ref<FanxiuFacetIndex | null>(null)
 const activityFacetIndex = ref<FanxiuFacetIndex | null>(null)
@@ -223,14 +328,26 @@ const gongfaItems = ref<FanxiuGongfaSearchItem[]>([])
 const itemItems = ref<FanxiuItemSearchItem[]>([])
 const activityItems = ref<FanxiuActivitySearchItem[]>([])
 const lingjieItems = ref<FanxiuLingjieFeatureSearchItem[]>([])
+const digitDoorItems = ref<FanxiuDigitDoorCharacterSearchItem[]>([])
+const digitDoorLevelItems = ref<FanxiuDigitDoorLevelSearchItem[]>([])
+const digitDoorEnhanceItems = ref<FanxiuDigitDoorEnhanceGroupSearchItem[]>([])
+const doupoTDItems = ref<FanxiuDoupoTDPartnerSearchItem[]>([])
+const doupoTDRewardItems = ref<FanxiuDoupoTDRewardConfigSearchItem[]>([])
 const selectedId = ref('')
 const selectedCard = ref<FanxiuGongfaCard | null>(null)
 const selectedItem = ref<FanxiuItemCard | null>(null)
 const selectedActivity = ref<FanxiuActivityCard | null>(null)
 const selectedLingjieCard = ref<FanxiuLingjieFeatureCard | null>(null)
+const selectedDigitDoorCharacter = ref<FanxiuDigitDoorCharacterCard | null>(null)
+const selectedDigitDoorLevel = ref<FanxiuDigitDoorLevelConfig | null>(null)
+const selectedDigitDoorStage = ref<FanxiuDigitDoorStageReward | null>(null)
+const selectedDigitDoorEnhanceGroup = ref<FanxiuDigitDoorEnhanceGroup | null>(null)
+const selectedDoupoTDPartner = ref<FanxiuDoupoTDPartnerCard | null>(null)
+const selectedDoupoTDReward = ref<FanxiuDoupoTDRewardConfigSearchItem | null>(null)
 const selectedHomeMakeStaticDetail = ref<FanxiuGongfaHomeMakeStaticDetailResponse | null>(null)
 const selectedHomeMakeBuffParameterSemantics = ref<FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>(null)
 const selectedHomeMakeXianShuFormulaCatalog = ref<FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse | null>(null)
+const selectedSpecialFazeCatalog = ref<FanxiuGongfaSpecialFazeCatalogResponse | null>(null)
 const homeMakeBuffOverview = ref<FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>(null)
 const homeMakeBuffParameterQuery = ref('')
 const homeMakeFormulaQuery = ref('')
@@ -248,14 +365,21 @@ const loadingDetail = ref(false)
 const loadingHomeMakeStaticDetail = ref(false)
 const loadingHomeMakeBuffParameterSemantics = ref(false)
 const loadingHomeMakeFormulaCatalog = ref(false)
+const loadingSpecialFazeCatalog = ref(false)
 const loadingHomeMakeBuffOverview = ref(false)
 const gongfaDetailCache = new Map<string, FanxiuGongfaCard>()
 const gongfaHomeMakeStaticDetailCache = new Map<string, FanxiuGongfaHomeMakeStaticDetailResponse | null>()
 const gongfaHomeMakeBuffParameterSemanticsCache = new Map<string, FanxiuGongfaHomeMakeBuffParameterSemanticsResponse | null>()
 const gongfaHomeMakeFormulaCatalogCache = new Map<string, FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse | null>()
+const gongfaSpecialFazeCatalogCache = new Map<string, FanxiuGongfaSpecialFazeCatalogResponse | null>()
 const itemDetailCache = new Map<string, FanxiuItemCard>()
 const activityDetailCache = new Map<string, FanxiuActivityCard>()
 const lingjieDetailCache = new Map<string, FanxiuLingjieFeatureCard>()
+const digitDoorDetailCache = new Map<string, FanxiuDigitDoorCharacterCard>()
+const digitDoorLevelDetailCache = new Map<string, { item: FanxiuDigitDoorLevelConfig; stage?: FanxiuDigitDoorStageReward | null }>()
+const digitDoorEnhanceDetailCache = new Map<string, FanxiuDigitDoorEnhanceGroup>()
+const doupoTDDetailCache = new Map<string, FanxiuDoupoTDPartnerCard>()
+const doupoTDRewardDetailCache = new Map<string, FanxiuDoupoTDRewardConfigSearchItem>()
 const route = useRoute()
 const router = useRouter()
 let listRequestSeq = 0
@@ -263,6 +387,7 @@ let detailRequestSeq = 0
 let homeMakeStaticDetailRequestSeq = 0
 let homeMakeBuffParameterSemanticsRequestSeq = 0
 let homeMakeFormulaCatalogRequestSeq = 0
+let specialFazeCatalogRequestSeq = 0
 let homeMakeBuffOverviewRequestSeq = 0
 let applyingRouteState = false
 let internalTabNavigation = false
@@ -345,7 +470,7 @@ function normalizeSortMode(value: unknown): SortMode {
 }
 
 function createEmptySearchHistory(): Record<WikiTab, string[]> {
-  return { item: [], activity: [], gongfa: [], lingjie: [], protocol: [] }
+  return { item: [], activity: [], gongfa: [], lingjie: [], digitdoor: [], digitdoor_level: [], digitdoor_enhance: [], doupotd: [], doupotd_reward: [], protocol: [], packet: [] }
 }
 
 function normalizeSearchQuery(value: unknown) {
@@ -456,6 +581,7 @@ function loadPageConfig() {
     activityKindFilter.value = String(config.activityKindFilter ?? '')
     activityTimeFilter.value = String(config.activityTimeFilter ?? '')
     activityTypeFilter.value = String(config.activityTypeFilter ?? '')
+    digitDoorStageFilter.value = String(config.digitDoorStageFilter ?? '')
     protocolFeature.value = String(config.protocolFeature ?? 'bluestarsea') || 'bluestarsea'
     protocolRoleFilter.value = String(config.protocolRoleFilter ?? '')
     protocolOperationFilter.value = String(config.protocolOperationFilter ?? '')
@@ -487,6 +613,7 @@ function persistPageConfig() {
       activityKindFilter: activityKindFilter.value,
       activityTimeFilter: activityTimeFilter.value,
       activityTypeFilter: activityTypeFilter.value,
+      digitDoorStageFilter: digitDoorStageFilter.value,
       protocolFeature: protocolFeature.value,
       protocolRoleFilter: protocolRoleFilter.value,
       protocolOperationFilter: protocolOperationFilter.value,
@@ -583,6 +710,21 @@ const selectedListItem = computed(() => {
   if (activeTab.value === 'lingjie') {
     return lingjieItems.value.find(item => String(item.gongfa_id) === selectedId.value) ?? null
   }
+  if (activeTab.value === 'digitdoor') {
+    return digitDoorItems.value.find(item => String(item.id) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'digitdoor_level') {
+    return digitDoorLevelItems.value.find(item => String(item.id) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'digitdoor_enhance') {
+    return digitDoorEnhanceItems.value.find(item => String(item.id ?? item.char_id) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'doupotd') {
+    return doupoTDItems.value.find(item => String(item.id) === selectedId.value) ?? null
+  }
+  if (activeTab.value === 'doupotd_reward') {
+    return doupoTDRewardItems.value.find(item => getDoupoTDRewardConfigKey(item) === selectedId.value) ?? null
+  }
   if (activeTab.value === 'protocol') {
     return null
   }
@@ -607,6 +749,40 @@ const selectedTerms = computed(() => {
       selectedLingjieCard.value?.side_feature_names,
       ...(selectedLingjieCard.value?.items ?? []).map(item => item.name),
     ]).slice(0, 12)
+  }
+  if (activeTab.value === 'digitdoor') {
+    return selectedDigitDoorCharacter.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
+  }
+  if (activeTab.value === 'digitdoor_level') {
+    const rewards = (selectedDigitDoorLevel.value?.reward_items ?? [])
+      .map(item => item.item?.name || item.id)
+      .filter(Boolean)
+    const monsters = (selectedDigitDoorLevel.value?.monster_refresh?.monsters ?? [])
+      .map(item => item.name || item.monster_id)
+      .filter(Boolean)
+    return uniqueLabels([
+      getDigitDoorStageName(selectedDigitDoorStage.value),
+      getDigitDoorLevelRewardTitlePlain(selectedDigitDoorLevel.value),
+      ...rewards,
+      ...monsters,
+    ]).slice(0, 12)
+  }
+  if (activeTab.value === 'digitdoor_enhance') {
+    const group = selectedDigitDoorEnhanceGroup.value
+    return uniqueLabels([
+      group?.name,
+      ...(group?.enhances ?? []).map(item => item.name),
+      ...(group?.enhances ?? []).flatMap(item => (item.prereqs ?? []).map(ref => ref.name)),
+    ].filter(Boolean)).slice(0, 12)
+  }
+  if (activeTab.value === 'doupotd') {
+    return selectedDoupoTDPartner.value?.terms?.slice(0, 12) ?? selectedListItem.value?.terms?.slice(0, 8) ?? []
+  }
+  if (activeTab.value === 'doupotd_reward') {
+    const itemNames = (selectedDoupoTDReward.value?.items ?? [])
+      .map(item => item.item_name || item.item_id)
+      .filter(Boolean)
+    return uniqueLabels([selectedDoupoTDReward.value?.reward_title, ...itemNames]).slice(0, 12)
   }
   if (activeTab.value === 'protocol') {
     return []
@@ -651,6 +827,47 @@ const objectStats = computed(() => {
       { label: '道具', value: lingjieStats.value.linked_item_count },
     ].filter(item => Number.isFinite(Number(item.value)))
   }
+  if (activeTab.value === 'digitdoor') {
+    return [
+      { label: '角色', value: digitDoorStats.value.character_count },
+      { label: '技能', value: digitDoorStats.value.skill_show_count },
+      { label: '强化效果', value: digitDoorStats.value.skill_enhance_effect_count },
+      { label: '门效果', value: digitDoorStats.value.door_effect_count },
+      { label: 'Buff', value: digitDoorStats.value.buff_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
+  if (activeTab.value === 'digitdoor_level') {
+    return [
+      { label: '关卡', value: digitDoorLevelStats.value.level_config_count },
+      { label: '章节', value: digitDoorLevelStats.value.pre_level_reward_count },
+      { label: '刷门点', value: digitDoorLevelStats.value.door_refresh_count },
+      { label: '门效果', value: digitDoorLevelStats.value.door_effect_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
+  if (activeTab.value === 'digitdoor_enhance') {
+    return [
+      { label: '强化组', value: digitDoorEnhanceStats.value.skill_enhance_group_count },
+      { label: '强化', value: digitDoorEnhanceStats.value.enhance_count },
+      { label: '强化效果', value: digitDoorEnhanceStats.value.skill_enhance_effect_count },
+      { label: '门效果', value: digitDoorEnhanceStats.value.door_effect_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
+  if (activeTab.value === 'doupotd') {
+    return [
+      { label: '角色', value: doupoTDStats.value.partner_count },
+      { label: '卡牌', value: doupoTDStats.value.compose_card_count },
+      { label: '技能', value: doupoTDStats.value.skill_show_count },
+      { label: '强化', value: doupoTDStats.value.strength_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
+  if (activeTab.value === 'doupotd_reward') {
+    return [
+      { label: '关卡奖励', value: doupoTDRewardStats.value.level_reward_row_count },
+      { label: '章节预览', value: doupoTDRewardStats.value.prelevel_reward_row_count },
+      { label: '奖励项', value: doupoTDRewardStats.value.reward_item_row_count },
+      { label: '物品', value: doupoTDRewardStats.value.unique_reward_item_count },
+    ].filter(item => Number.isFinite(Number(item.value)))
+  }
   if (activeTab.value === 'protocol') {
     const counts = protocolCounts.value
     return [
@@ -660,6 +877,15 @@ const objectStats = computed(() => {
       { label: '边', value: counts?.filtered_edges },
       { label: '总边', value: counts?.edges },
     ].filter(item => item.value !== undefined && item.value !== '')
+  }
+  if (activeTab.value === 'packet') {
+    if (isPacketWikiInitialLoading.value) {
+      return [{ label: '抓包', value: '加载中' }]
+    }
+    return [
+      { label: '样本', value: protocolBusinessCategoryCount.value },
+      { label: '大类', value: protocolBusinessCategories.value.length },
+    ]
   }
   const values = [
     { label: '功法', value: stats.value.gongfa_count },
@@ -674,12 +900,28 @@ const searchPlaceholder = computed(() => {
   if (activeTab.value === 'item') return '搜索道具 / 效果 / 描述 / ID'
   if (activeTab.value === 'activity') return '搜索活动 / 奖励 / 条件 / ID'
   if (activeTab.value === 'lingjie') return '搜索灵界功法 / 道具 / 主词条 / 侧词条 / Feature'
+  if (activeTab.value === 'digitdoor') return '搜索数字门角色 / 技能 / 门效果 / Buff'
+  if (activeTab.value === 'digitdoor_level') return '搜索数字门关卡 / 奖励 / 推荐 / 怪物 / ID'
+  if (activeTab.value === 'digitdoor_enhance') return '搜索数字门强化 / 条件 / 前置 / 互斥 / ID'
+  if (activeTab.value === 'doupotd') return '搜索斗破角色 / 技能 / 卡牌 / 强化'
+  if (activeTab.value === 'doupotd_reward') return '搜索斗破奖励 / 关卡 / 物品 / ID'
   if (activeTab.value === 'protocol') return '搜索 packet / handler / 字段 / 语义'
+  if (activeTab.value === 'packet') return '搜索大类 / 业务包 / 含义'
   return '搜索功法 / 技能 / 效果 / 条件'
 })
 
 const objectSortParams = computed<{ sort_by?: string; sort_order?: string }>(() => {
-  if (activeTab.value === 'lingjie' || activeTab.value === 'protocol' || sortMode.value === 'default') return {}
+  if (
+    activeTab.value === 'lingjie'
+    || activeTab.value === 'digitdoor'
+    || activeTab.value === 'digitdoor_level'
+    || activeTab.value === 'digitdoor_enhance'
+    || activeTab.value === 'doupotd'
+    || activeTab.value === 'doupotd_reward'
+    || activeTab.value === 'protocol'
+    || activeTab.value === 'packet'
+    || sortMode.value === 'default'
+  ) return {}
   if (sortMode.value === 'time_desc') return { sort_by: 'time', sort_order: 'desc' }
   return { sort_by: 'time', sort_order: 'asc' }
 })
@@ -696,12 +938,27 @@ const activeObjectLabel = computed(() => {
   if (activeTab.value === 'item') return '道具'
   if (activeTab.value === 'activity') return '活动'
   if (activeTab.value === 'lingjie') return '灵界词条'
+  if (activeTab.value === 'digitdoor') return '数字门角色'
+  if (activeTab.value === 'digitdoor_level') return '数字门关卡'
+  if (activeTab.value === 'digitdoor_enhance') return '数字门强化'
+  if (activeTab.value === 'doupotd') return '斗破角色'
+  if (activeTab.value === 'doupotd_reward') return '斗破奖励'
   if (activeTab.value === 'protocol') return '协议'
+  if (activeTab.value === 'packet') return '抓包'
   return '功法'
 })
 
 const selectedProgressionSource = computed(() => {
-  if (activeTab.value === 'lingjie' || activeTab.value === 'protocol') return {}
+  if (
+    activeTab.value === 'lingjie'
+    || activeTab.value === 'digitdoor'
+    || activeTab.value === 'digitdoor_level'
+    || activeTab.value === 'digitdoor_enhance'
+    || activeTab.value === 'doupotd'
+    || activeTab.value === 'doupotd_reward'
+    || activeTab.value === 'protocol'
+    || activeTab.value === 'packet'
+  ) return {}
   return activeTab.value === 'item'
     ? selectedItem.value?.progression ?? {}
     : selectedCard.value?.progression ?? {}
@@ -767,6 +1024,16 @@ const homeMakeFormulaCountText = computed(() => {
     return `${homeMakeFormulaGroups.value.length}/${homeMakeFormulaRawGroups.value.length} 组`
   }
   return counts ? `${counts.feature_groups} 组 · ${counts.rows} 阶` : ''
+})
+
+const specialFazeGroup = computed(() => selectedSpecialFazeCatalog.value?.selected.group ?? null)
+const specialFazeStages = computed(() => selectedSpecialFazeCatalog.value?.selected.stages ?? [])
+const specialFazeEffectTypes = computed(() => selectedSpecialFazeCatalog.value?.selected.effect_types ?? [])
+const specialFazeReasons = computed(() => selectedSpecialFazeCatalog.value?.selected.reasons ?? [])
+const specialFazeCountText = computed(() => {
+  const group = specialFazeGroup.value
+  if (!group) return ''
+  return `${group.stage_count} 阶 · ${group.faze_count} 法则 · ${group.effect_types || '-'}`
 })
 
 const homeMakeBuffOverviewRawGroups = computed(() => homeMakeBuffOverview.value?.items ?? [])
@@ -892,6 +1159,17 @@ const protocolFeatures = computed(() => {
 const protocolRows = computed(() => protocolResponse.value?.items ?? [])
 const protocolEdges = computed(() => protocolResponse.value?.edges ?? [])
 const protocolCounts = computed(() => protocolResponse.value?.counts ?? null)
+const protocolBusinessCategoryCount = computed(() => protocolBusinessCategories.value.reduce((sum, item) => sum + item.count, 0))
+const isPacketWikiInitialLoading = computed(() => (
+  activeTab.value === 'packet'
+  && loadingList.value
+  && !protocolBusinessCategories.value.length
+))
+const selectedPacketCategoryRow = computed(() => (
+  protocolBusinessCategories.value.find(item => item.category === selectedPacketCategory.value)
+    ?? protocolBusinessCategories.value[0]
+    ?? null
+))
 
 const selectedProtocolRow = computed(() => {
   return protocolRows.value.find(item => item.packet === selectedId.value) ?? protocolRows.value[0] ?? null
@@ -937,7 +1215,14 @@ type WikiObjectItem =
   FanxiuActivitySearchItem |
   FanxiuActivityCard |
   FanxiuLingjieFeatureSearchItem |
-  FanxiuLingjieFeatureCard
+  FanxiuLingjieFeatureCard |
+  FanxiuDigitDoorCharacterSearchItem |
+  FanxiuDigitDoorCharacterCard |
+  FanxiuDigitDoorLevelSearchItem |
+  FanxiuDigitDoorLevelConfig |
+  FanxiuDoupoTDPartnerSearchItem |
+  FanxiuDoupoTDPartnerCard |
+  FanxiuDoupoTDRewardConfigSearchItem
 
 type ProgressionAttrEntry = {
   key: string;
@@ -1314,6 +1599,883 @@ function getActivityMeta(item: FanxiuActivitySearchItem | FanxiuActivityCard | n
   ].filter(Boolean).join(' · ')
 }
 
+function getDigitDoorMeta(item: FanxiuDigitDoorCharacterSearchItem | FanxiuDigitDoorCharacterCard | null | undefined) {
+  return [
+    item?.quality_label ? `${item.quality_label}品` : '',
+    item?.positioning,
+    item?.skill_name ? `神通 ${item.skill_name}` : '',
+    item?.door_effect_count ? `${item.door_effect_count}门` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorSkillMeta(skill: FanxiuDigitDoorSkill | null | undefined) {
+  return [
+    skill?.level_show ? `${skill.level_show}级` : '',
+    skill?.skill_patch,
+    skill?.runtime?.damage_text ? `伤害 ${skill.runtime.damage_text}` : '',
+    skill?.runtime?.cd_ms ? `CD ${Number(skill.runtime.cd_ms) / 1000}s` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorLogicSkillTitle(skill: FanxiuDigitDoorLogicSkill | null | undefined, index: number) {
+  return skill?.id ? `逻辑技能 ${skill.id}` : `逻辑技能 ${index + 1}`
+}
+
+function getDigitDoorLogicSkillMeta(skill: FanxiuDigitDoorLogicSkill | null | undefined) {
+  return [
+    skill?.skill_type ? `类型 ${skill.skill_type}` : '',
+    skill?.level ? `${skill.level}级` : '',
+    skill?.damage_text ? `伤害 ${skill.damage_text}` : '',
+    skill?.cd_ms ? `CD ${Number(skill.cd_ms) / 1000}s` : '',
+    skill?.timeline_id ? `TL ${skill.timeline_id}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorBuffTitle(buff: FanxiuDigitDoorBuffRuntime | null | undefined) {
+  if (!buff) return ''
+  return buff.id ? `Buff ${buff.id}` : 'Buff'
+}
+
+function getDigitDoorBuffMeta(buff: FanxiuDigitDoorBuffRuntime | null | undefined) {
+  return [
+    buff?.type ? `type ${buff.type}` : '',
+    buff?.target_type ? `target ${buff.target_type}` : '',
+    buff?.trigger_type,
+    buff?.eff_type ? `eff ${buff.eff_type}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorBuffLines(buff: FanxiuDigitDoorBuffRuntime | null | undefined) {
+  if (!buff) return []
+  return [
+    buff.damage_text ? `伤害 ${buff.damage_text}` : '',
+    buff.add_attr ? `属性 ${buff.add_attr}` : '',
+    buff.shield ? `护盾 ${buff.shield}` : '',
+    buff.slow_down ? `减速 ${buff.slow_down}` : '',
+    buff.duration !== null && buff.duration !== undefined ? `时长 ${buff.duration}` : '',
+    buff.timeline_id ? `TL ${buff.timeline_id}` : '',
+  ].filter(Boolean)
+}
+
+function getDigitDoorEnhanceMeta(item: FanxiuDigitDoorSkillEnhanceEffect | null | undefined) {
+  return [
+    item?.skill ? `技能组 ${item.skill}` : '',
+    item?.skill_type ? `类型 ${item.skill_type}` : '',
+    item?.buff_id ? `Buff ${item.buff_id}` : '',
+    item?.mutex_timeline ? `替换TL ${item.mutex_timeline}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorEnhanceLines(item: FanxiuDigitDoorSkillEnhanceEffect | null | undefined) {
+  if (!item) return []
+  return [
+    item.ext_release_count ? `追加释放 ${item.ext_release_count}` : '',
+    item.ext_hit_num ? `追加命中 ${item.ext_hit_num}` : '',
+    item.ext_penetrate ? `穿透 +${item.ext_penetrate}` : '',
+    item.ext_atk_distance ? `距离 +${item.ext_atk_distance}` : '',
+  ].filter(Boolean)
+}
+
+function getDigitDoorEnhanceGroupMeta(item: FanxiuDigitDoorEnhanceGroupSearchItem | FanxiuDigitDoorEnhanceGroup | null | undefined) {
+  return [
+    item?.char_id ? `Group ${item.char_id}` : '',
+    item?.enhance_count ? `${item.enhance_count} 强化` : '',
+    (item as FanxiuDigitDoorEnhanceGroupSearchItem | null | undefined)?.condition_count ? `${(item as FanxiuDigitDoorEnhanceGroupSearchItem).condition_count} 条条件` : '',
+    (item as FanxiuDigitDoorEnhanceGroupSearchItem | null | undefined)?.mutex_count ? `${(item as FanxiuDigitDoorEnhanceGroupSearchItem).mutex_count} 互斥` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorEnhanceRefLabel(ref: FanxiuDigitDoorEnhanceRef | null | undefined) {
+  if (!ref) return ''
+  const name = String(ref.name || '').trim()
+  return name ? `${name}(${ref.id ?? ''})` : String(ref.id ?? '')
+}
+
+function getDigitDoorEnhanceLevelRangeText(item: FanxiuDigitDoorEnhance | null | undefined) {
+  return (item?.level_ranges ?? [])
+    .map(row => `Lv${row.min_level ?? '?'}-${row.max_level ?? '?'}`)
+    .filter(Boolean)
+    .join(' / ')
+}
+
+function getDigitDoorEnhanceConditionText(item: FanxiuDigitDoorEnhance | null | undefined) {
+  if (!item) return ''
+  const parts = [
+    item.prereqs?.length ? `前置 ${item.prereqs.map(getDigitDoorEnhanceRefLabel).join(' / ')}` : '',
+    getDigitDoorEnhanceLevelRangeText(item) ? `等级 ${getDigitDoorEnhanceLevelRangeText(item)}` : '',
+    item.mutexes?.length ? `互斥 ${item.mutexes.map(getDigitDoorEnhanceRefLabel).join(' / ')}` : '',
+  ].filter(Boolean)
+  return parts.join(' · ') || '无条件'
+}
+
+function getDigitDoorEnhanceTreeMeta(item: FanxiuDigitDoorEnhance | null | undefined) {
+  return [
+    item?.quality_label ? `${item.quality_label}品` : '',
+    item?.type_label,
+    item?.limit ? `上限 ${item.limit}` : '',
+    item?.weight ? `权重 ${item.weight}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorEnhanceBadges(item: FanxiuDigitDoorEnhance | null | undefined) {
+  if (!item) return []
+  return [
+    ...(item.prereqs ?? []).map(ref => `前置 ${getDigitDoorEnhanceRefLabel(ref)}`),
+    ...(item.mutexes ?? []).map(ref => `互斥 ${getDigitDoorEnhanceRefLabel(ref)}`),
+    getDigitDoorEnhanceLevelRangeText(item) ? `等级 ${getDigitDoorEnhanceLevelRangeText(item)}` : '',
+    ...(item.unlock_show ?? []).map(ref => `后续 ${getDigitDoorEnhanceRefLabel(ref)}`),
+  ].filter(Boolean)
+}
+
+function getDigitDoorDoorMeta(item: FanxiuDigitDoorDoorEffect | null | undefined) {
+  return [
+    item?.door_type_label,
+    item?.refresh_weights ? `权重 ${item.refresh_weights}` : '',
+    item?.skill_ids?.length ? `${item.skill_ids.length}技能效果` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorDoorSkillMeta(skill: FanxiuDigitDoorSkill | null | undefined) {
+  return [
+    skill?.skill_title_plain,
+    getDigitDoorSkillMeta(skill),
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorLevelMilestoneTitle(item: FanxiuDigitDoorLevelMilestone | null | undefined) {
+  return item?.level ? `${item.level}级` : '等级节点'
+}
+
+function getDigitDoorLevelMilestoneMeta(item: FanxiuDigitDoorLevelMilestone | null | undefined) {
+  const attrs = item?.attrs ?? {}
+  const attrText = Object.entries(attrs)
+    .slice(0, 4)
+    .map(([key, value]) => `${ATTR_LABELS[key] ?? key} ${value}`)
+    .join(' / ')
+  const skills = item?.default_skill?.length ? `技能 ${item.default_skill.join('/')}` : ''
+  const enhances = item?.default_skill_enhance?.length ? `强化 ${item.default_skill_enhance.join('/')}` : ''
+  return [attrText, skills, enhances].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorLevelTitle(item: FanxiuDigitDoorLevelSearchItem | FanxiuDigitDoorLevelConfig | null | undefined) {
+  if (!item) return ''
+  const name = String((item as FanxiuDigitDoorLevelConfig).name_plain || item.name || '').trim()
+  return name || `关卡 ${item.id ?? ''}`.trim()
+}
+
+function getDigitDoorLevelMeta(item: FanxiuDigitDoorLevelSearchItem | FanxiuDigitDoorLevelConfig | null | undefined) {
+  return [
+    item?.stage ? `章节 ${item.stage}` : '',
+    item?.layer ? `第 ${item.layer} 关` : '',
+    item?.sub_layer ? `小关 ${item.sub_layer}` : '',
+    item?.door_count ? `${item.door_count} 门` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorLevelRewardTitlePlain(item: FanxiuDigitDoorLevelConfig | FanxiuDigitDoorLevelSearchItem | null | undefined) {
+  return String((item as FanxiuDigitDoorLevelConfig | null | undefined)?.reward_show_title_plain || stripFanxiuRichTags(item?.reward_show_title || '')).trim()
+}
+
+function getDigitDoorLevelRewardTitleRich(item: FanxiuDigitDoorLevelConfig | null | undefined) {
+  return String(item?.reward_show_title || item?.reward_show_title_plain || '').trim()
+}
+
+function getDigitDoorStageName(stage: FanxiuDigitDoorStageReward | FanxiuDigitDoorStageOption | null | undefined) {
+  return String((stage as FanxiuDigitDoorStageReward | null | undefined)?.title_plain || (stage as FanxiuDigitDoorStageReward | null | undefined)?.title || stage?.name || '').trim()
+}
+
+function getDigitDoorLevelRewardText(item: FanxiuDigitDoorRewardItem | null | undefined) {
+  if (!item) return ''
+  if (item.text) return String(item.text)
+  const name = String(item.item?.name || item.id || item.raw || '').trim()
+  return item.count ? `${name}x${item.count}` : name
+}
+
+function getDigitDoorLevelRewardMeta(item: FanxiuDigitDoorRewardItem | null | undefined) {
+  const extraMarkName = item?.reward_result?.extra_mark_name
+  return [
+    item?.item?.quality_name,
+    item?.id ? `ID ${item.id}` : '',
+    extraMarkName && extraMarkName !== 'RewardType.ExtraMark.Common' ? extraMarkName : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorRewardResultBadges(item: FanxiuDigitDoorRewardItem | null | undefined) {
+  const result = item?.reward_result
+  if (!result) return []
+  const typeName = String(result.runtime_reward_type_name || '').trim()
+  const typeValue = String(result.runtime_reward_type ?? '').trim()
+  const code = String(result.code ?? item?.id ?? '').trim()
+  const amount = String(result.amount ?? item?.count ?? '').trim()
+  const extraMark = String(result.extra_mark ?? item?.extra_mark ?? '0').trim()
+  return [
+    typeName ? `${typeName}${typeValue ? `(${typeValue})` : ''}` : '',
+    code ? `code ${code}` : '',
+    amount ? `amount ${amount}` : '',
+    extraMark ? `extraMark ${extraMark}` : '',
+  ].filter(Boolean)
+}
+
+function getDigitDoorRewardResultNote(item: FanxiuDigitDoorRewardItem | null | undefined) {
+  const note = String(item?.reward_result?.note || '').trim()
+  if (!note) return ''
+  if (note.includes('omits extraMark')) return ''
+  if (note.includes('negative amount')) return '静态预览使用负数占位，最终数量看回包'
+  return note
+}
+
+function getDigitDoorLevelRawRows(item: FanxiuDigitDoorLevelConfig | null | undefined) {
+  if (!item) return []
+  return [
+    ['配置 ID', item.id],
+    ['章节', item.stage],
+    ['Group', item.group],
+    ['Layer', item.layer],
+    ['SubLayer', item.sub_layer],
+    ['InitChar', item.init_char],
+    ['Scene', item.scene_id],
+    ['Monster', (item.monster ?? []).join(' / ')],
+    ['DoorTypes', item.door_type_counts ? Object.entries(item.door_type_counts).map(([key, count]) => `${key}:${count}`).join(' / ') : ''],
+    ['FirstDoorTimes', (item.first_door_times ?? []).join(' / ')],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value) })).filter(row => row.value)
+}
+
+function getDigitDoorDoorRefreshChips(item: FanxiuDigitDoorLevelConfig | null | undefined) {
+  const summary = item?.door_refresh?.summary
+  if (!summary) return []
+  const timeRange = summary.first_refresh_time && summary.last_refresh_time
+    ? `${summary.first_refresh_time}-${summary.last_refresh_time} 秒`
+    : ''
+  return uniqueLabels([
+    summary.point_count ? `${summary.point_count} 个刷门点` : '',
+    timeRange,
+    summary.side_counts || '',
+    summary.special_rule_count ? `${summary.special_rule_count} 个特殊池字段` : '',
+    summary.max_hp ? `最高血量 ${summary.max_hp}` : '',
+    summary.pool_semantic_preview ? compactText(summary.pool_semantic_preview, 96) : '',
+    summary.replacement_pool_preview ? compactText(summary.replacement_pool_preview, 96) : '',
+    summary.effect_pool_preview ? compactText(summary.effect_pool_preview, 80) : '',
+  ])
+}
+
+function getDigitDoorDoorRefreshEffectText(item: FanxiuDigitDoorDoorRefreshPoint | null | undefined) {
+  if (!item) return ''
+  if (item.pool_semantic_text) return item.pool_semantic_text
+  if (item.effect_pool_preview) return item.effect_pool_preview
+  const types = item.customized_type_values?.filter(Boolean).join(' / ')
+  return types ? `customizedType ${types}` : ''
+}
+
+function getDigitDoorDoorEffectOptionLabel(item: FanxiuDigitDoorDoorEffectOption | null | undefined) {
+  if (!item) return ''
+  if (item.display_text) return item.display_text
+  const skillCount = Number(item.skill_count || item.skill_ids?.length || 0)
+  return [
+    item.char_name,
+    item.effect_show,
+    skillCount ? `${skillCount} 技能` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function hasDigitDoorEffectOptionValue(value: unknown) {
+  return value !== undefined && value !== null && value !== ''
+}
+
+function getDigitDoorDoorEffectOptionWeightText(item: FanxiuDigitDoorDoorEffectOption | null | undefined) {
+  if (!item) return ''
+  return hasDigitDoorEffectOptionValue(item.refresh_weights)
+    ? `权重 ${item.refresh_weights}`
+    : '权重 未填'
+}
+
+function getDigitDoorDoorEffectOptionPutBackText(item: FanxiuDigitDoorDoorEffectOption | null | undefined) {
+  if (!item || !hasDigitDoorEffectOptionValue(item.put_back)) return ''
+  return `放回 ${item.put_back}`
+}
+
+function getDigitDoorDoorEffectOptionChipHint(item: FanxiuDigitDoorDoorEffectOption | null | undefined) {
+  if (!item) return ''
+  return [
+    item.effect_hint_preview,
+    getDigitDoorDoorEffectOptionWeightText(item),
+    getDigitDoorDoorEffectOptionPutBackText(item),
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorDoorEffectOptionTitle(item: FanxiuDigitDoorDoorEffectOption | null | undefined) {
+  if (!item) return ''
+  return [
+    getDigitDoorDoorEffectOptionLabel(item),
+    item.show_tips,
+    item.effect_hints?.length ? `效果：${item.effect_hints.join(' / ')}` : '',
+    `权重：${hasDigitDoorEffectOptionValue(item.refresh_weights) ? item.refresh_weights : '未填'}`,
+    hasDigitDoorEffectOptionValue(item.put_back) ? `放回：${item.put_back}` : '',
+    item.skill_names?.length ? `技能：${item.skill_names.join(' / ')}` : '',
+    item.effect_id ? `SkillRefreshEffect ${item.effect_id}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function getDigitDoorDoorEffectOptionChips(item: FanxiuDigitDoorDoorRefreshPoint | null | undefined) {
+  const options = item?.effect_options ?? []
+  const chips = options.slice(0, 6).map(option => ({
+    key: String(option.effect_id ?? option.display_text ?? option.effect_show ?? ''),
+    label: compactText(getDigitDoorDoorEffectOptionLabel(option), 34),
+    title: getDigitDoorDoorEffectOptionTitle(option),
+    more: false,
+  }))
+  if (options.length > 6) {
+    chips.push({
+      key: `more-${item?.point_id ?? ''}`,
+      label: `另 ${options.length - 6} 个候选`,
+      title: (item?.effect_option_preview || '').replaceAll(' / ', '\n'),
+      more: true,
+    })
+  }
+  return chips.filter(chip => chip.label)
+}
+
+function getDigitDoorDoorSpecialEffectOptionChips(item: FanxiuDigitDoorDoorRefreshPoint | null | undefined) {
+  const chips: Array<{ key: string; label: string; title: string; more: boolean }> = []
+  let hiddenCount = 0
+  const pushGroup = (prefix: string, options: FanxiuDigitDoorDoorEffectOption[] | undefined) => {
+    const rows = options ?? []
+    if (!rows.length || chips.length >= 6) {
+      hiddenCount += rows.length
+      return
+    }
+    const visibleCount = Math.min(rows.length, 2, 6 - chips.length)
+    for (const option of rows.slice(0, visibleCount)) {
+      const label = [prefix, getDigitDoorDoorEffectOptionLabel(option)].filter(Boolean).join(' · ')
+      chips.push({
+        key: `special-${prefix}-${option.effect_id ?? option.display_text ?? chips.length}`,
+        label: compactText(label, 42),
+        title: getDigitDoorDoorEffectOptionTitle(option),
+        more: false,
+      })
+    }
+    hiddenCount += Math.max(0, rows.length - visibleCount)
+  }
+  for (const rule of item?.special_rules ?? []) {
+    if (rule.kind === 'debuff_pool') {
+      pushGroup(rule.semantic_label || '负面门池', rule.effect_options)
+    }
+    for (const option of rule.options ?? []) {
+      const prefix = option.rate_text
+        ? `${option.semantic_label || '特殊池'} ${option.rate_text}`
+        : option.semantic_label || '特殊池'
+      pushGroup(prefix, option.effect_options)
+    }
+  }
+  if (hiddenCount > 0) {
+    chips.push({
+      key: `special-more-${item?.point_id ?? ''}`,
+      label: `另 ${hiddenCount} 个特殊候选`,
+      title: '',
+      more: true,
+    })
+  }
+  return chips.filter(chip => chip.label)
+}
+
+function getDigitDoorDoorEffectPoolTitle(pool: FanxiuDigitDoorDoorEffectPool | null | undefined) {
+  if (!pool) return ''
+  return pool.semantic_label || (pool.customized_type ? `customizedType ${pool.customized_type}` : '门效果池')
+}
+
+function getDigitDoorDoorEffectPoolMeta(pool: FanxiuDigitDoorDoorEffectPool | null | undefined) {
+  if (!pool) return []
+  const sourceText = pool.source_labels?.length ? pool.source_labels.join(' / ') : ''
+  const rateText = pool.rate_texts?.length ? `特殊权重 ${pool.rate_texts.join(' / ')}` : ''
+  return uniqueLabels([
+    pool.customized_type ? `customizedType ${pool.customized_type}` : '',
+    sourceText,
+    pool.point_count ? `${pool.point_count} 个刷门点` : '',
+    pool.point_time_preview ? `时间 ${pool.point_time_preview}` : '',
+    pool.effect_count ? `${pool.effect_count} 个候选效果` : '',
+    pool.refresh_weight_summary ? `池内权重 ${pool.refresh_weight_summary}` : '',
+    pool.put_back_summary ? `放回 ${pool.put_back_summary}` : '',
+    rateText,
+  ])
+}
+
+function getDigitDoorDoorEffectPoolChips(pool: FanxiuDigitDoorDoorEffectPool | null | undefined) {
+  return (pool?.effect_options ?? []).map(option => ({
+    key: String(option.effect_id ?? option.display_text ?? option.effect_show ?? ''),
+    label: compactText(getDigitDoorDoorEffectOptionLabel(option), 42),
+    hint: compactText(getDigitDoorDoorEffectOptionChipHint(option), 48),
+    title: getDigitDoorDoorEffectOptionTitle(option),
+  })).filter(chip => chip.label)
+}
+
+function getDigitDoorDoorRefreshStatsText(item: FanxiuDigitDoorDoorRefreshPoint | null | undefined) {
+  if (!item) return ''
+  return [
+    item.hp ? `血 ${item.hp}` : '',
+    item.attack ? `攻 ${item.attack}` : '',
+    item.door_damage ? `门伤 ${item.door_damage}` : '',
+    item.volume ? `体积 ${item.volume}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorDoorRefreshSpecialText(item: FanxiuDigitDoorDoorRefreshPoint | null | undefined) {
+  if (!item) return ''
+  if (item.special_rule_text) return item.special_rule_text
+  if (item.replacement_pool_semantic_text && item.special_rule_projection) {
+    return `${item.replacement_pool_semantic_text}；${item.special_rule_projection}`
+  }
+  if (item.replacement_pool_semantic_text) return item.replacement_pool_semantic_text
+  if (item.special_rule_projection) return item.special_rule_projection
+  if (item.debuff_door_type) return `负面门池 ${item.debuff_door_type}`
+  return item.server_boundary || ''
+}
+
+function getDigitDoorMonsterRefreshChips(item: FanxiuDigitDoorLevelConfig | null | undefined) {
+  const summary = item?.monster_refresh?.summary
+  if (!summary) return []
+  const waveRange = summary.first_wave && summary.last_wave
+    ? `${summary.first_wave}-${summary.last_wave} 波`
+    : summary.wave_count ? `${summary.wave_count} 波` : ''
+  const declaredNames = (summary.declared_monster_names ?? []).join(' / ')
+  return uniqueLabels([
+    waveRange,
+    summary.refresh_point_count ? `${summary.refresh_point_count} 刷新点` : '',
+    summary.refresh_monster_count ? `${summary.refresh_monster_count} 种刷新怪` : '',
+    summary.max_attack ? `最高攻击 ${summary.max_attack}` : '',
+    summary.max_hp ? `最高血量 ${summary.max_hp}` : '',
+    declaredNames ? `配置怪 ${declaredNames}` : '',
+  ])
+}
+
+function getDigitDoorMonsterName(item: FanxiuDigitDoorMonsterRefreshPoint | null | undefined) {
+  if (!item) return ''
+  const name = String(item.monster_name || '').trim()
+  if (name) return name
+  return item.monster_id ? `怪物 ${item.monster_id}` : '刷新点'
+}
+
+function getDigitDoorMonsterRefreshProjectionText(item: FanxiuDigitDoorMonsterRefreshPoint | null | undefined) {
+  const fieldOrder = ['refreshTotalNum', 'refreshNum', 'refreshTime', 'waveTime', 'nextWaveCondition', 'refreshType', 'refreshPos']
+  const projections = item?.value_projections ?? []
+  return fieldOrder
+    .flatMap(field => projections.filter(row => row.field === field))
+    .map(row => row.projection)
+    .filter((text): text is string => Boolean(text))
+    .join(' · ')
+}
+
+function getDigitDoorMonsterTimingText(item: FanxiuDigitDoorMonsterRefreshPoint | null | undefined) {
+  if (!item) return ''
+  const projected = getDigitDoorMonsterRefreshProjectionText(item)
+  if (projected) return projected
+  return [
+    item.refresh_total_num ? `总数 ${item.refresh_total_num}` : '',
+    item.refresh_num ? `每批 ${item.refresh_num}` : '',
+    item.refresh_time ? `间隔 ${item.refresh_time}` : '',
+    item.wave_time ? `波长 ${item.wave_time}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorMonsterStatsText(item: FanxiuDigitDoorMonsterRefreshPoint | null | undefined) {
+  if (!item) return ''
+  const projected = item.attribute_projections
+    ?.map(row => row.projection)
+    .filter((text): text is string => Boolean(text))
+    .join(' · ')
+  if (projected) return projected
+  return [
+    item.attack ? `攻 ${item.attack}` : '',
+    item.hp ? `血 ${item.hp}` : '',
+    item.atk_speed ? `速 ${item.atk_speed}` : '',
+    item.critical ? `暴 ${item.critical}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorMonsterSkillText(item: FanxiuDigitDoorMonsterRefreshPoint | null | undefined) {
+  if (!item) return ''
+  return item.default_skill_ids ? `技能 ${item.default_skill_ids}` : ''
+}
+
+function getDigitDoorMonsterCardMeta(item: FanxiuDigitDoorMonsterRefreshMonster | null | undefined) {
+  if (!item) return ''
+  return [
+    item.monster_id ? `ID ${item.monster_id}` : '',
+    item.type ? `类型 ${item.type}` : '',
+    item.speed ? `速度 ${item.speed}` : '',
+    item.default_skill_count ? `${item.default_skill_count} 技能` : item.default_skill_ids ? `技能 ${item.default_skill_ids}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorMonsterSkillTitle(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.id ? `技能 ${item.id}` : '技能'
+}
+
+function getDigitDoorMonsterSkillMeta(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  if (!item) return ''
+  const effectClasses = item.timeline_effect?.effect_classes?.filter(Boolean) ?? []
+  const flowLabels = item.timeline_effect?.class_flows
+    ?.flatMap(flow => flow.flow_labels?.filter(Boolean) ?? [])
+    .filter(Boolean) ?? []
+  const configFields = item.timeline_effect?.skill_data_accessors
+    ?.map(accessor => accessor.config_field)
+    .filter(Boolean) ?? []
+  const buffLabels = item.buff_effects
+    ?.map(buff => buff.buff_type_name || buff.buff_id)
+    .filter(Boolean) ?? []
+  const sections = item.timeline_effect?.sections?.filter(Boolean) ?? []
+  return [
+    item.type_name ? `${item.type_name}(${item.type ?? ''})` : item.type ? `类型 ${item.type}` : '',
+    item.trigger_name ? `${item.trigger_name}(${item.trigger ?? ''})` : item.trigger ? `触发 ${item.trigger}` : '',
+    item.timeline_id ? `timeline ${item.timeline_id}` : '',
+    effectClasses.length ? `效果 ${effectClasses.slice(0, 4).join('/')}` : '',
+    flowLabels.length ? `流程 ${Array.from(new Set(flowLabels)).slice(0, 4).join('/')}` : '',
+    configFields.length ? `参数 ${Array.from(new Set(configFields)).slice(0, 5).join('/')}` : '',
+    sections.length ? `阶段 ${sections.join('/')}` : '',
+    item.cd ? `CD ${item.cd}` : '',
+    item.damage ? `伤害 ${item.damage}` : '',
+    item.distance ? `距离 ${item.distance}` : '',
+    item.hp_limit ? `血线 ${item.hp_limit}` : '',
+    buffLabels.length ? `Buff ${Array.from(new Set(buffLabels.map(String))).slice(0, 4).join('/')}` : item.buff_id ? `Buff ${item.buff_id}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDigitDoorMonsterSkillFlowHints(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.timeline_effect?.class_flows
+    ?.map(flow => flow.flow_hint)
+    .filter((hint): hint is string => Boolean(hint)) ?? []
+}
+
+function getDigitDoorMonsterSkillAccessorHints(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.timeline_effect?.skill_data_accessors
+    ?.map(accessor => {
+      if (!accessor.config_field || !accessor.accessor) return ''
+      return `${accessor.accessor} -> ${accessor.config_field}${accessor.transform ? `：${accessor.transform}` : ''}`
+    })
+    .filter((hint): hint is string => Boolean(hint)) ?? []
+}
+
+function getDigitDoorMonsterSkillValueProjectionHints(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.value_projections
+    ?.map(row => row.projection ? `${row.field || 'value'}：${row.projection}` : '')
+    .filter((hint): hint is string => Boolean(hint)) ?? []
+}
+
+function getDigitDoorMonsterSkillBuffHints(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.buff_effects
+    ?.map(buff => {
+      if (buff.runtime_hint) return buff.runtime_hint
+      const label = buff.buff_type_name || buff.buff_id
+      if (!label) return ''
+      return `Buff ${label}`
+    })
+    .filter((hint): hint is string => Boolean(hint)) ?? []
+}
+
+function getDigitDoorMonsterSkillBuffFormulaHints(item: FanxiuDigitDoorMonsterSkill | null | undefined) {
+  return item?.buff_effects
+    ?.flatMap(buff => buff.formula_projections
+      ?.map(row => row.projection ? `${row.field || 'formula'}：${row.projection}` : '')
+      .filter(Boolean) ?? [])
+    .filter((hint): hint is string => Boolean(hint)) ?? []
+}
+
+function getDoupoTDMeta(item: FanxiuDoupoTDPartnerSearchItem | FanxiuDoupoTDPartnerCard | null | undefined) {
+  return [
+    item?.positioning,
+    item?.skill_name ? `绝技 ${item.skill_name}` : '',
+    item?.compose_card_count ? `${item.compose_card_count} 卡` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDRewardConfigKey(item: FanxiuDoupoTDRewardConfigSearchItem | null | undefined) {
+  if (!item) return ''
+  return `${item.source_table}:${item.config_id}`
+}
+
+function parseDoupoTDRewardConfigKey(key: string) {
+  const index = key.indexOf(':')
+  if (index <= 0) return { sourceTable: 'Level', configId: key }
+  return { sourceTable: key.slice(0, index), configId: key.slice(index + 1) }
+}
+
+function getDoupoTDRewardSourceLabel(source: unknown) {
+  const text = String(source ?? '').trim()
+  if (text === 'Level') return '关卡奖励'
+  if (text === 'DoupoPreLevelReward') return '章节预览'
+  return text || '奖励'
+}
+
+function getDoupoTDRewardSourceShort(source: unknown) {
+  const text = String(source ?? '').trim()
+  if (text === 'Level') return '关'
+  if (text === 'DoupoPreLevelReward') return '章'
+  return Array.from(text || '奖')[0] ?? '奖'
+}
+
+function getDoupoTDRewardConfigTitle(item: FanxiuDoupoTDRewardConfigSearchItem | null | undefined) {
+  if (!item) return ''
+  const name = String(item.name || '').trim()
+  if (name) return name
+  const layer = String(item.layer ?? '').trim()
+  const source = getDoupoTDRewardSourceLabel(item.source_table)
+  return layer ? `${source} ${layer}` : `${source} ${item.config_id ?? ''}`.trim()
+}
+
+function getDoupoTDRewardConfigMeta(item: FanxiuDoupoTDRewardConfigSearchItem | null | undefined) {
+  if (!item) return ''
+  const stage = item.stage ? `章节 ${item.stage}` : ''
+  const layer = item.layer ? `关卡 ${item.layer}` : ''
+  const subLayer = item.sub_layer ? `小关 ${item.sub_layer}` : ''
+  return [
+    getDoupoTDRewardSourceLabel(item.source_table),
+    stage,
+    layer,
+    subLayer,
+    item.reward_count ? `${item.reward_count}项` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDRewardConfigPreview(item: FanxiuDoupoTDRewardConfigSearchItem | null | undefined) {
+  return compactText(item?.reward_items || item?.reward_title || item?.raw_rewards, 118)
+}
+
+function getDoupoTDRewardItemText(item: FanxiuDoupoTDRewardConfigRewardItem | null | undefined) {
+  if (!item) return ''
+  if (item.text) return String(item.text)
+  const name = String(item.item_name || item.item_id || item.raw || '').trim()
+  return item.count ? `${name}x${item.count}` : name
+}
+
+function getDoupoTDRewardItemMeta(item: FanxiuDoupoTDRewardConfigRewardItem | null | undefined) {
+  if (!item) return ''
+  const extraMarkName = item.reward_result?.extra_mark_name
+  return [
+    item.quality_name,
+    item.item_id ? `ID ${item.item_id}` : '',
+    extraMarkName && extraMarkName !== 'RewardType.ExtraMark.Common' ? extraMarkName : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDRewardResultBadges(item: FanxiuDoupoTDRewardConfigRewardItem | null | undefined) {
+  const result = item?.reward_result
+  if (!result) return []
+  const typeName = String(result.runtime_reward_type_name || '').trim()
+  const typeValue = String(result.runtime_reward_type ?? '').trim()
+  const code = String(result.code ?? item?.item_id ?? '').trim()
+  const amount = String(result.amount ?? item?.count ?? '').trim()
+  const extraMark = String(result.extra_mark ?? item?.extra_mark ?? '0').trim()
+  return [
+    typeName ? `${typeName}${typeValue ? `(${typeValue})` : ''}` : '',
+    code ? `code ${code}` : '',
+    amount ? `amount ${amount}` : '',
+    extraMark ? `extraMark ${extraMark}` : '',
+  ].filter(Boolean)
+}
+
+function getDoupoTDRewardResultNote(item: FanxiuDoupoTDRewardConfigRewardItem | null | undefined) {
+  const note = String(item?.reward_result?.note || '').trim()
+  if (!note) return ''
+  if (note.includes('omits extraMark')) return '未写 extraMark，客户端按 0 处理'
+  if (note.includes('negative amount')) return '静态预览使用负数占位，最终数量看回包'
+  return note
+}
+
+function getDoupoTDRewardConfigRawRows(item: FanxiuDoupoTDRewardConfigSearchItem | null | undefined) {
+  if (!item) return []
+  return [
+    ['来源', getDoupoTDRewardSourceLabel(item.source_table)],
+    ['配置 ID', item.config_id],
+    ['Different', item.different],
+    ['Stage', item.stage],
+    ['Layer', item.layer],
+    ['SubLayer', item.sub_layer],
+    ['ShowPos', item.show_pos_id],
+    ['标题', item.reward_title],
+    ['奖励串', item.raw_rewards],
+  ].map(([label, value]) => ({ label: String(label), value: formatRawValue(value) })).filter(row => row.value)
+}
+
+function getDoupoTDComposeIconUrl(card: FanxiuDoupoTDComposeCard | null | undefined) {
+  return getFanxiuResourceIconUrl(card?.show_item?.icon)
+}
+
+function getDoupoTDComposeMeta(card: FanxiuDoupoTDComposeCard | null | undefined) {
+  return [
+    card?.quality_name,
+    Number(card?.star || 0) > 0 ? `${card?.star}星` : '',
+    card?.show_item?.quality_name,
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDAttrText(entries: FanxiuDoupoTDAttrEntry[] | null | undefined) {
+  return (entries ?? []).map(item => item.text).filter(Boolean).join('\n')
+}
+
+function getDoupoTDSkillMeta(skill: FanxiuDoupoTDSkill | null | undefined) {
+  return [
+    skill?.skill_type ? `类型 ${skill.skill_type}` : '',
+    skill?.id ? `ID ${skill.id}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDLogicSkillTitle(skill: FanxiuDoupoTDLogicSkill | null | undefined, index: number) {
+  return skill?.id ? `技能 ${skill.id}` : `技能 ${index + 1}`
+}
+
+function getDoupoTDLogicSkillMeta(skill: FanxiuDoupoTDLogicSkill | null | undefined) {
+  return [
+    skill?.skillType ? `类型 ${skill.skillType}` : '',
+    skill?.level ? `${skill.level}级` : '',
+    skill?.damage ? `伤害 ${skill.damage}` : '',
+    skill?.cd ? `CD ${skill.cd}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDRuntimeTimelineChips(skill: FanxiuDoupoTDLogicSkill | null | undefined) {
+  return (skill?.runtime?.timeline_ids ?? []).map(item => `TL ${item}`)
+}
+
+const doupoTDBuffFlagLabels: Record<string, string> = {
+  starts_buff: '启动',
+  updates_timer: '计时',
+  custom_do_buff_logic: '逻辑',
+  layer_logic: '层数',
+  uses_trigger_buff: '派生',
+  uses_timeline: 'Timeline',
+  uses_add_attr: '属性',
+  uses_damage: '伤害',
+  adds_runtime_buff: '加Buff',
+  removes_runtime_buff: '移除',
+  has_percent_trigger: '概率',
+  controls_release_skill: '放技',
+  controls_status: '状态',
+}
+
+const doupoTDFlowCategoryLabels: Record<string, string> = {
+  add_buff: '加Buff',
+  remove_buff: '移除',
+  random_gate: '概率',
+  skill_filter: '技能过滤',
+  target_buff_check: '目标检查',
+  target_selection: '目标选择',
+  trigger_buff_ids: '派生',
+  buff_config_lookup: '配置读取',
+  layer: '叠层',
+  lifetime: '生命周期',
+  dispatch: '分发',
+  timeline: 'Timeline',
+}
+
+function getDoupoTDBuffTitle(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  if (!buff) return ''
+  const typeName = String(buff.type_name || '').trim()
+  return typeName && typeName !== 'None' ? typeName : `Buff ${buff.id ?? ''}`.trim()
+}
+
+function getDoupoTDBuffMeta(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  return [
+    buff?.buff_class,
+    buff?.trigger_type,
+    buff?.target_type_name,
+    buff?.layer_type_name,
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDBuffFlagLabels(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  return (buff?.semantic_flags ?? [])
+    .map(flag => doupoTDBuffFlagLabels[flag] || flag)
+    .slice(0, 4)
+}
+
+function getDoupoTDBuffExtraLines(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  if (!buff) return []
+  return [
+    buff.add_attr ? `属性 ${buff.add_attr}` : '',
+    buff.damage ? `伤害 ${buff.damage}` : '',
+    buff.timeline_id ? `Timeline ${buff.timeline_id}` : '',
+    buff.trigger_buff_ids?.length ? `派生 ${buff.trigger_buff_ids.join(' / ')}` : '',
+  ].filter(Boolean)
+}
+
+function getDoupoTDBuffFlowHint(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  return String(buff?.flow?.hint || '').trim()
+}
+
+function getDoupoTDBuffFlowChips(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  const categories = (buff?.flow?.categories ?? [])
+    .map(category => doupoTDFlowCategoryLabels[category] || category)
+    .filter(Boolean)
+  const stats = [
+    buff?.flow?.function_count ? `${buff.flow.function_count}函数` : '',
+    buff?.flow?.flow_step_count ? `${buff.flow.flow_step_count}步` : '',
+  ].filter(Boolean)
+  return uniqueLabels([...categories, ...stats]).slice(0, 7)
+}
+
+function getDoupoTDBuffFlowFunctions(buff: FanxiuDoupoTDBuffRuntime | null | undefined) {
+  return (buff?.flow?.key_functions ?? []).filter(item => item?.name).slice(0, 4)
+}
+
+function getDoupoTDBuffFlowFunctionLabel(item: FanxiuDoupoTDBuffFlowFunction) {
+  const name = String(item.name || '').trim()
+  const categories = (item.categories ?? [])
+    .filter(category => category !== 'entry' && category !== 'super_call' && category !== 'guard')
+    .map(category => doupoTDFlowCategoryLabels[category] || category)
+    .slice(0, 3)
+  return categories.length ? `${name} · ${categories.join('/')}` : name
+}
+
+function getDoupoTDStrengthMeta(item: FanxiuDoupoTDSkillStrength | null | undefined) {
+  return [
+    item?.quality_name,
+    item?.level ? `${item.level}级` : '',
+    item?.unlock_description,
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDRewardText(reward: FanxiuDoupoTDRewardItem | null | undefined) {
+  if (!reward) return ''
+  if (reward.text) return reward.text
+  const name = String(reward.item?.name || reward.id || '').trim()
+  return reward.count ? `${name}x${reward.count}` : name
+}
+
+function getDoupoTDRewardsText(rewards: FanxiuDoupoTDRewardItem[] | null | undefined) {
+  return (rewards ?? []).map(getDoupoTDRewardText).filter(Boolean).join(' / ')
+}
+
+function getDoupoTDEntryText(entry: { title?: string; chance_text?: string; weight?: string | number } | null | undefined) {
+  if (!entry) return ''
+  const chance = entry.chance_text ? ` ${entry.chance_text}` : ''
+  return `${entry.title || '卡牌'}${chance}`.trim()
+}
+
+function getDoupoTDDrawSourceTitle(source: FanxiuDoupoTDDrawSource | null | undefined) {
+  return source?.item?.name || (source?.item_id ? `抽卡道具 ${source.item_id}` : `抽卡池 ${source?.id ?? ''}`)
+}
+
+function getDoupoTDDrawSourceMeta(source: FanxiuDoupoTDDrawSource | null | undefined) {
+  return [
+    source?.id ? `池 ${source.id}` : '',
+    source?.total_weight ? `总权重 ${source.total_weight}` : '',
+    source?.rewards?.length ? `附带 ${getDoupoTDRewardsText(source.rewards)}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDComposeSourceTitle(source: FanxiuDoupoTDComposeQualitySource | null | undefined) {
+  return source?.quality_name || (source?.quality ? `品质 ${source.quality}` : `合成池 ${source?.id ?? ''}`)
+}
+
+function getDoupoTDComposeSourceMeta(source: FanxiuDoupoTDComposeQualitySource | null | undefined) {
+  return [
+    source?.id ? `池 ${source.id}` : '',
+    source?.total_weight ? `总权重 ${source.total_weight}` : '',
+  ].filter(Boolean).join(' · ')
+}
+
+function getDoupoTDProgressRewardTitle(item: FanxiuDoupoTDComposeProgressReward | null | undefined) {
+  return item?.progress ? `${item.progress} 抽` : `进度 ${item?.id ?? ''}`
+}
+
 function getItemCategoryLabel(item: FanxiuItemSearchItem | FanxiuItemCard | null | undefined) {
   const typeName = String(item?.type_name || '').trim()
   const subTypeName = String(item?.sub_type_name || '').trim()
@@ -1510,6 +2672,247 @@ function getProtocolRowMeta(row: FanxiuProtocolSemanticRow) {
 
 function getProtocolRowPreview(row: FanxiuProtocolSemanticRow) {
   return compactText(row.semantic_note || row.state_sinks || compactProtocolFields(row), 110)
+}
+
+function getProtocolBusinessNames(item: FanxiuTcpBusinessCategorySummary) {
+  return item.protocols.slice(0, 10).join('、')
+}
+
+function packetBusinessDisplaySegments(sample: FanxiuTcpBusinessProtocolSample) {
+  if (packetSampleTables(sample).length) {
+    const text = String(sample.display_text || '').split('：')[0] || '解析结果'
+    return [{ text, kind: 'text' }]
+  }
+  if (sample.display_segments?.length) return sample.display_segments
+  return [{ text: sample.display_text || JSON.stringify(sample.content), kind: 'text' }]
+}
+
+function packetEntryDisplaySegments(entry: FanxiuTcpBusinessEntry) {
+  if (entry.display_segments?.length) return entry.display_segments
+  return [{ text: entry.display_text || JSON.stringify(entry.content), kind: 'text' }]
+}
+
+function packetEntryJson(entry: FanxiuTcpBusinessEntry) {
+  return JSON.stringify(entry.content ?? {}, null, 2)
+}
+
+function formatTcpBusinessTime(value: string) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
+  if (!match) return value || '-'
+  const now = new Date()
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const time = `${match[4]}:${match[5]}:${match[6]}`
+  if (year === now.getFullYear() && month === now.getMonth() + 1 && day === now.getDate()) return time
+  if (year === now.getFullYear()) return `${match[2]}-${match[3]} ${time}`
+  return `${match[1]}-${match[2]}-${match[3]} ${time}`
+}
+
+async function togglePacketProtocolSamples(item: FanxiuTcpBusinessProtocolSummary) {
+  if (expandedPacketProtocol.value === item.name) {
+    expandedPacketProtocol.value = ''
+    packetProtocolSamples.value = []
+    return
+  }
+  expandedPacketProtocol.value = item.name
+  packetProtocolSamples.value = []
+  packetProtocolSamplesLoading.value = true
+  try {
+    const response = await listFanxiuTcpBusinessEntries({
+      page: 1,
+      page_size: 200,
+      category: item.category,
+      protocol: item.name,
+    })
+    if (expandedPacketProtocol.value === item.name) {
+      packetProtocolSamples.value = response.items ?? []
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取协议样本失败')
+  } finally {
+    if (expandedPacketProtocol.value === item.name) {
+      packetProtocolSamplesLoading.value = false
+    }
+  }
+}
+
+const PACKET_TABLE_FIELD_LABELS: Record<string, string> = {
+  id: 'ID',
+  serverId: '区服',
+  name: '名称',
+  level: '等级',
+  memberNum: '成员',
+  leaderName: '盟主',
+  leaderSex: '性别',
+  leaderVipLevel: 'VIP',
+  roleId: '角色ID',
+  roleName: '角色名',
+  clubId: '宗门ID',
+  clubName: '宗门',
+  score: '积分',
+  rank: '排行',
+  value: '值',
+  amount: '数量',
+  code: '编号',
+  type: '类型',
+  avatar: '头像',
+  headFrame: '头像框',
+  post: '职位',
+  sex: '性别',
+  lastOnlineTime: '最后在线',
+  vipLevel: 'VIP',
+}
+
+const PACKET_TABLE_FIELD_ORDER = [
+  'name',
+  'roleName',
+  'id',
+  'roleId',
+  'serverId',
+  'clubName',
+  'clubId',
+  'level',
+  'memberNum',
+  'leaderName',
+  'leaderSex',
+  'leaderVipLevel',
+  'score',
+  'rank',
+  'amount',
+  'code',
+  'type',
+  'value',
+  'avatar',
+  'headFrame',
+  'post',
+  'sex',
+  'lastOnlineTime',
+  'vipLevel',
+]
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function formatPacketTableValue(value: unknown, key?: string) {
+  if (value === null || value === undefined || value === '') return ''
+  if (typeof value === 'boolean') return value ? '是' : '否'
+  if (typeof value === 'number') {
+    if (key && /time/i.test(key) && value > 1_000_000_000_000) {
+      const date = new Date(value)
+      if (!isNaN(date.getTime())) {
+        return date.toLocaleString('zh-CN', { hour12: false })
+      }
+    }
+    return String(value)
+  }
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return `${value.length} 项`
+  if (isRecordValue(value) && typeof value.name === 'string') return value.name
+  return JSON.stringify(value)
+}
+
+function translatePacketCellValue(rawText: string, fieldKey: string, fieldLabels?: Record<string, Record<string, string>>) {
+  if (!fieldLabels) return null
+  const labels = fieldLabels[fieldKey]
+  if (!labels) return null
+  const label = labels[rawText]
+  if (label) return label
+  if (rawText === '是') return labels['1'] || labels['true'] || null
+  if (rawText === '否') return labels['0'] || labels['false'] || null
+  return null
+}
+
+function packetTableTitle(path: string) {
+  const parts = path.split('.').filter(part => part !== 'items')
+  const key = parts[parts.length - 1] || '列表'
+  const labels: Record<string, string> = {
+    members: '成员列表',
+    items: '列表',
+    rewards: '奖励列表',
+    costs: '消耗列表',
+  }
+  return labels[key] || key
+}
+
+function flattenPacketTableRow(row: Record<string, unknown>) {
+  const output: Record<string, string> = {}
+  if (isRecordValue(row._super)) {
+    for (const [key, value] of Object.entries(row._super)) {
+      if (key !== '_class') output[key] = formatPacketTableValue(value, key)
+    }
+  }
+  for (const [key, value] of Object.entries(row)) {
+    if (key === '_class' || key === '_super') continue
+    output[key] = formatPacketTableValue(value, key)
+  }
+  return output
+}
+
+function findPacketTableSource(value: unknown, path = ''): { path: string; rows: Record<string, unknown>[] } | null {
+  if (!isRecordValue(value)) return null
+  const items = value.items
+  if (Array.isArray(items) && items.some(isRecordValue)) {
+    return { path: `${path}.items`.replace(/^\./, ''), rows: items.filter(isRecordValue) }
+  }
+  let best: { path: string; rows: Record<string, unknown>[] } | null = null
+  for (const [key, child] of Object.entries(value)) {
+    if (key === '_super') continue
+    if (Array.isArray(child) && child.some(isRecordValue)) {
+      const childPath = path ? `${path}.${key}` : key
+      const rows = child.filter(isRecordValue)
+      if (!best || rows.length > best.rows.length) best = { path: childPath, rows }
+      continue
+    }
+    const found = findPacketTableSource(child, path ? `${path}.${key}` : key)
+    if (found && (!best || found.rows.length > best.rows.length)) best = found
+  }
+  return best
+}
+
+function packetSampleTables(sample: FanxiuTcpBusinessProtocolSample | null | undefined): PacketSampleTable[] {
+  const found = findPacketTableSource(sample?.content)
+  if (!found) return []
+  const rows = found.rows.map(flattenPacketTableRow)
+  const fieldSet = new Set(rows.flatMap(row => Object.keys(row).filter(key => row[key])))
+  const keys = [...fieldSet].sort((left, right) => {
+    const leftIndex = PACKET_TABLE_FIELD_ORDER.indexOf(left)
+    const rightIndex = PACKET_TABLE_FIELD_ORDER.indexOf(right)
+    const leftOrder = leftIndex >= 0 ? leftIndex : 999
+    const rightOrder = rightIndex >= 0 ? rightIndex : 999
+    return leftOrder - rightOrder || left.localeCompare(right)
+  }).slice(0, 10)
+  if (!keys.length) return []
+  return [{
+    title: packetTableTitle(found.path),
+    columns: keys.map(key => ({ key, label: PACKET_TABLE_FIELD_LABELS[key] || key })),
+    rows,
+    fieldLabels: sample?.field_labels,
+  }]
+}
+
+function isPacketProtocolChecked(name: string) {
+  return !hiddenPacketProtocols.value.includes(name) && isFanxiuPacketProtocolVisible(name)
+}
+
+function togglePacketProtocolVisibility(name: string, visible: boolean) {
+  setFanxiuPacketProtocolVisible(name, visible)
+  hiddenPacketProtocols.value = getHiddenFanxiuPacketProtocols()
+}
+
+function sortPacketProtocolsByVisibility(items: FanxiuTcpBusinessProtocolSummary[]) {
+  const hidden = new Set(getHiddenFanxiuPacketProtocols())
+  return [...items].sort((left, right) => Number(hidden.has(left.name)) - Number(hidden.has(right.name)))
+}
+
+function packetDirectionLabel(value: string) {
+  return value === 'c2s' ? '上行' : '下行'
+}
+
+function packetProtocolSampleJson(sample: FanxiuTcpBusinessProtocolSample | null | undefined) {
+  if (!sample) return ''
+  return JSON.stringify(sample.content ?? {}, null, 2)
 }
 
 function getActivityRewardRowKey(section: FanxiuActivityRewardSection, row: FanxiuActivityRewardRow, index: number) {
@@ -3214,6 +4617,38 @@ function getHomeMakeFormulaSearchText(group: FanxiuGongfaHomeMakeXianShuFormulaG
     .join(' ')
 }
 
+function splitSpecialFazeTokens(value: string | undefined) {
+  return String(value || '')
+    .split(/[、;,]/)
+    .map(part => part.trim())
+    .filter(Boolean)
+}
+
+function getSpecialFazeEffectTags(effect: FanxiuGongfaSpecialFazeEffectType) {
+  return [
+    effect.effect_type ? `Type ${effect.effect_type}` : '',
+    effect.stage_count ? `${effect.stage_count} 阶` : '',
+    effect.effect_id_count ? `${effect.effect_id_count} 效果` : '',
+  ].filter(Boolean)
+}
+
+function getSpecialFazeReasonTags(reason: FanxiuGongfaSpecialFazeReason) {
+  return [
+    reason.reason ? `Reason ${reason.reason}` : '',
+    reason.stage_count ? `${reason.stage_count} 阶` : '',
+    reason.effect_types ? `Type ${reason.effect_types}` : '',
+  ].filter(Boolean)
+}
+
+function getSpecialFazeStageTags(stage: FanxiuGongfaSpecialFazeStage) {
+  return [
+    stage.stage,
+    stage.faze_id ? `Faze ${stage.faze_id}` : '',
+    stage.effect_type ? `Type ${stage.effect_type}` : '',
+    stage.tip_codes ? `Reason ${stage.tip_codes}` : '',
+  ].filter(Boolean)
+}
+
 function getHomeMakeBuffLinkLabel(link: FanxiuGongfaHomeMakeBuffParameterLink) {
   return link.target_name || link.target_id || link.token || link.target_table
 }
@@ -3259,12 +4694,15 @@ function clearHomeMakeStaticDetail() {
   homeMakeStaticDetailRequestSeq += 1
   homeMakeBuffParameterSemanticsRequestSeq += 1
   homeMakeFormulaCatalogRequestSeq += 1
+  specialFazeCatalogRequestSeq += 1
   selectedHomeMakeStaticDetail.value = null
   selectedHomeMakeBuffParameterSemantics.value = null
   selectedHomeMakeXianShuFormulaCatalog.value = null
+  selectedSpecialFazeCatalog.value = null
   loadingHomeMakeStaticDetail.value = false
   loadingHomeMakeBuffParameterSemantics.value = false
   loadingHomeMakeFormulaCatalog.value = false
+  loadingSpecialFazeCatalog.value = false
 }
 
 async function loadHomeMakeStaticDetail(gongfaId: string | number) {
@@ -3354,6 +4792,36 @@ async function loadHomeMakeFormulaCatalog(gongfaId: string | number) {
   }
 }
 
+async function loadSpecialFazeCatalog(gongfaId: string | number) {
+  const nextId = String(gongfaId)
+  const requestSeq = ++specialFazeCatalogRequestSeq
+  selectedSpecialFazeCatalog.value = null
+  const cached = gongfaSpecialFazeCatalogCache.get(nextId)
+  if (cached !== undefined) {
+    selectedSpecialFazeCatalog.value = cached
+    loadingSpecialFazeCatalog.value = false
+    return
+  }
+
+  loadingSpecialFazeCatalog.value = true
+  try {
+    const response = await getFanxiuGongfaSpecialFazeCatalog({ gid: nextId, limit: 1 })
+    if (requestSeq !== specialFazeCatalogRequestSeq) return
+    const value = response.selected.group ? response : null
+    gongfaSpecialFazeCatalogCache.set(nextId, value)
+    selectedSpecialFazeCatalog.value = value
+  } catch (error) {
+    if (requestSeq !== specialFazeCatalogRequestSeq) return
+    gongfaSpecialFazeCatalogCache.set(nextId, null)
+    selectedSpecialFazeCatalog.value = null
+    console.warn('Failed to load Fanxiu Special-GongfaJie/Faze catalog:', error)
+  } finally {
+    if (requestSeq === specialFazeCatalogRequestSeq) {
+      loadingSpecialFazeCatalog.value = false
+    }
+  }
+}
+
 async function loadHomeMakeBuffOverview(options: { force?: boolean } = {}) {
   if (homeMakeBuffOverview.value && !options.force) return
   const requestSeq = ++homeMakeBuffOverviewRequestSeq
@@ -3406,9 +4874,15 @@ async function loadGongfaCards(options: { keepSelection?: boolean } = {}) {
     itemItems.value = []
     activityItems.value = []
     lingjieItems.value = []
+    digitDoorEnhanceItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
     selectedItem.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
       if (!selectedCard.value || String(selectedCard.value.id) !== selectedId.value) {
@@ -3472,9 +4946,14 @@ async function loadItemCards(options: { keepSelection?: boolean } = {}) {
     gongfaItems.value = []
     activityItems.value = []
     lingjieItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
     selectedCard.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
     clearHomeMakeStaticDetail()
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
@@ -3538,9 +5017,13 @@ async function loadActivityCards(options: { keepSelection?: boolean } = {}) {
     gongfaItems.value = []
     itemItems.value = []
     lingjieItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
     selectedCard.value = null
     selectedItem.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
       if (!selectedActivity.value || String(selectedActivity.value.id) !== selectedId.value) {
@@ -3594,9 +5077,13 @@ async function loadLingjieFeatureCards(options: { keepSelection?: boolean } = {}
     gongfaItems.value = []
     itemItems.value = []
     activityItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
     selectedCard.value = null
     selectedItem.value = null
     selectedActivity.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
     clearHomeMakeStaticDetail()
     const keepSelected = options.keepSelection && Boolean(selectedId.value)
     if (keepSelected) {
@@ -3627,6 +5114,267 @@ async function loadLingjieFeatureCards(options: { keepSelection?: boolean } = {}
   }
 }
 
+async function loadDigitDoorCharacterCards(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuDigitDoorCharacterCards({
+      query: query.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    digitDoorStats.value = response.stats
+    catalogPath.value = response.catalog_path ?? ''
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadDigitDoorCharacterCards(options)
+      return
+    }
+
+    digitDoorItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      if (!selectedDigitDoorCharacter.value || String(selectedDigitDoorCharacter.value.id) !== selectedId.value) {
+        void selectDigitDoorCharacter(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    if (first) {
+      selectedId.value = String(first.id)
+      selectedDigitDoorCharacter.value = null
+      void selectDigitDoorCharacter(first.id)
+    } else {
+      selectedId.value = ''
+      selectedDigitDoorCharacter.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门角色失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadDigitDoorLevelConfigs(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuDigitDoorLevelConfigs({
+      query: query.value,
+      stage: digitDoorStageFilter.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    digitDoorLevelStats.value = response.stats
+    digitDoorStageOptions.value = response.stage_options ?? []
+    catalogPath.value = response.catalog_path ?? ''
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadDigitDoorLevelConfigs(options)
+      return
+    }
+
+    digitDoorLevelItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    digitDoorItems.value = []
+    digitDoorEnhanceItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      if (!selectedDigitDoorLevel.value || String(selectedDigitDoorLevel.value.id) !== selectedId.value) {
+        void selectDigitDoorLevel(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    if (first) {
+      selectedId.value = String(first.id)
+      selectedDigitDoorLevel.value = null
+      selectedDigitDoorStage.value = null
+      void selectDigitDoorLevel(first.id)
+    } else {
+      selectedId.value = ''
+      selectedDigitDoorLevel.value = null
+      selectedDigitDoorStage.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门关卡失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadDoupoTDPartnerCards(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuDoupoTDPartnerCards({
+      query: query.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    doupoTDStats.value = response.stats
+    catalogPath.value = response.catalog_path ?? ''
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadDoupoTDPartnerCards(options)
+      return
+    }
+
+    doupoTDItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    doupoTDRewardItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      if (!selectedDoupoTDPartner.value || String(selectedDoupoTDPartner.value.id) !== selectedId.value) {
+        void selectDoupoTDPartner(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    if (first) {
+      selectedId.value = String(first.id)
+      selectedDoupoTDPartner.value = null
+      void selectDoupoTDPartner(first.id)
+    } else {
+      selectedId.value = ''
+      selectedDoupoTDPartner.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取斗破角色失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadDoupoTDRewardConfigs(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuDoupoTDRewardConfigs({
+      query: query.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    doupoTDRewardStats.value = response.stats
+    catalogPath.value = response.source?.reward_items ?? response.source?.levels ?? response.source?.prelevel_rewards ?? ''
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadDoupoTDRewardConfigs(options)
+      return
+    }
+
+    doupoTDRewardItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    doupoTDItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      const current = doupoTDRewardItems.value.find(item => getDoupoTDRewardConfigKey(item) === selectedId.value)
+      if (current) {
+        await selectDoupoTDRewardConfig(current)
+      } else if (!selectedDoupoTDReward.value || getDoupoTDRewardConfigKey(selectedDoupoTDReward.value) !== selectedId.value) {
+        await selectDoupoTDRewardConfig(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    if (first) {
+      selectedId.value = getDoupoTDRewardConfigKey(first)
+      selectedDoupoTDReward.value = first
+      doupoTDRewardDetailCache.set(selectedId.value, first)
+    } else {
+      selectedId.value = ''
+      selectedDoupoTDReward.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取斗破奖励失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
 async function loadProtocolSemantics(options: { keepSelection?: boolean } = {}) {
   const requestSeq = ++listRequestSeq
   loadingList.value = true
@@ -3648,10 +5396,14 @@ async function loadProtocolSemantics(options: { keepSelection?: boolean } = {}) 
     itemItems.value = []
     activityItems.value = []
     lingjieItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
     selectedCard.value = null
     selectedItem.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
     clearHomeMakeStaticDetail()
 
     const current = options.keepSelection ? selectedId.value : ''
@@ -3665,6 +5417,84 @@ async function loadProtocolSemantics(options: { keepSelection?: boolean } = {}) 
   } finally {
     if (requestSeq === listRequestSeq) {
       loadingList.value = false
+    }
+  }
+}
+
+async function loadPacketProtocolWiki() {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  loadingDetail.value = false
+  try {
+    const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 1 })
+    if (requestSeq !== listRequestSeq) return
+    const needle = normalizeSearchQuery(query.value).toLowerCase()
+    const categories = response.category_summary ?? []
+    protocolBusinessCategories.value = needle
+      ? categories.filter(item => {
+          const haystack = `${item.category} ${item.meaning} ${item.protocols.join(' ')}`.toLowerCase()
+          return haystack.includes(needle)
+        })
+      : categories
+    selectedPacketCategory.value = protocolBusinessCategories.value.some(item => item.category === selectedPacketCategory.value)
+      ? selectedPacketCategory.value
+      : protocolBusinessCategories.value[0]?.category ?? ''
+    packetProtocolDetails.value = []
+    expandedPacketProtocol.value = ''
+    packetProtocolSamples.value = []
+    protocolResponse.value = null
+    catalogPath.value = ''
+    total.value = protocolBusinessCategories.value.length
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    selectedId.value = ''
+    clearHomeMakeStaticDetail()
+    if (selectedPacketCategory.value) {
+      await loadPacketProtocolCategoryDetail(selectedPacketCategory.value, requestSeq)
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取抓包协议图鉴失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function loadPacketProtocolCategoryDetail(category: string, requestSeq = listRequestSeq) {
+  const target = String(category || '').trim()
+  if (!target) {
+    packetProtocolDetails.value = []
+    expandedPacketProtocol.value = ''
+    packetProtocolSamples.value = []
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await listFanxiuTcpBusinessEntries({ page: 1, page_size: 50, category: target })
+    if (requestSeq !== listRequestSeq || selectedPacketCategory.value !== target) return
+    packetProtocolDetails.value = sortPacketProtocolsByVisibility(response.protocol_summary ?? [])
+    expandedPacketProtocol.value = ''
+    packetProtocolSamples.value = []
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取抓包大类详情失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingDetail.value = false
     }
   }
 }
@@ -3688,8 +5518,26 @@ function loadCurrentCards(options: { keepSelection?: boolean } = {}) {
   if (activeTab.value === 'lingjie') {
     return loadLingjieFeatureCards(options)
   }
+  if (activeTab.value === 'digitdoor') {
+    return loadDigitDoorCharacterCards(options)
+  }
+  if (activeTab.value === 'digitdoor_level') {
+    return loadDigitDoorLevelConfigs(options)
+  }
+  if (activeTab.value === 'digitdoor_enhance') {
+    return loadDigitDoorEnhanceGroups(options)
+  }
+  if (activeTab.value === 'doupotd') {
+    return loadDoupoTDPartnerCards(options)
+  }
+  if (activeTab.value === 'doupotd_reward') {
+    return loadDoupoTDRewardConfigs(options)
+  }
   if (activeTab.value === 'protocol') {
     return loadProtocolSemantics(options)
+  }
+  if (activeTab.value === 'packet') {
+    return loadPacketProtocolWiki()
   }
   return loadGongfaCards(options)
 }
@@ -3704,6 +5552,7 @@ async function selectGongfa(gongfaId: string | number) {
     selectedItem.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     const tabs = progressionTabs.value
     if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
       selectedProgressionType.value = tabs[0]?.key ?? ''
@@ -3712,6 +5561,7 @@ async function selectGongfa(gongfaId: string | number) {
     void loadHomeMakeStaticDetail(nextId)
     void loadHomeMakeBuffParameterSemantics(nextId)
     void loadHomeMakeFormulaCatalog(nextId)
+    void loadSpecialFazeCatalog(nextId)
     return
   }
   loadingDetail.value = true
@@ -3723,6 +5573,7 @@ async function selectGongfa(gongfaId: string | number) {
     selectedItem.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     const tabs = progressionTabs.value
     if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
       selectedProgressionType.value = tabs[0]?.key ?? ''
@@ -3730,6 +5581,7 @@ async function selectGongfa(gongfaId: string | number) {
     void loadHomeMakeStaticDetail(nextId)
     void loadHomeMakeBuffParameterSemantics(nextId)
     void loadHomeMakeFormulaCatalog(nextId)
+    void loadSpecialFazeCatalog(nextId)
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取功法详情失败')
@@ -3751,6 +5603,7 @@ async function selectItem(itemId: string | number) {
     selectedCard.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     loadingDetail.value = false
     return
@@ -3764,6 +5617,7 @@ async function selectItem(itemId: string | number) {
     selectedCard.value = null
     selectedActivity.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     const tabs = progressionTabs.value
     if (!tabs.some(tab => tab.key === selectedProgressionType.value)) {
@@ -3790,6 +5644,7 @@ async function selectActivity(activityId: string | number) {
     selectedCard.value = null
     selectedItem.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     loadingDetail.value = false
     return
@@ -3803,6 +5658,7 @@ async function selectActivity(activityId: string | number) {
     selectedCard.value = null
     selectedItem.value = null
     selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
@@ -3825,6 +5681,7 @@ async function selectLingjieFeature(gongfaId: string | number) {
     selectedCard.value = null
     selectedItem.value = null
     selectedActivity.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
     loadingDetail.value = false
     return
@@ -3838,10 +5695,312 @@ async function selectLingjieFeature(gongfaId: string | number) {
     selectedCard.value = null
     selectedItem.value = null
     selectedActivity.value = null
+    selectedDoupoTDPartner.value = null
     clearHomeMakeStaticDetail()
   } catch (error: any) {
     if (requestSeq === detailRequestSeq) {
       ElMessage.error(error?.response?.data?.detail || error?.message || '读取灵界词条详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function selectDigitDoorCharacter(characterId: string | number) {
+  const nextId = String(characterId)
+  selectedId.value = nextId
+  const requestSeq = ++detailRequestSeq
+  const cached = digitDoorDetailCache.get(nextId)
+  if (cached) {
+    selectedDigitDoorCharacter.value = cached
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await getFanxiuDigitDoorCharacterCard(nextId)
+    if (requestSeq !== detailRequestSeq) return
+    digitDoorDetailCache.set(nextId, response.card)
+    selectedDigitDoorCharacter.value = response.card
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门角色详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function selectDigitDoorLevel(levelId: string | number) {
+  const nextId = String(levelId)
+  selectedId.value = nextId
+  const requestSeq = ++detailRequestSeq
+  const cached = digitDoorLevelDetailCache.get(nextId)
+  if (cached) {
+    selectedDigitDoorLevel.value = cached.item
+    selectedDigitDoorStage.value = cached.stage ?? null
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await getFanxiuDigitDoorLevelConfig(nextId)
+    if (requestSeq !== detailRequestSeq) return
+    digitDoorLevelDetailCache.set(nextId, { item: response.item, stage: response.stage })
+    selectedDigitDoorLevel.value = response.item
+    selectedDigitDoorStage.value = response.stage ?? null
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorEnhanceGroup.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门关卡详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function loadDigitDoorEnhanceGroups(options: { keepSelection?: boolean } = {}) {
+  const requestSeq = ++listRequestSeq
+  loadingList.value = true
+  try {
+    const response = await searchFanxiuDigitDoorEnhanceGroups({
+      query: query.value,
+      limit: pageSize.value,
+      offset: (page.value - 1) * pageSize.value,
+    })
+    if (requestSeq !== listRequestSeq) return
+    digitDoorEnhanceStats.value = response.stats
+    catalogPath.value = response.catalog_path ?? ''
+    total.value = response.total
+
+    const maxPage = Math.max(1, Math.ceil(Math.max(response.total, 0) / pageSize.value))
+    if (page.value > maxPage) {
+      page.value = maxPage
+      await loadDigitDoorEnhanceGroups(options)
+      return
+    }
+
+    digitDoorEnhanceItems.value = response.items
+    gongfaItems.value = []
+    itemItems.value = []
+    activityItems.value = []
+    lingjieItems.value = []
+    digitDoorItems.value = []
+    digitDoorLevelItems.value = []
+    doupoTDItems.value = []
+    doupoTDRewardItems.value = []
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    const keepSelected = options.keepSelection && Boolean(selectedId.value)
+    if (keepSelected) {
+      if (!selectedDigitDoorEnhanceGroup.value || String(selectedDigitDoorEnhanceGroup.value.char_id) !== selectedId.value) {
+        void selectDigitDoorEnhanceGroup(selectedId.value)
+      }
+      return
+    }
+
+    const first = response.items[0]
+    const firstId = first?.id ?? first?.char_id
+    if (firstId) {
+      selectedId.value = String(firstId)
+      selectedDigitDoorEnhanceGroup.value = null
+      void selectDigitDoorEnhanceGroup(firstId)
+    } else {
+      selectedId.value = ''
+      selectedDigitDoorEnhanceGroup.value = null
+    }
+  } catch (error: any) {
+    if (requestSeq === listRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门强化失败')
+    }
+  } finally {
+    if (requestSeq === listRequestSeq) {
+      loadingList.value = false
+    }
+  }
+}
+
+async function selectDigitDoorEnhanceGroup(groupId: string | number) {
+  const nextId = String(groupId)
+  selectedId.value = nextId
+  const requestSeq = ++detailRequestSeq
+  const cached = digitDoorEnhanceDetailCache.get(nextId)
+  if (cached) {
+    selectedDigitDoorEnhanceGroup.value = cached
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await getFanxiuDigitDoorEnhanceGroup(nextId)
+    if (requestSeq !== detailRequestSeq) return
+    digitDoorEnhanceDetailCache.set(nextId, response.group)
+    selectedDigitDoorEnhanceGroup.value = response.group
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDigitDoorCharacter.value = null
+    selectedDigitDoorLevel.value = null
+    selectedDigitDoorStage.value = null
+    selectedDoupoTDPartner.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取数字门强化详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function selectDoupoTDPartner(partnerId: string | number) {
+  const nextId = String(partnerId)
+  selectedId.value = nextId
+  const requestSeq = ++detailRequestSeq
+  const cached = doupoTDDetailCache.get(nextId)
+  if (cached) {
+    selectedDoupoTDPartner.value = cached
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+  loadingDetail.value = true
+  try {
+    const response = await getFanxiuDoupoTDPartnerCard(nextId)
+    if (requestSeq !== detailRequestSeq) return
+    doupoTDDetailCache.set(nextId, response.card)
+    selectedDoupoTDPartner.value = response.card
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDReward.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取斗破角色详情失败')
+    }
+  } finally {
+    if (requestSeq === detailRequestSeq) {
+      loadingDetail.value = false
+    }
+  }
+}
+
+async function selectDoupoTDRewardConfig(value: string | FanxiuDoupoTDRewardConfigSearchItem) {
+  const key = typeof value === 'string' ? value : getDoupoTDRewardConfigKey(value)
+  if (!key) return
+  selectedId.value = key
+  const current = typeof value === 'string'
+    ? doupoTDRewardItems.value.find(item => getDoupoTDRewardConfigKey(item) === value)
+    : value
+  if (current) {
+    selectedDoupoTDReward.value = current
+    doupoTDRewardDetailCache.set(key, current)
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+
+  const cached = doupoTDRewardDetailCache.get(key)
+  if (cached) {
+    selectedDoupoTDReward.value = cached
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    clearHomeMakeStaticDetail()
+    loadingDetail.value = false
+    return
+  }
+
+  const requestSeq = ++detailRequestSeq
+  loadingDetail.value = true
+  const { sourceTable, configId } = parseDoupoTDRewardConfigKey(key)
+  try {
+    const response = await getFanxiuDoupoTDRewardConfig(sourceTable, configId)
+    if (requestSeq !== detailRequestSeq) return
+    selectedDoupoTDReward.value = response.item
+    doupoTDRewardDetailCache.set(key, response.item)
+    selectedCard.value = null
+    selectedItem.value = null
+    selectedActivity.value = null
+    selectedLingjieCard.value = null
+    selectedDoupoTDPartner.value = null
+    clearHomeMakeStaticDetail()
+  } catch (error: any) {
+    if (requestSeq === detailRequestSeq) {
+      ElMessage.error(error?.response?.data?.detail || error?.message || '读取斗破奖励详情失败')
     }
   } finally {
     if (requestSeq === detailRequestSeq) {
@@ -3996,6 +6155,21 @@ function selectObject(objectId: string | number) {
   if (activeTab.value === 'lingjie') {
     return selectLingjieFeature(objectId)
   }
+  if (activeTab.value === 'digitdoor') {
+    return selectDigitDoorCharacter(objectId)
+  }
+  if (activeTab.value === 'digitdoor_level') {
+    return selectDigitDoorLevel(objectId)
+  }
+  if (activeTab.value === 'digitdoor_enhance') {
+    return selectDigitDoorEnhanceGroup(objectId)
+  }
+  if (activeTab.value === 'doupotd') {
+    return selectDoupoTDPartner(objectId)
+  }
+  if (activeTab.value === 'doupotd_reward') {
+    return selectDoupoTDRewardConfig(String(objectId))
+  }
   return selectGongfa(objectId)
 }
 
@@ -4049,18 +6223,31 @@ function handleTabChange() {
   closeContextMenu()
   if (internalTabNavigation) return
   page.value = 1
-  sortMode.value = activeTab.value === 'protocol' ? 'default' : sortMode.value
+  sortMode.value = activeTab.value === 'digitdoor' || activeTab.value === 'digitdoor_level' || activeTab.value === 'digitdoor_enhance' || activeTab.value === 'doupotd' || activeTab.value === 'doupotd_reward' || activeTab.value === 'protocol' || activeTab.value === 'packet' ? 'default' : sortMode.value
   total.value = 0
   selectedId.value = ''
   selectedCard.value = null
   selectedItem.value = null
   selectedActivity.value = null
   selectedLingjieCard.value = null
+  selectedDigitDoorCharacter.value = null
+  selectedDigitDoorLevel.value = null
+  selectedDigitDoorStage.value = null
+  selectedDigitDoorEnhanceGroup.value = null
+  selectedDoupoTDPartner.value = null
+  selectedDoupoTDReward.value = null
   loadCurrentCards()
 }
 
 function selectProtocolRow(row: FanxiuProtocolSemanticRow) {
   selectedId.value = row.packet
+}
+
+function selectPacketCategory(row: FanxiuTcpBusinessCategorySummary) {
+  if (selectedPacketCategory.value === row.category) return
+  selectedPacketCategory.value = row.category
+  packetProtocolDetails.value = []
+  void loadPacketProtocolCategoryDetail(row.category)
 }
 
 function applyGongfaQualityGradeFilter(value: string) {
@@ -4231,8 +6418,24 @@ onBeforeUnmount(() => {
         </div>
       </el-popover>
       <el-button type="primary" :icon="Search" :loading="loadingList" @click="executeSearchFromFirstPage">搜索</el-button>
+      <el-select
+        v-if="activeTab === 'digitdoor_level'"
+        v-model="digitDoorStageFilter"
+        class="stage-filter-select"
+        clearable
+        placeholder="全部章节"
+        @change="reloadFromFirstPage"
+        @clear="reloadFromFirstPage"
+      >
+        <el-option
+          v-for="option in digitDoorStageOptions"
+          :key="String(option.id)"
+          :label="`${option.name || option.id} ${option.level_count ? `(${option.level_count})` : ''}`"
+          :value="String(option.id)"
+        />
+      </el-select>
       <el-button
-        v-if="activeTab !== 'lingjie' && activeTab !== 'protocol'"
+        v-if="activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'protocol' && activeTab !== 'packet'"
         class="sort-mode-button"
         :class="{ active: sortMode !== 'default' }"
         :title="`点击切换到 ${nextSortModeLabel}`"
@@ -4241,7 +6444,7 @@ onBeforeUnmount(() => {
       <span class="result-count">{{ total }} 个对象</span>
     </div>
 
-    <div v-if="activeTab !== 'lingjie'" class="facet-panel">
+    <div v-if="activeTab !== 'lingjie' && activeTab !== 'digitdoor' && activeTab !== 'digitdoor_level' && activeTab !== 'digitdoor_enhance' && activeTab !== 'doupotd' && activeTab !== 'doupotd_reward' && activeTab !== 'packet'" class="facet-panel">
       <template v-if="activeTab === 'gongfa'">
         <div class="facet-row">
           <span class="facet-label">品阶</span>
@@ -4643,7 +6846,141 @@ onBeforeUnmount(() => {
       <div v-else class="homemake-overview-empty">没有匹配机制</div>
     </section>
 
-    <div class="object-workspace" :class="{ 'protocol-workspace': activeTab === 'protocol' }">
+    <div v-if="activeTab === 'packet'" class="object-workspace packet-wiki-workspace">
+      <aside class="object-list" v-loading="loadingList">
+        <div class="object-list-scroll">
+          <button
+            v-for="item in protocolBusinessCategories"
+            :key="item.category"
+            class="protocol-row"
+            :class="{ selected: item.category === selectedPacketCategory }"
+            type="button"
+            @click="selectPacketCategory(item)"
+          >
+            <span class="protocol-row-title">{{ item.category }}</span>
+            <span class="protocol-row-meta">{{ item.count }} 条样本</span>
+            <span class="protocol-row-preview">{{ item.meaning }}</span>
+          </button>
+          <div v-if="isPacketWikiInitialLoading" class="empty-state">加载中</div>
+          <div v-else-if="!protocolBusinessCategories.length" class="empty-state">还没有抓包样本</div>
+        </div>
+      </aside>
+
+      <main class="object-detail packet-wiki-detail" v-loading="loadingDetail">
+        <template v-if="selectedPacketCategoryRow">
+          <section class="packet-doc-head">
+            <h3>
+              {{ selectedPacketCategoryRow.category }}
+              <span class="packet-doc-sample-count">{{ selectedPacketCategoryRow.count }} 条样本 · {{ selectedPacketCategoryRow.protocols.length }} 个业务包</span>
+            </h3>
+            <p>{{ selectedPacketCategoryRow.meaning }}</p>
+          </section>
+          <section class="packet-doc-section">
+            <h4>业务包</h4>
+            <article
+              v-for="item in packetProtocolDetails"
+              :key="item.name"
+              class="packet-protocol-doc"
+            >
+              <header>
+                <el-checkbox
+                  :model-value="isPacketProtocolChecked(item.name)"
+                  @change="value => togglePacketProtocolVisibility(item.name, Boolean(value))"
+                />
+                <strong>{{ item.name }}</strong>
+                <span>{{ item.meaning }}</span>
+                <button class="packet-count-link" type="button" @click="togglePacketProtocolSamples(item)">
+                  {{ item.count }} 条
+                </button>
+              </header>
+              <div v-if="item.samples[0]" class="packet-protocol-example">
+                <div
+                  class="packet-translation-example"
+                  :class="{ upstream: item.samples[0].direction === 'c2s' }"
+                >
+                  <span class="packet-example-label">翻译结果</span>
+                  <span class="packet-sample-text">
+                    <template
+                      v-for="(segment, index) in packetBusinessDisplaySegments(item.samples[0])"
+                      :key="`${item.samples[0].id}-translation-${index}`"
+                    >
+                      <span :class="{ 'packet-business-param': segment.kind === 'param' }">{{ segment.text }}</span>
+                    </template>
+                  </span>
+                  <span class="packet-sample-meta">{{ packetDirectionLabel(item.samples[0].direction) }}</span>
+                </div>
+                <div
+                  v-for="table in packetSampleTables(item.samples[0])"
+                  :key="`${item.samples[0].id}-${table.title}`"
+                  class="packet-table-example"
+                >
+                  <span class="packet-example-label">{{ table.title }}</span>
+                  <div class="packet-sample-table-wrap">
+                    <table class="packet-sample-table">
+                      <thead>
+                        <tr>
+                          <th v-for="column in table.columns" :key="column.key">{{ column.label }}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr v-for="(row, rowIndex) in table.rows" :key="rowIndex">
+                          <td v-for="column in table.columns" :key="column.key">
+                            <template v-if="row[column.key]">
+                              {{ row[column.key] }}<span
+                                v-if="translatePacketCellValue(row[column.key], column.key, table.fieldLabels)"
+                                class="packet-cell-meaning"
+                              >（{{ translatePacketCellValue(row[column.key], column.key, table.fieldLabels) }}）</span>
+                            </template>
+                            <template v-else>-</template>
+                          </td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+                <div class="packet-json-example">
+                  <span class="packet-example-label">JSON 示例</span>
+                  <pre>{{ packetProtocolSampleJson(item.samples[0]) }}</pre>
+                </div>
+                <div
+                  v-if="expandedPacketProtocol === item.name"
+                  class="packet-all-samples"
+                  v-loading="packetProtocolSamplesLoading"
+                >
+                  <div
+                    v-for="entry in packetProtocolSamples"
+                    :key="entry.id"
+                    class="packet-sample-detail"
+                  >
+                    <div class="packet-sample-detail-head">
+                      <strong>{{ formatTcpBusinessTime(entry.decoded_at) }}</strong>
+                      <span>{{ packetDirectionLabel(entry.direction) }}</span>
+                    </div>
+                    <div class="packet-sample-detail-text">
+                      <template
+                        v-for="(segment, index) in packetEntryDisplaySegments(entry)"
+                        :key="`${entry.id}-all-${index}`"
+                      >
+                        <span :class="{ 'packet-business-param': segment.kind === 'param' }">{{ segment.text }}</span>
+                      </template>
+                    </div>
+                    <details>
+                      <summary>JSON</summary>
+                      <pre>{{ packetEntryJson(entry) }}</pre>
+                    </details>
+                  </div>
+                  <div v-if="!packetProtocolSamplesLoading && !packetProtocolSamples.length" class="empty-state">没有样本</div>
+                </div>
+              </div>
+            </article>
+          </section>
+        </template>
+        <div v-else-if="isPacketWikiInitialLoading" class="empty-state">加载中</div>
+        <div v-else class="empty-state">还没有抓包样本</div>
+      </main>
+    </div>
+
+    <div v-else class="object-workspace" :class="{ 'protocol-workspace': activeTab === 'protocol' }">
       <aside class="object-list" v-loading="loadingList">
         <div class="object-list-scroll">
           <template v-if="activeTab === 'gongfa'">
@@ -4743,6 +7080,114 @@ onBeforeUnmount(() => {
             </button>
             <div v-if="!loadingList && !lingjieItems.length" class="empty-state">没有匹配灵界词条</div>
           </template>
+          <template v-else-if="activeTab === 'digitdoor'">
+            <button
+              v-for="item in digitDoorItems"
+              :key="item.id"
+              class="object-row"
+              :class="{ selected: String(item.id) === selectedId }"
+              type="button"
+              @click="selectObject(item.id)"
+            >
+              <span class="object-row-icon">
+                <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
+                <img
+                  v-if="getObjectIconUrl(item)"
+                  :src="getObjectIconUrl(item)"
+                  :alt="item.name"
+                  loading="lazy"
+                  @error="hideBrokenIcon"
+                >
+              </span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ item.name }}</span>
+                <span class="object-row-meta">{{ getDigitDoorMeta(item) }}</span>
+                <span class="object-row-preview">{{ compactText(item.skill_description_preview, 96) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !digitDoorItems.length" class="empty-state">没有匹配数字门角色</div>
+          </template>
+          <template v-else-if="activeTab === 'digitdoor_level'">
+            <button
+              v-for="item in digitDoorLevelItems"
+              :key="item.id"
+              class="object-row reward-config-row"
+              :class="{ selected: String(item.id) === selectedId }"
+              type="button"
+              @click="selectObject(item.id)"
+            >
+              <span class="reward-config-badge">{{ item.stage || '关' }}</span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ getDigitDoorLevelTitle(item) }}</span>
+                <span class="object-row-meta">{{ getDigitDoorLevelMeta(item) }}</span>
+                <span class="object-row-preview">{{ compactText(item.reward_preview || item.recommend_tips, 108) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !digitDoorLevelItems.length" class="empty-state">没有匹配数字门关卡</div>
+          </template>
+          <template v-else-if="activeTab === 'digitdoor_enhance'">
+            <button
+              v-for="item in digitDoorEnhanceItems"
+              :key="String(item.id ?? item.char_id)"
+              class="object-row reward-config-row"
+              :class="{ selected: String(item.id ?? item.char_id) === selectedId }"
+              type="button"
+              @click="selectObject(item.id ?? item.char_id ?? '')"
+            >
+              <span class="reward-config-badge">{{ item.char_id || '强' }}</span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ item.name }}</span>
+                <span class="object-row-meta">{{ getDigitDoorEnhanceGroupMeta(item) }}</span>
+                <span class="object-row-preview">{{ compactText(item.enhance_preview || item.description_preview, 108) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !digitDoorEnhanceItems.length" class="empty-state">没有匹配数字门强化</div>
+          </template>
+          <template v-else-if="activeTab === 'doupotd'">
+            <button
+              v-for="item in doupoTDItems"
+              :key="item.id"
+              class="object-row"
+              :class="{ selected: String(item.id) === selectedId }"
+              type="button"
+              @click="selectObject(item.id)"
+            >
+              <span class="object-row-icon">
+                <span class="icon-fallback">{{ getObjectIconText(item) }}</span>
+                <img
+                  v-if="getObjectIconUrl(item)"
+                  :src="getObjectIconUrl(item)"
+                  :alt="item.name"
+                  loading="lazy"
+                  @error="hideBrokenIcon"
+                >
+              </span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ item.name }}</span>
+                <span class="object-row-meta">{{ getDoupoTDMeta(item) }}</span>
+                <span class="object-row-preview">{{ compactText(item.skill_description_preview, 96) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !doupoTDItems.length" class="empty-state">没有匹配斗破角色</div>
+          </template>
+          <template v-else-if="activeTab === 'doupotd_reward'">
+            <button
+              v-for="item in doupoTDRewardItems"
+              :key="getDoupoTDRewardConfigKey(item)"
+              class="object-row reward-config-row"
+              :class="{ selected: getDoupoTDRewardConfigKey(item) === selectedId }"
+              type="button"
+              @click="selectObject(getDoupoTDRewardConfigKey(item))"
+            >
+              <span class="reward-config-badge">{{ getDoupoTDRewardSourceShort(item.source_table) }}</span>
+              <span class="object-row-main">
+                <span class="object-row-title">{{ getDoupoTDRewardConfigTitle(item) }}</span>
+                <span class="object-row-meta">{{ getDoupoTDRewardConfigMeta(item) }}</span>
+                <span class="object-row-preview">{{ getDoupoTDRewardConfigPreview(item) }}</span>
+              </span>
+            </button>
+            <div v-if="!loadingList && !doupoTDRewardItems.length" class="empty-state">没有匹配斗破奖励</div>
+          </template>
           <template v-else-if="activeTab === 'item'">
             <button
               v-for="item in itemItems"
@@ -4831,7 +7276,869 @@ onBeforeUnmount(() => {
       </aside>
 
       <main class="object-detail" v-loading="loadingDetail">
-        <template v-if="selectedCard">
+        <template v-if="activeTab === 'doupotd_reward' && selectedDoupoTDReward">
+          <section class="detail-head reward-config-head">
+            <div class="reward-config-detail-badge">
+              {{ getDoupoTDRewardSourceShort(selectedDoupoTDReward.source_table) }}
+            </div>
+            <div class="detail-title">
+              <h3>{{ getDoupoTDRewardConfigTitle(selectedDoupoTDReward) }}</h3>
+              <div class="detail-meta">
+                <span>{{ getDoupoTDRewardSourceLabel(selectedDoupoTDReward.source_table) }}</span>
+                <span>ID {{ selectedDoupoTDReward.config_id }}</span>
+                <span v-if="selectedDoupoTDReward.reward_count">{{ selectedDoupoTDReward.reward_count }} 项奖励</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section class="object-section reward-boundary-section">
+            <div class="section-row">
+              <h4>结算边界</h4>
+              <span class="section-count">静态配置 / 服务端结果</span>
+            </div>
+            <div class="reward-boundary-grid">
+              <div>
+                <strong>配置展示</strong>
+                <span>Level.reward / rewardShow</span>
+                <small>用于预览和图标渲染</small>
+              </div>
+              <div>
+                <strong>字段解析</strong>
+                <span>ITEM -> Item_Item</span>
+                <small>code / amount / extraMark 已映射</small>
+              </div>
+              <div>
+                <strong>到账依据</strong>
+                <span>rewardResults 回包</span>
+                <small>SM_DoupoTDGamePlayer</small>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="selectedDoupoTDReward.items?.length" class="object-section">
+            <div class="section-row">
+              <h4>奖励列表</h4>
+              <span class="section-count">{{ selectedDoupoTDReward.items.length }} 项</span>
+            </div>
+            <div class="reward-config-item-grid">
+              <article
+                v-for="(item, index) in selectedDoupoTDReward.items"
+                :key="`${selectedId}-${item.item_id}-${index}`"
+                class="reward-config-item"
+              >
+                <strong>{{ getDoupoTDRewardItemText(item) }}</strong>
+                <div v-if="getDoupoTDRewardResultBadges(item).length" class="reward-result-badges">
+                  <span v-for="badge in getDoupoTDRewardResultBadges(item)" :key="badge">{{ badge }}</span>
+                </div>
+                <small>{{ getDoupoTDRewardItemMeta(item) }}</small>
+                <small v-if="getDoupoTDRewardResultNote(item)" class="reward-result-note">
+                  {{ getDoupoTDRewardResultNote(item) }}
+                </small>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="getDoupoTDRewardConfigRawRows(selectedDoupoTDReward).length" class="object-section item-field-section">
+            <h4>配置字段</h4>
+            <dl>
+              <template
+                v-for="row in getDoupoTDRewardConfigRawRows(selectedDoupoTDReward)"
+                :key="row.label"
+              >
+                <dt>{{ row.label }}</dt>
+                <dd>{{ row.value }}</dd>
+              </template>
+            </dl>
+          </section>
+        </template>
+        <template v-else-if="activeTab === 'digitdoor_level' && selectedDigitDoorLevel">
+          <section class="detail-head reward-config-head">
+            <div class="reward-config-detail-badge">
+              {{ selectedDigitDoorLevel.stage || '关' }}
+            </div>
+            <div class="detail-title">
+              <h3>{{ getDigitDoorLevelTitle(selectedDigitDoorLevel) }}</h3>
+              <div class="detail-meta">
+                <span v-if="getDigitDoorStageName(selectedDigitDoorStage)">{{ getDigitDoorStageName(selectedDigitDoorStage) }}</span>
+                <span>ID {{ selectedDigitDoorLevel.id }}</span>
+                <span v-if="selectedDigitDoorLevel.layer">第 {{ selectedDigitDoorLevel.layer }} 关</span>
+                <span v-if="selectedDigitDoorLevel.door_count">{{ selectedDigitDoorLevel.door_count }} 个刷门点</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section v-if="selectedDigitDoorLevel.recommend_tips || selectedDigitDoorLevel.reward_show_title" class="object-section intro-section">
+            <h4 v-html="renderFanxiuText(getDigitDoorLevelRewardTitleRich(selectedDigitDoorLevel) || '关卡概览', { tone: 'light' })" />
+            <div v-if="selectedDigitDoorLevel.recommend_tips" class="plain-rich-text" v-html="renderFanxiuText(selectedDigitDoorLevel.recommend_tips, { tone: 'light' })" />
+          </section>
+
+          <section v-if="selectedDigitDoorLevel.reward_items?.length" class="object-section">
+            <div class="section-row">
+              <h4>通关奖励</h4>
+              <span class="section-count">{{ selectedDigitDoorLevel.reward_items.length }} 项</span>
+            </div>
+            <div class="reward-config-item-grid">
+              <article
+                v-for="(item, index) in selectedDigitDoorLevel.reward_items"
+                :key="`${selectedDigitDoorLevel.id}-reward-${item.id}-${index}`"
+                class="reward-config-item"
+              >
+                <strong>{{ getDigitDoorLevelRewardText(item) }}</strong>
+                <small>{{ getDigitDoorLevelRewardMeta(item) }}</small>
+                <div v-if="getDigitDoorRewardResultBadges(item).length" class="reward-result-badges">
+                  <span v-for="badge in getDigitDoorRewardResultBadges(item)" :key="badge">{{ badge }}</span>
+                </div>
+                <small v-if="getDigitDoorRewardResultNote(item)" class="reward-result-note">
+                  {{ getDigitDoorRewardResultNote(item) }}
+                </small>
+                <small v-if="item.item?.description">{{ compactText(item.item.description, 120) }}</small>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorStage?.reward_items?.length" class="object-section">
+            <div class="section-row">
+              <h4>章节预览奖励</h4>
+              <span class="section-count">{{ selectedDigitDoorStage.reward_items.length }} 项</span>
+            </div>
+            <div class="reward-config-item-grid">
+              <article
+                v-for="(item, index) in selectedDigitDoorStage.reward_items"
+                :key="`${selectedDigitDoorStage.id}-stage-reward-${item.id}-${index}`"
+                class="reward-config-item"
+              >
+                <strong>{{ getDigitDoorLevelRewardText(item) }}</strong>
+                <small>{{ getDigitDoorLevelRewardMeta(item) }}</small>
+                <div v-if="getDigitDoorRewardResultBadges(item).length" class="reward-result-badges">
+                  <span v-for="badge in getDigitDoorRewardResultBadges(item)" :key="badge">{{ badge }}</span>
+                </div>
+                <small v-if="getDigitDoorRewardResultNote(item)" class="reward-result-note">
+                  {{ getDigitDoorRewardResultNote(item) }}
+                </small>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorLevel.customized_types?.length || selectedDigitDoorLevel.door_type_counts" class="object-section reward-boundary-section">
+            <div class="section-row">
+              <h4>刷门配置</h4>
+              <span class="section-count">Level -> DoorRefreshPoint</span>
+            </div>
+            <div class="reward-boundary-grid">
+              <div>
+                <strong>{{ selectedDigitDoorLevel.door_count || 0 }}</strong>
+                <span>刷门点</span>
+                <small>由 DoorRefreshPoint.level 汇总</small>
+              </div>
+              <div>
+                <strong>{{ (selectedDigitDoorLevel.customized_types || []).join(' / ') || '-' }}</strong>
+                <span>customizedType</span>
+                <small>{{ selectedDigitDoorLevel.door_refresh?.summary?.pool_semantic_preview || '对应 SkillRefreshEffect 门效果池' }}</small>
+              </div>
+              <div>
+                <strong>{{ selectedDigitDoorLevel.monster?.length || 0 }}</strong>
+                <span>怪物配置</span>
+                <small>{{ (selectedDigitDoorLevel.monster || []).join(' / ') || '-' }}</small>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorLevel.door_refresh?.effect_pools?.length" class="object-section digitdoor-door-pool-section">
+            <div class="section-row">
+              <h4>门效果池</h4>
+              <span class="section-count">{{ selectedDigitDoorLevel.door_refresh.effect_pools.length }} 池</span>
+            </div>
+            <div class="digitdoor-door-pool-grid">
+              <article
+                v-for="pool in selectedDigitDoorLevel.door_refresh.effect_pools"
+                :key="String(pool.customized_type || pool.semantic_label)"
+                class="digitdoor-door-pool-card"
+              >
+                <header>
+                  <strong>{{ getDigitDoorDoorEffectPoolTitle(pool) }}</strong>
+                  <small>{{ pool.effect_option_preview || '-' }}</small>
+                </header>
+                <div v-if="getDigitDoorDoorEffectPoolMeta(pool).length" class="digitdoor-door-pool-meta">
+                  <span v-for="meta in getDigitDoorDoorEffectPoolMeta(pool)" :key="meta">{{ meta }}</span>
+                </div>
+                <div v-if="getDigitDoorDoorEffectPoolChips(pool).length" class="digitdoor-door-pool-effect-list">
+                  <span
+                    v-for="chip in getDigitDoorDoorEffectPoolChips(pool)"
+                    :key="chip.key"
+                    :title="chip.title"
+                  >
+                    <b>{{ chip.label }}</b>
+                    <em v-if="chip.hint">{{ chip.hint }}</em>
+                  </span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorLevel.door_refresh?.points?.length" class="object-section digitdoor-monster-section">
+            <div class="section-row">
+              <h4>刷门时间轴</h4>
+              <span class="section-count">DoorRefreshPoint -> SkillRefreshEffect</span>
+            </div>
+            <div v-if="getDigitDoorDoorRefreshChips(selectedDigitDoorLevel).length" class="digitdoor-monster-chip-row">
+              <span v-for="chip in getDigitDoorDoorRefreshChips(selectedDigitDoorLevel)" :key="chip">{{ chip }}</span>
+            </div>
+            <div class="digitdoor-wave-table">
+              <div class="digitdoor-wave-row head">
+                <span>时间</span>
+                <span>位置</span>
+                <span>候选门池</span>
+                <span>实体</span>
+                <span>特殊字段</span>
+              </div>
+              <template
+                v-for="point in selectedDigitDoorLevel.door_refresh.points"
+                :key="`${point.level}-${point.start_refresh_time}-${point.point_id}`"
+              >
+                <div class="digitdoor-wave-row">
+                  <strong>{{ point.start_refresh_time || '-' }}s</strong>
+                  <span>{{ point.position_projection || point.side_label || '-' }}</span>
+                  <span>{{ getDigitDoorDoorRefreshEffectText(point) || '-' }}</span>
+                  <span>{{ getDigitDoorDoorRefreshStatsText(point) || '-' }}</span>
+                  <span>{{ getDigitDoorDoorRefreshSpecialText(point) || '-' }}</span>
+                </div>
+                <div
+                  v-if="getDigitDoorDoorEffectOptionChips(point).length || getDigitDoorDoorSpecialEffectOptionChips(point).length"
+                  class="digitdoor-door-option-row"
+                >
+                  <span
+                    v-for="chip in getDigitDoorDoorEffectOptionChips(point)"
+                    :key="chip.key"
+                    :class="{ more: chip.more }"
+                    :title="chip.title"
+                  >
+                    {{ chip.label }}
+                  </span>
+                  <span
+                    v-for="chip in getDigitDoorDoorSpecialEffectOptionChips(point)"
+                    :key="chip.key"
+                    class="special"
+                    :class="{ more: chip.more }"
+                    :title="chip.title"
+                  >
+                    {{ chip.label }}
+                  </span>
+                </div>
+              </template>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorLevel.monster_refresh?.points?.length" class="object-section digitdoor-monster-section">
+            <div class="section-row">
+              <h4>怪物波次</h4>
+              <span class="section-count">MonsterRefreshPoint -> MonsterGroup</span>
+            </div>
+            <div v-if="getDigitDoorMonsterRefreshChips(selectedDigitDoorLevel).length" class="digitdoor-monster-chip-row">
+              <span v-for="chip in getDigitDoorMonsterRefreshChips(selectedDigitDoorLevel)" :key="chip">{{ chip }}</span>
+            </div>
+            <div v-if="selectedDigitDoorLevel.monster_refresh.monsters?.length" class="digitdoor-monster-card-grid">
+              <article
+                v-for="monster in selectedDigitDoorLevel.monster_refresh.monsters"
+                :key="String(monster.monster_id || monster.name)"
+                class="digitdoor-monster-card"
+              >
+                <strong>{{ monster.name || monster.text_name || `怪物 ${monster.monster_id}` }}</strong>
+                <small>{{ getDigitDoorMonsterCardMeta(monster) }}</small>
+                <p v-if="monster.description">{{ compactText(monster.description, 96) }}</p>
+                <div v-if="monster.default_skills?.length" class="digitdoor-monster-skill-list">
+                  <span
+                    v-for="skill in monster.default_skills"
+                    :key="`${monster.monster_id}-skill-${skill.id}`"
+                  >
+                    <b>{{ getDigitDoorMonsterSkillTitle(skill) }}</b>
+                    {{ getDigitDoorMonsterSkillMeta(skill) }}
+                    <em
+                      v-for="hint in getDigitDoorMonsterSkillFlowHints(skill)"
+                      :key="`${monster.monster_id}-skill-${skill.id}-${hint}`"
+                    >
+                      {{ hint }}
+                    </em>
+                    <em
+                      v-for="hint in getDigitDoorMonsterSkillAccessorHints(skill)"
+                      :key="`${monster.monster_id}-skill-${skill.id}-accessor-${hint}`"
+                      class="param"
+                    >
+                      {{ hint }}
+                    </em>
+                    <em
+                      v-for="hint in getDigitDoorMonsterSkillValueProjectionHints(skill)"
+                      :key="`${monster.monster_id}-skill-${skill.id}-value-${hint}`"
+                      class="projection"
+                    >
+                      {{ hint }}
+                    </em>
+                    <em
+                      v-for="hint in getDigitDoorMonsterSkillBuffHints(skill)"
+                      :key="`${monster.monster_id}-skill-${skill.id}-buff-${hint}`"
+                      class="buff"
+                    >
+                      {{ hint }}
+                    </em>
+                    <em
+                      v-for="hint in getDigitDoorMonsterSkillBuffFormulaHints(skill)"
+                      :key="`${monster.monster_id}-skill-${skill.id}-buff-formula-${hint}`"
+                      class="formula"
+                    >
+                      {{ hint }}
+                    </em>
+                  </span>
+                </div>
+              </article>
+            </div>
+            <div class="digitdoor-wave-table">
+              <div class="digitdoor-wave-row head">
+                <span>波次</span>
+                <span>怪物</span>
+                <span>刷新</span>
+                <span>属性</span>
+                <span>技能</span>
+              </div>
+              <div
+                v-for="point in selectedDigitDoorLevel.monster_refresh.points"
+                :key="`${point.level}-${point.refresh_wave}-${point.id}`"
+                class="digitdoor-wave-row"
+              >
+                <strong>{{ point.refresh_wave || '-' }}</strong>
+                <span>{{ getDigitDoorMonsterName(point) }}</span>
+                <span>{{ getDigitDoorMonsterTimingText(point) || '-' }}</span>
+                <span>{{ getDigitDoorMonsterStatsText(point) || '-' }}</span>
+                <span>{{ getDigitDoorMonsterSkillText(point) || '-' }}</span>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="getDigitDoorLevelRawRows(selectedDigitDoorLevel).length" class="object-section item-field-section">
+            <h4>配置字段</h4>
+            <dl>
+              <template
+                v-for="row in getDigitDoorLevelRawRows(selectedDigitDoorLevel)"
+                :key="row.label"
+              >
+                <dt>{{ row.label }}</dt>
+                <dd>{{ row.value }}</dd>
+              </template>
+            </dl>
+          </section>
+        </template>
+        <template v-else-if="activeTab === 'digitdoor_enhance' && selectedDigitDoorEnhanceGroup">
+          <section class="detail-head reward-config-head">
+            <div class="reward-config-detail-badge">
+              {{ selectedDigitDoorEnhanceGroup.char_id || '强' }}
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedDigitDoorEnhanceGroup.name }}</h3>
+              <div class="detail-meta">
+                <span v-if="selectedDigitDoorEnhanceGroup.char_id">Group {{ selectedDigitDoorEnhanceGroup.char_id }}</span>
+                <span>{{ selectedDigitDoorEnhanceGroup.enhance_count || selectedDigitDoorEnhanceGroup.enhances?.length || 0 }} 个强化</span>
+                <span>{{ (selectedDigitDoorEnhanceGroup.enhances || []).filter(item => item.condition_raw).length }} 条条件</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section v-if="selectedDigitDoorEnhanceGroup.description" class="object-section intro-section">
+            <h4>基础效果</h4>
+            <div class="plain-rich-text" v-html="renderFanxiuText(selectedDigitDoorEnhanceGroup.description, { tone: 'light' })" />
+          </section>
+
+          <section v-if="selectedDigitDoorEnhanceGroup.enhances?.length" class="object-section">
+            <div class="section-row">
+              <h4>强化条件树</h4>
+              <span class="section-count">{{ selectedDigitDoorEnhanceGroup.enhances.length }} 节点</span>
+            </div>
+            <div class="doupo-strength-list">
+              <article
+                v-for="item in selectedDigitDoorEnhanceGroup.enhances"
+                :key="String(item.id)"
+                class="doupo-strength-item"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ item.name || item.id }}</strong>
+                  <span>{{ getDigitDoorEnhanceTreeMeta(item) }}</span>
+                </div>
+                <div class="plain-rich-text compact" v-html="renderFanxiuText(item.description || '', { tone: 'light' })" />
+                <div class="doupo-logic-chip-row compact">
+                  <span>{{ getDigitDoorEnhanceConditionText(item) }}</span>
+                </div>
+                <div v-if="getDigitDoorEnhanceBadges(item).length" class="doupo-logic-chip-row compact">
+                  <span v-for="badge in getDigitDoorEnhanceBadges(item)" :key="`${item.id}-${badge}`">{{ badge }}</span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section class="object-section item-field-section">
+            <h4>配置边界</h4>
+            <dl>
+              <dt>组 ID</dt>
+              <dd>{{ selectedDigitDoorEnhanceGroup.char_id || '-' }}</dd>
+              <dt>条件说明</dt>
+              <dd>PR 为前置强化，MU 为互斥，TCLV 为等级区间；该 group key 不直接等同数字门角色 id。</dd>
+            </dl>
+          </section>
+        </template>
+        <template v-else-if="activeTab === 'digitdoor' && selectedDigitDoorCharacter">
+          <section class="detail-head">
+            <div class="object-icon">
+              <span class="icon-fallback">{{ getObjectIconText(selectedDigitDoorCharacter) }}</span>
+              <img
+                v-if="getObjectIconUrl(selectedDigitDoorCharacter)"
+                :src="getObjectIconUrl(selectedDigitDoorCharacter)"
+                :alt="selectedDigitDoorCharacter.name"
+                @error="hideBrokenIcon"
+              >
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedDigitDoorCharacter.name }}</h3>
+              <div class="detail-meta">
+                <span>ID {{ selectedDigitDoorCharacter.id }}</span>
+                <span v-if="selectedDigitDoorCharacter.quality_label">{{ selectedDigitDoorCharacter.quality_label }}品</span>
+                <span v-if="selectedDigitDoorCharacter.positioning">{{ selectedDigitDoorCharacter.positioning }}</span>
+                <span v-if="selectedDigitDoorCharacter.skill_name">神通 {{ selectedDigitDoorCharacter.skill_name }}</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section v-if="selectedDigitDoorCharacter.skill_description" class="object-section intro-section">
+            <h4>{{ selectedDigitDoorCharacter.skill_name || '技能概览' }}</h4>
+            <div class="plain-rich-text" v-html="renderFanxiuText(selectedDigitDoorCharacter.skill_description, { tone: 'light' })" />
+          </section>
+
+          <section v-if="selectedDigitDoorCharacter.skills?.length" class="object-section">
+            <div class="section-row">
+              <h4>局内技能</h4>
+              <span class="section-count">{{ selectedDigitDoorCharacter.skills.length }} 条</span>
+            </div>
+            <div class="doupo-skill-list">
+              <article v-for="skill in selectedDigitDoorCharacter.skills" :key="String(skill.id)" class="doupo-skill-item">
+                <div class="doupo-source-head">
+                  <span class="doupo-source-icon">
+                    <span class="icon-fallback">{{ getObjectIconText(selectedDigitDoorCharacter) }}</span>
+                    <img
+                      v-if="getFanxiuResourceIconUrl(skill.skill_icon)"
+                      :src="getFanxiuResourceIconUrl(skill.skill_icon)"
+                      :alt="skill.skill_name || selectedDigitDoorCharacter.name"
+                      loading="lazy"
+                      @error="hideBrokenIcon"
+                    >
+                  </span>
+                  <span>
+                    <strong>{{ skill.skill_name || skill.skill_title_plain || skill.id }}</strong>
+                    <small>{{ getDigitDoorSkillMeta(skill) }}</small>
+                  </span>
+                </div>
+                <div class="plain-rich-text compact" v-html="renderFanxiuText(skill.skill_description || '', { tone: 'light' })" />
+                <div v-if="skill.show_condition" class="doupo-logic-chip-row compact">
+                  <span v-html="renderFanxiuText(skill.show_condition, { tone: 'light' })"></span>
+                </div>
+                <div v-if="skill.runtime?.buffs?.length" class="doupo-buff-list">
+                  <div
+                    v-for="buff in skill.runtime.buffs"
+                    :key="`${skill.id}-runtime-buff-${buff.id}`"
+                    class="doupo-buff-row"
+                  >
+                    <div class="doupo-buff-main">
+                      <strong>{{ getDigitDoorBuffTitle(buff) }}</strong>
+                      <small>{{ getDigitDoorBuffMeta(buff) }}</small>
+                    </div>
+                    <div v-if="getDigitDoorBuffLines(buff).length" class="doupo-buff-extra">
+                      <span v-for="line in getDigitDoorBuffLines(buff)" :key="`${skill.id}-${buff.id}-${line}`">{{ line }}</span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorCharacter.door_effects?.length" class="object-section">
+            <div class="section-row">
+              <h4>门效果</h4>
+              <span class="section-count">{{ selectedDigitDoorCharacter.door_effects.length }} 条</span>
+            </div>
+            <div class="doupo-source-grid">
+              <article
+                v-for="door in selectedDigitDoorCharacter.door_effects"
+                :key="String(door.id)"
+                class="doupo-source-card"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ door.effect_show_plain || door.effect_show || door.id }}</strong>
+                  <span>{{ getDigitDoorDoorMeta(door) }}</span>
+                </div>
+                <div v-if="door.show_tips" class="plain-rich-text compact" v-html="renderFanxiuText(door.show_tips, { tone: 'light' })" />
+                <div v-if="door.skills?.length" class="doupo-source-lines">
+                  <span v-for="skill in door.skills" :key="`${door.id}-${skill.id}`">
+                    {{ skill.skill_name || skill.skill_title_plain || skill.id }}
+                    <template v-if="getDigitDoorDoorSkillMeta(skill)"> · {{ getDigitDoorDoorSkillMeta(skill) }}</template>
+                  </span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorCharacter.logic_skills?.length" class="object-section">
+            <div class="section-row">
+              <h4>技能逻辑</h4>
+              <span class="section-count">{{ selectedDigitDoorCharacter.logic_skills.length }} 行</span>
+            </div>
+            <div class="doupo-logic-list">
+              <article
+                v-for="(skill, index) in selectedDigitDoorCharacter.logic_skills"
+                :key="String(skill.id ?? index)"
+                class="doupo-logic-item"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ getDigitDoorLogicSkillTitle(skill, index) }}</strong>
+                  <span>{{ getDigitDoorLogicSkillMeta(skill) }}</span>
+                </div>
+                <div v-if="skill.buff_ids?.length" class="doupo-logic-chip-row">
+                  <span v-for="buffId in skill.buff_ids" :key="`${skill.id}-buff-id-${buffId}`">Buff {{ buffId }}</span>
+                </div>
+                <div v-if="skill.buffs?.length" class="doupo-buff-list">
+                  <div
+                    v-for="buff in skill.buffs"
+                    :key="`${skill.id}-logic-buff-${buff.id}`"
+                    class="doupo-buff-row"
+                  >
+                    <div class="doupo-buff-main">
+                      <strong>{{ getDigitDoorBuffTitle(buff) }}</strong>
+                      <small>{{ getDigitDoorBuffMeta(buff) }}</small>
+                    </div>
+                    <div v-if="getDigitDoorBuffLines(buff).length" class="doupo-buff-extra">
+                      <span v-for="line in getDigitDoorBuffLines(buff)" :key="`${skill.id}-${buff.id}-${line}`">{{ line }}</span>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorCharacter.skill_enhance_effects?.length" class="object-section">
+            <div class="section-row">
+              <h4>强化效果</h4>
+              <span class="section-count">{{ selectedDigitDoorCharacter.skill_enhance_effects.length }} 条</span>
+            </div>
+            <div class="doupo-strength-list">
+              <article
+                v-for="item in selectedDigitDoorCharacter.skill_enhance_effects"
+                :key="String(item.id)"
+                class="doupo-strength-item"
+              >
+                <div class="skill-item-head">
+                  <strong>强化 {{ item.id }}</strong>
+                  <span>{{ getDigitDoorEnhanceMeta(item) }}</span>
+                </div>
+                <div v-if="getDigitDoorEnhanceLines(item).length" class="doupo-logic-chip-row compact">
+                  <span v-for="line in getDigitDoorEnhanceLines(item)" :key="`${item.id}-${line}`">{{ line }}</span>
+                </div>
+                <div v-if="item.buff" class="doupo-buff-row">
+                  <div class="doupo-buff-main">
+                    <strong>{{ getDigitDoorBuffTitle(item.buff) }}</strong>
+                    <small>{{ getDigitDoorBuffMeta(item.buff) }}</small>
+                  </div>
+                  <div v-if="getDigitDoorBuffLines(item.buff).length" class="doupo-buff-extra">
+                    <span v-for="line in getDigitDoorBuffLines(item.buff)" :key="`${item.id}-buff-${line}`">{{ line }}</span>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDigitDoorCharacter.level_milestones?.length" class="object-section">
+            <div class="section-row">
+              <h4>等级节点</h4>
+              <span class="section-count">{{ selectedDigitDoorCharacter.level_milestones.length }} 个</span>
+            </div>
+            <div class="doupo-progress-strip">
+              <span
+                v-for="item in selectedDigitDoorCharacter.level_milestones"
+                :key="String(item.level)"
+              >
+                <strong>{{ getDigitDoorLevelMilestoneTitle(item) }}</strong>
+                {{ getDigitDoorLevelMilestoneMeta(item) }}
+              </span>
+            </div>
+          </section>
+
+          <section class="object-section item-field-section">
+            <h4>配置摘要</h4>
+            <dl>
+              <dt>等级</dt>
+              <dd>{{ selectedDigitDoorCharacter.min_level || '-' }} - {{ selectedDigitDoorCharacter.max_level || '-' }} · {{ selectedDigitDoorCharacter.level_count || 0 }} 行</dd>
+              <dt>技能</dt>
+              <dd>{{ selectedDigitDoorCharacter.skill_count || 0 }} 展示 / {{ selectedDigitDoorCharacter.logic_skill_count || 0 }} 逻辑 / {{ selectedDigitDoorCharacter.skill_enhance_effect_count || 0 }} 强化</dd>
+              <dt>门效果</dt>
+              <dd>{{ selectedDigitDoorCharacter.door_effect_count || 0 }} 条</dd>
+              <dt>模型</dt>
+              <dd>{{ selectedDigitDoorCharacter.model || '-' }}</dd>
+            </dl>
+          </section>
+        </template>
+        <template v-else-if="activeTab === 'doupotd' && selectedDoupoTDPartner">
+          <section class="detail-head">
+            <div class="object-icon">
+              <span class="icon-fallback">{{ getObjectIconText(selectedDoupoTDPartner) }}</span>
+              <img
+                v-if="getObjectIconUrl(selectedDoupoTDPartner)"
+                :src="getObjectIconUrl(selectedDoupoTDPartner)"
+                :alt="selectedDoupoTDPartner.name"
+                @error="hideBrokenIcon"
+              >
+            </div>
+            <div class="detail-title">
+              <h3>{{ selectedDoupoTDPartner.name }}</h3>
+              <div class="detail-meta">
+                <span>ID {{ selectedDoupoTDPartner.id }}</span>
+                <span v-if="selectedDoupoTDPartner.positioning">{{ selectedDoupoTDPartner.positioning }}</span>
+                <span v-if="selectedDoupoTDPartner.skill_name">绝技 {{ selectedDoupoTDPartner.skill_name }}</span>
+              </div>
+            </div>
+          </section>
+
+          <div v-if="selectedTerms.length" class="term-strip">
+            <span v-for="term in selectedTerms" :key="term">{{ term }}</span>
+          </div>
+
+          <section v-if="selectedDoupoTDPartner.skill_description_rich" class="object-section intro-section">
+            <h4>{{ selectedDoupoTDPartner.skill_name || '技能概览' }}</h4>
+            <div class="plain-rich-text" v-html="renderFanxiuText(selectedDoupoTDPartner.skill_description_rich, { tone: 'light' })" />
+          </section>
+
+          <section v-if="selectedDoupoTDPartner.skills?.length" class="object-section">
+            <div class="section-row">
+              <h4>局内技能</h4>
+              <span class="section-count">{{ selectedDoupoTDPartner.skills.length }} 条</span>
+            </div>
+            <div class="doupo-skill-list">
+              <article v-for="skill in selectedDoupoTDPartner.skills" :key="String(skill.id)" class="doupo-skill-item">
+                <div class="skill-item-head">
+                  <strong>{{ skill.skill_name || skill.skill_title || skill.id }}</strong>
+                  <span>{{ getDoupoTDSkillMeta(skill) }}</span>
+                </div>
+                <div class="plain-rich-text compact" v-html="renderFanxiuText(skill.skill_description_rich || skill.skill_description || '', { tone: 'light' })" />
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDoupoTDPartner.logic_skills?.length" class="object-section">
+            <div class="section-row">
+              <h4>技能逻辑</h4>
+              <span class="section-count">{{ selectedDoupoTDPartner.logic_skills.length }} 行</span>
+            </div>
+            <div class="doupo-logic-list">
+              <article
+                v-for="(skill, index) in selectedDoupoTDPartner.logic_skills"
+                :key="String(skill.id ?? index)"
+                class="doupo-logic-item"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ getDoupoTDLogicSkillTitle(skill, index) }}</strong>
+                  <span>{{ getDoupoTDLogicSkillMeta(skill) }}</span>
+                </div>
+                <div v-if="getDoupoTDRuntimeTimelineChips(skill).length" class="doupo-logic-chip-row">
+                  <span v-for="chip in getDoupoTDRuntimeTimelineChips(skill)" :key="`${skill.id}-${chip}`">{{ chip }}</span>
+                </div>
+                <div v-if="skill.runtime?.buffs?.length" class="doupo-buff-list">
+                  <div
+                    v-for="buff in skill.runtime.buffs"
+                    :key="`${skill.id}-${buff.source_kind}-${buff.id}`"
+                    class="doupo-buff-row"
+                  >
+                    <div class="doupo-buff-main">
+                      <strong>{{ getDoupoTDBuffTitle(buff) }}</strong>
+                      <small>{{ getDoupoTDBuffMeta(buff) }}</small>
+                    </div>
+                    <div v-if="getDoupoTDBuffFlagLabels(buff).length" class="doupo-logic-chip-row compact">
+                      <span v-for="label in getDoupoTDBuffFlagLabels(buff)" :key="`${skill.id}-${buff.id}-${label}`">{{ label }}</span>
+                    </div>
+                    <div v-if="getDoupoTDBuffExtraLines(buff).length" class="doupo-buff-extra">
+                      <span v-for="line in getDoupoTDBuffExtraLines(buff)" :key="`${skill.id}-${buff.id}-${line}`">{{ line }}</span>
+                    </div>
+                    <div v-if="getDoupoTDBuffFlowHint(buff) || getDoupoTDBuffFlowFunctions(buff).length" class="doupo-buff-flow">
+                      <p v-if="getDoupoTDBuffFlowHint(buff)">{{ getDoupoTDBuffFlowHint(buff) }}</p>
+                      <div v-if="getDoupoTDBuffFlowChips(buff).length" class="doupo-logic-chip-row compact flow">
+                        <span v-for="chip in getDoupoTDBuffFlowChips(buff)" :key="`${skill.id}-${buff.id}-flow-${chip}`">{{ chip }}</span>
+                      </div>
+                      <div v-if="getDoupoTDBuffFlowFunctions(buff).length" class="doupo-buff-flow-functions">
+                        <span
+                          v-for="item in getDoupoTDBuffFlowFunctions(buff)"
+                          :key="`${skill.id}-${buff.id}-fn-${item.name}`"
+                        >
+                          {{ getDoupoTDBuffFlowFunctionLabel(item) }}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section
+            v-if="selectedDoupoTDPartner.draw_sources?.length || selectedDoupoTDPartner.compose_quality_sources?.length || selectedDoupoTDPartner.compose_progress_rewards?.length"
+            class="object-section"
+          >
+            <div class="section-row">
+              <h4>来源与概率</h4>
+              <span class="section-count">
+                {{ (selectedDoupoTDPartner.draw_sources?.length || 0) + (selectedDoupoTDPartner.compose_quality_sources?.length || 0) }} 池
+              </span>
+            </div>
+            <div class="doupo-source-grid">
+              <article
+                v-for="source in selectedDoupoTDPartner.draw_sources"
+                :key="`draw-${source.id}`"
+                class="doupo-source-card"
+              >
+                <div class="doupo-source-head">
+                  <span class="doupo-source-icon">
+                    <span class="icon-fallback">{{ getObjectIconText(source.item || selectedDoupoTDPartner) }}</span>
+                    <img
+                      v-if="getFanxiuResourceIconUrl(source.item?.icon)"
+                      :src="getFanxiuResourceIconUrl(source.item?.icon)"
+                      :alt="getDoupoTDDrawSourceTitle(source)"
+                      loading="lazy"
+                      @error="hideBrokenIcon"
+                    >
+                  </span>
+                  <span>
+                    <strong>{{ getDoupoTDDrawSourceTitle(source) }}</strong>
+                    <small>{{ getDoupoTDDrawSourceMeta(source) }}</small>
+                  </span>
+                </div>
+                <div class="doupo-source-lines">
+                  <span v-for="entry in source.entries" :key="`draw-${source.id}-${entry.card_id}`">
+                    {{ getDoupoTDEntryText(entry) }}
+                  </span>
+                </div>
+              </article>
+
+              <article
+                v-for="source in selectedDoupoTDPartner.compose_quality_sources"
+                :key="`compose-${source.id}`"
+                class="doupo-source-card compact-source"
+              >
+                <div class="doupo-source-head">
+                  <span class="doupo-source-badge">合</span>
+                  <span>
+                    <strong>{{ getDoupoTDComposeSourceTitle(source) }}</strong>
+                    <small>{{ getDoupoTDComposeSourceMeta(source) }}</small>
+                  </span>
+                </div>
+                <div class="doupo-source-lines">
+                  <span v-for="entry in source.entries" :key="`compose-${source.id}-${entry.card_id}`">
+                    {{ getDoupoTDEntryText(entry) }}
+                  </span>
+                </div>
+              </article>
+            </div>
+            <div v-if="selectedDoupoTDPartner.compose_progress_rewards?.length" class="doupo-progress-strip">
+              <span
+                v-for="item in selectedDoupoTDPartner.compose_progress_rewards"
+                :key="`progress-${item.id}`"
+              >
+                <strong>{{ getDoupoTDProgressRewardTitle(item) }}</strong>
+                {{ getDoupoTDRewardsText(item.rewards) }}
+              </span>
+            </div>
+          </section>
+
+          <section v-if="selectedDoupoTDPartner.compose_cards?.length" class="object-section">
+            <div class="section-row">
+              <h4>卡牌档位</h4>
+              <span class="section-count">{{ selectedDoupoTDPartner.compose_cards.length }} 张</span>
+            </div>
+            <div class="doupo-compose-grid">
+              <article
+                v-for="card in selectedDoupoTDPartner.compose_cards"
+                :key="String(card.id)"
+                class="doupo-compose-card"
+              >
+                <div class="doupo-compose-head">
+                  <span class="doupo-compose-icon">
+                    <span class="icon-fallback">{{ getObjectIconText(selectedDoupoTDPartner) }}</span>
+                    <img
+                      v-if="getDoupoTDComposeIconUrl(card)"
+                      :src="getDoupoTDComposeIconUrl(card)"
+                      :alt="card.title"
+                      loading="lazy"
+                      @error="hideBrokenIcon"
+                    >
+                  </span>
+                  <span>
+                    <strong>{{ card.title }}</strong>
+                    <small>{{ getDoupoTDComposeMeta(card) }}</small>
+                  </span>
+                </div>
+                <div v-if="getDoupoTDAttrText(card.attrs)" class="doupo-attr-text">
+                  <span v-for="line in getDoupoTDAttrText(card.attrs).split('\n')" :key="`${card.id}-${line}`">{{ line }}</span>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDoupoTDPartner.strengths?.length" class="object-section">
+            <div class="section-row">
+              <h4>角色强化</h4>
+              <span class="section-count">{{ selectedDoupoTDPartner.strengths.length }} 条</span>
+            </div>
+            <div class="doupo-strength-list">
+              <article
+                v-for="item in selectedDoupoTDPartner.strengths"
+                :key="String(item.id)"
+                class="doupo-strength-item"
+              >
+                <div class="skill-item-head">
+                  <strong>{{ item.skill_name || item.id }}</strong>
+                  <span>{{ getDoupoTDStrengthMeta(item) }}</span>
+                </div>
+                <div class="plain-rich-text compact" v-html="renderFanxiuText(item.skill_description_rich || item.skill_description || '', { tone: 'light' })" />
+              </article>
+            </div>
+          </section>
+
+          <section v-if="selectedDoupoTDPartner.level_summary" class="object-section item-field-section">
+            <h4>配置摘要</h4>
+            <dl>
+              <dt>等级</dt>
+              <dd>
+                {{ selectedDoupoTDPartner.level_summary.min_level || '-' }}
+                -
+                {{ selectedDoupoTDPartner.level_summary.max_level || '-' }}
+                <template v-if="selectedDoupoTDPartner.level_summary.level_count">
+                  · {{ selectedDoupoTDPartner.level_summary.level_count }} 行
+                </template>
+              </dd>
+              <dt>默认技能</dt>
+              <dd>{{ (selectedDoupoTDPartner.level_summary.default_skill || []).join(' / ') || '-' }}</dd>
+              <dt>模型</dt>
+              <dd>{{ selectedDoupoTDPartner.model || '-' }}</dd>
+              <dt>解锁</dt>
+              <dd>{{ selectedDoupoTDPartner.unlock_description || selectedDoupoTDPartner.unlock_description1 || selectedDoupoTDPartner.unlock_condition || '-' }}</dd>
+            </dl>
+          </section>
+        </template>
+        <template v-else-if="selectedCard">
           <section class="detail-head">
             <div class="object-icon">
               <span class="icon-fallback">{{ getObjectIconText(selectedCard) }}</span>
@@ -4892,6 +8199,67 @@ onBeforeUnmount(() => {
           <section v-if="getCardDescriptionText(selectedCard)" class="object-section intro-section">
             <h4>简介</h4>
             <div class="plain-rich-text" v-html="renderFanxiuText(getCardDescriptionText(selectedCard), { tone: 'light' })" />
+          </section>
+
+          <section
+            v-if="loadingSpecialFazeCatalog || specialFazeGroup"
+            class="object-section special-faze-section"
+          >
+            <div class="section-row">
+              <h4>特殊法则</h4>
+              <span v-if="specialFazeCountText" class="section-count">{{ specialFazeCountText }}</span>
+              <span v-else-if="loadingSpecialFazeCatalog" class="section-count">解析中</span>
+            </div>
+            <div v-if="loadingSpecialFazeCatalog" class="homemake-static-loading">正在读取法则目录...</div>
+            <template v-if="specialFazeGroup">
+              <div class="special-faze-summary">
+                <span v-for="type in splitSpecialFazeTokens(specialFazeGroup.effect_types)" :key="`special-type-${type}`">Type {{ type }}</span>
+                <span v-for="reason in splitSpecialFazeTokens(specialFazeGroup.reason_codes)" :key="`special-reason-${reason}`">Reason {{ reason }}</span>
+                <span v-if="specialFazeGroup.consume_items">{{ specialFazeGroup.consume_items }}</span>
+              </div>
+
+              <div v-if="specialFazeEffectTypes.length" class="special-faze-panel-list">
+                <article
+                  v-for="effect in specialFazeEffectTypes"
+                  :key="`special-effect-${effect.effect_type}`"
+                  class="special-faze-panel"
+                >
+                  <div class="special-faze-panel-head">
+                    <strong>Type {{ effect.effect_type }}</strong>
+                    <span v-for="tag in getSpecialFazeEffectTags(effect)" :key="`${effect.effect_type}-${tag}`">{{ tag }}</span>
+                  </div>
+                  <div v-if="effect.tip_texts" class="special-faze-text" v-html="renderFanxiuText(effect.tip_texts, { tone: 'light' })" />
+                </article>
+              </div>
+
+              <div v-if="specialFazeReasons.length" class="special-faze-reason-list">
+                <article
+                  v-for="reason in specialFazeReasons"
+                  :key="`special-reason-row-${reason.reason}`"
+                  class="special-faze-reason"
+                >
+                  <div class="special-faze-reason-head">
+                    <strong>{{ reason.reason }}</strong>
+                    <span v-for="tag in getSpecialFazeReasonTags(reason)" :key="`${reason.reason}-${tag}`">{{ tag }}</span>
+                  </div>
+                  <div class="special-faze-text" v-html="renderFanxiuText(reason.tip_texts, { tone: 'light' })" />
+                </article>
+              </div>
+
+              <div v-if="specialFazeStages.length" class="special-faze-stage-list">
+                <article
+                  v-for="stage in specialFazeStages"
+                  :key="`special-stage-${stage.source_id}-${stage.faze_id}`"
+                  class="special-faze-stage"
+                >
+                  <div class="special-faze-stage-head">
+                    <strong>{{ stage.source_name || stage.stage || stage.source_id }}</strong>
+                    <span v-for="tag in getSpecialFazeStageTags(stage)" :key="`${stage.source_id}-${tag}`">{{ tag }}</span>
+                  </div>
+                  <div v-if="stage.tip_texts" class="special-faze-text" v-html="renderFanxiuText(stage.tip_texts, { tone: 'light' })" />
+                </article>
+              </div>
+            </template>
           </section>
 
           <section
@@ -5986,6 +9354,10 @@ onBeforeUnmount(() => {
   width: min(420px, 42vw);
 }
 
+.stage-filter-select {
+  width: 168px;
+}
+
 :global(.fanxiu-search-history-popover) {
   padding: 6px !important;
 }
@@ -6468,6 +9840,265 @@ onBeforeUnmount(() => {
   -webkit-box-orient: vertical;
 }
 
+.packet-wiki-workspace {
+  grid-template-columns: clamp(280px, 24%, 380px) minmax(0, 1fr);
+}
+
+.packet-wiki-detail {
+  background: #fff;
+}
+
+.packet-doc-head {
+  max-width: 1120px;
+  margin: 0 auto 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.packet-doc-head h3 {
+  margin: 0 0 8px;
+  color: #101828;
+  font-size: 26px;
+  line-height: 1.2;
+}
+
+.packet-doc-sample-count {
+  font-size: 13px;
+  font-weight: 400;
+  color: #667085;
+  margin-left: 12px;
+}
+
+.packet-doc-head p {
+  margin: 0;
+  color: #344054;
+  line-height: 1.7;
+}
+
+.packet-doc-section {
+  max-width: 1120px;
+  margin: 0 auto;
+}
+
+.packet-doc-section h4 {
+  margin: 0 0 10px;
+  color: #1f2937;
+  font-size: 16px;
+}
+
+.packet-protocol-doc {
+  margin-bottom: 10px;
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.packet-protocol-doc header {
+  display: grid;
+  grid-template-columns: 18px max-content minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.packet-protocol-doc header :deep(.el-checkbox) {
+  height: 18px;
+}
+
+.packet-protocol-doc header strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.packet-protocol-doc header span {
+  overflow: hidden;
+  color: #475569;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.packet-count-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.packet-count-link:hover {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.packet-protocol-example {
+  display: grid;
+  gap: 0;
+}
+
+.packet-translation-example {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.packet-translation-example.upstream {
+  background: #f5f6f8;
+}
+
+.packet-example-label {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.packet-sample-meta {
+  color: #64748b;
+  text-align: right;
+  line-height: 1.4;
+}
+
+.packet-sample-text {
+  grid-column: 1 / -1;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.packet-table-example {
+  display: grid;
+  gap: 6px;
+  align-items: start;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.packet-sample-table-wrap {
+  overflow: auto;
+}
+
+.packet-sample-table {
+  min-width: 520px;
+  border-collapse: collapse;
+  background: #fff;
+  font-size: 12px;
+}
+
+.packet-sample-table th,
+.packet-sample-table td {
+  padding: 5px 8px;
+  border: 1px solid #e5e7eb;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.packet-sample-table th {
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 650;
+}
+
+.packet-cell-meaning {
+  color: #059669;
+  font-weight: 500;
+}
+
+.packet-json-example {
+  display: grid;
+  gap: 6px;
+  align-items: start;
+  padding: 8px 10px 10px;
+}
+
+.packet-json-example pre {
+  max-height: 360px;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #e5e7eb;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.packet-all-samples {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid #edf0f5;
+  background: #fcfcfd;
+}
+
+.packet-sample-detail {
+  border: 1px solid #e5e7eb;
+  background: #fff;
+}
+
+.packet-sample-detail-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 9px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.packet-sample-detail-head strong {
+  color: #334155;
+  font-size: 12px;
+}
+
+.packet-sample-detail-text {
+  padding: 8px 9px;
+  color: #1f2937;
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.packet-sample-detail details {
+  border-top: 1px solid #f1f5f9;
+}
+
+.packet-sample-detail summary {
+  padding: 6px 9px;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.packet-sample-detail pre {
+  max-height: 280px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px 12px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.packet-business-param {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #fff7ed;
+  color: #b45309;
+  font-weight: 600;
+}
+
 .object-pagination {
   flex: 0 0 auto;
   display: flex;
@@ -6829,6 +10460,76 @@ onBeforeUnmount(() => {
 .homemake-formula-section {
   background: #fbf7eb;
   border-color: rgba(176, 132, 44, 0.28);
+}
+
+.special-faze-section {
+  line-height: 1.35;
+}
+
+.special-faze-summary,
+.special-faze-panel-head,
+.special-faze-reason-head,
+.special-faze-stage-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.special-faze-summary {
+  margin-bottom: 12px;
+}
+
+.special-faze-summary span,
+.special-faze-panel-head span,
+.special-faze-reason-head span,
+.special-faze-stage-head span {
+  padding: 2px 7px;
+  color: #f3d37a;
+  font-size: 12px;
+  background: rgba(255, 212, 95, 0.1);
+  border: 1px solid rgba(255, 212, 95, 0.26);
+}
+
+.special-faze-panel-list,
+.special-faze-reason-list,
+.special-faze-stage-list {
+  display: grid;
+  gap: 10px;
+}
+
+.special-faze-panel-list,
+.special-faze-reason-list {
+  margin-bottom: 12px;
+}
+
+.special-faze-panel,
+.special-faze-reason,
+.special-faze-stage {
+  display: grid;
+  gap: 6px;
+  padding: 10px 0 11px;
+  border-bottom: 1px solid rgba(214, 196, 136, 0.22);
+}
+
+.special-faze-panel:last-child,
+.special-faze-reason:last-child,
+.special-faze-stage:last-child {
+  border-bottom: 0;
+}
+
+.special-faze-panel-head strong,
+.special-faze-reason-head strong,
+.special-faze-stage-head strong {
+  color: #fff5cf;
+  font-size: 17px;
+  font-weight: 760;
+}
+
+.special-faze-text {
+  color: #f7f0df;
+  font-size: 15px;
+  line-height: 1.62;
 }
 
 .homemake-buff-section h4,
@@ -7611,6 +11312,680 @@ onBeforeUnmount(() => {
   font-weight: inherit;
 }
 
+.reward-config-row {
+  grid-template-columns: 46px minmax(0, 1fr);
+}
+
+.reward-config-badge,
+.reward-config-detail-badge {
+  display: grid;
+  place-items: center;
+  color: #7b4f0a;
+  font-weight: 800;
+  background: linear-gradient(135deg, #fff7d8, #e8c067);
+  border: 1px solid rgba(174, 125, 32, 0.42);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+}
+
+.reward-config-badge {
+  width: 46px;
+  height: 46px;
+  font-size: 18px;
+}
+
+.reward-config-detail-badge {
+  width: 74px;
+  height: 74px;
+  font-size: 30px;
+}
+
+.reward-config-head {
+  align-items: center;
+}
+
+.reward-config-item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.reward-config-item {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  color: #f7f0df;
+  background: rgba(28, 29, 36, 0.22);
+  border: 1px solid rgba(214, 196, 136, 0.22);
+}
+
+.reward-config-item strong,
+.reward-config-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reward-config-item strong {
+  color: #fff5cf;
+  font-size: 14px;
+}
+
+.reward-config-item small {
+  color: rgba(247, 240, 223, 0.64);
+  font-size: 12px;
+}
+
+.reward-result-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.reward-result-badges span {
+  max-width: 100%;
+  padding: 2px 5px;
+  color: #f5d889;
+  font-size: 11px;
+  line-height: 1.25;
+  background: rgba(255, 212, 95, 0.08);
+  border: 1px solid rgba(255, 212, 95, 0.22);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reward-config-item .reward-result-note {
+  line-height: 1.35;
+  white-space: normal;
+}
+
+.reward-boundary-section {
+  background: rgba(54, 45, 33, 0.82);
+}
+
+.reward-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.reward-boundary-grid div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 10px;
+  background: rgba(255, 244, 208, 0.07);
+  border: 1px solid rgba(214, 196, 136, 0.22);
+}
+
+.reward-boundary-grid strong,
+.reward-boundary-grid span,
+.reward-boundary-grid small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reward-boundary-grid strong {
+  color: #ffd45f;
+  font-size: 13px;
+}
+
+.reward-boundary-grid span {
+  color: #fff5cf;
+  font-size: 13px;
+}
+
+.reward-boundary-grid small {
+  color: rgba(247, 240, 223, 0.62);
+  font-size: 12px;
+}
+
+.digitdoor-monster-section {
+  background: rgba(34, 37, 42, 0.86);
+}
+
+.digitdoor-monster-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.digitdoor-monster-chip-row span {
+  max-width: 100%;
+  padding: 3px 7px;
+  color: #f5d889;
+  font-size: 12px;
+  line-height: 1.35;
+  background: rgba(255, 212, 95, 0.08);
+  border: 1px solid rgba(255, 212, 95, 0.24);
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-monster-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.digitdoor-monster-card {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  background: rgba(255, 244, 208, 0.06);
+  border: 1px solid rgba(214, 196, 136, 0.2);
+}
+
+.digitdoor-monster-card strong {
+  color: #fff5cf;
+  font-size: 14px;
+}
+
+.digitdoor-monster-card small,
+.digitdoor-monster-card p {
+  margin: 0;
+  color: rgba(247, 240, 223, 0.64);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-door-pool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.digitdoor-door-pool-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid rgba(214, 196, 136, 0.24);
+  background: rgba(255, 244, 208, 0.055);
+}
+
+.digitdoor-door-pool-card header {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.digitdoor-door-pool-card strong {
+  color: #fff5cf;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.digitdoor-door-pool-card small {
+  color: rgba(247, 240, 223, 0.58);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-door-pool-meta,
+.digitdoor-door-pool-effect-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.digitdoor-door-pool-meta span,
+.digitdoor-door-pool-effect-list span {
+  max-width: 100%;
+  padding: 3px 7px;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-door-pool-meta span {
+  color: rgba(247, 240, 223, 0.68);
+  border: 1px solid rgba(247, 240, 223, 0.16);
+  background: rgba(247, 240, 223, 0.05);
+}
+
+.digitdoor-door-pool-effect-list span {
+  display: grid;
+  gap: 2px;
+  color: #ffe6a4;
+  border: 1px solid rgba(255, 212, 95, 0.3);
+  background: rgba(255, 212, 95, 0.08);
+}
+
+.digitdoor-door-pool-effect-list b {
+  color: inherit;
+  font-weight: 700;
+}
+
+.digitdoor-door-pool-effect-list em {
+  color: #b8f7a1;
+  font-style: normal;
+  line-height: 1.25;
+}
+
+.digitdoor-monster-skill-list {
+  display: grid;
+  gap: 3px;
+  margin-top: 2px;
+}
+
+.digitdoor-monster-skill-list span {
+  color: rgba(247, 240, 223, 0.7);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-monster-skill-list em {
+  display: block;
+  margin-top: 2px;
+  color: rgba(247, 240, 223, 0.58);
+  font-style: normal;
+}
+
+.digitdoor-monster-skill-list em.param {
+  color: rgba(178, 218, 255, 0.74);
+}
+
+.digitdoor-monster-skill-list em.projection {
+  color: rgba(255, 178, 120, 0.78);
+}
+
+.digitdoor-monster-skill-list em.buff {
+  color: rgba(181, 232, 159, 0.78);
+}
+
+.digitdoor-monster-skill-list em.formula {
+  color: rgba(255, 212, 95, 0.76);
+}
+
+.digitdoor-monster-skill-list b {
+  margin-right: 4px;
+  color: #ffd45f;
+  font-weight: 700;
+}
+
+.digitdoor-wave-table {
+  display: grid;
+  border-top: 1px solid rgba(214, 196, 136, 0.2);
+}
+
+.digitdoor-wave-row {
+  display: grid;
+  grid-template-columns: 48px minmax(100px, 1.1fr) minmax(120px, 1.4fr) minmax(110px, 1.1fr) minmax(90px, 1fr);
+  gap: 8px;
+  align-items: start;
+  padding: 7px 0;
+  border-bottom: 1px solid rgba(214, 196, 136, 0.16);
+}
+
+.digitdoor-wave-row.head {
+  padding-top: 9px;
+  color: rgba(247, 240, 223, 0.52);
+  font-size: 12px;
+}
+
+.digitdoor-wave-row strong {
+  color: #ffd45f;
+}
+
+.digitdoor-wave-row span {
+  min-width: 0;
+  color: #f7f0df;
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-door-option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 8px 56px;
+  border-bottom: 1px solid rgba(214, 196, 136, 0.16);
+}
+
+.digitdoor-door-option-row span {
+  max-width: 100%;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 212, 95, 0.34);
+  background: rgba(255, 212, 95, 0.08);
+  color: #ffe6a4;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.digitdoor-door-option-row span.more {
+  border-color: rgba(247, 240, 223, 0.18);
+  background: rgba(247, 240, 223, 0.06);
+  color: rgba(247, 240, 223, 0.68);
+}
+
+.digitdoor-door-option-row span.special {
+  border-color: rgba(102, 224, 255, 0.34);
+  background: rgba(102, 224, 255, 0.08);
+  color: #b8edff;
+}
+
+.digitdoor-door-option-row span.special.more {
+  border-color: rgba(102, 224, 255, 0.18);
+  color: rgba(184, 237, 255, 0.7);
+}
+
+.doupo-skill-list,
+.doupo-logic-list,
+.doupo-strength-list {
+  display: grid;
+  gap: 12px;
+}
+
+.doupo-skill-item,
+.doupo-logic-item,
+.doupo-strength-item {
+  padding: 10px 0 12px;
+  border-bottom: 1px solid rgba(214, 196, 136, 0.22);
+}
+
+.doupo-skill-item:last-child,
+.doupo-logic-item:last-child,
+.doupo-strength-item:last-child {
+  border-bottom: 0;
+}
+
+.doupo-logic-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.doupo-logic-chip-row span {
+  padding: 2px 7px;
+  color: #8b5a0a;
+  font-size: 12px;
+  background: rgba(255, 245, 213, 0.78);
+  border: 1px solid rgba(214, 196, 136, 0.42);
+}
+
+.doupo-logic-chip-row.compact {
+  margin-top: 0;
+}
+
+.doupo-logic-chip-row.compact span {
+  color: rgba(255, 245, 213, 0.88);
+  background: rgba(255, 245, 213, 0.08);
+  border-color: rgba(214, 196, 136, 0.24);
+}
+
+.doupo-logic-chip-row.compact.flow {
+  margin-top: 7px;
+}
+
+.doupo-logic-chip-row.compact.flow span {
+  color: #c7e3ff;
+  background: rgba(119, 173, 232, 0.1);
+  border-color: rgba(119, 173, 232, 0.24);
+}
+
+.doupo-buff-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.doupo-buff-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(130px, 0.7fr) minmax(180px, 1fr);
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+  padding: 8px 10px;
+  background: rgba(28, 29, 36, 0.18);
+  border: 1px solid rgba(214, 196, 136, 0.18);
+}
+
+.doupo-buff-main {
+  min-width: 0;
+}
+
+.doupo-buff-main strong,
+.doupo-buff-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doupo-buff-main strong {
+  color: #fff5cf;
+  font-size: 13px;
+}
+
+.doupo-buff-main small,
+.doupo-buff-extra {
+  color: rgba(247, 240, 223, 0.66);
+  font-size: 12px;
+}
+
+.doupo-buff-extra {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.doupo-buff-flow {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 7px;
+  border-top: 1px solid rgba(214, 196, 136, 0.14);
+}
+
+.doupo-buff-flow p {
+  margin: 0;
+  color: rgba(247, 240, 223, 0.82);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.doupo-buff-flow-functions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.doupo-buff-flow-functions span {
+  padding: 2px 7px;
+  color: rgba(247, 240, 223, 0.72);
+  font-size: 12px;
+  background: rgba(28, 29, 36, 0.28);
+  border: 1px solid rgba(214, 196, 136, 0.16);
+}
+
+.doupo-source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.doupo-source-card {
+  display: grid;
+  gap: 9px;
+  min-width: 0;
+  padding: 11px 12px;
+  color: #f7f0df;
+  background: rgba(28, 29, 36, 0.22);
+  border: 1px solid rgba(214, 196, 136, 0.24);
+}
+
+.doupo-source-card.compact-source {
+  background: rgba(255, 244, 208, 0.055);
+}
+
+.doupo-source-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+
+.doupo-source-head strong,
+.doupo-source-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doupo-source-head strong {
+  color: #fff5cf;
+  font-size: 14px;
+  font-weight: 760;
+}
+
+.doupo-source-head small {
+  margin-top: 2px;
+  color: rgba(247, 240, 223, 0.62);
+  font-size: 12px;
+}
+
+.doupo-source-icon,
+.doupo-source-badge {
+  position: relative;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  overflow: hidden;
+  place-items: center;
+  color: #efe2ad;
+  background: rgba(246, 231, 184, 0.12);
+  border: 1px solid rgba(214, 196, 136, 0.34);
+}
+
+.doupo-source-icon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.doupo-source-badge {
+  color: #ffd45f;
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.doupo-source-lines,
+.doupo-progress-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.doupo-source-lines span,
+.doupo-progress-strip span {
+  padding: 3px 7px;
+  color: #fff5cf;
+  font-size: 12px;
+  line-height: 1.35;
+  background: rgba(255, 244, 208, 0.07);
+  border: 1px solid rgba(214, 196, 136, 0.22);
+}
+
+.doupo-progress-strip {
+  margin-top: 10px;
+}
+
+.doupo-progress-strip strong {
+  margin-right: 5px;
+  color: #ffd45f;
+}
+
+.doupo-compose-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.doupo-compose-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  color: #f7f0df;
+  background: rgba(28, 29, 36, 0.28);
+  border: 1px solid rgba(214, 196, 136, 0.24);
+}
+
+.doupo-compose-head {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.doupo-compose-head strong,
+.doupo-compose-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doupo-compose-head strong {
+  color: #fff5cf;
+  font-size: 15px;
+  font-weight: 760;
+}
+
+.doupo-compose-head small {
+  margin-top: 2px;
+  color: rgba(247, 240, 223, 0.62);
+  font-size: 12px;
+}
+
+.doupo-compose-icon {
+  position: relative;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  overflow: hidden;
+  place-items: center;
+  color: #efe2ad;
+  background: rgba(246, 231, 184, 0.12);
+  border: 1px solid rgba(214, 196, 136, 0.34);
+}
+
+.doupo-compose-icon img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.doupo-attr-text {
+  display: grid;
+  gap: 4px;
+  color: #f7f0df;
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.doupo-attr-text span {
+  overflow-wrap: anywhere;
+}
+
 .source-details {
   width: min(100%, 1080px);
   margin: 8px auto 0;
@@ -7743,6 +12118,26 @@ onBeforeUnmount(() => {
 
   .homemake-buff-row {
     grid-template-columns: 1fr;
+  }
+
+  .doupo-buff-row {
+    grid-template-columns: 1fr;
+  }
+
+  .reward-boundary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .digitdoor-wave-row {
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .digitdoor-wave-row.head {
+    display: none;
+  }
+
+  .digitdoor-door-option-row {
+    padding-left: 0;
   }
 
   .homemake-buff-links {

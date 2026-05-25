@@ -9,10 +9,20 @@ from pydantic import BaseModel, Field
 
 from backend.core.fanxiu_apk_static import (
     build_fanxiu_apk_dex_login_body_probe,
+    build_fanxiu_apk_dex_login_payload_shape_probe,
     build_fanxiu_apk_dex_login_surface_probe,
     build_fanxiu_apk_download_config_report,
     build_fanxiu_apk_gamelogin_bridge_probe,
     build_fanxiu_apk_il2cpp_binary_boundary_probe,
+    build_fanxiu_apk_jadx_login_source_probe,
+    build_fanxiu_apk_jadx_sq_plugin_core_probe,
+    build_fanxiu_apk_jadx_sy37_endpoint_usage_probe,
+    build_fanxiu_apk_jadx_sy37_login_account_probe,
+    build_fanxiu_apk_jadx_sy37_login_response_surface_probe,
+    build_fanxiu_apk_jadx_sy37_request_signing_probe,
+    build_fanxiu_apk_jadx_sy37_url_catalog_probe,
+    build_fanxiu_apk_jadx_sy37_url_update_probe,
+    build_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe,
     build_fanxiu_apk_login_server_flow_probe,
     build_fanxiu_apk_manifest_probe,
     build_fanxiu_apk_network_stack_probe,
@@ -25,9 +35,12 @@ from backend.core.fanxiu_apk_static import (
     build_fanxiu_cpp2il_login_lua_bridge_probe,
     build_fanxiu_cpp2il_socket_proto_bridge_probe,
     build_fanxiu_cpp2il_socket_receive_dispatch_probe,
+    build_fanxiu_login_account_sign_source_probe,
+    build_fanxiu_login_token_to_socket_handoff_probe,
     build_fanxiu_lua_serverlist_response_flow_probe,
     build_fanxiu_resource_manifest_diff_report,
     build_fanxiu_resource_package_report,
+    build_fanxiu_taptap_download_dat_package_probe,
 )
 from backend.core.fanxiu_il2cpp_metadata import (
     build_fanxiu_il2cpp_gameplay_symbol_report,
@@ -65,6 +78,17 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_faze_effect_update_event_probe,
     build_fanxiu_faze_protocol_semantics_probe,
     build_fanxiu_faze_source_semantics_probe,
+    build_fanxiu_gongfa_special_faze_catalog_probe,
+    build_fanxiu_gongfa_special_faze_attr_key_index_probe,
+    build_fanxiu_gongfa_special_faze_effect_type_index_probe,
+    build_fanxiu_gongfa_special_faze_focus_probe,
+    build_fanxiu_gongfa_special_faze_param_item_ref_probe,
+    build_fanxiu_gongfa_special_faze_param_shape_index_probe,
+    build_fanxiu_gongfa_special_faze_payload_summary_probe,
+    build_fanxiu_gongfa_special_faze_reason_probe,
+    build_fanxiu_gongfa_special_faze_reason_reuse_index_probe,
+    build_fanxiu_gongfa_special_faze_reason_reuse_probe,
+    build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_sample_probe,
     build_fanxiu_gongfa_homemake_detail_view_probe,
@@ -77,12 +101,16 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_producer_probe,
+    build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe,
+    build_fanxiu_buff_change_result_decoder_probe,
+    build_fanxiu_buff_state_decoder_probe,
     build_fanxiu_fight_result_family_decoder_probe,
     build_fanxiu_socket_primitive_decoder_probe,
     build_fanxiu_typed_pool_runtime_observation_probe,
     build_fanxiu_socket_raw_decoder_probe,
     build_fanxiu_socket_compressed_int_codec_probe,
     build_fanxiu_socket_capture_fixture_codec_calibration_probe,
+    build_fanxiu_socket_result_sample_coverage_probe,
     build_fanxiu_combat_formula_authority_contrast_probe,
     build_fanxiu_cpp2il_main_combat_formula_surface_probe,
     get_fanxiu_gongfa_homemake_buff_parameter_semantics,
@@ -97,6 +125,8 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_homemake_share_href_prefab_probe,
     build_fanxiu_gongfa_homemake_share_href_registration_gap_probe,
     build_fanxiu_gongfa_homemake_share_ui_probe,
+    build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe,
+    build_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe,
     build_fanxiu_gongfa_homemake_side_feature_semantics_probe,
     build_fanxiu_gongfa_homemake_stage_star_timeline_boundary_probe,
     build_fanxiu_gongfa_homemake_stage_star_timeline_config_probe,
@@ -116,12 +146,68 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_view_snapshot_probe,
     build_fanxiu_hot_update_feature_probe,
     build_fanxiu_hot_update_lscripts_report,
+    query_fanxiu_gongfa_special_faze_catalog,
     render_fanxiu_gongfa_homemake_static_detail,
 )
 from backend.core.fanxiu_item_catalog import (
     get_fanxiu_item_card,
     load_fanxiu_item_runtime_index,
     search_fanxiu_item_cards,
+)
+from backend.core.fanxiu_doupotd_catalog import (
+    build_fanxiu_doupotd_buff_effect_probe,
+    build_fanxiu_doupotd_buff_class_semantics_probe,
+    build_fanxiu_doupotd_buff_class_flow_probe,
+    build_fanxiu_doupotd_buff_authority_boundary_probe,
+    build_fanxiu_doupotd_effect_gameplayer_summary_probe,
+    build_fanxiu_doupotd_gameplayer_result_probe,
+    build_fanxiu_doupotd_monster_drop_resolution_probe,
+    build_fanxiu_doupotd_reward_config_probe,
+    build_fanxiu_doupotd_reward_result_resolution_probe,
+    build_fanxiu_doupotd_catalog,
+    build_fanxiu_doupotd_skill_timeline_probe,
+    build_fanxiu_doupotd_store_bag_visual_probe,
+    get_fanxiu_doupotd_reward_config,
+    get_fanxiu_doupotd_partner_card,
+    search_fanxiu_doupotd_reward_configs,
+    search_fanxiu_doupotd_partner_cards,
+)
+from backend.core.fanxiu_digitdoor_catalog import (
+    build_fanxiu_digitdoor_buff_class_formula_probe,
+    build_fanxiu_digitdoor_buff_effect_usage_probe,
+    build_fanxiu_digitdoor_catalog,
+    build_fanxiu_digitdoor_door_customized_type_semantics_probe,
+    build_fanxiu_digitdoor_door_gain_buff_flow_probe,
+    build_fanxiu_digitdoor_door_refresh_projection_probe,
+    build_fanxiu_digitdoor_monster_effect_class_flow_probe,
+    build_fanxiu_digitdoor_monster_refresh_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_latent_field_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_value_projection_probe,
+    build_fanxiu_digitdoor_monster_skill_data_accessor_probe,
+    build_fanxiu_digitdoor_monster_skill_buff_formula_probe,
+    build_fanxiu_digitdoor_monster_skill_buff_link_probe,
+    build_fanxiu_digitdoor_monster_skill_timeline_probe,
+    build_fanxiu_digitdoor_monster_skill_value_projection_probe,
+    build_fanxiu_digitdoor_reward_marker_ui_probe,
+    build_fanxiu_digitdoor_reward_marker_semantics_probe,
+    build_fanxiu_digitdoor_reward_result_resolution_probe,
+    build_fanxiu_digitdoor_readyfight_partnerlist_probe,
+    build_fanxiu_digitdoor_readyfight_request_levelid_probe,
+    build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
+    build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
+    build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
+    build_fanxiu_digitdoor_skill_enhance_application_probe,
+    build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
+    build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
+    build_fanxiu_digitdoor_startgame_response_boundary_probe,
+    build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
+    get_fanxiu_digitdoor_character_card,
+    get_fanxiu_digitdoor_enhance_group,
+    get_fanxiu_digitdoor_level_config,
+    search_fanxiu_digitdoor_character_cards,
+    search_fanxiu_digitdoor_enhance_groups,
+    search_fanxiu_digitdoor_level_configs,
 )
 from backend.core.fanxiu_activity_catalog import (
     get_fanxiu_activity_card,
@@ -145,7 +231,29 @@ from backend.core.fanxiu_lua_logic_index import (
     build_fanxiu_lingjie_gongfa_runtime_report,
     build_fanxiu_lua_logic_index,
 )
-from backend.core.fanxiu_lua_packet_index import build_fanxiu_lua_login_socket_send_flow_probe, build_fanxiu_lua_packet_index
+from backend.core.fanxiu_lua_packet_index import (
+    build_fanxiu_lua_lscript_module_netlogic_flow_probe,
+    build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
+    build_fanxiu_lua_lscript_module_protocol_schema_probe,
+    build_fanxiu_lua_lscript_module_surface_probe,
+    build_fanxiu_lua_lscript_surface_inventory_probe,
+    build_fanxiu_lua_raw_lscript_export_coverage_probe,
+    build_fanxiu_lua_raw_lscript_missing_export_probe,
+    build_fanxiu_lua_login_finish_post_sync_probe,
+    build_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe,
+    build_fanxiu_lua_login_post_sync_manager_source_gap_probe,
+    build_fanxiu_lua_login_post_sync_handler_probe,
+    build_fanxiu_lua_login_post_sync_lua_loader_boundary_probe,
+    build_fanxiu_lua_login_post_sync_protocol_family_probe,
+    build_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe,
+    build_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe,
+    build_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe,
+    build_fanxiu_lua_login_socket_response_flow_probe,
+    build_fanxiu_lua_login_socket_send_flow_probe,
+    build_fanxiu_lua_sm_login_nested_vo_depth2_probe,
+    build_fanxiu_lua_sm_login_nested_vo_probe,
+    build_fanxiu_lua_packet_index,
+)
 from backend.core.fanxiu_protocol_semantics import load_fanxiu_protocol_semantics
 from backend.core.fanxiu_resources import (
     FanxiuResourceError,
@@ -244,6 +352,56 @@ class FanxiuApkDexLoginBodyProbeRequest(BaseModel):
     export_root: str | None = None
 
 
+class FanxiuApkDexLoginPayloadShapeProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxLoginSourceProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSqPluginCoreProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37LoginAccountProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37EndpointUsageProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37LoginResponseSurfaceProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37RequestSigningProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37UrlCatalogProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37UrlUpdateProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuApkJadxSy37WrapperEndpointProbeRequest(BaseModel):
+    apk_root: str | None = None
+    export_root: str | None = None
+
+
 class FanxiuApkUnityLoginReceiverProbeRequest(BaseModel):
     apk_root: str | None = None
     export_root: str | None = None
@@ -279,11 +437,121 @@ class FanxiuCpp2IlSocketReceiveDispatchProbeRequest(BaseModel):
     export_root: str | None = None
 
 
+class FanxiuLoginTokenToSocketHandoffProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLoginAccountSignSourceProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
 class FanxiuLuaServerListResponseFlowProbeRequest(BaseModel):
     export_root: str | None = None
 
 
 class FanxiuLuaLoginSocketSendFlowProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginSocketResponseFlowProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginFinishPostSyncProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaRawLscriptExportCoverageProbeRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuLuaRawLscriptMissingExportProbeRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+    status: list[str] = Field(default_factory=lambda: ["missing_export_by_hash"])
+    group_prefix: str | None = None
+    module_contains: str | None = None
+    limit: int | None = Field(default=None, ge=1, le=1000)
+    order_by: str = "path"
+    dry_run: bool = False
+    refresh_coverage: bool = True
+
+
+class FanxiuLuaLscriptSurfaceInventoryProbeRequest(BaseModel):
+    export_root: str | None = None
+    max_asset_rows: int | None = Field(default=None, ge=1, le=100000)
+
+
+class FanxiuLuaLscriptModuleSurfaceProbeRequest(BaseModel):
+    export_root: str | None = None
+    module: str = Field(min_length=1)
+    group: str = "gamesystem/game"
+    max_files: int | None = Field(default=None, ge=1, le=10000)
+    max_marker_rows: int = Field(default=5000, ge=0, le=100000)
+
+
+class FanxiuLuaLscriptModuleNetLogicFlowProbeRequest(BaseModel):
+    export_root: str | None = None
+    module: str = Field(min_length=1)
+    group: str = "gamesystem/game"
+    max_functions: int | None = Field(default=None, ge=1, le=1000)
+
+
+class FanxiuLuaLscriptModuleProtocolSchemaProbeRequest(BaseModel):
+    export_root: str | None = None
+    module: str = Field(min_length=1)
+    group: str = "gamesystem/game"
+
+
+class FanxiuLuaLscriptModulePacketPairFlowProbeRequest(BaseModel):
+    export_root: str | None = None
+    module: str = Field(min_length=1)
+    request_packet: str = Field(min_length=1)
+    response_packet: str | None = None
+    group: str = "gamesystem/game"
+    max_source_lines: int = Field(default=80, ge=1, le=500)
+
+
+class FanxiuLuaLoginPostSyncCpp2IlManagerSurfaceProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncHandlerProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncLuaLoaderBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncManagerSourceGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncProtocolFamilyProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncRawLscriptBundleGapProbeRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncRawLscriptHandlerClosureProbeRequest(BaseModel):
+    resource_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuLuaLoginPostSyncUnresolvedHandlerGapProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaSmLoginNestedVoProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuLuaSmLoginNestedVoDepth2ProbeRequest(BaseModel):
     export_root: str | None = None
 
 
@@ -303,6 +571,11 @@ class FanxiuIl2CppDownloadInventoryRequest(BaseModel):
 class FanxiuResourcePackageReportRequest(BaseModel):
     apk_root: str | None = None
     resource_root: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuTapTapDownloadDatPackageProbeRequest(BaseModel):
+    download_path: str | None = None
     export_root: str | None = None
 
 
@@ -524,6 +797,14 @@ class FanxiuHotUpdateGongfaHomeMakeSideFeatureSemanticsProbeRequest(BaseModel):
     export_root: str | None = None
 
 
+class FanxiuHotUpdateGongfaHomeMakeFazeLevelNameMatchBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaHomeMakeFazeLevelSkillOwnershipProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
 class FanxiuHotUpdateGongfaHomeMakeBuffFieldSemanticsProbeRequest(BaseModel):
     export_root: str | None = None
 
@@ -566,7 +847,20 @@ class FanxiuHotUpdateGongfaHomeMakeMechanismResultProducerProbeRequest(BaseModel
     buff_id: str | int | None = None
 
 
+class FanxiuHotUpdateGongfaHomeMakeNonFunnelBuffBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+    buff_id: str | int | None = None
+
+
 class FanxiuHotUpdateFightResultFamilyDecoderProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateBuffChangeResultDecoderProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateBuffStateDecoderProbeRequest(BaseModel):
     export_root: str | None = None
 
 
@@ -589,6 +883,10 @@ class FanxiuHotUpdateSocketCompressedIntCodecProbeRequest(BaseModel):
 class FanxiuHotUpdateSocketCaptureFixtureCodecCalibrationProbeRequest(BaseModel):
     export_root: str | None = None
     decoded_json: str | None = None
+
+
+class FanxiuHotUpdateSocketResultSampleCoverageProbeRequest(BaseModel):
+    export_root: str | None = None
 
 
 class FanxiuHotUpdateCombatFormulaAuthorityContrastProbeRequest(BaseModel):
@@ -617,6 +915,58 @@ class FanxiuHotUpdateFazeEffectUpdateEventProbeRequest(BaseModel):
 
 class FanxiuHotUpdateFazeEffectLuaUsageProbeRequest(BaseModel):
     export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazeFocusProbeRequest(BaseModel):
+    export_root: str | None = None
+    gongfa_id: str | int | None = None
+    query: str = ""
+
+
+class FanxiuHotUpdateGongfaSpecialFazeCatalogProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazeEffectTypeIndexProbeRequest(BaseModel):
+    export_root: str | None = None
+    min_stage_count: int = Field(default=1, ge=1)
+
+
+class FanxiuHotUpdateGongfaSpecialFazeAttrKeyIndexProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazeParamShapeIndexProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazeParamItemRefProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazePayloadSummaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuHotUpdateGongfaSpecialFazeRuntimeSampleAuditProbeRequest(BaseModel):
+    export_root: str | None = None
+    focus_effect_type: str | int = "804"
+
+
+class FanxiuHotUpdateGongfaSpecialFazeReasonProbeRequest(BaseModel):
+    export_root: str | None = None
+    gongfa_id: str | int | None = None
+    query: str = ""
+
+
+class FanxiuHotUpdateGongfaSpecialFazeReasonReuseProbeRequest(BaseModel):
+    export_root: str | None = None
+    reason: str | int = "1265"
+
+
+class FanxiuHotUpdateGongfaSpecialFazeReasonReuseIndexProbeRequest(BaseModel):
+    export_root: str | None = None
+    min_gongfa_count: int = Field(default=2, ge=1)
 
 
 class FanxiuHotUpdateFazeSourceSemanticsProbeRequest(BaseModel):
@@ -659,6 +1009,248 @@ class FanxiuLuaConfigBatchReportRequest(BaseModel):
     lang_path: str | None = None
     export_root: str | None = None
     max_preview_rows: int = Field(default=5000, ge=1, le=50000)
+
+
+class FanxiuDoupoTDCatalogRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    card_compose_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDSkillTimelineProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDBuffEffectProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDBuffClassSemanticsProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDBuffClassFlowProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+    buff_classes: list[str] | None = None
+
+
+class FanxiuDoupoTDBuffAuthorityBoundaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDEffectGamePlayerSummaryProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDGamePlayerResultProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDRewardConfigProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDMonsterDropResolutionProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    drop_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDStoreBagVisualProbeRequest(BaseModel):
+    tower_defense_config_dir: str | None = None
+    drop_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDoupoTDRewardResultResolutionProbeRequest(BaseModel):
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorCatalogRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorSkillEnhanceEffectUsageProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorSkillEnhanceApplicationProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorSkillEnhanceEffectIdNamespaceProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReadyFightSkillListConsumerProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReadyFightSkillListShapeProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReadyFightRuntimeSampleProbeRequest(BaseModel):
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReadyFightRequestLevelIdProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorReadyFightPartnerListProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorStartGameResponseBoundaryProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorStartGameSkillVosShapeProbeRequest(BaseModel):
+    digitdoor_logic_dir: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorBuffEffectUsageProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorBuffClassFormulaProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorRewardResultResolutionProbeRequest(BaseModel):
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorRewardMarkerSemanticsProbeRequest(BaseModel):
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorRewardMarkerUiProbeRequest(BaseModel):
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterRefreshProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorDoorRefreshProjectionProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorDoorGainBuffFlowProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorDoorCustomizedTypeSemanticsProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterSkillTimelineProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterEffectClassFlowProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+    effect_classes: list[str] | None = None
+
+
+class FanxiuDigitDoorMonsterRefreshPointValueProjectionProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterRefreshPointAttributeProjectionProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterRefreshPointLatentFieldProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterSkillDataAccessorProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterSkillValueProjectionProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterSkillBuffLinkProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
+
+
+class FanxiuDigitDoorMonsterSkillBuffFormulaProbeRequest(BaseModel):
+    digitdoor_config_dir: str | None = None
+    digitdoor_logic_dir: str | None = None
+    lang_path: str | None = None
+    export_root: str | None = None
 
 
 class FanxiuGongfaCatalogRequest(BaseModel):
@@ -1175,6 +1767,70 @@ def get_fanxiu_lingjie_feature_card_detail(
     )
 
 
+@router.get("/resources/doupotd/partner-cards")
+def get_fanxiu_doupotd_partner_cards(
+    query: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        search_fanxiu_doupotd_partner_cards,
+        query=query,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/doupotd/partner-card")
+def get_fanxiu_doupotd_partner_card_detail(
+    partner_id: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        get_fanxiu_doupotd_partner_card,
+        partner_id,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/doupotd/reward-configs")
+def get_fanxiu_doupotd_reward_configs(
+    query: str = Query(default=""),
+    source_table: str = Query(default=""),
+    stage: str = Query(default=""),
+    item_id: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        search_fanxiu_doupotd_reward_configs,
+        query=query,
+        source_table=source_table,
+        stage=stage,
+        item_id=item_id,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/doupotd/reward-config")
+def get_fanxiu_doupotd_reward_config_detail(
+    source_table: str = Query(min_length=1),
+    config_id: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        get_fanxiu_doupotd_reward_config,
+        source_table=source_table,
+        config_id=config_id,
+        export_root=export_root,
+    )
+
+
 @router.get("/resources/items/cards")
 def get_fanxiu_item_cards(
     query: str = Query(default=""),
@@ -1209,6 +1865,92 @@ def get_fanxiu_item_card_detail(
     return _run_resource_operation(
         get_fanxiu_item_card,
         item_id,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/character-cards")
+def get_fanxiu_digitdoor_character_cards(
+    query: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        search_fanxiu_digitdoor_character_cards,
+        query=query,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/character-card")
+def get_fanxiu_digitdoor_character_card_detail(
+    character_id: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        get_fanxiu_digitdoor_character_card,
+        character_id,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/level-configs")
+def get_fanxiu_digitdoor_level_configs(
+    query: str = Query(default=""),
+    stage: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        search_fanxiu_digitdoor_level_configs,
+        query=query,
+        stage=stage,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/level-config")
+def get_fanxiu_digitdoor_level_config_detail(
+    level_id: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        get_fanxiu_digitdoor_level_config,
+        level_id,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/enhance-groups")
+def get_fanxiu_digitdoor_enhance_groups(
+    query: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        search_fanxiu_digitdoor_enhance_groups,
+        query=query,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.get("/resources/digitdoor/enhance-group")
+def get_fanxiu_digitdoor_enhance_group_detail(
+    group_id: str = Query(min_length=1),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        get_fanxiu_digitdoor_enhance_group,
+        group_id,
         export_root=export_root,
     )
 
@@ -1402,6 +2144,112 @@ def post_fanxiu_apk_dex_login_body_probe(req: FanxiuApkDexLoginBodyProbeRequest)
     )
 
 
+@router.post("/resources/apk/dex-login-payload-shape-probe")
+def post_fanxiu_apk_dex_login_payload_shape_probe(
+    req: FanxiuApkDexLoginPayloadShapeProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_dex_login_payload_shape_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-login-source-probe")
+def post_fanxiu_apk_jadx_login_source_probe(req: FanxiuApkJadxLoginSourceProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_login_source_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sq-plugin-core-probe")
+def post_fanxiu_apk_jadx_sq_plugin_core_probe(req: FanxiuApkJadxSqPluginCoreProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sq_plugin_core_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-login-account-probe")
+def post_fanxiu_apk_jadx_sy37_login_account_probe(
+    req: FanxiuApkJadxSy37LoginAccountProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_login_account_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-request-signing-probe")
+def post_fanxiu_apk_jadx_sy37_request_signing_probe(
+    req: FanxiuApkJadxSy37RequestSigningProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_request_signing_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-endpoint-usage-probe")
+def post_fanxiu_apk_jadx_sy37_endpoint_usage_probe(
+    req: FanxiuApkJadxSy37EndpointUsageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_endpoint_usage_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-login-response-surface-probe")
+def post_fanxiu_apk_jadx_sy37_login_response_surface_probe(
+    req: FanxiuApkJadxSy37LoginResponseSurfaceProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_login_response_surface_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-url-catalog-probe")
+def post_fanxiu_apk_jadx_sy37_url_catalog_probe(
+    req: FanxiuApkJadxSy37UrlCatalogProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_url_catalog_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-url-update-probe")
+def post_fanxiu_apk_jadx_sy37_url_update_probe(
+    req: FanxiuApkJadxSy37UrlUpdateProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_url_update_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/jadx-sy37-wrapper-endpoint-probe")
+def post_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe(
+    req: FanxiuApkJadxSy37WrapperEndpointProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe,
+        apk_root=req.apk_root,
+        export_root=req.export_root,
+    )
+
+
 @router.post("/resources/apk/unity-login-receiver-probe")
 def post_fanxiu_apk_unity_login_receiver_probe(req: FanxiuApkUnityLoginReceiverProbeRequest) -> dict[str, Any]:
     return _run_resource_operation(
@@ -1477,6 +2325,26 @@ def post_fanxiu_cpp2il_socket_receive_dispatch_probe(
     )
 
 
+@router.post("/resources/apk/login-token-to-socket-handoff-probe")
+def post_fanxiu_login_token_to_socket_handoff_probe(
+    req: FanxiuLoginTokenToSocketHandoffProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_login_token_to_socket_handoff_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/login-account-sign-source-probe")
+def post_fanxiu_login_account_sign_source_probe(
+    req: FanxiuLoginAccountSignSourceProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_login_account_sign_source_probe,
+        export_root=req.export_root,
+    )
+
+
 @router.post("/resources/apk/lua-serverlist-response-flow-probe")
 def post_fanxiu_lua_serverlist_response_flow_probe(
     req: FanxiuLuaServerListResponseFlowProbeRequest,
@@ -1518,6 +2386,15 @@ def post_fanxiu_resource_package_report(req: FanxiuResourcePackageReportRequest)
         build_fanxiu_resource_package_report,
         apk_root=req.apk_root,
         resource_root=req.resource_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/apk/taptap-download-dat-package-probe")
+def post_fanxiu_taptap_download_dat_package_probe(req: FanxiuTapTapDownloadDatPackageProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_taptap_download_dat_package_probe,
+        download_path=req.download_path,
         export_root=req.export_root,
     )
 
@@ -2038,6 +2915,26 @@ def post_fanxiu_hot_update_fight_result_family_decoder_probe(
     )
 
 
+@router.post("/resources/hot-update/buff-change-result-decoder-probe")
+def post_fanxiu_hot_update_buff_change_result_decoder_probe(
+    req: FanxiuHotUpdateBuffChangeResultDecoderProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_buff_change_result_decoder_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/buff-state-decoder-probe")
+def post_fanxiu_hot_update_buff_state_decoder_probe(
+    req: FanxiuHotUpdateBuffStateDecoderProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_buff_state_decoder_probe,
+        export_root=req.export_root,
+    )
+
+
 @router.post("/resources/hot-update/socket-primitive-decoder-probe")
 def post_fanxiu_hot_update_socket_primitive_decoder_probe(
     req: FanxiuHotUpdateSocketPrimitiveDecoderProbeRequest,
@@ -2089,6 +2986,16 @@ def post_fanxiu_hot_update_socket_capture_fixture_codec_calibration_probe(
     )
 
 
+@router.post("/resources/hot-update/socket-result-sample-coverage-probe")
+def post_fanxiu_hot_update_socket_result_sample_coverage_probe(
+    req: FanxiuHotUpdateSocketResultSampleCoverageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_socket_result_sample_coverage_probe,
+        export_root=req.export_root,
+    )
+
+
 @router.post("/resources/hot-update/combat-formula-authority-contrast-probe")
 def post_fanxiu_hot_update_combat_formula_authority_contrast_probe(
     req: FanxiuHotUpdateCombatFormulaAuthorityContrastProbeRequest,
@@ -2115,6 +3022,26 @@ def post_fanxiu_hot_update_gongfa_homemake_side_feature_semantics_probe(
 ) -> dict[str, Any]:
     return _run_resource_operation(
         build_fanxiu_gongfa_homemake_side_feature_semantics_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-homemake-fazelevel-name-match-boundary-probe")
+def post_fanxiu_hot_update_gongfa_homemake_fazelevel_name_match_boundary_probe(
+    req: FanxiuHotUpdateGongfaHomeMakeFazeLevelNameMatchBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-homemake-fazelevel-skill-ownership-probe")
+def post_fanxiu_hot_update_gongfa_homemake_fazelevel_skill_ownership_probe(
+    req: FanxiuHotUpdateGongfaHomeMakeFazeLevelSkillOwnershipProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe,
         export_root=req.export_root,
     )
 
@@ -2215,6 +3142,17 @@ def post_fanxiu_hot_update_gongfa_homemake_mechanism_result_producer_probe(
     )
 
 
+@router.post("/resources/hot-update/gongfa-homemake-nonfunnel-buff-boundary-probe")
+def post_fanxiu_hot_update_gongfa_homemake_nonfunnel_buff_boundary_probe(
+    req: FanxiuHotUpdateGongfaHomeMakeNonFunnelBuffBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe,
+        export_root=req.export_root,
+        buff_id=req.buff_id or "385002010",
+    )
+
+
 @router.post("/resources/hot-update/gongfa-view-snapshot-probe")
 def post_fanxiu_hot_update_gongfa_view_snapshot_probe(
     req: FanxiuHotUpdateGongfaViewSnapshotProbeRequest,
@@ -2261,6 +3199,146 @@ def post_fanxiu_hot_update_faze_effect_lua_usage_probe(
 ) -> dict[str, Any]:
     return _run_resource_operation(
         build_fanxiu_faze_effect_lua_usage_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-focus-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_focus_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeFocusProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_focus_probe,
+        gongfa_id=req.gongfa_id,
+        query=req.query,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-catalog-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_catalog_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeCatalogProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_catalog_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.get("/resources/hot-update/gongfa-special-faze-catalog")
+def get_fanxiu_hot_update_gongfa_special_faze_catalog(
+    query: str = Query(default=""),
+    gid: str | None = Query(default=None),
+    effect_type: str = Query(default=""),
+    reason: str = Query(default=""),
+    limit: int = Query(default=80, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    export_root: str | None = Query(default=None),
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        query_fanxiu_gongfa_special_faze_catalog,
+        query=query,
+        gid=gid,
+        effect_type=effect_type,
+        reason=reason,
+        limit=limit,
+        offset=offset,
+        export_root=export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-effect-type-index-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_effect_type_index_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeEffectTypeIndexProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_effect_type_index_probe,
+        min_stage_count=req.min_stage_count,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-attr-key-index-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_attr_key_index_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeAttrKeyIndexProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_attr_key_index_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-param-shape-index-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_param_shape_index_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeParamShapeIndexProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_param_shape_index_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-param-item-ref-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_param_item_ref_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeParamItemRefProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_param_item_ref_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-payload-summary-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_payload_summary_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazePayloadSummaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_payload_summary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-runtime-sample-audit-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_runtime_sample_audit_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeRuntimeSampleAuditProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
+        focus_effect_type=req.focus_effect_type,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-reason-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_reason_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeReasonProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_reason_probe,
+        gongfa_id=req.gongfa_id,
+        query=req.query,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-reason-reuse-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_reason_reuse_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeReasonReuseProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_reason_reuse_probe,
+        reason=req.reason,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/hot-update/gongfa-special-faze-reason-reuse-index-probe")
+def post_fanxiu_hot_update_gongfa_special_faze_reason_reuse_index_probe(
+    req: FanxiuHotUpdateGongfaSpecialFazeReasonReuseIndexProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_gongfa_special_faze_reason_reuse_index_probe,
+        min_gongfa_count=req.min_gongfa_count,
         export_root=req.export_root,
     )
 
@@ -2330,6 +3408,486 @@ def post_fanxiu_lua_config_batch_report(req: FanxiuLuaConfigBatchReportRequest) 
         lang_path=req.lang_path,
         export_root=req.export_root,
         max_preview_rows=req.max_preview_rows,
+    )
+
+
+@router.post("/resources/doupotd/catalog")
+def post_fanxiu_doupotd_catalog(req: FanxiuDoupoTDCatalogRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_catalog,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        card_compose_config_dir=req.card_compose_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/catalog")
+def post_fanxiu_digitdoor_catalog(req: FanxiuDigitDoorCatalogRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_catalog,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/skill-enhance-effect-usage-probe")
+def post_fanxiu_digitdoor_skill_enhance_effect_usage_probe(
+    req: FanxiuDigitDoorSkillEnhanceEffectUsageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/skill-enhance-application-probe")
+def post_fanxiu_digitdoor_skill_enhance_application_probe(
+    req: FanxiuDigitDoorSkillEnhanceApplicationProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_skill_enhance_application_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/skill-enhance-effect-id-namespace-probe")
+def post_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe(
+    req: FanxiuDigitDoorSkillEnhanceEffectIdNamespaceProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/readyfight-skilllist-consumer-probe")
+def post_fanxiu_digitdoor_readyfight_skilllist_consumer_probe(
+    req: FanxiuDigitDoorReadyFightSkillListConsumerProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/readyfight-skilllist-shape-probe")
+def post_fanxiu_digitdoor_readyfight_skilllist_shape_probe(
+    req: FanxiuDigitDoorReadyFightSkillListShapeProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/readyfight-runtime-sample-probe")
+def post_fanxiu_digitdoor_readyfight_runtime_sample_probe(
+    req: FanxiuDigitDoorReadyFightRuntimeSampleProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/readyfight-request-levelid-probe")
+def post_fanxiu_digitdoor_readyfight_request_levelid_probe(
+    req: FanxiuDigitDoorReadyFightRequestLevelIdProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_request_levelid_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/readyfight-partnerlist-probe")
+def post_fanxiu_digitdoor_readyfight_partnerlist_probe(
+    req: FanxiuDigitDoorReadyFightPartnerListProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_readyfight_partnerlist_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/startgame-response-boundary-probe")
+def post_fanxiu_digitdoor_startgame_response_boundary_probe(
+    req: FanxiuDigitDoorStartGameResponseBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_startgame_response_boundary_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/startgame-skillvos-shape-probe")
+def post_fanxiu_digitdoor_startgame_skillvos_shape_probe(
+    req: FanxiuDigitDoorStartGameSkillVosShapeProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/buff-effect-usage-probe")
+def post_fanxiu_digitdoor_buff_effect_usage_probe(
+    req: FanxiuDigitDoorBuffEffectUsageProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_buff_effect_usage_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/buff-class-formula-probe")
+def post_fanxiu_digitdoor_buff_class_formula_probe(
+    req: FanxiuDigitDoorBuffClassFormulaProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_buff_class_formula_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/reward-result-resolution-probe")
+def post_fanxiu_digitdoor_reward_result_resolution_probe(
+    req: FanxiuDigitDoorRewardResultResolutionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_reward_result_resolution_probe,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/reward-marker-semantics-probe")
+def post_fanxiu_digitdoor_reward_marker_semantics_probe(
+    req: FanxiuDigitDoorRewardMarkerSemanticsProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_reward_marker_semantics_probe,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/reward-marker-ui-probe")
+def post_fanxiu_digitdoor_reward_marker_ui_probe(
+    req: FanxiuDigitDoorRewardMarkerUiProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_reward_marker_ui_probe,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-refresh-probe")
+def post_fanxiu_digitdoor_monster_refresh_probe(
+    req: FanxiuDigitDoorMonsterRefreshProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_refresh_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/door-refresh-projection-probe")
+def post_fanxiu_digitdoor_door_refresh_projection_probe(
+    req: FanxiuDigitDoorDoorRefreshProjectionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_door_refresh_projection_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/door-gain-buff-flow-probe")
+def post_fanxiu_digitdoor_door_gain_buff_flow_probe(
+    req: FanxiuDigitDoorDoorGainBuffFlowProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_door_gain_buff_flow_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/door-customized-type-semantics-probe")
+def post_fanxiu_digitdoor_door_customized_type_semantics_probe(
+    req: FanxiuDigitDoorDoorCustomizedTypeSemanticsProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_door_customized_type_semantics_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-skill-timeline-probe")
+def post_fanxiu_digitdoor_monster_skill_timeline_probe(
+    req: FanxiuDigitDoorMonsterSkillTimelineProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_skill_timeline_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-effect-class-flow-probe")
+def post_fanxiu_digitdoor_monster_effect_class_flow_probe(
+    req: FanxiuDigitDoorMonsterEffectClassFlowProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_effect_class_flow_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+        effect_classes=req.effect_classes,
+    )
+
+
+@router.post("/resources/digitdoor/monster-refresh-point-value-projection-probe")
+def post_fanxiu_digitdoor_monster_refresh_point_value_projection_probe(
+    req: FanxiuDigitDoorMonsterRefreshPointValueProjectionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_refresh_point_value_projection_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-refresh-point-attribute-projection-probe")
+def post_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe(
+    req: FanxiuDigitDoorMonsterRefreshPointAttributeProjectionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-refresh-point-latent-field-probe")
+def post_fanxiu_digitdoor_monster_refresh_point_latent_field_probe(
+    req: FanxiuDigitDoorMonsterRefreshPointLatentFieldProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_refresh_point_latent_field_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-skill-data-accessor-probe")
+def post_fanxiu_digitdoor_monster_skill_data_accessor_probe(
+    req: FanxiuDigitDoorMonsterSkillDataAccessorProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_skill_data_accessor_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-skill-value-projection-probe")
+def post_fanxiu_digitdoor_monster_skill_value_projection_probe(
+    req: FanxiuDigitDoorMonsterSkillValueProjectionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_skill_value_projection_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-skill-buff-link-probe")
+def post_fanxiu_digitdoor_monster_skill_buff_link_probe(
+    req: FanxiuDigitDoorMonsterSkillBuffLinkProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_skill_buff_link_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/digitdoor/monster-skill-buff-formula-probe")
+def post_fanxiu_digitdoor_monster_skill_buff_formula_probe(
+    req: FanxiuDigitDoorMonsterSkillBuffFormulaProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_digitdoor_monster_skill_buff_formula_probe,
+        digitdoor_config_dir=req.digitdoor_config_dir,
+        digitdoor_logic_dir=req.digitdoor_logic_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/skill-timeline-probe")
+def post_fanxiu_doupotd_skill_timeline_probe(req: FanxiuDoupoTDSkillTimelineProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_skill_timeline_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/buff-effect-probe")
+def post_fanxiu_doupotd_buff_effect_probe(req: FanxiuDoupoTDBuffEffectProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_buff_effect_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/buff-class-semantics-probe")
+def post_fanxiu_doupotd_buff_class_semantics_probe(
+    req: FanxiuDoupoTDBuffClassSemanticsProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_buff_class_semantics_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/buff-class-flow-probe")
+def post_fanxiu_doupotd_buff_class_flow_probe(
+    req: FanxiuDoupoTDBuffClassFlowProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_buff_class_flow_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+        buff_classes=req.buff_classes,
+    )
+
+
+@router.post("/resources/doupotd/buff-authority-boundary-probe")
+def post_fanxiu_doupotd_buff_authority_boundary_probe(
+    req: FanxiuDoupoTDBuffAuthorityBoundaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_buff_authority_boundary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/effect-gameplayer-summary-probe")
+def post_fanxiu_doupotd_effect_gameplayer_summary_probe(
+    req: FanxiuDoupoTDEffectGamePlayerSummaryProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_effect_gameplayer_summary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/gameplayer-result-probe")
+def post_fanxiu_doupotd_gameplayer_result_probe(
+    req: FanxiuDoupoTDGamePlayerResultProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_gameplayer_result_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/reward-config-probe")
+def post_fanxiu_doupotd_reward_config_probe(
+    req: FanxiuDoupoTDRewardConfigProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_reward_config_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/monster-drop-resolution-probe")
+def post_fanxiu_doupotd_monster_drop_resolution_probe(
+    req: FanxiuDoupoTDMonsterDropResolutionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_monster_drop_resolution_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        drop_config_dir=req.drop_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/store-bag-visual-probe")
+def post_fanxiu_doupotd_store_bag_visual_probe(
+    req: FanxiuDoupoTDStoreBagVisualProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_store_bag_visual_probe,
+        tower_defense_config_dir=req.tower_defense_config_dir,
+        drop_config_dir=req.drop_config_dir,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/doupotd/reward-result-resolution-probe")
+def post_fanxiu_doupotd_reward_result_resolution_probe(
+    req: FanxiuDoupoTDRewardResultResolutionProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_doupotd_reward_result_resolution_probe,
+        lang_path=req.lang_path,
+        export_root=req.export_root,
     )
 
 
@@ -2410,6 +3968,186 @@ def post_fanxiu_lua_packet_index(req: FanxiuLuaPacketIndexRequest) -> dict[str, 
 def post_fanxiu_lua_login_socket_send_flow_probe(req: FanxiuLuaLoginSocketSendFlowProbeRequest) -> dict[str, Any]:
     return _run_resource_operation(
         build_fanxiu_lua_login_socket_send_flow_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-socket-response-flow-probe")
+def post_fanxiu_lua_login_socket_response_flow_probe(req: FanxiuLuaLoginSocketResponseFlowProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_socket_response_flow_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-finish-post-sync-probe")
+def post_fanxiu_lua_login_finish_post_sync_probe(req: FanxiuLuaLoginFinishPostSyncProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_finish_post_sync_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/raw-lscript-export-coverage-probe")
+def post_fanxiu_lua_raw_lscript_export_coverage_probe(req: FanxiuLuaRawLscriptExportCoverageProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_raw_lscript_export_coverage_probe,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/raw-lscript-missing-export-probe")
+def post_fanxiu_lua_raw_lscript_missing_export_probe(req: FanxiuLuaRawLscriptMissingExportProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_raw_lscript_missing_export_probe,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+        status=req.status,
+        group_prefix=req.group_prefix,
+        module_contains=req.module_contains,
+        limit=req.limit,
+        order_by=req.order_by,
+        dry_run=req.dry_run,
+        refresh_coverage=req.refresh_coverage,
+    )
+
+
+@router.post("/resources/lua/lscript-surface-inventory-probe")
+def post_fanxiu_lua_lscript_surface_inventory_probe(req: FanxiuLuaLscriptSurfaceInventoryProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_lscript_surface_inventory_probe,
+        export_root=req.export_root,
+        max_asset_rows=req.max_asset_rows,
+    )
+
+
+@router.post("/resources/lua/lscript-module-surface-probe")
+def post_fanxiu_lua_lscript_module_surface_probe(req: FanxiuLuaLscriptModuleSurfaceProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_lscript_module_surface_probe,
+        export_root=req.export_root,
+        module=req.module,
+        group=req.group,
+        max_files=req.max_files,
+        max_marker_rows=req.max_marker_rows,
+    )
+
+
+@router.post("/resources/lua/lscript-module-netlogic-flow-probe")
+def post_fanxiu_lua_lscript_module_netlogic_flow_probe(req: FanxiuLuaLscriptModuleNetLogicFlowProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_lscript_module_netlogic_flow_probe,
+        export_root=req.export_root,
+        module=req.module,
+        group=req.group,
+        max_functions=req.max_functions,
+    )
+
+
+@router.post("/resources/lua/lscript-module-protocol-schema-probe")
+def post_fanxiu_lua_lscript_module_protocol_schema_probe(req: FanxiuLuaLscriptModuleProtocolSchemaProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_lscript_module_protocol_schema_probe,
+        export_root=req.export_root,
+        module=req.module,
+        group=req.group,
+    )
+
+
+@router.post("/resources/lua/lscript-module-packet-pair-flow-probe")
+def post_fanxiu_lua_lscript_module_packet_pair_flow_probe(req: FanxiuLuaLscriptModulePacketPairFlowProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
+        export_root=req.export_root,
+        module=req.module,
+        request_packet=req.request_packet,
+        response_packet=req.response_packet,
+        group=req.group,
+        max_source_lines=req.max_source_lines,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-cpp2il-manager-surface-probe")
+def post_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe(req: FanxiuLuaLoginPostSyncCpp2IlManagerSurfaceProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-handler-probe")
+def post_fanxiu_lua_login_post_sync_handler_probe(req: FanxiuLuaLoginPostSyncHandlerProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_handler_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-lua-loader-boundary-probe")
+def post_fanxiu_lua_login_post_sync_lua_loader_boundary_probe(req: FanxiuLuaLoginPostSyncLuaLoaderBoundaryProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_lua_loader_boundary_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-manager-source-gap-probe")
+def post_fanxiu_lua_login_post_sync_manager_source_gap_probe(req: FanxiuLuaLoginPostSyncManagerSourceGapProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_manager_source_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-protocol-family-probe")
+def post_fanxiu_lua_login_post_sync_protocol_family_probe(req: FanxiuLuaLoginPostSyncProtocolFamilyProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_protocol_family_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-raw-lscript-bundle-gap-probe")
+def post_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe(req: FanxiuLuaLoginPostSyncRawLscriptBundleGapProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-raw-lscript-handler-closure-probe")
+def post_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe(
+    req: FanxiuLuaLoginPostSyncRawLscriptHandlerClosureProbeRequest,
+) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe,
+        resource_root=req.resource_root,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/login-post-sync-unresolved-handler-gap-probe")
+def post_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe(req: FanxiuLuaLoginPostSyncUnresolvedHandlerGapProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/sm-login-nested-vo-probe")
+def post_fanxiu_lua_sm_login_nested_vo_probe(req: FanxiuLuaSmLoginNestedVoProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_sm_login_nested_vo_probe,
+        export_root=req.export_root,
+    )
+
+
+@router.post("/resources/lua/sm-login-nested-vo-depth2-probe")
+def post_fanxiu_lua_sm_login_nested_vo_depth2_probe(req: FanxiuLuaSmLoginNestedVoDepth2ProbeRequest) -> dict[str, Any]:
+    return _run_resource_operation(
+        build_fanxiu_lua_sm_login_nested_vo_depth2_probe,
         export_root=req.export_root,
     )
 

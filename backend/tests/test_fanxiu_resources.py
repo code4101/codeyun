@@ -19,9 +19,19 @@ from backend.core.fanxiu_resources import (
 from backend.core.fanxiu_apk_static import (
     _decode_dex_instruction_refs,
     build_fanxiu_apk_dex_login_surface_probe,
+    build_fanxiu_apk_dex_login_payload_shape_probe,
     build_fanxiu_apk_download_config_report,
     build_fanxiu_apk_gamelogin_bridge_probe,
     build_fanxiu_apk_il2cpp_binary_boundary_probe,
+    build_fanxiu_apk_jadx_login_source_probe,
+    build_fanxiu_apk_jadx_sq_plugin_core_probe,
+    build_fanxiu_apk_jadx_sy37_endpoint_usage_probe,
+    build_fanxiu_apk_jadx_sy37_login_account_probe,
+    build_fanxiu_apk_jadx_sy37_login_response_surface_probe,
+    build_fanxiu_apk_jadx_sy37_request_signing_probe,
+    build_fanxiu_apk_jadx_sy37_url_catalog_probe,
+    build_fanxiu_apk_jadx_sy37_url_update_probe,
+    build_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe,
     build_fanxiu_apk_login_server_flow_probe,
     build_fanxiu_apk_manifest_probe,
     build_fanxiu_apk_network_stack_probe,
@@ -34,9 +44,12 @@ from backend.core.fanxiu_apk_static import (
     build_fanxiu_cpp2il_login_lua_bridge_probe,
     build_fanxiu_cpp2il_socket_proto_bridge_probe,
     build_fanxiu_cpp2il_socket_receive_dispatch_probe,
+    build_fanxiu_login_account_sign_source_probe,
+    build_fanxiu_login_token_to_socket_handoff_probe,
     build_fanxiu_lua_serverlist_response_flow_probe,
     build_fanxiu_resource_manifest_diff_report,
     build_fanxiu_resource_package_report,
+    build_fanxiu_taptap_download_dat_package_probe,
 )
 from backend.core.fanxiu_game_luaconfig import (
     build_fanxiu_gongfa_feature_probe,
@@ -52,6 +65,62 @@ from backend.core.fanxiu_il2cpp_metadata import (
 )
 from backend.core.fanxiu_download_bridge import build_fanxiu_il2cpp_download_inventory, build_fanxiu_lua_download_bridge_report
 from backend.core.fanxiu_item_catalog import build_fanxiu_item_catalog, get_fanxiu_item_card, search_fanxiu_item_cards
+from backend.core.fanxiu_doupotd_catalog import (
+    build_fanxiu_doupotd_buff_effect_probe,
+    build_fanxiu_doupotd_buff_class_semantics_probe,
+    build_fanxiu_doupotd_buff_class_flow_probe,
+    build_fanxiu_doupotd_buff_authority_boundary_probe,
+    build_fanxiu_doupotd_effect_gameplayer_summary_probe,
+    build_fanxiu_doupotd_gameplayer_result_probe,
+    build_fanxiu_doupotd_monster_drop_resolution_probe,
+    build_fanxiu_doupotd_reward_config_probe,
+    build_fanxiu_doupotd_reward_result_resolution_probe,
+    build_fanxiu_doupotd_catalog,
+    build_fanxiu_doupotd_skill_timeline_probe,
+    build_fanxiu_doupotd_store_bag_visual_probe,
+    get_fanxiu_doupotd_reward_config,
+    get_fanxiu_doupotd_partner_card,
+    search_fanxiu_doupotd_reward_configs,
+    search_fanxiu_doupotd_partner_cards,
+)
+from backend.core.fanxiu_digitdoor_catalog import (
+    build_fanxiu_digitdoor_buff_class_formula_probe,
+    build_fanxiu_digitdoor_buff_effect_usage_probe,
+    build_fanxiu_digitdoor_catalog,
+    build_fanxiu_digitdoor_door_customized_type_semantics_probe,
+    build_fanxiu_digitdoor_door_gain_buff_flow_probe,
+    build_fanxiu_digitdoor_door_refresh_projection_probe,
+    build_fanxiu_digitdoor_monster_effect_class_flow_probe,
+    build_fanxiu_digitdoor_monster_refresh_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_latent_field_probe,
+    build_fanxiu_digitdoor_monster_refresh_point_value_projection_probe,
+    build_fanxiu_digitdoor_monster_skill_data_accessor_probe,
+    build_fanxiu_digitdoor_monster_skill_buff_formula_probe,
+    build_fanxiu_digitdoor_monster_skill_buff_link_probe,
+    build_fanxiu_digitdoor_monster_skill_timeline_probe,
+    build_fanxiu_digitdoor_monster_skill_value_projection_probe,
+    build_fanxiu_digitdoor_reward_marker_semantics_probe,
+    build_fanxiu_digitdoor_reward_marker_ui_probe,
+    build_fanxiu_digitdoor_reward_result_resolution_probe,
+    build_fanxiu_digitdoor_readyfight_partnerlist_probe,
+    build_fanxiu_digitdoor_readyfight_request_levelid_probe,
+    build_fanxiu_digitdoor_readyfight_runtime_sample_probe,
+    build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe,
+    build_fanxiu_digitdoor_readyfight_skilllist_shape_probe,
+    build_fanxiu_digitdoor_skill_enhance_application_probe,
+    build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe,
+    build_fanxiu_digitdoor_skill_enhance_effect_usage_probe,
+    build_fanxiu_digitdoor_startgame_response_boundary_probe,
+    build_fanxiu_digitdoor_startgame_skillvos_shape_probe,
+    get_fanxiu_digitdoor_character_card,
+    get_fanxiu_digitdoor_enhance_group,
+    get_fanxiu_digitdoor_level_config,
+    load_fanxiu_digitdoor_runtime_index,
+    search_fanxiu_digitdoor_character_cards,
+    search_fanxiu_digitdoor_enhance_groups,
+    search_fanxiu_digitdoor_level_configs,
+)
 from backend.core.fanxiu_hot_update import (
     build_fanxiu_bluestarsea_authority_boundary_probe,
     build_fanxiu_bluestarsea_catalog_probe,
@@ -79,6 +148,17 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_faze_effect_update_event_probe,
     build_fanxiu_faze_protocol_semantics_probe,
     build_fanxiu_faze_source_semantics_probe,
+    build_fanxiu_gongfa_special_faze_catalog_probe,
+    build_fanxiu_gongfa_special_faze_attr_key_index_probe,
+    build_fanxiu_gongfa_special_faze_effect_type_index_probe,
+    build_fanxiu_gongfa_special_faze_focus_probe,
+    build_fanxiu_gongfa_special_faze_param_item_ref_probe,
+    build_fanxiu_gongfa_special_faze_param_shape_index_probe,
+    build_fanxiu_gongfa_special_faze_payload_summary_probe,
+    build_fanxiu_gongfa_special_faze_reason_probe,
+    build_fanxiu_gongfa_special_faze_reason_reuse_index_probe,
+    build_fanxiu_gongfa_special_faze_reason_reuse_probe,
+    build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_probe,
     build_fanxiu_gongfa_homemake_detail_renderer_sample_probe,
     build_fanxiu_gongfa_homemake_detail_view_probe,
@@ -91,12 +171,16 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_homemake_mechanism_formula_surface_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_packet_probe,
     build_fanxiu_gongfa_homemake_mechanism_result_producer_probe,
+    build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe,
+    build_fanxiu_buff_change_result_decoder_probe,
+    build_fanxiu_buff_state_decoder_probe,
     build_fanxiu_fight_result_family_decoder_probe,
     build_fanxiu_socket_primitive_decoder_probe,
     build_fanxiu_typed_pool_runtime_observation_probe,
     build_fanxiu_socket_raw_decoder_probe,
     build_fanxiu_socket_compressed_int_codec_probe,
     build_fanxiu_socket_capture_fixture_codec_calibration_probe,
+    build_fanxiu_socket_result_sample_coverage_probe,
     build_fanxiu_combat_formula_authority_contrast_probe,
     build_fanxiu_cpp2il_main_combat_formula_surface_probe,
     get_fanxiu_gongfa_homemake_buff_parameter_semantics,
@@ -111,6 +195,8 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_homemake_share_href_prefab_probe,
     build_fanxiu_gongfa_homemake_share_href_registration_gap_probe,
     build_fanxiu_gongfa_homemake_share_ui_probe,
+    build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe,
+    build_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe,
     build_fanxiu_gongfa_homemake_side_feature_semantics_probe,
     build_fanxiu_gongfa_homemake_stage_star_timeline_boundary_probe,
     build_fanxiu_gongfa_homemake_stage_star_timeline_config_probe,
@@ -130,6 +216,7 @@ from backend.core.fanxiu_hot_update import (
     build_fanxiu_gongfa_view_snapshot_probe,
     build_fanxiu_hot_update_feature_probe,
     build_fanxiu_hot_update_lscripts_report,
+    query_fanxiu_gongfa_special_faze_catalog,
     render_fanxiu_gongfa_homemake_static_detail,
     _parse_prefab_binder_variables_from_raw,
 )
@@ -144,7 +231,26 @@ from backend.core.fanxiu_lua_logic_index import (
     build_fanxiu_lua_logic_index,
 )
 from backend.core.fanxiu_lua_packet_index import (
+    build_fanxiu_lua_lscript_module_netlogic_flow_probe,
+    build_fanxiu_lua_lscript_module_packet_pair_flow_probe,
+    build_fanxiu_lua_lscript_module_protocol_schema_probe,
+    build_fanxiu_lua_lscript_module_surface_probe,
+    build_fanxiu_lua_lscript_surface_inventory_probe,
+    build_fanxiu_lua_raw_lscript_export_coverage_probe,
+    build_fanxiu_lua_raw_lscript_missing_export_probe,
+    build_fanxiu_lua_login_finish_post_sync_probe,
+    build_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe,
+    build_fanxiu_lua_login_post_sync_handler_probe,
+    build_fanxiu_lua_login_post_sync_lua_loader_boundary_probe,
+    build_fanxiu_lua_login_post_sync_manager_source_gap_probe,
+    build_fanxiu_lua_login_post_sync_protocol_family_probe,
+    build_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe,
+    build_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe,
+    build_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe,
+    build_fanxiu_lua_login_socket_response_flow_probe,
     build_fanxiu_lua_login_socket_send_flow_probe,
+    build_fanxiu_lua_sm_login_nested_vo_depth2_probe,
+    build_fanxiu_lua_sm_login_nested_vo_probe,
     build_fanxiu_lua_packet_index,
 )
 from backend.core.fanxiu_protocol_semantics import load_fanxiu_protocol_semantics
@@ -881,6 +987,2409 @@ def test_fanxiu_lua_config_batch_report_indexes_tables(tmp_path):
     assert result["parsed_count"] == 1
     assert "Gongfa.lua" in tables_text
     assert "玄魔大法" in (export_root / "parsed_configs" / "Gongfa" / "rows.json").read_text(encoding="utf-8")
+
+
+def test_fanxiu_doupotd_catalog_links_partner_cards_and_skills(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    card_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupocardcompose_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    tower_dir.mkdir(parents=True)
+    card_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (tower_dir / "CharacterMainInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,positioning=3,icon=4,skillName=5,skillDes=6,sort=7}\n"
+        "local _key2null={[1]=0,[2]='',[3]='',[4]='',[5]='',[6]='',[7]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n"
+        "[1]='萧炎',\n"
+        "[2]='攻击范围：大  范围输出',\n"
+        "[3]='head_icon_9179',\n"
+        "[4]='破妄金光',\n"
+        "[5]='<color=#fead20>火掌</color>造成<color=#8de349>50%</color>伤害',\n"
+        "}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1],[3]=_A[2],[4]=_A[3],[5]=_A[4],[6]=_A[5],[7]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillShow.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partnerId=2,skillType=3,skillName=4,skillDes=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='火爆',\n[2]='爆炸造成<color=#8de349>600%</color>范围伤害',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=2,[4]=_A[1],[5]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillType=2,charId=3,level=4,damage=5,cd=6,timeLineId=7,buffId=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _B={[1]={2001}}\n"
+        "local _M={\n[1101]=setmetatable({[1]=1101,[2]=2,[3]=1,[4]=1,[5]=6000,[6]=12000,[7]=100001,[8]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "BuffEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,targetType=3,triggerType=4,duration=5,effType=6,addAttr=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=0,[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='ADD',[2]='ATTACK_DAMAGE_RATE:6000'}\n"
+        "local _M={\n[2001]=setmetatable({[1]=2001,[2]=9,[3]=3,[4]=_A[1],[5]=-1,[6]=1,[7]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDType.lua").write_text(
+        "local _M={}\n"
+        "_M.SkillBuffType={None=0,AddAttr=9}\n"
+        "_M.BuffLayerType={None=0,Add=1}\n"
+        "_M.BuffTargetType={None=0,Self=3}\n"
+        "_M.BuffPath={[_M.SkillBuffType.AddAttr]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffAddAttr\"}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffAddAttr.lua").write_text(
+        "local _M={}\nfunction _M.Start(self)\nself.OwnerView:AddAttr(self.BuffCfg.addAttr)\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillStrength.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,partnerId=2,qualityName=3,level=4,unlockDes=5,skillName=6,skillDes=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]='',[6]='',[7]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='凡品',\n[2]='31级解锁',\n[3]='技能强化++',\n[4]='技能伤害提升',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=_A[1],[4]=31,[5]=_A[2],[6]=_A[3],[7]=_A[4]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterLevel.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,charId=2,level=3,defaultSkill=4,attr=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=nil,[5]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _B={\n[1]={1001,1101},\n[2]={ATTACK=10000},\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=1,[4]=_B[1],[5]=_B[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "AttrName.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,charId=2,attr=3,attrName=4,attrTrans=5,ratio=6,sort=7,isShow=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]='',[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='VIOLENT_RATE',\n[2]='会心几率',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=_A[1],[4]=_A[2],[5]=10000,[6]=1,[7]=1,[8]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "ComposeType.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={quality=1,qualityName=2,sort=3}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='黄阶下品',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1],[3]=1},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "ComposeCard.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,charId=2,name=3,quality=4,star=5,showItem=6,attr=7}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=0,[5]=0,[6]=0,[7]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='凡品',\n}\n"
+        "local _B={\n[1]={VIOLENT_RATE=800},\n}\n"
+        "local _M={\n[1001]=setmetatable({[1]=1001,[2]=1,[3]=_A[1],[4]=1,[6]=29006,[7]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "DrawCard.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,sort=2,itemId=3,drawCard=4,reward=5}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='2#1001_2',\n[2]='item|29002_1',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=29002,[4]=_A[1],[5]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "ComposeProgress.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,progress=2,reward=3}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='item|29002_1',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=10,[3]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "ComposeCardQuality.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,quality=2,composeCard=3}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='2#1001_2',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (card_dir / "ComposeBook.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,quality=2,sort=3,cardId=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=1,[4]=1001},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    index_dir = export_root / "apk_static_index"
+    index_dir.mkdir(parents=True)
+    (index_dir / "lua_lscript_module_doupotd_buff_class_flow_classes.tsv").write_text(
+        "buff_class\tbuff_ids\tbuff_types\tsource_file\tfunction_count\tflow_step_count\tflow_categories\tflow_hint\n"
+        "DoupoTDBuffAddAttr\t2001\tAddAttr\tDoupoTDBuffAddAttr.lua\t1\t3\tentry|add_buff\t属性加成型：Start 读取 addAttr 并更新战斗属性。\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_buff_class_flow_functions.tsv").write_text(
+        "buff_class\tbuff_ids\tbuff_types\tfunction\tparams\tstart_line\tend_line\tstep_count\tcategories\tcalls\tadds_buff\tremoves_buff\tuses_random_gate\tuses_skill_filter\tuses_target_buff_check\tuses_friend_target_expansion\tsource_file\n"
+        "DoupoTDBuffAddAttr\t2001\tAddAttr\tStart\tself\t2\t4\t3\tentry|add_buff\tAddAttr\ttrue\tfalse\tfalse\tfalse\tfalse\tfalse\tDoupoTDBuffAddAttr.lua\n",
+        encoding="utf-8-sig",
+    )
+
+    result = build_fanxiu_doupotd_catalog(export_root=export_root)
+    assert result["stats"]["partner_count"] == 1
+    assert result["stats"]["compose_card_count"] == 1
+
+    searched = search_fanxiu_doupotd_partner_cards(query="火爆", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["name"] == "萧炎"
+
+    detail = get_fanxiu_doupotd_partner_card(1, export_root=export_root)["card"]
+    assert detail["skills"][0]["skill_name"] == "火爆"
+    assert detail["strengths"][0]["skill_name"] == "技能强化++"
+    assert detail["compose_cards"][0]["title"] == "黄阶下品·萧炎"
+    assert detail["compose_cards"][0]["attrs"][0]["text"] == "会心几率+8%"
+    assert detail["draw_sources"][0]["entries"][0]["chance_text"] == "100%"
+    assert detail["compose_quality_sources"][0]["quality_name"] == "黄阶下品"
+    assert detail["compose_progress_rewards"][0]["rewards"][0]["count"] == 1
+    assert detail["compose_book_entries"][0]["title"] == "黄阶下品·萧炎"
+    assert detail["logic_skills"][0]["runtime"]["timeline_ids"] == [100001]
+    assert detail["logic_skills"][0]["runtime"]["buffs"][0]["type_name"] == "AddAttr"
+    assert "uses_add_attr" in detail["logic_skills"][0]["runtime"]["buffs"][0]["semantic_flags"]
+    flow = detail["logic_skills"][0]["runtime"]["buffs"][0]["flow"]
+    assert flow["hint"].startswith("属性加成型")
+    assert flow["key_functions"][0]["name"] == "Start"
+
+
+def test_fanxiu_digitdoor_catalog_links_characters_enhances_doors_and_levels(tmp_path):
+    export_root = tmp_path / "exports"
+    config_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "digitdoor_mock" / "text_assets"
+    item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_mock" / "text_assets"
+    common_dir = export_root / "by_source" / "lscripts" / "lua_mock" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    config_dir.mkdir(parents=True)
+    item_dir.mkdir(parents=True)
+    common_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+
+    def write_config(path: Path, fields: list[str], rows: list[dict[str, object]]) -> None:
+        pool: list[str] = []
+
+        def value_expr(value: object) -> str:
+            if isinstance(value, str):
+                pool.append(value.replace("\\", "\\\\").replace("'", "\\'"))
+                return f"_A[{len(pool)}]"
+            if isinstance(value, list):
+                return "{" + ",".join(value_expr(item) for item in value) + "}"
+            return str(value)
+
+        key2index = ",".join(f"{field}={index}" for index, field in enumerate(fields, start=1))
+        key2null = ",".join(f"[{index}]=''" for index, _field in enumerate(fields, start=1))
+        key2type = ",".join(f"[{index}]=0" for index, _field in enumerate(fields, start=1))
+        row_lines = []
+        for row in rows:
+            row_id = row.get("_row_key", row.get("id", 1))
+            body = ",".join(
+                f"[{index}]={value_expr(row[field])}"
+                for index, field in enumerate(fields, start=1)
+                if field in row
+            )
+            row_lines.append(f"[{row_id}]=setmetatable({{{body}}},_P),")
+        pool_lines = [f"[{index}]='{value}'," for index, value in enumerate(pool, start=1)]
+        path.write_text(
+            "local c=require('Generate.Cfg.bean')\n"
+            f"local _key2index={{{key2index}}}\n"
+            f"local _key2null={{{key2null}}}\n"
+            f"local _key2type={{{key2type}}}\n"
+            "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+            "local _A={\n"
+            + "\n".join(pool_lines)
+            + "\n}\nlocal _M={\n"
+            + "\n".join(row_lines)
+            + "\n}\nreturn _M\n",
+            encoding="utf-8",
+        )
+
+    write_config(
+        config_dir / "CharacterMainInfo.lua",
+        ["id", "name", "positioning", "quality", "sort", "icon", "bigIcon", "headIcon", "skillName", "skillDes"],
+        [
+            {
+                "id": 1,
+                "name": "宇文拓",
+                "positioning": "后排、飞剑",
+                "quality": 7,
+                "sort": 1,
+                "icon": "npcicon_pic_0001",
+                "bigIcon": "hero_big",
+                "headIcon": "head_1",
+                "skillName": "飞剑术",
+                "skillDes": "<color=#fead20>飞剑术</color>造成<color=#8de349>300%</color>伤害",
+            }
+        ],
+    )
+    write_config(
+        config_dir / "CharacterLevel.lua",
+        ["id", "charId", "level", "cost", "defaultSkill", "defaultSkillEnhance", "ATTACK", "PVPATTACK", "MAXHP", "SKILL_DAMAGE"],
+        [
+            {"id": 1, "charId": 1, "level": 1, "cost": "Item|25001_20", "defaultSkill": [1001, 1101], "ATTACK": 100, "MAXHP": 1000},
+            {"id": 2, "charId": 1, "level": 30, "cost": "Item|25001_30", "defaultSkill": [1002, 1101], "defaultSkillEnhance": [1001], "ATTACK": 200, "MAXHP": 1500},
+        ],
+    )
+    write_config(
+        config_dir / "CharacterSkillInfo.lua",
+        ["id", "skillType", "charId", "skillGroup", "level", "timeLineId", "pvpTimeLineId", "cd", "damage", "duration", "range", "buffId"],
+        [
+            {"id": 1001, "skillType": 1, "charId": 1, "skillGroup": 1, "level": 1, "timeLineId": 7001, "pvpTimeLineId": 8001, "cd": 2000, "damage": 30000, "duration": 2000, "range": 20},
+            {"id": 1002, "skillType": 1, "charId": 1, "skillGroup": 1, "level": 30, "timeLineId": 7001, "pvpTimeLineId": 8001, "cd": 2000, "damage": 39000, "duration": 2000, "range": 20, "buffId": [9001]},
+        ],
+    )
+    write_config(
+        config_dir / "CharacterSkillShow.lua",
+        ["id", "partnerId", "belongId", "baseSkill", "levelShow", "skillTitle", "skillName", "skillDes", "skillIcon"],
+        [
+            {"id": 1001, "partnerId": 1, "belongId": 1, "baseSkill": 1, "levelShow": 1, "skillTitle": "飞剑术（神通）", "skillName": "飞剑术1阶", "skillDes": "造成<color=#8de349>300%</color>伤害", "skillIcon": "skill_1"},
+            {"id": 1002, "partnerId": 1, "belongId": 1, "baseSkill": 1, "levelShow": 30, "skillTitle": "飞剑术（神通）", "skillName": "飞剑术2阶", "skillDes": "造成<color=#8de349>390%</color>伤害", "skillIcon": "skill_1"},
+        ],
+    )
+    write_config(
+        config_dir / "BuffEffect.lua",
+        ["id", "type", "targetType", "triggerType", "duration", "damage", "addAttr", "shield", "timelineId"],
+        [{"id": 9001, "type": 9, "targetType": 3, "triggerType": "ADD", "duration": -1, "damage": 0, "addAttr": "ATTACK:3000", "shield": 0, "timelineId": 0}],
+    )
+    write_config(
+        config_dir / "SkillEnhance.lua",
+        ["id", "charId", "name", "type", "quality", "des", "condition", "effectId", "limit", "weight", "unlockShow", "bgIcon"],
+        [
+            {"id": 1000, "charId": 1, "name": "招募宇文拓", "type": 1, "quality": 7, "des": "解锁角色", "limit": 1, "weight": 5000},
+            {"id": 1001, "charId": 1, "name": "飞剑·破空", "type": 2, "quality": 4, "des": "飞剑伤害+60%", "condition": "PR|1000_1,TCLV|1_1_39", "effectId": 1001, "limit": 3, "weight": 3000, "unlockShow": "1002"},
+            {"id": 1002, "charId": 1, "name": "飞剑·分影", "type": 2, "quality": 5, "des": "飞剑数量+1", "condition": "PR|1001_1,MU|1003", "effectId": 1002, "limit": 1, "weight": 1000},
+        ],
+    )
+    write_config(
+        config_dir / "SkillEnhanceEffect.lua",
+        ["id", "skillType", "buffId", "charId", "skill", "extReleaseCount"],
+        [{"id": 1002, "skillType": 1, "buffId": 9001, "charId": 1, "skill": 1, "extReleaseCount": 1}],
+    )
+    write_config(
+        config_dir / "SkillRefreshEffect.lua",
+        ["id", "charId", "customizedType", "doorEffect", "doorType", "skill", "refreshWeights", "effectShow", "showTips", "putBack"],
+        [
+            {"id": 8, "charId": 1, "customizedType": 5, "doorEffect": "eff_door", "doorType": 1, "skill": [1001, 1002], "refreshWeights": 1, "effectShow": "神·觉醒", "showTips": "宇文拓获得神·觉醒", "putBack": "1"},
+            {"id": 10034, "charId": 0, "customizedType": 4, "doorEffect": "eff_debuff", "doorType": 2, "skill": [1002], "refreshWeights": 1, "effectShow": "攻击-5%", "showTips": "全体获得攻击-5%", "putBack": "1"},
+            {"id": 30001, "charId": 1, "customizedType": 6, "doorEffect": "eff_reset", "doorType": 2, "skill": [1001], "refreshWeights": 1, "effectShow": "重置绝招", "showTips": "宇文拓重置绝招", "putBack": "1"},
+        ],
+    )
+    write_config(
+        config_dir / "Level.lua",
+        ["id", "name", "stage", "group", "layer", "subLayer", "initChar", "recommendTips", "reward", "rewardShowTitle", "monster", "sceneId", "showImg", "type"],
+        [{"id": 1, "name": "第1关", "stage": 1, "group": 1, "layer": 1, "subLayer": 1, "initChar": 1, "recommendTips": "推荐宇文拓", "reward": ["Item|25001_20"], "rewardShowTitle": "通关得材料", "monster": [101], "sceneId": 89001, "showImg": 18017095, "type": 1}],
+    )
+    write_config(
+        config_dir / "DoorRefreshPoint.lua",
+        ["id", "level", "name", "side", "startRefreshTime", "doorType", "customizedType", "probabilityList", "debuffDoorType", "probability", "rateList", "spxDoorType", "doorDamage", "attack", "volume", "hp", "refreshOffsetDis"],
+        [{"id": 1110001, "level": 1, "name": "第1关", "side": 1, "startRefreshTime": 4, "doorType": 1, "customizedType": ["5"], "debuffDoorType": 4, "probability": 3000, "rateList": [6000, 4000], "spxDoorType": [4, 6], "doorDamage": 1000, "attack": 5, "volume": 130000, "hp": 36000, "refreshOffsetDis": 2}],
+    )
+    write_config(config_dir / "DigitDoorStage.lua", ["id", "name", "type"], [{"id": 10001, "name": "大圣降魔", "type": 1}])
+    write_config(
+        config_dir / "DigitDoorPreLevelReward.lua",
+        ["id", "name", "title", "rewardShow"],
+        [{"id": 1, "name": "盘丝洞", "title": "盘丝洞", "rewardShow": ["Item|18017095_1_7", "Item|3110171_-1_7"]}],
+    )
+    write_config(
+        config_dir / "MonsterInfo.lua",
+        ["id", "name", "type", "modelId", "des", "newDes", "unlockLevel", "sort"],
+        [{"id": 101, "name": "毒敌大将", "type": 1, "modelId": 130000, "des": "护盾防御", "newDes": "护盾防御", "unlockLevel": 1, "sort": 1}],
+    )
+    write_config(
+        config_dir / "MonsterSkill.lua",
+        ["id", "timeLineId", "cd", "damage", "type", "trigger", "releaseCount", "distance", "hitTime", "buffId"],
+        [
+            {"id": 1005, "timeLineId": 9002, "cd": 2000, "damage": 10000, "type": 1, "trigger": 4, "releaseCount": -1, "distance": 3, "hitTime": 500, "buffId": [9001]},
+            {"id": 1501, "timeLineId": 9003, "cd": 3000, "damage": 12000, "type": 2, "trigger": 4, "releaseCount": -1, "distance": 8, "hitTime": 600},
+        ],
+    )
+    write_config(
+        config_dir / "MonsterGroup.lua",
+        ["id", "textName", "restrained", "baseId", "type", "modelId", "speed", "moveStopDistance", "defaultSkill", "drops", "weight", "repel"],
+        [{"id": 101, "textName": "毒敌大将", "restrained": ["5_2000"], "baseId": 101, "type": 1, "modelId": 130000, "speed": 190000, "moveStopDistance": 260, "defaultSkill": "1501,1005", "drops": 1, "weight": 80, "repel": 2}],
+    )
+    write_config(
+        config_dir / "MonsterRefreshPoint.lua",
+        ["id", "level", "name", "refreshWave", "frontRow", "gameType", "monsterId", "ATTACK", "HP", "nextWaveCondition", "waveTime", "objectType", "refreshTotalNum", "refreshTime", "refreshNum", "refreshOffsetDis", "refreshType", "refreshPos", "moveType", "moveAngle", "startBubble", "endBubble", "bubbleCondition", "killExp"],
+        [
+            {"id": 1000, "level": 1, "name": "第1关", "refreshWave": 1, "gameType": 1, "nextWaveCondition": "CM|0", "objectType": 1, "refreshTime": 10},
+            {"id": 1001, "level": 1, "name": "第1关", "refreshWave": 2, "gameType": 1, "monsterId": 101, "ATTACK": 12, "HP": 34020, "nextWaveCondition": "CM|0", "waveTime": 8000, "objectType": 1, "refreshTotalNum": 5, "refreshTime": 500, "refreshNum": 2, "refreshOffsetDis": 10, "refreshType": 2, "refreshPos": [21, 168, 10, 171], "killExp": 1},
+        ],
+    )
+    (common_dir / "RewardType.lua").write_text(
+        "_M={}\n_M.ITEM=0\n_M.ExtraMark={Common=0,Faze=7,FirstGet=8}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (common_dir / "RewardResult.lua").write_text(
+        "function _M:Read(_os_)\n"
+        "self.type=_os_:ReadInt()\n"
+        "self.code=_os_:ReadInt()\n"
+        "self.amount=_os_:ReadLong()\n"
+        "self.extraMark=_os_:ReadInt()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (common_dir / "CostAndRewardMgr.lua").write_text(
+        "function _M.AddRewardResults(self,rewardResults,popType)\n"
+        "if reward.type==RewardType.ITEM then local itemCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_Item,reward.code) end\n"
+        "end\n"
+        "function _M.FormatStr2Reward(self,str,multiple)\n"
+        "local reward=_RewardResult.new()\n"
+        "reward.code=code\n"
+        "reward.type=RewardType.ITEM\n"
+        "reward.amount=tonumber(rewardArr1[1])*multiple\n"
+        "reward.extraMark=tonumber(rewardArr1[2]) or 0\n"
+        "return reward\nend\n",
+        encoding="utf-8",
+    )
+    (common_dir / "GameUtil.lua").write_text(
+        "function _M.GetItemIcon(str)\nlocal extraMark=idList[2]\nend\n"
+        "function _M.GetItemCfgByRewardTypeAndCode(rewardType,code)\n"
+        "if rewardType==RewardType.ITEM then return DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_Item,code) end\n"
+        "end\n"
+        "function _M.UpdateItemCornet(item,effName,effItemName,cornerRoot,cornerTxt,extraMark)\n"
+        "local cornerCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_ItemCorner,extraMark,true)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (item_dir / "ItemCorner.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,showType=2,name=3,effName=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='pre_eff_ui_zongmenqifu_paomadeng',\n[2]='',\n}\n"
+        "local _M={\n[7]=setmetatable({[1]=7,[2]=2,[3]=_A[2],[4]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (common_dir / "ItemType.lua").write_text(
+        "_M={}\n"
+        "_M.ItemCornerShowType={OnlyCorner=1,OnlyEff=2,CornerAndEff=3}\n"
+        "_M.ItemCornerType={DuanWu=23,PartnerExploreExtra=60}\n"
+        '_M.ItemExtraMarkUseType={effNameExtraMark="effNameExtraMark",effItemNameExtraMark="effItemNameExtraMark"}\n'
+        "return _M\n",
+        encoding="utf-8",
+    )
+    item_component_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "item_mock"
+        / "text_assets"
+    )
+    item_component_dir.mkdir(parents=True)
+    (item_component_dir / "RewardItem.lua").write_text(
+        "function _M.UpdateItemCorner(self,signText,extraMark)\n"
+        "GameUtil.UpdateItemCornet(self,ItemType.ItemExtraMarkUseType.effNameExtraMark,ItemType.ItemExtraMarkUseType.effItemNameExtraMark,self.limitImg,self.limitTF,extraMark)\n"
+        "end\n"
+        "function _M.UpdateItem(self,data)\n"
+        "self:UpdateItemCorner(signText,data.extraMark)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    resource_index_dir = export_root / "apk_static_index"
+    resource_index_dir.mkdir(parents=True, exist_ok=True)
+    (resource_index_dir / "resource_manifest_diff.tsv").write_text(
+        "status\tpath\tresource_size\tresource_md5\n"
+        "unchanged\tuieffect/pre_eff_ui_zongmenqifu_paomadeng.bytes\t5813\t269e0187169f102d93236fe9549c027f\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "protocol_catalog_canonical.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "10053\tRewardResult\tother\tcommon.reward.model.RewardResult\t8\ttype:Int, code:Int, amount:Long, content:Bean<BaseMessage>, mail:Bool, isFirstGet:Bool, additions:MessageMap2Dic, extraMark:Int\ttype:Int, code:Int, amount:Long, content:Bean, mail:Bool, isFirstGet:Bool, extraMark:Int\t0\t\t\t2\tRewardResult.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_digitdoor_catalog(export_root=export_root)
+    assert result["stats"]["character_count"] == 1
+    assert result["stats"]["enhance_count"] == 3
+    assert result["stats"]["skill_enhance_effect_count"] == 1
+    assert result["stats"]["door_refresh_count"] == 1
+    assert result["stats"]["door_skill_ref_unresolved_count"] == 0
+    assert result["stats"]["character_door_effect_count"] == 2
+    assert result["stats"]["global_door_effect_count"] == 1
+
+    runtime = load_fanxiu_digitdoor_runtime_index(export_root=export_root)
+    assert len(runtime["catalog"]["global_door_effects"]) == 1
+    assert runtime["catalog"]["global_door_effects"][0]["effect_show"] == "攻击-5%"
+    assert runtime["catalog"]["global_door_effects"][0]["skills"][0]["enhance_effect"]["buff"]["add_attr"] == "ATTACK:3000"
+    assert runtime["catalog"]["global_door_effects"][0]["effect_hint_preview"] == "攻击 +30% / 额外释放 +1"
+    door_effect_summary = (export_root / "parsed_configs" / "digitdoor_catalog" / "door_effect_summary.tsv").read_text(encoding="utf-8-sig")
+    assert "effect_hint_preview" in door_effect_summary
+    assert "攻击 +30% / 额外释放 +1" in door_effect_summary
+    door_effect_hint_calibration = (export_root / "parsed_configs" / "digitdoor_catalog" / "door_effect_hint_calibration.tsv").read_text(encoding="utf-8-sig")
+    assert "matched_show_percent" in door_effect_hint_calibration
+    assert "ATTACK:3000" in door_effect_hint_calibration
+    door_effect_hint_report = (export_root / "parsed_configs" / "digitdoor_catalog" / "door_effect_hint_calibration_report.md").read_text(encoding="utf-8")
+    assert "门效果数值提示校准" in door_effect_hint_report
+    assert "CM_DigitDoorRefDoor.resourceList" in door_effect_hint_report
+    condition_audit = (export_root / "parsed_configs" / "digitdoor_catalog" / "condition_field_audit.tsv").read_text(encoding="utf-8-sig")
+    assert "SkillRefreshEffect\tcondition" in condition_audit
+    assert "MonsterRefreshPoint\tnextWaveCondition" in condition_audit
+    assert "波长倒计时剩余 <= 0 秒" in condition_audit
+    condition_audit_report = (export_root / "parsed_configs" / "digitdoor_catalog" / "condition_field_audit_report.md").read_text(encoding="utf-8")
+    assert "DigitDoor condition field audit" in condition_audit_report
+    assert "`SkillRefreshEffect.condition`" in condition_audit_report
+    enhance_condition_nodes = (export_root / "parsed_configs" / "digitdoor_catalog" / "skill_enhance_condition_nodes.tsv").read_text(encoding="utf-8-sig")
+    assert "condition_text" in enhance_condition_nodes
+    assert "前置强化 1000 x1 + 角色等级区间 角色1 1-39" in enhance_condition_nodes
+    enhance_condition_edges = (export_root / "parsed_configs" / "digitdoor_catalog" / "skill_enhance_condition_edges.tsv").read_text(encoding="utf-8-sig")
+    assert "requires" in enhance_condition_edges
+    assert "mutex_with" in enhance_condition_edges
+    enhance_condition_report = (export_root / "parsed_configs" / "digitdoor_catalog" / "skill_enhance_condition_report.md").read_text(encoding="utf-8")
+    assert "SkillEnhance condition graph" in enhance_condition_report
+
+    searched = search_fanxiu_digitdoor_character_cards(query="飞剑", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["name"] == "宇文拓"
+    enhance_groups = search_fanxiu_digitdoor_enhance_groups(query="飞剑", export_root=export_root)
+    assert enhance_groups["total"] == 1
+    assert enhance_groups["items"][0]["name"] == "招募宇文拓"
+    enhance_group = get_fanxiu_digitdoor_enhance_group(1, export_root=export_root)["group"]
+    assert enhance_group["enhances"][1]["condition_raw"] == "PR|1000_1,TCLV|1_1_39"
+    assert enhance_group["enhances"][1]["prereqs"][0]["name"] == "招募宇文拓"
+
+    detail = get_fanxiu_digitdoor_character_card(1, export_root=export_root)["card"]
+    assert detail["skill_count"] == 2
+    assert detail["skills"][1]["runtime"]["damage_text"] == "390%"
+    assert detail["logic_skills"][1]["buffs"][0]["add_attr"] == "ATTACK:3000"
+    assert detail["skill_enhance_effect_count"] == 1
+    assert detail["skill_enhance_effects"][0]["buff"]["add_attr"] == "ATTACK:3000"
+    assert detail["door_effects"][0]["skills"][0]["skill_name"] == "飞剑术1阶"
+    assert detail["door_effects"][0]["skills"][1]["enhance_effect"]["ext_release_count"] == 1
+
+    logic_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "digitdoor_mock_logic" / "text_assets"
+    logic_dir.mkdir(parents=True)
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.SM_DigitDoorGamePlayerFun(self,msg)\n"
+        "DigitDoorMgr.Inst_get():DigitDoorExitGame(msg)\n"
+        "if msg.rewardResults then CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME) end\n"
+        "end\n"
+        "function _M.CM_DigitDoorGainBuffFun(buffList)\n"
+        "local CM_DigitDoorGainBuff=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorGainBuff)\n"
+        "CM_DigitDoorGainBuff.buffList=buffList\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorGainBuff)\n"
+        "end\n"
+        "function _M.SM_DigitDoorGainBuffFun(msg)\n"
+        "if msg.code==0 then\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorResultInfoView.lua").write_text(
+        "function _M.InitData(self,msg)\n"
+        "self.rewardResults=msg.rewardResults\n"
+        "CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME)\n"
+        "if msg.isSkipLevel then self:OpenReward(msg.rewardResults) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEntityMgr.lua").write_text(
+        "function _M.GetRefreshPointCfg(self,level,refreshWave)\n"
+        "local refreshPointCfg=DBMgr.Inst_get():GetConfigTable(ConfigName.DigitDoor_MonsterRefreshPoint)\n"
+        "self.refreshPointDict[v.level][v.refreshWave]:Add(v)\n"
+        "end\n"
+        "function _M.CheckStartBubble(self)\n"
+        "local cfg=list and list[0]\n"
+        "local startBubble=cfg and cfg.startBubble\n"
+        "if not StringProxy.IsNullOrEmpty(startBubble) and GameUtil.CheckCondition(cfg.bubbleCondition) then TalkMgr.Inst_get():AddTalkFromPlot(startBubble,function() end) end\n"
+        "end\n"
+        "function _M.CheckEndBubble(self,callback)\n"
+        "local cfg=list and list[0]\n"
+        "local endBubble=cfg and cfg.endBubble\n"
+        "if not StringProxy.IsNullOrEmpty(endBubble) and GameUtil.CheckCondition(cfg.bubbleCondition) then TalkMgr.Inst_get():AddTalkFromPlot(endBubble,callback) end\n"
+        "end\n"
+        "function _M.GetDoorRefreshPointCfg(self,level)\n"
+        "local doorRefreshPointCfg=DBMgr.Inst_get():GetConfigTable(ConfigName.DigitDoor_DoorRefreshPoint)\n"
+        "self.doorRefreshPointDict[v.level]:Add(v)\n"
+        "self.doorRefreshPointDictById[v.id]=v\n"
+        "end\n"
+        "function _M.UpdatePreCreateDoor(self,levelTime)\n"
+        "local list=self:GetDoorRefreshPointCfg(self.level)\n"
+        "if levelTime<v.startRefreshTime then return end\n"
+        "self.sendDoorList:Add(v.id)\n"
+        "DigitDoorMgr.Inst_get().NetLogic.CM_DigitDoorRefDoorFun(self.sendDoorList)\n"
+        "end\n"
+        "function _M.CreateDoor(self,msg)\n"
+        "self.createDoorList:AddRange(msg.doorVOS)\n"
+        "end\n"
+        "function _M.CheckCreateDoor(self)\n"
+        "local cfg=self.doorRefreshPointDictById[v.resourceId]\n"
+        "local buffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_SkillRefreshEffect,v.id)\n"
+        "local pos=self:GenerateDoorPosByType(cfg,v.side)\n"
+        "end\n"
+        "function _M.GenerateDoorPosByType(self,cfg,side)\n"
+        "local disZ=cfg.refreshOffsetDis\n"
+        "targetPos.x=side==DigitDoorType.DoorRefreshPosType.Left and 1.3 or 13.3\n"
+        "end\n"
+        "function _M.RefreshMonster(self,level,refreshWave)\n"
+        "local list=self:GetRefreshPointCfg(level,refreshWave)\n"
+        "DigitDoorMgr.Inst_get().NetLogic.CM_DigitDoorRefreshWaveFun(self.refreshWave)\n"
+        "self.curWaveBossInfoDict[self.refreshWave]={DDBossVo(id,hp)}\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBot.lua").write_text(
+        "function _M.InitData(self,cfg)\n"
+        "self.monsterdata=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_MonsterGroup,cfg.monsterId)\n"
+        "self.monsterBaseCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_MonsterInfo,self.monsterdata.baseId or 0)\n"
+        "self.isFront=cfg.frontRow and cfg.frontRow==1 or false\n"
+        "self.moveType=tonumber(cfg.moveType)\n"
+        "if self.moveType==DigitDoorType.MoveType.BrokenLine then local list=string.split(cfg.moveAngle,\",\") self.startMoveAngle=tonumber(list[1]) self.curMoveAngle=self.startMoveAngle end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBuffEffectData.lua").write_text(
+        "function _M.InitData(self,cfg,buffCfg)\n"
+        "self:SetDoorDamage(cfg.doorDamage or 0)\n"
+        "self:SetAttack(cfg.attack or 0)\n"
+        "self:SetVolume(cfg.volume or 0)\n"
+        "self:SetMaxHp(cfg.hp or 0)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBotView.lua").write_text(
+        "function _M.AddNormalAttack(self)\n"
+        "local skillStr=self.Entity.monsterdata.defaultSkill\n"
+        "local monsterSkillCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_MonsterSkill,skillId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorEffectType.lua").write_text(
+        'local _M={}\n'
+        '_M.SkillEffect={None=0,Start=1,Hit=2,End=3}\n'
+        '_M.EffectClass={AttackEffect="DigitDoorAttackAnimEffect",BotBulletEffect="DigitDoorBotBulletEffect"}\n'
+        '_M.AttachSkillStartType={Start_Hit=1}\n'
+        'return _M\n',
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorType.lua").write_text(
+        'local _M={}\n'
+        '_M.SkillBuffType={None=0,AddAttr=9,Shield=10}\n'
+        '_M.BuffTargetType={Self=1,Enemy=2,Partner=3}\n'
+        '_M.BuffTriggerType={ADD="ADD",HITTARGET="HITTARGET"}\n'
+        '[_M.SkillBuffType.None]="GameSystem.Game.DigitDoor.Core.Fight.SkillBuff.Base.DigitDoorBuffBase"\n'
+        '[_M.SkillBuffType.AddAttr]="GameSystem.Game.DigitDoor.Core.Fight.SkillBuff.DigitDoorBuffAddAttr"\n'
+        '[_M.SkillBuffType.Shield]="GameSystem.Game.DigitDoor.Core.Fight.SkillBuff.DigitDoorBuffShield"\n'
+        'return _M\n',
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBotSkillActor.lua").write_text(
+        "function _M.SkillCreator(self,skillId,skillCfg)\n"
+        "local skill=Skill.new(skillId,self.casterView)\n"
+        "skill:AddSkillEffectClassPath(skillCfg.timeLineId)\n"
+        "skill:InitSkillData(skillCfg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBotSkillData.lua").write_text(
+        "function _M.InitData(self,cfg)\n"
+        "self:SetDuration(cfg.duration and cfg.duration*0.001 or 0)\n"
+        "self:SetHitTime(cfg.hitTime or 0)\n"
+        "self:SetDamage(cfg.damage or 0)\n"
+        "self:SetSummonId(cfg.summonMonsterId or 0)\n"
+        "self:SetSummonHpPercent(cfg.summonHp and cfg.summonHp*0.0001 or 0)\n"
+        "end\n"
+        "function _M.GetHitTime(self)\nreturn self.hitTime\nend\n"
+        "function _M.GetDuration(self)\nreturn self.duration\nend\n"
+        "function _M.GetSummonId(self)\nreturn self.summonId\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorAddBuffData.lua").write_text(
+        "function _M.InitData(self,cfg)\n"
+        "self:SetExtCondition(cfg.extCondition and cfg.extCondition)\n"
+        "self:SetExtBuffValue(cfg.extBuffValue and cfg.extBuffValue)\n"
+        "end\n"
+        "function _M.GetExtCondition(self)\nreturn self.extCondition\nend\n"
+        "function _M.GetExtBuffValue(self)\nreturn self.extBuffValue\nend\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorAttackAnimEffect.lua").write_text(
+        "function _M.DoStart(self)\n"
+        "self.V_Data:SetHitTime(self.V_Skill.skillData:GetHitTime()*0.001)\n"
+        "self.V_Data:SetLifeTime(self.V_Skill.skillData:GetDuration())\n"
+        "self:PlayAnimation()\n"
+        "end\n"
+        "function _M.EffectUpdate(self,fTime,fDTime)\n"
+        "local casterView=self.V_Skill.casterView\n"
+        "local targetView=EntityMgr.Inst_get():GetDigitDoorPartnerView(self.V_Skill.targetId)\n"
+        "DigitDoorFightMgr.Inst_get().UserFightComponent:AddDamageResult(casterView,targetView,self.V_Skill)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBotBulletEffect.lua").write_text(
+        "function _M.DoStart(self,targetView)\n"
+        "if not targetView then return end\n"
+        "self.V_Data:SetLifeTime(self.V_Skill.skillData:GetDuration())\n"
+        "self:LoadEffect(targetView,function()\n"
+        "targetView:AddBuff(200001,self.V_Skill.casterView.Entity.V_ID,nil,self.V_Skill)\n"
+        "end)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (common_dir / "9002.lua").write_text(
+        'local EffectType=require"GameSystem.Game.DigitDoor.Core.Fight.SkillEffect.Const.DigitDoorEffectType"\n'
+        "local _M={\n"
+        "[EffectType.SkillEffect.Start]={{class=EffectType.EffectClass.AttackEffect,resPath=\"\",delay=0,time=-1}},\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (common_dir / "9003.lua").write_text(
+        'local EffectType=require"GameSystem.Game.DigitDoor.Core.Fight.SkillEffect.Const.DigitDoorEffectType"\n'
+        "local _M={\n"
+        "[EffectType.SkillEffect.Start]={{class=EffectType.EffectClass.BotBulletEffect,resPath=\"eff/poison\",delay=0,time=1000,audio=1001}},\n"
+        "[EffectType.SkillEffect.Hit]={{class=EffectType.EffectClass.AttackEffect,resPath=\"\",delay=500,time=-1}},\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+
+    level_search = search_fanxiu_digitdoor_level_configs(query="材料", export_root=export_root)
+    assert level_search["total"] == 1
+    assert level_search["items"][0]["reward_preview"] == "25001x20"
+    assert level_search["stage_options"][0]["name"] == "盘丝洞"
+
+    level_detail = get_fanxiu_digitdoor_level_config(1, export_root=export_root)
+    assert level_detail["item"]["name_plain"] == "第1关"
+    assert level_detail["item"]["door_count"] == 1
+    assert level_detail["stage"]["name_plain"] == "盘丝洞"
+    assert level_detail["item"]["reward_items"][0]["reward_result"]["runtime_reward_type_name"] == "ITEM"
+    assert level_detail["stage"]["reward_items"][0]["reward_result"]["extra_mark_eff_name"] == "pre_eff_ui_zongmenqifu_paomadeng"
+    assert level_detail["item"]["door_refresh"]["summary"]["point_count"] == 1
+    assert "角色专属：神·觉醒" in level_detail["item"]["door_refresh"]["summary"]["pool_semantic_preview"]
+    assert level_detail["item"]["door_refresh"]["summary"]["effect_pool_count"] == 3
+    assert level_detail["item"]["door_refresh"]["points"][0]["timing_projection"] == "开局 4 秒后进入候选刷门列表"
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_pool_preview"] == "神·觉醒"
+    assert level_detail["item"]["door_refresh"]["points"][0]["pool_semantic_text"] == "角色专属：神·觉醒"
+    door_effect_pools = {str(row["customized_type"]): row for row in level_detail["item"]["door_refresh"]["effect_pools"]}
+    assert door_effect_pools["5"]["semantic_label"] == "角色专属：神·觉醒"
+    assert door_effect_pools["5"]["refresh_weight_summary"] == "1x1"
+    assert door_effect_pools["5"]["put_back_summary"] == "1x1"
+    assert door_effect_pools["5"]["effect_options"][0]["char_name"] == "宇文拓"
+    assert door_effect_pools["5"]["effect_options"][0]["refresh_weights"] == 1
+    assert door_effect_pools["5"]["effect_options"][0]["put_back"] == "1"
+    assert door_effect_pools["4"]["effect_options"][0]["effect_show"] == "攻击-5%"
+    assert "攻击 +30%" in door_effect_pools["4"]["effect_options"][0]["effect_hint_preview"]
+    assert set(door_effect_pools["4"]["source_fields"]) == {"debuffDoorType", "spxDoorType"}
+    assert door_effect_pools["6"]["semantic_label"] == "特殊替换：重置绝招"
+    assert door_effect_pools["6"]["effect_options"][0]["effect_show"] == "重置绝招"
+    assert "宇文拓 · 神·觉醒 · 2 技能" in level_detail["item"]["door_refresh"]["summary"]["effect_option_preview"]
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["effect_id"] == 8
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["char_name"] == "宇文拓"
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["effect_show"] == "神·觉醒"
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["skill_ids"] == [1001, 1002]
+    assert "飞剑术1阶" in level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["skill_names"]
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_options"][0]["effect_hints"] == ["攻击 +30%", "额外释放 +1"]
+    assert level_detail["item"]["door_refresh"]["points"][0]["effect_option_preview"] == "宇文拓 · 神·觉醒 · 2 技能"
+    assert "spxDoorType:特殊替换：重置绝招" in level_detail["item"]["door_refresh"]["points"][0]["replacement_pool_semantic_text"]
+    assert "特殊池触发 30%" in level_detail["item"]["door_refresh"]["points"][0]["special_rule_text"]
+    assert "特殊替换：重置绝招 40%" in level_detail["item"]["door_refresh"]["points"][0]["special_rule_text"]
+    assert level_detail["item"]["door_refresh"]["points"][0]["special_rules"][1]["trigger_probability_text"] == "30%"
+    assert level_detail["item"]["door_refresh"]["points"][0]["special_rules"][0]["effect_options"][0]["effect_show"] == "攻击-5%"
+    assert level_detail["item"]["door_refresh"]["points"][0]["special_rules"][1]["options"][1]["effect_options"][0]["effect_show"] == "重置绝招"
+    assert level_detail["item"]["door_refresh"]["points"][0]["special_rules"][1]["options"][1]["effect_options"][0]["char_name"] == "宇文拓"
+    assert "特殊池触发字段" in level_detail["item"]["door_refresh"]["points"][0]["special_rule_projection"]
+    assert level_detail["item"]["monster_refresh"]["summary"]["wave_count"] == "2"
+    assert any(point["monster_name"] == "毒敌大将" for point in level_detail["item"]["monster_refresh"]["points"])
+    refresh_point = next(point for point in level_detail["item"]["monster_refresh"]["points"] if point["id"] == "1001")
+    assert any(row["field"] == "refreshTime" and row["projection"] == "刷新间隔 0.5 秒" for row in refresh_point["value_projections"])
+    assert any(row["field"] == "nextWaveCondition" and "波长倒计时剩余" in row["projection"] for row in refresh_point["value_projections"])
+    assert any(row["field"] == "refreshPos" and "minX=21" in row["projection"] for row in refresh_point["value_projections"])
+    assert any(row["field"] == "ATTACK" and row["projection"] == "攻击 12" for row in refresh_point["attribute_projections"])
+    assert any(row["field"] == "HP" and row["projection"] == "生命 34020" for row in refresh_point["attribute_projections"])
+    assert level_detail["item"]["monster_refresh"]["monsters"][0]["default_skill_ids"] == "1501,1005"
+    assert level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["id"] == "1501"
+    assert any(skill["type_name"] == "NormalAttack" for skill in level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"])
+    assert level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["trigger_name"] == "DistanceBetween"
+    assert any(row["field"] == "damage" and row["projection"] == "120% 基础伤害/技能伤害系数" for row in level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["value_projections"])
+    assert level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["timeline_effect"]["effect_classes"] == [
+        "DigitDoorBotBulletEffect",
+        "DigitDoorAttackAnimEffect",
+    ]
+    timeline_flows = level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["timeline_effect"]["class_flows"]
+    assert any("伤害结算" in flow["flow_labels"] for flow in timeline_flows)
+    assert any("加Buff" in flow["flow_labels"] for flow in timeline_flows)
+    timeline_accessors = level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"][0]["timeline_effect"]["skill_data_accessors"]
+    assert any(accessor["accessor"] == "GetHitTime" and accessor["config_field"] == "hitTime" for accessor in timeline_accessors)
+    shield_skill = next(skill for skill in level_detail["item"]["monster_refresh"]["monsters"][0]["default_skills"] if skill["id"] == "1005")
+    assert shield_skill["buff_effects"][0]["buff_type_name"] == "AddAttr"
+    assert shield_skill["buff_effects"][0]["add_attr"] == "ATTACK:3000"
+    assert any(row["field"] == "addAttr" and row["projection"] == "ATTACK +30%" for row in shield_skill["buff_effects"][0]["formula_projections"])
+    assert any(skill["damage"] == "10000" for skill in level_detail["item"]["monster_refresh"]["skills"])
+
+    reward_result = build_fanxiu_digitdoor_reward_result_resolution_probe(export_root=export_root)
+    assert reward_result["stats"]["static_reward_item_count"] == 3
+    assert reward_result["stats"]["level_reward_item_count"] == 1
+    assert reward_result["stats"]["prelevel_reward_item_count"] == 2
+    assert reward_result["stats"]["nonzero_extra_mark_row_count"] == 2
+    assert reward_result["stats"]["negative_amount_row_count"] == 1
+    assert reward_result["verdict"]["static_reward_string_shape_matches_reward_result"] is True
+    assert reward_result["verdict"]["item_reward_type_resolves_code_to_item_table"] is True
+    assert reward_result["verdict"]["server_result_boundary_remains_gameplayer_reward_results"] is True
+    reward_result_text = Path(reward_result["files"]["items"]).read_text(encoding="utf-8-sig")
+    assert "RewardType.ITEM(0) => ConfigName.Item_Item[code]" in reward_result_text
+    assert "pre_eff_ui_zongmenqifu_paomadeng" in reward_result_text
+    assert "3110171" in reward_result_text
+
+    marker_result = build_fanxiu_digitdoor_reward_marker_semantics_probe(export_root=export_root)
+    assert marker_result["stats"]["extra_mark_rows"] == 2
+    assert marker_result["stats"]["negative_amount_rows"] == 1
+    assert marker_result["verdict"]["negative_amount_rows_are_preview_rows"] is True
+    assert marker_result["verdict"]["negative_amount_rows_all_have_extra_mark"] is True
+    marker_text = Path(marker_result["files"]["markdown"]).read_text(encoding="utf-8")
+    marker_summary = Path(marker_result["files"]["summary"]).read_text(encoding="utf-8-sig")
+    assert "preview" in marker_text
+    assert "\n3110171\t" in marker_summary
+
+    marker_ui_result = build_fanxiu_digitdoor_reward_marker_ui_probe(export_root=export_root)
+    assert marker_ui_result["stats"]["item_corner_7_show_type"] == 2
+    assert marker_ui_result["verdict"]["item_corner_7_config_resolved"] is True
+    assert marker_ui_result["verdict"]["item_corner_7_is_effect_only"] is True
+    assert marker_ui_result["verdict"]["reward_item_consumes_data_extra_mark_for_display"] is True
+    assert marker_ui_result["verdict"]["display_uses_item_corner_config_not_quantity"] is True
+    assert marker_ui_result["verdict"]["effect_asset_present"] is True
+    marker_ui_text = Path(marker_ui_result["files"]["markdown"]).read_text(encoding="utf-8")
+    marker_ui_flow = Path(marker_ui_result["files"]["flow"]).read_text(encoding="utf-8-sig")
+    assert "ItemCorner#7" in marker_ui_text
+    assert "OnlyEff" in marker_ui_text
+    assert "RewardItem.lua" in marker_ui_flow
+
+    door_refresh = build_fanxiu_digitdoor_door_refresh_projection_probe(export_root=export_root)
+    assert door_refresh["confirmed"] is True
+    assert door_refresh["stats"]["door_refresh_point_count"] == 1
+    assert door_refresh["stats"]["special_rule_row_count"] == 1
+    assert door_refresh["stats"]["effect_pool_linked_row_count"] == 1
+    assert door_refresh["verdict"]["pre_create_request_found"] is True
+    assert door_refresh["verdict"]["server_create_response_found"] is True
+    door_refresh_text = Path(door_refresh["files"]["projections"]).read_text(encoding="utf-8-sig")
+    assert "开局 4 秒后进入候选刷门列表" in door_refresh_text
+    assert "神·觉醒" in door_refresh_text
+    assert "负面门池 customizedType=4" in door_refresh_text
+
+    monster_refresh = build_fanxiu_digitdoor_monster_refresh_probe(export_root=export_root)
+    assert monster_refresh["confirmed"] is True
+    assert monster_refresh["stats"]["monster_refresh_point_count"] == 2
+    assert monster_refresh["stats"]["monster_refresh_rows_with_monster_id"] == 1
+    assert monster_refresh["stats"]["monster_group_count"] == 1
+    assert monster_refresh["stats"]["monster_skill_count"] == 2
+    assert monster_refresh["verdict"]["refresh_monster_ids_resolve_monster_group"] is True
+    assert monster_refresh["verdict"]["monster_default_skills_resolve_monster_skill"] is True
+    assert monster_refresh["verdict"]["runtime_uses_monster_refresh_point_by_level_wave"] is True
+    monster_refresh_report = Path(monster_refresh["files"]["markdown"]).read_text(encoding="utf-8")
+    monster_refresh_points = Path(monster_refresh["files"]["refresh_points"]).read_text(encoding="utf-8-sig")
+    monster_refresh_skills = Path(monster_refresh["files"]["skills"]).read_text(encoding="utf-8-sig")
+    assert "MonsterRefreshPoint.level + refreshWave" in monster_refresh_report
+    assert "毒敌大将" in monster_refresh_points
+    assert "1501" in monster_refresh_skills
+    assert "DistanceBetween" in monster_refresh_skills
+
+    refresh_point_values = build_fanxiu_digitdoor_monster_refresh_point_value_projection_probe(export_root=export_root)
+    assert refresh_point_values["confirmed"] is True
+    assert refresh_point_values["stats"]["monster_refresh_point_count"] == 2
+    assert refresh_point_values["stats"]["projection_field_counts"]["refreshTime"] == 2
+    assert refresh_point_values["stats"]["projection_field_counts"]["refreshPos"] == 1
+    assert refresh_point_values["stats"]["projection_field_counts"]["objectType"] == 2
+    refresh_point_projection_text = Path(refresh_point_values["files"]["projections"]).read_text(encoding="utf-8-sig")
+    assert "刷新间隔 0.5 秒" in refresh_point_projection_text
+    assert "波长 8 秒" in refresh_point_projection_text
+    assert "波长倒计时剩余 <= 0 秒" in refresh_point_projection_text
+    assert "区域参数 minX=21, minZ=168, maxX=10, maxZ=171" in refresh_point_projection_text
+
+    refresh_point_attrs = build_fanxiu_digitdoor_monster_refresh_point_attribute_projection_probe(export_root=export_root)
+    assert refresh_point_attrs["confirmed"] is True
+    assert refresh_point_attrs["stats"]["monster_refresh_point_count"] == 2
+    assert refresh_point_attrs["stats"]["projection_field_counts"]["ATTACK"] == 1
+    assert refresh_point_attrs["stats"]["projection_field_counts"]["HP"] == 1
+    assert refresh_point_attrs["stats"]["projection_field_counts"]["killExp"] == 1
+    assert refresh_point_attrs["verdict"]["only_attack_hp_nonzero_in_current_surface"] is False
+    refresh_point_attr_text = Path(refresh_point_attrs["files"]["projections"]).read_text(encoding="utf-8-sig")
+    refresh_point_attr_fields = Path(refresh_point_attrs["files"]["field_summary"]).read_text(encoding="utf-8-sig")
+    assert "攻击 12" in refresh_point_attr_text
+    assert "生命 34020" in refresh_point_attr_text
+    assert "CRITICAL\tcritical\t暴击\t0" in refresh_point_attr_fields
+
+    refresh_point_latent = build_fanxiu_digitdoor_monster_refresh_point_latent_field_probe(export_root=export_root)
+    assert refresh_point_latent["confirmed"] is True
+    assert refresh_point_latent["stats"]["monster_refresh_point_count"] == 2
+    assert refresh_point_latent["stats"]["latent_fields_with_values"] == 0
+    assert refresh_point_latent["verdict"]["latent_fields_empty_in_current_surface"] is True
+    latent_fields_text = Path(refresh_point_latent["files"]["fields"]).read_text(encoding="utf-8-sig")
+    latent_hits_text = Path(refresh_point_latent["files"]["lua_hits"]).read_text(encoding="utf-8-sig")
+    assert "frontRow\tTrue\t2\t0" in latent_fields_text
+    assert "moveType\tTrue\t2\t0" in latent_fields_text
+    assert "bubbleCondition\tTrue\t2\t0" in latent_fields_text
+    assert "front_row" in latent_hits_text
+    assert "bubble_start" in latent_hits_text
+
+    monster_timeline = build_fanxiu_digitdoor_monster_skill_timeline_probe(export_root=export_root)
+    assert monster_timeline["confirmed"] is True
+    assert monster_timeline["stats"]["monster_skill_row_count"] == 2
+    assert monster_timeline["stats"]["timeline_found_count"] == 2
+    assert monster_timeline["verdict"]["all_monster_skill_timelines_have_digitdoor_config"] is True
+    timeline_report = Path(monster_timeline["files"]["markdown"]).read_text(encoding="utf-8")
+    timeline_links = Path(monster_timeline["files"]["skill_links"]).read_text(encoding="utf-8-sig")
+    assert "MonsterSkill.timeLineId" in timeline_report
+    assert "DigitDoorBotBulletEffect" in timeline_links
+
+    monster_effect_flow = build_fanxiu_digitdoor_monster_effect_class_flow_probe(export_root=export_root)
+    assert monster_effect_flow["confirmed"] is True
+    assert monster_effect_flow["stats"]["selected_class_count"] == 2
+    assert monster_effect_flow["stats"]["classes_with_damage_result"] == 1
+    assert monster_effect_flow["stats"]["classes_with_add_buff"] == 1
+    effect_flow_report = Path(monster_effect_flow["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "命中伤害型" in effect_flow_report
+    assert "加 Buff 型" in effect_flow_report
+
+    monster_skill_accessors = build_fanxiu_digitdoor_monster_skill_data_accessor_probe(export_root=export_root)
+    assert monster_skill_accessors["confirmed"] is True
+    assert monster_skill_accessors["stats"]["used_accessor_count"] >= 2
+    accessor_report = Path(monster_skill_accessors["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "GetHitTime" in accessor_report
+    assert "hitTime" in accessor_report
+    assert "DigitDoorBotSkillData" in accessor_report
+
+    monster_skill_values = build_fanxiu_digitdoor_monster_skill_value_projection_probe(export_root=export_root)
+    assert monster_skill_values["confirmed"] is True
+    assert monster_skill_values["stats"]["monster_skill_row_count"] == 2
+    assert monster_skill_values["stats"]["projection_field_counts"]["damage"] == 2
+    value_projection_text = Path(monster_skill_values["files"]["projections"]).read_text(encoding="utf-8-sig")
+    assert "120% 基础伤害/技能伤害系数" in value_projection_text
+    assert "冷却 3 秒" in value_projection_text
+
+    monster_skill_buff_links = build_fanxiu_digitdoor_monster_skill_buff_link_probe(export_root=export_root)
+    assert monster_skill_buff_links["confirmed"] is True
+    assert monster_skill_buff_links["stats"]["skills_with_buff_id"] == 1
+    assert monster_skill_buff_links["stats"]["unique_buff_ref_count"] == 1
+    buff_link_report = Path(monster_skill_buff_links["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "MonsterSkill.buffId" in buff_link_report
+    assert "DigitDoorBuffAddAttr" in buff_link_report
+
+    monster_skill_buff_formula = build_fanxiu_digitdoor_monster_skill_buff_formula_probe(export_root=export_root)
+    assert monster_skill_buff_formula["confirmed"] is True
+    assert monster_skill_buff_formula["stats"]["linked_buff_count"] == 1
+    assert monster_skill_buff_formula["stats"]["projection_field_counts"]["addAttr"] == 1
+    formula_projection_text = Path(monster_skill_buff_formula["files"]["projections"]).read_text(encoding="utf-8-sig")
+    assert "ATTACK +30%" in formula_projection_text
+
+    catalog = json.loads((export_root / "parsed_configs" / "digitdoor_catalog" / "digitdoor_catalog.json").read_text(encoding="utf-8"))
+    enhance_group = catalog["custom_enhance_groups"][0]
+    assert enhance_group["enhances"][1]["prereqs"][0]["name"] == "招募宇文拓"
+    assert enhance_group["enhances"][1]["level_ranges"] == [{"char_id": 1, "min_level": 1, "max_level": 39}]
+    assert catalog["levels"][0]["door_count"] == 1
+    assert catalog["levels"][0]["reward_items"][0]["text"] == "25001x20"
+
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.UpdateRoleSkillAttrList(self,id)\n"
+        "self.V_RoleSkillEnhanceEffList=self.V_RoleSkillEnhanceEffList or{}\n"
+        "end\n"
+        "function _M.GetRoleAllSkillEnhanceEffectList(self)\n"
+        "return self.V_RoleSkillEnhanceEffList\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.UpdateDigitDoorSkillInBattle(self)\n"
+        "local roleSkillAttrList=DigitDoorMgr.Inst_get().Model:GetRoleAllSkillEnhanceEffectList()\n"
+        "local buffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_SkillRefreshEffect,id)\n"
+        "local skillCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.DigitDoor_SkillEnhanceEffect,v)\n"
+        "casterView.SkillActor:UpdateSkill(skillCfg)\n"
+        "end\n"
+        "function _M.UpdateSkillEffect(self,enhanceEffectId,loopCount,casterView)\n"
+        "self:UpdateSkillCD(effectCfg.extCd)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBuffEffectView.lua").write_text(
+        "function _M.UpdateMove(self,fTime,fDTime)\n"
+        "if DigitDoorEntityMgr.Inst_get():CheckMutualExclusion(self.Entity:GetCfgData()) then return end\n"
+        "if self:CheckPartnerCollision(self.Entity.V_GridPosition,width,height) then self.isTouchDead=true self:StartDead() end\n"
+        "end\n"
+        "function _M.StartDead(self)\n"
+        "if self.isTouchDead then DigitDoorEntityMgr.Inst_get():RecordCollisionDoor(self.Entity:GetCfgData()) end\n"
+        "local buffCfg=self.Entity:GetBuffCfgData()\n"
+        "DigitDoorMgr.Inst_get().Model:UpdateRoleSkillAttrList(buffCfg.id)\n"
+        "end\n"
+        "function _M.DeadEnd(self)\n"
+        "local buffCfg=self.Entity:GetBuffCfgData()\n"
+        "local sendList=CList.new()\n"
+        "sendList:Add(buffCfg.id)\n"
+        "DigitDoorMgr.Inst_get().NetLogic.CM_DigitDoorGainBuffFun(sendList)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    door_gain_buff = build_fanxiu_digitdoor_door_gain_buff_flow_probe(export_root=export_root)
+    assert door_gain_buff["confirmed"] is True
+    assert door_gain_buff["stats"]["skill_refresh_effect_count"] == 3
+    assert door_gain_buff["stats"]["door_refresh_point_count"] == 1
+    assert door_gain_buff["stats"]["effects_with_skill_count"] == 3
+    assert door_gain_buff["verdict"]["local_counter_found"] is True
+    assert door_gain_buff["verdict"]["battle_apply_found"] is True
+    assert door_gain_buff["verdict"]["gain_buff_claim_send_found"] is True
+    assert door_gain_buff["verdict"]["sm_gain_buff_ack_is_thin"] is True
+    door_gain_buff_text = Path(door_gain_buff["files"]["markdown"]).read_text(encoding="utf-8")
+    door_gain_buff_effects = Path(door_gain_buff["files"]["effects"]).read_text(encoding="utf-8-sig")
+    assert "UpdateRoleSkillAttrList" in door_gain_buff_text
+    assert "SM_DigitDoorGainBuff" in door_gain_buff_text
+    assert "神·觉醒" in door_gain_buff_effects
+
+    door_type_semantics = build_fanxiu_digitdoor_door_customized_type_semantics_probe(export_root=export_root)
+    assert door_type_semantics["confirmed"] is True
+    assert door_type_semantics["stats"]["customized_type_count"] == 3
+    assert door_type_semantics["verdict"]["lua_enum_is_partial"] is True
+    assert door_type_semantics["verdict"]["special_replacement_pool_found"] is True
+    door_type_text = Path(door_type_semantics["files"]["markdown"]).read_text(encoding="utf-8")
+    door_type_rows = Path(door_type_semantics["files"]["types"]).read_text(encoding="utf-8-sig")
+    assert "角色专属：神·觉醒" in door_type_text
+    assert "特殊替换：重置绝招" in door_type_rows
+    assert "DoorRefreshPoint.spxDoorType" in door_type_rows
+
+    (logic_dir / "DigitDoorBaseSkill.lua").write_text(
+        "function _M.UpdateStrengthEffect(self,effectStrengthCfg)\n"
+        "if effectStrengthCfg.mutexTimeline>0 then self:AddSkillEffectClassPath(effectStrengthCfg.mutexTimeline) end\n"
+        "self:AddBuffData(effectStrengthCfg.buffId)\n"
+        "self.skillData:ModifyData(effectStrengthCfg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorSkillData.lua").write_text(
+        "function _M.ModifyData(self,updateData)\n"
+        "local addPenetrate=updateData.extPenetrate and updateData.extPenetrate or 0\n"
+        "self:SetExtReleaseCount((updateData.extReleaseCount or 0)+self:GetExtReleaseCount())\n"
+        "self:SetDefaultPenetrateNum(self:GetDefaultPenetrateNum()+addPenetrate)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFocusLaserData.lua").write_text(
+        "function _M.ModifyData(self,updateData)\n"
+        "self:SetExtHitNum(updateData.extHitNum and updateData.extHitNum+self:GetExtHitNum() or self:GetExtHitNum())\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorParabolaData.lua").write_text(
+        "function _M.ModifyData(self,updateData)\n"
+        "self:SetExtAtkDistance(updateData.extAtkDistance and updateData.extAtkDistance+self:GetExtAtkDistance() or self:GetExtAtkDistance())\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorSkillActor.lua").write_text(
+        "function _M.ReleaseSkill(self,skillId)\n"
+        "local extReleaseCount=runtimeSkill.skillData:GetExtReleaseCount()\n"
+        "runtimeSkill:Start(extReleaseCount,callback)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    usage_result = build_fanxiu_digitdoor_skill_enhance_effect_usage_probe(export_root=export_root)
+    assert usage_result["confirmed"] is True
+    assert usage_result["counts"]["config_effect_rows"] == 1
+    assert usage_result["counts"]["fields"]["buff_id"] == 1
+    assert usage_result["counts"]["fields"]["ext_release_count"] == 1
+    report_text = (export_root / "parsed_configs" / "digitdoor_catalog" / "skill_enhance_effect_usage_report.md").read_text(encoding="utf-8")
+    fields_text = (export_root / "parsed_configs" / "digitdoor_catalog" / "skill_enhance_effect_usage_fields.tsv").read_text(encoding="utf-8-sig")
+    assert "SkillRefreshEffect.skill" in report_text
+    assert "ext_release_count" in fields_text
+
+    (logic_dir / "DigitDoorData.lua").write_text(
+        "function _M.DigitDoorReadyFright(self,msg)\n"
+        "self:SetCouncilSkill2lvMap(msg.skillList)\n"
+        "end\n"
+        "function _M.SetCouncilSkill2lvMap(self,skillList)\n"
+        "self.V_CouncilSkillList=skillList\n"
+        "end\n"
+        "function _M.GetCouncilSkillList(self)\n"
+        "return self.V_CouncilSkillList\n"
+        "end\n"
+        "function _M.GetCouncilSkillCfgById(self,skillCfgId)\n"
+        "local cfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.DigitDoor_CharacterSkillInfo,skillCfgId)\n"
+        "return cfg\n"
+        "end\n"
+        "function _M.GetSkillName(self,skillId)\n"
+        "local skillCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_SkillEnhance,skillId)\n"
+        "return skillCfg.name\n"
+        "end\n"
+        "function _M.GetSkillNameList(self,skillList)\n"
+        "local skillCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_SkillEnhance,info.id)\n"
+        "local lv=info.value\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    application_result = build_fanxiu_digitdoor_skill_enhance_application_probe(export_root=export_root)
+    assert application_result["confirmed"] is True
+    assert application_result["stats"]["enhance_count"] == 3
+    assert application_result["stats"]["effect_id_non_empty_count"] == 2
+    assert application_result["stats"]["effect_id_direct_effect_match_count"] == 1
+    assert application_result["stats"]["effect_id_no_direct_effect_match_count"] == 1
+    assert application_result["verdict"]["visible_skill_enhance_effect_id_reader_found"] is False
+    application_report = Path(application_result["files"]["markdown"]).read_text(encoding="utf-8")
+    application_nodes = Path(application_result["files"]["nodes"]).read_text(encoding="utf-8-sig")
+    assert "SkillEnhance application boundary" in application_report
+    assert "effectId 未直接命中" in application_nodes
+    assert "effectId 直接命中" in application_nodes
+
+    namespace_result = build_fanxiu_digitdoor_skill_enhance_effect_id_namespace_probe(export_root=export_root)
+    assert namespace_result["confirmed"] is True
+    assert namespace_result["stats"]["effect_id_row_count"] == 2
+    assert namespace_result["stats"]["direct_skill_enhance_effect_count"] == 1
+    assert namespace_result["stats"]["character_skill_candidate_count"] == 1
+    namespace_report = Path(namespace_result["files"]["markdown"]).read_text(encoding="utf-8")
+    namespace_rows = Path(namespace_result["files"]["rows"]).read_text(encoding="utf-8-sig")
+    assert "effectId namespace audit" in namespace_report
+    assert "direct_skill_enhance_effect" in namespace_rows
+    assert "character_skill_candidate" in namespace_rows
+
+    (logic_dir / "DigitDoorModel.lua").write_text(
+        "function _M.GetCouncilSkillList(self)\n"
+        "return self.DigitDoorData:GetCouncilSkillList()\n"
+        "end\n"
+        "function _M.GetCouncilSkillById(self,skillId)\n"
+        "return self.DigitDoorData:GetCouncilSkillCfgById(skillId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        "function _M.GetCharacterSkillInfo(self,charId)\n"
+        "local skillList={1001,2001,3001,4001,5001}\n"
+        "for _,skillId in Cipairs(skillList)do\n"
+        "local skillCfg=DigitDoorMgr.Inst_get().Model:GetCouncilSkillById(skillId)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    message_dir.mkdir(parents=True, exist_ok=True)
+    (message_dir / "SM_DigitDoorReadyFight.lua").write_text(
+        "function _M.ctor(self)\n"
+        "self.skillList=CList.new()\n"
+        "self.indexList=CList.new()\n"
+        "end\n"
+        "function _M.read(self)\n"
+        "self:readMessageList2List(self.skillList)\n"
+        "self:readMessageList2List(self.indexList)\n"
+        "end\n"
+        "function _M.write(self)\n"
+        "self:writeIntList(self.skillList)\n"
+        "self:writeList(self.indexList)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorReadyFight.lua").write_text(
+        "function _M.ctor(self)\n"
+        "self.levelId=0\n"
+        "end\n"
+        "function _M.read(self)\n"
+        "self.levelId=self:readInt()\n"
+        "end\n"
+        "function _M.write(self)\n"
+        "self:writeInt(self.levelId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDSkillVo.lua").write_text(
+        "function _M.getId(self)\n"
+        "return 91604\n"
+        "end\n"
+        "function _M.ctor(self)\n"
+        "self.id=0\n"
+        "self.num=0\n"
+        "end\n"
+        "function _M.reading(self)\n"
+        "self.id=self:readInt()\n"
+        "self.num=self:readInt()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DDFightPartnerVO.lua").write_text(
+        "function _M.getId(self)\n"
+        "return 91601\n"
+        "end\n"
+        "function _M.ctor(self)\n"
+        "self.id=0\n"
+        "self.index=0\n"
+        "end\n"
+        "function _M.reading(self)\n"
+        "self.id=self:readInt()\n"
+        "self.index=self:readInt()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "CM_DigitDoorStartGame.lua").write_text(
+        "function _M.ctor(self)\n"
+        "self.indexList=CList.new()\n"
+        "end\n"
+        "function _M.read(self)\n"
+        "self:readMessageList2List(self.indexList)\n"
+        "end\n"
+        "function _M.write(self)\n"
+        "self:writeList(self.indexList)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_DigitDoorStartGame.lua").write_text(
+        "function _M.ctor(self)\n"
+        "self.indexList=CList.new()\n"
+        "self.skillVos=CList.new()\n"
+        "end\n"
+        "function _M.read(self)\n"
+        "self:readMessageList2List(self.indexList)\n"
+        "self:readMessageList2List(self.skillVos)\n"
+        "end\n"
+        "function _M.write(self)\n"
+        "self:writeList(self.indexList)\n"
+        "self:writeList(self.skillVos)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    core_dir.mkdir(parents=True, exist_ok=True)
+    (core_dir / "BaseMessage.lua").write_text(
+        "SerializerType={INT_JAVA=-13}\n"
+        "function _M.writeIntList(self,messages)\n"
+        "self:writeByte(SerializerType.INT_JAVA)\n"
+        "end\n"
+        "function _M.writeList(self,messages)\n"
+        "self:writeByte(message:getId())\n"
+        "end\n"
+        "function _M.readMessageList2List(self,msgList)\n"
+        "local proId=self:readByte()\n"
+        "if proId<0 and proId>-44 then\n"
+        "msgList:Add(self:readBaseByType(proId))\n"
+        "else\n"
+        "local msg=MessagePool.F_GetMessage(proId)\n"
+        "msg:reading()\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    headui_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "headui_mock" / "text_assets"
+    headui_dir.mkdir(parents=True, exist_ok=True)
+    (headui_dir / "DigitDoorPartnerHeadUI.lua").write_text(
+        "function _M.RefreshSkillCD(self,skillId,cdTime)\n"
+        "local skillCfg=DigitDoorMgr.Inst_get().Model:GetCouncilSkillById(skillId)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    readyfight_skilllist_result = build_fanxiu_digitdoor_readyfight_skilllist_consumer_probe(export_root=export_root)
+    assert readyfight_skilllist_result["confirmed"] is True
+    assert readyfight_skilllist_result["stats"]["packet_skill_list_schema_rows"] == 3
+    assert readyfight_skilllist_result["stats"]["readyfight_msg_to_cache_rows"] == 1
+    assert readyfight_skilllist_result["stats"]["external_cache_consumer_rows"] == 0
+    assert readyfight_skilllist_result["verdict"]["visible_external_cache_consumer_found"] is False
+    readyfight_skilllist_report = Path(readyfight_skilllist_result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "ReadyFight skillList consumer audit" in readyfight_skilllist_report
+    assert "server snapshot surface" in readyfight_skilllist_report
+
+    readyfight_shape_result = build_fanxiu_digitdoor_readyfight_skilllist_shape_probe(export_root=export_root)
+    assert readyfight_shape_result["confirmed"] is True
+    assert readyfight_shape_result["stats"]["readyfight_read_message_list_rows"] == 1
+    assert readyfight_shape_result["stats"]["readyfight_write_int_list_rows"] == 1
+    assert readyfight_shape_result["stats"]["dds_skill_vo_field_count"] == 2
+    assert readyfight_shape_result["verdict"]["shape_verdict"] == "ambiguous_runtime_wire_shape"
+    assert readyfight_shape_result["verdict"]["visible_ddskillvo_logic_usage_found"] is False
+    assert readyfight_shape_result["verdict"]["dds_skill_vo_num_value_name_mismatch"] is True
+    readyfight_shape_report = Path(readyfight_shape_result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "ReadyFight skillList wire-shape audit" in readyfight_shape_report
+    assert "primitive int-list client write shape" in readyfight_shape_report
+
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    (capture_dir / "sample.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "offset": 10,
+                        "frame_len": 8,
+                        "pro_id": 91628,
+                        "name": "CM_DigitDoorReadyFight",
+                        "direction": "c2s",
+                        "payload_len": 1,
+                        "zlib": False,
+                        "parsed": {"_class": "CM_DigitDoorReadyFight", "levelId": 1},
+                    },
+                    {
+                        "offset": 20,
+                        "frame_len": 16,
+                        "pro_id": 91629,
+                        "name": "SM_DigitDoorReadyFight",
+                        "direction": "s2c",
+                        "payload_len": 9,
+                        "zlib": False,
+                        "parsed": {"_class": "SM_DigitDoorReadyFight", "levelId": 1, "skillList": [1001]},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    runtime_sample_result = build_fanxiu_digitdoor_readyfight_runtime_sample_probe(export_root=export_root)
+    assert runtime_sample_result["confirmed"] is True
+    assert runtime_sample_result["stats"]["readyfight_request_frame_count"] == 1
+    assert runtime_sample_result["stats"]["readyfight_response_frame_count"] == 1
+    assert runtime_sample_result["verdict"]["existing_captures_cover_readyfight_shape"] is True
+    runtime_sample_report = Path(runtime_sample_result["files"]["markdown"]).read_text(encoding="utf-8")
+    runtime_sample_hits = Path(runtime_sample_result["files"]["hits"]).read_text(encoding="utf-8-sig")
+    assert "ReadyFight runtime sample coverage" in runtime_sample_report
+    assert "skillList" in runtime_sample_hits
+
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        "function _M.CM_DigitDoorReadyFightFun(self)\n"
+        "local CM_DigitDoorReadyFight=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorReadyFight)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorReadyFight)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    digitdoor_data_path = logic_dir / "DigitDoorData.lua"
+    digitdoor_data_path.write_text(
+        digitdoor_data_path.read_text(encoding="utf-8")
+        + "function _M.SetGameLevel(self,levelId)\n"
+        + "self.V_GameLevelId=levelId\n"
+        + "end\n"
+        + "function _M.GetGameLevel(self)\n"
+        + "return self.V_GameLevelId or 1\n"
+        + "end\n"
+        + "function _M.DigitDoorReadyFrightLevel(self,msg)\n"
+        + "self:SetGameLevel(msg.levelId)\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    readyfight_levelid_result = build_fanxiu_digitdoor_readyfight_request_levelid_probe(export_root=export_root)
+    assert readyfight_levelid_result["confirmed"] is True
+    assert readyfight_levelid_result["stats"]["request_packet_levelid_write_rows"] == 1
+    assert readyfight_levelid_result["stats"]["netlogic_request_send_rows"] == 1
+    assert readyfight_levelid_result["verdict"]["visible_levelid_assignment_found"] is False
+    assert readyfight_levelid_result["verdict"]["authority_interpretation"] == "request_levelid_static_assignment_gap"
+    readyfight_levelid_report = Path(readyfight_levelid_result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "ReadyFight request levelId audit" in readyfight_levelid_report
+    assert "field declaration alone" in readyfight_levelid_report
+
+    digitdoor_data_path.write_text(
+        digitdoor_data_path.read_text(encoding="utf-8")
+        + "function _M.SetFightPartnerVoList(self,gameFightPartnerVoList)\n"
+        + "if gameFightPartnerVoList:Count()==0 and self:GetGameLevel()==1 then end\n"
+        + "for _,v in Cipairs(gameFightPartnerVoList)do\n"
+        + "self.gameFightPartnerVoList:LuaDic_AddOrSetItem(v.index,v)\n"
+        + "end\n"
+        + "end\n"
+        + "function _M.DigitDoorReadyFrightPartner(self,msg)\n"
+        + "self:SetFightPartnerVoList(msg.indexList)\n"
+        + "end\n"
+        + "function _M.UpdateFightPartnerVoList(self,id,index)\n"
+        + "local DDFightPartnerVO=require\"GameSystem.Game.Message.module.mini.digitdoor.packet.vo.DDFightPartnerVO\"\n"
+        + "local vo=DDFightPartnerVO.new()\n"
+        + "vo.id=id\n"
+        + "vo.index=index\n"
+        + "end\n"
+        + "function _M.GetFightPartnerVoList(self)\n"
+        + "return self.gameFightPartnerVoList\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        (logic_dir / "DigitDoorNetLogic.lua").read_text(encoding="utf-8")
+        + "function _M.CM_DigitDoorStartGameFun(self)\n"
+        + "local dict=DigitDoorMgr.Inst_get().Model.DigitDoorData:GetFightPartnerVoList()\n"
+        + "for i,v in Kpairs(dict)do\n"
+        + "CM_DigitDoorStartGame.indexList:Add(v)\n"
+        + "end\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        (logic_dir / "DigitDoorFightComponent.lua").read_text(encoding="utf-8")
+        + "function _M.SelectPartner(self,dragEntityView)\n"
+        + "DigitDoorMgr.Inst_get().Model.DigitDoorData:UpdateFightPartnerVoList(dragEntityView.partnerData.id,self.dragSelectIndex)\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    partnerlist_result = build_fanxiu_digitdoor_readyfight_partnerlist_probe(export_root=export_root)
+    assert partnerlist_result["confirmed"] is True
+    assert partnerlist_result["stats"]["fight_partner_vo_field_count"] == 2
+    assert partnerlist_result["verdict"]["readyfight_indexlist_is_bean_list"] is True
+    assert partnerlist_result["verdict"]["startgame_submits_partner_vo_list"] is True
+    assert partnerlist_result["verdict"]["authority_interpretation"] == "server_snapshot_then_local_selection_submit"
+    partnerlist_report = Path(partnerlist_result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "ReadyFight indexList partner-list audit" in partnerlist_report
+    assert "DDFightPartnerVO(id,index)" in partnerlist_report
+
+    (logic_dir / "DigitDoorNetLogic.lua").write_text(
+        (logic_dir / "DigitDoorNetLogic.lua").read_text(encoding="utf-8")
+        + "function _M.SM_DigitDoorStartGameFun(msg)\n"
+        + "if ErroCodeMgr.Inst_get():CheckCodeMessage(msg,3,true)then\n"
+        + "DigitDoorMgr.Inst_get():DigitDoorStartGame(msg)\n"
+        + "end\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorMgr.lua").write_text(
+        "function _M.DigitDoorStartGame(self,msg)\n"
+        "if not DigitDoorSceneMgr.Inst_get():IsInDigitDoorPveScene()or self.V_StartGame then return end\n"
+        "self.V_StartGame=true\n"
+        "self.Model:RaiseEvent(DigitDoorType.EventType.OnStartGame)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorSceneView.lua").write_text(
+        "function _M.RegisterEvent(self)\n"
+        "self._OnDigitDoorStartGame=function()\n"
+        "DigitDoorEntityMgr.Inst_get():StartGame()\n"
+        "end\n"
+        "self:BinderEvent(DigitDoorMgr.Inst_get().Model,DigitDoorType.EventType.OnStartGame,self._OnDigitDoorStartGame)\n"
+        "DigitDoorMgr.Inst_get():ReqStartGame()\n"
+        "if not DigitDoorMgr.Inst_get():IsStartGame() then end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorFightComponent.lua").write_text(
+        (logic_dir / "DigitDoorFightComponent.lua").read_text(encoding="utf-8")
+        + "function _M.RegisterEvent(self)\n"
+        + "self._OnDigitDoorStartGame=function()\n"
+        + "self:ClearSkillCasterEmptyEff()\n"
+        + "self:UpdateDigitDoorSkillInBattle()\n"
+        + "end\n"
+        + "DigitDoorMgr.Inst_get().Model:AddEventHandler(DigitDoorType.EventType.OnStartGame,self._OnDigitDoorStartGame)\n"
+        + "end\n",
+        encoding="utf-8",
+    )
+    startgame_boundary = build_fanxiu_digitdoor_startgame_response_boundary_probe(export_root=export_root)
+    assert startgame_boundary["confirmed"] is True
+    assert startgame_boundary["verdict"]["visible_response_field_consumer_found"] is False
+    assert startgame_boundary["verdict"]["visible_start_state_boundary_found"] is True
+    assert startgame_boundary["verdict"]["authority_interpretation"] == "server_ack_gates_local_start_event"
+    startgame_report = Path(startgame_boundary["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "StartGame response boundary audit" in startgame_report
+    assert "does not read those fields" in startgame_report
+
+    startgame_skillvos = build_fanxiu_digitdoor_startgame_skillvos_shape_probe(export_root=export_root)
+    assert startgame_skillvos["confirmed"] is True
+    assert startgame_skillvos["stats"]["sm_startgame_skillvos_write_list_rows"] == 1
+    assert startgame_skillvos["stats"]["dds_skill_vo_field_count"] == 2
+    assert startgame_skillvos["verdict"]["visible_msg_skillvos_consumer_found"] is False
+    assert startgame_skillvos["verdict"]["shape_interpretation"] == "server_returned_ddskillvo_candidate_unconsumed"
+    startgame_skillvos_report = Path(startgame_skillvos["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "StartGame skillVos shape audit" in startgame_skillvos_report
+    assert "DDSkillVo(91604)" in startgame_skillvos_report
+
+    (logic_dir / "DigitDoorType.lua").write_text(
+        "_M={}\n"
+        "_M.SkillBuffType={None=0,AddAttr=9,EffectStrength=16,SkillDamageStrength=17}\n"
+        "_M.BuffLayerType={None=0,Add=1,Refresh=2}\n"
+        "_M.BuffPath={\n"
+        '[_M.SkillBuffType.None]="GameSystem.Game.DigitDoor.Core.Fight.SkillBuff.Base.DigitDoorBuffBase",\n'
+        '[_M.SkillBuffType.AddAttr]="GameSystem.Game.DigitDoor.Core.Fight.SkillBuff.DigitDoorBuffAddAttr",\n'
+        "}\n"
+        '_M.BuffTriggerType={Add="ADD",HitTarget="HITTARGET"}\n'
+        "_M.BuffTargetType={AllEnemy=3,Self=9}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerView.lua").write_text(
+        "function _M.AddBuff(self,buffCfgId,casterId,extParam,skill)\n"
+        "local buffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_BuffEffect,buffCfgId)\n"
+        "if buffCfg.effType==DigitDoorType.BuffLayerType.Add then buff:AddBuffLayer() end\n"
+        "if buffCfg.effType==DigitDoorType.BuffLayerType.Refresh then buff:OnRefreshBuff() end\n"
+        "local buffPath=DigitDoorType.BuffPath[buffCfg.type]\n"
+        "local Buff=require(buffPath)\n"
+        "_buff:InitData(buffCfg,casterId,self.Entity.V_ID,extParam,skill)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBuffBase.lua").write_text(
+        "function _M.InitData(self,buffCfg,casterId,ownerId,extParam,skill)\n"
+        "self.V_ConfigId=buffCfg.id\n"
+        "self.V_Type=buffCfg.type\n"
+        "self.V_TargetType=buffCfg.targetType\n"
+        "self.timelineId=buffCfg.timelineId\n"
+        "self.isPassive=buffCfg.passive and buffCfg.passive==1 or false\n"
+        "self:AnalysisTriggerType(buffCfg.triggerType)\n"
+        "end\n"
+        "function _M.Update(self,fTime,fDTime)\n"
+        "local lifeTime=self.V_Data:GetDuration()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorBaseSkill.lua").write_text(
+        "function _M.AddBuffData(self,buffId)\n"
+        "local buffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_BuffEffect,buffId)\n"
+        "if buffCfg.type==DigitDoorType.SkillBuffType.EffectStrength then self.skillData:SetBuffStrength(buffCfg.buffAmplify) end\n"
+        "if buffCfg.type==DigitDoorType.SkillBuffType.SkillDamageStrength then self.skillData:SetDamageStrength(buffCfg.buffAmplify) end\n"
+        "if buffCfg.passive and buffCfg.targetType==DigitDoorType.BuffTargetType.Self then self.casterView:AddBuff(buffId,self.casterView.Entity.V_ID,nil,self) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    buff_usage_result = build_fanxiu_digitdoor_buff_effect_usage_probe(export_root=export_root)
+    assert buff_usage_result["confirmed"] is True
+    assert buff_usage_result["counts"]["buff_effect_rows"] == 1
+    assert buff_usage_result["counts"]["types"]["9"] == 1
+    assert buff_usage_result["counts"]["fields"]["add_attr"] == 1
+    buff_report_text = (export_root / "parsed_configs" / "digitdoor_catalog" / "buff_effect_usage_report.md").read_text(encoding="utf-8")
+    assert "BuffEffect.type" in buff_report_text
+
+    (logic_dir / "DigitDoorBuffData.lua").write_text(
+        "function _M.InitData(self,cfg,extParam,strengthVal)\n"
+        "self:SetDamage(cfg.damage and cfg.damage*(1+strengthVal*0.0001) or 0)\n"
+        "self:SetShieldRatio(cfg.shield and cfg.shield*(1+strengthVal*0.0001) or 0)\n"
+        "if cfg.addAttr then self:SetAddExtBattleAttr('ATTACK',1000*(1+strengthVal*0.0001)) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (logic_dir / "DigitDoorPartnerView.lua").write_text(
+        "function _M.AddBuff(self,buffCfgId,casterId,extParam,skill)\n"
+        "local buffCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DigitDoor_BuffEffect,buffCfgId)\n"
+        "if buffCfg.effType==DigitDoorType.BuffLayerType.Add then buff:AddBuffLayer() end\n"
+        "local buffPath=DigitDoorType.BuffPath[buffCfg.type]\n"
+        "local Buff=require(buffPath)\n"
+        "_buff:InitData(buffCfg,casterId,self.Entity.V_ID,extParam,skill)\n"
+        "end\n"
+        "function _M.GetBuffDebug(self)\n"
+        "local extAttack=0\n"
+        "local extSkillDamage=0\n"
+        "for _,key in pairs(DigitDoorType.BuffAddAttrType)do local val=buff.V_Data:GetAddExtBattleAttr(key)*buff.V_Data:GetLayer() end\n"
+        "local shieldRatio=buff.V_Data:GetShieldRatio()\n"
+        "local shieldValue=maxHp*shieldRatio*0.0001\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    class_formula_result = build_fanxiu_digitdoor_buff_class_formula_probe(export_root=export_root)
+    assert class_formula_result["confirmed"] is True
+    assert class_formula_result["counts"]["formula_rows"] >= 8
+    assert class_formula_result["counts"]["fields"]["addAttr"] == 1
+    formula_text = (export_root / "parsed_configs" / "digitdoor_catalog" / "buff_class_formula_report.md").read_text(encoding="utf-8")
+    assert "DigitDoorBuffData:InitData" in formula_text
+
+
+def test_fanxiu_doupotd_skill_timeline_probe_links_config_to_effect_classes(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    lua_dir = export_root / "by_source" / "lscripts" / "lua_mock" / "text_assets"
+    tower_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    lua_dir.mkdir(parents=True)
+    (tower_dir / "CharacterMainInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='萧炎'}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillType=2,charId=3,skillGroup=4,level=5,timeLineId=6,pvpTimeLineId=7,buffId=8,extSkill=9,damage=10,cd=11,duration=12}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=nil,[9]=0,[10]=0,[11]=0,[12]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0,[12]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _B={[1]={2001}}\n"
+        "local _M={\n[1101]=setmetatable({[1]=1101,[2]=2,[3]=1,[4]=1001,[5]=1,[6]=100001,[7]=100002,[8]=_B[1],[9]=1104,[10]=6000,[11]=12000,[12]=1000},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDEffectType.lua").write_text(
+        "local _M={}\n"
+        "_M.SkillEffect={Start=1,Hit=2}\n"
+        "_M.EffectClass={BoomEffect=\"DoupoTDBoomEffect\",HitEffect=\"DoupoTDHitEffect\",DoupoTDGushFireEffect=\"DoupoTDGushFireEffect\"}\n"
+        "_M.AttachSkillStartType={None=0}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "100001.lua").write_text(
+        "local EffectType=require\"GameSystem.Game.DigitDoor.Core.Fight.SkillEffect.Const.DigitDoorEffectType\"\nreturn {}\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "100001__123.lua").write_text(
+        "local EffectType=require\"GameSystem.Game.DoupoTD.Core.Fight.SkillEffect.Const.DoupoTDEffectType\"\n"
+        "local _M={[EffectType.SkillEffect.Start]={{class=EffectType.EffectClass.BoomEffect,resPath=\"skill/mock_boom\"}},"
+        "[EffectType.SkillEffect.Hit]={{class=EffectType.EffectClass.HitEffect,audio=812000001}}}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "100002.lua").write_text(
+        "local EffectType=require\"GameSystem.Game.DoupoTD.Core.Fight.SkillEffect.Const.DoupoTDEffectType\"\n"
+        "local _M={[EffectType.SkillEffect.Start]={{class=EffectType.EffectClass.DoupoTDGushFireEffect,resPath=\"skill/mock_fire\"}}}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    for name in ("DoupoTDBoomEffect.lua", "DoupoTDHitEffect.lua", "DoupoTDGushFireEffect.lua"):
+        (lscript_dir / name).write_text("return {}\n", encoding="utf-8")
+
+    result = build_fanxiu_doupotd_skill_timeline_probe(export_root=export_root)
+    assert result["stats"]["skill_row_count"] == 1
+    assert result["stats"]["requested_timeline_count"] == 2
+    assert result["stats"]["timeline_missing_count"] == 0
+    assert result["stats"]["exact_non_doupotd_collision_count"] == 1
+    assert result["verdict"]["all_character_skill_timelines_have_doupotd_config"] is True
+
+    links_text = Path(result["files"]["skill_links"]).read_text(encoding="utf-8-sig")
+    timeline_text = Path(result["files"]["timelines"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "萧炎" in links_text
+    assert "DoupoTDBoomEffect" in links_text
+    assert "100001__123.lua" in timeline_text
+    assert "exact_filename_collisions_present" in report_text
+
+
+def test_fanxiu_doupotd_buff_effect_probe_links_skill_buffs_to_runtime_classes(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    tower_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (tower_dir / "CharacterMainInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='萧炎'}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillType=2,charId=3,buffId=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _B={[1]={2001}}\n"
+        "local _M={\n[1101]=setmetatable({[1]=1101,[2]=2,[3]=1,[4]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "BuffEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,targetType=3,triggerType=4,duration=5,effType=6,triggerBuffId=7,addAttr=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=0,[7]=nil,[8]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='ADD',[2]='ATK_RATE:1000'}\n"
+        "local _B={[1]={2002}}\n"
+        "local _M={\n"
+        "[2001]=setmetatable({[1]=2001,[2]=9,[3]=3,[4]=_A[1],[5]=-1,[6]=1,[7]=_B[1],[8]=_A[2]},_P),\n"
+        "[2002]=setmetatable({[1]=2002,[2]=4,[3]=1,[4]=_A[1],[5]=2000,[6]=2},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDType.lua").write_text(
+        "local _M={}\n"
+        "_M.SkillBuffType={None=0,SlowDown=4,AddAttr=9}\n"
+        "_M.BuffLayerType={None=0,Add=1,Refresh=2}\n"
+        "_M.BuffTargetType={None=0,Enemy=1,Self=3}\n"
+        "_M.BuffPath={[_M.SkillBuffType.None]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.Base.DoupoTDBuffBase\","
+        "[_M.SkillBuffType.AddAttr]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffAddAttr\","
+        "[_M.SkillBuffType.SlowDown]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffSlowDown\"}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    for name in ("DoupoTDBuffBase.lua", "DoupoTDBuffAddAttr.lua", "DoupoTDBuffSlowDown.lua"):
+        (lscript_dir / name).write_text("return {}\n", encoding="utf-8")
+
+    result = build_fanxiu_doupotd_buff_effect_probe(export_root=export_root)
+    assert result["stats"]["direct_skill_buff_id_count"] == 1
+    assert result["stats"]["secondary_buff_id_count"] == 1
+    assert result["stats"]["missing_buff_effect_count"] == 0
+    assert result["verdict"]["all_direct_skill_buff_ids_have_buff_effect"] is True
+    assert result["verdict"]["all_selected_buff_classes_have_files"] is True
+
+    links_text = Path(result["files"]["skill_links"]).read_text(encoding="utf-8-sig")
+    effects_text = Path(result["files"]["buff_effects"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "DoupoTDBuffAddAttr" in links_text
+    assert "secondary_buff" in effects_text
+    assert "DoupoTDBuffSlowDown" in effects_text
+    assert "BuffPath" in report_text
+
+
+def test_fanxiu_doupotd_buff_class_semantics_probe_summarizes_selected_classes(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    tower_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (tower_dir / "CharacterMainInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]='萧炎'},_P),\n}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillType=2,charId=3,buffId=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _B={[1]={2001}}\n"
+        "local _M={\n[1101]=setmetatable({[1]=1101,[2]=2,[3]=1,[4]=_B[1]},_P),\n}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "BuffEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,targetType=3,triggerType=4,duration=5,effType=6,triggerBuffId=7,addAttr=8}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=0,[7]=nil,[8]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='ADD',[2]='ATK_RATE:1000'}\n"
+        "local _B={[1]={2002}}\n"
+        "local _M={\n"
+        "[2001]=setmetatable({[1]=2001,[2]=9,[3]=3,[4]=_A[1],[5]=-1,[6]=1,[7]=_B[1],[8]=_A[2]},_P),\n"
+        "[2002]=setmetatable({[1]=2002,[2]=4,[3]=1,[4]=_A[1],[5]=2000,[6]=2},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDType.lua").write_text(
+        "local _M={}\n"
+        "_M.SkillBuffType={None=0,SlowDown=4,AddAttr=9}\n"
+        "_M.BuffLayerType={None=0,Add=1,Refresh=2}\n"
+        "_M.BuffTargetType={None=0,Enemy=1,Self=3}\n"
+        "_M.BuffPath={[_M.SkillBuffType.None]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.Base.DoupoTDBuffBase\","
+        "[_M.SkillBuffType.AddAttr]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffAddAttr\","
+        "[_M.SkillBuffType.SlowDown]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffSlowDown\"}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffBase.lua").write_text(
+        "local _M={}\nfunction _M.Start(self)\nself:AnalysisTriggerType(self.triggerType)\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffAddAttr.lua").write_text(
+        "local _M={}\nfunction _M.Start(self)\nself.OwnerView:AddAttr(self.BuffCfg.addAttr)\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffSlowDown.lua").write_text(
+        "local _M={}\nfunction _M.Update(self,fTime,fDTime)\nself.OwnerView:RemoveBuff(self.BuffId)\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_buff_class_semantics_probe(export_root=export_root)
+    assert result["stats"]["buff_class_count"] == 2
+    assert result["stats"]["class_file_missing_count"] == 0
+    assert result["verdict"]["all_selected_buff_classes_have_source"] is True
+    assert result["verdict"]["has_runtime_buff_mutation_classes"] is True
+
+    class_text = Path(result["files"]["classes"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "DoupoTDBuffAddAttr" in class_text
+    assert "uses_add_attr" in class_text
+    assert "RemoveBuff" in evidence_text
+    assert "client buff class behavior" in report_text
+
+
+def test_fanxiu_doupotd_buff_class_flow_probe_extracts_trigger_paths(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    tower_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (tower_dir / "CharacterMainInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2}\n"
+        "local _key2null={[1]=0,[2]=''}\n"
+        "local _key2type={[1]=0,[2]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]='萧炎'},_P),\n}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "CharacterSkillInfo.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,skillType=2,charId=3,buffId=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n"
+        "[1101]=setmetatable({[1]=1101,[2]=2,[3]=1,[4]=8005},_P),\n"
+        "[1102]=setmetatable({[1]=1102,[2]=1,[3]=1,[4]=7001},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "BuffEffect.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,type=2,targetType=3,triggerType=4,duration=5,effType=6,triggerBuffId=7,targetBuffCheck=8,layerType=9}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]='',[5]=0,[6]=0,[7]=nil,[8]=nil,[9]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={[1]='HITTARGET_8001:2,8001:1',[2]='RELEASESKILL',[3]='ADD'}\n"
+        "local _M={\n"
+        "[8005]=setmetatable({[1]=8005,[2]=15,[3]=3,[4]=_A[1],[5]=-1,[6]=1,[7]=8003,[8]=8001,[9]=3},_P),\n"
+        "[8003]=setmetatable({[1]=8003,[2]=7,[3]=1,[4]=_A[3],[5]=2000,[6]=1,[9]=2},_P),\n"
+        "[7001]=setmetatable({[1]=7001,[2]=39,[3]=3,[4]=_A[2],[5]=4000,[6]=1,[7]=7017,[9]=2},_P),\n"
+        "[7017]=setmetatable({[1]=7017,[2]=9,[3]=2,[4]=_A[3],[5]=-1,[6]=1,[9]=2},_P),\n"
+        "}\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDType.lua").write_text(
+        "local _M={}\n"
+        "_M.SkillBuffType={AddAttr=9,HitAddBuff=15,Mingxin=39,Stun=7}\n"
+        "_M.BuffLayerType={None=0,Add=1,Refresh=2,Replace=3}\n"
+        "_M.BuffTargetType={None=0,Enemy=1,Friend=2,Self=3}\n"
+        "_M.BuffPath={[_M.SkillBuffType.AddAttr]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffAddAttr\","
+        "[_M.SkillBuffType.HitAddBuff]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffHitAddBuff\","
+        "[_M.SkillBuffType.Mingxin]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffMingxin\","
+        "[_M.SkillBuffType.Stun]=\"GameSystem.Game.DoupoTD.Core.Fight.SkillBuff.DoupoTDBuffStun\"}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffHitAddBuff.lua").write_text(
+        "local _M={}\n"
+        "function _M.DoBuffLogic(self,target,skill)\nself:DoHitTargetAddBuff(target,skill)\nend\n"
+        "function _M.DoHitTargetAddBuff(self,target,skill)\n"
+        "if self.TriggerSkillDic and self.TriggerSkillDic:LuaDic_ContainsKey(skill.skillGroup) then\n"
+        "if skill.skillType==1 then self:TriggerPercentBuff(target,skill) end\nend\n"
+        "if self.BuffIdCheckList and self.BuffIdCheckList:Count()>0 then\n"
+        "local buffDic=target:GetBuffDic()\n"
+        "for _,buff in Cipairs(buffDic)do\nif buff.V_ConfigId==8001 then self:TriggerPercentBuff(target,skill) end\nend\n"
+        "else\nself:TriggerPercentBuff(target,skill)\nend\nend\n"
+        "function _M.TriggerPercentBuff(self,targetView,skill)\n"
+        "local triggerPercent=self.V_Data:GetTriggerPercent()\n"
+        "local percentVal=math.random(1,10000)\n"
+        "local triggerBuffIds=self.V_Data:GetTriggerBuffIds()\n"
+        "for _,v in ipairs(triggerBuffIds)do\ntargetView:AddBuff(v,self.V_OwnerId,nil,skill)\nend\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDBuffMingxin.lua").write_text(
+        "local _M={}\n"
+        "function _M.Start(self)\nself:DoBuffLogic(ownerView,self.V_Skill)\nend\n"
+        "function _M.Update(self,fTime,fDTime)\n"
+        "self.StartTime=self.StartTime+fDTime\n"
+        "local lifeTime=self.V_Data:GetDuration()\n"
+        "if self.StartTime>=lifeTime then\n"
+        "for _,view in Cipairs(targetList)do\nview:RemoveBuff(buffId,self.V_Skill.casterView.Entity.V_ID,nil,self.V_Skill)\nend\n"
+        "end\nend\n"
+        "function _M.TriggerPercentBuff(self,targetView,skill)\n"
+        "local triggerPercent=self.V_Data:GetTriggerPercent()\n"
+        "local percentVal=math.random(1,10000)\n"
+        "local triggerBuffIds=self.V_Data:GetTriggerBuffIds()\n"
+        "if buffCfg.targetType==DoupoTDType.BuffTargetType.Friend then\n"
+        "local targetList=fightComponent:GetBuffTargetList(self.V_Skill.casterView,buffCfg.targetType)\n"
+        "for _,view in Cipairs(targetList)do\nview:AddBuff(buffId,self.V_Skill.casterView.Entity.V_ID,nil,self.V_Skill)\nend\n"
+        "end\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_buff_class_flow_probe(
+        export_root=export_root,
+        buff_classes=["DoupoTDBuffHitAddBuff", "DoupoTDBuffMingxin"],
+    )
+    assert result["stats"]["selected_class_count"] == 2
+    assert result["stats"]["classes_with_skill_filter"] == 1
+    assert result["stats"]["classes_with_target_buff_check"] == 1
+    assert result["stats"]["classes_with_friend_target_expansion"] == 1
+    assert result["verdict"]["has_trigger_filter_flow"] is True
+
+    classes_text = Path(result["files"]["classes"]).read_text(encoding="utf-8-sig")
+    functions_text = Path(result["files"]["functions"]).read_text(encoding="utf-8-sig")
+    steps_text = Path(result["files"]["steps"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "命中触发型" in classes_text
+    assert "uses_target_buff_check" in functions_text
+    assert "target_buff_check" in steps_text
+    assert "remove_buff" in steps_text
+    assert "client Lua flow" in report_text
+
+
+def test_fanxiu_doupotd_buff_authority_boundary_probe_summarizes_visible_protocol_gap(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    index_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (index_dir / "lua_lscript_module_doupotd_buff_class_flow_classes.tsv").write_text(
+        "buff_class\tbuff_ids\tbuff_types\tsource_file\tfunction_count\tflow_step_count\tflow_categories\tflow_hint\n"
+        "DoupoTDBuffHitAddBuff\t8005\tHitAddBuff\tDoupoTDBuffHitAddBuff.lua\t3\t12\tentry|add_buff|remove_buff|random_gate\t命中触发型\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_protocol_schemas.tsv").write_text(
+        "group\tmodule\tpacket_name\tpacket_id\tdirection\tpacket_module\tfield_count\tbase_class\trelative_path\tpackage\tnetlogic_functions\tassigned_fields\tschema_fields\tmissing_assigned_fields\tassignment_status\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t4\tBaseMessage\tCM.lua\tpkg\tCMFun\tcurrWave | wavePercent | killNum | bossVoList\tcurrWave | wavePercent | killNum | bossVoList\t\tassigned_fields_match_schema\n"
+        "gamesystem/game\tdoupotd\tSM_DoupoTDGamePlayer\t93614\tserver_to_client\tmini.doupo\t7\tClientResult\tSM.lua\tpkg\tSMFun\t\tfinishWave | rewardResults | passLevelVOS | levelId | gameType | isSkipLevel | wavePercent\t\tno_client_assignments\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_protocol_fields.tsv").write_text(
+        "group\tmodule\tpacket_name\tpacket_id\tdirection\tpacket_module\tfield_order\tfield_name\tfield_type\trelative_path\tline\tassigned\tnetlogic_functions\tnotes\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t1\tcurrWave\tInt\tCM.lua\t1\tyes\tCMFun\t\n",
+        encoding="utf-8-sig",
+    )
+    (lscript_dir / "DoupoTDLocalFight.lua").write_text(
+        "local _M={}\n"
+        "function _M.Hit(self,targetView)\n"
+        "fightComponent:AddDamageResult(self.casterView,targetView,self.skill)\n"
+        "targetView:AddBuff(8003,self.owner,nil,self.skill)\n"
+        "targetView:RemoveBuff(8003)\n"
+        "CM_DoupoTDGamePlayer.killNum=1\n"
+        "end\nreturn _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_buff_authority_boundary_probe(export_root=export_root)
+    assert result["stats"]["flow_classes_with_add_buff"] == 1
+    assert result["stats"]["flow_classes_with_remove_buff"] == 1
+    assert result["stats"]["buff_like_protocol_field_count"] == 0
+    assert result["verdict"]["no_visible_per_buff_state_packet_in_doupotd_schema"] is True
+    assert result["verdict"]["visible_doupotd_protocol_has_game_progress_summary"] is True
+
+    packets_text = Path(result["files"]["packets"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "CM_DoupoTDGamePlayer" in packets_text
+    assert "AddDamageResult" in evidence_text
+    assert "per-buff state/result protocol" in report_text
+
+
+def test_fanxiu_doupotd_effect_gameplayer_summary_probe_decodes_summary_objects(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    index_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdeffect_sm_doupotdeffect_pair_fields.tsv").write_text(
+        "group\tmodule\tpacket_name\tpacket_id\tdirection\tpacket_module\tfield_index\tfield_name\tread_method\ttype_hint\tline\tassigned_in_netlogic\tnetlogic_functions\trelative_path\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDEffect\t93651\tclient_to_server\tmini.doupo\t1\tindex\tInt\t\t14\tyes\tCM_DoupoTDEffectFun\t\n"
+        "gamesystem/game\tdoupotd\tSM_DoupoTDEffect\t93652\tserver_to_client\tmini.doupo\t1\teffectVO\tBean\tDoupoTDEffectVO\t22\t\tSM_DoupoTDEffectFun\t\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdgameplayer_sm_doupotdgameplayer_pair_fields.tsv").write_text(
+        "group\tmodule\tpacket_name\tpacket_id\tdirection\tpacket_module\tfield_index\tfield_name\tread_method\ttype_hint\tline\tassigned_in_netlogic\tnetlogic_functions\trelative_path\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t1\tcurrWave\tInt\t\t18\tyes\tCM_DoupoTDGamePlayerFun\t\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t2\twavePercent\tInt\t\t19\tyes\tCM_DoupoTDGamePlayerFun\t\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t3\tkillNum\tInt\t\t20\tyes\tCM_DoupoTDGamePlayerFun\t\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDGamePlayer\t93613\tclient_to_server\tmini.doupo\t4\tbossVoList\tMessageList2List\t\t21\tyes\tCM_DoupoTDGamePlayerFun\t\n"
+        "gamesystem/game\tdoupotd\tSM_DoupoTDGamePlayer\t93614\tserver_to_client\tmini.doupo\t1\tfinishWave\tInt\t\t22\t\tSM_DoupoTDGamePlayerFun\t\n"
+        "gamesystem/game\tdoupotd\tSM_DoupoTDGamePlayer\t93614\tserver_to_client\tmini.doupo\t2\trewardResults\tMessageList2List\t\t23\t\tSM_DoupoTDGamePlayerFun\t\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdrefreshwave_sm_doupotdrefreshwave_pair_fields.tsv").write_text(
+        "group\tmodule\tpacket_name\tpacket_id\tdirection\tpacket_module\tfield_index\tfield_name\tread_method\ttype_hint\tline\tassigned_in_netlogic\tnetlogic_functions\trelative_path\n"
+        "gamesystem/game\tdoupotd\tCM_DoupoTDRefreshWave\t93617\tclient_to_server\tmini.doupo\t4\tbossVoList\tMessageList2List\t\t21\tyes\tCM_DoupoTDRefreshWaveFun\t\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdeffect_sm_doupotdeffect_pair_edges.tsv").write_text(
+        "group\tmodule\tbundle\tasset_name\trelative_path\tfunction_name\tfunction_kind\tline\tcategory\ttarget\tsnippet\n"
+        "gamesystem/game\tdoupotd\tbundle\tDoupoTDNetLogic.lua\tpath\tSM_DoupoTDEffectFun\tserver_handler\t440\tmodel_call\tUpdateRoleSkillAttrList\tDoupoTDMgr.Inst_get().Model:UpdateRoleSkillAttrList(msg.effectVO)\n",
+        encoding="utf-8-sig",
+    )
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdgameplayer_sm_doupotdgameplayer_pair_edges.tsv").write_text(
+        "group\tmodule\tbundle\tasset_name\trelative_path\tfunction_name\tfunction_kind\tline\tcategory\ttarget\tsnippet\n"
+        "gamesystem/game\tdoupotd\tbundle\tDoupoTDNetLogic.lua\tpath\tCM_DoupoTDGamePlayerFun\tclient_request\t329\tmanager_call\tGetTotalBossDamageList\tCM_DoupoTDGamePlayer.bossVoList=DoupoTDEntityMgr.Inst_get():GetTotalBossDamageList()\n",
+        encoding="utf-8-sig",
+    )
+    (message_dir / "DoupoTDEffectVO.lua").write_text(
+        "local _M={}\n"
+        "function _M.reading(self)\n"
+        "self.index=self:readInt()\n"
+        "self.type=self:readInt()\n"
+        "self.id=self:readInt()\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 93650\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DoupoBossVo.lua").write_text(
+        "local _M={}\n"
+        "function _M.reading(self)\n"
+        "self.id=self:readInt()\n"
+        "self.hp=self:readDouble()\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 93670\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDModel.lua").write_text(
+        "local _M={}\n"
+        "function _M.UpdateRoleSkillAttrList(self,vo)\n"
+        "if vo.type==2 then\n"
+        "local skillCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DoupoTowerDefense_SkillEnhance,vo.id)\n"
+        "self.V_RoleSkillIdList[vo.id]=1\n"
+        "elseif vo.type==3 then\n"
+        "local skillCfg=DBMgr.Inst_get():GetConfigTableByIdWithLog(ConfigName.DoupoTowerDefense_TurnSkillEnhance,vo.id)\n"
+        "end\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDEntityMgr.lua").write_text(
+        "local _M={}\n"
+        "function _M.GetTotalBossDamageList(self)\n"
+        "local DDBossVo=require('GameSystem.Game.Message.module.mini.doupo.packet.vo.DoupoBossVo')\n"
+        "local vo=DDBossVo.new()\n"
+        "vo.id=v.cfg.id\n"
+        "local maxHp=DoupoTDData:GetMaxHp()\n"
+        "vo.hp=Mathf.Floor(DoupoTDData:GetCurrentHp()/maxHp*10000)\n"
+        "bossVoList:Add(vo)\n"
+        "return bossVoList\n"
+        "end\nreturn _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_effect_gameplayer_summary_probe(export_root=export_root)
+    assert result["stats"]["effect_vo_field_count"] == 3
+    assert result["stats"]["boss_vo_field_count"] == 2
+    assert result["stats"]["packet_fields_targeting_boss_vo"] == 2
+    assert result["verdict"]["effect_vo_is_upgrade_selection_result"] is True
+    assert result["verdict"]["boss_vo_list_is_hp_percent_snapshot"] is True
+    assert result["verdict"]["summary_objects_are_not_per_buff_state"] is True
+
+    object_text = Path(result["files"]["object_fields"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "hp_percent_x10000" in object_text
+    assert "DoupoTowerDefense_SkillEnhance" in evidence_text
+    assert "per-buff state" in report_text
+
+
+def test_fanxiu_doupotd_gameplayer_result_probe_summarizes_rewards_and_pass_levels(tmp_path):
+    export_root = tmp_path / "exports"
+    index_dir = export_root / "apk_static_index"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    index_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    (index_dir / "lua_lscript_module_doupotd_cm_doupotdgameplayer_sm_doupotdgameplayer_pair_edges.tsv").write_text(
+        "group\tmodule\tbundle\tasset_name\trelative_path\tfunction_name\tfunction_kind\tline\tcategory\ttarget\tsnippet\n"
+        "gamesystem/game\tdoupotd\tbundle\tDoupoTDNetLogic.lua\tpath\tSM_DoupoTDGamePlayerFun\tserver_handler\t336\tmanager_call\tOpenDoupoTDResultInfoView\tDoupoTDMgr.Inst_get():OpenDoupoTDResultInfoView(msg)\n"
+        "gamesystem/game\tdoupotd\tbundle\tDoupoTDNetLogic.lua\tpath\tSM_DoupoTDGamePlayerFun\tserver_handler\t339\tmanager_call\tAddRewardResults\tCostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME,nil,nil,\n"
+        "gamesystem/game\tdoupotd\tbundle\tDoupoTDNetLogic.lua\tpath\tSM_DoupoTDGamePlayerFun\tserver_handler\t347\tevent_raise\tDoupoTDInfoUpdate\tDoupoTDMgr.Inst_get().Model:RaiseEvent(DoupoTDType.EventType.DoupoTDInfoUpdate,msg.isSkipLevel)\n",
+        encoding="utf-8-sig",
+    )
+    (message_dir / "SM_DoupoTDGamePlayer.lua").write_text(
+        "local _M={}\n"
+        "function _M.reading(self)\n"
+        "self.finishWave=self:readInt()\n"
+        "self:readMessageList2List(self.rewardResults)\n"
+        "self:readMessageList2List(self.passLevelVOS)\n"
+        "self.levelId=self:readInt()\n"
+        "self.gameType=self:readInt()\n"
+        "self.isSkipLevel=self:readBool()\n"
+        "self.wavePercent=self:readInt()\n"
+        "return true\n"
+        "end\n"
+        "function _M.writing(self)\n"
+        "self:writeInt(self.finishWave)\n"
+        "self:writeList(self.rewardResults)\n"
+        "self:writeIntList(self.passLevelVOS)\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 93614\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (message_dir / "RewardResult.lua").write_text(
+        "local _M={}\n"
+        "function _M.reading(self)\n"
+        "self.type=self:readInt()\n"
+        "self.code=self:readInt()\n"
+        "self.amount=self:readLong()\n"
+        "self.content=self:readBean(typeof(BaseMessage))\n"
+        "self.mail=self:readBool()\n"
+        "self.isFirstGet=self:readBool()\n"
+        "self:readMessageMap2Dic(self.additions)\n"
+        "self.extraMark=self:readInt()\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 10053\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (message_dir / "DoupoTDPassLevelVO.lua").write_text(
+        "local _M={}\n"
+        "function _M.reading(self)\n"
+        "self.levelSourceType=self:readInt()\n"
+        "self:readMessageList2List(self.passLevelIds)\n"
+        "return true\n"
+        "end\n"
+        "function _M.writing(self)\nself:writeIntList(self.passLevelIds)\nend\n"
+        "function _M.getId(self)\nreturn 93637\nend\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.SM_DoupoTDGamePlayerFun(self,msg)\n"
+        "DoupoTDMgr.Inst_get():OpenDoupoTDResultInfoView(msg)\n"
+        "CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME,nil,nil,)\n"
+        "DoupoTDMgr.Inst_get().Model:RaiseEvent(DoupoTDType.EventType.DoupoTDInfoUpdate,msg.isSkipLevel)\n"
+        "end\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDResultInfoView.lua").write_text(
+        "local _M={}\n"
+        "function _M.UpdateViewInfoShow(self,msg)\n"
+        "local isHasPass=msg.passLevelVOS and msg.passLevelVOS:Contains(msg.levelId)\n"
+        "local isHasRewards=msg.rewardResults and msg.rewardResults:Count()>0\n"
+        "if isHasRewards then self.ItemScrollView:UpdateView(msg.rewardResults) end\n"
+        "end\nreturn _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDData.lua").write_text(
+        "local _M={}\n"
+        "function _M.SetFinishLevelInfo(self,msg)\n"
+        "self:InitNewLevelDic(msg.passLevelVOS)\n"
+        "end\n"
+        "function _M.InitNewLevelDic(self,passList)\n"
+        "for _,levelId in Cipairs(passList)do\n"
+        "self.V_NewLevelIdDic[levelId]=true\n"
+        "end\nend\nreturn _M\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_gameplayer_result_probe(export_root=export_root)
+    assert result["stats"]["sm_gameplayer_field_count"] == 7
+    assert result["stats"]["reward_result_field_count"] == 8
+    assert result["stats"]["pass_level_consumer_evidence_count"] >= 2
+    assert result["verdict"]["reward_results_are_server_returned_reward_list"] is True
+    assert result["verdict"]["pass_level_vos_are_consumed_as_level_id_list"] is True
+    assert result["verdict"]["gameplayer_response_is_server_result_boundary"] is True
+
+    fields_text = Path(result["files"]["fields"]).read_text(encoding="utf-8-sig")
+    evidence_text = Path(result["files"]["evidence"]).read_text(encoding="utf-8-sig")
+    report_text = Path(result["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "server_reward_result_list" in fields_text
+    assert "ItemScrollView" in evidence_text
+    assert "level-id" in report_text
+
+
+def test_fanxiu_doupotd_reward_config_probe_links_static_rewards_to_result_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    tower_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "doupotowerdefense_mock" / "text_assets"
+    drop_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "drop_mock" / "text_assets"
+    item_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "item_mock" / "text_assets"
+    lscript_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "doupotd_mock" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    tower_dir.mkdir(parents=True)
+    drop_dir.mkdir(parents=True)
+    item_dir.mkdir(parents=True)
+    lscript_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+    (tower_dir / "Level.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,different=2,stage=3,layer=4,subLayer=5,ShowPosId=6,name=7,rewardShowTitle=8,showImg=9,reward=10,monster=11}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]='',[8]='',[9]=0,[10]=nil,[11]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='第1关',\n[2]='通关1关得天资丹',\n[3]='item|3020501_2_7',\n[4]='item|8064_500',\n}\n"
+        "local _B={\n[1]={_A[3],_A[4]},\n[2]={101,102},\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=1,[3]=1,[4]=1,[5]=1,[6]=1,[7]=_A[1],[8]=_A[2],[9]=3020501,[10]=_B[1],[11]=_B[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "DoupoPreLevelReward.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,different=3,stage=4,title=5,rewardShow=6}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]=0,[5]='',[6]=nil}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='塔戈尔沙漠',\n[2]='Item|18017079_-1_7',\n}\n"
+        "local _B={\n[1]={_A[2]},\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=_A[1],[3]=1,[4]=1,[5]=_A[1],[6]=_B[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (tower_dir / "MonsterGroup.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,baseId=2,type=3,modelId=4,drops=5,weight=6}\n"
+        "local _key2null={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _M={\n[101]=setmetatable({[1]=101,[2]=101,[3]=1,[4]=2800001,[5]=3,[6]=80},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (drop_dir / "ItemTeam.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,itemTeam=2,itemId=3,condition=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='Item|3020501_1_7',\n[2]='CLIENT|WL|1_80,CLIENT|SD|1_15',\n}\n"
+        "local _M={\n[1]=setmetatable({[1]=1,[2]=3,[3]=_A[1],[4]=_A[2]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (drop_dir / "StoreContentBag.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,name=2,interactTime=3,appearAction=4,disappearAction=5,effect=6,interactIcon=7,interactingIcon=8,modelId=9,modelZoom=10,range=11}\n"
+        "local _key2null={[1]=0,[2]='',[3]=0,[4]='',[5]='',[6]='',[7]='',[8]='',[9]=0,[10]=0,[11]=0}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0,[5]=0,[6]=0,[7]=0,[8]=0,[9]=0,[10]=0,[11]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='测试储物袋',\n[2]='ani|diaoluo',\n[3]='ani|open',\n[4]='eff_test',\n[5]='mainui_btn_0104|打开',\n[6]='mainui_btn_0104|开启中...',\n}\n"
+        "local _M={\n[101]=setmetatable({[1]=101,[2]=_A[1],[3]=0.5,[4]=_A[2],[5]=_A[3],[6]=_A[4],[7]=_A[5],[8]=_A[6],[9]=125,[10]=2,[11]=3},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDData.lua").write_text(
+        "function _M.GetPreRewardDataList(self,type,stage)\n"
+        "data.rewardsList=CostAndRewardMgr.Inst_get():FormatStrArr2Reward(v.reward)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDInfoPanel.lua").write_text(
+        "function _M.UpdateRewardListScroll(self)\n"
+        "if self.showLevelCfg and self.showLevelCfg.reward then\n"
+        "local rewardList=CostAndRewardMgr.Inst_get():FormatStrArr2Reward(self.showLevelCfg.reward)\n"
+        "end\nend\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDMgr.lua").write_text(
+        "local cfg=DBMgr.Inst_get():GetConfigTable(ConfigName.DoupoTowerDefense_DoupoPreLevelReward)\n"
+        "if v.rewardShow then local itemCfg,num,extraMark=GameUtil.GetItemIcon(v) end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DoupoTDNetLogic.lua").write_text(
+        "function _M.SM_DoupoTDGamePlayerFun(msg)\n"
+        "if msg.rewardResults and msg.rewardResults:Count()>0 then CostAndRewardMgr.Inst_get():AddRewardResults(msg.rewardResults,RewardAndCostPopType.BULLET_FRAME) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DropNetLogic.lua").write_text(
+        "function _M.SM_DropObjectsFun(msg)\n"
+        "if msg.dropObjectVO then DropMgr.Inst_get():DropItemMethod(msg.dropObjectVO) end\n"
+        "end\n"
+        "function _M.SM_PickUpFun(msg)\n"
+        "if msg.pickUpVO and msg.pickUpVO.rewardResults then CostAndRewardMgr.Inst_get():AddRewardResults(msg.pickUpVO.rewardResults) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DropMgr.lua").write_text(
+        "function _M.DropItemMethod(self,dropMsgList)\n"
+        "for k,dropItem in Kpairs(dropMsgList.dropMap) do local code=dropItem.rewardItem.code end\n"
+        "end\n"
+        "function _M.CreateDropView(self,dropItem,deadGrid)\n"
+        "_Drop.V_Code=dropItem.rewardItem.code\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DropObjectVO.lua").write_text(
+        "self.dropWhich=0\nself.dropMonster=0\nself.dropMap=Dictionary.new()\nself:readMessageMap2Dic(self.dropMap)\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "DropUnitVO.lua").write_text(
+        "self.dropMonster=0\nself.rewardItem=RewardItem.new()\nself.rewardItem=self:readBean(typeof(RewardItem))\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "PickUpVO.lua").write_text(
+        "self.rewardResults=CList.new()\nself.successList=CList.new()\nself:readMessageList2List(self.rewardResults)\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "BagUnitVO.lua").write_text(
+        "self.monsterId=0\nself.dropMonster=0\nself.bagModel=0\nself:readMessageList2List(self.canPickAccounts)\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "BagObjectVO.lua").write_text(
+        "self.dropMonster=0\nself.bagUnitVO=BagUnitVO.new()\nself.bagUnitVO=self:readBean(typeof(BagUnitVO))\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "StoreContentBag.lua").write_text(
+        "function _M.InitData(self,data)\n"
+        "self.dropMonster=data.monsterId\n"
+        "self.storeCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Drop_StoreContentBag,data.bagModel)\n"
+        "self:SetDisplayId(self.storeCfg.modelId)\nself:SetModelScale(self.storeCfg.modelZoom)\nself.V_Name=self.storeCfg.name\n"
+        "end\n"
+        "function _M.PhaseBagData(self)\n"
+        "local appear=self.storeCfg.appearAction\nlocal disappear=self.storeCfg.disappearAction\nself:CtorActionByCfg(self.appearAction,appear)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "StoreContentBagView.lua").write_text(
+        "function _M.OnInteract(self)\nDropMgr.Inst_get().NetLogic:Get_CM_OpenBag(self.Entity.V_ID)\nend\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "RewardType.lua").write_text(
+        "local _M={}\n"
+        "_M.ExtraMark={Common=0,Vip=1,Faze=2,FirstGet=3,GongFaExpFull=4}\n"
+        "_M.ITEM=0\n"
+        "_M.WALLET=1\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "RewardResult.lua").write_text(
+        "function _M:Read(_os_)\n"
+        "self.type=_os_:ReadInt()\n"
+        "self.code=_os_:ReadInt()\n"
+        "self.amount=_os_:ReadLong()\n"
+        "self.extraMark=_os_:ReadInt()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "CostAndRewardMgr.lua").write_text(
+        "function _M.AddRewardResults(self,rewardResults,popType)\n"
+        "if reward.extraMark and reward.extraMark==RewardType.ExtraMark.Faze then end\n"
+        "if reward.type==RewardType.ITEM and reward.mail~=true then\n"
+        "local itemCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_Item,reward.code)\n"
+        "end\nend\n"
+        "function _M.FormatStr2Reward(self,str,multiple)\n"
+        "local reward=_RewardResult.new()\n"
+        "reward.code=code\n"
+        "reward.type=RewardType.ITEM\n"
+        "reward.amount=tonumber(rewardArr1[1])*multiple\n"
+        "reward.extraMark=tonumber(rewardArr1[2]) or 0\n"
+        "return reward\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lscript_dir / "GameUtil.lua").write_text(
+        "function _M.GetItemIcon(str)\nlocal extraMark=idList[2]\nend\n"
+        "function _M.GetRewardResult(itemId,amount,extraMark)\n"
+        "local str='Item|'..itemId..'_'..amount..'_'..extraMark\n"
+        "return CostAndRewardMgr.Inst_get().FormatStr2Reward(str)\nend\n"
+        "function _M.GetItemCfgByRewardResult(rewardResult)\n"
+        "return _M.GetItemCfgByRewardTypeAndCode(rewardType,code)\nend\n"
+        "function _M.GetItemCfgByRewardTypeAndCode(rewardType,code,content)\n"
+        "if rewardType==RewardType.ITEM then return DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_Item,code) end\n"
+        "end\n"
+        "function _M.ConvertRewardByResource(rewardResult,baseNotMask)\ndata.extraMark=type\nend\n"
+        "function _M.ConsumeReward(rewardResult)\nif v.code==j.code and v.extraMark==j.extraMark then end\nend\n"
+        "function _M.SortReward(rewardCList)\nif a.extraMark~=nil and a.extraMark==RewardType.ExtraMark.FirstGet then end\nend\n"
+        "function _M.UpdateItemCornet(item,effName,effItemName,cornerRoot,cornerTxt,extraMark)\n"
+        "local cornerCfg=DBMgr.Inst_get():GetConfigTableById(ConfigName.Item_ItemCorner,extraMark,true)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (item_dir / "ItemCorner.lua").write_text(
+        "local c=require('Generate.Cfg.bean')\n"
+        "local _key2index={id=1,showType=2,name=3,effName=4}\n"
+        "local _key2null={[1]=0,[2]=0,[3]='',[4]=''}\n"
+        "local _key2type={[1]=0,[2]=0,[3]=0,[4]=0}\n"
+        "local _P=c.Init(_key2index,_key2null,_key2type)\n"
+        "local _A={\n[1]='pre_eff_ui_zongmenqifu_paomadeng',\n[2]='',\n}\n"
+        "local _M={\n[7]=setmetatable({[1]=7,[2]=2,[3]=_A[2],[4]=_A[1]},_P),\n}\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "protocol_catalog_canonical.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tread_fields\twrite_fields\tregistration_count\thandler_names\tlogic_names\tsource_file_count\tsample_files\n"
+        "10053\tRewardResult\tother\tcommon.reward.model.RewardResult\t8\ttype:Int, code:Int, amount:Long, content:Bean<BaseMessage>, mail:Bool, isFirstGet:Bool, additions:MessageMap2Dic, extraMark:Int\ttype:Int, code:Int, amount:Long, content:Bean, mail:Bool, isFirstGet:Bool, extraMark:Int\t0\t\t\t2\tRewardResult.lua\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_doupotd_reward_config_probe(export_root=export_root)
+
+    assert result["stats"]["level_reward_row_count"] == 1
+    assert result["stats"]["prelevel_reward_row_count"] == 1
+    assert result["stats"]["reward_item_row_count"] == 3
+    assert result["stats"]["monster_drop_group_ref_count"] == 1
+    assert result["verdict"]["level_reward_is_client_display_config"] is True
+    assert result["verdict"]["prelevel_reward_show_is_preview_config"] is True
+    assert result["verdict"]["server_result_boundary_remains_rewardResults"] is True
+    items_text = (export_root / "apk_static_index" / "lua_lscript_module_doupotd_reward_config_items.tsv").read_text(
+        encoding="utf-8-sig"
+    )
+    assert "3020501" in items_text
+    assert "18017079" in items_text
+    assert "\t2\t7\t" in items_text
+
+    searched = search_fanxiu_doupotd_reward_configs(query="3020501", export_root=export_root)
+    assert searched["total"] == 1
+    assert searched["items"][0]["source_table"] == "Level"
+    assert searched["items"][0]["items"][0]["item_id"] == "3020501"
+
+    prelevel = search_fanxiu_doupotd_reward_configs(source_table="DoupoPreLevelReward", export_root=export_root)
+    assert prelevel["total"] == 1
+    assert prelevel["items"][0]["items"][0]["extra_mark"] == "7"
+    assert prelevel["items"][0]["items"][0]["reward_result"]["extra_mark_eff_name"] == "pre_eff_ui_zongmenqifu_paomadeng"
+
+    detail = get_fanxiu_doupotd_reward_config(source_table="Level", config_id="1", export_root=export_root)
+    assert detail["item"]["reward_count"] == "2"
+    assert [item["item_id"] for item in detail["item"]["items"]] == ["3020501", "8064"]
+    assert detail["item"]["items"][0]["reward_result"]["runtime_reward_type_name"] == "ITEM"
+    assert detail["item"]["items"][0]["reward_result"]["resolution_rule"] == "RewardType.ITEM(0) => ConfigName.Item_Item[code]"
+
+    monster_drop = build_fanxiu_doupotd_monster_drop_resolution_probe(export_root=export_root)
+    assert monster_drop["stats"]["monster_drop_group_ref_count"] == 1
+    assert monster_drop["stats"]["resolved_drop_group_ref_count"] == 1
+    assert monster_drop["stats"]["candidate_item_row_count"] == 1
+    assert monster_drop["verdict"]["monster_group_drops_has_static_itemteam_candidate"] is True
+    assert monster_drop["verdict"]["drop_spawn_uses_server_drop_objects"] is True
+    assert monster_drop["verdict"]["client_drop_unit_contains_reward_item"] is True
+    assert monster_drop["verdict"]["pickup_settlement_uses_server_reward_results"] is True
+    monster_drop_items = Path(monster_drop["files"]["items"]).read_text(encoding="utf-8-sig")
+    monster_drop_report = Path(monster_drop["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "candidate_static_itemteam" in monster_drop_items
+    assert "WL 1-80; SD 1-15" in monster_drop_items
+    assert "server-provided" in monster_drop_report
+
+    store_bag = build_fanxiu_doupotd_store_bag_visual_probe(export_root=export_root)
+    assert store_bag["stats"]["store_bag_config_count"] == 1
+    assert store_bag["stats"]["doupotd_monster_group_count"] == 1
+    assert store_bag["stats"]["direct_static_match_row_count"] == 1
+    assert store_bag["verdict"]["store_bag_visual_resolves_by_server_bag_model"] is True
+    assert store_bag["verdict"]["bag_unit_vo_carries_bag_model"] is True
+    assert store_bag["verdict"]["open_bag_is_client_request_to_server"] is True
+    store_bag_matches = Path(store_bag["files"]["monster_matches"]).read_text(encoding="utf-8-sig")
+    store_bag_report = Path(store_bag["files"]["markdown"]).read_text(encoding="utf-8")
+    assert "测试储物袋" in store_bag_matches
+    assert "runtime uses server BagUnitVO.bagModel" in store_bag_matches
+    assert "BagUnitVO.bagModel" in store_bag_report
+
+    resolution = build_fanxiu_doupotd_reward_result_resolution_probe(export_root=export_root)
+    assert resolution["stats"]["reward_config_item_count"] == 3
+    assert resolution["stats"]["resolved_item_reward_count"] == 3
+    assert resolution["stats"]["nonzero_extra_mark_row_count"] == 2
+    assert resolution["verdict"]["static_reward_string_shape_matches_reward_result"] is True
+    assert resolution["verdict"]["item_reward_type_resolves_code_to_item_table"] is True
+    assert resolution["verdict"]["amount_maps_to_reward_result_amount"] is True
+    assert resolution["verdict"]["extra_mark_resolves_to_item_corner"] is True
+    assert resolution["verdict"]["extra_mark_preserved_in_split_merge_sort"] is True
+    resolution_text = Path(resolution["files"]["items"]).read_text(encoding="utf-8-sig")
+    flow_text = Path(resolution["files"]["flow"]).read_text(encoding="utf-8-sig")
+    assert "RewardType.ITEM(0) => ConfigName.Item_Item[code]" in resolution_text
+    assert "pre_eff_ui_zongmenqifu_paomadeng" in resolution_text
+    assert "\t18017079\t" in resolution_text
+    assert "Item_ItemCorner" in flow_text
 
 
 def test_fanxiu_lingjie_feature_catalog_links_feature_groups(tmp_path):
@@ -2106,6 +4615,1799 @@ def test_fanxiu_lua_login_socket_send_flow_probe_traces_login_packets_to_native_
     assert result["counts"]["cm_login_fields"] == 14
     assert "CM_Login" in report_text
     assert "20001\tCM_Login\tclient_to_server\t14\tsign\tString" in fields_text
+
+
+def test_fanxiu_lua_login_socket_response_flow_probe_traces_sm_login_consumers(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "login_response_flow" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    (text_dir / "VO_URL.lua").write_text(
+        "local _o={}\n"
+        "return {\n"
+        "['20002']=setmetatable({'20002','module.user.login.packet.SM_Login',},_o),\n"
+        "['20007']=setmetatable({'20007','module.user.login.packet.CM_LoginFinish',},_o),\n"
+        "['20008']=setmetatable({'20008','module.user.login.packet.SM_LoginFinish',},_o),\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SM_Login.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.SM_Login"]=_M\n'
+        "function _M.reading(self)\n"
+        "self.accountId=self:readString()\n"
+        "self.token=self:readString()\n"
+        "self.role=_AS_(self:readBean(typeof(RoleVO)),RoleVO)\n"
+        "self.mapInfo=_AS_(self:readBean(typeof(MapInfoVO)),MapInfoVO)\n"
+        "self:readMessageList2List(self.wallet)\n"
+        "self.inner=self:readBool()\n"
+        "self.timestamp=self:readLong()\n"
+        "self.timeZone=self:readInt()\n"
+        "self.worldLevel=self:readInt()\n"
+        "self.functionOpen=_AS_(self:readBean(typeof(FunctionOpenVo)),FunctionOpenVo)\n"
+        "self.totalOnlineSecends=self:readLong()\n"
+        "self.totalTimes=self:readInt()\n"
+        "self.openServer=self:readLong()\n"
+        "self.crossVO=_AS_(self:readBean(typeof(CrossVO)),CrossVO)\n"
+        "self.channelPackage=self:readInt()\n"
+        "self.clubVO=_AS_(self:readBean(typeof(SimpleClubVO)),SimpleClubVO)\n"
+        "_M._super_.reading(self)\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 20002\nend\n"
+        "function _M.getName(self)\nreturn\"SM_Login\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "CM_LoginFinish.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.CM_LoginFinish"]=_M\n'
+        "function _M.getId(self)\nreturn 20007\nend\n"
+        "function _M.getName(self)\nreturn\"CM_LoginFinish\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SM_LoginFinish.lua").write_text(
+        'package.loaded["GameSystem.Game.Message.module.user.login.packet.SM_LoginFinish"]=_M\n'
+        "function _M.getId(self)\nreturn 20008\nend\n"
+        "function _M.getName(self)\nreturn\"SM_LoginFinish\"\nend\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LoginNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_Login:getId(),typeof(_SM_Login),function(msg)\n"
+        "self.SM_LoginData(msg)\n"
+        "end)\n"
+        "_MessagePool.Inst_get():F_Register(_CM_LoginFinish:getId(),typeof(_CM_LoginFinish))\n"
+        "_MessagePool.Inst_get():F_Register(_SM_LoginFinish:getId(),typeof(_SM_LoginFinish),function(msg)\n"
+        "self.SM_LoginFinishData(msg)\n"
+        "end)\n"
+        "end\n"
+        "function _M.SM_LoginData(msg)\n"
+        "UIShowMgr.Inst_get():CloseById(Window.LoginWaitingView)\n"
+        "if(msg==nil or msg.code~=0)then\n"
+        "LoginMgr.Inst_get():DisconnectAndBack(msg.code)\n"
+        "return\n"
+        "end\n"
+        "PhoneHelper.F_UploadThinkingLaunchProcess(SdkLaunchEventType.Recv_Login_Data)\n"
+        "LoginMgr.Inst_get():LoginDataBack(msg)\n"
+        "end\n"
+        "function _M.SM_LoginFinishData(msg)end\n"
+        "function _M.CM_LoginFinishSent()\n"
+        "local CM_LoginFinish=SocketManager.Inst_get():GetMessageFromPools(_CM_LoginFinish)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_LoginFinish)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LoginMgr.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginDataBack(self,msg)\n"
+        "self.EnterGameInfo:StartEnter_4(msg)\n"
+        "end\n"
+        "function _M.GetSmLoginData(self)\n"
+        "return self.EnterGameInfo.V_SM_Login\n"
+        "end\n"
+        "function _M.CheckAndSendFinish(self)\n"
+        "self.EnterGameInfo:CheckAndSendFinish()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.StartEnter_4(self,msg)\n"
+        "self.V_SM_Login=msg\n"
+        "serverItem.token=msg.token\n"
+        "self:ChangeChannelPackage(msg and msg.channelPackage)\n"
+        "self:FinishChekDataInfo()\n"
+        "LoginMgr.Inst_get().GameTime:TimeDataInfo(msg.timestamp,msg.timeZone)\n"
+        "LoginMgr.Inst_get().SdkCustomEvent:SmLoginInfo(msg)\n"
+        "self:UpdateCrossData(msg and msg.crossVO)\n"
+        "self.openServer=msg.openServer\n"
+        "self:StartEnter_5(msg)\n"
+        "end\n"
+        "function _M.UpdateCrossData(self,crossVO)\n"
+        "self.V_CrossVO=crossVO\n"
+        "self.V_ServerList=self.V_CrossVO and self.V_CrossVO.serverList\n"
+        "self.V_PrepareServerList=self.V_CrossVO and self.V_CrossVO.prepareServerList\n"
+        "self.V_CrossServerDic=dic\n"
+        "end\n"
+        "function _M.StartEnter_5(self,msg)\n"
+        "self.V_EnterGameMapInfo=msg.mapInfo\n"
+        "TaskMgr.Inst_get().Model.TaskData:OnLevelUpdate(msg.role.level)\n"
+        "WorldlevelMgr.Inst_get().Model:SetWorldLevel(msg.worldLevel)\n"
+        "WalletMgr.Inst_get().Model.WalletData:SetWalletInfo(msg.wallet)\n"
+        "FunctionMgr.Inst_get().Model:DataInfo(msg.functionOpen)\n"
+        "PhoneHelper.SetUserName(msg.role.name,msg.role.roleId:ToString())\n"
+        "RoleMgr.Inst_get():InitRole(msg.role)\n"
+        "SceneMgr.Inst_get().SceneNetLogic.CM_RecoverMapFun(false)\n"
+        "self:GetBaseModelData(msg)\n"
+        "end\n"
+        "function _M.CheckAndSendFinish(self)\n"
+        "self.V_InfoAllFinish=self.V_IsInfoRole and self.V_IsInfoTime and self.V_IsEnterScence\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_LoginFinishSent()\n"
+        "LoginMgr.Inst_get().LoginModel:RaiseEvent(LoginType.EventType.LoginSucceed)\n"
+        "self.LoginFinishGetServerData()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "GameTime.lua").write_text(
+        "local _M={}\n"
+        "function _M.TimeDataInfo(self,timestamp,timeZone)\n"
+        "self.timeZone=timeZone\n"
+        "self:UpdateSystemTime(timestamp)\n"
+        "end\n"
+        "function _M.UpdateSystemTime(self,timestamp)\n"
+        "LoginMgr.Inst_get().EnterGameInfo.V_IsInfoTime=true\n"
+        "LoginMgr.Inst_get().EnterGameInfo:CheckAndSendFinish()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_socket_response_flow_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_socket_response_flow_report.md").read_text(encoding="utf-8")
+    fields_text = (output_dir / "lua_login_socket_response_fields.tsv").read_text(encoding="utf-8-sig")
+    consumers_text = (output_dir / "lua_login_socket_response_consumers.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["sm_login_fields"] == 16
+    assert "SM_Login(20002)" in report_text
+    assert "20002\tSM_Login\tserver_to_client\t16\tclubVO\tBean\tSimpleClubVO" in fields_text
+    assert "token\tEnterGameInfo.StartEnter_4 -> curServerItem.token" in consumers_text
+
+
+def test_fanxiu_lua_login_finish_post_sync_probe_maps_first_sync_fanout(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "login_finish_flow" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.CheckAndSendFinish(self)\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_LoginFinishSent()\n"
+        "LoginMgr.Inst_get().LoginModel:RaiseEvent(LoginType.EventType.LoginSucceed)\n"
+        "self.LoginFinishGetServerData()\n"
+        "end\n"
+        "function _M.LoginFinishGetServerData()\n"
+        "EventMgr.Inst_get().NetLogic:CM_EventSyncAllFun()\n"
+        "MedicineMgr.Inst_get():GetClientAttributes()\n"
+        "SubpackageMgr.Inst_get():StartInit()\n"
+        "XianLvMinesMgr.Inst_get().NetLogic:CM_SyncBattleFieldBuffsFun()\n"
+        "WorldlevelMgr.Inst_get().NetLogic:CM_WorldLevelWorshipInfoSyncFun()\n"
+        "local FunctionType=require\"GameSystem.Game.Function.Model.FunctionType\"\n"
+        "if FunctionMgr.Inst_get():CheckFunctionOpen(FunctionType.Travel)then\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n"
+        "end\n"
+        "PhoneHelper.F_UploadThinkingLaunchProcess(SdkLaunchEventType.GameLogin_Success,\"\")\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LoginNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_LoginFinishSent()\n"
+        "local CM_LoginFinish=SocketManager.Inst_get():GetMessageFromPools(_CM_LoginFinish)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_LoginFinish)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WorldlevelNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_WorldLevelWorshipInfoSyncFun(self)\n"
+        "local CM_WorldLevelWorshipInfoSync=SocketManager.Inst_get():GetMessageFromPools(_CM_WorldLevelWorshipInfoSync)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_WorldLevelWorshipInfoSync)\n"
+        "end\n"
+        "function _M.SM_WorldLevelWorshipInfoSyncFun(msg)end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LuaInitializer.lua").write_text(
+        "local _M={}\n"
+        "function _M.GameStartInit()\n"
+        "FunctionMgr.Inst_get().Model:InitByFunctionOpen(FunctionType.Travel,function()\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n"
+        "end)\n"
+        "end\n"
+        "return _M\n",
+        encoding="utf-8",
+    )
+    (text_dir / "VO_URL.lua").write_text(
+        "local _o={}\n"
+        "return {\n"
+        "['20007']=setmetatable({'20007','module.user.login.packet.CM_LoginFinish',},_o),\n"
+        "['38005']=setmetatable({'38005','module.player.event.packet.CM_EventSyncAll',},_o),\n"
+        "['87641']=setmetatable({'87641','module.player.partner.packet.CM_SyncBattleFieldBuffs',},_o),\n"
+        "['10083']=setmetatable({'10083','module.world.worldlevel.packet.CM_WorldLevelWorshipInfoSync',},_o),\n"
+        "['14371']=setmetatable({'14371','module.player.inner.youlipool.packet.CM_YouliPoolInfo',},_o),\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    packet_sources = {
+        "CM_LoginFinish.lua": (
+            "GameSystem.Game.Message.module.user.login.packet.CM_LoginFinish",
+            "CM_LoginFinish",
+            20007,
+            "",
+        ),
+        "CM_EventSyncAll.lua": ("GameSystem.Game.Message.module.player.event.packet.CM_EventSyncAll", "CM_EventSyncAll", 38005, ""),
+        "SM_EventSyncAll.lua": (
+            "GameSystem.Game.Message.module.player.event.packet.SM_EventSyncAll",
+            "SM_EventSyncAll",
+            38006,
+            "self:readMessageList2List(self.events)\n",
+        ),
+        "CM_SyncBattleFieldBuffs.lua": (
+            "GameSystem.Game.Message.module.player.partner.packet.CM_SyncBattleFieldBuffs",
+            "CM_SyncBattleFieldBuffs",
+            87641,
+            "",
+        ),
+        "SM_SyncBattleFieldBuffs.lua": (
+            "GameSystem.Game.Message.module.player.partner.packet.SM_SyncBattleFieldBuffs",
+            "SM_SyncBattleFieldBuffs",
+            87642,
+            "self:readMessageMap2Dic(self.activityBaseIdToBuff)\n",
+        ),
+        "CM_WorldLevelWorshipInfoSync.lua": (
+            "GameSystem.Game.Message.module.world.worldlevel.packet.CM_WorldLevelWorshipInfoSync",
+            "CM_WorldLevelWorshipInfoSync",
+            10083,
+            "",
+        ),
+        "SM_WorldLevelWorshipInfoSync.lua": (
+            "GameSystem.Game.Message.module.world.worldlevel.packet.SM_WorldLevelWorshipInfoSync",
+            "SM_WorldLevelWorshipInfoSync",
+            10084,
+            "self.firstRankVO=self:readBean(typeof(ActivityRankPersonalVO))\n"
+            "self.worshipTimes=self:readInt()\n"
+            "self:readMessageList2List(self.rewardItems)\n"
+            "self.recState=self:readInt()\n",
+        ),
+        "CM_YouliPoolInfo.lua": (
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.CM_YouliPoolInfo",
+            "CM_YouliPoolInfo",
+            14371,
+            "",
+        ),
+        "SM_YouliPoolInfo.lua": (
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.SM_YouliPoolInfo",
+            "SM_YouliPoolInfo",
+            14372,
+            "self:readMessageMap2Dic(self.infoMap)\n",
+        ),
+    }
+    for filename, (package_name, packet_name, packet_id, reading_body) in packet_sources.items():
+        (text_dir / filename).write_text(
+            f'package.loaded["{package_name}"]=_M\n'
+            "function _M.reading(self)\n"
+            f"{reading_body}"
+            "return true\n"
+            "end\n"
+            "function _M.getId(self)\n"
+            f"return {packet_id}\n"
+            "end\n"
+            "function _M.getName(self)\n"
+            f"return\"{packet_name}\"\n"
+            "end\n",
+            encoding="utf-8",
+        )
+
+    result = build_fanxiu_lua_login_finish_post_sync_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_finish_post_sync_report.md").read_text(encoding="utf-8")
+    entries_text = (output_dir / "lua_login_finish_post_sync_entries.tsv").read_text(encoding="utf-8-sig")
+    fields_text = (output_dir / "lua_login_finish_post_sync_packet_fields.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["sync_entries"] == 8
+    assert result["counts"]["response_fields"] == 7
+    assert "LoginFinishGetServerData" in report_text
+    assert "event_sync_all\tsocket_request_response" in entries_text
+    assert "10084\tSM_WorldLevelWorshipInfoSync\tserver_to_client\t4\trecState\tInt" in fields_text
+
+
+def test_fanxiu_lua_login_post_sync_handler_probe_closes_visible_handlers(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "post_sync_handlers" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginFinishGetServerData()\n"
+        "EventMgr.Inst_get().NetLogic:CM_EventSyncAllFun()\n"
+        "SubpackageMgr.Inst_get():StartInit()\n"
+        "XianLvMinesMgr.Inst_get().NetLogic:CM_SyncBattleFieldBuffsFun()\n"
+        "WorldlevelMgr.Inst_get().NetLogic:CM_WorldLevelWorshipInfoSyncFun()\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WorldlevelNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.LuaWorldlevelNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_WorldLevelWorshipInfoSync:getId(),typeof(_SM_WorldLevelWorshipInfoSync),function(msg)\n"
+        "self.SM_WorldLevelWorshipInfoSyncFun(msg)\n"
+        "end)\n"
+        "end\n"
+        "function _M.CM_WorldLevelWorshipInfoSyncFun(self)\n"
+        "local CM_WorldLevelWorshipInfoSync=SocketManager.Inst_get():GetMessageFromPools(_CM_WorldLevelWorshipInfoSync)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_WorldLevelWorshipInfoSync)\n"
+        "end\n"
+        "function _M.SM_WorldLevelWorshipInfoSyncFun(msg)\n"
+        "print(\"SM_WorldLevelWorshipInfoSyncDataIsGet\")\n"
+        "WorldlevelMgr.Inst_get().Model.WorldlevelData:SetWorshipInfo(msg)\n"
+        "WorldlevelMgr.Inst_get().Model:RaiseEvent(WorldlevelType.WORLD_LEVEL_WORSHIP_INFO_SYNC,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WorldlevelData.lua").write_text(
+        "local _M={}\n"
+        "function _M.SetWorshipInfo(self,msg)\n"
+        "self.worshipInfo=msg\n"
+        "end\n"
+        "function _M.UpdateRewardItems(self,rewardItems)\n"
+        "self.worshipInfo.rewardItems=rewardItems\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WorldlevelType.lua").write_text(
+        "local _M={}\n"
+        "_M.WORLD_LEVEL_WORSHIP_INFO_SYNC=\"WORLD_LEVEL_WORSHIP_INFO_SYNC\"\n"
+        "_M.WORLD_LEVEL_REWARD_NOTIFY=\"WORLD_LEVEL_REWARD_NOTIFY\"\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WorldLevelWorshipView.lua").write_text(
+        "local _M={}\n"
+        "WorldlevelMgr.Inst_get().Model:BinderEvent(WorldlevelType.WORLD_LEVEL_WORSHIP_INFO_SYNC,self._OnWorshipInfoSync)\n"
+        "function _M.OnWorshipInfoSync(self,msg)\n"
+        "self:UpdateView(msg)\n"
+        "end\n"
+        "function _M.UpdateView(self,msg)\n"
+        "self.worshipData=WorldlevelMgr.Inst_get().Model.WorldlevelData:GetWorshipInfo()\n"
+        "local firstRankVO=self.worshipData.firstRankVO\n"
+        "self.name:SetText(firstRankVO.name or\"\")\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SubpackageMgr.lua").write_text(
+        "local _M={}\n"
+        "function _M.StartInit(self)\n"
+        "self.Model:CheckLoadingAndStart()\n"
+        "end\n"
+        "function _M.GetServerData(self)\n"
+        "self.NetLogic:CM_SubpackageSyncFun()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SubpackageModel.lua").write_text(
+        "local _M={}\n"
+        "function _M.CheckLoadingAndStart(self)\n"
+        "self:DataInfo()\n"
+        "self:InfoSubcontract()\n"
+        "self:AddEvent()\n"
+        "self.V_LoadingSubId=LuaGameResDownloadBridge.GetDownloadingPackageId()\n"
+        "SubpackageMgr.Inst_get():GetServerData()\n"
+        "end\n"
+        "function _M.SM_SubpackageSyncFun(self,msg)\n"
+        "self.V_SubPackageRecRewardList=msg.subpackageIds\n"
+        "self.V_SubRecRewardListInfo=true\n"
+        "LuaEventMgr.Inst_get():RaiseEvent(CommonEventType.SUB_PACKAGE_LOADIND_UPDATE)\n"
+        "SubpackageMgr.Inst_get().Model:UpdateMainUiLoadinBtn()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "SubpackageNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_SubpackageSyncFun(self)\n"
+        "local CM_SubpackageSync=SocketManager.Inst_get():GetMessageFromPools(_CM_SubpackageSync)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_SubpackageSync)\n"
+        "end\n"
+        "function _M.SM_SubpackageSyncFun(msg)\n"
+        "SubpackageMgr.Inst_get().Model:SM_SubpackageSyncFun(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "EventNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_EventSyncAllFun()\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_EventSyncAll)\n"
+        "end\n"
+        "function _M.SM_EventSyncAllFun(msg)\n"
+        "EventMgr.Inst_get().Model.EventData:EventInfo(msg.events)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "EventData.lua").write_text(
+        "local _M={}\n"
+        "function _M.EventInfo(self,events)\n"
+        "self:AddEventVO(eventvo)\n"
+        "LocationDetectionMgr.Inst_get():StartCheckEvent()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "XianLvMinesNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_SyncBattleFieldBuffsFun(self)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_SyncBattleFieldBuffs)\n"
+        "end\n"
+        "function _M.SM_SyncBattleFieldBuffsFun(msg)\n"
+        "XianLvMinesMgr.Inst_get().Model:SetBattleFieldBuffs(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "XianLvMinesModel.lua").write_text(
+        "local _M={}\n"
+        "function _M.SetBattleFieldBuffs(self,msg)\n"
+        "self.Data:SetBattleFieldBuffs(msg and msg.activityBaseIdToBuff)\n"
+        "self:RaiseEvent(XianLvMinesType.EventType.XianLvMinesUpdateBattleFieldBuffs)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "YoulipoolNetLogic.lua").write_text(
+        "local _M={}\n"
+        "function _M.CM_YouliPoolInfoFun(self)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_YouliPoolInfo)\n"
+        "end\n"
+        "function _M.SM_YouliPoolInfoFun(msg)\n"
+        "YoulipoolMgr.Inst_get().Model:SetInfoMap(msg.infoMap)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "YoulipoolModel.lua").write_text(
+        "local _M={}\n"
+        "function _M.SetInfoMap(self,infoMap)\n"
+        "self.YoulipoolData:SetInfoMap(infoMap)\n"
+        "self:RaiseEvent(YoulipoolType.EventType.InfoUpdate)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    def write_packet(filename: str, package_name: str, packet_name: str, packet_id: int, reading_body: str) -> None:
+        (text_dir / filename).write_text(
+            f'package.loaded["{package_name}"]=_M\n'
+            "function _M.reading(self)\n"
+            f"{reading_body}"
+            "return true\n"
+            "end\n"
+            "function _M.getId(self)\n"
+            f"return {packet_id}\n"
+            "end\n"
+            "function _M.getName(self)\n"
+            f"return\"{packet_name}\"\n"
+            "end\n",
+            encoding="utf-8",
+        )
+
+    packet_sources = {
+        "CM_EventSyncAll.lua": ("GameSystem.Game.Message.module.player.event.packet.CM_EventSyncAll", "CM_EventSyncAll", 38005, ""),
+        "SM_EventSyncAll.lua": (
+            "GameSystem.Game.Message.module.player.event.packet.SM_EventSyncAll",
+            "SM_EventSyncAll",
+            38006,
+            "self:readMessageList2List(self.events)\n",
+        ),
+        "CM_SyncBattleFieldBuffs.lua": (
+            "GameSystem.Game.Message.module.player.partner.packet.CM_SyncBattleFieldBuffs",
+            "CM_SyncBattleFieldBuffs",
+            87641,
+            "",
+        ),
+        "SM_SyncBattleFieldBuffs.lua": (
+            "GameSystem.Game.Message.module.player.partner.packet.SM_SyncBattleFieldBuffs",
+            "SM_SyncBattleFieldBuffs",
+            87642,
+            "self:readMessageMap2Dic(self.activityBaseIdToBuff)\n",
+        ),
+        "CM_WorldLevelWorshipInfoSync.lua": (
+            "GameSystem.Game.Message.module.world.worldlevel.packet.CM_WorldLevelWorshipInfoSync",
+            "CM_WorldLevelWorshipInfoSync",
+            10083,
+            "",
+        ),
+        "SM_WorldLevelWorshipInfoSync.lua": (
+            "GameSystem.Game.Message.module.world.worldlevel.packet.SM_WorldLevelWorshipInfoSync",
+            "SM_WorldLevelWorshipInfoSync",
+            10084,
+            "self.firstRankVO=self:readBean(typeof(ActivityRankPersonalVO))\n"
+            "self.worshipTimes=self:readInt()\n"
+            "self:readMessageList2List(self.rewardItems)\n"
+            "self.recState=self:readInt()\n",
+        ),
+        "CM_YouliPoolInfo.lua": (
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.CM_YouliPoolInfo",
+            "CM_YouliPoolInfo",
+            14371,
+            "",
+        ),
+        "SM_YouliPoolInfo.lua": (
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.SM_YouliPoolInfo",
+            "SM_YouliPoolInfo",
+            14372,
+            "self:readMessageMap2Dic(self.infoMap)\n",
+        ),
+        "CM_SubpackageSync.lua": (
+            "GameSystem.Game.Message.module.player.subpackage.packet.CM_SubpackageSync",
+            "CM_SubpackageSync",
+            43203,
+            "",
+        ),
+        "SM_SubpackageSync.lua": (
+            "GameSystem.Game.Message.module.player.subpackage.packet.SM_SubpackageSync",
+            "SM_SubpackageSync",
+            43204,
+            "self:readMessageList2List(self.subpackageIds)\n",
+        ),
+    }
+    for filename, (package_name, packet_name, packet_id, reading_body) in packet_sources.items():
+        write_packet(filename, package_name, packet_name, packet_id, reading_body)
+
+    result = build_fanxiu_lua_login_post_sync_handler_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_handlers_report.md").read_text(encoding="utf-8")
+    handlers_text = (output_dir / "lua_login_post_sync_handlers.tsv").read_text(encoding="utf-8-sig")
+    fields_text = (output_dir / "lua_login_post_sync_handler_packet_fields.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["handlers"] == 5
+    assert result["counts"]["closed_handlers"] == 5
+    assert result["counts"]["schema_only_handlers"] == 0
+    assert "Visible closed branches" in report_text
+    assert "event_sync_all\tclosed_lua_handler" in handlers_text
+    assert "xianlv_mines_battlefield_buffs\tclosed_lua_handler" in handlers_text
+    assert "worldlevel_worship_info\tclosed_lua_handler" in handlers_text
+    assert "travel_youlipool_info\tclosed_lua_handler" in handlers_text
+    assert "subpackage_sync\tclosed_lua_handler" in handlers_text
+    assert "43204\tSM_SubpackageSync\tserver_to_client\t1\tsubpackageIds\tMessageList2List" in fields_text
+
+
+def test_fanxiu_lua_login_post_sync_protocol_family_probe_indexes_focus_families(tmp_path):
+    export_root = tmp_path / "exports"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    packet_dir.mkdir(parents=True)
+    header = [
+        "id",
+        "name",
+        "direction",
+        "module",
+        "field_count",
+        "read_fields",
+        "write_fields",
+        "registration_count",
+        "handler_names",
+        "logic_names",
+        "source_file_count",
+        "sample_files",
+    ]
+    rows = [
+        ["38005", "CM_EventSyncAll", "client_to_server", "player.event", "0", "", "", "0", "", "", "1", "CM_EventSyncAll.lua"],
+        ["38006", "SM_EventSyncAll", "server_to_client", "player.event", "1", "events:MessageList2List", "", "0", "", "", "1", "SM_EventSyncAll.lua"],
+        ["38052", "EventVo", "other", "player.event", "6", "id:Int, sourceId:Int", "", "0", "", "", "1", "EventVo.lua"],
+        [
+            "87641",
+            "CM_SyncBattleFieldBuffs",
+            "client_to_server",
+            "player.partner",
+            "0",
+            "",
+            "",
+            "0",
+            "",
+            "",
+            "1",
+            "CM_SyncBattleFieldBuffs.lua",
+        ],
+        [
+            "87642",
+            "SM_SyncBattleFieldBuffs",
+            "server_to_client",
+            "player.partner",
+            "1",
+            "activityBaseIdToBuff:MessageMap2Dic",
+            "",
+            "0",
+            "",
+            "",
+            "1",
+            "SM_SyncBattleFieldBuffs.lua",
+        ],
+        ["87764", "BattleFieldBuffVO", "value_object", "player.partner", "3", "configId:Int, startTime:Long, endTime:Long", "", "0", "", "", "1", "BattleFieldBuffVO.lua"],
+        [
+            "10083",
+            "CM_WorldLevelWorshipInfoSync",
+            "client_to_server",
+            "world.worldlevel",
+            "0",
+            "",
+            "",
+            "1",
+            "",
+            "WorldlevelNetLogic",
+            "1",
+            "CM_WorldLevelWorshipInfoSync.lua",
+        ],
+        [
+            "10084",
+            "SM_WorldLevelWorshipInfoSync",
+            "server_to_client",
+            "world.worldlevel",
+            "4",
+            "firstRankVO:Bean<ActivityRankPersonalVO>, worshipTimes:Int",
+            "",
+            "1",
+            "SM_WorldLevelWorshipInfoSyncFun",
+            "WorldlevelNetLogic",
+            "1",
+            "SM_WorldLevelWorshipInfoSync.lua",
+        ],
+        ["14371", "CM_YouliPoolInfo", "client_to_server", "player.inner.youlipool", "0", "", "", "0", "", "", "1", "CM_YouliPoolInfo.lua"],
+        ["14372", "SM_YouliPoolInfo", "server_to_client", "player.inner.youlipool", "1", "infoMap:MessageMap2Dic", "", "0", "", "", "1", "SM_YouliPoolInfo.lua"],
+        ["14378", "YouliPoolPlayVO", "value_object", "player.inner.youlipool", "6", "bigItems:MessageList2List", "", "0", "", "", "1", "YouliPoolPlayVO.lua"],
+        [
+            "43203",
+            "CM_SubpackageSync",
+            "client_to_server",
+            "player.subpackage",
+            "0",
+            "",
+            "",
+            "1",
+            "",
+            "SubpackageNetLogic",
+            "1",
+            "CM_SubpackageSync.lua",
+        ],
+        [
+            "43204",
+            "SM_SubpackageSync",
+            "server_to_client",
+            "player.subpackage",
+            "1",
+            "subpackageIds:MessageList2List",
+            "",
+            "1",
+            "SM_SubpackageSyncFun",
+            "SubpackageNetLogic",
+            "1",
+            "SM_SubpackageSync.lua",
+        ],
+    ]
+    (packet_dir / "protocol_catalog_canonical.tsv").write_text(
+        "\n".join(["\t".join(header), *["\t".join(row) for row in rows]]) + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_protocol_family_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_protocol_families_report.md").read_text(encoding="utf-8")
+    families_text = (output_dir / "lua_login_post_sync_protocol_families.tsv").read_text(encoding="utf-8-sig")
+    rows_text = (output_dir / "lua_login_post_sync_protocol_family_rows.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["families"] == 5
+    assert result["counts"]["family_rows"] == 13
+    assert result["counts"]["schema_only_families"] == 3
+    assert "xianlv_mines_battlefield_buffs" in report_text
+    assert "subpackage_sync\tplayer.subpackage\t2\t1\t1\t0\t2\t1\tCM_SubpackageSync\tSM_SubpackageSync" in families_text
+    assert "xianlv_mines_battlefield_buffs\t87764\tBattleFieldBuffVO\tvalue_object" in rows_text
+
+
+def test_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe_records_missing_handlers(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "post_sync_gaps" / "text_assets"
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    text_dir.mkdir(parents=True)
+    packet_dir.mkdir(parents=True)
+
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginFinishGetServerData()\n"
+        "EventMgr.Inst_get().NetLogic:CM_EventSyncAllFun()\n"
+        "XianLvMinesMgr.Inst_get().NetLogic:CM_SyncBattleFieldBuffsFun()\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "LuaInitializer.lua").write_text(
+        "local YoulipoolMgr=require\"GameSystem.Game.YouliPool.YoulipoolMgr\"\n"
+        "local XianLvMinesMgr=require\"GameSystem.Game.XianLvMines.XianLvMinesMgr\"\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n",
+        encoding="utf-8",
+    )
+    (text_dir / "TravelFinishView.lua").write_text(
+        "local _M={}\n"
+        "local data=YoulipoolMgr.Inst_get().Model:GetDrawData()\n",
+        encoding="utf-8",
+    )
+    (text_dir / "WinMainXianLvMineContent.lua").write_text(
+        "local _M={}\n"
+        "local mgr=XianLvMinesMgr.Inst_get()\n",
+        encoding="utf-8",
+    )
+
+    def write_packet(filename: str, package_name: str, packet_name: str, packet_id: int, reading_body: str) -> None:
+        (text_dir / filename).write_text(
+            f'package.loaded["{package_name}"]=_M\n'
+            "function _M.reading(self)\n"
+            f"{reading_body}"
+            "return true\n"
+            "end\n"
+            "function _M.getId(self)\n"
+            f"return {packet_id}\n"
+            "end\n"
+            "function _M.getName(self)\n"
+            f"return\"{packet_name}\"\n"
+            "end\n",
+            encoding="utf-8",
+        )
+
+    packet_rows = [
+        ("CM_EventSyncAll.lua", "GameSystem.Game.Message.module.player.event.packet.CM_EventSyncAll", "CM_EventSyncAll", 38005, ""),
+        (
+            "SM_EventSyncAll.lua",
+            "GameSystem.Game.Message.module.player.event.packet.SM_EventSyncAll",
+            "SM_EventSyncAll",
+            38006,
+            "self:readMessageList2List(self.events)\n",
+        ),
+        (
+            "CM_SyncBattleFieldBuffs.lua",
+            "GameSystem.Game.Message.module.player.partner.packet.CM_SyncBattleFieldBuffs",
+            "CM_SyncBattleFieldBuffs",
+            87641,
+            "",
+        ),
+        (
+            "SM_SyncBattleFieldBuffs.lua",
+            "GameSystem.Game.Message.module.player.partner.packet.SM_SyncBattleFieldBuffs",
+            "SM_SyncBattleFieldBuffs",
+            87642,
+            "self:readMessageMap2Dic(self.activityBaseIdToBuff)\n",
+        ),
+        (
+            "CM_YouliPoolInfo.lua",
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.CM_YouliPoolInfo",
+            "CM_YouliPoolInfo",
+            14371,
+            "",
+        ),
+        (
+            "SM_YouliPoolInfo.lua",
+            "GameSystem.Game.Message.module.player.inner.youlipool.packet.SM_YouliPoolInfo",
+            "SM_YouliPoolInfo",
+            14372,
+            "self:readMessageMap2Dic(self.infoMap)\n",
+        ),
+    ]
+    for args in packet_rows:
+        write_packet(*args)
+
+    header = [
+        "id",
+        "name",
+        "direction",
+        "module",
+        "field_count",
+        "read_fields",
+        "write_fields",
+        "registration_count",
+        "handler_names",
+        "logic_names",
+        "source_file_count",
+        "sample_files",
+    ]
+    catalog_rows = [
+        ["38005", "CM_EventSyncAll", "client_to_server", "player.event", "0", "", "", "0", "", "", "1", "CM_EventSyncAll.lua"],
+        ["38006", "SM_EventSyncAll", "server_to_client", "player.event", "1", "events:MessageList2List", "", "0", "", "", "1", "SM_EventSyncAll.lua"],
+        [
+            "87641",
+            "CM_SyncBattleFieldBuffs",
+            "client_to_server",
+            "player.partner",
+            "0",
+            "",
+            "",
+            "0",
+            "",
+            "",
+            "1",
+            "CM_SyncBattleFieldBuffs.lua",
+        ],
+        [
+            "87642",
+            "SM_SyncBattleFieldBuffs",
+            "server_to_client",
+            "player.partner",
+            "1",
+            "activityBaseIdToBuff:MessageMap2Dic",
+            "",
+            "0",
+            "",
+            "",
+            "1",
+            "SM_SyncBattleFieldBuffs.lua",
+        ],
+        ["14371", "CM_YouliPoolInfo", "client_to_server", "player.inner.youlipool", "0", "", "", "0", "", "", "1", "CM_YouliPoolInfo.lua"],
+        ["14372", "SM_YouliPoolInfo", "server_to_client", "player.inner.youlipool", "1", "infoMap:MessageMap2Dic", "", "0", "", "", "1", "SM_YouliPoolInfo.lua"],
+    ]
+    (packet_dir / "protocol_catalog_canonical.tsv").write_text(
+        "\n".join(["\t".join(header), *["\t".join(row) for row in catalog_rows]]) + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_unresolved_handler_gap_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_unresolved_handler_gaps_report.md").read_text(encoding="utf-8")
+    gaps_text = (output_dir / "lua_login_post_sync_unresolved_handler_gaps.tsv").read_text(encoding="utf-8-sig")
+    candidates_text = (output_dir / "lua_login_post_sync_unresolved_handler_gap_candidates.tsv").read_text(encoding="utf-8-sig")
+    fields_text = (output_dir / "lua_login_post_sync_unresolved_handler_gap_packet_fields.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["gaps"] == 3
+    assert result["counts"]["response_fields"] == 3
+    assert "event_sync_all\tEventMgr.Inst_get().NetLogic:CM_EventSyncAllFun()" in gaps_text
+    assert "xianlv_mines_battlefield_buffs\tXianLvMinesMgr" in candidates_text
+    assert "travel_youlipool_info\tYoulipoolMgr" in candidates_text
+    assert "38006\tSM_EventSyncAll\tserver_to_client\t1\tevents\tMessageList2List" in fields_text
+    assert "unresolved_static_gap" in report_text
+
+
+def test_fanxiu_lua_login_post_sync_manager_source_gap_probe_records_required_but_missing_mgr_sources(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "manager_gaps" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    (text_dir / "LuaInitializer.lua").write_text(
+        "local EventMgr=require(\"GameSystem.Game.Event.Mgr.EventMgr\")\n"
+        "LuaEngineBridge:AddSingleton(EventMgr.Inst_get())\n"
+        "local YoulipoolMgr=require(\"GameSystem.Game.Youlipool.Mgr.YoulipoolMgr\")\n"
+        "LuaEngineBridge:AddSingleton(YoulipoolMgr.Inst_get())\n"
+        "local XianLvMinesMgr=require(\"GameSystem.Game.XianLvMines.Mgr.XianLvMinesMgr\")\n"
+        "LuaEngineBridge:AddSingleton(XianLvMinesMgr.Inst_get())\n",
+        encoding="utf-8",
+    )
+    (text_dir / "EnterGameInfo.lua").write_text(
+        "local _M={}\n"
+        "function _M.LoginFinishGetServerData()\n"
+        "EventMgr.Inst_get().NetLogic:CM_EventSyncAllFun()\n"
+        "XianLvMinesMgr.Inst_get().NetLogic:CM_SyncBattleFieldBuffsFun()\n"
+        "YoulipoolMgr.Inst_get().NetLogic:CM_YouliPoolInfoFun()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "TravelEventMgr.lua").write_text(
+        "local _M={}\n"
+        "local LuaEventMgr=require\"Core.Engine.GlobalEvent.LuaEventMgr\"\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_manager_source_gap_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_manager_source_gaps_report.md").read_text(encoding="utf-8")
+    managers_text = (output_dir / "lua_login_post_sync_manager_source_gaps.tsv").read_text(encoding="utf-8-sig")
+    evidence_text = (output_dir / "lua_login_post_sync_manager_source_gap_evidence.tsv").read_text(encoding="utf-8-sig")
+    near_files_text = (output_dir / "lua_login_post_sync_manager_source_gap_near_files.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["managers"] == 3
+    assert "event_sync_all\tEventMgr\tGameSystem.Game.Event.Mgr.EventMgr\tEventMgr.lua" in managers_text
+    assert "required singleton is visible, but its Lua class source/package is absent" in managers_text
+    assert "GameSystem.Game.Youlipool.Mgr.YoulipoolMgr" in evidence_text
+    assert "TravelEventMgr.lua" in near_files_text
+    assert "Rows can be resolved after raw lscript export" in report_text
+
+
+def test_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe_separates_generic_event_mgr(tmp_path):
+    export_root = tmp_path / "exports"
+    diffable_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp" / "MU" / "Manager"
+    isil_dir = export_root / "apk_static_index" / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "MU" / "Manager"
+    diffable_dir.mkdir(parents=True)
+    isil_dir.mkdir(parents=True)
+
+    (diffable_dir / "EventMgr.cs").write_text(
+        "namespace MU.Manager;\n"
+        "public class EventMgr : Notifier\n"
+        "{\n"
+        "    public static EventMgr GetInstance() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (isil_dir / "EventMgr.txt").write_text(
+        "Type: MU.Manager.EventMgr\n"
+        "Method: MU.Manager.EventMgr GetInstance()\n"
+        "Call CsCallLuaMgr.EventMgrRaiseEvent, X0\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_cpp2il_manager_surface_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_cpp2il_manager_surface_report.md").read_text(encoding="utf-8")
+    summary_text = (output_dir / "lua_login_post_sync_cpp2il_manager_surface.tsv").read_text(encoding="utf-8-sig")
+    hits_text = (output_dir / "lua_login_post_sync_cpp2il_manager_surface_hits.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["branches"] == 3
+    assert result["counts"]["generic_eventmgr_hits"] > 0
+    assert "event_sync_all\tEventMgr\tGameSystem.Game.Event.Mgr.EventMgr" in summary_text
+    assert "Only generic C# EventMgr/CsCallLuaMgr event bridge hits are expected here." in summary_text
+    assert "MU.Manager.EventMgr" in hits_text
+    assert "Generic C# event infrastructure" in report_text
+
+
+def test_fanxiu_lua_login_post_sync_lua_loader_boundary_probe_links_loader_to_missing_asset_inventory(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    diffable_dir = output_dir / "cpp2il_2022_1_pre21_arm64_diffable_cs" / "DiffableCs" / "Assembly-CSharp" / "Core" / "Asset"
+    isil_dir = output_dir / "cpp2il_2022_1_pre21_arm64_isil" / "IsilDump" / "Assembly-CSharp" / "Core" / "Asset"
+    diffable_dir.mkdir(parents=True)
+    isil_dir.mkdir(parents=True)
+
+    (diffable_dir / "LScriptData.cs").write_text(
+        "public class LScriptData\n"
+        "{\n"
+        "    public byte[] LoadScript() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    (isil_dir / "AssetManager.txt").write_text(
+        "Method: AssetManager Load\n"
+        "039 Call LScriptData.LoadScript, X0\n",
+        encoding="utf-8",
+    )
+    header = [
+        "status",
+        "module",
+        "group",
+        "logical_path",
+        "actual_path",
+        "asset_name",
+        "path_id",
+        "byte_size",
+        "line_count",
+        "function_count",
+        "requires",
+        "functions",
+        "terms",
+        "output_path",
+    ]
+    rows = [
+        [
+            "changed",
+            "core",
+            "lscripts/core.bytes",
+            "lscripts/core.bytes",
+            "lscripts/core.bytes",
+            "LuaEventMgr.lua",
+            "1",
+            "100",
+            "10",
+            "1",
+            "class",
+            "_M.Inst_get",
+            "",
+            "LuaEventMgr.lua",
+        ],
+        [
+            "changed",
+            "travel",
+            "game",
+            "lscripts/gamesystem/game/travel.bytes",
+            "lscripts/gamesystem/game/travel.bytes",
+            "TravelEventMgr.lua",
+            "2",
+            "100",
+            "10",
+            "1",
+            "class",
+            "_M.AddEvent",
+            "",
+            "TravelEventMgr.lua",
+        ],
+    ]
+    (output_dir / "hot_update_lscripts_text_assets.tsv").write_text(
+        "\n".join(["\t".join(header), *["\t".join(row) for row in rows]]) + "\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_lua_loader_boundary_probe(export_root=export_root)
+    report_text = (output_dir / "lua_login_post_sync_lua_loader_boundary_report.md").read_text(encoding="utf-8")
+    assets_text = (output_dir / "lua_login_post_sync_lua_loader_boundary_assets.tsv").read_text(encoding="utf-8-sig")
+    hits_text = (output_dir / "lua_login_post_sync_lua_loader_boundary_hits.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["asset_rows"] == 3
+    assert "event_sync_all\tEventMgr.lua" in assets_text
+    assert "LuaEventMgr.lua, TravelEventMgr.lua" in assets_text
+    assert "LScriptData.LoadScript" in hits_text
+    assert "current `hot_update_lscripts_text_assets.tsv` index has no exact manager assets" in report_text
+
+
+def test_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe_finds_unindexed_raw_bundle(tmp_path):
+    resource_root = tmp_path / "resources"
+    export_root = tmp_path / "exports"
+    raw_game_dir = resource_root / "lscripts" / "gamesystem" / "game"
+    output_dir = export_root / "apk_static_index"
+    raw_game_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+
+    (raw_game_dir / "event_abc.bytes").write_bytes(
+        b"\x00asset:EventMgr.lua\x00local class=require\x00CM_EventSyncAllFun\x00SM_EventSyncAllFun\x00"
+    )
+    (raw_game_dir / "xianlvmines_def.bytes").write_bytes(b"\x00raw xianlv mines bundle without exported manager marker\x00")
+    (raw_game_dir / "youlipool_ghi.bytes").write_bytes(b"\x00raw youlipool bundle without exported manager marker\x00")
+    (output_dir / "hot_update_lscripts_text_assets.tsv").write_text(
+        "status\tmodule\tgroup\tlogical_path\tactual_path\tasset_name\toutput_path\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_login_post_sync_raw_lscript_bundle_gap_probe(
+        resource_root=resource_root,
+        export_root=export_root,
+    )
+    report_text = (output_dir / "lua_login_post_sync_raw_lscript_bundle_gaps_report.md").read_text(encoding="utf-8")
+    gaps_text = (output_dir / "lua_login_post_sync_raw_lscript_bundle_gaps.tsv").read_text(encoding="utf-8-sig")
+    hits_text = (output_dir / "lua_login_post_sync_raw_lscript_bundle_gap_hits.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["branches"] == 3
+    assert result["counts"]["raw_bundles"] == 3
+    assert result["counts"]["event_mgr_asset_hits"] == 1
+    assert "event_sync_all\tgamesystem/game/event_*.bytes\t1" in gaps_text
+    assert "raw bundle exposes a manager asset marker" in gaps_text
+    assert "EventMgr.lua" in hits_text
+    assert "current text-asset export missed" in report_text
+
+
+def test_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe_exports_and_closes_handlers(tmp_path, monkeypatch):
+    resource_root = tmp_path / "resources"
+    export_root = tmp_path / "exports"
+    raw_game_dir = resource_root / "lscripts" / "gamesystem" / "game"
+    raw_game_dir.mkdir(parents=True)
+    for name in [
+        "event_4202f391f2fa425c1cd3864ebd848b62.bytes",
+        "xianlvmines_ba5b4cf8259585b87649c7c98578275a.bytes",
+        "youlipool_3a952de7d13bbf1ff3e6134fcfd2e3ae.bytes",
+    ]:
+        (raw_game_dir / name).write_bytes(b"fake")
+
+    def fake_export(path, *, resource_root=None, export_root=None, max_assets=None):
+        del resource_root, max_assets
+        base = Path(export_root)
+        stem = Path(path).with_suffix("")
+        text_dir = base / "by_source" / stem / "text_assets"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        if stem.name.startswith("event_"):
+            files = {
+                "EventMgr.lua": 'package.loaded["GameSystem.Game.Event.Mgr.EventMgr"]=_M\nEventMgr=_M\n',
+                "EventNetLogic.lua": (
+                    "function _M.SM_EventSyncAllFun(msg)\n"
+                    "EventMgr.Inst_get().Model.EventData:EventInfo(msg.events)\n"
+                    "end\n"
+                    "function _M.CM_EventSyncAllFun()\n"
+                    "SocketManager.Inst_get():F_SendMsg(CM_EventSyncAll)\n"
+                    "end\n"
+                ),
+                "EventData.lua": (
+                    "function _M.EventInfo(self,events)\n"
+                    "self:AddEventVO(eventvo)\n"
+                    "LocationDetectionMgr.Inst_get():StartCheckEvent()\n"
+                    "end\n"
+                ),
+            }
+        elif stem.name.startswith("xianlvmines_"):
+            files = {
+                "XianLvMinesMgr.lua": 'package.loaded["GameSystem.Game.XianLvMines.Mgr.XianLvMinesMgr"]=_M\nXianLvMinesMgr=_M\n',
+                "XianLvMinesNetLogic.lua": (
+                    "function _M.SM_SyncBattleFieldBuffsFun(msg)\n"
+                    "XianLvMinesMgr.Inst_get().Model:SetBattleFieldBuffs(msg)\n"
+                    "end\n"
+                    "function _M.CM_SyncBattleFieldBuffsFun(self)\n"
+                    "SocketManager.Inst_get():F_SendMsg(CM_SyncBattleFieldBuffs)\n"
+                    "end\n"
+                ),
+                "XianLvMinesModel.lua": (
+                    "function _M.SetBattleFieldBuffs(self,msg)\n"
+                    "self.Data:SetBattleFieldBuffs(msg and msg.activityBaseIdToBuff)\n"
+                    "self:RaiseEvent(XianLvMinesType.EventType.XianLvMinesUpdateBattleFieldBuffs)\n"
+                    "end\n"
+                ),
+            }
+        else:
+            files = {
+                "YoulipoolMgr.lua": 'package.loaded["GameSystem.Game.Youlipool.Mgr.YoulipoolMgr"]=_M\nYoulipoolMgr=_M\n',
+                "YoulipoolNetLogic.lua": (
+                    "function _M.CM_YouliPoolInfoFun(self)\n"
+                    "SocketManager.Inst_get():F_SendMsg(CM_YouliPoolInfo)\n"
+                    "end\n"
+                    "function _M.SM_YouliPoolInfoFun(msg)\n"
+                    "YoulipoolMgr.Inst_get().Model:SetInfoMap(msg.infoMap)\n"
+                    "end\n"
+                ),
+                "YoulipoolModel.lua": (
+                    "function _M.SetInfoMap(self,infoMap)\n"
+                    "self.YoulipoolData:SetInfoMap(infoMap)\n"
+                    "self:RaiseEvent(YoulipoolType.EventType.InfoUpdate)\n"
+                    "end\n"
+                ),
+            }
+        for filename, text in files.items():
+            (text_dir / filename).write_text(text, encoding="utf-8")
+        return {
+            "output_dir": str(text_dir),
+            "items": [{"name": name, "output_path": str(text_dir / name), "byte_size": len(text)} for name, text in files.items()],
+        }
+
+    monkeypatch.setattr("backend.core.fanxiu_lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
+
+    result = build_fanxiu_lua_login_post_sync_raw_lscript_handler_closure_probe(
+        resource_root=resource_root,
+        export_root=export_root,
+    )
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_login_post_sync_raw_lscript_handler_closure_report.md").read_text(encoding="utf-8")
+    closures_text = (output_dir / "lua_login_post_sync_raw_lscript_handler_closures.tsv").read_text(encoding="utf-8-sig")
+    evidence_text = (output_dir / "lua_login_post_sync_raw_lscript_handler_closure_evidence.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["closed_handlers"] == 3
+    assert "event_sync_all\tlscripts/gamesystem/game/event_" in closures_text
+    assert "xianlv_mines_battlefield_buffs" in closures_text
+    assert "travel_youlipool_info" in closures_text
+    assert "EventData.EventInfo(events)" in closures_text
+    assert "XianLvMinesUpdateBattleFieldBuffs" in evidence_text
+    assert "YoulipoolType.EventType.InfoUpdate" in evidence_text
+    assert "close the post-login handler gaps" in report_text
+
+
+def test_fanxiu_lua_raw_lscript_export_coverage_probe_counts_missing_bundles(tmp_path):
+    resource_root = tmp_path / "resources"
+    export_root = tmp_path / "exports"
+    raw_dir = resource_root / "lscripts" / "gamesystem" / "game"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "event_abc.bytes").write_bytes(b"event")
+    (raw_dir / "missing_def.bytes").write_bytes(b"missing")
+    exported_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "event_abc" / "text_assets"
+    exported_dir.mkdir(parents=True)
+    (exported_dir / "EventMgr.lua").write_text("EventMgr", encoding="utf-8")
+
+    result = build_fanxiu_lua_raw_lscript_export_coverage_probe(
+        resource_root=resource_root,
+        export_root=export_root,
+    )
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_raw_lscript_export_coverage_report.md").read_text(encoding="utf-8")
+    coverage_text = (output_dir / "lua_raw_lscript_export_coverage.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["raw_bundles"] == 2
+    assert result["counts"]["covered_by_hash"] == 1
+    assert result["counts"]["missing_export_by_hash"] == 1
+    assert "event_abc.bytes\tlscripts/gamesystem/game\tevent" in coverage_text
+    assert "missing_def.bytes\tlscripts/gamesystem/game\tmissing" in coverage_text
+    assert "Missing rows mean the raw bundle exists" in report_text
+
+
+def test_fanxiu_lua_raw_lscript_missing_export_probe_exports_selected_missing_bundles(tmp_path, monkeypatch):
+    resource_root = tmp_path / "resources"
+    export_root = tmp_path / "exports"
+    raw_dir = resource_root / "lscripts" / "gamesystem" / "game"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "event_abc.bytes").write_bytes(b"event")
+    (raw_dir / "boss_def.bytes").write_bytes(b"boss")
+
+    def fake_export(path, *, resource_root=None, export_root=None, max_assets=None):
+        del resource_root, max_assets
+        stem = Path(path).with_suffix("")
+        text_dir = Path(export_root) / "by_source" / stem / "text_assets"
+        text_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{stem.name}.lua"
+        output_path = text_dir / filename
+        output_path.write_text(
+            f'local A=require"GameSystem.Game.{stem.name}"\nfunction _M.TestFun(self)\nend\n',
+            encoding="utf-8",
+        )
+        return {
+            "output_dir": str(text_dir),
+            "items": [
+                {
+                    "name": filename,
+                    "path_id": 1,
+                    "byte_size": output_path.stat().st_size,
+                    "output_path": str(output_path),
+                }
+            ],
+        }
+
+    monkeypatch.setattr("backend.core.fanxiu_lua_packet_index.export_fanxiu_unity_text_assets", fake_export)
+
+    result = build_fanxiu_lua_raw_lscript_missing_export_probe(
+        resource_root=resource_root,
+        export_root=export_root,
+        module_contains="event",
+    )
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_raw_lscript_missing_export_report.md").read_text(encoding="utf-8")
+    bundles_text = (output_dir / "lua_raw_lscript_missing_export_bundles.tsv").read_text(encoding="utf-8-sig")
+    assets_text = (output_dir / "lua_raw_lscript_missing_export_text_assets.tsv").read_text(encoding="utf-8-sig")
+    refreshed_coverage_text = (output_dir / "lua_raw_lscript_export_coverage.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["candidates"] == 1
+    assert result["counts"]["exported"] == 1
+    assert result["counts"]["text_assets"] == 1
+    assert result["counts"]["after_missing"] == 1
+    assert "event_abc.bytes\tlscripts/gamesystem/game\tevent" in bundles_text
+    assert "event_abc.lua" in assets_text
+    assert "TestFun" in assets_text
+    assert "boss_def.bytes\tlscripts/gamesystem/game\tboss" in refreshed_coverage_text
+    assert "exports selected raw lscript bundles" in report_text
+
+
+def test_fanxiu_lua_lscript_surface_inventory_probe_indexes_full_export_surface(tmp_path):
+    export_root = tmp_path / "exports"
+    event_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" / "text_assets"
+    event_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    event_mgr = event_dir / "EventMgr.lua"
+    event_mgr.write_text(
+        'package.loaded["GameSystem.Game.Event.Mgr.EventMgr"]=_M\n'
+        'local A=require"GameSystem.Game.Event.Model.EventData"\n'
+        "function _M.SM_EventSyncAllFun(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    packet_file = message_dir / "SM_EventSyncAll.lua"
+    packet_file.write_text(
+        'package.loaded["GameSystem.Game.Message.module.player.event.packet.SM_EventSyncAll"]=_M\n'
+        "function _M.reading(self)\n"
+        "self:readMessageList2List(self.events)\n"
+        "return true\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 38006\n"
+        "end\n"
+        "function _M.getName(self)\n"
+        'return"SM_EventSyncAll"\n'
+        "end\n",
+        encoding="utf-8",
+    )
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir()
+    (output_dir / "lua_raw_lscript_missing_export_text_assets.tsv").write_text(
+        "raw_path\tmodule\tasset_name\tpath_id\tbyte_size\tline_count\tfunction_count\trequires\tfunctions\toutput_path\n"
+        f"lscripts/gamesystem/game/event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bytes\tevent\tEventMgr.lua\t1\t1\t1\t1\t\t\t{event_mgr}\n",
+        encoding="utf-8-sig",
+    )
+    (output_dir / "hot_update_lscripts_text_assets.tsv").write_text(
+        "status\tmodule\tgroup\tlogical_path\tactual_path\tasset_name\tpath_id\tbyte_size\tline_count\tfunction_count\trequires\tfunctions\tterms\toutput_path\n"
+        f"changed\tmessage\tgame\tlscripts/gamesystem/game/message.bytes\tlscripts/gamesystem/game/message_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.bytes\tSM_EventSyncAll.lua\t2\t1\t1\t1\t\t\t\t{packet_file}\n",
+        encoding="utf-8-sig",
+    )
+
+    result = build_fanxiu_lua_lscript_surface_inventory_probe(export_root=export_root)
+    report_text = (output_dir / "lua_lscript_surface_inventory_report.md").read_text(encoding="utf-8")
+    assets_text = (output_dir / "lua_lscript_surface_assets.tsv").read_text(encoding="utf-8-sig")
+    modules_text = (output_dir / "lua_lscript_surface_modules.tsv").read_text(encoding="utf-8-sig")
+    bundles_text = (output_dir / "lua_lscript_surface_bundles.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["assets"] == 2
+    assert result["counts"]["bundles"] == 2
+    assert result["counts"]["packet_files"] == 1
+    assert "event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tEventMgr.lua" in assets_text
+    assert "raw_missing_export" in assets_text
+    assert "hot_update_diff" in assets_text
+    assert "message\t1\t1\t1" in modules_text
+    assert "event_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" in bundles_text
+    assert "full exported `by_source/lscripts` inventory" in report_text
+
+
+def test_fanxiu_lua_lscript_module_surface_probe_indexes_module_edges(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "doupotd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    (text_dir / "DoupoTDNetLogic.lua").write_text(
+        'package.loaded["GameSystem.Game.DoupoTD.Net.DoupoTDNetLogic"]=_M\n'
+        'local _CM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoTDInfo"\n'
+        'local _SM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.SM_DoupoTDInfo"\n'
+        "function _M.CM_DoupoTDInfoFun(self)\n"
+        "local CM_DoupoTDInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DoupoTDInfo)\n"
+        "end\n"
+        "function _M.SM_DoupoTDInfoFun(msg)\n"
+        "DoupoTDMgr.Inst_get().Model:RaiseEvent(DoupoTDType.EventType.INFO,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDMgr.lua").write_text(
+        'package.loaded["GameSystem.Game.DoupoTD.Mgr.DoupoTDMgr"]=_M\n'
+        'local DoupoTDNetLogic=require"GameSystem.Game.DoupoTD.Net.DoupoTDNetLogic"\n'
+        "function _M._init_(self)\n"
+        "AddSingleton(DoupoTDMgr)\n"
+        "self.NetLogic=DoupoTDNetLogic.new()\n"
+        "end\n"
+        "function _M.Open(self)\n"
+        "self.NetLogic:CM_DoupoTDInfoFun()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_lscript_module_surface_probe(export_root=export_root, module="doupotd")
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_lscript_module_doupotd_surface_report.md").read_text(encoding="utf-8")
+    files_text = (output_dir / "lua_lscript_module_doupotd_surface_files.tsv").read_text(encoding="utf-8-sig")
+    functions_text = (output_dir / "lua_lscript_module_doupotd_surface_functions.tsv").read_text(encoding="utf-8-sig")
+    markers_text = (output_dir / "lua_lscript_module_doupotd_surface_markers.tsv").read_text(encoding="utf-8-sig")
+    protocol_text = (output_dir / "lua_lscript_module_doupotd_surface_protocol_refs.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["files"] == 2
+    assert result["counts"]["protocol_refs"] == 2
+    assert result["counts"]["file_kinds"]["net_logic"] == 1
+    assert "DoupoTDNetLogic.lua" in files_text
+    assert "client_request" in functions_text
+    assert "server_handler" in functions_text
+    assert "packet_send" in markers_text
+    assert "netlogic_call" in markers_text
+    assert "CM_DoupoTDInfo" in protocol_text
+    assert "static, read-only module surface map" in report_text
+
+
+def test_fanxiu_lua_lscript_module_netlogic_flow_probe_slices_request_fields_and_sinks(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "doupotd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    (text_dir / "DoupoTDNetLogic.lua").write_text(
+        'package.loaded["GameSystem.Game.DoupoTD.NetLogic.DoupoTDNetLogic"]=_M\n'
+        'local _CM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoTDInfo"\n'
+        'local _SM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.SM_DoupoTDInfo"\n'
+        "function _M.CM_DoupoTDInfoFun(self,wave)\n"
+        "local CM_DoupoTDInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "CM_DoupoTDInfo.wave=wave\n"
+        "CM_DoupoTDInfo.indexList:Add(wave)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DoupoTDInfo)\n"
+        "end\n"
+        "function _M.SM_DoupoTDInfoFun(msg)\n"
+        "DoupoTDMgr.Inst_get().Model.DoupoTDData:SetWave(msg.wave)\n"
+        "DoupoTDMgr.Inst_get():HandleInfo(msg)\n"
+        "DoupoTDMgr.Inst_get().Model:RaiseEvent(DoupoTDType.EventType.INFO,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDMgr.lua").write_text(
+        "function _M.HandleInfo(self,msg)\n"
+        "self.Model:HandleInfo(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDModel.lua").write_text(
+        "function _M.HandleInfo(self,msg)\n"
+        "self.DoupoTDData:SetWave(msg.wave)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDData.lua").write_text(
+        "function _M.SetWave(self,wave)\n"
+        "self.wave=wave\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_lua_lscript_module_netlogic_flow_probe(export_root=export_root, module="doupotd")
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_lscript_module_doupotd_netlogic_flow_report.md").read_text(encoding="utf-8")
+    functions_text = (output_dir / "lua_lscript_module_doupotd_netlogic_flow_functions.tsv").read_text(encoding="utf-8-sig")
+    fields_text = (output_dir / "lua_lscript_module_doupotd_netlogic_flow_fields.tsv").read_text(encoding="utf-8-sig")
+    edges_text = (output_dir / "lua_lscript_module_doupotd_netlogic_flow_edges.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["netlogic_files"] == 1
+    assert result["counts"]["functions"] == 2
+    assert result["counts"]["field_assignments"] == 2
+    assert result["counts"]["edge_kinds"]["packet_send"] == 1
+    assert "CM_DoupoTDInfoFun" in functions_text
+    assert "client_request" in functions_text
+    assert "CM_DoupoTDInfo\twave\twave" in fields_text
+    assert "CM_DoupoTDInfo\tindexList\tAdd(wave)" in fields_text
+    assert "model_call" in edges_text
+    assert "event_raise" in edges_text
+    assert "statically slices NetLogic Lua function bodies" in report_text
+
+
+def test_fanxiu_lua_lscript_module_protocol_schema_probe_joins_netlogic_to_packet_index(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "doupotd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    (text_dir / "DoupoTDNetLogic.lua").write_text(
+        'package.loaded["GameSystem.Game.DoupoTD.NetLogic.DoupoTDNetLogic"]=_M\n'
+        'local _CM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoTDInfo"\n'
+        'local _SM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.SM_DoupoTDInfo"\n'
+        "function _M.CM_DoupoTDInfoFun(self,wave)\n"
+        "local CM_DoupoTDInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "CM_DoupoTDInfo.wave=wave\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DoupoTDInfo)\n"
+        "end\n"
+        "function _M.SM_DoupoTDInfoFun(msg)\n"
+        "DoupoTDMgr.Inst_get().Model:SetInfo(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    packet_index_dir = export_root / "parsed_configs" / "lua_packet_index"
+    packet_index_dir.mkdir(parents=True)
+    (packet_index_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "93603\tCM_DoupoTDInfo\tclient_to_server\tmini.doupo\t1\tBaseMessage\tmessage\tCM_DoupoTDInfo.lua\tmsg/CM_DoupoTDInfo.lua\tpkg.CM\n"
+        "93604\tSM_DoupoTDInfo\tserver_to_client\tmini.doupo\t1\tBaseMessage\tmessage\tSM_DoupoTDInfo.lua\tmsg/SM_DoupoTDInfo.lua\tpkg.SM\n",
+        encoding="utf-8-sig",
+    )
+    (packet_index_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\trelative_path\tline\n"
+        "93603\tCM_DoupoTDInfo\t1\twave\tInt\t\tclient_to_server\tmini.doupo\tmessage\tCM_DoupoTDInfo.lua\tmsg/CM_DoupoTDInfo.lua\t10\n"
+        "93604\tSM_DoupoTDInfo\t1\tpassList\tMessageList2List\t\tserver_to_client\tmini.doupo\tmessage\tSM_DoupoTDInfo.lua\tmsg/SM_DoupoTDInfo.lua\t11\n",
+        encoding="utf-8-sig",
+    )
+
+    result = build_fanxiu_lua_lscript_module_protocol_schema_probe(export_root=export_root, module="doupotd")
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_lscript_module_doupotd_protocol_schema_report.md").read_text(encoding="utf-8")
+    schemas_text = (output_dir / "lua_lscript_module_doupotd_protocol_schemas.tsv").read_text(encoding="utf-8-sig")
+    fields_text = (output_dir / "lua_lscript_module_doupotd_protocol_fields.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["packets"] == 2
+    assert result["counts"]["fields"] == 2
+    assert result["counts"]["assignment_statuses"]["assigned_fields_match_schema"] == 1
+    assert "CM_DoupoTDInfo\t93603\tclient_to_server" in schemas_text
+    assert "assigned_fields_match_schema" in schemas_text
+    assert "SM_DoupoTDInfo\t93604\tserver_to_client" in fields_text
+    assert "schema/static-code alignment report" in report_text
+
+
+def test_fanxiu_lua_lscript_module_protocol_schema_uses_message_pool_alias_for_field_owner(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "digitdoor_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    (text_dir / "DigitDoorNetLogic.lua").write_text(
+        'package.loaded["GameSystem.Game.DigitDoor.NetLogic.DigitDoorNetLogic"]=_M\n'
+        'local _CM_DigitDoorUpLevel=require"GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorUpLevel"\n'
+        'local _CM_DigitDoorRefDoor=require"GameSystem.Game.Message.module.mini.digitdoor.packet.CM_DigitDoorRefDoor"\n'
+        "function _M.CM_DigitDoorRefDoorFun(self,resourceList,aliveIdList)\n"
+        "local CM_DigitDoorUpLevel=SocketManager.Inst_get():GetMessageFromPools(_CM_DigitDoorRefDoor)\n"
+        "CM_DigitDoorUpLevel.resourceList=resourceList\n"
+        "CM_DigitDoorUpLevel.aliveIdList=aliveIdList\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DigitDoorUpLevel)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    packet_index_dir = export_root / "parsed_configs" / "lua_packet_index"
+    packet_index_dir.mkdir(parents=True)
+    (packet_index_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "91637\tCM_DigitDoorUpLevel\tclient_to_server\tmini.digitdoor\t1\tBaseMessage\tmessage\tCM_DigitDoorUpLevel.lua\tmsg/CM_DigitDoorUpLevel.lua\tpkg.Up\n"
+        "91639\tCM_DigitDoorRefDoor\tclient_to_server\tmini.digitdoor\t2\tBaseMessage\tmessage\tCM_DigitDoorRefDoor.lua\tmsg/CM_DigitDoorRefDoor.lua\tpkg.Ref\n",
+        encoding="utf-8-sig",
+    )
+    (packet_index_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\trelative_path\tline\n"
+        "91637\tCM_DigitDoorUpLevel\t1\tid\tInt\t\tclient_to_server\tmini.digitdoor\tmessage\tCM_DigitDoorUpLevel.lua\tmsg/CM_DigitDoorUpLevel.lua\t10\n"
+        "91639\tCM_DigitDoorRefDoor\t1\tresourceList\tMessageList2List\t\tclient_to_server\tmini.digitdoor\tmessage\tCM_DigitDoorRefDoor.lua\tmsg/CM_DigitDoorRefDoor.lua\t11\n"
+        "91639\tCM_DigitDoorRefDoor\t2\taliveIdList\tMessageList2List\t\tclient_to_server\tmini.digitdoor\tmessage\tCM_DigitDoorRefDoor.lua\tmsg/CM_DigitDoorRefDoor.lua\t12\n",
+        encoding="utf-8-sig",
+    )
+
+    result = build_fanxiu_lua_lscript_module_protocol_schema_probe(export_root=export_root, module="digitdoor")
+    output_dir = export_root / "apk_static_index"
+    schemas_text = (output_dir / "lua_lscript_module_digitdoor_protocol_schemas.tsv").read_text(encoding="utf-8-sig")
+    netlogic_fields_text = (output_dir / "lua_lscript_module_digitdoor_netlogic_flow_fields.tsv").read_text(
+        encoding="utf-8-sig"
+    )
+
+    assert result["checks"]["assigned_fields_align"] is True
+    assert result["counts"]["assignment_statuses"]["assigned_fields_match_schema"] == 1
+    assert "CM_DigitDoorRefDoor\t91639\tclient_to_server" in schemas_text
+    assert "aliveIdList | resourceList\tresourceList | aliveIdList\t\tassigned_fields_match_schema" in schemas_text
+    assert "CM_DigitDoorRefDoor\tresourceList\tresourceList" in netlogic_fields_text
+    assert "CM_DigitDoorUpLevel\tresourceList" not in netlogic_fields_text
+
+
+def test_fanxiu_lua_lscript_module_packet_pair_flow_probe_drills_one_pair(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = (
+        export_root
+        / "by_source"
+        / "lscripts"
+        / "gamesystem"
+        / "game"
+        / "doupotd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        / "text_assets"
+    )
+    text_dir.mkdir(parents=True)
+    (text_dir / "DoupoTDNetLogic.lua").write_text(
+        'package.loaded["GameSystem.Game.DoupoTD.NetLogic.DoupoTDNetLogic"]=_M\n'
+        'local _CM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.CM_DoupoTDInfo"\n'
+        'local _SM_DoupoTDInfo=require"GameSystem.Game.Message.module.mini.doupo.packet.SM_DoupoTDInfo"\n'
+        "function _M.CM_DoupoTDInfoFun(self,wave)\n"
+        "local CM_DoupoTDInfo=SocketManager.Inst_get():GetMessageFromPools(_CM_DoupoTDInfo)\n"
+        "CM_DoupoTDInfo.wave=wave\n"
+        "CM_DoupoTDInfo.indexList:Add(wave)\n"
+        "SocketManager.Inst_get():F_SendMsg(CM_DoupoTDInfo)\n"
+        "end\n"
+        "function _M.SM_DoupoTDInfoFun(msg)\n"
+        "DoupoTDMgr.Inst_get().Model.DoupoTDData:SetWave(msg.wave)\n"
+        "DoupoTDMgr.Inst_get():HandleInfo(msg)\n"
+        "DoupoTDMgr.Inst_get().Model:RaiseEvent(DoupoTDType.EventType.INFO,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDMgr.lua").write_text(
+        "function _M.HandleInfo(self,msg)\n"
+        "self.Model:HandleInfo(msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDModel.lua").write_text(
+        "function _M.HandleInfo(self,msg)\n"
+        "self.DoupoTDData:SetWave(msg.wave)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (text_dir / "DoupoTDData.lua").write_text(
+        "function _M.SetWave(self,wave)\n"
+        "self.wave=wave\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    packet_index_dir = export_root / "parsed_configs" / "lua_packet_index"
+    packet_index_dir.mkdir(parents=True)
+    (packet_index_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\tbase_class\tbundle\tfile\trelative_path\tpackage\n"
+        "93603\tCM_DoupoTDInfo\tclient_to_server\tmini.doupo\t2\tBaseMessage\tmessage\tCM_DoupoTDInfo.lua\tmsg/CM_DoupoTDInfo.lua\tpkg.CM\n"
+        "93604\tSM_DoupoTDInfo\tserver_to_client\tmini.doupo\t1\tBaseMessage\tmessage\tSM_DoupoTDInfo.lua\tmsg/SM_DoupoTDInfo.lua\tpkg.SM\n",
+        encoding="utf-8-sig",
+    )
+    (packet_index_dir / "packet_fields.tsv").write_text(
+        "packet_id\tpacket_name\tfield_index\tfield_name\tread_method\ttype_hint\tdirection\tmodule\tbundle\tfile\trelative_path\tline\n"
+        "93603\tCM_DoupoTDInfo\t1\twave\tInt\t\tclient_to_server\tmini.doupo\tmessage\tCM_DoupoTDInfo.lua\tmsg/CM_DoupoTDInfo.lua\t10\n"
+        "93603\tCM_DoupoTDInfo\t2\tindexList\tMessageList2List\t\tclient_to_server\tmini.doupo\tmessage\tCM_DoupoTDInfo.lua\tmsg/CM_DoupoTDInfo.lua\t11\n"
+        "93604\tSM_DoupoTDInfo\t1\tpassList\tMessageList2List\t\tserver_to_client\tmini.doupo\tmessage\tSM_DoupoTDInfo.lua\tmsg/SM_DoupoTDInfo.lua\t11\n",
+        encoding="utf-8-sig",
+    )
+
+    result = build_fanxiu_lua_lscript_module_packet_pair_flow_probe(
+        export_root=export_root,
+        module="doupotd",
+        request_packet="CM_DoupoTDInfo",
+    )
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_lscript_module_doupotd_cm_doupotdinfo_sm_doupotdinfo_pair_flow_report.md").read_text(encoding="utf-8")
+    packets_text = (output_dir / "lua_lscript_module_doupotd_cm_doupotdinfo_sm_doupotdinfo_pair_packets.tsv").read_text(encoding="utf-8-sig")
+    edges_text = (output_dir / "lua_lscript_module_doupotd_cm_doupotdinfo_sm_doupotdinfo_pair_edges.tsv").read_text(encoding="utf-8-sig")
+    sources_text = (output_dir / "lua_lscript_module_doupotd_cm_doupotdinfo_sm_doupotdinfo_pair_sources.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["packet_rows"] == 2
+    assert result["counts"]["field_rows"] == 3
+    assert result["counts"]["edge_kinds"]["packet_send"] == 1
+    assert "CM_DoupoTDInfo\t93603" in packets_text
+    assert "indexList | wave" in packets_text
+    assert "SM_DoupoTDInfo\t93604" in packets_text
+    assert "SM_DoupoTDInfoFun" in edges_text
+    assert "netlogic_function" in sources_text
+    assert "DoupoTDMgr.lua" in sources_text
+    assert "DoupoTDModel.lua" in sources_text
+    assert "DoupoTDData.lua" in sources_text
+    assert "function _M.SetWave" in sources_text
+    assert "joining module protocol schemas" in report_text
+
+
+def test_fanxiu_lua_sm_login_nested_vo_probe_expands_login_snapshot_objects(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "sm_login_vo" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    def write_packet(filename: str, package_name: str, packet_name: str, packet_id: int, reading_body: str) -> None:
+        (text_dir / filename).write_text(
+            f'package.loaded["{package_name}"]=_M\n'
+            "function _M.reading(self)\n"
+            f"{reading_body}"
+            "return true\n"
+            "end\n"
+            "function _M.getId(self)\n"
+            f"return {packet_id}\n"
+            "end\n"
+            "function _M.getName(self)\n"
+            f"return\"{packet_name}\"\n"
+            "end\n",
+            encoding="utf-8",
+        )
+
+    write_packet(
+        "SM_Login.lua",
+        "GameSystem.Game.Message.module.user.login.packet.SM_Login",
+        "SM_Login",
+        20002,
+        "self.role=_AS_(self:readBean(typeof(RoleVO)),RoleVO)\n"
+        "self.mapInfo=_AS_(self:readBean(typeof(MapInfoVO)),MapInfoVO)\n"
+        "self:readMessageList2List(self.wallet)\n"
+        "self.functionOpen=_AS_(self:readBean(typeof(FunctionOpenVo)),FunctionOpenVo)\n"
+        "self.crossVO=_AS_(self:readBean(typeof(CrossVO)),CrossVO)\n"
+        "self.clubVO=_AS_(self:readBean(typeof(SimpleClubVO)),SimpleClubVO)\n",
+    )
+    write_packet(
+        "RoleVO.lua",
+        "GameSystem.Game.Message.module.player.role.packet.vo.RoleVO",
+        "RoleVO",
+        30051,
+        "self.roleId=self:readLong()\n"
+        "self.name=self:readString()\n"
+        "self.level=self:readInt()\n"
+        "self.vipLevel=self:readInt()\n"
+        "self.battleScore=self:readDouble()\n"
+        "self.finishNewRoleTask=self:readBool()\n"
+        "self.createStep=self:readInt()\n"
+        "self.createTime=self:readLong()\n",
+    )
+    write_packet(
+        "MapInfoVO.lua",
+        "GameSystem.Game.Message.module.scene.map.packet.bean.MapInfoVO",
+        "MapInfoVO",
+        40058,
+        "self.mapId=self:readInt()\n"
+        "self.direction=self:readInt()\n"
+        "self.position=_AS_(self:readBean(typeof(Grid3DVO)),Grid3DVO)\n"
+        "self.dungeonId=self:readInt()\n",
+    )
+    write_packet(
+        "FunctionOpenVo.lua",
+        "GameSystem.Game.Message.module.player.function.packet.vo.FunctionOpenVo",
+        "FunctionOpenVo",
+        30710,
+        "self:readMessageList2List(self.openFunctionClickList)\n"
+        "self:readMessageList2List(self.openFunctionList)\n"
+        "self.gmAll=self:readBool()\n"
+        "self.gmNormalAll=self:readBool()\n",
+    )
+    write_packet(
+        "CrossVO.lua",
+        "GameSystem.Game.Message.module.common.cross.packet.bean.CrossVO",
+        "CrossVO",
+        59603,
+        "self.crossGroup=self:readInt()\n"
+        "self:readMessageList2List(self.serverList)\n"
+        "self:readMessageList2List(self.prepareServerList)\n"
+        "self.avgWorldLevel=self:readInt()\n"
+        "self:readMessageMap2Dic(self.conditionLevels)\n",
+    )
+    write_packet(
+        "SimpleClubVO.lua",
+        "GameSystem.Game.Message.module.player.club.packet.vo.SimpleClubVO",
+        "SimpleClubVO",
+        80192,
+        "self.id=self:readLong()\n"
+        "self.name=self:readString()\n"
+        "self.level=self:readInt()\n"
+        "self.belongAlliance=self:readInt()\n",
+    )
+
+    result = build_fanxiu_lua_sm_login_nested_vo_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_sm_login_nested_vo_report.md").read_text(encoding="utf-8")
+    fields_text = (output_dir / "lua_sm_login_nested_vo_fields.tsv").read_text(encoding="utf-8-sig")
+    refs_text = (output_dir / "lua_sm_login_nested_vo_refs.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["objects"] == 6
+    assert "RoleVO" in report_text
+    assert "30051\tRoleVO\tvalue_object\t1\troleId\tLong" in fields_text
+    assert "SM_Login\tclubVO\tBean\tSimpleClubVO" in refs_text
+
+
+def test_fanxiu_lua_sm_login_nested_vo_depth2_probe_expands_typed_child_beans(tmp_path):
+    export_root = tmp_path / "exports"
+    text_dir = export_root / "by_source" / "lscripts" / "sm_login_vo_depth2" / "text_assets"
+    text_dir.mkdir(parents=True)
+
+    def write_packet(filename: str, package_name: str, packet_name: str, packet_id: int, reading_body: str) -> None:
+        (text_dir / filename).write_text(
+            f'package.loaded["{package_name}"]=_M\n'
+            "function _M.reading(self)\n"
+            f"{reading_body}"
+            "return true\n"
+            "end\n"
+            "function _M.getId(self)\n"
+            f"return {packet_id}\n"
+            "end\n"
+            "function _M.getName(self)\n"
+            f"return\"{packet_name}\"\n"
+            "end\n",
+            encoding="utf-8",
+        )
+
+    write_packet(
+        "HangPointVO.lua",
+        "GameSystem.Game.Message.module.scene.map.packet.bean.HangPointVO",
+        "HangPointVO",
+        40076,
+        "self:readMessageMap2Dic(self.values)\n",
+    )
+    write_packet(
+        "Grid3DVO.lua",
+        "GameSystem.Game.Message.module.scene.map.packet.bean.Grid3DVO",
+        "Grid3DVO",
+        40052,
+        "self.x=self:readFloat()\n"
+        "self.y=self:readFloat()\n"
+        "self.z=self:readFloat()\n",
+    )
+    write_packet(
+        "SM_SkillVO.lua",
+        "GameSystem.Game.Message.module.player.skill.learn.learn.packet.SM_SkillVO",
+        "SM_SkillVO",
+        30065,
+        "self:readMessageList2List(self.posList)\n"
+        "self:readMessageList2List(self.learnList)\n",
+    )
+
+    result = build_fanxiu_lua_sm_login_nested_vo_depth2_probe(export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "lua_sm_login_nested_vo_depth2_report.md").read_text(encoding="utf-8")
+    fields_text = (output_dir / "lua_sm_login_nested_vo_depth2_fields.tsv").read_text(encoding="utf-8-sig")
+    relations_text = (output_dir / "lua_sm_login_nested_vo_depth2_relations.tsv").read_text(encoding="utf-8-sig")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["objects"] == 3
+    assert result["counts"]["fields"] == 6
+    assert "Grid3DVO" in report_text
+    assert "40052\tGrid3DVO\tvalue_object\t3\tz\tFloat" in fields_text
+    assert "RoleVO\tskill\tSM_SkillVO" in relations_text
 
 
 def test_fanxiu_lingjie_gongfa_runtime_report_links_configs_packets_and_callsites(tmp_path, monkeypatch):
@@ -4630,6 +8932,7 @@ def test_fanxiu_apk_download_config_report_extracts_local_url_config(tmp_path):
 def test_fanxiu_apk_manifest_probe_extracts_permissions_components_and_intents(tmp_path):
     root = tmp_path / "1023295_unpacked"
     root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
     network_xml_dir = root / "res" / "xml"
     network_xml_dir.mkdir(parents=True)
     (root / "classes.dex").write_bytes(b"dex\n035\x00")
@@ -4946,6 +9249,1389 @@ def test_fanxiu_dex_instruction_refs_decode_strings_calls_and_types():
     assert refs[0]["ref_value"] == "token"
     assert refs[1]["ref_value"] == "com.example.SDKCallback.OnSDKLoginData"
     assert refs[2]["ref_value"] == "com.example.LoginCallback"
+
+
+def test_fanxiu_apk_dex_login_payload_shape_probe_summarizes_template(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    success = "com.flamePhoenix.plugin.activity.FlameUnityActivity$7.onSuccess"
+    event = "com.flamePhoenix.plugin.plugin.SDKCallback.OnSDKLoginData"
+    send = "com.flamePhoenix.plugin.plugin.SDKCallback.SendDataToUnity"
+    (output_dir / "apk_dex_login_body_refs.tsv").write_text(
+        "dex\tsource_method\tsource_role\tordinal\toffset_code_unit\topcode\tref_kind\tref_index\tref_value\tinteresting\tnote\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t0\t0\t0x1b\tstring\t1\ttoken\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t1\t7\t0x1a\tstring\t2\tgid\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t2\t15\t0x1a\tstring\t3\tpid\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t3\t69\t0x1a\tstring\t4\t1__\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t4\t77\t0x1a\tstring\t5\t__\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t5\t82\t0x62\tfield\t6\tcom.flamePhoenix.plugin.activity.FlameUnityActivity.m_gid:java.lang.String\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t6\t90\t0x62\tfield\t7\tcom.flamePhoenix.plugin.activity.FlameUnityActivity.m_pid:java.lang.String\t1\t\n"
+        f"classes7.dex\t{success}\tsdk_login_success_callback\t7\t99\t0x71\tcall\t8\tcom.flamePhoenix.plugin.plugin.SDKCallback.OnSDKLoginData\t1\t\n"
+        f"classes7.dex\t{event}\tunity_login_message_builder\t0\t21\t0x1a\tstring\t9\tOnReceiveLogin\t1\t\n"
+        f"classes7.dex\t{send}\tunity_send_message\t0\t1\t0x1a\tstring\t10\tGameEnter\t1\t\n"
+        f"classes7.dex\t{send}\tunity_send_message\t1\t3\t0x71\tcall\t11\tcom.unity3d.player.UnityPlayer.UnitySendMessage\t1\t\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_apk_dex_login_payload_shape_probe(apk_root=root, export_root=export_root)
+    rows_text = (output_dir / "apk_dex_login_payload_shape.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "apk_dex_login_payload_shape_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["payload_template_recovered"] is True
+    assert result["verdict"]["persists_secret_values"] is False
+    assert "1__{token}__{gid}__{pid}" in rows_text
+    assert "GameEnter.OnReceiveLogin" in markdown_text
+
+
+def test_fanxiu_apk_jadx_login_source_probe_summarizes_readable_java_chain(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    sources_root = export_root / "apk_static_index" / "jadx_1_5_5_nores" / "sources"
+    activity_dir = sources_root / "com" / "flamePhoenix" / "plugin" / "activity"
+    callback_dir = sources_root / "com" / "flamePhoenix" / "plugin" / "plugin"
+    unity_dir = sources_root / "com" / "unity3d" / "player"
+    sqwan_dir = sources_root / "com" / "sqwan" / "msdk"
+    bad_dir = sources_root / "com" / "vendor"
+    for directory in (activity_dir, callback_dir, unity_dir, sqwan_dir, bad_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+    (activity_dir / "FlameUnityActivity.java").write_text(
+        """
+package com.flamePhoenix.plugin.activity;
+class FlameUnityActivity {
+  static String m_gid;
+  static String m_pid;
+  void init(AppConfig appConfig) {
+    m_gid = appConfig.getGameid();
+    m_pid = appConfig.getPartner();
+  }
+  void SDKLogin() {
+    SQwanCore.getInstance().login(this, new SQResultListener() {
+      public void onSuccess(Bundle bundle) {
+        String string = bundle.getString("token");
+        FlameUnityActivity.m_gid = bundle.getString("gid");
+        FlameUnityActivity.m_pid = bundle.getString(PushConsts.KEY_SERVICE_PIT);
+        SDKCallback.OnSDKLoginData("1__" + string + "__" + FlameUnityActivity.m_gid + "__" + FlameUnityActivity.m_pid);
+        SDKCallback.OnSDKSwitchAccount("1__" + string + "__" + FlameUnityActivity.m_gid + "__" + FlameUnityActivity.m_pid);
+        SDKCallback.OnSDKChangeAccount("1__" + string + "__" + FlameUnityActivity.m_gid + "__" + FlameUnityActivity.m_pid);
+      }
+      public void onFail(String str) {
+        SDKCallback.OnSDKLoginData("0__" + str);
+      }
+    });
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (callback_dir / "SDKCallback.java").write_text(
+        """
+package com.flamePhoenix.plugin.plugin;
+class SDKCallback {
+  public static void OnSDKLoginData(String str) {
+    SendDataToUnity("OnReceiveLogin", str);
+  }
+  public static void OnSDKSwitchAccount(String str) {
+    SendDataToUnity("OnReceiveSwitchAccount", str);
+  }
+  public static void OnSDKChangeAccount(String str) {
+    SendDataToUnity("OnReceiveChangeAccount", str);
+  }
+  public static void OnSDKCancelLogin(String str) {
+    SendDataToUnity("OnReceiveCancelLogin", str);
+  }
+  static void SendDataToUnity(String str, String str2) {
+    UnityPlayer.UnitySendMessage("GameEnter", str, str2);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (unity_dir / "UnityPlayer.java").write_text(
+        """
+package com.unity3d.player;
+class UnityPlayer {
+  public static void UnitySendMessage(String str, String str2, String str3) {
+    nativeUnitySendMessage(str, str2, str3.getBytes());
+  }
+  private static native void nativeUnitySendMessage(String str, String str2, byte[] bArr);
+}
+""",
+        encoding="utf-8",
+    )
+    (sqwan_dir / "SQwanCore.java").write_text(
+        """
+package com.sqwan.msdk;
+class SQwanCore {
+  public void login(Context context, SQResultListener listener) {
+    super.login(context, listener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (bad_dir / "Broken.java").write_text("/* JADX ERROR: test fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_login_source_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_login_source_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_login_source_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_login_source_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["java_confirms_dex_payload_shape"] is True
+    assert result["verdict"]["unity_native_boundary_found"] is True
+    assert result["counts"]["java_source_count"] == 5
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "1__{token}__{gid}__{pid}" in report_text
+    assert "login_payload_success" in hits_text
+    assert "UnityPlayer.UnitySendMessage" in flow_text
+
+
+def test_fanxiu_apk_jadx_sq_plugin_core_probe_links_embedded_plugin_to_login_bundle(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    (root / "assets").mkdir(parents=True)
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    (root / "assets" / "sq_plugin_3.7.9.6.1_2025_11_28_10_43_37.apk").write_bytes(b"PK\x03\x04fixture")
+
+    export_root = tmp_path / "exports"
+    main_root = export_root / "apk_static_index" / "jadx_1_5_5_nores" / "sources"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    plugin_manager_dir = main_root / "com" / "plugin" / "core"
+    main_sqwan_dir = main_root / "com" / "sqwan" / "msdk"
+    plugin_sqwan_dir = plugin_root / "com" / "sqwan" / "msdk"
+    plugin_sdk_dir = plugin_sqwan_dir / "api" / "sdk"
+    plugin_config_dir = plugin_sqwan_dir / "config"
+    plugin_manager_dir.mkdir(parents=True)
+    main_sqwan_dir.mkdir(parents=True)
+    plugin_sqwan_dir.mkdir(parents=True)
+    plugin_sdk_dir.mkdir(parents=True)
+    plugin_config_dir.mkdir(parents=True)
+
+    (plugin_manager_dir / "PluginManager.java").write_text(
+        """
+package com.plugin.core;
+class PluginManager {
+  private String defaultPluginApkName = "default_plugin.apk";
+  Plugin loadPlugin() {
+    PluginMultiSdkManager.getInstance().getDefaultPlugin();
+    this.mPluginPath = copyAssetPlugin(this.defaultPluginApkName, "plugin");
+    return new ApkClassLoader(this.mPluginPath);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (main_sqwan_dir / "PluginSQwanCore.java").write_text(
+        """
+package com.sqwan.msdk;
+class PluginSQwanCore {
+  private final String SDK_CLASS = "com.sqwan.msdk.SQwanCoreImpl";
+  private final String SDK_GET_METHOD = "getInstance";
+  public void login(Context context, SQResultListener listener) {
+    getSQwanCoreImplClass().getMethod("login", Context.class, getClass("com.sqwan.msdk.api.SQResultListener")).invoke(getSQwanCoreImpl(), context, listener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_sqwan_dir / "SQwanCoreImpl.java").write_text(
+        """
+package com.sqwan.msdk;
+public class SQwanCoreImpl extends BaseSQwanCore {
+  public static SQwanCoreImpl getInstance() { return new SQwanCoreImpl(); }
+  public SQSdkInterface getPlatform(Context context, InitBean initBean, SQResultListener sQResultListener) {
+    return new _SQwan(context, initBean, sQResultListener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_sqwan_dir / "BaseSQwanCore.java").write_text(
+        """
+package com.sqwan.msdk;
+abstract class BaseSQwanCore {
+  public void login(final Context context, final SQResultListener sQResultListener) { doLogin(context, sQResultListener); }
+  private void doLogin(Context context, SQResultListener sQResultListener) {
+    sdkapi.login(context, new SQResultListener() {});
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_sdk_dir / "_SQwan.java").write_text(
+        """
+package com.sqwan.msdk.api.sdk;
+class _SQwan extends Platform {
+  protected void loginPlatform(SQResultListener sQResultListener) {
+    loginSQ(sQResultListener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_sdk_dir / "Platform.java").write_text(
+        """
+package com.sqwan.msdk.api.sdk;
+class Platform {
+  void initSQ(boolean z) {
+    sq.init(context, ZipString.zipString2Json(MultiSDKUtils.getKey(context)), null);
+  }
+  public void loginSQ(final SQResultListener sQResultListener) {
+    sq.login(context, new com.sy37sdk.core.SQResultListener() {
+      public void onSuccess(Bundle bundle) {
+        Platform.this.sqLoginSuccess(context, sQResultListener, bundle);
+      }
+    });
+  }
+  protected void loginSuccessCallBack(String str, final SQResultListener sQResultListener) {
+    String string = jSONObject2.getString("token");
+    final Bundle bundle = new Bundle();
+    bundle.putString("token", string);
+    bundle.putString("gid", appConfig.getGameid());
+    bundle.putString("pid", appConfig.getPartner());
+  }
+  private void sqLoginSuccess(Context context, SQResultListener sQResultListener, Bundle bundle) {
+    String string3 = bundle.getString("token");
+    String string = bundle.getString(BaseSQwanCore.LOGIN_KEY_USERID);
+    Bundle bundle2 = new Bundle();
+    bundle2.putString("token", string3);
+    bundle2.putString("gid", appConfig.getGameid());
+    bundle2.putString("pid", appConfig.getPartner());
+    sQResultListener.onSuccess(bundle2);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_config_dir / "HostManager.java").write_text(
+        'package com.sqwan.msdk.config;\nclass HostManager { public static String APP_HOST_Prefix_m = "http://m-api."; }\n',
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: plugin fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sq_plugin_core_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sq_plugin_core_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_sq_plugin_core_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_sq_plugin_core_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["embedded_plugin_apk_found"] is True
+    assert result["verdict"]["plugin_loader_boundary_found"] is True
+    assert result["verdict"]["reflection_login_to_plugin_found"] is True
+    assert result["verdict"]["sqwan_core_impl_found"] is True
+    assert result["verdict"]["bundle_token_gid_pid_found"] is True
+    assert result["counts"]["main_apk_java_source_count"] == 2
+    assert result["counts"]["sq_plugin_java_source_count"] == 6
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "assets/sq_plugin_3.7.9.6.1_2025_11_28_10_43_37.apk" in report_text
+    assert "plugin_core_impl_class" in hits_text
+    assert "Platform.sqLoginSuccess" in flow_text
+
+
+def test_fanxiu_apk_jadx_sy37_login_account_probe_maps_account_http_boundary(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    core_dir = plugin_root / "com" / "sy37sdk" / "core"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    controller_dir = account_dir / "controller"
+    alifast_dir = account_dir / "alifast"
+    net_dir = account_dir / "net"
+    core_dir.mkdir(parents=True)
+    controller_dir.mkdir(parents=True)
+    alifast_dir.mkdir(parents=True)
+    net_dir.mkdir(parents=True)
+
+    (core_dir / "SQwan.java").write_text(
+        """
+package com.sy37sdk.core;
+class SQwan {
+  public void login(Context context, final SQResultListener sQResultListener) {
+    this.wan.login(sQResultListener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (core_dir / "SQwanManager.java").write_text(
+        """
+package com.sy37sdk.core;
+class SQwanManager {
+  public void login(final SQResultListener sQResultListener) {
+    ((IAccountMod) ModHelper.get(IAccountMod.class)).login(listener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountModImpl.java").write_text(
+        """
+package com.sy37sdk.account;
+class AccountModImpl {
+  public void login(ILoginListener iLoginListener) {
+    AbstractLoginController loginController = UIVersionManager.getInstance(this.mContext).getLoginController();
+    loginController.login(this);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (controller_dir / "UIVersionManager.java").write_text(
+        """
+package com.sy37sdk.account.controller;
+class UIVersionManager {
+  AbstractLoginController getLoginController() {
+    this.mLoginController = new FastVerifyController(this.mContext);
+    return this.mLoginController;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (controller_dir / "FastVerifyController.java").write_text(
+        """
+package com.sy37sdk.account.controller;
+class FastVerifyController {
+  void showLoginDialog(ILoginListener iLoginListener) {
+    AccountLoginManager.getInstance(this.mContext).login(iLoginListener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (controller_dir / "AbstractLoginController.java").write_text(
+        """
+package com.sy37sdk.account.controller;
+abstract class AbstractLoginController {
+  public void login(ILoginListener iLoginListener) {
+    showAutoLoginDialog(mobile, iLoginListener);
+    showLoginDialog(iLoginListener);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (alifast_dir / "AccountLoginManager.java").write_text(
+        """
+package com.sy37sdk.account.alifast;
+class AccountLoginManager {
+  void login(ILoginListener listener) {
+    FastLoginManager.getInstance(this.mContext).doFastVerifyLogin(new FastLoginManager.FastLoginListener() {});
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountLogic.java").write_text(
+        """
+package com.sy37sdk.account;
+class AccountLogic {
+  public void accountLogin(final String str, final String str2, final boolean z, final AccountListener accountListener) {
+    this.requestManager.loginRequest(str, encryptPwd(str2), z, null);
+  }
+  private void handleLoginSuccess(String str, String str2, String str3, String str4, boolean z, String str5) {
+    String strOptString3 = jSONObject.optString("token");
+    map.put(BaseSQwanCore.LOGIN_KEY_USERID, userInfoCreateUserInfo.getUid());
+    map.put(BaseSQwanCore.LOGIN_KEY_USERNAME, userInfoCreateUserInfo.getUname());
+    map.put("token", userInfoCreateUserInfo.getToken());
+    map.put("pid", ConfigManager.getInstance(this.context).getSQAppConfig().getPartner());
+    map.put("gid", ConfigManager.getInstance(this.context).getSQAppConfig().getGameid());
+    this.loginListener.onSuccess(map);
+  }
+  private String encryptPwd(String str) {
+    return Base64.encodeToString(AESUtil.encrypt(str, getEncodeKey()), 2);
+  }
+  private String getEncodeKey() {
+    String appKey = ConfigManager.getInstance(this.context).getAppKey();
+    return appKey.substring(0, 16);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountRequestManager.java").write_text(
+        """
+package com.sy37sdk.account;
+class AccountRequestManager {
+  public void loginRequest(String str, String str2, boolean z, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.LOGIN).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(this.mContext)).addParam("uname", str).addParam(SqConstants.UPWD, str2).addParamsTransformer(new CommonParamsV2()).post(cb, String.class);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (net_dir / "LoginRequestManager.java").write_text(
+        """
+package com.sy37sdk.account.net;
+class LoginRequestManager {
+  public static void phoneLoginPwd(String str, String str2, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_PHONE_PWD).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void phoneLoginCheckCode(String str, String str2, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_CHECK_CODE).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void phoneLoginTicket(String str, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_TICKET).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void wechatLogin(String str, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.WECHAT_LOGIN).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (alifast_dir / "FastLoginHttpUtil.java").write_text(
+        """
+package com.sy37sdk.account.alifast;
+class FastLoginHttpUtil {
+  static void verifyFastToken(String str, SqHttpCallback<JSONObject> cb) {
+    SqRequest.of(UrlConstant.URL_VERIFY_FAST_TOKEN).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, JSONObject.class);
+  }
+  static void fastLogin(String token, String refreshToken, byte b, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_FAST).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "UrlConstant.java").write_text(
+        """
+package com.sy37sdk.account;
+class UrlConstant {
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+  static {
+    URL_LOGIN_PHONE_PWD = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/go/sdk/mobile/login_pwd";
+    URL_LOGIN_CHECK_CODE = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/go/sdk/mobile/check_code";
+    URL_VERIFY_FAST_TOKEN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/go/sdk/mobile/shan_yan_login";
+    URL_LOGIN_FAST = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/go/sdk/quick_login";
+    WECHAT_LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/go/sdk/third_auth/wechat/oplatform";
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: sy37 fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_login_account_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_login_account_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_sy37_login_account_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_sy37_login_account_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["sqwan_to_account_mod_found"] is True
+    assert result["verdict"]["native_login_controller_found"] is True
+    assert result["verdict"]["account_password_http_path_found"] is True
+    assert result["verdict"]["phone_login_http_paths_found"] is True
+    assert result["verdict"]["fast_verify_http_path_found"] is True
+    assert result["verdict"]["success_map_token_gid_pid_found"] is True
+    assert result["counts"]["sq_plugin_java_source_count"] == 13
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "signed HTTP POST" in report_text
+    assert "sy37_account_request_login_url" in hits_text
+    assert "AccountLogic.handleLoginSuccess" in flow_text
+
+
+def test_fanxiu_apk_jadx_sy37_login_response_surface_probe_maps_response_to_unity(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    main_root = export_root / "apk_static_index" / "jadx_1_5_5_nores" / "sources"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    core_dir = plugin_root / "com" / "sy37sdk" / "core"
+    platform_dir = plugin_root / "com" / "sqwan" / "msdk" / "api" / "sdk"
+    activity_dir = main_root / "com" / "flamePhoenix" / "plugin" / "activity"
+    callback_dir = main_root / "com" / "flamePhoenix" / "plugin" / "plugin"
+    for directory in (account_dir, core_dir, platform_dir, activity_dir, callback_dir):
+        directory.mkdir(parents=True)
+
+    (account_dir / "AccountLogic.java").write_text(
+        """
+package com.sy37sdk.account;
+class AccountLogic {
+  private UserInfo createUserInfo(String str, String str2, String str3, String str4, boolean z, String str5) throws Exception {
+    JSONObject jSONObject = new JSONObject(str);
+    if (jSONObject.has("pwd")) { str2 = decryptPwd(jSONObject.optString("pwd")); }
+    String strOptString = jSONObject.optString("uid");
+    String strOptString2 = jSONObject.optString("uname");
+    String strOptString3 = jSONObject.optString("token");
+    String strOptString4 = jSONObject.optString(SqConstants.REFRESH_TOKEN);
+    String strOptString5 = jSONObject.optString("login_account");
+    String strOptString6 = jSONObject.optString("action_type");
+    UserInfo userInfo = new UserInfo();
+    userInfo.setUid(strOptString);
+    userInfo.setUname(strOptString2);
+    userInfo.setToken(strOptString3);
+    userInfo.setRefreshToken(strOptString4);
+    userInfo.setAlias(strOptString5);
+    return userInfo;
+  }
+  private void handleLoginSuccess(String str, String str2, String str3, String str4, boolean z, String str5) {
+    UserInfo userInfoCreateUserInfo = createUserInfo(str, str2, str3, str4, z, str5);
+    UserInfoManager.getInstance().setLoginUser(userInfoConvert);
+    AccountCache.setUserInfo(this.context, userInfoCreateUserInfo);
+    AccountTools.setAccountToFile(this.context, userInfoCreateUserInfo);
+    HashMap map = new HashMap();
+    map.put(BaseSQwanCore.LOGIN_KEY_USERID, userInfoCreateUserInfo.getUid());
+    map.put(BaseSQwanCore.LOGIN_KEY_USERNAME, userInfoCreateUserInfo.getUname());
+    map.put("token", userInfoCreateUserInfo.getToken());
+    map.put("pwd", userInfoCreateUserInfo.getUpwd());
+    map.put("pid", ConfigManager.getInstance(this.context).getSQAppConfig().getPartner());
+    map.put("gid", ConfigManager.getInstance(this.context).getSQAppConfig().getGameid());
+    this.loginListener.onSuccess(map);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (core_dir / "SQwanManager.java").write_text(
+        """
+package com.sy37sdk.core;
+class SQwanManager {
+  public Bundle convertMapToBundle(Map<String, String> map) {
+    Bundle bundle = new Bundle();
+    for (Map.Entry<String, String> entry : map.entrySet()) {
+      bundle.putString(entry.getKey(), entry.getValue());
+    }
+    return bundle;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (platform_dir / "Platform.java").write_text(
+        """
+package com.sqwan.msdk.api.sdk;
+class Platform {
+  public void sqLoginSuccess(Context context2, SQResultListener sQResultListener, Bundle bundle) {
+    String string = bundle.getString(BaseSQwanCore.LOGIN_KEY_USERID);
+    String string2 = bundle.getString(BaseSQwanCore.LOGIN_KEY_USERNAME);
+    String string3 = bundle.getString("token");
+    MultiSDKUtils.setUserid(context2, string);
+    MultiSDKUtils.setUsername(context2, string2);
+    MultiSDKUtils.setToken(context2, string3);
+    bundle2.putString("token", string3);
+    bundle2.putString("gid", appConfig.getGameid());
+    bundle2.putString("pid", appConfig.getPartner());
+    sQResultListener.onSuccess(bundle2);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (activity_dir / "FlameUnityActivity.java").write_text(
+        """
+package com.flamePhoenix.plugin.activity;
+class FlameUnityActivity {
+  void SDKLogin() {
+    SQwanCore.getInstance().login(this, new SQResultListener() {
+      public void onSuccess(Bundle bundle) {
+        String string = bundle.getString("token");
+        FlameUnityActivity.m_gid = bundle.getString("gid");
+        FlameUnityActivity.m_pid = bundle.getString(PushConsts.KEY_SERVICE_PIT);
+        SDKCallback.OnSDKLoginData("1__" + string + "__" + FlameUnityActivity.m_gid + "__" + FlameUnityActivity.m_pid);
+      }
+      public void onFailture(int i, final String str) {
+        SDKCallback.OnSDKLoginData("0__" + str);
+      }
+    });
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (callback_dir / "SDKCallback.java").write_text(
+        """
+package com.flamePhoenix.plugin.plugin;
+class SDKCallback {
+  public static void OnSDKLoginData(String str) {
+    SendDataToUnity("OnReceiveLogin", str);
+  }
+  static void SendDataToUnity(String str, String str2) {
+    UnityPlayer.UnitySendMessage("GameEnter", str, str2);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: response plugin fixture */\nclass Broken {}\n", encoding="utf-8")
+    (main_root / "BrokenMain.java").write_text("/* JADX ERROR: response main fixture */\nclass BrokenMain {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_login_response_surface_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_login_response_surface_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_sy37_login_response_surface_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_sy37_login_response_surface_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["login_response_json_fields_found"] is True
+    assert result["verdict"]["userinfo_object_population_found"] is True
+    assert result["verdict"]["login_cache_writes_found"] is True
+    assert result["verdict"]["success_map_fields_found"] is True
+    assert result["verdict"]["sqwan_bundle_conversion_found"] is True
+    assert result["verdict"]["platform_final_bundle_found"] is True
+    assert result["verdict"]["main_unity_login_payload_found"] is True
+    assert result["counts"]["main_java_source_count"] == 3
+    assert result["counts"]["sq_plugin_java_source_count"] == 4
+    assert result["counts"]["jadx_error_marker_files"] == 2
+    assert "1__token__gid__pid" in report_text
+    assert "response_json_token" in hits_text
+    assert "FlameUnityActivity.SDKLogin" in flow_text
+
+
+def test_fanxiu_apk_jadx_sy37_request_signing_probe_maps_request_envelope(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    network_dir = plugin_root / "com" / "sq" / "tool" / "network"
+    gateway_dir = plugin_root / "com" / "sdk" / "sq" / "net" / "gateway"
+    request_dir = plugin_root / "com" / "sqwan" / "common" / "request"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    net_dir = account_dir / "net"
+    alifast_dir = account_dir / "alifast"
+    network_dir.mkdir(parents=True)
+    gateway_dir.mkdir(parents=True)
+    request_dir.mkdir(parents=True)
+    net_dir.mkdir(parents=True)
+    alifast_dir.mkdir(parents=True)
+
+    (network_dir / "SqRequest.java").write_text(
+        """
+package com.sq.tool.network;
+class SqRequest {
+  public SqRequest signV3() {
+    this.mRequestBuilder.tag(SignInterceptor.SignVersion.class, SignInterceptor.SignVersion.V3);
+    return this;
+  }
+  public SqRequest addParamsTransformer(RequestBuilder.ParamsTransformer paramsTransformer) {
+    this.mRequestBuilder.addParamsTransformer(paramsTransformer);
+    return this;
+  }
+  private void enqueue() {
+    this.mRequestBuilder.addParamsTransformer(new StringifyTransformer());
+    this.mRequestBuilder.addHeadersTransformer(new IpHeaderTransformer());
+  }
+  public static String getTransInfo() { return ""; }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "SqHttpClient.java").write_text(
+        """
+package com.sq.tool.network;
+class SqHttpClient {
+  private static OkHttpClient.Builder createBuilder() {
+    return new OkHttpClient.Builder().addInterceptor(new RequestIdOkInterceptor()).addInterceptor(new SignInterceptor()).addInterceptor(new GateWayEncryptInterceptor(new GateWayEncryptInterceptor.Provider() {
+      public String provideKey() { return GateWayManager.getKey(); }
+      public HashSet<String> provideWhiteList() { return GateWayManager.getWhiteList(); }
+      public String provideXRequestVersion() { return GateWayManager.getXVersion(); }
+    }, new ExceptionReporter()));
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "SignInterceptor.java").write_text(
+        """
+package com.sq.tool.network;
+class SignInterceptor {
+  private void init() {
+    String appKey = ConfigManager.getInstance(SQContextWrapper.getApplicationContext()).getAppKey();
+    this.mV3 = new SignV3Interceptor(appKey);
+  }
+  public Response intercept(Interceptor.Chain chain) {
+    return this.mV3.intercept(chain);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "SignV3Interceptor.java").write_text(
+        """
+package com.sq.tool.network;
+class SignV3Interceptor {
+  private static final String PARAM_NAME = "sign";
+  public Response intercept(Interceptor.Chain chain) {
+    if (!"sign".equals(strName)) {
+      map.put(strName, strValue);
+    }
+    builder.add("sign", getSign(request, map));
+    request = request.newBuilder().url(httpUrlUrl.newBuilder().addQueryParameter("sign", getSign(request, map2)).build()).build();
+    return chain.proceed(request);
+  }
+  private static StringBuilder buildString(String str, Map<String, String> map) {
+    Collections.sort(arrayList);
+    sb.append(map.get(str2));
+    sb.append(str);
+    return sb;
+  }
+  private static String sign(StringBuilder sb) {
+    return MD5Util.Md5(sb.toString()).toLowerCase(Locale.US);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "RequestIdOkInterceptor.java").write_text(
+        """
+package com.sq.tool.network;
+class RequestIdOkInterceptor {
+  public Response intercept(Interceptor.Chain chain) {
+    return chain.proceed(chain.request().newBuilder().addHeader("Request-Id", RequestUtil.generateRequestId()).addHeader("Request-LiveId", SpRequestInfo.getRequestLiveId(SQContextWrapper.getApplicationContext())).build());
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (gateway_dir / "GateWayEncryptInterceptor.java").write_text(
+        """
+package com.sdk.sq.net.gateway;
+class GateWayEncryptInterceptor {
+  private Request encryptRequest(Request originalRequest) {
+    builderNewBuilder.header("x-request-id", strObtainXRequestId);
+    builderNewBuilder.header("X-Request-Nonce-Str", strBuildNonceStr);
+    builderNewBuilder.header("x-request-version", this.mProvider.provideXRequestVersion());
+    encryptQueryParams(strBuildNonceStr, originalRequest, builderNewBuilder);
+    encryptBody(strBuildNonceStr, originalRequest, builderNewBuilder);
+    return builderNewBuilder.build();
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "GateWayManager.java").write_text(
+        """
+package com.sq.tool.network;
+class GateWayManager {
+  static {
+    hashSet.add("https://sdk-apix-secure.37.com.cn/server-info-service/get-url");
+  }
+  public static void addWhiteListUrl(String str) {
+    if (str.contains("-secure")) {
+      sWhiteList.add(str);
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (request_dir / "CommonParamsV2.java").write_text(
+        """
+package com.sqwan.common.request;
+class CommonParamsV2 {
+  public Map<String, Object> transform(Map<String, Object> map) {
+    map.put("pid", sQAppConfig.getPartner());
+    map.put("gid", sQAppConfig.getGameid());
+    map.put("refer", sQAppConfig.getRefer());
+    map.put("dev", DevLogic.getInstance(applicationContext).getValue());
+    map.put("sversion", VersionUtil.sdkVersion);
+    map.put("version", AppUtils.getVersionName(applicationContext));
+    map.put("gwversion", "4.6.7");
+    map.put("time", String.valueOf(System.currentTimeMillis() / 1000));
+    map.put("scut", getCodeOfLogin(applicationContext));
+    map.put("oaid", oaid);
+    map.put(SqConstants.HOST_SDK_VERSION, VersionUtil.getOriginalVersion());
+    map.put(SqConstants.IS_ROOT, RootLogic.getInstance(applicationContext).getValue());
+    map.put(SqConstants.IS_SIMULATOR, SimulatorLogic.getInstance(applicationContext).getValue());
+    return map;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (request_dir / "CommonParamsV3.java").write_text(
+        """
+package com.sqwan.common.request;
+class CommonParamsV3 {
+  public Map<String, Object> transform(Map<String, Object> map) {
+    map.put("pid", partner);
+    map.put("gid", gameid);
+    map.put("refer", refer);
+    map.put("dev", DevLogic.getInstance(applicationContext).getValue());
+    map.put("android_id", DevManager.getAndroidId(DevLogic.getInstance(applicationContext).isAuthCheck()));
+    map.put("version", appVersionName);
+    map.put("gwversion", "4.6.7");
+    map.put("sversion", VersionUtil.sdkVersion);
+    map.put("mac", MacLogic.getInstance(applicationContext).getValue());
+    map.put("imei", ImeiLogic.getInstance(applicationContext).getValue());
+    map.put("os", IMUrl.OS);
+    map.put("over", Build.VERSION.RELEASE);
+    map.put("time", String.valueOf(System.currentTimeMillis() / 1000));
+    map.put("oaid", oaid);
+    map.put(SqConstants.HOST_SDK_VERSION, VersionUtil.getOriginalVersion());
+    map.put(SqConstants.IS_ROOT, RootLogic.getInstance(applicationContext).getValue());
+    map.put(SqConstants.IS_SIMULATOR, SimulatorLogic.getInstance(applicationContext).getValue());
+    return map;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountRequestManager.java").write_text(
+        """
+package com.sy37sdk.account;
+class AccountRequestManager {
+  public void loginRequest(String str, String str2, boolean z, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.LOGIN).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(this.mContext)).addParam("uname", str).addParam(SqConstants.UPWD, str2).addParam(SqConstants.TRANS_INFO, SqRequest.getTransInfo()).addParamsTransformer(new CommonParamsV2()).post(cb, String.class);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (net_dir / "LoginRequestManager.java").write_text(
+        """
+package com.sy37sdk.account.net;
+class LoginRequestManager {
+  public static void phoneLoginPwd(String str, String str2, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_PHONE_PWD).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(SQContextWrapper.getActivity())).addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void phoneLoginCheckCode(String str, String str2, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_CHECK_CODE).signV3().addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void phoneLoginTicket(String str, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_TICKET).signV3().addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+  public static void wechatLogin(String str, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.WECHAT_LOGIN).signV3().addParamsTransformer(new CommonParamsV3()).post(cb, String.class);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (alifast_dir / "FastLoginHttpUtil.java").write_text(
+        """
+package com.sy37sdk.account.alifast;
+class FastLoginHttpUtil {
+  static void verifyFastToken(String str, SqHttpCallback<JSONObject> cb) {
+    SqRequest.of(UrlConstant.URL_VERIFY_FAST_TOKEN).signV3().addParamsTransformer(new CommonParamsV3()).post(cb, JSONObject.class);
+  }
+  static void fastLogin(UserInfo userInfo, SqHttpCallback<JSONObject> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_FAST).signV3().addParamsTransformer(new CommonParamsV3()).post(cb);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: request signing fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_request_signing_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_request_signing_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_sy37_request_signing_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_sy37_request_signing_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["sqrequest_sign_tag_found"] is True
+    assert result["verdict"]["http_client_interceptor_chain_found"] is True
+    assert result["verdict"]["sign_interceptor_dispatch_found"] is True
+    assert result["verdict"]["sign_v3_algorithm_shape_found"] is True
+    assert result["verdict"]["gateway_encryption_layer_present"] is True
+    assert result["verdict"]["common_params_v2_fields_found"] is True
+    assert result["verdict"]["common_params_v3_fields_found"] is True
+    assert result["verdict"]["account_login_uses_common_params_v2"] is True
+    assert result["verdict"]["phone_fast_wechat_use_common_params_v3"] is True
+    assert result["counts"]["sq_plugin_java_source_count"] == 13
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "request-envelope evidence" in report_text
+    assert "sign_v3_md5_lower" in hits_text
+    assert "GateWayEncryptInterceptor" in flow_text
+
+
+def test_fanxiu_apk_jadx_sy37_url_catalog_probe_extracts_annotated_fields(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    im_dir = plugin_root / "com" / "sqwan" / "msdk" / "api"
+    websocket_dir = plugin_root / "com" / "sq" / "websocket_engine"
+    account_dir.mkdir(parents=True)
+    im_dir.mkdir(parents=True)
+    websocket_dir.mkdir(parents=True)
+
+    (account_dir / "UrlConstant.java").write_text(
+        """
+package com.sy37sdk.account;
+class UrlConstant {
+  public static final String KEY_S_APPEAL_PAGE = "phone_retrieval";
+  @UrlUpdate(KEY_S_APPEAL_PAGE)
+  public static String APPEAL_PAGE = null;
+  @UrlUpdate(value = "login", xValue = "x_login")
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+  static {
+    APPEAL_PAGE = "http://" + MultiSdkManager.APP_HOST + "/service-system/accountappeal/phoneRetrieval";
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (im_dir / "IMUrl.java").write_text(
+        """
+package com.sqwan.msdk.api;
+class IMUrl {
+  public static final String KEY_M_ORDER = "order";
+  @UrlUpdate(value = KEY_M_ORDER, xValue = "x_order_m")
+  public static String URL_M_ORDER = "http://mpay-api-secure." + MultiSdkManager.APP_HOST + "/sdk/order/";
+}
+""",
+        encoding="utf-8",
+    )
+    (websocket_dir / "WebSocketCenter.java").write_text(
+        """
+package com.sq.websocket_engine;
+class WebSocketCenter {
+  public static final String KEY_WEBSOCKET = "websocket";
+  @UrlUpdate(KEY_WEBSOCKET)
+  private static String websocket_url_release = "ws://push-comet.37.com.cn/sub";
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: url catalog fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_url_catalog_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_url_catalog_report.md").read_text(encoding="utf-8")
+    catalog_text = (output_dir / "apk_jadx_sy37_url_catalog.tsv").read_text(encoding="utf-8")
+    by_class_text = (output_dir / "apk_jadx_sy37_url_catalog_by_class.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["url_rows"] == 4
+    assert result["counts"]["class_rows"] == 3
+    assert result["counts"]["with_x_key"] == 2
+    assert result["counts"]["secure_like_rows"] == 2
+    assert result["counts"]["assignment_recovered_rows"] == 1
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "phone_retrieval" in catalog_text
+    assert "x_order_m" in catalog_text
+    assert "websocket_url_release" in catalog_text
+    assert "secure_gateway_candidate" in catalog_text
+    assert "com.sy37sdk.account.UrlConstant" in by_class_text
+    assert "static `@UrlUpdate` catalog" in report_text
+
+
+def test_fanxiu_apk_jadx_sy37_endpoint_usage_probe_joins_sqrequest_calls_to_url_catalog(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    update_dir = account_dir / "update"
+    dynamic_dir = plugin_root / "com" / "example"
+    for directory in (account_dir, update_dir, dynamic_dir):
+        directory.mkdir(parents=True)
+
+    (account_dir / "UrlConstant.java").write_text(
+        """
+package com.sy37sdk.account;
+class UrlConstant {
+  @UrlUpdate(value = "login", xValue = "x_login")
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+  @UrlUpdate(value = "fast_login", xValue = "x_fast_login")
+  public static String URL_LOGIN_FAST = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/fast_login/";
+  @UrlUpdate("update_url")
+  public static String UPDATE_URL = "http://api." + MultiSdkManager.APP_HOST + "/sdk/update";
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountRequestManager.java").write_text(
+        """
+package com.sy37sdk.account;
+import com.sy37sdk.account.UrlConstant;
+class AccountRequestManager {
+  public void login(String str, String str2, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.LOGIN).signV3().addHeader("D-Token", DevicesFingerprint.getDevToken(this.mContext)).addParam("uname", str).addParam(SqConstants.UPWD, str2).addParam("token", AccountCache.getToken(this.mContext)).addParam(SqConstants.TRANS_INFO, SqRequest.getTransInfo()).addParamsTransformer(new CommonParamsV2()).post(cb);
+  }
+  public void fast(String token, SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.URL_LOGIN_FAST).signV3().addParam("token", token).addParamsTransformer(new CommonParamsV3()).post(cb);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (update_dir / "UpdateUrlManager.java").write_text(
+        """
+package com.sy37sdk.account.update;
+import com.sy37sdk.account.UrlConstant;
+class UpdateUrlManager {
+  public void req(SqHttpCallback<String> cb) {
+    SqRequest.of(UrlConstant.UPDATE_URL).signV1().addParamsTransformer(new CommonParamsV1()).get(cb);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (dynamic_dir / "DynamicManager.java").write_text(
+        """
+package com.example;
+class DynamicManager {
+  public void dyn(String str, SqHttpCallback<String> cb) {
+    SqRequest.of(str).signV3().jsonParams("{}").post(cb);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: endpoint usage fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_endpoint_usage_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_endpoint_usage_report.md").read_text(encoding="utf-8")
+    usage_text = (output_dir / "apk_jadx_sy37_endpoint_usage.tsv").read_text(encoding="utf-8")
+    by_endpoint_text = (output_dir / "apk_jadx_sy37_endpoint_usage_by_endpoint.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["callsite_rows"] == 4
+    assert result["counts"]["joined_catalog_rows"] == 3
+    assert result["counts"]["unresolved_url_expr_rows"] == 1
+    assert result["counts"]["secure_like_callsite_rows"] == 2
+    assert result["counts"]["d_token_header_callsite_rows"] == 1
+    assert result["counts"]["trans_info_callsite_rows"] == 1
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert result["verdict"]["login_endpoint_joined"] is True
+    assert result["verdict"]["safe_static_shape_only"] is True
+    assert "UrlConstant.LOGIN" in usage_text
+    assert "CommonParamsV2" in usage_text
+    assert "D-Token" in usage_text
+    assert "x_login" in usage_text
+    assert "secure_gateway_candidate" in usage_text
+    assert "joined_url_update_catalog" in usage_text
+    assert "dynamic_unresolved" in usage_text
+    assert "com.sy37sdk.account.UrlConstant.LOGIN" in by_endpoint_text
+    assert "static callsite catalog" in report_text
+
+
+def test_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe_maps_generic_post_wrappers(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    core_dir = plugin_root / "com" / "sy37sdk" / "core"
+    m_dir = plugin_root / "com" / "sqwan" / "msdk" / "api"
+    core_dir.mkdir(parents=True)
+    m_dir.mkdir(parents=True)
+
+    (core_dir / "INewUrl.java").write_text(
+        """
+package com.sy37sdk.core;
+class INewUrl {
+  @UrlUpdate(value = "s_login", xValue = "x_s_login")
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+  @UrlUpdate(value = "s_reg", xValue = "x_s_reg")
+  public static String REG = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/reg/";
+}
+""",
+        encoding="utf-8",
+    )
+    (core_dir / "RequestManager.java").write_text(
+        """
+package com.sy37sdk.core;
+class RequestManager {
+  public void loginRequest(String str, String str2, RequestCallBack cb, boolean z) {
+    HashMap<String, String> map = new HashMap<>();
+    map.put("uname", str);
+    map.put(SqConstants.UPWD, str2);
+    post(INewUrl.LOGIN, map, SignInterceptor.SignVersion.V2, new SignV2Interceptor.SignExt(str).append(str2), cb, z);
+  }
+  public void registRequest(String str, String str2, RequestCallBack cb, boolean z) {
+    HashMap<String, String> map = new HashMap<>();
+    map.put("uname", str);
+    map.put(SqConstants.UPWD, str2);
+    post(INewUrl.REG, map, SignInterceptor.SignVersion.V2, new SignV2Interceptor.SignExt(str).append(str2), cb, z);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (m_dir / "IMUrl.java").write_text(
+        """
+package com.sqwan.msdk.api;
+class IMUrl {
+  @UrlUpdate(value = "m_order", xValue = "x_m_order")
+  public static String URL_M_ORDER = "http://m-api-secure." + MultiSdkManager.APP_HOST + "/sdk/order/";
+}
+""",
+        encoding="utf-8",
+    )
+    (m_dir / "MRequestManager.java").write_text(
+        """
+package com.sqwan.msdk.api;
+class MRequestManager {
+  public void orderRequest(PayInfoModel payInfoModel, SqRequestCallBack cb) {
+    HashMap<String, String> map = new HashMap<>();
+    map.put(SqConstants.DOID, payInfoModel.getOrderId());
+    map.put("token", MultiSDKUtils.getToken(this.mContext));
+    post(IMUrl.URL_M_ORDER, map, SignInterceptor.SignVersion.V2, new SignV2Interceptor.SignExt(payInfoModel.getOrderId()), cb, true, false);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: wrapper fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_wrapper_endpoint_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_wrapper_endpoint_report.md").read_text(encoding="utf-8")
+    wrapper_text = (output_dir / "apk_jadx_sy37_wrapper_endpoint.tsv").read_text(encoding="utf-8")
+    by_helper_text = (output_dir / "apk_jadx_sy37_wrapper_endpoint_by_helper.tsv").read_text(encoding="utf-8")
+
+    assert result["counts"]["wrapper_rows"] == 3
+    assert result["counts"]["joined_catalog_rows"] == 3
+    assert result["counts"]["secure_like_rows"] == 3
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert result["verdict"]["s_layer_legacy_wrappers_found"] is True
+    assert result["verdict"]["m_layer_wrappers_found"] is True
+    assert "com.sy37sdk.core.INewUrl.LOGIN" in wrapper_text
+    assert "com.sqwan.msdk.api.IMUrl.URL_M_ORDER" in wrapper_text
+    assert "SCommonParam" in wrapper_text
+    assert "CommonParamsV1" in wrapper_text
+    assert "uname" in wrapper_text
+    assert "s_layer_legacy_account_post_helper" in by_helper_text
+    assert "static wrapper-call catalog" in report_text
+
+
+def test_fanxiu_apk_jadx_sy37_url_update_probe_maps_server_info_flow(tmp_path):
+    root = tmp_path / "1023295_unpacked"
+    root.mkdir()
+    (root / "AndroidManifest.xml").write_text("<manifest />", encoding="utf-8")
+    export_root = tmp_path / "exports"
+    plugin_root = export_root / "apk_static_index" / "jadx_sq_plugin_3_7_9_6_1" / "sources"
+    base_dir = plugin_root / "com" / "sqwan" / "msdk"
+    update_dir = plugin_root / "com" / "sy37sdk" / "account" / "update"
+    account_dir = plugin_root / "com" / "sy37sdk" / "account"
+    annotation_dir = plugin_root / "com" / "sqwan" / "common" / "annotation"
+    request_dir = plugin_root / "com" / "sqwan" / "common" / "request"
+    urlmod_dir = plugin_root / "com" / "sqwan" / "common" / "url"
+    network_dir = plugin_root / "com" / "sq" / "tool" / "network"
+    core_dir = plugin_root / "com" / "sy37sdk" / "core"
+    for directory in (base_dir, update_dir, account_dir, annotation_dir, request_dir, urlmod_dir, network_dir, core_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    (base_dir / "BaseSQwanCore.java").write_text(
+        """
+package com.sqwan.msdk;
+class BaseSQwanCore {
+  public void init(Context context) {
+    final UpdateUrlManager updateUrlManager = new UpdateUrlManager();
+    updateUrlManager.reqUrlUpdateManager(new SqHttpCallback<JSONObject>() {
+      public void onSuccess(JSONObject jSONObject) {
+        HashMap<String, String> map = updateUrlManager.parse(jSONObject);
+        if (GateWayManager.getWhiteList().contains(UrlConstant.UPDATE_URL)) {
+          GateWayManager.updateWhiteList(map);
+          GateWayManager.updateKeySet(jSONObject);
+        }
+        UrlUpdateUtils.setUrlData(map, BaseSQwanCore.this.context);
+        ProtectUrlManager.getInstance().setProtectUrls(updateUrlManager.getApiUrls());
+        BaseSQwanCore.this.afterApiUpdate(context);
+      }
+      private void onFailure(String str2) {
+        ProtectUrlManager.getInstance().setProtectUrls(UrlUpdateUtils.getUrls());
+        BaseSQwanCore.this.afterApiUpdate(context);
+      }
+    });
+  }
+  private void afterApiUpdate(final Context context) {
+    SqHttpDns.getInstance().pullDnsConfig();
+    UrlUpdateUtils.urlUpdate(context);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (update_dir / "UpdateUrlManager.java").write_text(
+        """
+package com.sy37sdk.account.update;
+class UpdateUrlManager {
+  public void reqUrlUpdateManager(SqHttpCallback<JSONObject> sqHttpCallback) {
+    SqRequest.of(UrlConstant.UPDATE_URL).signV3().addParamsTransformer(new CommonParamsV1()).get(sqHttpCallback);
+  }
+  public HashMap<String, String> parse(JSONObject jSONObject) {
+    JSONArray jSONArrayOptJSONArray = jSONObject.optJSONArray("api_infos");
+    String string = jSONObjectOptJSONObject.getString("api_key");
+    String string2 = jSONObjectOptJSONObject.getString("api_info");
+    if (!"x_secure_key".equals(string)) {
+      apiMap.put(string, string2);
+      this.apiUrls.add(string2);
+    }
+    return apiMap;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (account_dir / "UrlConstant.java").write_text(
+        """
+package com.sy37sdk.account;
+class UrlConstant {
+  @UrlUpdate(value = "login", xValue = "x_login")
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+  static {
+    UPDATE_URL = "https://sdk-apix-secure." + MultiSdkManager.APP_HOST + "/server-info-service/get-url";
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (network_dir / "GateWayManager.java").write_text(
+        """
+package com.sq.tool.network;
+class GateWayManager {
+  static {
+    hashSet.add("https://sdk-apix-secure.37.com.cn/server-info-service/get-url");
+  }
+  public static void updateWhiteList(Map<String, String> map) {
+    sWhiteList.clear();
+    if (str.contains("-secure")) {
+      sWhiteList.add(str);
+    }
+  }
+  public static void updateKeySet(JSONObject jSONObject) {
+    JSONObject jSONObject2 = new JSONObject(strFindSecureKey);
+    String strOptString = jSONObject2.optString("X-Request-AppKey");
+    String strOptString2 = jSONObject2.optString("X-Request-AppSecret");
+    String strOptString3 = jSONObject2.optString("X-Request-Version");
+    saveKey(GateWayUtils.getFixedKey(strOptString, strOptString2));
+    saveXVersion(strOptString3);
+  }
+  private static String findSecureKey(JSONObject jSONObject) {
+    if ("x_secure_key".equals(jSONObjectOptJSONObject.optString("api_key"))) {
+      return jSONObjectOptJSONObject.optString("api_info");
+    }
+    return "";
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (annotation_dir / "UrlUpdate.java").write_text(
+        """
+package com.sqwan.common.annotation;
+public @interface UrlUpdate {
+  String value();
+  String xValue() default "";
+}
+""",
+        encoding="utf-8",
+    )
+    (annotation_dir / "UrlUpdateUtils.java").write_text(
+        """
+package com.sqwan.common.annotation;
+class UrlUpdateUtils {
+  private static final String SQ_URL_UPDATE = "sq_url_update";
+  public static void urlUpdate(Context context) {
+    Iterator<Map.Entry<String, String>> it = UrlMod.getUrlMod().entrySet().iterator();
+    Class<?> cls = Class.forName(it.next().getValue());
+    UrlUpdate urlUpdate = (UrlUpdate) field.getAnnotation(UrlUpdate.class);
+    if (urlMap.get(urlUpdate.xValue()) != null) {
+      strValue = urlUpdate.xValue();
+    } else {
+      strValue = urlUpdate.value();
+    }
+    GateWayManager.addWhiteListUrl((String) obj);
+    field.set(null, urlFromSpOrLocal);
+  }
+  public static void setUrlData(Map<String, String> map, Context context) {
+    urlMap.putAll(map);
+    editorEdit.putString(str, str2);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (annotation_dir / "ProtectUrlManager.java").write_text(
+        """
+package com.sqwan.common.annotation;
+class ProtectUrlManager {
+  static {
+    arrayList.add("bugless.shan-yu-tech.com");
+    defaultProtectHosts.add("track.37.com.cn");
+  }
+  public void setProtectUrls(ArrayList<String> arrayList) {
+    String host = SoftwareUtils.getHost(it.next());
+    SqHttpDns.getInstance().setProtectHosts(this.protectHosts);
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (urlmod_dir / "UrlMod.java").write_text(
+        """
+package com.sqwan.common.url;
+class UrlMod {
+  public static Map<String, String> getUrlMod() {
+    urlMod.put("IMUrl", "com.sqwan.msdk.api.IMUrl");
+    urlMod.put("INewUrl", "com.sy37sdk.core.INewUrl");
+    urlMod.put("orderUrl", "com.sy37sdk.order.OrderUrl");
+    urlMod.put("accountUrl", "com.sy37sdk.account.UrlConstant");
+    return urlMod;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (request_dir / "CommonParamsV1.java").write_text(
+        """
+package com.sqwan.common.request;
+class CommonParamsV1 {
+  public Map<String, Object> transform(Map<String, Object> map) {
+    map.put("gid", gameid);
+    map.put("pid", partner);
+    map.put("refer", refer);
+    map.put("version", versionName);
+    map.put("time", String.valueOf(System.currentTimeMillis() / 1000));
+    map.put("dev", DevLogic.getInstance(applicationContext).getValue());
+    map.put("oaid", oaid);
+    map.put("sversion", VersionUtil.sdkVersion);
+    map.put("gwversion", "4.6.7");
+    map.put(SqConstants.IS_ROOT, RootLogic.getInstance(applicationContext).getValue());
+    map.put(SqConstants.IS_SIMULATOR, SimulatorLogic.getInstance(applicationContext).getValue());
+    return map;
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    (core_dir / "INewUrl.java").write_text(
+        """
+package com.sy37sdk.core;
+class INewUrl {
+  @UrlUpdate(value = "login", xValue = "x_login")
+  public static String LOGIN = "http://s-api-secure." + MultiSdkManager.APP_HOST + "/sdk/login/";
+}
+""",
+        encoding="utf-8",
+    )
+    (plugin_root / "Broken.java").write_text("/* JADX ERROR: url update fixture */\nclass Broken {}\n", encoding="utf-8")
+
+    result = build_fanxiu_apk_jadx_sy37_url_update_probe(apk_root=root, export_root=export_root)
+    output_dir = export_root / "apk_static_index"
+    report_text = (output_dir / "apk_jadx_sy37_url_update_report.md").read_text(encoding="utf-8")
+    hits_text = (output_dir / "apk_jadx_sy37_url_update_hits.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "apk_jadx_sy37_url_update_flow.tsv").read_text(encoding="utf-8")
+
+    assert result["verdict"]["server_info_request_found"] is True
+    assert result["verdict"]["server_info_response_parse_found"] is True
+    assert result["verdict"]["url_reflection_update_found"] is True
+    assert result["verdict"]["gateway_keyset_update_found"] is True
+    assert result["verdict"]["gateway_whitelist_update_found"] is True
+    assert result["verdict"]["httpdns_protect_urls_found"] is True
+    assert result["verdict"]["urlmod_registry_found"] is True
+    assert result["verdict"]["common_params_v1_fields_found"] is True
+    assert result["counts"]["common_v1_field_hits"] == 11
+    assert result["counts"]["jadx_error_marker_files"] == 1
+    assert "server-info/get-url" in report_text
+    assert "gateway_key_appkey_field" in hits_text
+    assert "UpdateUrlManager.reqUrlUpdateManager" in flow_text
 
 
 def test_fanxiu_apk_unity_login_receiver_probe_links_java_message_to_il2cpp_receiver(tmp_path):
@@ -5286,6 +10972,272 @@ def test_fanxiu_cpp2il_login_lua_bridge_probe_closes_login_server_chain(tmp_path
     assert result["checks"]["lua_calls_gamelogin_bridge"] is True
     assert "GetServerInfo:GetSDKServerList(Pid, Token)" in report_text
     assert "LoginMgr.Inst_get():LoginCheck" in evidence_text
+
+
+def test_fanxiu_login_token_to_socket_handoff_probe_joins_java_il2cpp_lua_fields(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    jadx_dir = (
+        output_dir
+        / "jadx_1_5_5_nores"
+        / "sources"
+        / "com"
+        / "flamePhoenix"
+        / "plugin"
+        / "activity"
+    )
+    isil_phone_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "PhoneReceiver"
+    )
+    account_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "MU"
+        / "Tool"
+    )
+    cs_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "Core"
+        / "Managers"
+    )
+    lua_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gamelogin" / "text_assets"
+    for path in (jadx_dir, isil_phone_dir, account_dir, cs_dir, lua_dir):
+        path.mkdir(parents=True)
+
+    (jadx_dir / "FlameUnityActivity.java").write_text(
+        'String string = bundle.getString("token");\n'
+        'FlameUnityActivity.m_gid = bundle.getString("gid");\n'
+        "FlameUnityActivity.m_pid = bundle.getString(PushConsts.KEY_SERVICE_PIT);\n"
+        'SDKCallback.OnSDKLoginData("1__" + string + "__" + FlameUnityActivity.m_gid + "__" + FlameUnityActivity.m_pid);\n',
+        encoding="utf-8",
+    )
+    (isil_phone_dir / "PhoneMsgReceiver.txt").write_text(
+        "048 Call String.Split, X0, X1, X2\n"
+        "057 Call Int32.Parse, X0\n"
+        "191 Move [X8+16], X22\n"
+        "199 Move [X8+24], X21\n"
+        "207 Move [X8+32], X20\n"
+        "216 Move [X8+56], X23\n"
+        "252 Call CsCallLuaMgr.GetLoginTokenSucceed, X0, X1, X2, X3, X4\n",
+        encoding="utf-8",
+    )
+    (account_dir / "AccountInfo.cs").write_text(
+        "public string V_LoginToken; //Field offset: 0x10\n"
+        "public string V_GameId; //Field offset: 0x18\n"
+        "public string V_PId; //Field offset: 0x20\n"
+        "public string V_UId; //Field offset: 0x38\n",
+        encoding="utf-8",
+    )
+    (cs_dir / "CsCallLuaMgr.cs").write_text(
+        "public static void GetLoginTokenSucceed(string LoginToken, string GameId, string Pid, string Uid, string TimeStamp) { }\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginMgr.lua").write_text(
+        "function _M.GetLoginTokenSucceed(LoginToken,GameId,ChannelId,Uid,Timestamp)\n"
+        "LoginMgr.Inst_get():LoginCheck(LoginToken,GameId,ChannelId,Uid,Timestamp)\n"
+        "end\n"
+        "function _M.GetSDKServerInfo(self,Pid,Token)\n"
+        "self.GetServerInfo:GetSDKServerList(Pid,Token)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "GetServerInfo.lua").write_text(
+        "function _M.GetSDKServerList(self,Pid,LoginToken)\n"
+        "pid=Pid,\n"
+        "token=LoginToken,\n"
+        "cid=PhoneHelper.GetPid(),\n"
+        "gid=PhoneHelper.GetGameId(),\n"
+        "GameLoginBridge.F_GetServerList(serverListCallbackId,jsonStr,isZip)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "EnterGameInfo.lua").write_text(
+        "function _M.ContinueLogin(self)\n"
+        "local curServerItem=LoginMgr.Inst_get():GetCurServerItem()\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_ReLoginHandler(curServerItem.account,curServerItem.serverId,curServerItem.token,curServerItem.pid,self.V_ChannelPackage)\n"
+        "LoginMgr.Inst_get().LoginNetLogic.CM_LoginFun(curServerItem.serverId,curServerItem.account,curServerItem.pid,self.V_ChannelPackage)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginNetLogic.lua").write_text(
+        "function _M.CM_LoginFun(serverId,account,pid,channelPackage)\n"
+        "CM_Login.serverId=serverId\n"
+        "CM_Login.account=account\n"
+        'CM_Login.pid=pid or""\n'
+        "local loginAccount=LoginMgr.Inst_get().LoginModel:GetLoginAccountData()\n"
+        'CM_Login.sign=loginAccount and loginAccount.V_Token or""\n'
+        "CM_Login.signTime=loginAccount and loginAccount.V_Time or 0\n"
+        'CM_Login.cid=(PhoneHelper.GetPid()or"")..""\n'
+        'CM_Login.gid=(PhoneHelper.GetGameId()or"")..""\n'
+        "SocketManager.Inst_get():F_SendMsg(CM_Login)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "CM_Login.lua").write_text(
+        "function _M.writing(self)\n"
+        "self:writeString(self.account)\n"
+        "self:writeInt(self.serverId)\n"
+        "self:writeString(self.pid)\n"
+        "self:writeString(self.cid)\n"
+        "self:writeString(self.gid)\n"
+        "self:writeInt(self.signTime)\n"
+        "self:writeString(self.sign)\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 20001\nend\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "SocketManager.lua").write_text(
+        "function _M.F_SendMsg(self,pSendInfo,clientData)\n"
+        "pSendInfo:write()\n"
+        "self:DoSendMsg(so,pSendInfo,pid,sn)\n"
+        "end\n"
+        "function _M.DoSendMsg(self,so,pSendInfo,pid,sn)\n"
+        "so:F_Send(pid,sn)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_login_token_to_socket_handoff_probe(export_root=export_root)
+    report_text = (output_dir / "login_token_to_socket_handoff_report.md").read_text(encoding="utf-8")
+    field_text = (output_dir / "login_token_to_socket_handoff_fields.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["checks"]["cm_login_sign_from_login_model"] is True
+    assert result["counts"]["field_rows"] == 9
+    assert "1__token__gid__pid" in report_text
+    assert "sign/signTime\tLoginModel:GetLoginAccountData().V_Token / V_Time" in field_text
+
+
+def test_fanxiu_login_account_sign_source_probe_traces_sign_to_loginaccount_response(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    bridge_cs_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Login"
+    )
+    setting_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_diffable_cs"
+        / "DiffableCs"
+        / "Assembly-CSharp"
+        / "MU"
+        / "Define"
+    )
+    bridge_isil_dir = (
+        output_dir
+        / "cpp2il_2022_1_pre21_arm64_isil"
+        / "IsilDump"
+        / "Assembly-CSharp"
+        / "LuaBridge"
+        / "Login"
+    )
+    lua_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "gamelogin" / "text_assets"
+    vo_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message" / "text_assets"
+    for path in (bridge_cs_dir, setting_dir, bridge_isil_dir, lua_dir, vo_dir):
+        path.mkdir(parents=True)
+
+    (bridge_cs_dir / "GameLoginBridge.cs").write_text(
+        "public static void F_WebLoginCheck(int callbackid, string token, string jsonData) { }\n",
+        encoding="utf-8",
+    )
+    (setting_dir / "EM_SettingConstant.cs").write_text(
+        "ImportServerUrl = 12,\nTestLoginCheckInUrl = 13,\n",
+        encoding="utf-8",
+    )
+    (bridge_isil_dir / "GameLoginBridge.txt").write_text(
+        "Method: System.Void F_WebLoginCheck(System.Int32 callbackid, System.String token, System.String jsonData)\n"
+        "033 Call String.IsNullOrEmpty, X0\n"
+        "057 Move W1, 13\n"
+        "075 Or W1, W31, 12\n"
+        "077 Call GameInitSettingModel.F_GetSettingValue, X0, X1\n"
+        "086 Call String.Concat, X0, X1, X2, X3\n"
+        "137 Call FileUtil.F_LoadFilePost, X0, X1, X2, X3\n",
+        encoding="utf-8",
+    )
+    (bridge_isil_dir / "GameLoginBridge_NestedType___c__DisplayClass2_0.txt").write_text(
+        "Method: System.Void <F_WebLoginCheck>b__0(UnityEngine.Networking.DownloadHandler www)\n"
+        "024 Call DownloadHandler.get_text, X0\n"
+        "046 Call CallBackManager.CallStringDelegate, X0, X1\n",
+        encoding="utf-8",
+    )
+    (output_dir / "apk_download_config_entries.tsv").write_text(
+        "kind\tsource\tkey\tvalue\tnote\n"
+        "url_config\tsetting.config\tImportServerUrl\thttps://prod-login-frxxz.akbing.com/sdk/mobi37/login/verify\tprod\n"
+        "url_config\tsetting.config\tTestLoginCheckInUrl\thttps://prod-login-frxxz.akbing.com/sdk/devtest/login/verify\tdevtest\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginMgr.lua").write_text(
+        "function _M.LoginCheck(self,LoginToken,GameId,ChannelId,Uid,TimeStamp)\n"
+        "data.token=LoginToken\n"
+        "data.uid=Uid\n"
+        "data.time=os.time()\n"
+        "GameLoginBridge.F_WebLoginCheck(loginCallbackId,LoginToken,str)\n"
+        "self:StartInfo(jsonData)\n"
+        "end\n"
+        "function _M.StartInfo(self,jsonData)\n"
+        "self.StartGameInfo:LoginAccountDataInfo(jsonData)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "StartGameInfo.lua").write_text(
+        "function _M.LoginAccountDataInfo(self,jsondata)\n"
+        'local LoginAccount=require"GameSystem.Game.Message.module.user.login.packet.vo.LoginAccount"\n'
+        "loginAccount=LuaUtil.decode(jsondata,typeof(LoginAccount))\n"
+        "LoginMgr.Inst_get().LoginModel:SetLoginAccountData(loginAccount)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginModel.lua").write_text(
+        "function _M.SetLoginAccountData(self,loginAccount)\n"
+        "self.V_LoginAccount=loginAccount\n"
+        "end\n"
+        "function _M.GetLoginAccountData(self)\n"
+        "return self.V_LoginAccount\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (vo_dir / "LoginAccount.lua").write_text(
+        "function _M.FillData(self,data)\n"
+        "self.V_Time=self.V_Data.time\n"
+        "self.V_Token=self.V_Data.token\n"
+        "self.V_UId=self.V_Data.uid\n"
+        "self.V_PId=self.V_Data.pid\n"
+        "self.V_GId=self.V_Data.gid\n"
+        "self.V_CId=self.V_Data.cid\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (lua_dir / "LoginNetLogic.lua").write_text(
+        "local loginAccount=LoginMgr.Inst_get().LoginModel:GetLoginAccountData()\n"
+        'CM_Login.sign=loginAccount and loginAccount.V_Token or""\n'
+        "CM_Login.signTime=loginAccount and loginAccount.V_Time or 0\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_login_account_sign_source_probe(export_root=export_root)
+    report_text = (output_dir / "login_account_sign_source_report.md").read_text(encoding="utf-8")
+    field_text = (output_dir / "login_account_sign_source_fields.tsv").read_text(encoding="utf-8")
+    url_text = (output_dir / "login_account_sign_source_urls.tsv").read_text(encoding="utf-8")
+
+    assert result["confirmed"] is True
+    assert result["counts"]["url_rows"] == 2
+    assert result["checks"]["loginaccount_maps_token_and_time"] is True
+    assert "LoginAccount.FillData" in report_text
+    assert "V_Token\tLoginAccount.FillData: data.token" in field_text
+    assert "ImportServerUrl" in url_text
 
 
 def test_fanxiu_cpp2il_gamelogin_serverlist_bridge_probe_closes_http_callback_chain(tmp_path):
@@ -5935,6 +11887,34 @@ def test_fanxiu_resource_package_report_groups_filelist_packages(tmp_path):
     assert "config/test.bytes" in files_text
     assert "\t1\t0" in files_text or "\t0\t1" in files_text
     assert "v1" in (output_dir / "resource_package_report.json").read_text(encoding="utf-8")
+
+
+def test_fanxiu_taptap_download_dat_package_probe_classifies_mumu_zip(tmp_path):
+    import zipfile
+
+    package = tmp_path / "101000000.dat"
+    with zipfile.ZipFile(package, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("hypervisor/MuMuVMMAuth.dll", b"dll")
+        archive.writestr("nx_device/12.0/vms/EGTapTap-12.0-base/system.vdi", b"0" * 1024)
+        archive.writestr("nx_main/MuMuNxMain.exe", b"exe")
+        archive.writestr("install/install_config.json", "{}")
+
+    result = build_fanxiu_taptap_download_dat_package_probe(
+        download_path=package,
+        export_root=tmp_path / "exports",
+    )
+    output_dir = Path(result["outputs"]["markdown"]).parent
+
+    assert result["counts"]["entries"] == 4
+    assert result["verdict"]["is_zip_archive"] is True
+    assert result["verdict"]["looks_like_mumu_emulator_package"] is True
+    assert result["verdict"]["contains_vm_disk_images"] is True
+    assert result["verdict"]["not_fanxiu_hot_update_resource_package"] is True
+    assert "system.vdi" in (output_dir / "taptap_download_dat_entries.tsv").read_text(encoding="utf-8")
+    assert "nx_device" in (output_dir / "taptap_download_dat_top_dirs.tsv").read_text(encoding="utf-8")
+    assert "TapTap download dat package report" in (output_dir / "taptap_download_dat_package_report.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_fanxiu_resource_manifest_diff_report_compares_filelists(tmp_path):
@@ -7784,6 +13764,553 @@ def test_fanxiu_faze_source_semantics_probe_groups_direct_faze_sources(tmp_path)
     assert "膜拜礼x1" in rows_text
     assert "gongfa_jie_rule" in groups_text
     assert "Faze 来源语义探针" in (output_dir / "hot_update_faze_source_semantics_report.md").read_text(encoding="utf-8")
+
+
+def test_fanxiu_gongfa_special_faze_focus_probe_maps_xuanmo_chain(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_rows(table: str, rows: list[dict[str, object]]) -> None:
+        table_dir = export_root / "parsed_configs" / table
+        table_dir.mkdir(parents=True)
+        (table_dir / "rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows("Gongfa", [{"id": 476701, "name_plain": "玄魔大法"}])
+    write_rows("Item", [{"id": 3110210, "name_plain": "玄魔大法"}])
+    write_rows(
+        "Special-GongfaJie",
+        [
+            {
+                "id": 47670101,
+                "gid": 476701,
+                "pin": 1,
+                "jie": 1,
+                "name_plain": "1重",
+                "fazeId": 10130001,
+                "consume": "",
+                "attr": {"ATTACK": 500},
+                "describe_plain": "一阶效果：【先天魔功】 星海之力+3% 【血魂大法】",
+            },
+            {
+                "id": 47670102,
+                "gid": 476701,
+                "pin": 1,
+                "jie": 2,
+                "name_plain": "2重",
+                "fazeId": 10130002,
+                "consume": ["Item|3110210_1"],
+                "attr": {"ATTACK": 1000},
+                "describe_plain": "二阶效果：【先天魔功】 星海之力+4%",
+            },
+        ],
+    )
+    write_rows(
+        "FazeResource",
+        [
+            {
+                "id": 10130001,
+                "effects": 1013001,
+                "name_plain": "秘术·玄魔大法",
+                "tipStr_plain": "1265|玄魔大法：真元自然恢复速度提升;1254|玄魔大法：恢复自身命魂",
+            },
+            {
+                "id": 10130002,
+                "effects": 1013002,
+                "name_plain": "秘术·玄魔大法",
+                "tipStr_plain": "1265|玄魔大法：真元自然恢复速度提升",
+            },
+        ],
+    )
+    write_rows("FazeEffectResource", [{"id": 1013001, "type": 804}, {"id": 1013002, "type": 804}])
+
+    lang_dir = export_root / "by_source" / "lscripts" / "generate" / "localization" / "chinese" / "lang_demo" / "text_assets"
+    lang_dir.mkdir(parents=True)
+    (lang_dir / "lang.lua").write_text("[804]='功法伤害加深效果累计提升：$SKILL_DAMAGE_RATE$'\n", encoding="utf-8")
+
+    result = build_fanxiu_gongfa_special_faze_focus_probe(query="玄魔大法", export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_focus_rows.tsv").read_text(encoding="utf-8")
+    types_text = (output_dir / "hot_update_gongfa_special_faze_focus_types.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_focus_report.md").read_text(encoding="utf-8")
+
+    assert result["target"]["gongfa_id"] == "476701"
+    assert result["counts"]["focus_rows"] == 2
+    assert result["counts"]["effect_types"] == 1
+    assert result["counts"]["lua_usage_rows"] == 0
+    assert result["verdict"]["special_gongfa_faze_chain_closed"] is True
+    assert result["verdict"]["readable_lua_interprets_focused_effect_type"] is False
+    assert "10130001" in rows_text
+    assert "玄魔大法x1" in rows_text
+    assert "804\t功法伤害加深效果累计提升" in types_text
+    assert "Special-GongfaJie -> FazeResource -> FazeEffectResource" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_reason_probe_maps_sm_faze_effect_reason(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_rows(table: str, rows: list[dict[str, object]]) -> None:
+        table_dir = export_root / "parsed_configs" / table
+        table_dir.mkdir(parents=True)
+        (table_dir / "rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows("Gongfa", [{"id": 476701, "name_plain": "玄魔大法"}])
+    write_rows("Item", [{"id": 3110210, "name_plain": "玄魔大法"}])
+    write_rows(
+        "Special-GongfaJie",
+        [
+            {
+                "id": 47670101,
+                "gid": 476701,
+                "jie": 1,
+                "name_plain": "1重",
+                "fazeId": 10130001,
+                "describe_plain": "一阶效果：【先天魔功】",
+            }
+        ],
+    )
+    write_rows(
+        "FazeResource",
+        [
+            {
+                "id": 10130001,
+                "effects": 1013001,
+                "name_plain": "秘术·玄魔大法",
+                "tipStr_plain": "1265|玄魔大法：真元自然恢复速度提升;1254|玄魔大法：恢复自身命魂;340|玄魔大法：恢复自身命魂",
+            }
+        ],
+    )
+    write_rows("FazeEffectResource", [{"id": 1013001, "type": 804}])
+    write_rows("AniEffect", [{"reasonId": 1265, "effect": "demo_top_effect"}])
+
+    packet_dir = export_root / "parsed_configs" / "lua_packet_index"
+    packet_dir.mkdir(parents=True)
+    (packet_dir / "packets.tsv").write_text(
+        "id\tname\tdirection\tmodule\tfield_count\n"
+        "34034\tSM_FazeEffect\tserver_to_client\tplayer.faze\t4\n",
+        encoding="utf-8",
+    )
+    (packet_dir / "packet_fields.tsv").write_text(
+        "packet_name\tmodule\tfield_index\tfield_name\tread_method\ttype_hint\tfile\tline\n"
+        "SM_FazeEffect\tplayer.faze\t1\tfazeId\treadInt\tInt\tSM_FazeEffect.lua\t1\n"
+        "SM_FazeEffect\tplayer.faze\t2\teffectType\treadInt\tInt\tSM_FazeEffect.lua\t2\n"
+        "SM_FazeEffect\tplayer.faze\t3\tnum\treadInt\tInt\tSM_FazeEffect.lua\t3\n"
+        "SM_FazeEffect\tplayer.faze\t4\treason\treadInt\tInt\tSM_FazeEffect.lua\t4\n",
+        encoding="utf-8",
+    )
+
+    faze_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "faze_demo" / "text_assets"
+    faze_dir.mkdir(parents=True)
+    (faze_dir / "FazeNetLogic.lua").write_text(
+        "function _M.SM_FazeEffectFun(self,msg)\n"
+        "if msg.code==0 and msg.num>0 then FazeMgr.Inst_get().Model:FazeEffectTip(msg) end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeModel.lua").write_text(
+        "function _M.FazeEffectTip(self,msg)\n"
+        "FazeMgr.Inst_get():ShowTopSpecialEffect(msg.reason)\n"
+        "self:RaiseEvent(FazeType.UpdateFazeEffect,msg)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (faze_dir / "FazeMgr.lua").write_text(
+        "function _M.InitFazeAniEffect(self)\n"
+        "local cfgTb=DBMgr.Inst_get():GetConfigTable(ConfigName.Gongfa_AniEffect)\n"
+        "self.V_FazeAniEffect={}\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_reason_probe(query="玄魔大法", export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    reasons_text = (output_dir / "hot_update_gongfa_special_faze_reason_rows.tsv").read_text(encoding="utf-8")
+    events_text = (output_dir / "hot_update_gongfa_special_faze_reason_events.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_gongfa_special_faze_reason_flow.tsv").read_text(encoding="utf-8")
+    packet_text = (output_dir / "hot_update_gongfa_special_faze_reason_packet_fields.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_reason_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["reason_rows"] == 3
+    assert result["counts"]["packet_fields"] == 4
+    assert result["verdict"]["sm_faze_effect_fields_available"] is True
+    assert result["verdict"]["reason_tip_map_closed"] is True
+    assert result["verdict"]["target_reasons_have_ani_effect"] is True
+    assert result["verdict"]["target_specific_update_listener_found"] is False
+    assert "1265" in reasons_text
+    assert "340" in reasons_text
+    assert "demo_top_effect" in reasons_text
+    assert "tip_dispatch" in events_text
+    assert "tip_render" in flow_text
+    assert "reason" in packet_text
+    assert "GongFa Special Faze Reason" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_catalog_probe_exports_groups(tmp_path):
+    export_root = tmp_path / "exports"
+
+    def write_rows(table: str, rows: list[dict[str, object]]) -> None:
+        table_dir = export_root / "parsed_configs" / table
+        table_dir.mkdir(parents=True)
+        (table_dir / "rows.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    write_rows(
+        "Gongfa",
+        [
+            {"id": 476701, "name_plain": "玄魔大法"},
+            {"id": 476702, "name_plain": "测试功法"},
+        ],
+    )
+    write_rows("Item", [{"id": 3110210, "name_plain": "玄魔大法"}])
+    write_rows(
+        "Special-GongfaJie",
+        [
+            {"id": 47670101, "gid": 476701, "jie": 1, "name_plain": "1重", "fazeId": 10130001, "consume": "Item|3110210_1"},
+            {"id": 47670102, "gid": 476701, "jie": 2, "name_plain": "2重", "fazeId": 10130002, "consume": "Item|3110210_1"},
+            {"id": 47670201, "gid": 476702, "jie": 1, "name_plain": "1重", "fazeId": 10140001},
+        ],
+    )
+    write_rows(
+        "FazeResource",
+        [
+            {"id": 10130001, "effects": 1013001, "name_plain": "秘术·玄魔大法", "tipStr_plain": "1265|玄魔大法：真元恢复"},
+            {"id": 10130002, "effects": 1013002, "name_plain": "秘术·玄魔大法2", "tipStr_plain": "1254|玄魔大法：恢复命魂"},
+            {"id": 10140001, "effects": 1014001, "name_plain": "秘术·测试", "tipStr_plain": "340|测试：奖励"},
+        ],
+    )
+    write_rows(
+        "FazeEffectResource",
+        [
+            {"id": 1013001, "type": 804},
+            {"id": 1013002, "type": 804},
+            {"id": 1014001, "type": 805},
+        ],
+    )
+
+    result = build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").read_text(encoding="utf-8")
+    groups_text = (output_dir / "hot_update_gongfa_special_faze_catalog_groups.tsv").read_text(encoding="utf-8")
+    types_text = (output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv").read_text(encoding="utf-8")
+    reasons_text = (output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_catalog_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["group_rows"] == 2
+    assert result["counts"]["stage_rows"] == 3
+    assert result["counts"]["effect_type_count"] == 2
+    assert result["counts"]["reason_code_count"] == 3
+    assert result["verdict"]["wiki_catalog_ready"] is True
+    assert "玄魔大法" in rows_text
+    assert "1265" in rows_text
+    assert "1265|玄魔大法：真元恢复" in rows_text
+    assert "804" in groups_text
+    assert "804\t2\t1\t2\t玄魔大法" in types_text
+    assert "1265\t1\t1\t804\t玄魔大法\t玄魔大法：真元恢复" in reasons_text
+    assert "GongFa Special Faze Catalog" in report_text
+
+    queried = query_fanxiu_gongfa_special_faze_catalog(
+        query="玄魔",
+        reason="1265",
+        export_root=export_root,
+    )
+    assert queried["counts"]["filtered_groups"] == 1
+    assert queried["selected"]["gid"] == "476701"
+    assert queried["selected"]["group"]["gongfa_name"] == "玄魔大法"
+    assert len(queried["selected"]["stages"]) == 1
+    assert queried["selected"]["stages"][0]["tip_pairs"] == "1265|玄魔大法：真元恢复"
+    assert queried["selected"]["effect_types"][0]["effect_type"] == "804"
+    assert queried["selected"]["reasons"][0]["reason"] == "1265"
+
+
+def test_fanxiu_gongfa_special_faze_reason_reuse_probe_writes_non_overwriting_report(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_catalog_groups.tsv").write_text(
+        "gid\tgongfa_name\tstage_count\tfaze_count\teffect_types\treason_codes\ttip_texts\tconsume_items\n"
+        "476701\t玄魔大法\t10\t10\t804\t1265、1254\t玄魔大法：真元恢复\t玄魔大法x1\n"
+        "476801\t凤舞九天诀\t10\t10\t815\t1265、1282\t凤舞九天诀：真元恢复\t凤舞九天诀x1\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").write_text(
+        "gid\tgongfa_name\tsource_id\tstage\tsource_name\tfaze_id\tfaze_name\teffect_id\teffect_type\teffect_params\teffect_attr\ttip_codes\ttip_texts\ttip_pairs\tconsume\tskill\tattr\tdescribe_preview\n"
+        "476701\t玄魔大法\t47670101\tjie=1\t1重\t10130001\t秘术·玄魔大法\t1013001\t804\t\t\t1265;1254\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t一阶效果\n"
+        "476801\t凤舞九天诀\t47680101\tjie=1\t1重\t10140001\t秘术·凤舞九天诀\t1014001\t815\t\t\t1265;1282\t凤舞九天诀：真元恢复\t1265|凤舞九天诀：真元恢复\t\t\t\t一阶效果\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv").write_text(
+        "effect_type\tstage_count\tgongfa_count\teffect_id_count\tsample_gongfa\tsample_effect_ids\treason_codes\ttip_texts\teffect_params_sample\teffect_attr_sample\n"
+        "804\t10\t1\t10\t玄魔大法\t1013001\t1265\t玄魔大法：真元恢复\t\t\n"
+        "815\t10\t1\t10\t凤舞九天诀\t1014001\t1265\t凤舞九天诀：真元恢复\t\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv").write_text(
+        "reason\tstage_count\tgongfa_count\teffect_types\tsample_gongfa\ttip_texts\n"
+        "1265\t20\t2\t804、815\t玄魔大法、凤舞九天诀\t玄魔大法：真元恢复；凤舞九天诀：真元恢复\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_reason_reuse_probe(reason="1265", export_root=export_root)
+    report_text = (output_dir / "hot_update_gongfa_special_faze_reason_reuse_1265_report.md").read_text(
+        encoding="utf-8"
+    )
+    groups_text = (output_dir / "hot_update_gongfa_special_faze_reason_reuse_1265_groups.tsv").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["groups"] == 2
+    assert result["counts"]["stages"] == 2
+    assert result["verdict"]["reason_reuse_found"] is True
+    assert result["verdict"]["non_overwriting_report"] is True
+    assert "玄魔大法" in groups_text
+    assert "凤舞九天诀" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_reason_reuse_index_probe_summarizes_shared_vocab(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv").write_text(
+        "reason\tstage_count\tgongfa_count\teffect_types\tsample_gongfa\ttip_texts\n"
+        "22\t401\t21\t610、734\t兽灵诀、虚天诀\t兽灵诀：获得额外道具奖励；虚天诀：获得额外道具奖励\n"
+        "1265\t20\t2\t804、815\t玄魔大法、凤舞九天诀\t玄魔大法：真元恢复；凤舞九天诀：真元恢复\n"
+        "1254\t10\t1\t804\t玄魔大法\t玄魔大法：恢复命魂\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_reason_reuse_index_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_reason_reuse_index.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_reason_reuse_index_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["source_reasons"] == 3
+    assert result["counts"]["shared_reasons"] == 2
+    assert result["verdict"]["shared_reason_index_ready"] is True
+    assert "22\t401\t21\t2\t1\tshared_reason_multi_effect" in rows_text
+    assert "1254" not in rows_text
+    assert "Top Shared Reasons" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_effect_type_index_probe_classifies_ownership(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").write_text(
+        "gid\tgongfa_name\tsource_id\tstage\tsource_name\tfaze_id\tfaze_name\teffect_id\teffect_type\teffect_params\teffect_attr\ttip_codes\ttip_texts\ttip_pairs\tconsume\tskill\tattr\tdescribe_preview\n"
+        "476701\t玄魔大法\t47670101\tjie=1\t1重\t10130001\t秘术·玄魔大法\t1013001\t804\t\t\t1265;1254\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t一阶效果\n"
+        "476701\t玄魔大法\t47670102\tjie=2\t2重\t10130002\t秘术·玄魔大法\t1013002\t804\t\t\t1265\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t二阶效果\n"
+        "325732\t降魔咒\t32573201\tjie=1\t1重\t400001\t降魔咒\t40001\t54\t10_19070111_0\t{\"\"PET_ULTRA_RATE\"\":500}\t\t降魔咒：获得额外属性加成\t|降魔咒：获得额外属性加成\t\t\t\t一阶效果\n"
+        "100001\t共享功法甲\t10000101\tjie=1\t1重\t520001\t共享甲\t52001\t52\t5#5#Item|1_1\t{\"\"ALL_SKILL_DAMAGE_RATE\"\":500}\t60\t共享甲：获得额外道具奖励\t60|共享甲：获得额外道具奖励\t\t\t\t一阶效果\n"
+        "100002\t共享功法乙\t10000201\tjie=1\t1重\t520002\t共享乙\t52002\t52\t5#5#Item|1_2\t{\"\"ALL_SKILL_DAMAGE_RATE\"\":600}\t60\t共享乙：获得额外道具奖励\t60|共享乙：获得额外道具奖励\t\t\t\t一阶效果\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv").write_text(
+        "effect_type\tstage_count\tgongfa_count\teffect_id_count\tsample_gongfa\tsample_effect_ids\treason_codes\ttip_texts\teffect_params_sample\teffect_attr_sample\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv").write_text(
+        "reason\tstage_count\tgongfa_count\teffect_types\tsample_gongfa\ttip_texts\n"
+        "1265\t20\t2\t804、815\t玄魔大法、凤舞九天诀\t玄魔大法：真元恢复；凤舞九天诀：真元恢复\n"
+        "1254\t10\t1\t804\t玄魔大法\t玄魔大法：恢复命魂\n"
+        "60\t299\t10\t52、54\t共享功法甲、共享功法乙\t共享甲：获得额外道具奖励；共享乙：获得额外道具奖励\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_effect_type_index_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_effect_type_index.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_effect_type_index_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["effect_types"] == 3
+    assert result["verdict"]["effect_type_index_ready"] is True
+    assert result["verdict"]["xuanmo_effect_type_unique"] is True
+    assert "804\t2\t1\t2\t2\t1\tunique_type_with_shared_reason_vocab" in rows_text
+    assert "54\t1\t1\t1\t0\t0\tunique_type_with_payload" in rows_text
+    assert "52\t2\t2\t2\t1\t1\tshared_type_with_payload_and_shared_reason_vocab" in rows_text
+    assert "Focus: Effect Type 804" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_attr_key_index_probe_summarizes_json_payload(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").write_text(
+        "gid\tgongfa_name\tsource_id\tstage\tsource_name\tfaze_id\tfaze_name\teffect_id\teffect_type\teffect_params\teffect_attr\ttip_codes\ttip_texts\ttip_pairs\tconsume\tskill\tattr\tdescribe_preview\n"
+        "100001\t测试功法甲\t10000101\tjie=1\t1重\t520001\t测试甲\t52001\t52\t5#5#Item|1_1\t{\"ATK_RATE\":500,\"MAXHP_RATE\":\"_A[1]\"}\t60\t测试甲：获得额外属性加成\t60|测试甲：获得额外属性加成\t\t\t\t一阶效果\n"
+        "100002\t测试功法乙\t10000201\tjie=1\t1重\t540001\t测试乙\t54001\t54\t10\t{\"SKILL_DAMAGE_RATE\":1000}\t\t测试乙：技能伤害提升\t|测试乙：技能伤害提升\t\t\t\t一阶效果\n"
+        "476701\t玄魔大法\t47670101\tjie=1\t1重\t10130001\t秘术·玄魔大法\t1013001\t804\t\t\t1265\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t一阶效果\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_attr_key_index_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_attr_key_index.tsv").read_text(encoding="utf-8")
+    detail_text = (output_dir / "hot_update_gongfa_special_faze_attr_key_detail.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_attr_key_index_report.md").read_text(encoding="utf-8")
+
+    assert result["counts"]["stage_rows"] == 3
+    assert result["counts"]["nonempty_effect_attr_rows"] == 2
+    assert result["counts"]["parsed_effect_attr_rows"] == 2
+    assert result["counts"]["attr_keys"] == 3
+    assert result["verdict"]["all_nonempty_effect_attrs_parse"] is True
+    assert result["verdict"]["xuanmo_804_has_visible_attr_payload"] is False
+    assert "ATK_RATE\tbase_attribute_rate\t1\t1\t1\t1\t500\t500" in rows_text
+    assert "MAXHP_RATE\tbase_attribute_rate\t1\t1\t1\t0\t\t\t_A[1]" in rows_text
+    assert "SKILL_DAMAGE_RATE\tskill_or_lingbao_damage_rate" in rows_text
+    assert "测试功法甲" in detail_text
+    assert "Unique attr keys" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_param_shape_index_probe_classifies_compact_payload(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").write_text(
+        "gid\tgongfa_name\tsource_id\tstage\tsource_name\tfaze_id\tfaze_name\teffect_id\teffect_type\teffect_params\teffect_attr\ttip_codes\ttip_texts\ttip_pairs\tconsume\tskill\tattr\tdescribe_preview\n"
+        "100001\t测试道具功法\t10000101\tjie=1\t1重\t520001\t测试甲\t52001\t52\t5#22002#Item|8022001_20\t\t60\t测试甲：获得额外道具奖励\t60|测试甲：获得额外道具奖励\t\t\t\t一阶效果\n"
+        "100002\t测试数值功法\t10000201\tjie=1\t1重\t540001\t测试乙\t54001\t54\t10_19070111_0\t\t\t测试乙：获得额外属性加成\t|测试乙：获得额外属性加成\t\t\t\t一阶效果\n"
+        "100003\t测试单值功法\t10000301\tjie=1\t1重\t650001\t测试丙\t65001\t65\t1000\t{\"ALL_SKILL_DAMAGE_RATE\":500}\t\t测试丙：获得额外属性加成\t|测试丙：获得额外属性加成\t\t\t\t一阶效果\n"
+        "476701\t玄魔大法\t47670101\tjie=1\t1重\t10130001\t秘术·玄魔大法\t1013001\t804\t\t\t1265\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t一阶效果\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_param_shape_index_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_param_shape_index.tsv").read_text(encoding="utf-8")
+    detail_text = (output_dir / "hot_update_gongfa_special_faze_param_shape_detail.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_param_shape_index_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["stage_rows"] == 4
+    assert result["counts"]["nonempty_effect_params_rows"] == 3
+    assert result["counts"]["param_classes"] == 3
+    assert result["verdict"]["param_shape_index_ready"] is True
+    assert result["verdict"]["xuanmo_804_has_visible_params_payload"] is False
+    assert "item_hash_params\t1\t1\t1\t52\t测试道具功法" in rows_text
+    assert "underscore_numeric_params\t1\t1\t1\t54\t测试数值功法" in rows_text
+    assert "single_numeric_param\t1\t1\t1\t65\t测试单值功法" in rows_text
+    assert "Item|8022001" in detail_text
+    assert "Param Classes" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_param_item_ref_probe_resolves_item_names(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    item_dir = export_root / "parsed_configs" / "Item"
+    item_dir.mkdir(parents=True)
+    (item_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 8022001, "name_plain": "珍品饲灵丸"},
+                {"id": 3020129, "name_plain": "悟境残页"},
+                {"id": 1, "name_plain": "测试零值道具"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv").write_text(
+        "gid\tgongfa_name\tsource_id\tstage\tsource_name\tfaze_id\tfaze_name\teffect_id\teffect_type\teffect_params\teffect_attr\ttip_codes\ttip_texts\ttip_pairs\tconsume\tskill\tattr\tdescribe_preview\n"
+        "100001\t测试道具功法\t10000101\tjie=1\t1重\t520001\t测试甲\t52001\t52\t5#22002#Item|8022001_20\t\t60\t测试甲：获得额外道具奖励\t60|测试甲：获得额外道具奖励\t\t\t\t一阶效果\n"
+        "100002\t测试列表功法\t10000201\tjie=1\t1重\t450001\t测试乙\t45001\t45\tItem|3020129_1,Item|1_0\t\t\t测试乙：额外获得残页\t|测试乙：额外获得残页\t\t\t\t一阶效果\n"
+        "476701\t玄魔大法\t47670101\tjie=1\t1重\t10130001\t秘术·玄魔大法\t1013001\t804\t\t\t1265\t玄魔大法：真元恢复\t1265|玄魔大法：真元恢复\t\t\t\t一阶效果\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_param_item_ref_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_param_item_refs.tsv").read_text(encoding="utf-8")
+    detail_text = (output_dir / "hot_update_gongfa_special_faze_param_item_ref_detail.tsv").read_text(
+        encoding="utf-8"
+    )
+    report_text = (output_dir / "hot_update_gongfa_special_faze_param_item_refs_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["rows_with_item_refs"] == 2
+    assert result["counts"]["item_ref_detail_rows"] == 3
+    assert result["counts"]["unique_item_refs"] == 3
+    assert result["counts"]["unresolved_item_refs"] == 0
+    assert result["verdict"]["all_item_refs_resolved"] is True
+    assert "8022001\t珍品饲灵丸\t1\t20\t0" in rows_text
+    assert "1\t测试零值道具\t1\t0\t1" in rows_text
+    assert "Item|1_0" in detail_text
+    assert "Top Items" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_payload_summary_probe_merges_static_surfaces(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_special_faze_effect_type_index.tsv").write_text(
+        "effect_type\tstage_count\tgongfa_count\teffect_id_count\treason_count\tshared_reason_count\townership_class\tpayload_class\tsample_gongfa\tsample_effect_ids\treason_codes\tshared_reason_codes\tnormalized_labels\teffect_params_sample\teffect_attr_sample\n"
+        "52\t2\t2\t2\t1\t1\tshared_type_with_payload_and_shared_reason_vocab\tparams_and_attr_payload\t测试道具功法、测试列表功法\t52001、52002\t60\t60\t获得额外道具奖励\t5#22002#Item|8022001_20\t{\"ALL_SKILL_DAMAGE_RATE\":500}\n"
+        "804\t1\t1\t1\t1\t1\tunique_type_with_shared_reason_vocab\tno_visible_payload\t玄魔大法\t1013001\t1265\t1265\t真元恢复\t\t\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_attr_key_detail.tsv").write_text(
+        "attr_key\tattr_family\tvalue\tgid\tgongfa_name\tstage\teffect_type\teffect_id\ttip_codes\ttip_texts\teffect_params\n"
+        "ALL_SKILL_DAMAGE_RATE\tskill_or_lingbao_damage_rate\t500\t100001\t测试道具功法\tjie=1\t52\t52001\t60\t测试甲：获得额外道具奖励\t5#22002#Item|8022001_20\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_param_shape_detail.tsv").write_text(
+        "param_class\tgid\tgongfa_name\tstage\teffect_type\teffect_id\teffect_params\titem_refs\tnumeric_tokens\ttip_codes\ttip_texts\teffect_attr\n"
+        "item_hash_params\t100001\t测试道具功法\tjie=1\t52\t52001\t5#22002#Item|8022001_20\tItem|8022001\t5、22002、8022001、20\t60\t测试甲：获得额外道具奖励\t{\"ALL_SKILL_DAMAGE_RATE\":500}\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_special_faze_param_item_ref_detail.tsv").write_text(
+        "item_id\titem_name\tcount\traw_token\tparam_class\tgid\tgongfa_name\tstage\teffect_type\teffect_id\teffect_params\ttip_codes\ttip_texts\n"
+        "8022001\t珍品饲灵丸\t20\tItem|8022001_20\titem_hash_params\t100001\t测试道具功法\tjie=1\t52\t52001\t5#22002#Item|8022001_20\t60\t测试甲：获得额外道具奖励\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_payload_summary_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_payload_summary.tsv").read_text(encoding="utf-8")
+    report_text = (output_dir / "hot_update_gongfa_special_faze_payload_summary_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["effect_types"] == 2
+    assert result["counts"]["attr_payload_effect_types"] == 1
+    assert result["counts"]["param_payload_effect_types"] == 1
+    assert result["counts"]["item_ref_payload_effect_types"] == 1
+    assert result["verdict"]["payload_summary_ready"] is True
+    assert result["verdict"]["xuanmo_804_has_static_payload"] is False
+    assert "52\t2\t2\t2\t1\t1\tshared_type_with_payload_and_shared_reason_vocab" in rows_text
+    assert "ALL_SKILL_DAMAGE_RATE" in rows_text
+    assert "珍品饲灵丸" in rows_text
+    assert "804\t1\t1\t1\t1\t1\tunique_type_with_shared_reason_vocab" in rows_text
+    assert "Focus: Effect Type 804" in report_text
+
+
+def test_fanxiu_gongfa_special_faze_runtime_sample_audit_probe_distinguishes_static_and_runtime(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_faze_protocol_semantics.tsv").write_text(
+        "packet\tfields\n"
+        "SM_FazeEffect\tfazeId:Int, effectType:Int, num:Int, reason:Int\n",
+        encoding="utf-8",
+    )
+    (output_dir / "socket_capture_fixture.tsv").write_text(
+        "packet\tpayload\n"
+        "SM_FazeEffect\tfazeId=10130001 effectType=804 num=12 reason=1265\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe(export_root=export_root)
+    rows_text = (output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit.tsv").read_text(
+        encoding="utf-8"
+    )
+    report_text = (output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert result["counts"]["runtime_sample_candidates"] == 1
+    assert result["counts"]["focus_runtime_candidates"] == 1
+    assert result["verdict"]["runtime_samples_found"] is True
+    assert result["verdict"]["focus_effect_type_runtime_samples_found"] is True
+    assert "runtime_sample_candidate" in rows_text
+    assert "schema_or_reference" in rows_text
+    assert "Focus effect type `804` runtime candidates: 1" in report_text
 
 
 def test_fanxiu_bluestarsea_tree_faze_usage_probe_keeps_unresolved_tree_ids_separate(tmp_path):
@@ -11085,6 +17612,272 @@ def test_fanxiu_gongfa_homemake_xianshu_gap_probe_and_skill_fallback(tmp_path):
     assert "释放回包消费" in cast_ack_md
 
 
+def test_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe_marks_candidate_not_authority(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    side_path = output_dir / "hot_update_gongfa_homemake_side_feature_semantics.tsv"
+    side_path.write_text(
+        "\t".join(
+            [
+                "gongfa_id",
+                "gongfa_name",
+                "side_jie_name",
+                "clean_name",
+                "side_jie_feature",
+                "buff_prefix_ids",
+                "buff_prefix_names",
+                "buff_prefix_descriptions",
+                "faze_level_ids",
+                "faze_level_descriptions",
+                "best_static_semantics_source",
+            ]
+        )
+        + "\n"
+        + "\t".join(
+            [
+                "400101",
+                "须弥感应篇",
+                "【须弥芥子】",
+                "须弥芥子",
+                "38500201",
+                "385002010",
+                "须弥芥子",
+                "添加增益状态时造成伤害",
+                "300",
+                "【须弥芥子】：战斗开始时，自身获得4层【须弥芥子】",
+                "faze_level_name_match",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    parsed_dir = export_root / "parsed_configs" / "FazeLevel"
+    parsed_dir.mkdir(parents=True)
+    (parsed_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 300,
+                    "fazeId": 2000000,
+                    "level": 100,
+                    "skill": [432901180],
+                    "consume": "Item|1010021_100000",
+                    "attr": {"ATTACK": 114000},
+                    "descript_plain": "【须弥芥子】：战斗开始时，自身获得4层【须弥芥子】",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "gongfa_mock" / "text_assets"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "FazeLevel.lua").write_text('s_globalCfgIdx["Gongfa"]["FazeLevel"]=_key2index\n', encoding="utf-8")
+    msg_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    msg_dir.mkdir(parents=True)
+    (msg_dir / "VO_URL.lua").write_text("['34036']={'module.player.faze.packet.SM_UpFazeLevel'}\n", encoding="utf-8")
+    lang_dir = export_root / "by_source" / "lscripts" / "generate" / "localization" / "chinese" / "lang_mock" / "text_assets"
+    lang_dir.mkdir(parents=True)
+    (lang_dir / "lang.lua").write_text("[139841]='【须弥芥子】：战斗开始时，自身获得4层【须弥芥子】'\n", encoding="utf-8")
+
+    result = build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe(export_root=export_root)
+    result_dir = Path(result["output_dir"])
+    rows_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary.tsv"
+    ).read_text(encoding="utf-8")
+    usage_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_lua_usage.tsv"
+    ).read_text(encoding="utf-8")
+    markdown_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert result["counts"]["boundary_rows"] == 1
+    assert result["counts"]["faze_detail_rows"] == 1
+    assert result["counts"]["direct_gongfa_xianshu_runtime_hits"] == 0
+    assert result["verdict"]["fazelevel_name_match_rows_found"] is True
+    assert result["verdict"]["faze_level_is_upgrade_config_surface"] is True
+    assert result["verdict"]["supports_name_match_as_candidate_not_authority"] is True
+    assert "name_match_semantics_only" in rows_text
+    assert "faze_level_generated_config" in usage_text
+    assert "同名参考说明" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe_marks_faze_reference(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    boundary_path = output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary.tsv"
+    boundary_path.write_text(
+        "\t".join(
+            [
+                "gongfa_id",
+                "gongfa_name",
+                "side_jie_name",
+                "clean_name",
+                "side_jie_feature",
+                "buff_prefix_ids",
+                "faze_level_ids",
+            ]
+        )
+        + "\n"
+        + "\t".join(["400101", "须弥感应篇", "【须弥芥子】", "须弥芥子", "38500201", "385002010", "300"])
+        + "\n",
+        encoding="utf-8",
+    )
+    faze_dir = export_root / "parsed_configs" / "FazeLevel"
+    faze_dir.mkdir(parents=True)
+    (faze_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {"id": 300, "fazeId": 2000000, "level": 100, "skill": [432901180]},
+                {"id": 301, "fazeId": 2000000, "level": 101, "skill": [432901180]},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    skill_dir = export_root / "parsed_configs" / "Skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "rows.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": 432901180,
+                    "name_plain": "万界空间法则",
+                    "skillType": 18,
+                    "fightScore": 30000,
+                    "rangeLimit": 15,
+                    "targetType": 1,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    cfg_dir = export_root / "by_source" / "lscripts" / "generate" / "cfg" / "skill_mock" / "text_assets"
+    cfg_dir.mkdir(parents=True)
+    (cfg_dir / "Skill.lua").write_text("[432901180]=setmetatable({[1]=432901180,[2]='万界空间法则'},_P)\n", encoding="utf-8")
+
+    result = build_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe(export_root=export_root)
+    result_dir = Path(result["output_dir"])
+    links_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_links.tsv"
+    ).read_text(encoding="utf-8")
+    skills_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_skills.tsv"
+    ).read_text(encoding="utf-8")
+    markdown_text = (
+        result_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert result["counts"]["link_rows"] == 1
+    assert result["counts"]["skill_rows"] == 1
+    assert result["verdict"]["faze_skill_links_found"] is True
+    assert result["verdict"]["skill_names_indicate_faze_surface"] is True
+    assert result["verdict"]["skill_id_overlaps_side_feature_or_buff_id"] is False
+    assert result["verdict"]["supports_fazelevel_skill_as_faze_reference_not_xianshu_authority"] is True
+    assert "432901180" in links_text
+    assert "万界空间法则" in skills_text
+    assert "不是 `38500201/385002010`" in markdown_text
+
+
+def test_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe_marks_generic_result_boundary(tmp_path):
+    export_root = tmp_path / "exports"
+    output_dir = export_root / "apk_static_index"
+    output_dir.mkdir(parents=True)
+    (output_dir / "hot_update_gongfa_homemake_side_feature_semantics.tsv").write_text(
+        "gongfa_id\tside_jie_name\tside_jie_feature\n400101\t【须弥芥子】\t38500201\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_field_semantics.tsv").write_text(
+        "gongfa_id\tgongfa_name\tside_jie_name\tside_jie_feature\tside_jie_param\tbuff_id\tbuff_name\tbuff_desc\tbuff_type\tduration_seconds\tperiodic_seconds\tmax_trigger_count\trelation_type\tlayer\tfield_semantics\n"
+        "400101\t须弥感应篇\t【须弥芥子】\t38500201\t[0, 6000]\t385002010\t须弥芥子\t添加增益状态时造成伤害\t\t25s\t2s\t999999\t1\t1\t持续 25s，每 2s 周期触发/刷新；无 type\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_parameter_semantics.tsv").write_text(
+        "gongfa_id\tgongfa_name\tside_jie_name\tside_jie_feature\tbuff_id\tbuff_name\tbuff_desc\thas_direct_formula_parameters\tpopulated_parameter_fields\tfield_semantics\n"
+        "400101\t须弥感应篇\t【须弥芥子】\t38500201\t385002010\t须弥芥子\t添加增益状态时造成伤害\tFalse\t\t持续 25s\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_parameter_semantics_links.tsv").write_text(
+        "buff_id\ttarget_table\ttarget_id\ttarget_name\ttarget_description\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_combat_result_flow.tsv").write_text(
+        "stage\tfields\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_result_correlation.tsv").write_text(
+        "gongfa_id\tgongfa_name\tside_jie_name\tside_jie_feature\tbuff_id\tbuff_name\tbuff_desc\tstate_packet_link\tresult_packet_config_field\tresult_packet_consumed_fields\tstatic_correlation_status\n"
+        "400101\t须弥感应篇\t【须弥芥子】\t38500201\t385002010\t须弥芥子\t添加增益状态时造成伤害\tBuffVO.configId -> BuffResource.id\tmissing\townerId,casterId,targetId,damage,damageView,recoverHp,recoverMp,fightEffect\tno_direct_buffresource_link_in_visible_lua\n",
+        encoding="utf-8",
+    )
+    (output_dir / "hot_update_gongfa_homemake_buff_result_field_usage.tsv").write_text(
+        "field\tusage\n",
+        encoding="utf-8",
+    )
+
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    battle_dir.mkdir(parents=True)
+    message_dir.mkdir(parents=True)
+    (message_dir / "BuffVO.lua").write_text(
+        "self.id=0\nself.configId=0\nfunction _M.reading(self)\nself.id=self:readLong()\nself.configId=self:readInt()\nend\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "Buff.lua").write_text(
+        "function _M.InitData(self,buffVO,ownerId)\nself.V_ConfigId=buffVO.configId\nlocal buffCfg=BuffConfig.GetBuffConfig(buffVO.configId)\nif buffCfg.type then end\nend\n"
+        "function _M.Update(self,fTime)\nif self.V_DurationType==0 then self.V_RemainTime=self.V_RemainTime-fTime end\nend\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "BuffNetLogic.lua").write_text(
+        'local _SM_BuffChangeHpAndMp=require"GameSystem.Game.Message.module.scene.fight.packet.SM_BuffChangeHpAndMp"\n'
+        "_MessagePool.Inst_get():F_Register(_SM_BuffChangeHpAndMp:getId(),typeof(_SM_BuffChangeHpAndMp),self.SM_BuffChangeHpAndMpFunc)\n"
+        "function _M.SM_BuffChangeHpAndMpFunc(msg)\nBuffMgr.Inst_get():UpdateBuffResult(msg.resultVOs)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_BuffChangeHpAndMp.lua").write_text(
+        "self.resultVOs=CList.new()\nfunction _M.reading(self)\nself:readMessageList2List(self.resultVOs)\nend\nfunction _M.writing(self)\nself:writeList(self.resultVOs)\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "BuffResultVO.lua").write_text(
+        "self.id=0\nself.ownerId=0\nself.casterId=0\nself.targetId=0\nself.modelId=0\nself.damage=0\nself.damageView=0\nfunction _M.reading(self)\nself.id=self:readLong()\nself.modelId=self:readInt()\nself.damage=self:readDouble()\nself.damageView=self:readDouble()\nend\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "BuffMgr.lua").write_text(
+        "function _M.UpdateBuffResult(self,resultVOs)\nfor _,buffResultVO in Kpairs(resultVOs)do\nentityView:AddBuffResult(buffResultVO)\nend\nend\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "EntityFightView.lua").write_text(
+        "function _M.AddBuffResult(self,buffResultVO)\nlocal hurtData=HurtData.new()\nhurtData:SetData(buffResultVO.damage,buffResultVO.damageView,buffResultVO.fightEffect)\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe(export_root=export_root)
+    result_dir = Path(result["output_dir"])
+    drilldown_text = (
+        result_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_drilldown.tsv"
+    ).read_text(encoding="utf-8")
+    flow_text = (
+        result_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_flow.tsv"
+    ).read_text(encoding="utf-8")
+    markdown_text = (
+        result_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_report.md"
+    ).read_text(encoding="utf-8")
+
+    assert result["counts"]["selected_rows"] == 1
+    assert result["verdict"]["origin_to_buffresource_closed"] is True
+    assert result["verdict"]["nonfunnel_buff_type"] is True
+    assert result["verdict"]["state_packet_links_config_id"] is True
+    assert result["verdict"]["result_packet_has_config_id"] is False
+    assert result["verdict"]["static_result_to_buffresource_correlation_closed"] is False
+    assert "result_packet_boundary" in drilldown_text
+    assert "BuffResultVO" in flow_text
+    assert "没有可见 `configId/buffId`" in markdown_text
+
+
 def test_fanxiu_gongfa_homemake_skillcastbridge_boundary_probe_traces_geometry_bridge(tmp_path):
     export_root = tmp_path / "exports"
 
@@ -11801,6 +18594,206 @@ def test_fanxiu_fight_result_family_decoder_probe_maps_packet_variants(tmp_path)
     assert "Decode Order" in markdown_text
 
 
+def test_fanxiu_buff_change_result_decoder_probe_maps_packet_schema_and_privacy(tmp_path):
+    export_root = tmp_path / "exports"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    message_dir.mkdir(parents=True)
+    battle_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (battle_dir / "BuffNetLogic.lua").write_text(
+        "function _M.BuffNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_BuffChangeHpAndMp:getId(),typeof(_SM_BuffChangeHpAndMp),self.SM_BuffChangeHpAndMpFunc)\n"
+        "end\n"
+        "function _M.SM_BuffChangeHpAndMpFunc(msg)\n"
+        "BuffMgr.Inst_get():UpdateBuffResult(msg.resultVOs)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_BuffChangeHpAndMp.lua").write_text(
+        "function _M.reading(self)\n"
+        "self:readMessageList2List(self.resultVOs)\n"
+        "_M._super_.reading(self)\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 60034\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "BuffResultVO.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.id=self:readLong()\n"
+        "self.ownerId=self:readLong()\n"
+        "self.casterId=self:readLong()\n"
+        "self.targetId=self:readLong()\n"
+        "self.modelId=self:readInt()\n"
+        "self.damage=self:readDouble()\n"
+        "self.damageView=self:readDouble()\n"
+        "self.recoverHp=self:readDouble()\n"
+        "self.recoverMp=self:readDouble()\n"
+        "self.fightEffect=self:readLong()\n"
+        "end\n"
+        "function _M.getId(self)\n"
+        "return 60033\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "BuffMgr.lua").write_text(
+        "function _M.UpdateBuffResult(self,resultVOs)\n"
+        "for _,buffResultVO in Kpairs(resultVOs)do\n"
+        "local entityView=EntityMgr.Inst_get():GetEntityFightInBattleView(buffResultVO.ownerId)\n"
+        "entityView:AddBuffResult(buffResultVO)\n"
+        "end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (core_dir / "EntityFightView.lua").write_text(
+        "function _M.AddBuffResult(self,buffResultVO)\n"
+        "local damage_num=Mathf.Floor(buffResultVO.damage)\n"
+        "local damage_view=Mathf.Floor(buffResultVO.damageView)\n"
+        "local recoverHp_num=Mathf.Floor(buffResultVO.recoverHp)\n"
+        "local recoverMp_num=Mathf.Floor(buffResultVO.recoverMp)\n"
+        "local fightEffect=buffResultVO.fightEffect:ToNum()\n"
+        "hurtData:SetData(buffResultVO.casterId,buffResultVO.targetId,fightEffect,damage_view,0,0,recoverHp_num,recoverMp_num)\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (message_dir / "BuffVO.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.id=self:readLong()\n"
+        "self.configId=self:readInt()\n"
+        "self.layer=self:readInt()\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_buff_change_result_decoder_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    packet_text = (output_dir / "hot_update_buff_change_result_decoder_packet.tsv").read_text(encoding="utf-8")
+    schema_text = (output_dir / "hot_update_buff_change_result_decoder_schema.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_buff_change_result_decoder_flow.tsv").read_text(encoding="utf-8")
+    privacy_text = (output_dir / "hot_update_buff_change_result_decoder_privacy.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_buff_change_result_decoder_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["supports_buff_change_decoder_map"] is True
+    assert result["counts"]["packet_id"] == "60034"
+    assert result["counts"]["value_vo_id"] == "60033"
+    assert "SM_BuffChangeHpAndMp\t60034\tBuffResultVO\t60033" in packet_text
+    assert "SM_BuffChangeHpAndMp\t1\tresultVOs\treadMessageList2List\tBuffResultVO" in schema_text
+    assert "BuffResultVO\t6\tdamage\treadDouble" in schema_text
+    assert "configId" not in "\n".join(
+        line for line in schema_text.splitlines() if line.startswith("BuffResultVO\t")
+    )
+    assert "display_projection" in flow_text
+    assert "hash or truncate runtime entity ids" in privacy_text
+    assert "Decode Order" in markdown_text
+
+
+def test_fanxiu_buff_state_decoder_probe_maps_state_packets_and_config_link(tmp_path):
+    export_root = tmp_path / "exports"
+    message_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "message_mock" / "text_assets"
+    battle_dir = export_root / "by_source" / "lscripts" / "gamesystem" / "game" / "battle_mock" / "text_assets"
+    core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
+    message_dir.mkdir(parents=True)
+    battle_dir.mkdir(parents=True)
+    core_dir.mkdir(parents=True)
+    (battle_dir / "BuffNetLogic.lua").write_text(
+        "function _M.BuffNetLogic(self)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_AddBuff:getId(),typeof(_SM_AddBuff),self.SM_AddBuffFunc)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_RemoveBuff:getId(),typeof(_SM_RemoveBuff),self.SM_RemoveBuffFunc)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_UpdateBuff:getId(),typeof(_SM_UpdateBuff),self.SM_UpdateBuffFunc)\n"
+        "_MessagePool.Inst_get():F_Register(_SM_AllBuff:getId(),typeof(_SM_AllBuff),self.SM_AllBuffFunc)\n"
+        "end\n"
+        "function _M.SM_AddBuffFunc(msg)\nBuffMgr.Inst_get():AddBuff(msg.buffVO)\nend\n"
+        "function _M.SM_UpdateBuffFunc(msg)\nBuffMgr.Inst_get():ModifyBuff(msg)\nend\n"
+        "function _M.SM_RemoveBuffFunc(msg)\nBuffMgr.Inst_get():RemoveBuff(msg)\nend\n"
+        "function _M.SM_AllBuffFunc(msg)\nBuffMgr.Inst_get():RemoveAllBuff()\nfor _,buffVO in Kpairs(msg.buffVOList)do\nBuffMgr.Inst_get():AddBuff(buffVO)\nend\nend\n",
+        encoding="utf-8",
+    )
+    for file_name, packet_id in [
+        ("SM_AddBuff.lua", 60015),
+        ("SM_UpdateBuff.lua", 60032),
+    ]:
+        (message_dir / file_name).write_text(
+            "function _M.reading(self)\n"
+            "local BuffVO=require\"GameSystem.Game.Message.module.scene.buff.packet.bean.BuffVO\"\n"
+            "self.buffVO=_AS_(self:readBean(typeof(BuffVO)),BuffVO)\n"
+            "_M._super_.reading(self)\n"
+            "end\n"
+            f"function _M.getId(self)\nreturn {packet_id}\nend\n",
+            encoding="utf-8",
+        )
+    (message_dir / "SM_RemoveBuff.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.id=self:readLong()\n"
+        "self.configId=self:readInt()\n"
+        "self.ownerId=self:readLong()\n"
+        "self.destroyReason=self:readInt()\n"
+        "_M._super_.reading(self)\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 60014\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "SM_AllBuff.lua").write_text(
+        "function _M.reading(self)\n"
+        "self:readMessageList2List(self.buffVOList)\n"
+        "_M._super_.reading(self)\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 60035\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "BuffVO.lua").write_text(
+        "function _M.reading(self)\n"
+        "self.id=self:readLong()\n"
+        "self.configId=self:readInt()\n"
+        "self.layer=self:readInt()\n"
+        "self.ownerId=self:readLong()\n"
+        "self.remainTime=self:readLong()\n"
+        "self.duration=self:readLong()\n"
+        "local BuffEffectVO=require\"GameSystem.Game.Message.module.scene.buff.packet.bean.BuffEffectVO\"\n"
+        "self.effectVO=_AS_(self:readBean(typeof(BuffEffectVO)),BuffEffectVO)\n"
+        "_M._super_.reading(self)\n"
+        "end\n"
+        "function _M.getId(self)\nreturn 60017\nend\n",
+        encoding="utf-8",
+    )
+    (message_dir / "BuffEffectVO.lua").write_text(
+        "function _M.reading(self)\n_M._super_.reading(self)\nend\nfunction _M.getId(self)\nreturn 60051\nend\n",
+        encoding="utf-8",
+    )
+    (battle_dir / "BuffMgr.lua").write_text(
+        "function _M.AddBuff(self,buffVO)\nentityView:AddBuff(buffVO,buff,entityView.Entity.V_ID)\nend\n"
+        "function _M.ModifyBuff(self,msg)\nentityView:ModifyBuff(msg.buffVO)\nend\n"
+        "function _M.RemoveBuff(self,msg)\nentityView:RemoveBuff(msg.id,msg.configId,msg.destroyReason)\nend\n",
+        encoding="utf-8",
+    )
+    (core_dir / "EntityFightView.lua").write_text(
+        "function _M.AddBuff(self,buffVO,buff,ownerId)\nself.BuffDic[buffVO.configId]=self.BuffDic[buffVO.configId] or CList.new()\nend\n"
+        "function _M.ModifyBuff(self,buffVO)\nlocal buffList=self.BuffDic[buffVO.configId]\nend\n"
+        "function _M.RemoveBuff(self,uid,configId,destroyReason)\nlocal buffList=self.BuffDic[configId]\nend\n",
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_buff_state_decoder_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    packet_text = (output_dir / "hot_update_buff_state_decoder_packets.tsv").read_text(encoding="utf-8")
+    schema_text = (output_dir / "hot_update_buff_state_decoder_schema.tsv").read_text(encoding="utf-8")
+    flow_text = (output_dir / "hot_update_buff_state_decoder_flow.tsv").read_text(encoding="utf-8")
+    markdown_text = (output_dir / "hot_update_buff_state_decoder_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["supports_buff_state_decoder_map"] is True
+    assert result["counts"]["packet_ids"]["SM_AddBuff"] == "60015"
+    assert result["counts"]["packet_ids"]["SM_RemoveBuff"] == "60014"
+    assert result["counts"]["packet_ids"]["BuffVO"] == "60017"
+    assert "SM_AllBuff\t60035\tserver_state_snapshot" in packet_text
+    assert "SM_AddBuff\t1\tbuffVO\treadBean\tBuffVO" in schema_text
+    assert "BuffVO\t2\tconfigId\treadInt" in schema_text
+    assert "SM_RemoveBuff\t2\tconfigId\treadInt" in schema_text
+    assert "entity_add_buff" in flow_text
+    assert "BuffVO.configId" in markdown_text
+
+
 def test_fanxiu_socket_primitive_decoder_probe_maps_typed_pools(tmp_path):
     export_root = tmp_path / "exports"
     core_dir = export_root / "by_source" / "lscripts" / "core_mock" / "text_assets"
@@ -12238,6 +19231,81 @@ def test_fanxiu_socket_capture_fixture_codec_calibration_probe_redacts_payload_v
     assert "token" in sensitive_text
     assert "secret-value" not in frames_text
     assert "secret-value" not in markdown_text
+
+
+def test_fanxiu_socket_result_sample_coverage_probe_reports_existing_result_frames(tmp_path):
+    export_root = tmp_path / "exports"
+    capture_dir = export_root / "tcp_captures"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "sample.codeyun_decoded.json").write_text(
+        json.dumps(
+            {
+                "frames": [
+                    {
+                        "direction": "s2c",
+                        "offset": 0,
+                        "frame_len": 32,
+                        "sn": 10,
+                        "pro_id": 60034,
+                        "name": "SM_BuffChangeHpAndMp",
+                        "payload_len": 27,
+                        "zlib": False,
+                        "parsed": {"_class": "SM_BuffChangeHpAndMp", "resultVOs": [{"damage": 12345}]},
+                        "remain": 0,
+                    },
+                    {
+                        "direction": "s2c",
+                        "offset": 40,
+                        "frame_len": 40,
+                        "sn": 11,
+                        "pro_id": 60054,
+                        "name": "SM_FightResultFunnel",
+                        "payload_len": 35,
+                        "zlib": False,
+                        "parsed": {"_class": "SM_FightResultFunnel", "results": [{"damage": 222}]},
+                        "remain": 0,
+                    },
+                    {
+                        "direction": "c2s",
+                        "offset": 90,
+                        "frame_len": 5,
+                        "sn": 12,
+                        "pro_id": 20011,
+                        "name": "CM_SyncTime",
+                        "payload_len": 0,
+                        "zlib": False,
+                        "parsed": {"_class": "CM_SyncTime"},
+                        "remain": 0,
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = build_fanxiu_socket_result_sample_coverage_probe(export_root=export_root)
+    output_dir = Path(result["output_dir"])
+    targets_text = (output_dir / "hot_update_socket_result_sample_coverage_targets.tsv").read_text(
+        encoding="utf-8"
+    )
+    hits_text = (output_dir / "hot_update_socket_result_sample_coverage_hits.tsv").read_text(encoding="utf-8")
+    protocol_text = (output_dir / "hot_update_socket_result_sample_coverage_protocol_counts.tsv").read_text(
+        encoding="utf-8"
+    )
+    markdown_text = (output_dir / "hot_update_socket_result_sample_coverage_report.md").read_text(encoding="utf-8")
+
+    assert result["verdict"]["supports_result_sample_coverage_report"] is True
+    assert result["verdict"]["ordinary_buff_result_sample_present"] is True
+    assert result["verdict"]["fight_result_family_sample_present"] is True
+    assert result["verdict"]["existing_captures_cover_result_attribution"] is True
+    assert result["counts"]["target_hit_rows"] == 2
+    assert "60034\tSM_BuffChangeHpAndMp" in targets_text
+    assert "60054\tSM_FightResultFunnel" in targets_text
+    assert "metadata_only_no_payload_values" in hits_text
+    assert "12345" not in hits_text
+    assert "222" not in markdown_text
+    assert "SM_BuffChangeHpAndMp" in protocol_text
 
 
 def test_fanxiu_combat_formula_authority_contrast_probe_separates_local_formula_and_server_results(tmp_path):

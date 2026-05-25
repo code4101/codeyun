@@ -531,6 +531,122 @@ def test_rebuild_nianzhu_attendance_uses_course_sheets_as_source(session: Sessio
     assert rows[1][8] == "1遍/100%"
 
 
+def test_rebuild_nianzhu_attendance_highlights_zen_completion_text(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "start_date": "2026-05-01 00:00:00",
+                    "lesson_name": "禅宗第01课",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {"course_name": "修道班7期5阶"}
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 1800,
+                    "progress": 20,
+                    "update_time": "2026-05-03 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+    session.add(video_config)
+    session.add(video_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["updated_rows"] == 1
+    attendance = _find_sheet(session, "attendance")
+    document = attendance.document_json
+    columns = document["columns"]
+    row = document["rows"][0]
+    lesson_column = columns.index("第01课")
+    assert row[lesson_column] == "准时完成"
+    assert row[columns.index("完成视频数")] == 1
+    assert row[columns.index("视频应返款")] == 20
+    document_row = document["data_start_row"]
+    assert document["cell_meta"][f"{document_row}:{lesson_column}"]["style"]["background_color"]
+
+
+def test_rebuild_nianzhu_attendance_counts_zen_stage_title_videos_as_refundable(session: Session) -> None:
+    _create_nianzhu_workbook(session)
+    materialize_nianzhu_course_sheets(session, replace=False)
+
+    attendance = _find_sheet(session, "attendance")
+    attendance_document = copy.deepcopy(attendance.document_json)
+    columns = attendance_document["columns"]
+    columns[8] = "佛教史1"
+    attendance_document["rows"][0][8] = ""
+    attendance.document_json = attendance_document
+
+    video_config = _find_sheet(session, VIDEO_CONFIG_SHEET_KEY)
+    video_config.document_json = _sheet_document(
+        VIDEO_CONFIG_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_CONFIG_COLUMNS,
+                {
+                    "lesson_id": 1,
+                    "start_date": "2026-05-01 00:00:00",
+                    "lesson_name": "第1周=佛教史1",
+                    "video_duration": 3600,
+                },
+            ),
+        ],
+    )
+    video_config.document_json["source_meta"] = {"course_name": "修道班7期5阶"}
+    video_data = _find_sheet(session, VIDEO_DATA_SHEET_KEY)
+    video_data.document_json = _sheet_document(
+        VIDEO_DATA_COLUMNS,
+        [
+            _row_from_dict(
+                VIDEO_DATA_COLUMNS,
+                {
+                    "lesson_data_id": 1,
+                    "user_id2": "u1",
+                    "cum_seconds": 1800,
+                    "progress": 20,
+                    "update_time": "2026-05-03 08:00:00",
+                    "lesson_id": 1,
+                },
+            ),
+        ],
+    )
+    session.add(attendance)
+    session.add(video_config)
+    session.add(video_data)
+    session.commit()
+
+    summary = rebuild_nianzhu_attendance_from_course_sheets(session, active_only=True)
+    session.commit()
+
+    assert summary["video_refund_total"] == 20
+    document = _find_sheet(session, "attendance").document_json
+    row = document["rows"][0]
+    assert row[columns.index("佛教史1")] == "准时完成"
+    assert row[columns.index("视频应返款")] == 20
+
+
 def test_rebuild_nianzhu_attendance_clears_blank_progress_background_on_skipped_rows(session: Session) -> None:
     _create_nianzhu_workbook(session)
     materialize_nianzhu_course_sheets(session, replace=False)

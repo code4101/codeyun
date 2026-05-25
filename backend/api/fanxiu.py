@@ -76,6 +76,12 @@ from backend.core.fanxiu_packet_capture import build_fanxiu_packet_capture_snaps
 from backend.core.fanxiu_android_proxy import fanxiu_android_proxy_service
 from backend.core.fanxiu_packet_activity import fanxiu_packet_activity_service
 from backend.core.fanxiu_packet_proxy import fanxiu_packet_proxy_service
+from backend.core.fanxiu_tcp_flow import (
+    decode_fanxiu_tcp_pcap,
+    list_fanxiu_tcp_business_entries,
+    list_fanxiu_tcp_captures,
+    list_fanxiu_tcp_records,
+)
 from backend.core.fanxiu_behavior_tree_service import (
     get_behavior_tree_status,
     start_behavior_tree_service,
@@ -418,6 +424,127 @@ class FanxiuPacketCaptureSnapshot(BaseModel):
     summary: dict[str, int] = Field(default_factory=dict)
 
 
+class FanxiuTcpCaptureFile(BaseModel):
+    name: str
+    path: str
+    relative_path: str
+    size: int = 0
+    modified_at: str = ""
+    decoded_path: str = ""
+    decoded: bool = False
+    capture_sha256: str = ""
+    record_id: str = ""
+    record_dir: str = ""
+    stored_pcap: str = ""
+    stored_decoded_path: str = ""
+    stored: bool = False
+
+
+class FanxiuTcpCaptureListResponse(BaseModel):
+    export_root: str
+    capture_dir: str
+    store_capture_dir: str = ""
+    items: List[FanxiuTcpCaptureFile] = Field(default_factory=list)
+
+
+class FanxiuTcpRecordItem(BaseModel):
+    record_id: str
+    record_dir: str
+    pcap_name: str = ""
+    source_pcap: str = ""
+    stored_pcap: str = ""
+    decoded_path: str = ""
+    decoded: bool = False
+    stream: int = 0
+    server_host: str = ""
+    capture_sha256: str = ""
+    created_at: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuTcpRecordListResponse(BaseModel):
+    store_root: str
+    items: List[FanxiuTcpRecordItem] = Field(default_factory=list)
+
+
+class FanxiuTcpBusinessEntry(BaseModel):
+    id: str
+    decoded_at: str = ""
+    record_id: str = ""
+    pcap_name: str = ""
+    source_kind: str = ""
+    direction: str = ""
+    name: str = ""
+    category: str = ""
+    meaning: str = ""
+    protocol_meaning: str = ""
+    pro_id: int = 0
+    sn: int = 0
+    frame_index: int = 0
+    display_text: str = ""
+    display_segments: List[dict[str, Any]] = Field(default_factory=list)
+    content: dict[str, Any] = Field(default_factory=dict)
+
+
+class FanxiuTcpBusinessCategorySummary(BaseModel):
+    category: str = ""
+    meaning: str = ""
+    count: int = 0
+    protocols: List[str] = Field(default_factory=list)
+
+
+class FanxiuTcpBusinessProtocolSample(BaseModel):
+    id: str = ""
+    decoded_at: str = ""
+    direction: str = ""
+    display_text: str = ""
+    display_segments: List[dict[str, Any]] = Field(default_factory=list)
+    content: dict[str, Any] = Field(default_factory=dict)
+    field_labels: dict[str, dict[str, str]] = Field(default_factory=dict)
+
+
+class FanxiuTcpBusinessProtocolSummary(BaseModel):
+    name: str = ""
+    category: str = ""
+    meaning: str = ""
+    count: int = 0
+    samples: List[FanxiuTcpBusinessProtocolSample] = Field(default_factory=list)
+
+
+class FanxiuTcpBusinessEntryListResponse(BaseModel):
+    page: int = 1
+    page_size: int = 50
+    total: int = 0
+    category_summary: List[FanxiuTcpBusinessCategorySummary] = Field(default_factory=list)
+    protocol_summary: List[FanxiuTcpBusinessProtocolSummary] = Field(default_factory=list)
+    items: List[FanxiuTcpBusinessEntry] = Field(default_factory=list)
+
+
+class FanxiuTcpDecodeRequest(BaseModel):
+    pcap: str
+    stream: int = Field(34, ge=-1)
+    server_host: str = "1.12.44.63"
+    persist: bool = True
+
+
+class FanxiuTcpDecodeResponse(BaseModel):
+    export_root: str
+    pcap: str
+    stream: int
+    server_host: str
+    text_assets: str
+    output_path: str = ""
+    capture_sha256: str = ""
+    stream_candidates: List[dict[str, Any]] = Field(default_factory=list)
+    record_id: str = ""
+    record_dir: str = ""
+    stored_pcap: str = ""
+    stored_decoded_path: str = ""
+    meta_path: str = ""
+    summary: dict[str, Any] = Field(default_factory=dict)
+    frames: List[dict[str, Any]] = Field(default_factory=list)
+
+
 class FanxiuPacketProxyStartRequest(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(8899, ge=1, le=65535)
@@ -496,6 +623,8 @@ class FanxiuPacketActivityStatus(BaseModel):
     total_bytes: int = 0
     history_total: int = 0
     history_capacity: int = 0
+    pcap_path: str = ""
+    pcap_size: int = 0
     items: List[FanxiuPacketActivityFlow] = Field(default_factory=list)
 
 
@@ -4102,6 +4231,78 @@ def get_fanxiu_packet_capture_snapshot(
     return FanxiuPacketCaptureSnapshot.model_validate(
         build_fanxiu_packet_capture_snapshot(payload.dns_hosts, resolve_dns=payload.resolve_dns)
     )
+
+
+@status_router.get("/packet-capture/tcp/captures", response_model=FanxiuTcpCaptureListResponse)
+def list_fanxiu_packet_tcp_captures(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuTcpCaptureListResponse.model_validate(
+        list_fanxiu_tcp_captures(limit=limit)
+    )
+
+
+@status_router.get("/packet-capture/tcp/records", response_model=FanxiuTcpRecordListResponse)
+def list_fanxiu_packet_tcp_records(
+    limit: int = Query(50, ge=1, le=200),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    return FanxiuTcpRecordListResponse.model_validate(
+        list_fanxiu_tcp_records(limit=limit)
+    )
+
+
+@status_router.get("/packet-capture/tcp/business-entries", response_model=FanxiuTcpBusinessEntryListResponse)
+def list_fanxiu_packet_tcp_business_entries(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    category: str = Query("", max_length=80),
+    protocol: str = Query("", max_length=120),
+    hidden_protocols: str = Query("", max_length=8000),
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    hidden_protocol_list = [
+        item.strip()
+        for item in hidden_protocols.split(",")
+        if item.strip()
+    ]
+    return FanxiuTcpBusinessEntryListResponse.model_validate(
+        list_fanxiu_tcp_business_entries(
+            category=category,
+            protocol=protocol,
+            hidden_protocols=hidden_protocol_list,
+            page=page,
+            page_size=page_size,
+        )
+    )
+
+
+@status_router.post("/packet-capture/tcp/decode", response_model=FanxiuTcpDecodeResponse)
+def decode_fanxiu_packet_tcp_capture(
+    payload: FanxiuTcpDecodeRequest,
+    current_user: User = Depends(get_current_active_user),
+    session: Session = Depends(get_session),
+):
+    ensure_fanxiu_write_permission(current_user, session)
+    try:
+        result = decode_fanxiu_tcp_pcap(
+            payload.pcap,
+            stream=payload.stream,
+            server_host=payload.server_host,
+            persist=payload.persist,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return FanxiuTcpDecodeResponse.model_validate(result)
 
 
 @status_router.get("/packet-capture/activity/status", response_model=FanxiuPacketActivityStatus)

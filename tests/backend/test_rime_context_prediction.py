@@ -427,6 +427,28 @@ def test_local_entry_rebuild_filters_suspicious_jiu_typo_phrases(client, auth_us
     assert "好久" in counts_text
 
 
+def test_local_entry_rebuild_filters_impossible_duplicate_shi_phrase(client, auth_user, test_device, tmp_path, monkeypatch):
+    rime_dir = tmp_path / "Rime"
+    rime_dir.mkdir()
+    (rime_dir / "context_prediction_history.log").write_text(
+        "2026-05-13 10:00:00\t逻辑\t逻辑\n"
+        "2026-05-13 10:00:01\t是\t是\n"
+        "2026-05-13 10:00:02\t是\t是\n"
+        "2026-05-13 10:00:03\t明显\t明显\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CODEYUN_RIME_USER_DIR", str(rime_dir))
+    entry_id = _create_local_entry(client)
+
+    response = client.post(f"/api/device-entries/{entry_id}/rime/context-prediction/tree/refresh")
+
+    assert response.status_code == 200
+    counts_text = (rime_dir / "context_prediction_model_counts.tsv").read_text(encoding="utf-8")
+    hot_text = (rime_dir / "context_prediction_hot.tsv").read_text(encoding="utf-8")
+    assert "是是" not in counts_text
+    assert "是是" not in hot_text
+
+
 def test_local_entry_saves_edited_history_article_for_prediction(client, auth_user, test_device, tmp_path, monkeypatch):
     rime_dir = tmp_path / "Rime"
     rime_dir.mkdir()

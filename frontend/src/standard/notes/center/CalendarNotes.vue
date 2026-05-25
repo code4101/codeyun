@@ -856,13 +856,17 @@ const startCodexDiaryImport = async (date: Date, confirmDuplicate = false): Prom
       response?: {
         status?: number;
         data?: {
-          detail?: string | { message?: string; duplicate_count?: number };
+          detail?: string | { code?: string; message?: string; duplicate_count?: number };
         };
       };
       message?: string;
     };
+    const detail = maybeError.response?.data?.detail;
+    if (typeof detail === 'object' && detail?.code === 'active_import') {
+      await showCodexDiaryImportError(detail.message || '该日期的 Codex 总结日记仍在导入中，请稍后再试。');
+      return null;
+    }
     if (maybeError.response?.status === 409 && !confirmDuplicate) {
-      const detail = maybeError.response.data?.detail;
       const message = typeof detail === 'object' && detail?.message
         ? detail.message
         : '该日期已导入过 Codex 总结日记，继续会重复生成一批新节点。';

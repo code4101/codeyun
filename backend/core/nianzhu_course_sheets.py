@@ -258,6 +258,36 @@ def _extract_play_count(value: Any) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _is_legacy_completed_video_text(value: Any) -> bool:
+    text = _normalize_text(value)
+    return text == "准时完成" or bool(re.match(r"延\s*\d+\s*周完成", text))
+
+
+def _video_refund_progress_percent(value: Any) -> float | None:
+    if _is_legacy_completed_video_text(value):
+        return 100.0
+    return parse_progress_percent(value)
+
+
+def _video_completed_count(value: Any) -> int:
+    play_count = _extract_play_count(value)
+    if play_count > 0:
+        return play_count
+    if _is_legacy_completed_video_text(value):
+        return 1
+    return 1 if (_video_refund_progress_percent(value) or 0) >= 100 else 0
+
+
+def _highlight_video_refund_progress(
+    rules: list[PercentageRefundRule],
+    value: Any,
+) -> tuple[float, str | None]:
+    progress_percent = _video_refund_progress_percent(value)
+    if progress_percent is None:
+        return 0, None
+    return highlight_percentage_refund_progress(rules, f"{progress_percent}%")
+
+
 def _strip_progress_title(value: Any) -> str:
     text = _normalize_text(value)
     return re.sub(r"^\d{1,2}:\d{2}\s*[~～-]\s*\d{1,2}:\d{2}\s*", "", text).strip()
@@ -1892,8 +1922,10 @@ def _load_video_config(document: dict[str, Any]) -> list[VideoConfigItem]:
         if not lesson_id or not lesson_name or not course_key:
             continue
         lesson_number = _extract_lesson_number(lesson_name)
-        item_type = "课次" if lesson_number is not None else ("答疑" if course_key.startswith("qa:") else "视频")
-        participates_refund = lesson_number is not None
+        is_qa_item = course_key.startswith("qa:")
+        is_zen_stage_video = _is_zen_stage_course_text(f"{course_name} {lesson_name}") and not is_qa_item
+        item_type = "课次" if lesson_number is not None or is_zen_stage_video else ("答疑" if is_qa_item else "视频")
+        participates_refund = lesson_number is not None or is_zen_stage_video
         rules_by_version: dict[str, list[PercentageRefundRule]] = {
             CURRENT_RULE: _parse_percentage_rules(DEFAULT_VIDEO_RULES[CURRENT_RULE] if participates_refund else ""),
             LEGACY_AFTER_20250522_RULE: _parse_percentage_rules(
@@ -2249,11 +2281,11 @@ def _select_video_progress_for_identity_keys(
     rules = _rules_for_version(item.rules_by_version, rule_version)
 
     def sort_key(value: str) -> tuple[float, int, float, int]:
-        refund_amount, _color = highlight_percentage_refund_progress(rules, value)
+        refund_amount, _color = _highlight_video_refund_progress(rules, value)
         return (
             refund_amount,
-            _extract_play_count(value),
-            parse_progress_percent(value) or 0,
+            _video_completed_count(value),
+            _video_refund_progress_percent(value) or 0,
             len(value),
         )
 
@@ -2676,15 +2708,16 @@ def rebuild_nianzhu_attendance_from_course_sheets(
 
             color: str | None = None
             if item.participates_refund:
-                if _extract_play_count(value) > 0:
+                completed_count = _video_completed_count(value)
+                if completed_count > 0:
                     completed_video_count += 1
-                refund_amount, color = highlight_percentage_refund_progress(
+                refund_amount, color = _highlight_video_refund_progress(
                     _rules_for_version(item.rules_by_version, rule_version),
                     value,
                 )
                 video_refund += refund_amount
                 if item.participates_score and refund_amount > 0:
-                    score += max(_extract_play_count(value) - 1, 0)
+                    score += max(completed_count - 1, 0)
             else:
                 color = highlight_presence_progress(value)
 

@@ -348,6 +348,7 @@ def parse_fanxiu_generated_lua_config(
     config_path: str | Path,
     *,
     lang_path: str | Path | None = None,
+    lang_map: dict[int, str] | None = None,
 ) -> dict[str, Any]:
     path = Path(config_path)
     text = path.read_text(encoding="utf-8-sig", errors="replace")
@@ -358,7 +359,7 @@ def parse_fanxiu_generated_lua_config(
         "B": _parse_index_value_map(_extract_lua_table_body(text, "_B")),
         "C": _parse_index_value_map(_extract_lua_table_body(text, "_C")),
     }
-    lang_map = load_fanxiu_lang_map(lang_path) if lang_path else {}
+    active_lang_map = lang_map if lang_map is not None else (load_fanxiu_lang_map(lang_path) if lang_path else {})
     rows = []
     for line in _extract_lua_table_body(text, "_M").splitlines():
         match = _ROW_RE.match(line.strip())
@@ -372,7 +373,7 @@ def parse_fanxiu_generated_lua_config(
         raw_values: dict[str, str] = {}
         for index, raw_value in _parse_row_body_values(match.group("body")):
             field = key2index.get(index, f"field_{index}")
-            resolved, lang_id = _resolve_row_value(raw_value, string_pool=string_pool, raw_pools=raw_pools, lang_map=lang_map)
+            resolved, lang_id = _resolve_row_value(raw_value, string_pool=string_pool, raw_pools=raw_pools, lang_map=active_lang_map)
             raw_values[field] = raw_value
             row[field] = resolved
             if lang_id is not None:

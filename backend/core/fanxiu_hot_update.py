@@ -8282,6 +8282,3169 @@ def build_fanxiu_faze_effect_lua_usage_probe(
     return result
 
 
+def _resolve_gongfa_special_faze_target_id(
+    export_base: Path,
+    *,
+    gongfa_id: str | int | None,
+    query: str,
+) -> tuple[str, str]:
+    explicit = str(gongfa_id or "").strip()
+    query_text = str(query or "").strip()
+    gongfa_rows = _load_parsed_config_rows(export_base, "Gongfa")
+    if explicit:
+        for row in gongfa_rows:
+            row_id = str(row.get("id", row.get("_row_key", ""))).strip()
+            if row_id == explicit:
+                return explicit, _hot_update_plain(row, "name") or explicit
+        return explicit, explicit
+
+    if query_text:
+        query_lower = query_text.lower()
+        for row in gongfa_rows:
+            row_id = str(row.get("id", row.get("_row_key", ""))).strip()
+            row_name = _hot_update_plain(row, "name")
+            if row_id == query_text or query_lower in row_name.lower():
+                return row_id, row_name or row_id
+
+    # The current focused default is the user-facing "玄魔大法" chain.
+    for row in gongfa_rows:
+        row_name = _hot_update_plain(row, "name")
+        if row_name == "玄魔大法":
+            return str(row.get("id", row.get("_row_key", ""))).strip(), row_name
+    return "476701", "玄魔大法"
+
+
+def _collect_gongfa_special_faze_focus_rows(
+    export_base: Path,
+    *,
+    target_gongfa_id: str,
+    target_gongfa_name: str,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    resource_by_id = _faze_row_by_id(_load_parsed_config_rows(export_base, "FazeResource"))
+    effect_by_id = _faze_row_by_id(_load_parsed_config_rows(export_base, "FazeEffectResource"))
+    item_by_id = _faze_row_by_id(_load_parsed_config_rows(export_base, "Item"))
+    for row in _collect_faze_source_semantics_rows(export_base, resource_by_id, effect_by_id, item_by_id):
+        if str(row.get("source_table") or "") != "Special-GongfaJie":
+            continue
+        if str(row.get("gid") or "") != str(target_gongfa_id):
+            continue
+        rows.append(
+            {
+                "source_id": row.get("source_id", ""),
+                "gongfa_id": target_gongfa_id,
+                "gongfa_name": target_gongfa_name,
+                "stage": row.get("stage", ""),
+                "source_name": row.get("source_name", ""),
+                "faze_id": row.get("faze_id", ""),
+                "faze_name": row.get("faze_name", ""),
+                "effect_id": row.get("effect_id", ""),
+                "effect_type": row.get("effect_type", ""),
+                "effect_params": row.get("effect_params", ""),
+                "effect_attr": row.get("effect_attr", ""),
+                "tip_codes": row.get("tip_codes", ""),
+                "tip_texts": row.get("tip_texts", ""),
+                "consume": row.get("consume", ""),
+                "attr": row.get("attr", ""),
+                "describe_preview": _markdown_table_cell(row.get("source_context", ""), limit=900),
+            }
+        )
+    return sorted(rows, key=lambda item: (_hot_update_int(item.get("source_id")) or 0, str(item.get("stage") or "")))
+
+
+def _collect_gongfa_special_faze_focus_lua_usage_rows(
+    export_base: Path,
+    effect_types: set[str],
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    if not effect_types:
+        return rows
+    for row in _collect_faze_effect_lua_usage_rows(export_base):
+        values = set(re.findall(r"\d+", str(row.get("effect_types") or "")))
+        values.update(re.findall(r"\d+", str(row.get("effect_type_exprs") or "")))
+        if not values.intersection(effect_types):
+            continue
+        rows.append(row)
+    return rows
+
+
+def _collect_gongfa_special_faze_focus_type_rows(
+    focus_rows: list[dict[str, object]],
+    lua_usage_rows: list[dict[str, object]],
+    lang_entries: dict[int, str],
+) -> list[dict[str, object]]:
+    by_type: dict[str, dict[str, object]] = {}
+    for row in focus_rows:
+        effect_type = str(row.get("effect_type") or "")
+        if not effect_type:
+            continue
+        item = by_type.setdefault(
+            effect_type,
+            {
+                "effect_type": effect_type,
+                "type_lang_text": lang_entries.get(_hot_update_int(effect_type) or -1, ""),
+                "stage_count": 0,
+                "effect_ids": [],
+                "faze_ids": [],
+                "faze_names": [],
+                "tip_texts": [],
+                "params_present": False,
+                "attr_present": False,
+                "lua_usage_count": 0,
+                "lua_categories": [],
+                "lua_files": [],
+                "sample_lua_lines": [],
+            },
+        )
+        item["stage_count"] = int(item["stage_count"]) + 1
+        for source, target in [
+            ("effect_id", "effect_ids"),
+            ("faze_id", "faze_ids"),
+            ("faze_name", "faze_names"),
+            ("tip_texts", "tip_texts"),
+        ]:
+            value = str(row.get(source) or "").strip()
+            if value and value not in item[target]:
+                item[target].append(value)
+        if str(row.get("effect_params") or "").strip():
+            item["params_present"] = True
+        if str(row.get("effect_attr") or "").strip():
+            item["attr_present"] = True
+
+    for row in lua_usage_rows:
+        values = set(re.findall(r"\d+", str(row.get("effect_types") or "")))
+        values.update(re.findall(r"\d+", str(row.get("effect_type_exprs") or "")))
+        for effect_type in values.intersection(by_type):
+            item = by_type[effect_type]
+            item["lua_usage_count"] = int(item["lua_usage_count"]) + 1
+            for source, target in [
+                ("category", "lua_categories"),
+                ("file", "lua_files"),
+                ("text", "sample_lua_lines"),
+            ]:
+                value = str(row.get(source) or "").strip()
+                if value and value not in item[target]:
+                    item[target].append(value)
+
+    out: list[dict[str, object]] = []
+    for item in by_type.values():
+        out.append(
+            {
+                "effect_type": item["effect_type"],
+                "type_lang_text": strip_fanxiu_rich_text(str(item["type_lang_text"] or "")),
+                "stage_count": item["stage_count"],
+                "effect_ids": "、".join(str(value) for value in item["effect_ids"][:12]),
+                "faze_ids": "、".join(str(value) for value in item["faze_ids"][:12]),
+                "faze_names": "、".join(str(value) for value in item["faze_names"][:8]),
+                "tips_sample": "；".join(str(value) for value in item["tip_texts"][:4]),
+                "params_present": item["params_present"],
+                "attr_present": item["attr_present"],
+                "lua_usage_count": item["lua_usage_count"],
+                "lua_categories": "、".join(str(value) for value in item["lua_categories"][:8]),
+                "lua_files": "、".join(str(value) for value in item["lua_files"][:8]),
+                "sample_lua_lines": " / ".join(strip_fanxiu_rich_text(str(value)) for value in item["sample_lua_lines"][:3]),
+            }
+        )
+    return sorted(out, key=lambda item: _hot_update_int(item.get("effect_type")) or 0)
+
+
+def build_fanxiu_gongfa_special_faze_focus_probe(
+    *,
+    gongfa_id: str | int | None = None,
+    query: str = "",
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Build a focused Special-GongfaJie -> FazeResource -> FazeEffectResource report."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_id, target_name = _resolve_gongfa_special_faze_target_id(
+        export_base,
+        gongfa_id=gongfa_id,
+        query=query,
+    )
+    focus_rows = _collect_gongfa_special_faze_focus_rows(
+        export_base,
+        target_gongfa_id=target_id,
+        target_gongfa_name=target_name,
+    )
+    if not focus_rows:
+        raise FanxiuResourceError(f"未找到 Special-GongfaJie 目标功法：{target_id or query or '玄魔大法'}")
+
+    effect_types = {str(row.get("effect_type") or "") for row in focus_rows if str(row.get("effect_type") or "")}
+    lua_usage_rows = _collect_gongfa_special_faze_focus_lua_usage_rows(export_base, effect_types)
+    lang_entries = _load_numeric_lang_entries(_find_lang_path(export_base))
+    type_rows = _collect_gongfa_special_faze_focus_type_rows(focus_rows, lua_usage_rows, lang_entries)
+
+    rows_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_focus_rows.tsv",
+        [
+            "source_id",
+            "gongfa_id",
+            "gongfa_name",
+            "stage",
+            "source_name",
+            "faze_id",
+            "faze_name",
+            "effect_id",
+            "effect_type",
+            "effect_params",
+            "effect_attr",
+            "tip_codes",
+            "tip_texts",
+            "consume",
+            "attr",
+            "describe_preview",
+        ],
+        focus_rows,
+    )
+    type_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_focus_types.tsv",
+        [
+            "effect_type",
+            "type_lang_text",
+            "stage_count",
+            "effect_ids",
+            "faze_ids",
+            "faze_names",
+            "tips_sample",
+            "params_present",
+            "attr_present",
+            "lua_usage_count",
+            "lua_categories",
+            "lua_files",
+            "sample_lua_lines",
+        ],
+        type_rows,
+    )
+    lua_usage_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_focus_lua_usage.tsv",
+        ["category", "module", "file", "line", "effect_type_exprs", "effect_types", "fields", "text", "path"],
+        lua_usage_rows,
+    )
+
+    effect_type_counts = dict(Counter(str(row.get("effect_type") or "") for row in focus_rows).most_common())
+    params_present = any(str(row.get("effect_params") or "").strip() for row in focus_rows)
+    effect_attr_present = any(str(row.get("effect_attr") or "").strip() for row in focus_rows)
+    lua_usage_present = bool(lua_usage_rows)
+
+    lines = [
+        f"# GongFa Special Faze Focus: {target_name}",
+        "",
+        f"- Target: `{target_id}` `{target_name}`",
+        f"- Source: `Special-GongfaJie -> FazeResource -> FazeEffectResource`",
+        f"- Stage rows: `{rows_count}`; effect types: `{type_count}`; Lua usage rows: `{lua_usage_count}`",
+        "",
+        "## Effect Types",
+        "",
+        "| Type | Lang Text | Stages | Effects | Faze | Params | Lua Usage | Tips |",
+        "| --- | --- | ---: | --- | --- | --- | ---: | --- |",
+    ]
+    for row in type_rows:
+        params = []
+        if row.get("params_present"):
+            params.append("params")
+        if row.get("attr_present"):
+            params.append("attr")
+        lines.append(
+            "| "
+            f"{row.get('effect_type', '')} | "
+            f"{_markdown_table_cell(row.get('type_lang_text', ''), limit=180)} | "
+            f"{row.get('stage_count', '')} | "
+            f"{_markdown_table_cell(row.get('effect_ids', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('faze_ids', ''), limit=120)} | "
+            f"{_markdown_table_cell('、'.join(params) or 'empty', limit=80)} | "
+            f"{row.get('lua_usage_count', '')} | "
+            f"{_markdown_table_cell(row.get('tips_sample', ''), limit=220)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Stage Rows",
+            "",
+            "| Stage | Source | Faze | Effect | Tips | Consume | Attr | Preview |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in focus_rows[:20]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('stage', ''), limit=60)} | "
+            f"{row.get('source_id', '')} | "
+            f"{row.get('faze_id', '')} `{_markdown_table_cell(row.get('faze_name', ''), limit=100)}` | "
+            f"{row.get('effect_id', '')} / type `{row.get('effect_type', '')}` | "
+            f"{_markdown_table_cell(row.get('tip_texts', ''), limit=180)} | "
+            f"{_markdown_table_cell(row.get('consume', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('attr', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('describe_preview', ''), limit=260)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            f"- `{target_name}` is a `Special-GongfaJie` chain, not the XianShu `SideFeatureJie -> BuffResource` chain used by the previous ordinary/funnel buff probes.",
+            "- The static ownership chain closes at `Special-GongfaJie.fazeId -> FazeResource.id -> FazeEffectResource.id/type`.",
+            "- `FazeResource.tipStr` gives reason-code labels for runtime `SM_FazeEffect` prompts; the long visible detail text comes from `Special-GongfaJie.describe`.",
+            "- If `lua_usage_count=0` for the focused effect type, readable Lua does not visibly interpret that type's algorithm; treat the effect as config/display plus server/event driven until runtime or deeper native evidence says otherwise.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_focus_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "target": {"gongfa_id": target_id, "gongfa_name": target_name},
+        "counts": {
+            "focus_rows": rows_count,
+            "effect_types": type_count,
+            "lua_usage_rows": lua_usage_count,
+            "effect_type_counts": effect_type_counts,
+        },
+        "verdict": {
+            "special_gongfa_faze_chain_closed": rows_count > 0 and all(str(row.get("faze_id") or "") for row in focus_rows),
+            "faze_effect_resource_resolved": rows_count > 0 and all(str(row.get("effect_id") or "") for row in focus_rows),
+            "effect_resource_payload_present": params_present or effect_attr_present,
+            "readable_lua_interprets_focused_effect_type": lua_usage_present,
+            "xianshu_buffresource_chain": False,
+            "next_static_step": "trace runtime SM_FazeEffect reason handling or build a wiki view for Special-GongfaJie/FazeResource chains",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_focus_rows.tsv"),
+            "types": str(output_dir / "hot_update_gongfa_special_faze_focus_types.tsv"),
+            "lua_usage": str(output_dir / "hot_update_gongfa_special_faze_focus_lua_usage.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_focus_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_focus_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _collect_gongfa_special_faze_reason_rows(
+    focus_rows: list[dict[str, object]],
+    ani_effect_rows: list[dict[str, Any]],
+    *,
+    faze_resource_by_id: dict[int, dict[str, Any]] | None = None,
+) -> list[dict[str, object]]:
+    ani_by_reason = _faze_catalog_ani_by_reason(ani_effect_rows)
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in focus_rows:
+        tip_pairs: list[dict[str, str]] = []
+        if faze_resource_by_id:
+            faze_id = _hot_update_int(row.get("faze_id"))
+            resource = faze_resource_by_id.get(faze_id or -1)
+            if resource:
+                tip_pairs = _split_faze_tip_str(_hot_update_plain(resource, "tipStr"))
+        if not tip_pairs:
+            tip_codes = [item for item in str(row.get("tip_codes") or "").split(";") if item]
+            tip_texts = [item for item in str(row.get("tip_texts") or "").split(";") if item]
+            tip_pairs = [
+                {"code": code, "text": tip_texts[index] if index < len(tip_texts) else ""}
+                for index, code in enumerate(tip_codes)
+            ]
+        for tip in tip_pairs:
+            code = str(tip.get("code") or "").strip()
+            if not code:
+                continue
+            item = grouped.setdefault(
+                code,
+                {
+                    "reason": code,
+                    "stage_count": 0,
+                    "stages": [],
+                    "faze_ids": [],
+                    "effect_ids": [],
+                    "effect_types": [],
+                    "tip_texts": [],
+                    "ani_effects": [],
+                },
+            )
+            item["stage_count"] += 1
+            for source, target in [
+                ("stage", "stages"),
+                ("faze_id", "faze_ids"),
+                ("effect_id", "effect_ids"),
+                ("effect_type", "effect_types"),
+            ]:
+                text = str(row.get(source) or "").strip()
+                if text and text not in item[target]:
+                    item[target].append(text)
+            tip_text = str(tip.get("text") or "").strip()
+            if tip_text and tip_text not in item["tip_texts"]:
+                item["tip_texts"].append(tip_text)
+            reason_id = _hot_update_int(code)
+            for ani in ani_by_reason.get(reason_id or -1, []):
+                effect_text = str(ani.get("effect") or ani.get("effect_plain") or ani.get("name") or "").strip()
+                if effect_text and effect_text not in item["ani_effects"]:
+                    item["ani_effects"].append(effect_text)
+
+    rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        rows.append(
+            {
+                "reason": item["reason"],
+                "stage_count": item["stage_count"],
+                "stages": "、".join(item["stages"][:12]),
+                "faze_ids": "、".join(item["faze_ids"][:12]),
+                "effect_ids": "、".join(item["effect_ids"][:12]),
+                "effect_types": "、".join(item["effect_types"][:8]),
+                "tip_texts": "；".join(item["tip_texts"][:8]),
+                "ani_effects": "；".join(item["ani_effects"][:8]),
+                "has_ani_effect": bool(item["ani_effects"]),
+            }
+        )
+    return sorted(rows, key=lambda item: _hot_update_int(item.get("reason")) or 0)
+
+
+def _collect_gongfa_special_faze_reason_event_rows(
+    event_rows: list[dict[str, object]],
+    *,
+    effect_types: set[str],
+    reasons: set[str],
+) -> list[dict[str, object]]:
+    global_categories = {"packet_register", "packet_handler", "tip_dispatch", "raise_update_event", "visual_refresh"}
+    out: list[dict[str, object]] = []
+    for row in event_rows:
+        category = str(row.get("category") or "")
+        row_effects = set(re.findall(r"\d+", str(row.get("effect_types") or "")))
+        row_reasons = set(re.findall(r"\d+", str(row.get("reasons") or "")))
+        relevance = []
+        if category in global_categories:
+            relevance.append("global_faze_effect_flow")
+        if row_effects.intersection(effect_types):
+            relevance.append("matches_effect_type")
+        if row_reasons.intersection(reasons):
+            relevance.append("matches_reason")
+        if not relevance:
+            continue
+        copied = dict(row)
+        copied["relevance"] = "、".join(relevance)
+        out.append(copied)
+    return out
+
+
+def build_fanxiu_gongfa_special_faze_reason_probe(
+    *,
+    gongfa_id: str | int | None = None,
+    query: str = "",
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Map focused Special-Gongfa Faze reasons into SM_FazeEffect client handling."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target_id, target_name = _resolve_gongfa_special_faze_target_id(
+        export_base,
+        gongfa_id=gongfa_id,
+        query=query,
+    )
+    focus_rows = _collect_gongfa_special_faze_focus_rows(
+        export_base,
+        target_gongfa_id=target_id,
+        target_gongfa_name=target_name,
+    )
+    if not focus_rows:
+        raise FanxiuResourceError(f"未找到 Special-GongfaJie 目标功法：{target_id or query or '玄魔大法'}")
+
+    reason_rows = _collect_gongfa_special_faze_reason_rows(
+        focus_rows,
+        _load_parsed_config_rows(export_base, "AniEffect"),
+        faze_resource_by_id=_faze_row_by_id(_load_parsed_config_rows(export_base, "FazeResource")),
+    )
+    effect_types = {
+        str(row.get("effect_type") or "")
+        for row in focus_rows
+        if str(row.get("effect_type") or "")
+    }
+    reason_codes = {
+        str(row.get("reason") or "")
+        for row in reason_rows
+        if str(row.get("reason") or "")
+    }
+    event_rows = _collect_faze_effect_update_event_rows(export_base)
+    focused_event_rows = _collect_gongfa_special_faze_reason_event_rows(
+        event_rows,
+        effect_types=effect_types,
+        reasons=reason_codes,
+    )
+    faze_dir = _find_text_asset_dir(export_base, "lscripts", "gamesystem", "game", module="faze")
+    flow_rows = _collect_bluestarsea_faze_runtime_rows(faze_dir)
+    packet_rows = [
+        row
+        for row in _collect_bluestarsea_faze_packet_rows(export_base)
+        if str(row.get("packet") or "") == "SM_FazeEffect"
+    ]
+
+    reason_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_reason_rows.tsv",
+        [
+            "reason",
+            "stage_count",
+            "stages",
+            "faze_ids",
+            "effect_ids",
+            "effect_types",
+            "tip_texts",
+            "ani_effects",
+            "has_ani_effect",
+        ],
+        reason_rows,
+    )
+    event_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_reason_events.tsv",
+        [
+            "relevance",
+            "category",
+            "module",
+            "file",
+            "line",
+            "end_line",
+            "effect_type_terms",
+            "effect_types",
+            "reason_terms",
+            "reasons",
+            "actions",
+            "effect_reason_map",
+            "effect_action_map",
+            "text",
+            "block_preview",
+            "path",
+        ],
+        focused_event_rows,
+    )
+    flow_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_reason_flow.tsv",
+        ["stage", "file", "function", "line_start", "line_end", "terms", "msg_fields", "config_reads", "events", "model_calls", "path"],
+        flow_rows,
+    )
+    packet_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_reason_packet_fields.tsv",
+        ["packet", "direction", "packet_id", "field_index", "field_name", "read_method", "type_hint", "file", "line"],
+        packet_rows,
+    )
+
+    target_listener_rows = [
+        row
+        for row in focused_event_rows
+        if "matches_effect_type" in str(row.get("relevance") or "") or "matches_reason" in str(row.get("relevance") or "")
+    ]
+    has_ani_effect = any(bool(row.get("has_ani_effect")) for row in reason_rows)
+    has_tip_dispatch = any(row.get("category") == "tip_dispatch" for row in focused_event_rows)
+    has_raise_event = any(row.get("category") == "raise_update_event" for row in focused_event_rows)
+    packet_field_names = {str(row.get("field_name") or "") for row in packet_rows}
+
+    lines = [
+        f"# GongFa Special Faze Reason: {target_name}",
+        "",
+        f"- Target: `{target_id}` `{target_name}`",
+        f"- Effect types: `{', '.join(sorted(effect_types))}`",
+        f"- Reasons: `{', '.join(sorted(reason_codes, key=lambda item: _hot_update_int(item) or 0))}`",
+        f"- Reason rows: `{reason_count}`; event rows: `{event_count}`; flow rows: `{flow_count}`; packet fields: `{packet_count}`",
+        "",
+        "## Reason Map",
+        "",
+        "| Reason | Stages | Effect | Has Ani | Tip Texts |",
+        "| ---: | --- | --- | --- | --- |",
+    ]
+    for row in reason_rows:
+        lines.append(
+            "| "
+            f"{row.get('reason', '')} | "
+            f"{_markdown_table_cell(row.get('stages', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('effect_ids', ''), limit=120)} / type `{_markdown_table_cell(row.get('effect_types', ''), limit=80)}` | "
+            f"{row.get('has_ani_effect', '')} | "
+            f"{_markdown_table_cell(row.get('tip_texts', ''), limit=240)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Client Flow",
+            "",
+            "| Stage | File | Function | Msg Fields | Config Reads | Events |",
+            "| --- | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in flow_rows:
+        if row.get("stage") not in {"sm_faze_effect", "tip_render", "ani_effect_cache"}:
+            continue
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('stage', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('file', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('function', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('msg_fields', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('config_reads', ''), limit=140)} | "
+            f"{_markdown_table_cell(row.get('events', ''), limit=140)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Focused Events",
+            "",
+            "| Relevance | Category | File | Line | Effects | Reasons | Text |",
+            "| --- | --- | --- | ---: | --- | --- | --- |",
+        ]
+    )
+    for row in focused_event_rows[:30]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('relevance', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('category', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('file', ''), limit=90)} | "
+            f"{row.get('line', '')} | "
+            f"{_markdown_table_cell(row.get('effect_types', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('reasons', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('text', ''), limit=220)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- `SM_FazeEffect` is the runtime carrier for `fazeId/effectType/num/reason`; the focused reason codes are labels selected from `FazeResource.tipStr`.",
+            "- `FazeEffectTip` dispatches UI/system prompts and raises `FazeType.UpdateFazeEffect`; this is client presentation/event fan-out, not proof of local algorithm execution.",
+            "- If no focused listener row matches the target effect type or reason, the current readable Lua has no target-specific continuation for this chain.",
+            "- `AniEffect.reasonId` only adds top visual effects when present; missing AniEffect rows do not block the rule, they just mean no visible top-special-effect mapping was found.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_reason_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "target": {"gongfa_id": target_id, "gongfa_name": target_name},
+        "counts": {
+            "reason_rows": reason_count,
+            "event_rows": event_count,
+            "flow_rows": flow_count,
+            "packet_fields": packet_count,
+            "target_listener_rows": len(target_listener_rows),
+            "effect_types": sorted(effect_types),
+            "reasons": sorted(reason_codes, key=lambda item: _hot_update_int(item) or 0),
+        },
+        "verdict": {
+            "sm_faze_effect_fields_available": {"fazeId", "effectType", "num", "reason"}.issubset(packet_field_names),
+            "reason_tip_map_closed": reason_count > 0 and all(str(row.get("tip_texts") or "") for row in reason_rows),
+            "target_reasons_have_ani_effect": has_ani_effect,
+            "faze_effect_tip_flow_seen": has_tip_dispatch or any(row.get("stage") == "tip_render" for row in flow_rows),
+            "update_event_raised_after_tip": has_raise_event or any("UpdateFazeEffect" in str(row.get("events") or "") for row in flow_rows),
+            "target_specific_update_listener_found": bool(target_listener_rows),
+            "target_algorithm_visible_in_lua": bool(target_listener_rows),
+            "supports_server_rule_notification_boundary": reason_count > 0 and not target_listener_rows,
+        },
+        "outputs": {
+            "reasons": str(output_dir / "hot_update_gongfa_special_faze_reason_rows.tsv"),
+            "events": str(output_dir / "hot_update_gongfa_special_faze_reason_events.tsv"),
+            "flow": str(output_dir / "hot_update_gongfa_special_faze_reason_flow.tsv"),
+            "packet_fields": str(output_dir / "hot_update_gongfa_special_faze_reason_packet_fields.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_reason_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_reason_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _collect_gongfa_special_faze_catalog_rows(export_base: Path) -> list[dict[str, object]]:
+    gongfa_by_id = {
+        gongfa_id: _hot_update_plain(row, "name")
+        for row in _load_parsed_config_rows(export_base, "Gongfa")
+        if (gongfa_id := _hot_update_int(row.get("id"))) is not None
+    }
+    resource_by_id = _faze_row_by_id(_load_parsed_config_rows(export_base, "FazeResource"))
+    source_rows = _collect_faze_source_semantics_rows(
+        export_base,
+        resource_by_id,
+        _faze_row_by_id(_load_parsed_config_rows(export_base, "FazeEffectResource")),
+        _faze_row_by_id(_load_parsed_config_rows(export_base, "Item")),
+    )
+    rows: list[dict[str, object]] = []
+    for row in source_rows:
+        if str(row.get("source_table") or "") != "Special-GongfaJie":
+            continue
+        gid = _hot_update_int(row.get("gid"))
+        faze_id = _hot_update_int(row.get("faze_id"))
+        raw_tips = _split_faze_tip_str(_hot_update_plain(resource_by_id.get(faze_id or -1, {}), "tipStr"))
+        rows.append(
+            {
+                "gid": gid or "",
+                "gongfa_name": gongfa_by_id.get(gid or -1, ""),
+                "source_id": row.get("source_id", ""),
+                "stage": row.get("stage", ""),
+                "source_name": row.get("source_name", ""),
+                "faze_id": row.get("faze_id", ""),
+                "faze_name": row.get("faze_name", ""),
+                "effect_id": row.get("effect_id", ""),
+                "effect_type": row.get("effect_type", ""),
+                "effect_params": row.get("effect_params", ""),
+                "effect_attr": row.get("effect_attr", ""),
+                "tip_codes": row.get("tip_codes", ""),
+                "tip_texts": row.get("tip_texts", ""),
+                "tip_pairs": ";".join(
+                    f"{tip.get('code', '')}|{tip.get('text', '')}"
+                    for tip in raw_tips
+                    if tip.get("code") or tip.get("text")
+                ),
+                "consume": row.get("consume", ""),
+                "skill": row.get("skill", ""),
+                "attr": row.get("attr", ""),
+                "describe_preview": row.get("source_context", ""),
+            }
+        )
+    return sorted(
+        rows,
+        key=lambda item: (
+            _hot_update_int(item.get("gid")) or 0,
+            _hot_update_int(item.get("source_id")) or 0,
+            _hot_update_int(item.get("faze_id")) or 0,
+        ),
+    )
+
+
+def _collect_gongfa_special_faze_catalog_group_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        gid = str(row.get("gid") or "")
+        item = grouped.setdefault(
+            gid,
+            {
+                "gid": gid,
+                "gongfa_name": row.get("gongfa_name", ""),
+                "stage_count": 0,
+                "faze_ids": [],
+                "effect_types": [],
+                "reason_codes": [],
+                "tip_texts": [],
+                "consume_items": [],
+            },
+        )
+        item["stage_count"] += 1
+        for source, target in [
+            ("faze_id", "faze_ids"),
+            ("effect_type", "effect_types"),
+            ("consume", "consume_items"),
+        ]:
+            text = str(row.get(source) or "").strip()
+            if text and text not in item[target]:
+                item[target].append(text)
+        for code in str(row.get("tip_codes") or "").split(";"):
+            text = code.strip()
+            if text and text not in item["reason_codes"]:
+                item["reason_codes"].append(text)
+        for tip in str(row.get("tip_texts") or "").split(";"):
+            text = tip.strip()
+            if text and text not in item["tip_texts"]:
+                item["tip_texts"].append(text)
+
+    out: list[dict[str, object]] = []
+    for item in grouped.values():
+        out.append(
+            {
+                "gid": item["gid"],
+                "gongfa_name": item["gongfa_name"],
+                "stage_count": item["stage_count"],
+                "faze_count": len(item["faze_ids"]),
+                "effect_types": "、".join(item["effect_types"][:12]),
+                "reason_codes": "、".join(item["reason_codes"][:24]),
+                "tip_texts": "；".join(item["tip_texts"][:12]),
+                "consume_items": "、".join(item["consume_items"][:12]),
+            }
+        )
+    return sorted(out, key=lambda item: _hot_update_int(item.get("gid")) or 0)
+
+
+def _collect_gongfa_special_faze_catalog_effect_type_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        item = grouped.setdefault(
+            effect_type,
+            {
+                "effect_type": effect_type,
+                "stage_count": 0,
+                "gids": [],
+                "gongfa_names": [],
+                "effect_ids": [],
+                "reason_codes": [],
+                "tip_texts": [],
+                "effect_params": [],
+                "effect_attrs": [],
+            },
+        )
+        item["stage_count"] += 1
+        for source, target in [
+            ("gid", "gids"),
+            ("gongfa_name", "gongfa_names"),
+            ("effect_id", "effect_ids"),
+            ("effect_params", "effect_params"),
+            ("effect_attr", "effect_attrs"),
+        ]:
+            text = str(row.get(source) or "").strip()
+            if text and text not in item[target]:
+                item[target].append(text)
+        for code in str(row.get("tip_codes") or "").split(";"):
+            text = code.strip()
+            if text and text not in item["reason_codes"]:
+                item["reason_codes"].append(text)
+        for tip in str(row.get("tip_texts") or "").split(";"):
+            text = tip.strip()
+            if text and text not in item["tip_texts"]:
+                item["tip_texts"].append(text)
+
+    out: list[dict[str, object]] = []
+    for item in grouped.values():
+        out.append(
+            {
+                "effect_type": item["effect_type"],
+                "stage_count": item["stage_count"],
+                "gongfa_count": len(item["gids"]),
+                "effect_id_count": len(item["effect_ids"]),
+                "sample_gongfa": "、".join(item["gongfa_names"][:12]),
+                "sample_effect_ids": "、".join(item["effect_ids"][:16]),
+                "reason_codes": "、".join(item["reason_codes"][:24]),
+                "tip_texts": "；".join(item["tip_texts"][:12]),
+                "effect_params_sample": "；".join(item["effect_params"][:6]),
+                "effect_attr_sample": "；".join(item["effect_attrs"][:6]),
+            }
+        )
+    return sorted(out, key=lambda item: (-int(item["stage_count"]), _hot_update_int(item.get("effect_type")) or 0))
+
+
+def _collect_gongfa_special_faze_catalog_reason_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        pairs = []
+        for part in str(row.get("tip_pairs") or "").split(";"):
+            text = part.strip()
+            if not text:
+                continue
+            code, _sep, label = text.partition("|")
+            pairs.append((code.strip(), label.strip()))
+        if not pairs:
+            pairs = [(code.strip(), "") for code in str(row.get("tip_codes") or "").split(";") if code.strip()]
+        for code, label in pairs:
+            if not code:
+                continue
+            item = grouped.setdefault(
+                code,
+                {
+                    "reason": code,
+                    "stage_count": 0,
+                    "gids": [],
+                    "gongfa_names": [],
+                    "effect_types": [],
+                    "tip_texts": [],
+                },
+            )
+            item["stage_count"] += 1
+            for source, target in [
+                ("gid", "gids"),
+                ("gongfa_name", "gongfa_names"),
+                ("effect_type", "effect_types"),
+            ]:
+                value = str(row.get(source) or "").strip()
+                if value and value not in item[target]:
+                    item[target].append(value)
+            if label and label not in item["tip_texts"]:
+                item["tip_texts"].append(label)
+
+    out: list[dict[str, object]] = []
+    for item in grouped.values():
+        out.append(
+            {
+                "reason": item["reason"],
+                "stage_count": item["stage_count"],
+                "gongfa_count": len(item["gids"]),
+                "effect_types": "、".join(item["effect_types"][:12]),
+                "sample_gongfa": "、".join(item["gongfa_names"][:12]),
+                "tip_texts": "；".join(item["tip_texts"][:12]),
+            }
+        )
+    return sorted(out, key=lambda item: (-int(item["stage_count"]), _hot_update_int(item.get("reason")) or 0))
+
+
+def build_fanxiu_gongfa_special_faze_catalog_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export a wiki-facing catalog for all Special-GongfaJie/Faze chains."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rows = _collect_gongfa_special_faze_catalog_rows(export_base)
+    group_rows = _collect_gongfa_special_faze_catalog_group_rows(rows)
+    effect_type_rows = _collect_gongfa_special_faze_catalog_effect_type_rows(rows)
+    reason_rows = _collect_gongfa_special_faze_catalog_reason_rows(rows)
+    effect_type_counts = Counter(str(row.get("effect_type") or "") for row in rows if str(row.get("effect_type") or ""))
+    reason_codes = sorted(
+        {
+            code.strip()
+            for row in rows
+            for code in str(row.get("tip_codes") or "").split(";")
+            if code.strip()
+        },
+        key=lambda value: _hot_update_int(value) or 0,
+    )
+
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv",
+        [
+            "gid",
+            "gongfa_name",
+            "source_id",
+            "stage",
+            "source_name",
+            "faze_id",
+            "faze_name",
+            "effect_id",
+            "effect_type",
+            "effect_params",
+            "effect_attr",
+            "tip_codes",
+            "tip_texts",
+            "tip_pairs",
+            "consume",
+            "skill",
+            "attr",
+            "describe_preview",
+        ],
+        rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_catalog_groups.tsv",
+        [
+            "gid",
+            "gongfa_name",
+            "stage_count",
+            "faze_count",
+            "effect_types",
+            "reason_codes",
+            "tip_texts",
+            "consume_items",
+        ],
+        group_rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv",
+        [
+            "effect_type",
+            "stage_count",
+            "gongfa_count",
+            "effect_id_count",
+            "sample_gongfa",
+            "sample_effect_ids",
+            "reason_codes",
+            "tip_texts",
+            "effect_params_sample",
+            "effect_attr_sample",
+        ],
+        effect_type_rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv",
+        [
+            "reason",
+            "stage_count",
+            "gongfa_count",
+            "effect_types",
+            "sample_gongfa",
+            "tip_texts",
+        ],
+        reason_rows,
+    )
+
+    lines = [
+        "# GongFa Special Faze Catalog",
+        "",
+        f"- Gongfa groups: `{len(group_rows)}`",
+        f"- Stage rows: `{len(rows)}`",
+        f"- Effect types: `{len(effect_type_rows)}`",
+        f"- Reason codes: `{', '.join(reason_codes[:40])}`",
+        "",
+        "## Groups",
+        "",
+        "| GID | Name | Stages | Effect Types | Reasons | Tips |",
+        "| ---: | --- | ---: | --- | --- | --- |",
+    ]
+    for row in group_rows[:80]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("gid") or ""),
+                    str(row.get("gongfa_name") or ""),
+                    str(row.get("stage_count") or ""),
+                    str(row.get("effect_types") or ""),
+                    str(row.get("reason_codes") or ""),
+                    str(row.get("tip_texts") or ""),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Effect Types",
+            "",
+            "| Type | Stages | Gongfa | Reasons | Tips |",
+            "| ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    for row in effect_type_rows[:30]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("effect_type") or ""),
+                    str(row.get("stage_count") or ""),
+                    str(row.get("gongfa_count") or ""),
+                    str(row.get("reason_codes") or ""),
+                    str(row.get("tip_texts") or ""),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Reasons",
+            "",
+            "| Reason | Stages | Gongfa | Effect Types | Tips |",
+            "| ---: | ---: | ---: | --- | --- |",
+        ]
+    )
+    for row in reason_rows[:30]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(row.get("reason") or ""),
+                    str(row.get("stage_count") or ""),
+                    str(row.get("gongfa_count") or ""),
+                    str(row.get("effect_types") or ""),
+                    str(row.get("tip_texts") or ""),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- This is a static wiki-facing catalog, not proof that formulas execute locally.",
+            "- `Special-GongfaJie.fazeId` closes the ownership chain to `FazeResource.id`, then to `FazeEffectResource.id/type` when `effects` is present.",
+            "- `FazeResource.tipStr` reason codes should be interpreted with the `SM_FazeEffect.reason` client prompt flow.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_catalog_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "counts": {
+            "group_rows": len(group_rows),
+            "stage_rows": len(rows),
+            "effect_type_count": len(effect_type_rows),
+            "reason_code_count": len(reason_rows),
+        },
+        "effect_type_counts": dict(effect_type_counts),
+        "verdict": {
+            "wiki_catalog_ready": bool(rows and group_rows),
+            "static_ownership_chain_closed": bool(rows),
+            "formula_boundary": "server_rule_notification_or_deeper_runtime",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv"),
+            "groups": str(output_dir / "hot_update_gongfa_special_faze_catalog_groups.tsv"),
+            "effect_types": str(output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv"),
+            "reasons": str(output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_catalog_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_catalog_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _split_special_faze_catalog_tokens(value: object) -> list[str]:
+    return [part.strip() for part in re.split(r"[、;,]", str(value or "")) if part.strip()]
+
+
+def _special_faze_catalog_contains(row: dict[str, str], query: str) -> bool:
+    if not query:
+        return True
+    haystack = " ".join(str(value or "") for value in row.values()).lower()
+    return query.lower() in haystack
+
+
+def query_fanxiu_gongfa_special_faze_catalog(
+    *,
+    query: str = "",
+    gid: str | int | None = None,
+    effect_type: str = "",
+    reason: str = "",
+    limit: int = 80,
+    offset: int = 0,
+    export_root: str | os.PathLike[str] | None = None,
+    rebuild_missing: bool = True,
+) -> dict[str, Any]:
+    """Read the generated Special-GongfaJie/Faze catalog in a UI-friendly shape."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    paths = {
+        "rows": output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv",
+        "groups": output_dir / "hot_update_gongfa_special_faze_catalog_groups.tsv",
+        "effect_types": output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv",
+        "reasons": output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv",
+    }
+    if rebuild_missing and any(not path.is_file() for path in paths.values()):
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        raise FanxiuResourceError("Special-GongfaJie/Faze 目录缺少导出文件：" + "；".join(missing))
+
+    group_rows = _read_tsv_rows(paths["groups"])
+    stage_rows = _read_tsv_rows(paths["rows"])
+    effect_type_rows = _read_tsv_rows(paths["effect_types"])
+    reason_rows = _read_tsv_rows(paths["reasons"])
+    normalized_query = str(query or "").strip()
+    normalized_gid = str(gid or "").strip()
+    normalized_effect_type = str(effect_type or "").strip()
+    normalized_reason = str(reason or "").strip()
+    safe_limit = max(1, min(int(limit or 80), 200))
+    safe_offset = max(0, int(offset or 0))
+
+    def group_matches(row: dict[str, str]) -> bool:
+        if normalized_gid and str(row.get("gid") or "") != normalized_gid:
+            return False
+        if normalized_effect_type and normalized_effect_type not in _split_special_faze_catalog_tokens(row.get("effect_types")):
+            return False
+        if normalized_reason and normalized_reason not in _split_special_faze_catalog_tokens(row.get("reason_codes")):
+            return False
+        return _special_faze_catalog_contains(row, normalized_query)
+
+    filtered_groups = [row for row in group_rows if group_matches(row)]
+    page_groups = filtered_groups[safe_offset : safe_offset + safe_limit]
+    selected_gid = normalized_gid or (page_groups[0].get("gid") if page_groups else "")
+
+    def stage_matches(row: dict[str, str]) -> bool:
+        if selected_gid and str(row.get("gid") or "") != selected_gid:
+            return False
+        if normalized_effect_type and str(row.get("effect_type") or "") != normalized_effect_type:
+            return False
+        if normalized_reason and normalized_reason not in _split_special_faze_catalog_tokens(row.get("tip_codes")):
+            return False
+        return _special_faze_catalog_contains(row, normalized_query) or bool(selected_gid)
+
+    selected_stages = [row for row in stage_rows if stage_matches(row)]
+    selected_group = next((row for row in group_rows if str(row.get("gid") or "") == selected_gid), None)
+    selected_effect_types = set(_split_special_faze_catalog_tokens((selected_group or {}).get("effect_types")))
+    selected_reasons = set(_split_special_faze_catalog_tokens((selected_group or {}).get("reason_codes")))
+    related_effect_types = {normalized_effect_type} if normalized_effect_type else selected_effect_types
+    related_reasons = {normalized_reason} if normalized_reason else selected_reasons
+
+    return {
+        "output_dir": str(output_dir),
+        "paths": {key: str(path) for key, path in paths.items()},
+        "filters": {
+            "query": normalized_query,
+            "gid": normalized_gid,
+            "effect_type": normalized_effect_type,
+            "reason": normalized_reason,
+            "limit": safe_limit,
+            "offset": safe_offset,
+        },
+        "counts": {
+            "groups": len(group_rows),
+            "stages": len(stage_rows),
+            "effect_types": len(effect_type_rows),
+            "reasons": len(reason_rows),
+            "filtered_groups": len(filtered_groups),
+            "selected_stages": len(selected_stages),
+        },
+        "groups": page_groups,
+        "selected": {
+            "gid": selected_gid,
+            "group": selected_group,
+            "stages": selected_stages[:200],
+            "effect_types": [row for row in effect_type_rows if str(row.get("effect_type") or "") in related_effect_types],
+            "reasons": [row for row in reason_rows if str(row.get("reason") or "") in related_reasons],
+        },
+        "top_effect_types": effect_type_rows[:30],
+        "top_reasons": reason_rows[:30],
+    }
+
+
+def build_fanxiu_gongfa_special_faze_reason_reuse_probe(
+    *,
+    reason: str | int = "1265",
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export a non-overwriting comparison report for one Special-GongfaJie/Faze reason code."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    reason_text = str(reason or "").strip() or "1265"
+    safe_reason = re.sub(r"[^0-9A-Za-z_-]+", "_", reason_text).strip("_") or "unknown"
+    catalog = query_fanxiu_gongfa_special_faze_catalog(
+        reason=reason_text,
+        limit=200,
+        export_root=export_base,
+    )
+    rows_path = Path(catalog["paths"]["rows"])
+    reasons_path = Path(catalog["paths"]["reasons"])
+    all_stage_rows = _read_tsv_rows(rows_path)
+    all_reason_rows = _read_tsv_rows(reasons_path)
+    group_rows = list(catalog["groups"])
+    group_ids = {str(row.get("gid") or "") for row in group_rows}
+    stage_rows = [
+        row
+        for row in all_stage_rows
+        if str(row.get("gid") or "") in group_ids
+        and reason_text in _split_special_faze_catalog_tokens(row.get("tip_codes"))
+    ]
+    reason_summary = next((row for row in all_reason_rows if str(row.get("reason") or "") == reason_text), {})
+    effect_types = sorted(
+        {str(row.get("effect_type") or "") for row in stage_rows if str(row.get("effect_type") or "")},
+        key=lambda value: _hot_update_int(value) or 0,
+    )
+    prefix = f"hot_update_gongfa_special_faze_reason_reuse_{safe_reason}"
+    _write_tsv(
+        output_dir / f"{prefix}_groups.tsv",
+        ["gid", "gongfa_name", "stage_count", "faze_count", "effect_types", "reason_codes", "tip_texts", "consume_items"],
+        group_rows,
+    )
+    _write_tsv(
+        output_dir / f"{prefix}_stages.tsv",
+        [
+            "gid",
+            "gongfa_name",
+            "source_id",
+            "stage",
+            "source_name",
+            "faze_id",
+            "faze_name",
+            "effect_id",
+            "effect_type",
+            "tip_codes",
+            "tip_texts",
+            "tip_pairs",
+            "consume",
+            "attr",
+            "describe_preview",
+        ],
+        stage_rows,
+    )
+
+    lines = [
+        f"# Special-GongfaJie/Faze Reason {reason_text} Reuse Probe",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Matching Gongfa groups: `{len(group_rows)}`",
+        f"- Matching stage rows: `{len(stage_rows)}`",
+        f"- Effect types: `{'、'.join(effect_types)}`",
+        "",
+        "## Reason Summary",
+        "",
+        "| Reason | Stages | Gongfa | Effect Types | Tips |",
+        "| ---: | ---: | ---: | --- | --- |",
+        "| "
+        + " | ".join(
+            [
+                _markdown_table_cell(reason_summary.get("reason", reason_text)),
+                _markdown_table_cell(reason_summary.get("stage_count", len(stage_rows))),
+                _markdown_table_cell(reason_summary.get("gongfa_count", len(group_rows))),
+                _markdown_table_cell(reason_summary.get("effect_types", "、".join(effect_types))),
+                _markdown_table_cell(reason_summary.get("tip_texts", "")),
+            ]
+        )
+        + " |",
+        "",
+        "## Matching Groups",
+        "",
+        "| GID | Gongfa | Stages | Effect Types | Reasons | Tips |",
+        "| ---: | --- | ---: | --- | --- | --- |",
+    ]
+    for row in group_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("gid", "")),
+                    _markdown_table_cell(row.get("gongfa_name", "")),
+                    _markdown_table_cell(row.get("stage_count", "")),
+                    _markdown_table_cell(row.get("effect_types", "")),
+                    _markdown_table_cell(row.get("reason_codes", "")),
+                    _markdown_table_cell(row.get("tip_texts", "")),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Stage Samples",
+            "",
+            "| GID | Gongfa | Stage | Faze | Effect Type | Tips |",
+            "| ---: | --- | --- | --- | ---: | --- |",
+        ]
+    )
+    for row in stage_rows[:40]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("gid", "")),
+                    _markdown_table_cell(row.get("gongfa_name", "")),
+                    _markdown_table_cell(row.get("stage", "")),
+                    _markdown_table_cell(row.get("faze_name", "")),
+                    _markdown_table_cell(row.get("effect_type", "")),
+                    _markdown_table_cell(row.get("tip_texts", "")),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- This report compares reuse of one `SM_FazeEffect.reason` label across Special-GongfaJie/Faze chains.",
+            "- It is non-overwriting: filenames include the reason code, so focused reports for `玄魔大法` remain intact.",
+            "- It still proves prompt/config ownership only; local numeric formulas remain outside the visible Special-GongfaJie/Faze static surface.",
+        ]
+    )
+    markdown_path = output_dir / f"{prefix}_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "filters": {"reason": reason_text},
+        "counts": {
+            "groups": len(group_rows),
+            "stages": len(stage_rows),
+            "effect_types": len(effect_types),
+        },
+        "verdict": {
+            "reason_reuse_found": len(group_rows) > 1,
+            "non_overwriting_report": True,
+            "formula_boundary": "server_rule_notification_or_deeper_runtime",
+        },
+        "outputs": {
+            "groups": str(output_dir / f"{prefix}_groups.tsv"),
+            "stages": str(output_dir / f"{prefix}_stages.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / f"{prefix}_report.json"),
+        },
+    }
+    (output_dir / f"{prefix}_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _normalize_special_faze_reason_tip_labels(tip_texts: object) -> list[str]:
+    labels: list[str] = []
+    for part in re.split(r"[；;]", str(tip_texts or "")):
+        text = part.strip()
+        if not text:
+            continue
+        if "：" in text:
+            text = text.split("：", 1)[1].strip()
+        elif ":" in text:
+            text = text.split(":", 1)[1].strip()
+        if text and text not in labels:
+            labels.append(text)
+    return labels
+
+
+def _special_faze_reason_reuse_class(gongfa_count: int, effect_type_count: int, label_count: int) -> str:
+    if gongfa_count <= 1:
+        return "single_gongfa"
+    if effect_type_count > 1 and label_count > 1:
+        return "shared_reason_multi_effect_multi_label"
+    if effect_type_count > 1:
+        return "shared_reason_multi_effect"
+    if label_count > 1:
+        return "shared_reason_same_effect_multi_label"
+    return "shared_reason_same_effect"
+
+
+def build_fanxiu_gongfa_special_faze_reason_reuse_index_probe(
+    *,
+    min_gongfa_count: int = 2,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export a global reuse index for Special-GongfaJie/Faze reason codes."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    reasons_path = output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv"
+    if not reasons_path.is_file():
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    if not reasons_path.is_file():
+        raise FanxiuResourceError(f"缺少 Special-GongfaJie/Faze reason 目录：{reasons_path}")
+
+    threshold = max(1, int(min_gongfa_count or 2))
+    reason_rows = _read_tsv_rows(reasons_path)
+    indexed_rows: list[dict[str, object]] = []
+    for row in reason_rows:
+        gongfa_count = _hot_update_int(row.get("gongfa_count")) or 0
+        if gongfa_count < threshold:
+            continue
+        effect_types = _split_special_faze_catalog_tokens(row.get("effect_types"))
+        labels = _normalize_special_faze_reason_tip_labels(row.get("tip_texts"))
+        label_count = len(labels)
+        effect_type_count = len(effect_types)
+        indexed_rows.append(
+            {
+                "reason": row.get("reason", ""),
+                "stage_count": row.get("stage_count", ""),
+                "gongfa_count": gongfa_count,
+                "effect_type_count": effect_type_count,
+                "label_count": label_count,
+                "reuse_class": _special_faze_reason_reuse_class(gongfa_count, effect_type_count, label_count),
+                "effect_types": row.get("effect_types", ""),
+                "sample_gongfa": row.get("sample_gongfa", ""),
+                "normalized_labels": "；".join(labels[:16]),
+                "tip_texts": row.get("tip_texts", ""),
+            }
+        )
+    indexed_rows.sort(
+        key=lambda item: (
+            -int(item.get("gongfa_count") or 0),
+            -int(item.get("stage_count") or 0),
+            _hot_update_int(item.get("reason")) or 0,
+        )
+    )
+
+    class_counts = Counter(str(row.get("reuse_class") or "") for row in indexed_rows)
+    output_path = output_dir / "hot_update_gongfa_special_faze_reason_reuse_index.tsv"
+    _write_tsv(
+        output_path,
+        [
+            "reason",
+            "stage_count",
+            "gongfa_count",
+            "effect_type_count",
+            "label_count",
+            "reuse_class",
+            "effect_types",
+            "sample_gongfa",
+            "normalized_labels",
+            "tip_texts",
+        ],
+        indexed_rows,
+    )
+
+    lines = [
+        "# Special-GongfaJie/Faze Reason Reuse Index",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Source: `{reasons_path}`",
+        f"- Min Gongfa count: `{threshold}`",
+        f"- Shared reason rows: `{len(indexed_rows)}`",
+        "",
+        "## Reuse Classes",
+        "",
+        "| Class | Count |",
+        "| --- | ---: |",
+    ]
+    for key, count in class_counts.most_common():
+        lines.append(f"| {_markdown_table_cell(key)} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Top Shared Reasons",
+            "",
+            "| Reason | Gongfa | Stages | Effect Types | Labels | Class | Sample Gongfa | Normalized Labels |",
+            "| ---: | ---: | ---: | ---: | ---: | --- | --- | --- |",
+        ]
+    )
+    for row in indexed_rows[:60]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("reason", "")),
+                    _markdown_table_cell(row.get("gongfa_count", "")),
+                    _markdown_table_cell(row.get("stage_count", "")),
+                    _markdown_table_cell(row.get("effect_type_count", "")),
+                    _markdown_table_cell(row.get("label_count", "")),
+                    _markdown_table_cell(row.get("reuse_class", "")),
+                    _markdown_table_cell(row.get("sample_gongfa", ""), limit=120),
+                    _markdown_table_cell(row.get("normalized_labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- Reason codes with many Gongfa groups are usually shared prompt/reward vocabulary, not unique formula ownership.",
+            "- A reason shared across multiple effect types is especially weak as proof of a single local algorithm.",
+            "- Use focused per-reason reports only when a specific label needs drill-down; this index is the first triage table.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_reason_reuse_index_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "filters": {"min_gongfa_count": threshold},
+        "counts": {
+            "source_reasons": len(reason_rows),
+            "shared_reasons": len(indexed_rows),
+            "reuse_classes": dict(class_counts),
+        },
+        "verdict": {
+            "shared_reason_index_ready": bool(indexed_rows),
+            "formula_boundary": "shared_reason_prompt_vocab_not_unique_formula",
+        },
+        "outputs": {
+            "rows": str(output_path),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_reason_reuse_index_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_reason_reuse_index_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _special_faze_effect_payload_class(effect_params: Iterable[str], effect_attrs: Iterable[str]) -> str:
+    has_params = any(str(value or "").strip() for value in effect_params)
+    has_attrs = any(str(value or "").strip() for value in effect_attrs)
+    if has_params and has_attrs:
+        return "params_and_attr_payload"
+    if has_params:
+        return "params_payload"
+    if has_attrs:
+        return "attr_payload"
+    return "no_visible_payload"
+
+
+def _special_faze_effect_ownership_class(
+    *,
+    gongfa_count: int,
+    payload_class: str,
+    shared_reason_count: int,
+) -> str:
+    has_payload = payload_class != "no_visible_payload"
+    if gongfa_count <= 1:
+        if shared_reason_count:
+            return "unique_type_with_shared_reason_vocab"
+        if has_payload:
+            return "unique_type_with_payload"
+        return "unique_type_no_visible_payload"
+    if shared_reason_count and has_payload:
+        return "shared_type_with_payload_and_shared_reason_vocab"
+    if shared_reason_count:
+        return "shared_type_with_shared_reason_vocab"
+    if has_payload:
+        return "shared_type_with_payload"
+    return "shared_type_no_visible_payload"
+
+
+def build_fanxiu_gongfa_special_faze_effect_type_index_probe(
+    *,
+    min_stage_count: int = 1,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export an ownership/payload index for Special-GongfaJie/Faze effect types."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    paths = {
+        "rows": output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv",
+        "effect_types": output_dir / "hot_update_gongfa_special_faze_catalog_effect_types.tsv",
+        "reasons": output_dir / "hot_update_gongfa_special_faze_catalog_reasons.tsv",
+    }
+    if any(not path.is_file() for path in paths.values()):
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    missing = [str(path) for path in paths.values() if not path.is_file()]
+    if missing:
+        raise FanxiuResourceError("Special-GongfaJie/Faze effect_type 目录缺少导出文件：" + "；".join(missing))
+
+    threshold = max(1, int(min_stage_count or 1))
+    stage_rows = _read_tsv_rows(paths["rows"])
+    reason_rows = _read_tsv_rows(paths["reasons"])
+    reason_gongfa_counts = {
+        str(row.get("reason") or ""): _hot_update_int(row.get("gongfa_count")) or 0
+        for row in reason_rows
+    }
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in stage_rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        item = grouped.setdefault(
+            effect_type,
+            {
+                "effect_type": effect_type,
+                "stage_count": 0,
+                "gids": [],
+                "gongfa_names": [],
+                "effect_ids": [],
+                "reason_codes": [],
+                "shared_reason_codes": [],
+                "tip_labels": [],
+                "effect_params": [],
+                "effect_attrs": [],
+            },
+        )
+        item["stage_count"] += 1
+        for source, target in [
+            ("gid", "gids"),
+            ("gongfa_name", "gongfa_names"),
+            ("effect_id", "effect_ids"),
+        ]:
+            value = str(row.get(source) or "").strip()
+            if value and value not in item[target]:
+                item[target].append(value)
+        for code in _split_special_faze_catalog_tokens(row.get("tip_codes")):
+            if code not in item["reason_codes"]:
+                item["reason_codes"].append(code)
+            if reason_gongfa_counts.get(code, 0) > 1 and code not in item["shared_reason_codes"]:
+                item["shared_reason_codes"].append(code)
+        for label in _normalize_special_faze_reason_tip_labels(row.get("tip_texts")):
+            if label and label not in item["tip_labels"]:
+                item["tip_labels"].append(label)
+        for source, target in [("effect_params", "effect_params"), ("effect_attr", "effect_attrs")]:
+            value = str(row.get(source) or "").strip()
+            if value and value not in item[target]:
+                item[target].append(value)
+
+    rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        if int(item["stage_count"]) < threshold:
+            continue
+        payload_class = _special_faze_effect_payload_class(item["effect_params"], item["effect_attrs"])
+        gongfa_count = len(item["gids"])
+        shared_reason_count = len(item["shared_reason_codes"])
+        ownership_class = _special_faze_effect_ownership_class(
+            gongfa_count=gongfa_count,
+            payload_class=payload_class,
+            shared_reason_count=shared_reason_count,
+        )
+        rows.append(
+            {
+                "effect_type": item["effect_type"],
+                "stage_count": item["stage_count"],
+                "gongfa_count": gongfa_count,
+                "effect_id_count": len(item["effect_ids"]),
+                "reason_count": len(item["reason_codes"]),
+                "shared_reason_count": shared_reason_count,
+                "ownership_class": ownership_class,
+                "payload_class": payload_class,
+                "sample_gongfa": "、".join(item["gongfa_names"][:12]),
+                "sample_effect_ids": "、".join(item["effect_ids"][:16]),
+                "reason_codes": "、".join(item["reason_codes"][:24]),
+                "shared_reason_codes": "、".join(item["shared_reason_codes"][:24]),
+                "normalized_labels": "；".join(item["tip_labels"][:16]),
+                "effect_params_sample": "；".join(item["effect_params"][:8]),
+                "effect_attr_sample": "；".join(item["effect_attrs"][:8]),
+            }
+        )
+    rows.sort(
+        key=lambda item: (
+            -int(item.get("stage_count") or 0),
+            -int(item.get("gongfa_count") or 0),
+            _hot_update_int(item.get("effect_type")) or 0,
+        )
+    )
+    ownership_counts = Counter(str(row.get("ownership_class") or "") for row in rows)
+    payload_counts = Counter(str(row.get("payload_class") or "") for row in rows)
+    output_path = output_dir / "hot_update_gongfa_special_faze_effect_type_index.tsv"
+    _write_tsv(
+        output_path,
+        [
+            "effect_type",
+            "stage_count",
+            "gongfa_count",
+            "effect_id_count",
+            "reason_count",
+            "shared_reason_count",
+            "ownership_class",
+            "payload_class",
+            "sample_gongfa",
+            "sample_effect_ids",
+            "reason_codes",
+            "shared_reason_codes",
+            "normalized_labels",
+            "effect_params_sample",
+            "effect_attr_sample",
+        ],
+        rows,
+    )
+
+    xuanmo_row = next((row for row in rows if str(row.get("effect_type") or "") == "804"), {})
+    lines = [
+        "# Special-GongfaJie/Faze Effect Type Index",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Source rows: `{paths['rows']}`",
+        f"- Min stage count: `{threshold}`",
+        f"- Effect type rows: `{len(rows)}`",
+        "",
+        "## Ownership Classes",
+        "",
+        "| Class | Count |",
+        "| --- | ---: |",
+    ]
+    for key, count in ownership_counts.most_common():
+        lines.append(f"| {_markdown_table_cell(key)} | {count} |")
+    lines.extend(["", "## Payload Classes", "", "| Class | Count |", "| --- | ---: |"])
+    for key, count in payload_counts.most_common():
+        lines.append(f"| {_markdown_table_cell(key)} | {count} |")
+    if xuanmo_row:
+        lines.extend(
+            [
+                "",
+                "## Focus: Effect Type 804",
+                "",
+                "| Effect Type | Gongfa | Stages | Ownership | Payload | Shared Reasons | Labels |",
+                "| ---: | --- | ---: | --- | --- | --- | --- |",
+                "| "
+                + " | ".join(
+                    [
+                        _markdown_table_cell(xuanmo_row.get("effect_type", "")),
+                        _markdown_table_cell(xuanmo_row.get("sample_gongfa", "")),
+                        _markdown_table_cell(xuanmo_row.get("stage_count", "")),
+                        _markdown_table_cell(xuanmo_row.get("ownership_class", "")),
+                        _markdown_table_cell(xuanmo_row.get("payload_class", "")),
+                        _markdown_table_cell(xuanmo_row.get("shared_reason_codes", "")),
+                        _markdown_table_cell(xuanmo_row.get("normalized_labels", ""), limit=180),
+                    ]
+                )
+                + " |",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Unique Effect Types With Payload",
+            "",
+            "| Effect Type | Gongfa | Stages | Payload | Reasons | Labels | Payload Sample |",
+            "| ---: | --- | ---: | --- | --- | --- | --- |",
+        ]
+    )
+    for row in [
+        row
+        for row in rows
+        if str(row.get("ownership_class") or "") == "unique_type_with_payload"
+    ][:40]:
+        payload_sample = str(row.get("effect_attr_sample") or row.get("effect_params_sample") or "")
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("effect_type", "")),
+                    _markdown_table_cell(row.get("sample_gongfa", "")),
+                    _markdown_table_cell(row.get("stage_count", "")),
+                    _markdown_table_cell(row.get("payload_class", "")),
+                    _markdown_table_cell(row.get("reason_codes", "")),
+                    _markdown_table_cell(row.get("normalized_labels", ""), limit=160),
+                    _markdown_table_cell(payload_sample, limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Shared Effect Types",
+            "",
+            "| Effect Type | Gongfa Count | Stages | Ownership | Shared Reasons | Sample Gongfa | Labels |",
+            "| ---: | ---: | ---: | --- | --- | --- | --- |",
+        ]
+    )
+    for row in [row for row in rows if int(row.get("gongfa_count") or 0) > 1][:40]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("effect_type", "")),
+                    _markdown_table_cell(row.get("gongfa_count", "")),
+                    _markdown_table_cell(row.get("stage_count", "")),
+                    _markdown_table_cell(row.get("ownership_class", "")),
+                    _markdown_table_cell(row.get("shared_reason_codes", "")),
+                    _markdown_table_cell(row.get("sample_gongfa", ""), limit=140),
+                    _markdown_table_cell(row.get("normalized_labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- Effect type is a better first grouping key than reason when searching for mechanism ownership.",
+            "- A unique effect type with payload is a stronger static lead than a high-frequency shared reason label.",
+            "- A unique effect type with shared reason vocabulary, such as `804`, should be read as a unique mechanism cluster using common prompt labels, not as proof that the reason label owns the formula.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_effect_type_index_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "filters": {"min_stage_count": threshold},
+        "counts": {
+            "effect_types": len(rows),
+            "ownership_classes": dict(ownership_counts),
+            "payload_classes": dict(payload_counts),
+        },
+        "focus": {"effect_type_804": xuanmo_row},
+        "verdict": {
+            "effect_type_index_ready": bool(rows),
+            "xuanmo_effect_type_unique": bool(xuanmo_row) and int(xuanmo_row.get("gongfa_count") or 0) == 1,
+            "formula_boundary": "effect_type_clusters_mechanisms_reason_labels_are_prompt_vocab",
+        },
+        "outputs": {
+            "rows": str(output_path),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_effect_type_index_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_effect_type_index_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _parse_special_faze_effect_attr_map(raw: object) -> dict[str, object]:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key): value for key, value in data.items()}
+
+
+def _special_faze_attr_key_family(key: str) -> str:
+    if key in {"ATK_RATE", "MAXHP_RATE", "REALM_RATE"}:
+        return "base_attribute_rate"
+    if key in {"SKILL_DAMAGE_RATE", "ALL_SKILL_DAMAGE_RATE", "LINGBAO_DAMAGE_INCREASE_RATE"}:
+        return "skill_or_lingbao_damage_rate"
+    if key in {"VIOLENT_ADDDAMAGE", "DEADLY_ADDDAMAGE_NEW"}:
+        return "critical_or_extra_damage"
+    if key.endswith("_ASSEMBLY_RATE"):
+        return "assembly_rate"
+    if key == "PET_ULTRA_RATE":
+        return "pet_ultra_rate"
+    return "unknown_attr_rate"
+
+
+def build_fanxiu_gongfa_special_faze_attr_key_index_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export a static index of Special-GongfaJie/Faze effect_attr keys."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    rows_path = output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv"
+    if not rows_path.is_file():
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    if not rows_path.is_file():
+        raise FanxiuResourceError(f"缺少 Special-GongfaJie/Faze stage 目录：{rows_path}")
+
+    stage_rows = _read_tsv_rows(rows_path)
+    grouped: dict[str, dict[str, Any]] = {}
+    detail_rows: list[dict[str, object]] = []
+    nonempty_attr_rows = 0
+    parsed_attr_rows = 0
+    for row in stage_rows:
+        attr_map = _parse_special_faze_effect_attr_map(row.get("effect_attr"))
+        if str(row.get("effect_attr") or "").strip():
+            nonempty_attr_rows += 1
+        if attr_map:
+            parsed_attr_rows += 1
+        for key, value in attr_map.items():
+            effect_type = str(row.get("effect_type") or "").strip()
+            gongfa_name = str(row.get("gongfa_name") or "").strip()
+            value_text = str(value)
+            item = grouped.setdefault(
+                key,
+                {
+                    "attr_key": key,
+                    "row_count": 0,
+                    "effect_types": [],
+                    "gongfa_names": [],
+                    "values": [],
+                    "numeric_values": [],
+                    "non_numeric_values": [],
+                    "labels": [],
+                },
+            )
+            item["row_count"] += 1
+            for value_to_add, target in [
+                (effect_type, "effect_types"),
+                (gongfa_name, "gongfa_names"),
+                (value_text, "values"),
+            ]:
+                if value_to_add and value_to_add not in item[target]:
+                    item[target].append(value_to_add)
+            numeric_value = _hot_update_int(value)
+            if numeric_value is not None:
+                item["numeric_values"].append(numeric_value)
+            elif value_text and value_text not in item["non_numeric_values"]:
+                item["non_numeric_values"].append(value_text)
+            for label in _normalize_special_faze_reason_tip_labels(row.get("tip_texts")):
+                if label and label not in item["labels"]:
+                    item["labels"].append(label)
+            detail_rows.append(
+                {
+                    "attr_key": key,
+                    "attr_family": _special_faze_attr_key_family(key),
+                    "value": value_text,
+                    "gid": row.get("gid", ""),
+                    "gongfa_name": gongfa_name,
+                    "stage": row.get("stage", ""),
+                    "effect_type": effect_type,
+                    "effect_id": row.get("effect_id", ""),
+                    "tip_codes": row.get("tip_codes", ""),
+                    "tip_texts": row.get("tip_texts", ""),
+                    "effect_params": row.get("effect_params", ""),
+                }
+            )
+
+    key_rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        numeric_values = list(item["numeric_values"])
+        non_numeric_values = list(item["non_numeric_values"])
+        key_rows.append(
+            {
+                "attr_key": item["attr_key"],
+                "attr_family": _special_faze_attr_key_family(str(item["attr_key"])),
+                "row_count": item["row_count"],
+                "effect_type_count": len(item["effect_types"]),
+                "gongfa_count": len(item["gongfa_names"]),
+                "numeric_value_count": len(numeric_values),
+                "numeric_min": min(numeric_values) if numeric_values else "",
+                "numeric_max": max(numeric_values) if numeric_values else "",
+                "non_numeric_sample": "、".join(non_numeric_values[:12]),
+                "sample_effect_types": "、".join(item["effect_types"][:16]),
+                "sample_gongfa": "、".join(item["gongfa_names"][:16]),
+                "sample_values": "、".join(item["values"][:16]),
+                "sample_labels": "；".join(item["labels"][:12]),
+            }
+        )
+    key_rows.sort(
+        key=lambda item: (
+            -int(item.get("row_count") or 0),
+            str(item.get("attr_key") or ""),
+        )
+    )
+    detail_rows.sort(
+        key=lambda item: (
+            str(item.get("attr_key") or ""),
+            _hot_update_int(item.get("effect_type")) or 0,
+            _hot_update_int(item.get("effect_id")) or 0,
+        )
+    )
+    family_counts = Counter(str(row.get("attr_family") or "") for row in key_rows)
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_attr_key_index.tsv",
+        [
+            "attr_key",
+            "attr_family",
+            "row_count",
+            "effect_type_count",
+            "gongfa_count",
+            "numeric_value_count",
+            "numeric_min",
+            "numeric_max",
+            "non_numeric_sample",
+            "sample_effect_types",
+            "sample_gongfa",
+            "sample_values",
+            "sample_labels",
+        ],
+        key_rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_attr_key_detail.tsv",
+        [
+            "attr_key",
+            "attr_family",
+            "value",
+            "gid",
+            "gongfa_name",
+            "stage",
+            "effect_type",
+            "effect_id",
+            "tip_codes",
+            "tip_texts",
+            "effect_params",
+        ],
+        detail_rows,
+    )
+
+    lines = [
+        "# Special-GongfaJie/Faze Effect Attr Key Index",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Source rows: `{rows_path}`",
+        f"- Stage rows: `{len(stage_rows)}`",
+        f"- Non-empty effect_attr rows: `{nonempty_attr_rows}`",
+        f"- Parsed effect_attr rows: `{parsed_attr_rows}`",
+        f"- Unique attr keys: `{len(key_rows)}`",
+        "",
+        "## Attr Families",
+        "",
+        "| Family | Keys |",
+        "| --- | ---: |",
+    ]
+    for key, count in family_counts.most_common():
+        lines.append(f"| {_markdown_table_cell(key)} | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Attr Keys",
+            "",
+            "| Attr Key | Family | Rows | Effect Types | Gongfa | Numeric Range | Sample Gongfa | Labels |",
+            "| --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+        ]
+    )
+    for row in key_rows:
+        numeric_range = ""
+        if row.get("numeric_min") != "":
+            numeric_range = f"{row.get('numeric_min')}..{row.get('numeric_max')}"
+        if row.get("non_numeric_sample"):
+            numeric_range = (numeric_range + " / " if numeric_range else "") + f"non-numeric: {row.get('non_numeric_sample')}"
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("attr_key", "")),
+                    _markdown_table_cell(row.get("attr_family", "")),
+                    _markdown_table_cell(row.get("row_count", "")),
+                    _markdown_table_cell(row.get("effect_type_count", "")),
+                    _markdown_table_cell(row.get("gongfa_count", "")),
+                    _markdown_table_cell(numeric_range, limit=120),
+                    _markdown_table_cell(row.get("sample_gongfa", ""), limit=140),
+                    _markdown_table_cell(row.get("sample_labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- `effect_attr` is fully parseable as JSON in the current Special-GongfaJie/Faze catalog.",
+            "- Attr keys expose the strongest static numeric payload surface for this family; they are config/display evidence, not proof of client authority.",
+            "- `玄魔大法` effect type `804` does not appear here because it has no visible `effect_attr` payload.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_attr_key_index_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "stage_rows": len(stage_rows),
+            "nonempty_effect_attr_rows": nonempty_attr_rows,
+            "parsed_effect_attr_rows": parsed_attr_rows,
+            "attr_keys": len(key_rows),
+            "detail_rows": len(detail_rows),
+            "attr_families": dict(family_counts),
+        },
+        "verdict": {
+            "attr_key_index_ready": bool(key_rows),
+            "all_nonempty_effect_attrs_parse": nonempty_attr_rows == parsed_attr_rows,
+            "xuanmo_804_has_visible_attr_payload": any(
+                str(row.get("effect_type") or "") == "804" for row in detail_rows
+            ),
+            "formula_boundary": "effect_attr_is_static_payload_not_client_authority",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_attr_key_index.tsv"),
+            "detail": str(output_dir / "hot_update_gongfa_special_faze_attr_key_detail.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_attr_key_index_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_attr_key_index_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _classify_special_faze_effect_params(raw: object) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return "empty"
+    if "Item|" in text:
+        if "#" in text:
+            return "item_hash_params"
+        if "," in text:
+            return "item_list_params"
+        return "single_item_param"
+    if "#" in text:
+        return "hash_numeric_params"
+    if "," in text:
+        return "comma_numeric_params"
+    if "_" in text:
+        return "underscore_numeric_params"
+    if re.fullmatch(r"-?\d+", text):
+        return "single_numeric_param"
+    return "other_text_params"
+
+
+def _special_faze_param_tokens(raw: object) -> tuple[list[str], list[str]]:
+    text = str(raw or "")
+    item_refs = list(dict.fromkeys(re.findall(r"Item\|\d+", text)))
+    numeric_tokens = list(dict.fromkeys(re.findall(r"\d+", text)))
+    return item_refs, numeric_tokens
+
+
+def build_fanxiu_gongfa_special_faze_param_shape_index_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Export a pattern index for non-JSON Special-GongfaJie/Faze effect_params strings."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    rows_path = output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv"
+    if not rows_path.is_file():
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    if not rows_path.is_file():
+        raise FanxiuResourceError(f"缺少 Special-GongfaJie/Faze stage 目录：{rows_path}")
+
+    stage_rows = _read_tsv_rows(rows_path)
+    grouped: dict[str, dict[str, Any]] = {}
+    detail_rows: list[dict[str, object]] = []
+    nonempty_param_rows = 0
+    separator_counts: Counter[str] = Counter()
+    item_token_counts: Counter[str] = Counter()
+    numeric_token_counts: Counter[str] = Counter()
+    for row in stage_rows:
+        params = str(row.get("effect_params") or "").strip()
+        if not params:
+            continue
+        nonempty_param_rows += 1
+        param_class = _classify_special_faze_effect_params(params)
+        item_refs, numeric_tokens = _special_faze_param_tokens(params)
+        for sep in ("#", ",", "_", "Item|"):
+            if sep in params:
+                separator_counts[sep] += 1
+        item_token_counts.update(item_refs)
+        numeric_token_counts.update(numeric_tokens)
+        effect_type = str(row.get("effect_type") or "").strip()
+        gongfa_name = str(row.get("gongfa_name") or "").strip()
+        item = grouped.setdefault(
+            param_class,
+            {
+                "param_class": param_class,
+                "row_count": 0,
+                "effect_types": [],
+                "gongfa_names": [],
+                "samples": [],
+                "labels": [],
+                "item_refs": [],
+                "numeric_tokens": [],
+            },
+        )
+        item["row_count"] += 1
+        for value, target in [
+            (effect_type, "effect_types"),
+            (gongfa_name, "gongfa_names"),
+        ]:
+            if value and value not in item[target]:
+                item[target].append(value)
+        if params and params not in item["samples"]:
+            item["samples"].append(params)
+        for label in _normalize_special_faze_reason_tip_labels(row.get("tip_texts")):
+            if label and label not in item["labels"]:
+                item["labels"].append(label)
+        for value, target in [(item_refs, "item_refs"), (numeric_tokens, "numeric_tokens")]:
+            for token in value:
+                if token and token not in item[target]:
+                    item[target].append(token)
+        detail_rows.append(
+            {
+                "param_class": param_class,
+                "gid": row.get("gid", ""),
+                "gongfa_name": gongfa_name,
+                "stage": row.get("stage", ""),
+                "effect_type": effect_type,
+                "effect_id": row.get("effect_id", ""),
+                "effect_params": params,
+                "item_refs": "、".join(item_refs),
+                "numeric_tokens": "、".join(numeric_tokens[:30]),
+                "tip_codes": row.get("tip_codes", ""),
+                "tip_texts": row.get("tip_texts", ""),
+                "effect_attr": row.get("effect_attr", ""),
+            }
+        )
+
+    pattern_rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        pattern_rows.append(
+            {
+                "param_class": item["param_class"],
+                "row_count": item["row_count"],
+                "effect_type_count": len(item["effect_types"]),
+                "gongfa_count": len(item["gongfa_names"]),
+                "sample_effect_types": "、".join(item["effect_types"][:16]),
+                "sample_gongfa": "、".join(item["gongfa_names"][:16]),
+                "sample_params": "；".join(item["samples"][:8]),
+                "sample_item_refs": "、".join(item["item_refs"][:16]),
+                "sample_numeric_tokens": "、".join(item["numeric_tokens"][:24]),
+                "sample_labels": "；".join(item["labels"][:12]),
+            }
+        )
+    pattern_rows.sort(key=lambda item: (-int(item.get("row_count") or 0), str(item.get("param_class") or "")))
+    detail_rows.sort(
+        key=lambda item: (
+            str(item.get("param_class") or ""),
+            _hot_update_int(item.get("effect_type")) or 0,
+            _hot_update_int(item.get("effect_id")) or 0,
+        )
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_param_shape_index.tsv",
+        [
+            "param_class",
+            "row_count",
+            "effect_type_count",
+            "gongfa_count",
+            "sample_effect_types",
+            "sample_gongfa",
+            "sample_params",
+            "sample_item_refs",
+            "sample_numeric_tokens",
+            "sample_labels",
+        ],
+        pattern_rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_param_shape_detail.tsv",
+        [
+            "param_class",
+            "gid",
+            "gongfa_name",
+            "stage",
+            "effect_type",
+            "effect_id",
+            "effect_params",
+            "item_refs",
+            "numeric_tokens",
+            "tip_codes",
+            "tip_texts",
+            "effect_attr",
+        ],
+        detail_rows,
+    )
+
+    lines = [
+        "# Special-GongfaJie/Faze Effect Params Shape Index",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Source rows: `{rows_path}`",
+        f"- Stage rows: `{len(stage_rows)}`",
+        f"- Non-empty effect_params rows: `{nonempty_param_rows}`",
+        f"- Param classes: `{len(pattern_rows)}`",
+        "",
+        "## Param Classes",
+        "",
+        "| Class | Rows | Effect Types | Gongfa | Sample Gongfa | Sample Params | Labels |",
+        "| --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for row in pattern_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("param_class", "")),
+                    _markdown_table_cell(row.get("row_count", "")),
+                    _markdown_table_cell(row.get("effect_type_count", "")),
+                    _markdown_table_cell(row.get("gongfa_count", "")),
+                    _markdown_table_cell(row.get("sample_gongfa", ""), limit=140),
+                    _markdown_table_cell(row.get("sample_params", ""), limit=180),
+                    _markdown_table_cell(row.get("sample_labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Separators",
+            "",
+            "| Separator | Rows |",
+            "| --- | ---: |",
+        ]
+    )
+    for key, count in separator_counts.most_common():
+        lines.append(f"| `{_markdown_table_cell(key)}` | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Top Item Refs",
+            "",
+            "| Item Ref | Count |",
+            "| --- | ---: |",
+        ]
+    )
+    for key, count in item_token_counts.most_common(20):
+        lines.append(f"| `{_markdown_table_cell(key)}` | {count} |")
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- `effect_params` is not one uniform schema; it is a compact string parameter surface with several recurring encodings.",
+            "- Item-bearing classes (`item_hash_params`, `item_list_params`, `single_item_param`) are useful for reward/wiki expansion.",
+            "- Numeric-only classes are useful mechanism leads, but still static config payload rather than proof of client authority.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_param_shape_index_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "stage_rows": len(stage_rows),
+            "nonempty_effect_params_rows": nonempty_param_rows,
+            "param_classes": len(pattern_rows),
+            "detail_rows": len(detail_rows),
+            "separator_counts": dict(separator_counts),
+            "top_item_refs": dict(item_token_counts.most_common(20)),
+            "top_numeric_tokens": dict(numeric_token_counts.most_common(20)),
+        },
+        "verdict": {
+            "param_shape_index_ready": bool(pattern_rows),
+            "xuanmo_804_has_visible_params_payload": any(
+                str(row.get("effect_type") or "") == "804" for row in detail_rows
+            ),
+            "formula_boundary": "effect_params_is_static_compact_payload_not_client_authority",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_param_shape_index.tsv"),
+            "detail": str(output_dir / "hot_update_gongfa_special_faze_param_shape_detail.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_param_shape_index_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_param_shape_index_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _extract_special_faze_param_item_refs(raw: object) -> list[dict[str, object]]:
+    refs: list[dict[str, object]] = []
+    for match in re.finditer(r"(?i)Item\|(\d+)(?:_(\d+))?", str(raw or "")):
+        item_id = int(match.group(1))
+        count = int(match.group(2)) if match.group(2) is not None else 1
+        refs.append({"raw": match.group(0), "item_id": item_id, "count": count})
+    return refs
+
+
+def build_fanxiu_gongfa_special_faze_param_item_ref_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Resolve Item refs embedded in Special-GongfaJie/Faze effect_params strings."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    rows_path = output_dir / "hot_update_gongfa_special_faze_catalog_rows.tsv"
+    if not rows_path.is_file():
+        build_fanxiu_gongfa_special_faze_catalog_probe(export_root=export_base)
+    if not rows_path.is_file():
+        raise FanxiuResourceError(f"缺少 Special-GongfaJie/Faze stage 目录：{rows_path}")
+
+    item_by_id = _faze_row_by_id(_load_parsed_config_rows(export_base, "Item"))
+    stage_rows = _read_tsv_rows(rows_path)
+    grouped: dict[int, dict[str, Any]] = {}
+    detail_rows: list[dict[str, object]] = []
+    rows_with_item_refs = 0
+    unresolved_refs = 0
+    for row in stage_rows:
+        params = str(row.get("effect_params") or "").strip()
+        refs = _extract_special_faze_param_item_refs(params)
+        if not refs:
+            continue
+        rows_with_item_refs += 1
+        param_class = _classify_special_faze_effect_params(params)
+        effect_type = str(row.get("effect_type") or "").strip()
+        gongfa_name = str(row.get("gongfa_name") or "").strip()
+        labels = _normalize_special_faze_reason_tip_labels(row.get("tip_texts"))
+        for ref in refs:
+            item_id = int(ref["item_id"])
+            count = int(ref["count"])
+            item_name = _item_name(item_by_id, item_id)
+            if not item_name:
+                unresolved_refs += 1
+            item = grouped.setdefault(
+                item_id,
+                {
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "occurrence_count": 0,
+                    "total_count": 0,
+                    "zero_count_occurrences": 0,
+                    "effect_types": [],
+                    "gongfa_names": [],
+                    "param_classes": [],
+                    "raw_tokens": [],
+                    "params": [],
+                    "labels": [],
+                },
+            )
+            if item_name and not item["item_name"]:
+                item["item_name"] = item_name
+            item["occurrence_count"] += 1
+            item["total_count"] += count
+            if count == 0:
+                item["zero_count_occurrences"] += 1
+            for value, target in [
+                (effect_type, "effect_types"),
+                (gongfa_name, "gongfa_names"),
+                (param_class, "param_classes"),
+                (str(ref["raw"]), "raw_tokens"),
+                (params, "params"),
+            ]:
+                if value and value not in item[target]:
+                    item[target].append(value)
+            for label in labels:
+                if label and label not in item["labels"]:
+                    item["labels"].append(label)
+            detail_rows.append(
+                {
+                    "item_id": item_id,
+                    "item_name": item_name,
+                    "count": count,
+                    "raw_token": ref["raw"],
+                    "param_class": param_class,
+                    "gid": row.get("gid", ""),
+                    "gongfa_name": gongfa_name,
+                    "stage": row.get("stage", ""),
+                    "effect_type": effect_type,
+                    "effect_id": row.get("effect_id", ""),
+                    "effect_params": params,
+                    "tip_codes": row.get("tip_codes", ""),
+                    "tip_texts": row.get("tip_texts", ""),
+                }
+            )
+
+    item_rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        item_rows.append(
+            {
+                "item_id": item["item_id"],
+                "item_name": item["item_name"],
+                "occurrence_count": item["occurrence_count"],
+                "total_count": item["total_count"],
+                "zero_count_occurrences": item["zero_count_occurrences"],
+                "effect_type_count": len(item["effect_types"]),
+                "gongfa_count": len(item["gongfa_names"]),
+                "param_classes": "、".join(item["param_classes"][:12]),
+                "sample_effect_types": "、".join(item["effect_types"][:16]),
+                "sample_gongfa": "、".join(item["gongfa_names"][:16]),
+                "sample_raw_tokens": "、".join(item["raw_tokens"][:16]),
+                "sample_params": "；".join(item["params"][:8]),
+                "sample_labels": "；".join(item["labels"][:12]),
+            }
+        )
+    item_rows.sort(
+        key=lambda item: (
+            -int(item.get("occurrence_count") or 0),
+            -int(item.get("total_count") or 0),
+            int(item.get("item_id") or 0),
+        )
+    )
+    detail_rows.sort(
+        key=lambda item: (
+            int(item.get("item_id") or 0),
+            _hot_update_int(item.get("effect_type")) or 0,
+            _hot_update_int(item.get("effect_id")) or 0,
+        )
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_param_item_refs.tsv",
+        [
+            "item_id",
+            "item_name",
+            "occurrence_count",
+            "total_count",
+            "zero_count_occurrences",
+            "effect_type_count",
+            "gongfa_count",
+            "param_classes",
+            "sample_effect_types",
+            "sample_gongfa",
+            "sample_raw_tokens",
+            "sample_params",
+            "sample_labels",
+        ],
+        item_rows,
+    )
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_param_item_ref_detail.tsv",
+        [
+            "item_id",
+            "item_name",
+            "count",
+            "raw_token",
+            "param_class",
+            "gid",
+            "gongfa_name",
+            "stage",
+            "effect_type",
+            "effect_id",
+            "effect_params",
+            "tip_codes",
+            "tip_texts",
+        ],
+        detail_rows,
+    )
+
+    lines = [
+        "# Special-GongfaJie/Faze Effect Params Item Refs",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Source rows: `{rows_path}`",
+        f"- Item table rows: `{len(item_by_id)}`",
+        f"- Stage rows with Item refs: `{rows_with_item_refs}`",
+        f"- Item ref detail rows: `{len(detail_rows)}`",
+        f"- Unique item refs: `{len(item_rows)}`",
+        f"- Unresolved item refs: `{unresolved_refs}`",
+        "",
+        "## Top Items",
+        "",
+        "| Item | Name | Occurrences | Total Count | Zero Count | Effect Types | Gongfa | Classes | Labels |",
+        "| ---: | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |",
+    ]
+    for row in item_rows[:60]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("item_id", "")),
+                    _markdown_table_cell(row.get("item_name", "")),
+                    _markdown_table_cell(row.get("occurrence_count", "")),
+                    _markdown_table_cell(row.get("total_count", "")),
+                    _markdown_table_cell(row.get("zero_count_occurrences", "")),
+                    _markdown_table_cell(row.get("effect_type_count", "")),
+                    _markdown_table_cell(row.get("gongfa_count", "")),
+                    _markdown_table_cell(row.get("param_classes", ""), limit=120),
+                    _markdown_table_cell(row.get("sample_labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- This report resolves `Item|id_count` tokens embedded in `effect_params` into Item names and usage distribution.",
+            "- Counts are static config quantities per stage/token; they are useful for wiki display but not proof of server-side grant amounts.",
+            "- Zero counts are preserved because they appear to be stage placeholders in compact params.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_param_item_refs_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "item_table_rows": len(item_by_id),
+            "stage_rows": len(stage_rows),
+            "rows_with_item_refs": rows_with_item_refs,
+            "item_ref_detail_rows": len(detail_rows),
+            "unique_item_refs": len(item_rows),
+            "unresolved_item_refs": unresolved_refs,
+        },
+        "verdict": {
+            "param_item_ref_index_ready": bool(item_rows),
+            "all_item_refs_resolved": unresolved_refs == 0,
+            "formula_boundary": "effect_params_item_refs_are_static_reward_display_payload",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_param_item_refs.tsv"),
+            "detail": str(output_dir / "hot_update_gongfa_special_faze_param_item_ref_detail.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_param_item_refs_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_param_item_refs_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _append_unique_limited(target: list[str], value: object, *, limit: int = 80) -> None:
+    text = str(value or "").strip()
+    if not text or text in target or len(target) >= limit:
+        return
+    target.append(text)
+
+
+def build_fanxiu_gongfa_special_faze_payload_summary_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Merge Special-GongfaJie/Faze ownership, reason, attr, params, and item-ref indexes by effect type."""
+
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    required_paths = {
+        "effect_type_index": output_dir / "hot_update_gongfa_special_faze_effect_type_index.tsv",
+        "attr_detail": output_dir / "hot_update_gongfa_special_faze_attr_key_detail.tsv",
+        "param_detail": output_dir / "hot_update_gongfa_special_faze_param_shape_detail.tsv",
+        "item_detail": output_dir / "hot_update_gongfa_special_faze_param_item_ref_detail.tsv",
+    }
+    builders = [
+        (required_paths["effect_type_index"], build_fanxiu_gongfa_special_faze_effect_type_index_probe),
+        (required_paths["attr_detail"], build_fanxiu_gongfa_special_faze_attr_key_index_probe),
+        (required_paths["param_detail"], build_fanxiu_gongfa_special_faze_param_shape_index_probe),
+        (required_paths["item_detail"], build_fanxiu_gongfa_special_faze_param_item_ref_probe),
+    ]
+    for path, builder in builders:
+        if not path.is_file():
+            builder(export_root=export_base)
+    missing = [str(path) for path in required_paths.values() if not path.is_file()]
+    if missing:
+        raise FanxiuResourceError("Special-GongfaJie/Faze payload summary 缺少导出文件：" + "；".join(missing))
+
+    effect_rows = _read_tsv_rows(required_paths["effect_type_index"])
+    attr_rows = _read_tsv_rows(required_paths["attr_detail"])
+    param_rows = _read_tsv_rows(required_paths["param_detail"])
+    item_rows = _read_tsv_rows(required_paths["item_detail"])
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in effect_rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        grouped[effect_type] = {
+            "effect_type": effect_type,
+            "stage_count": row.get("stage_count", ""),
+            "gongfa_count": row.get("gongfa_count", ""),
+            "effect_id_count": row.get("effect_id_count", ""),
+            "reason_count": row.get("reason_count", ""),
+            "shared_reason_count": row.get("shared_reason_count", ""),
+            "ownership_class": row.get("ownership_class", ""),
+            "payload_class": row.get("payload_class", ""),
+            "sample_gongfa": row.get("sample_gongfa", ""),
+            "reason_codes": row.get("reason_codes", ""),
+            "shared_reason_codes": row.get("shared_reason_codes", ""),
+            "labels": row.get("normalized_labels", ""),
+            "attr_keys": [],
+            "attr_families": [],
+            "attr_samples": [],
+            "param_classes": [],
+            "param_samples": [],
+            "item_refs": [],
+            "item_names": [],
+            "item_total_count": 0,
+            "zero_count_occurrences": 0,
+        }
+
+    def ensure_effect(effect_type: str) -> dict[str, Any]:
+        return grouped.setdefault(
+            effect_type,
+            {
+                "effect_type": effect_type,
+                "stage_count": "",
+                "gongfa_count": "",
+                "effect_id_count": "",
+                "reason_count": "",
+                "shared_reason_count": "",
+                "ownership_class": "",
+                "payload_class": "",
+                "sample_gongfa": "",
+                "reason_codes": "",
+                "shared_reason_codes": "",
+                "labels": "",
+                "attr_keys": [],
+                "attr_families": [],
+                "attr_samples": [],
+                "param_classes": [],
+                "param_samples": [],
+                "item_refs": [],
+                "item_names": [],
+                "item_total_count": 0,
+                "zero_count_occurrences": 0,
+            },
+        )
+
+    for row in attr_rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        item = ensure_effect(effect_type)
+        _append_unique_limited(item["attr_keys"], row.get("attr_key"))
+        _append_unique_limited(item["attr_families"], row.get("attr_family"))
+        if row.get("attr_key"):
+            _append_unique_limited(item["attr_samples"], f"{row.get('attr_key')}={row.get('value')}", limit=24)
+    for row in param_rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        item = ensure_effect(effect_type)
+        _append_unique_limited(item["param_classes"], row.get("param_class"))
+        _append_unique_limited(item["param_samples"], row.get("effect_params"), limit=24)
+    for row in item_rows:
+        effect_type = str(row.get("effect_type") or "").strip()
+        if not effect_type:
+            continue
+        item = ensure_effect(effect_type)
+        item_id = str(row.get("item_id") or "").strip()
+        item_name = str(row.get("item_name") or "").strip()
+        count = _hot_update_int(row.get("count")) or 0
+        if item_id:
+            _append_unique_limited(item["item_refs"], f"Item|{item_id}", limit=32)
+        if item_name:
+            _append_unique_limited(item["item_names"], item_name, limit=32)
+        item["item_total_count"] += count
+        if count == 0:
+            item["zero_count_occurrences"] += 1
+
+    summary_rows: list[dict[str, object]] = []
+    for item in grouped.values():
+        summary_rows.append(
+            {
+                "effect_type": item["effect_type"],
+                "stage_count": item["stage_count"],
+                "gongfa_count": item["gongfa_count"],
+                "effect_id_count": item["effect_id_count"],
+                "reason_count": item["reason_count"],
+                "shared_reason_count": item["shared_reason_count"],
+                "ownership_class": item["ownership_class"],
+                "payload_class": item["payload_class"],
+                "sample_gongfa": item["sample_gongfa"],
+                "reason_codes": item["reason_codes"],
+                "shared_reason_codes": item["shared_reason_codes"],
+                "labels": item["labels"],
+                "attr_key_count": len(item["attr_keys"]),
+                "attr_keys": "、".join(item["attr_keys"]),
+                "attr_families": "、".join(item["attr_families"]),
+                "attr_samples": "；".join(item["attr_samples"][:12]),
+                "param_class_count": len(item["param_classes"]),
+                "param_classes": "、".join(item["param_classes"]),
+                "param_samples": "；".join(item["param_samples"][:8]),
+                "item_ref_count": len(item["item_refs"]),
+                "item_refs": "、".join(item["item_refs"]),
+                "item_names": "、".join(item["item_names"]),
+                "item_total_count": item["item_total_count"],
+                "zero_count_occurrences": item["zero_count_occurrences"],
+            }
+        )
+    summary_rows.sort(
+        key=lambda row: (
+            -int(row.get("stage_count") or 0),
+            -int(row.get("attr_key_count") or 0),
+            -int(row.get("item_ref_count") or 0),
+            _hot_update_int(row.get("effect_type")) or 0,
+        )
+    )
+    ownership_counts = Counter(str(row.get("ownership_class") or "") for row in summary_rows)
+    attr_payload_effects = sum(1 for row in summary_rows if int(row.get("attr_key_count") or 0) > 0)
+    param_payload_effects = sum(1 for row in summary_rows if int(row.get("param_class_count") or 0) > 0)
+    item_payload_effects = sum(1 for row in summary_rows if int(row.get("item_ref_count") or 0) > 0)
+    _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_payload_summary.tsv",
+        [
+            "effect_type",
+            "stage_count",
+            "gongfa_count",
+            "effect_id_count",
+            "reason_count",
+            "shared_reason_count",
+            "ownership_class",
+            "payload_class",
+            "sample_gongfa",
+            "reason_codes",
+            "shared_reason_codes",
+            "labels",
+            "attr_key_count",
+            "attr_keys",
+            "attr_families",
+            "attr_samples",
+            "param_class_count",
+            "param_classes",
+            "param_samples",
+            "item_ref_count",
+            "item_refs",
+            "item_names",
+            "item_total_count",
+            "zero_count_occurrences",
+        ],
+        summary_rows,
+    )
+
+    xuanmo_row = next((row for row in summary_rows if str(row.get("effect_type") or "") == "804"), {})
+    lines = [
+        "# Special-GongfaJie/Faze Payload Summary",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Effect type rows: `{len(summary_rows)}`",
+        f"- Attr payload effect types: `{attr_payload_effects}`",
+        f"- Params payload effect types: `{param_payload_effects}`",
+        f"- Item-ref payload effect types: `{item_payload_effects}`",
+        "",
+        "## Ownership Classes",
+        "",
+        "| Class | Effect Types |",
+        "| --- | ---: |",
+    ]
+    for key, count in ownership_counts.most_common():
+        lines.append(f"| {_markdown_table_cell(key)} | {count} |")
+    if xuanmo_row:
+        lines.extend(
+            [
+                "",
+                "## Focus: Effect Type 804",
+                "",
+                "| Effect Type | Gongfa | Ownership | Payload | Attr Keys | Param Classes | Items | Shared Reasons | Labels |",
+                "| ---: | --- | --- | --- | --- | --- | --- | --- | --- |",
+                "| "
+                + " | ".join(
+                    [
+                        _markdown_table_cell(xuanmo_row.get("effect_type", "")),
+                        _markdown_table_cell(xuanmo_row.get("sample_gongfa", "")),
+                        _markdown_table_cell(xuanmo_row.get("ownership_class", "")),
+                        _markdown_table_cell(xuanmo_row.get("payload_class", "")),
+                        _markdown_table_cell(xuanmo_row.get("attr_keys", "")),
+                        _markdown_table_cell(xuanmo_row.get("param_classes", "")),
+                        _markdown_table_cell(xuanmo_row.get("item_names", "")),
+                        _markdown_table_cell(xuanmo_row.get("shared_reason_codes", "")),
+                        _markdown_table_cell(xuanmo_row.get("labels", ""), limit=180),
+                    ]
+                )
+                + " |",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "## Top Payload Rows",
+            "",
+            "| Effect Type | Gongfa | Stages | Ownership | Attr Keys | Param Classes | Items | Labels |",
+            "| ---: | --- | ---: | --- | --- | --- | --- | --- |",
+        ]
+    )
+    for row in [
+        row
+        for row in summary_rows
+        if int(row.get("attr_key_count") or 0) or int(row.get("param_class_count") or 0) or int(row.get("item_ref_count") or 0)
+    ][:60]:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _markdown_table_cell(row.get("effect_type", "")),
+                    _markdown_table_cell(row.get("sample_gongfa", ""), limit=90),
+                    _markdown_table_cell(row.get("stage_count", "")),
+                    _markdown_table_cell(row.get("ownership_class", "")),
+                    _markdown_table_cell(row.get("attr_keys", ""), limit=120),
+                    _markdown_table_cell(row.get("param_classes", ""), limit=120),
+                    _markdown_table_cell(row.get("item_names", ""), limit=140),
+                    _markdown_table_cell(row.get("labels", ""), limit=180),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- This is the wiki-facing rollup for Special-GongfaJie/Faze payload evidence by effect type.",
+            "- It merges ownership, reasons, attr keys, compact params, and resolved item refs without replacing the more detailed tables.",
+            "- Empty payload columns, especially for `804`, mean the static payload surface does not expose the exact numeric formula.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_payload_summary_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "effect_types": len(summary_rows),
+            "attr_payload_effect_types": attr_payload_effects,
+            "param_payload_effect_types": param_payload_effects,
+            "item_ref_payload_effect_types": item_payload_effects,
+            "ownership_classes": dict(ownership_counts),
+        },
+        "focus": {"effect_type_804": xuanmo_row},
+        "verdict": {
+            "payload_summary_ready": bool(summary_rows),
+            "xuanmo_804_has_static_payload": bool(xuanmo_row)
+            and any(
+                str(xuanmo_row.get(field) or "").strip()
+                for field in ("attr_keys", "param_classes", "item_names")
+            ),
+            "formula_boundary": "payload_summary_merges_static_config_surfaces_not_runtime_authority",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_payload_summary.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_payload_summary_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_payload_summary_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+_SPECIAL_FAZE_RUNTIME_FILE_HINTS = (
+    "capture",
+    "fixture",
+    "runtime",
+    "observation",
+    "sample",
+    "socket",
+    "packet",
+    "flow",
+)
+_SPECIAL_FAZE_AUDIT_FILE_HINTS = (
+    "faze",
+    "socket",
+    "packet",
+    "capture",
+    "fixture",
+    "runtime",
+    "observation",
+    "sample",
+    "typed_pool",
+)
+_SPECIAL_FAZE_SAMPLE_FIELD_RE = re.compile(
+    r"""["']?\b(fazeId|effectType|num|reason)\b["']?\s*[:=]\s*["']?(-?\d+)""",
+    re.IGNORECASE,
+)
+
+
+def _special_faze_runtime_audit_files(output_dir: Path) -> list[Path]:
+    suffixes = {".tsv", ".json", ".md", ".txt", ".log", ".csv"}
+    files: list[Path] = []
+    if not output_dir.is_dir():
+        return files
+    for path in sorted(output_dir.rglob("*"), key=lambda item: item.as_posix().lower()):
+        if not path.is_file() or path.suffix.lower() not in suffixes:
+            continue
+        name = path.name.lower()
+        if any(hint in name for hint in _SPECIAL_FAZE_AUDIT_FILE_HINTS):
+            files.append(path)
+    return files
+
+
+def _special_faze_runtime_line_classification(path: Path, line: str) -> tuple[str, dict[str, str]]:
+    canonical = {"fazeid": "fazeId", "effecttype": "effectType", "num": "num", "reason": "reason"}
+    fields = {
+        canonical.get(match.group(1).lower(), match.group(1)): match.group(2)
+        for match in _SPECIAL_FAZE_SAMPLE_FIELD_RE.finditer(line)
+    }
+    name = path.name.lower()
+    has_runtime_hint = any(hint in name for hint in _SPECIAL_FAZE_RUNTIME_FILE_HINTS)
+    has_packet_name = "SM_FazeEffect" in line
+    has_concrete_packet_fields = has_packet_name and "effectType" in fields and bool({"fazeId", "num", "reason"} & set(fields))
+    if has_runtime_hint and has_concrete_packet_fields:
+        return "runtime_sample_candidate", fields
+    if has_concrete_packet_fields:
+        return "static_or_report_value", fields
+    return "schema_or_reference", fields
+
+
+def build_fanxiu_gongfa_special_faze_runtime_sample_audit_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+    focus_effect_type: str | int = "804",
+) -> dict[str, Any]:
+    """Audit existing exports for concrete SM_FazeEffect runtime samples."""
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    focus_text = str(focus_effect_type).strip()
+
+    rows: list[dict[str, object]] = []
+    scanned_files = 0
+    for path in _special_faze_runtime_audit_files(output_dir):
+        scanned_files += 1
+        relative = path.relative_to(export_base).as_posix() if path.is_relative_to(export_base) else path.name
+        try:
+            with path.open("r", encoding="utf-8", errors="ignore") as f:
+                for line_no, line in enumerate(f, start=1):
+                    if "SM_FazeEffect" not in line and "FazeEffect" not in line:
+                        continue
+                    classification, fields = _special_faze_runtime_line_classification(path, line)
+                    rows.append(
+                        {
+                            "classification": classification,
+                            "source_file": relative,
+                            "line": line_no,
+                            "packet": "SM_FazeEffect" if "SM_FazeEffect" in line else "FazeEffect",
+                            "field_values": _unique_join((f"{key}={value}" for key, value in fields.items()), limit=8),
+                            "focus_effect_type_match": str(fields.get("effectType", "")) == focus_text,
+                            "excerpt": line.strip()[:500],
+                        }
+                    )
+        except OSError as exc:
+            rows.append(
+                {
+                    "classification": "read_error",
+                    "source_file": relative,
+                    "line": "",
+                    "packet": "",
+                    "field_values": "",
+                    "focus_effect_type_match": False,
+                    "excerpt": str(exc),
+                }
+            )
+
+    rows.sort(
+        key=lambda row: (
+            0 if row.get("classification") == "runtime_sample_candidate" else 1,
+            str(row.get("source_file", "")),
+            int(row.get("line") or 0),
+        )
+    )
+    runtime_rows = [row for row in rows if row.get("classification") == "runtime_sample_candidate"]
+    focus_rows = [row for row in runtime_rows if str(row.get("focus_effect_type_match", "")).lower() == "true"]
+    class_counts = Counter(str(row.get("classification", "")) for row in rows)
+
+    row_count = _write_tsv(
+        output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit.tsv",
+        [
+            "classification",
+            "source_file",
+            "line",
+            "packet",
+            "field_values",
+            "focus_effect_type_match",
+            "excerpt",
+        ],
+        rows,
+    )
+
+    lines = [
+        "# Special-GongfaJie/Faze Runtime Sample Audit",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Scanned files: {scanned_files}",
+        f"- Evidence rows: {row_count}",
+        f"- Runtime sample candidates: {len(runtime_rows)}",
+        f"- Focus effect type `{focus_text}` runtime candidates: {len(focus_rows)}",
+        f"- Class counts: {', '.join(f'{name}:{count}' for name, count in class_counts.most_common()) or 'none'}",
+        "",
+        "## Meaning",
+        "",
+        "- A runtime sample candidate must mention `SM_FazeEffect` and carry concrete numeric `effectType` plus at least one of `fazeId/num/reason` in a capture/fixture/runtime/socket-style file.",
+        "- Schema/report references are useful for packet shape, but they do not prove a specific live trigger instance.",
+        "- If this report has zero runtime candidates for `804`, the exact live frequency/condition for `玄魔大法` still needs a privacy-filtered runtime sample rather than another broad static scan.",
+        "",
+        "## Candidate Rows",
+        "",
+        "| class | source | line | fields | focus | excerpt |",
+        "| --- | --- | ---: | --- | --- | --- |",
+    ]
+    for row in rows[:80]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('classification', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('source_file', ''), limit=180)} | "
+            f"{_markdown_table_cell(row.get('line', ''), limit=40)} | "
+            f"{_markdown_table_cell(row.get('field_values', ''), limit=160)} | "
+            f"{_markdown_table_cell(row.get('focus_effect_type_match', ''), limit=40)} | "
+            f"{_markdown_table_cell(row.get('excerpt', ''), limit=220)} |"
+        )
+    if not rows:
+        lines.append("| none |  |  |  |  |  |")
+
+    lines.extend(
+        [
+            "",
+            "## Conclusion",
+            "",
+            "- Existing exports are enough to describe `SM_FazeEffect(fazeId/effectType/num/reason)` as a server-to-client rule notification.",
+            "- Concrete runtime samples are treated separately from static schema evidence, so this report can be used as a gate before claiming exact live behavior.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.md"
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = {
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "scanned_files": scanned_files,
+            "evidence_rows": row_count,
+            "runtime_sample_candidates": len(runtime_rows),
+            "focus_runtime_candidates": len(focus_rows),
+            "classifications": dict(class_counts),
+        },
+        "verdict": {
+            "runtime_samples_found": bool(runtime_rows),
+            "focus_effect_type_runtime_samples_found": bool(focus_rows),
+            "static_shape_known": any("SM_FazeEffect" in str(row.get("excerpt", "")) for row in rows),
+            "next_step_if_missing": "collect_or_import_privacy_filtered_SM_FazeEffect_sample_before_claiming_live_trigger_frequency",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_special_faze_runtime_sample_audit_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
 def _blue_operation_from_packet(packet: str) -> str:
     for prefix in ("CM_BlueStarSea", "SM_BlueStarSea"):
         if packet.startswith(prefix):
@@ -17792,6 +20955,627 @@ def build_fanxiu_gongfa_homemake_side_feature_semantics_probe(
     return result
 
 
+def _split_joined_int_values(value: object) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for match in re.findall(r"\d+", str(value or "")):
+        parsed = int(match)
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        out.append(parsed)
+    return out
+
+
+def _collect_gongfa_homemake_fazelevel_boundary_usage_rows(
+    export_base: Path,
+    *,
+    clean_names: set[str],
+    side_feature_ids: set[str],
+    buff_ids: set[str],
+) -> tuple[list[dict[str, object]], dict[str, int], int]:
+    root = export_base / "by_source" / "lscripts"
+    if not root.is_dir():
+        return [], {}, 0
+
+    terms = {
+        "FazeLevel",
+        "Gongfa_FazeLevel",
+        "CM_UpFazeLevel",
+        "SM_UpFazeLevel",
+        "UpFazeLevel",
+    }
+    terms.update(name for name in clean_names if name)
+    terms.update(value for value in side_feature_ids if value)
+    terms.update(value for value in buff_ids if value)
+    ordered_terms = sorted(terms, key=lambda item: (-len(item), item))
+
+    rows: list[dict[str, object]] = []
+    counts: Counter[str] = Counter()
+    direct_runtime_hits = 0
+    cap_by_category: Counter[str] = Counter()
+    max_per_category = 80
+    for path in sorted(root.rglob("*.lua"), key=lambda item: str(item).lower()):
+        if "__" in path.stem:
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            continue
+        try:
+            relative_path = str(path.relative_to(export_base))
+        except ValueError:
+            relative_path = str(path)
+        rel_lower = relative_path.replace("\\", "/").lower()
+        for line_no, line in enumerate(lines, start=1):
+            hit = next((term for term in ordered_terms if term and term in line), "")
+            if not hit:
+                continue
+            if "generate/cfg/gongfa" in rel_lower and "fazelevel" in rel_lower:
+                category = "faze_level_generated_config"
+            elif "generate/localization" in rel_lower:
+                category = "localization_name_match"
+            elif "upfazelevel" in line.lower() or path.name in {"CM_UpFazeLevel.lua", "SM_UpFazeLevel.lua", "VO_URL.lua"}:
+                category = "faze_level_protocol_upgrade"
+            elif "gongfahomemake" in rel_lower or "xianshu" in rel_lower:
+                category = "gongfa_xianshu_direct_runtime_candidate"
+            elif "generate/cfg/gongfa" in rel_lower:
+                category = "gongfa_generated_config"
+            elif "/faze_" in rel_lower or "faze" in path.name.lower() or "faze" in rel_lower:
+                category = "faze_feature_ui_model"
+            else:
+                category = "other_reference"
+            counts[category] += 1
+            if category == "gongfa_xianshu_direct_runtime_candidate":
+                direct_runtime_hits += 1
+            if cap_by_category[category] >= max_per_category:
+                continue
+            cap_by_category[category] += 1
+            rows.append(
+                {
+                    "category": category,
+                    "hit": hit,
+                    "file": path.name,
+                    "relative_path": relative_path,
+                    "line": line_no,
+                    "text": line.strip(),
+                    "path": str(path),
+                }
+            )
+    rows.sort(key=lambda item: (str(item["category"]), str(item["relative_path"]), int(item["line"])))
+    return rows, dict(counts.most_common()), direct_runtime_hits
+
+
+def build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    side_semantics_path = output_dir / "hot_update_gongfa_homemake_side_feature_semantics.tsv"
+    if not side_semantics_path.is_file():
+        build_fanxiu_gongfa_homemake_side_feature_semantics_probe(export_root=export_base)
+
+    side_rows = [
+        row
+        for row in _read_tsv_rows(side_semantics_path)
+        if str(row.get("faze_level_ids") or "").strip()
+        or str(row.get("best_static_semantics_source") or "") == "faze_level_name_match"
+    ]
+    faze_rows = _load_gongfa_renderer_parsed_rows(export_base, "FazeLevel")
+    faze_by_id = {
+        parsed: row
+        for row in faze_rows
+        if (parsed := _renderer_int(row.get("id"))) is not None
+    }
+    boundary_rows: list[dict[str, object]] = []
+    faze_detail_by_id: dict[int, dict[str, object]] = {}
+    clean_names: set[str] = set()
+    side_feature_ids: set[str] = set()
+    buff_ids: set[str] = set()
+
+    for row in side_rows:
+        clean_name = str(row.get("clean_name") or "").strip()
+        if clean_name:
+            clean_names.add(clean_name)
+        side_feature = str(row.get("side_jie_feature") or "").strip()
+        if side_feature:
+            side_feature_ids.add(side_feature)
+        for buff_id in _split_joined_int_values(row.get("buff_prefix_ids")):
+            buff_ids.add(str(buff_id))
+        faze_ids = _split_joined_int_values(row.get("faze_level_ids"))
+        matched_faze_rows = [faze_by_id[faze_id] for faze_id in faze_ids if faze_id in faze_by_id]
+        descriptions = [
+            str(faze.get("descript_plain") or strip_fanxiu_rich_text(faze.get("descript") or ""))
+            for faze in matched_faze_rows
+        ]
+        if not descriptions and row.get("faze_level_descriptions"):
+            descriptions = [str(row.get("faze_level_descriptions") or "")]
+        boundary_rows.append(
+            {
+                "gongfa_id": row.get("gongfa_id", ""),
+                "gongfa_name": row.get("gongfa_name", ""),
+                "side_jie_name": row.get("side_jie_name", ""),
+                "clean_name": clean_name,
+                "side_jie_feature": row.get("side_jie_feature", ""),
+                "buff_prefix_ids": row.get("buff_prefix_ids", ""),
+                "buff_prefix_names": row.get("buff_prefix_names", ""),
+                "buff_prefix_descriptions": row.get("buff_prefix_descriptions", ""),
+                "faze_level_ids": "、".join(str(value) for value in faze_ids),
+                "faze_level_faze_ids": _unique_join((faze.get("fazeId", "") for faze in matched_faze_rows), sep="、"),
+                "faze_level_levels": _unique_join((faze.get("level", "") for faze in matched_faze_rows), sep="、"),
+                "faze_level_skills": _unique_join(
+                    (
+                        json.dumps(faze.get("skill"), ensure_ascii=False)
+                        if isinstance(faze.get("skill"), list)
+                        else faze.get("skill", "")
+                        for faze in matched_faze_rows
+                    ),
+                    sep="、",
+                ),
+                "faze_level_descriptions": " | ".join(descriptions),
+                "best_static_semantics_source": row.get("best_static_semantics_source", ""),
+                "candidate_role": "name_match_semantics_only",
+                "boundary_note": "FazeLevel row is a same-name upgrade/config text surface, not evidence that GongFaHomeMake/XianShu runtime reads this row.",
+            }
+        )
+        for faze_id in faze_ids:
+            faze = faze_by_id.get(faze_id)
+            if faze is None:
+                continue
+            detail = faze_detail_by_id.setdefault(
+                faze_id,
+                {
+                    "faze_level_id": faze_id,
+                    "faze_id": faze.get("fazeId", ""),
+                    "level": faze.get("level", ""),
+                    "skill": json.dumps(faze.get("skill") or [], ensure_ascii=False),
+                    "consume": faze.get("consume", ""),
+                    "attr_keys": _unique_join((faze.get("attr") or {}).keys()) if isinstance(faze.get("attr"), dict) else "",
+                    "descript_plain": faze.get("descript_plain")
+                    or strip_fanxiu_rich_text(faze.get("descript") or ""),
+                    "matched_side_names": "",
+                    "matched_gongfa_ids": "",
+                },
+            )
+            detail["matched_side_names"] = _unique_join(
+                [detail.get("matched_side_names", ""), row.get("side_jie_name", "")],
+                sep="、",
+            )
+            detail["matched_gongfa_ids"] = _unique_join(
+                [detail.get("matched_gongfa_ids", ""), row.get("gongfa_id", "")],
+                sep="、",
+            )
+
+    usage_rows, usage_counts, direct_runtime_hits = _collect_gongfa_homemake_fazelevel_boundary_usage_rows(
+        export_base,
+        clean_names=clean_names,
+        side_feature_ids=side_feature_ids,
+        buff_ids=buff_ids,
+    )
+    boundary_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary.tsv",
+        [
+            "gongfa_id",
+            "gongfa_name",
+            "side_jie_name",
+            "clean_name",
+            "side_jie_feature",
+            "buff_prefix_ids",
+            "buff_prefix_names",
+            "buff_prefix_descriptions",
+            "faze_level_ids",
+            "faze_level_faze_ids",
+            "faze_level_levels",
+            "faze_level_skills",
+            "faze_level_descriptions",
+            "best_static_semantics_source",
+            "candidate_role",
+            "boundary_note",
+        ],
+        boundary_rows,
+    )
+    faze_detail_rows = sorted(faze_detail_by_id.values(), key=lambda item: int(item["faze_level_id"]))
+    faze_detail_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_faze_rows.tsv",
+        [
+            "faze_level_id",
+            "faze_id",
+            "level",
+            "skill",
+            "consume",
+            "attr_keys",
+            "descript_plain",
+            "matched_side_names",
+            "matched_gongfa_ids",
+        ],
+        faze_detail_rows,
+    )
+    usage_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_lua_usage.tsv",
+        ["category", "hit", "file", "relative_path", "line", "text", "path"],
+        usage_rows,
+    )
+
+    lines = [
+        "# GongFaHomeMake FazeLevel 同名匹配边界",
+        "",
+        f"- 导出目录：`{export_base}`",
+        f"- 同名候选行：{boundary_count}；FazeLevel 明细：{faze_detail_count}；Lua 证据行：{usage_count}",
+        "- 口径：这里验证 `FazeLevel.descript` 只能作为同名旁路文案/规则线索，不能直接升级为仙书副词缀运行时公式。当前探针不改 APK、不注入、不执行游戏逻辑。",
+        "",
+        "## 结论",
+        "",
+        "- `须弥芥子` 这类行同时有两层信息：`BuffResource` 前缀给出战斗效果族的粗说明，`FazeLevel` 同名行给出更完整的规则文案。",
+        "- `FazeLevel` 表自身属于法则升级/展示配置面；当前静态证据没有证明 `GongFaHomeMake` 或 `XianShu` 战斗运行时直接读取 `FazeLevel.id=300` 来结算副词缀。",
+        "- 因此前端图鉴可以把 `FazeLevel` 文案作为“同名参考说明”，但结构化逻辑仍应优先追 `BuffResource`、`Skill`、战斗包和服务端结果边界。",
+        "",
+        "## 来源统计",
+        "",
+        "| category | rows |",
+        "| --- | ---: |",
+    ]
+    for category, count in usage_counts.items():
+        lines.append(f"| {_markdown_table_cell(category, limit=120)} | {count} |")
+    if not usage_counts:
+        lines.append("| 无 | 0 |")
+    lines.extend(
+        [
+            "",
+            "## 同名候选",
+            "",
+            "| 功法 | 词缀 | feature | Buff 说明 | FazeLevel | 边界 |",
+            "| ---: | --- | ---: | --- | --- | --- |",
+        ]
+    )
+    for row in boundary_rows[:80]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('gongfa_id', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('side_jie_name', ''), limit=140)} | "
+            f"{_markdown_table_cell(row.get('side_jie_feature', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('buff_prefix_descriptions', ''), limit=220)} | "
+            f"{_markdown_table_cell(row.get('faze_level_descriptions', ''), limit=360)} | "
+            f"{_markdown_table_cell(row.get('candidate_role', ''), limit=120)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## FazeLevel 明细",
+            "",
+            "| id | fazeId | level | skill | consume | desc |",
+            "| ---: | ---: | ---: | --- | --- | --- |",
+        ]
+    )
+    for row in faze_detail_rows[:80]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('faze_level_id', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('faze_id', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('level', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('skill', ''), limit=160)} | "
+            f"{_markdown_table_cell(row.get('consume', ''), limit=160)} | "
+            f"{_markdown_table_cell(row.get('descript_plain', ''), limit=420)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Lua 证据样例",
+            "",
+            "| category | file | line | hit | text |",
+            "| --- | --- | ---: | --- | --- |",
+        ]
+    )
+    for row in usage_rows[:120]:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('category', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('relative_path', row.get('file', '')), limit=240)} | "
+            f"{_markdown_table_cell(row.get('line', ''), limit=40)} | "
+            f"{_markdown_table_cell(row.get('hit', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('text', ''), limit=420)} |"
+        )
+
+    markdown_path = output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "boundary_rows": boundary_count,
+            "faze_detail_rows": faze_detail_count,
+            "lua_usage_rows": usage_count,
+            "lua_usage_categories": usage_counts,
+            "direct_gongfa_xianshu_runtime_hits": direct_runtime_hits,
+        },
+        "verdict": {
+            "fazelevel_name_match_rows_found": boundary_count > 0,
+            "faze_level_is_upgrade_config_surface": bool(
+                usage_counts.get("faze_level_generated_config")
+                or usage_counts.get("faze_level_protocol_upgrade")
+                or usage_counts.get("faze_feature_ui_model")
+            ),
+            "gongfa_xianshu_direct_runtime_use_found": direct_runtime_hits > 0,
+            "supports_name_match_as_candidate_not_authority": boundary_count > 0
+            and direct_runtime_hits == 0,
+            "next_static_step": "continue from BuffResource/Skill/runtime result packets for authoritative XianShu side-feature mechanics",
+        },
+        "outputs": {
+            "rows": str(output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary.tsv"),
+            "faze_rows": str(output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_faze_rows.tsv"),
+            "lua_usage": str(output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_lua_usage.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _row_skill_ids(row: dict[str, Any]) -> list[int]:
+    value = row.get("skill")
+    if isinstance(value, list):
+        return [parsed for item in value if (parsed := _renderer_int(item)) is not None]
+    parsed = _renderer_int(value)
+    return [parsed] if parsed is not None else []
+
+
+def build_fanxiu_gongfa_homemake_fazelevel_skill_ownership_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    boundary_path = output_dir / "hot_update_gongfa_homemake_fazelevel_name_match_boundary.tsv"
+    if not boundary_path.is_file():
+        build_fanxiu_gongfa_homemake_fazelevel_name_match_boundary_probe(export_root=export_base)
+
+    boundary_rows = _read_tsv_rows(boundary_path)
+    faze_rows = _load_gongfa_renderer_parsed_rows(export_base, "FazeLevel")
+    skill_rows = _load_gongfa_renderer_parsed_rows(export_base, "Skill")
+    faze_by_id = {
+        parsed: row
+        for row in faze_rows
+        if (parsed := _renderer_int(row.get("id"))) is not None
+    }
+    skill_by_id = {
+        parsed: row
+        for row in skill_rows
+        if (parsed := _renderer_int(row.get("id"))) is not None
+    }
+
+    link_rows: list[dict[str, object]] = []
+    summary_by_skill: dict[int, dict[str, object]] = {}
+    clean_names: set[str] = set()
+    search_ids: set[str] = set()
+    buff_ids: set[str] = set()
+    overlap_found = False
+
+    for boundary in boundary_rows:
+        clean_name = str(boundary.get("clean_name") or "").strip()
+        if clean_name:
+            clean_names.add(clean_name)
+        side_feature_id = str(boundary.get("side_jie_feature") or "").strip()
+        if side_feature_id:
+            search_ids.add(side_feature_id)
+        buff_id_values = _split_joined_int_values(boundary.get("buff_prefix_ids"))
+        for buff_id in buff_id_values:
+            buff_ids.add(str(buff_id))
+        comparable_ids = {side_feature_id, *(str(value) for value in buff_id_values)}
+        for faze_level_id in _split_joined_int_values(boundary.get("faze_level_ids")):
+            faze = faze_by_id.get(faze_level_id)
+            if not faze:
+                continue
+            for skill_id in _row_skill_ids(faze):
+                skill = skill_by_id.get(skill_id, {})
+                skill_name = str(skill.get("name_plain") or skill.get("name") or "")
+                if skill_name:
+                    clean_names.add(skill_name)
+                search_ids.add(str(skill_id))
+                has_overlap = str(skill_id) in comparable_ids
+                overlap_found = overlap_found or has_overlap
+                linked_faze_rows = [row for row in faze_rows if skill_id in _row_skill_ids(row)]
+                levels = [
+                    parsed
+                    for row in linked_faze_rows
+                    if (parsed := _renderer_int(row.get("level"))) is not None
+                ]
+                level_span = f"{min(levels)}..{max(levels)}" if levels else ""
+                link_rows.append(
+                    {
+                        "gongfa_id": boundary.get("gongfa_id", ""),
+                        "gongfa_name": boundary.get("gongfa_name", ""),
+                        "side_jie_name": boundary.get("side_jie_name", ""),
+                        "side_jie_feature": side_feature_id,
+                        "buff_prefix_ids": boundary.get("buff_prefix_ids", ""),
+                        "faze_level_id": faze_level_id,
+                        "faze_id": faze.get("fazeId", ""),
+                        "faze_level": faze.get("level", ""),
+                        "skill_id": skill_id,
+                        "skill_name": skill_name,
+                        "skill_type": skill.get("skillType", ""),
+                        "fight_score": skill.get("fightScore", ""),
+                        "range_limit": skill.get("rangeLimit", ""),
+                        "target_type": skill.get("targetType", ""),
+                        "faze_skill_level_span": level_span,
+                        "id_relation": "direct_id_overlap" if has_overlap else "disjoint_id_space",
+                        "ownership_note": "FazeLevel.skill resolves to Skill config on the faze/reference surface; XianShu side feature still resolves through SideFeatureJie.feature and BuffResource prefix.",
+                    }
+                )
+                summary = summary_by_skill.setdefault(
+                    skill_id,
+                    {
+                        "skill_id": skill_id,
+                        "skill_name": skill_name,
+                        "skill_type": skill.get("skillType", ""),
+                        "fight_score": skill.get("fightScore", ""),
+                        "faze_level_ids": "",
+                        "faze_ids": "",
+                        "faze_level_span": level_span,
+                        "matched_side_names": "",
+                        "matched_gongfa_ids": "",
+                        "id_relation": "direct_id_overlap" if has_overlap else "disjoint_id_space",
+                    },
+                )
+                summary["faze_level_ids"] = _unique_join(
+                    (_renderer_int(row.get("id")) for row in linked_faze_rows),
+                    limit=120,
+                    sep="、",
+                )
+                summary["faze_ids"] = _unique_join((row.get("fazeId", "") for row in linked_faze_rows), sep="、")
+                summary["matched_side_names"] = _unique_join(
+                    [summary.get("matched_side_names", ""), boundary.get("side_jie_name", "")],
+                    sep="、",
+                )
+                summary["matched_gongfa_ids"] = _unique_join(
+                    [summary.get("matched_gongfa_ids", ""), boundary.get("gongfa_id", "")],
+                    sep="、",
+                )
+                if has_overlap:
+                    summary["id_relation"] = "direct_id_overlap"
+
+    usage_rows, usage_counts, direct_runtime_hits = _collect_gongfa_homemake_fazelevel_boundary_usage_rows(
+        export_base,
+        clean_names=clean_names,
+        side_feature_ids=search_ids,
+        buff_ids=buff_ids,
+    )
+    link_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_links.tsv",
+        [
+            "gongfa_id",
+            "gongfa_name",
+            "side_jie_name",
+            "side_jie_feature",
+            "buff_prefix_ids",
+            "faze_level_id",
+            "faze_id",
+            "faze_level",
+            "skill_id",
+            "skill_name",
+            "skill_type",
+            "fight_score",
+            "range_limit",
+            "target_type",
+            "faze_skill_level_span",
+            "id_relation",
+            "ownership_note",
+        ],
+        link_rows,
+    )
+    summary_rows = sorted(summary_by_skill.values(), key=lambda item: int(item["skill_id"]))
+    summary_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_skills.tsv",
+        [
+            "skill_id",
+            "skill_name",
+            "skill_type",
+            "fight_score",
+            "faze_level_ids",
+            "faze_ids",
+            "faze_level_span",
+            "matched_side_names",
+            "matched_gongfa_ids",
+            "id_relation",
+        ],
+        summary_rows,
+    )
+    usage_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_lua_usage.tsv",
+        ["category", "hit", "file", "relative_path", "line", "text", "path"],
+        usage_rows,
+    )
+
+    lines = [
+        "# GongFaHomeMake FazeLevel skill 归属边界",
+        "",
+        f"- 导出目录：`{export_base}`",
+        f"- link 行：{link_count}；skill 摘要：{summary_count}；Lua 证据行：{usage_count}",
+        "- 口径：从 `FazeLevel` 同名候选继续追 `skill` 字段，确认它属于法则参考/升级配置面，还是和仙书副词缀 `SideFeatureJie.feature` / `BuffResource.id` 同一套 id。",
+        "",
+        "## 结论",
+        "",
+        "- `FazeLevel.id=300` 挂出的 `skill=432901180` 在 `Skill` 表中叫 `万界空间法则`，不是 `38500201/385002010` 这套仙书副词缀或 buff id。",
+        "- 同一个 skill 覆盖 `FazeLevel` 的一段等级配置，说明它更像法则升级/展示链路的技能引用，而不是 `GongFaHomeMake` 仙书战斗结算的直接入口。",
+        "- 因此前端图鉴可展示该 skill 作为同名参考上下文，但结构化运行时逻辑仍要沿 `BuffResource` 和 FightResult-family 结果包继续追。",
+        "",
+        "## Skill 摘要",
+        "",
+        "| skill | name | type | faze levels | side names | relation |",
+        "| ---: | --- | ---: | --- | --- | --- |",
+    ]
+    for row in summary_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('skill_id', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('skill_name', ''), limit=160)} | "
+            f"{_markdown_table_cell(row.get('skill_type', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('faze_level_span', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('matched_side_names', ''), limit=200)} | "
+            f"{_markdown_table_cell(row.get('id_relation', ''), limit=120)} |"
+        )
+    lines.extend(["", "## Link 样例", "", "| 功法 | side feature | FazeLevel | Skill | relation |", "| --- | ---: | ---: | --- | --- |"])
+    for row in link_rows[:80]:
+        skill_text = f"{row.get('skill_id', '')} {row.get('skill_name', '')}"
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('gongfa_name', ''), limit=140)} | "
+            f"{_markdown_table_cell(row.get('side_jie_feature', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('faze_level_id', ''), limit=80)} | "
+            f"{_markdown_table_cell(skill_text, limit=180)} | "
+            f"{_markdown_table_cell(row.get('id_relation', ''), limit=120)} |"
+        )
+    lines.extend(["", "## Lua 证据分类", "", "| category | rows |", "| --- | ---: |"])
+    for category, count in usage_counts.items():
+        lines.append(f"| {_markdown_table_cell(category, limit=120)} | {count} |")
+    if not usage_counts:
+        lines.append("| 无 | 0 |")
+
+    markdown_path = output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "link_rows": link_count,
+            "skill_rows": summary_count,
+            "lua_usage_rows": usage_count,
+            "lua_usage_categories": usage_counts,
+            "direct_gongfa_xianshu_runtime_hits": direct_runtime_hits,
+        },
+        "verdict": {
+            "faze_skill_links_found": link_count > 0,
+            "skill_names_indicate_faze_surface": any("法则" in str(row.get("skill_name", "")) for row in summary_rows),
+            "skill_id_overlaps_side_feature_or_buff_id": overlap_found,
+            "gongfa_xianshu_direct_runtime_use_found": direct_runtime_hits > 0,
+            "supports_fazelevel_skill_as_faze_reference_not_xianshu_authority": link_count > 0
+            and not overlap_found
+            and direct_runtime_hits == 0,
+            "next_static_step": "continue authoritative XianShu mechanism tracing through BuffResource/Skill/FightResult packet evidence, not FazeLevel skill ids",
+        },
+        "outputs": {
+            "links": str(output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_links.tsv"),
+            "skills": str(output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_skills.tsv"),
+            "lua_usage": str(output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_lua_usage.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_homemake_fazelevel_skill_ownership_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
 def _format_millis_seconds(value: object) -> str:
     parsed = _renderer_int(value)
     if parsed is None or parsed <= 0:
@@ -20041,6 +23825,333 @@ def build_fanxiu_gongfa_homemake_mechanism_ownership_probe(
     return result
 
 
+def _collect_gongfa_homemake_nonfunnel_buff_flow_rows(export_base: Path) -> list[dict[str, object]]:
+    by_source = export_base / "by_source" / "lscripts"
+    files = {
+        "buff_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffVO.lua"),
+        "buff": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/Buff.lua"),
+        "buff_net_logic": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffNetLogic.lua"),
+        "sm_buff_change": _find_one_file(
+            by_source, "gamesystem/game/message_*/text_assets/SM_BuffChangeHpAndMp.lua"
+        ),
+        "buff_result_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffResultVO.lua"),
+        "buff_mgr": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffMgr.lua"),
+        "entity_fight_view": _find_one_file(by_source, "core_*/text_assets/EntityFightView.lua")
+        or _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/EntityFightView.lua"),
+    }
+    return [
+        {
+            "stage": "active_buff_state_packet",
+            "source_file": str(files["buff_vo"] or ""),
+            "lines": "11-29",
+            "fields": "BuffVO.id/configId/layer/remainTime/duration",
+            "ownership_meaning": "`BuffVO.configId` is the visible runtime-state link back to `BuffResource.id`.",
+            "formula_evidence": "state_link_only",
+            "code_excerpt": _source_excerpt(files["buff_vo"], 11, 29),
+        },
+        {
+            "stage": "buff_init_and_config_lookup",
+            "source_file": str(files["buff"] or ""),
+            "lines": "62-83",
+            "fields": "self.V_ConfigId=buffVO.configId; BuffConfig.GetBuffConfig(buffVO.configId); buffCfg.type",
+            "ownership_meaning": "Client builds a Buff object from server state and loads display/lifecycle config.",
+            "formula_evidence": "no_damage_formula",
+            "code_excerpt": _source_excerpt(files["buff"], 62, 83),
+        },
+        {
+            "stage": "buff_duration_update",
+            "source_file": str(files["buff"] or ""),
+            "lines": "94-110",
+            "fields": "durationType, remainTime, RemoveBuff",
+            "ownership_meaning": "For durationType=0 buffs, client updates lifetime/removal display state.",
+            "formula_evidence": "timer_only",
+            "code_excerpt": _source_excerpt(files["buff"], 94, 110),
+        },
+        {
+            "stage": "server_result_packet_registration",
+            "source_file": str(files["buff_net_logic"] or ""),
+            "lines": "9-53",
+            "fields": "SM_BuffChangeHpAndMp -> BuffMgr.UpdateBuffResult(msg.resultVOs)",
+            "ownership_meaning": "Buff damage/recovery numbers arrive through a server-to-client result packet.",
+            "formula_evidence": "server_result_packet",
+            "code_excerpt": _source_excerpt(files["buff_net_logic"], 9, 53),
+        },
+        {
+            "stage": "server_result_packet_schema",
+            "source_file": str(files["sm_buff_change"] or ""),
+            "lines": "11-20",
+            "fields": "SM_BuffChangeHpAndMp.resultVOs",
+            "ownership_meaning": "The packet carries a list of BuffResultVO values.",
+            "formula_evidence": "server_result_packet",
+            "code_excerpt": _source_excerpt(files["sm_buff_change"], 11, 20),
+        },
+        {
+            "stage": "buff_result_vo_schema",
+            "source_file": str(files["buff_result_vo"] or ""),
+            "lines": "11-35",
+            "fields": "id, ownerId, casterId, targetId, modelId, damage, damageView, recoverHp, recoverMp, fightEffect",
+            "ownership_meaning": "`BuffResultVO` has result/display fields but no `configId`/`buffId` config link.",
+            "formula_evidence": "computed_values_only",
+            "code_excerpt": _source_excerpt(files["buff_result_vo"], 11, 35),
+        },
+        {
+            "stage": "buff_result_dispatch",
+            "source_file": str(files["buff_mgr"] or ""),
+            "lines": "77-82",
+            "fields": "BuffMgr.UpdateBuffResult -> EntityFightView.AddBuffResult",
+            "ownership_meaning": "Client dispatches already-computed result values to the target entity view.",
+            "formula_evidence": "display_dispatch",
+            "code_excerpt": _source_excerpt(files["buff_mgr"], 77, 82),
+        },
+        {
+            "stage": "buff_result_projection",
+            "source_file": str(files["entity_fight_view"] or ""),
+            "lines": "751-762",
+            "fields": "AddBuffResult, HurtData, damage/damageView/recoverHp/recoverMp/fightEffect",
+            "ownership_meaning": "Entity view projects packet result fields into hurt/heal display data.",
+            "formula_evidence": "display_projection",
+            "code_excerpt": _source_excerpt(files["entity_fight_view"], 751, 762),
+        },
+    ]
+
+
+def build_fanxiu_gongfa_homemake_nonfunnel_buff_boundary_probe(
+    *,
+    buff_id: str | int = "385002010",
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_gongfa_homemake_mechanism_drilldown_inputs(export_base)
+
+    buff_id_text = str(buff_id or "").strip() or "385002010"
+    field_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_buff_field_semantics.tsv")
+    parameter_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_buff_parameter_semantics.tsv")
+    link_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_buff_parameter_semantics_links.tsv")
+    correlation_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_buff_result_correlation.tsv")
+    field_usage_rows = _read_tsv_rows(output_dir / "hot_update_gongfa_homemake_buff_result_field_usage.tsv")
+
+    selected_rows = [row for row in field_rows if str(row.get("buff_id", "")).strip() == buff_id_text]
+    selected = selected_rows[0] if selected_rows else {}
+    side_feature = str(selected.get("side_jie_feature") or "").strip()
+    family_rows = [
+        row for row in field_rows if side_feature and str(row.get("side_jie_feature", "")).strip() == side_feature
+    ]
+    parameter_matches = [
+        row for row in parameter_rows if str(row.get("buff_id", "")).strip() == buff_id_text
+    ]
+    correlation_matches = [
+        row for row in correlation_rows if str(row.get("buff_id", "")).strip() == buff_id_text
+    ]
+    selected_links = [row for row in link_rows if str(row.get("buff_id", "")).strip() == buff_id_text]
+    flow_rows = _collect_gongfa_homemake_nonfunnel_buff_flow_rows(export_base)
+    cpp2il_hits = _scan_cpp2il_term_hits(
+        export_base,
+        [buff_id_text, str(selected.get("buff_name") or ""), "SM_BuffChangeHpAndMp", "BuffResultVO", "BuffVO"],
+        limit=80,
+    )
+
+    drilldown_rows = [
+        {
+            "stage": "xianshu_side_feature_to_buff",
+            "evidence_source": "hot_update_gongfa_homemake_buff_field_semantics.tsv",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "high_static_config" if selected else "missing",
+            "key_fields": _format_drilldown_key_fields(
+                selected,
+                [
+                    "gongfa_id",
+                    "gongfa_name",
+                    "side_jie_name",
+                    "side_jie_feature",
+                    "side_jie_param",
+                    "buff_desc",
+                ],
+            ),
+            "conclusion": "SideFeatureJie.feature prefix resolves to this BuffResource candidate.",
+        },
+        {
+            "stage": "buff_lifecycle_fields",
+            "evidence_source": "hot_update_gongfa_homemake_buff_field_semantics.tsv",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "high_static_config" if selected else "missing",
+            "key_fields": _format_drilldown_key_fields(
+                selected,
+                [
+                    "buff_type",
+                    "duration_seconds",
+                    "periodic_seconds",
+                    "max_trigger_count",
+                    "relation_type",
+                    "layer",
+                    "field_semantics",
+                ],
+            ),
+            "conclusion": "This explains timing/lifecycle/state display; empty type means no special client logic branch like FUNNEL.",
+        },
+        {
+            "stage": "parameter_surface",
+            "evidence_source": "hot_update_gongfa_homemake_buff_parameter_semantics.tsv",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "empty_or_display_parameters",
+            "key_fields": _unique_join(
+                (_format_drilldown_key_fields(row, ["has_direct_formula_parameters", "populated_parameter_fields"]) for row in parameter_matches),
+                limit=6,
+            ),
+            "conclusion": "No direct formula parameters are populated for this buff candidate.",
+        },
+        {
+            "stage": "runtime_state_link",
+            "evidence_source": "BuffVO + Buff.InitData",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "high_state_link",
+            "key_fields": "BuffVO.configId -> BuffResource.id; Buff.InitData loads BuffConfig by configId",
+            "conclusion": "Active buff state can be linked back to this config id.",
+        },
+        {
+            "stage": "result_packet_boundary",
+            "evidence_source": "hot_update_gongfa_homemake_buff_result_correlation.tsv",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "high_boundary" if correlation_matches else "missing",
+            "key_fields": _unique_join(
+                (
+                    _format_drilldown_key_fields(
+                        row,
+                        [
+                            "state_packet_link",
+                            "result_packet_config_field",
+                            "result_packet_consumed_fields",
+                            "static_correlation_status",
+                        ],
+                    )
+                    for row in correlation_matches
+                ),
+                limit=3,
+            ),
+            "conclusion": "BuffResultVO carries computed result/display values but no visible configId/buffId to statically reattach one result row to this config.",
+        },
+        {
+            "stage": "cpp2il_named_surface",
+            "evidence_source": "Cpp2IL diffable C#/ISIL term scan",
+            "object_id": buff_id_text,
+            "object_name": selected.get("buff_name", ""),
+            "confidence": "negative_or_generic_hits",
+            "key_fields": f"hits={len(cpp2il_hits)}",
+            "conclusion": "Current Cpp2IL output does not expose a stronger named formula producer for this buff.",
+        },
+    ]
+
+    drilldown_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_drilldown.tsv",
+        ["stage", "evidence_source", "object_id", "object_name", "confidence", "key_fields", "conclusion"],
+        drilldown_rows,
+    )
+    flow_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_flow.tsv",
+        ["stage", "source_file", "lines", "fields", "ownership_meaning", "formula_evidence", "code_excerpt"],
+        flow_rows,
+    )
+    cpp2il_hit_count = _write_tsv(
+        output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_cpp2il_hits.tsv",
+        ["term", "source_root", "source_file", "line", "text"],
+        cpp2il_hits,
+    )
+
+    lines = [
+        "# GongFaHomeMake 普通 buff 结果边界",
+        "",
+        f"- 导出目录：`{export_base}`",
+        f"- 目标 buff：`{buff_id_text}` `{selected.get('buff_name', '')}`",
+        f"- 来源词缀：`{selected.get('side_jie_name', '')}` / feature `{side_feature}`",
+        f"- 来源功法数：{len({row.get('gongfa_id') for row in selected_rows})}；同 feature buff 行：{len(family_rows)}",
+        "- 口径：只做静态只读归属分析；这里不注入、不改包、不尝试重放或修改战斗结果。",
+        "",
+        "## 结论",
+        "",
+        f"- `{buff_id_text}` 是 `{selected.get('side_jie_name', '')}` 的 `BuffResource` 前缀候选，描述为 `{selected.get('buff_desc', '')}`。",
+        f"- 它是普通/空 type buff：持续 `{selected.get('duration_seconds', '')}`，每 `{selected.get('periodic_seconds', '')}` 周期触发/刷新，`layer={selected.get('layer', '')}`，`relationType={selected.get('relation_type', '')}`。",
+        "- 活跃状态可通过 `BuffVO.configId -> BuffResource.id` 回连到配置；这是状态归属，不是结果公式。",
+        "- 结果值走 `SM_BuffChangeHpAndMp.resultVOs -> BuffResultVO -> BuffMgr.UpdateBuffResult -> EntityFightView.AddBuffResult`；`BuffResultVO` 没有可见 `configId/buffId` 字段。",
+        "- 因此当前静态 Lua/Cpp2IL 证据不能把某条 `BuffResultVO` 精确归属回这个普通 buff，也没看到客户端公式；若要精确结果归属，需要隐私过滤运行时样本或更深服务端/原生证据。",
+        "",
+        "## 证据链",
+        "",
+        "| 阶段 | 置信度 | 关键字段 | 结论 |",
+        "| --- | --- | --- | --- |",
+    ]
+    for row in drilldown_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('stage', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('confidence', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('key_fields', ''), limit=260)} | "
+            f"{_markdown_table_cell(row.get('conclusion', ''), limit=260)} |"
+        )
+    lines.extend(["", "## 通用结果链路", "", "| 阶段 | 字段 | 含义 | 公式证据 |", "| --- | --- | --- | --- |"])
+    for row in flow_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('stage', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('fields', ''), limit=220)} | "
+            f"{_markdown_table_cell(row.get('ownership_meaning', ''), limit=260)} | "
+            f"{_markdown_table_cell(row.get('formula_evidence', ''), limit=120)} |"
+        )
+    markdown_path = output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "params": {"buff_id": buff_id_text},
+        "counts": {
+            "drilldown_rows": drilldown_count,
+            "selected_rows": len(selected_rows),
+            "family_buff_rows": len(family_rows),
+            "parameter_rows": len(parameter_matches),
+            "parameter_links": len(selected_links),
+            "correlation_rows": len(correlation_matches),
+            "field_usage_rows": len(field_usage_rows),
+            "flow_rows": flow_count,
+            "cpp2il_hits": cpp2il_hit_count,
+        },
+        "verdict": {
+            "origin_to_buffresource_closed": bool(selected_rows),
+            "nonfunnel_buff_type": not str(selected.get("buff_type") or "").strip(),
+            "state_packet_links_config_id": any("BuffVO.configId" in str(row.get("state_packet_link", "")) for row in correlation_matches),
+            "result_packet_has_config_id": any(
+                str(row.get("result_packet_config_field", "")).strip() not in {"", "missing"}
+                for row in correlation_matches
+            ),
+            "direct_formula_parameters_found": any(
+                str(row.get("has_direct_formula_parameters", "")).lower() == "true" for row in parameter_matches
+            ),
+            "static_result_to_buffresource_correlation_closed": False,
+            "damage_values_from_server_result_packet": True,
+            "needs_runtime_capture_for_exact_result_attribution": True,
+            "next_static_step": "compare another non-FUNNEL buff family or collect privacy-filtered SM_BuffChangeHpAndMp samples if exact attribution is required",
+        },
+        "outputs": {
+            "drilldown": str(output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_drilldown.tsv"),
+            "flow": str(output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_flow.tsv"),
+            "cpp2il_hits": str(output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_cpp2il_hits.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_report.json"),
+        },
+    }
+    (output_dir / "hot_update_gongfa_homemake_nonfunnel_buff_boundary_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
 def _collect_gongfa_homemake_result_packet_source_files(export_base: Path) -> dict[str, Path | None]:
     by_source = export_base / "by_source" / "lscripts"
     return {
@@ -21081,6 +25192,850 @@ def build_fanxiu_fight_result_family_decoder_probe(
         },
     }
     (output_dir / "hot_update_fight_result_family_decoder_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _collect_buff_change_result_decoder_files(export_base: Path) -> dict[str, Path | None]:
+    by_source = export_base / "by_source" / "lscripts"
+    return {
+        "buff_net_logic": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffNetLogic.lua"),
+        "sm_buff_change": _find_one_file(
+            by_source, "gamesystem/game/message_*/text_assets/SM_BuffChangeHpAndMp.lua"
+        ),
+        "buff_result_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffResultVO.lua"),
+        "buff_mgr": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffMgr.lua"),
+        "entity_fight_view": _find_one_file(by_source, "core_*/text_assets/EntityFightView.lua")
+        or _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/EntityFightView.lua"),
+        "buff_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffVO.lua"),
+    }
+
+
+def _buff_change_result_field_role(packet_name: str, field: str) -> str:
+    roles = {
+        "resultVOs": "list of BuffResultVO server result rows",
+        "id": "runtime result row id; visible Lua does not use it as BuffResource config id",
+        "ownerId": "entity that owns/receives this buff result",
+        "casterId": "entity that caused the buff result",
+        "targetId": "result target entity id",
+        "modelId": "model/display context; visible Lua does not use it for config ownership",
+        "damage": "numeric damage value from result packet",
+        "damageView": "display damage value from result packet",
+        "recoverHp": "healing value from result packet",
+        "recoverMp": "MP recovery value from result packet",
+        "fightEffect": "result display flags/effect bitmask",
+    }
+    if packet_name == "BuffResultVO":
+        return roles.get(field, "BuffResultVO field")
+    return roles.get(field, "buff result packet field")
+
+
+def _extract_buff_change_result_schema_rows(packet_name: str, path: Path | None) -> list[dict[str, object]]:
+    if not path or not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    rows: list[dict[str, object]] = []
+    order = 0
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        read_match = re.search(r"self\.(?P<field>\w+)\s*=\s*self:(?P<method>read\w+)\(", stripped)
+        list_match = re.search(r"self:readMessageList2List\(self\.(?P<field>\w+)\)", stripped)
+        super_match = "_M._super_.reading(self)" in stripped
+        if read_match:
+            order += 1
+            field = read_match.group("field")
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": order,
+                    "field": field,
+                    "read_method": read_match.group("method"),
+                    "nested_type": "",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": _buff_change_result_field_role(packet_name, field),
+                    "ownership_note": "no_config_link" if field not in {"resultVOs"} else "result_list",
+                }
+            )
+            continue
+        if list_match:
+            order += 1
+            field = list_match.group("field")
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": order,
+                    "field": field,
+                    "read_method": "readMessageList2List",
+                    "nested_type": "BuffResultVO" if field == "resultVOs" else "",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": _buff_change_result_field_role(packet_name, field),
+                    "ownership_note": "server_result_list_without_config_id",
+                }
+            )
+            continue
+        if super_match:
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": "super",
+                    "field": "BaseMessage.*",
+                    "read_method": "_super_.reading",
+                    "nested_type": "BaseMessage",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": "generated packet base read hook",
+                    "ownership_note": "base_packet",
+                }
+            )
+    return rows
+
+
+def _buff_change_result_decoder_packet_rows(files: dict[str, Path | None]) -> list[dict[str, object]]:
+    handler_lines, handler_excerpt = _find_lua_function_excerpt(files["buff_net_logic"], "SM_BuffChangeHpAndMpFunc")
+    return [
+        {
+            "packet": "SM_BuffChangeHpAndMp",
+            "packet_id": _lua_packet_id(files["sm_buff_change"]),
+            "value_vo": "BuffResultVO",
+            "value_vo_id": _lua_packet_id(files["buff_result_vo"]),
+            "handler": "BuffNetLogic.SM_BuffChangeHpAndMpFunc",
+            "consumer": "BuffMgr.UpdateBuffResult(msg.resultVOs)",
+            "ownership_fields": "none: BuffResultVO has no configId/buffId",
+            "runtime_state_counterpart": "BuffVO.configId links active state to BuffResource.id",
+            "schema_file": str(files["sm_buff_change"] or ""),
+            "vo_file": str(files["buff_result_vo"] or ""),
+            "handler_file": str(files["buff_net_logic"] or ""),
+            "handler_lines": handler_lines,
+            "handler_excerpt": handler_excerpt,
+        }
+    ]
+
+
+def _buff_change_result_decoder_flow_rows(files: dict[str, Path | None]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    specs = [
+        (
+            "message_pool_registration",
+            files["buff_net_logic"],
+            "BuffNetLogic",
+            "F_Register(_SM_BuffChangeHpAndMp:getId(), ..., self.SM_BuffChangeHpAndMpFunc)",
+            "packet 60034 is registered as a server-to-client buff result message",
+            "BuffNetLogic",
+            18,
+            27,
+        ),
+        (
+            "packet_handler",
+            files["buff_net_logic"],
+            "SM_BuffChangeHpAndMpFunc",
+            "msg.resultVOs -> BuffMgr.UpdateBuffResult",
+            "handler forwards the result list without adding config ownership fields",
+            "SM_BuffChangeHpAndMpFunc",
+            None,
+            None,
+        ),
+        (
+            "manager_dispatch",
+            files["buff_mgr"],
+            "UpdateBuffResult",
+            "BuffMgr.UpdateBuffResult -> EntityFightView.AddBuffResult",
+            "manager dispatches each BuffResultVO to the owner entity view",
+            "UpdateBuffResult",
+            None,
+            None,
+        ),
+        (
+            "display_projection",
+            files["entity_fight_view"],
+            "AddBuffResult",
+            "BuffResultVO.damage/damageView/recoverHp/recoverMp/fightEffect -> HurtData",
+            "entity view projects already-computed result values into visual hurt/heal data",
+            "AddBuffResult",
+            None,
+            None,
+        ),
+        (
+            "state_packet_counterpart",
+            files["buff_vo"],
+            "BuffVO.reading",
+            "BuffVO.configId -> BuffResource.id",
+            "active buff state can link to config; the result packet cannot",
+            "reading",
+            None,
+            None,
+        ),
+    ]
+    for stage, path, function_name, fields, meaning, lookup_name, start, end in specs:
+        if start is not None and end is not None:
+            line_range = f"{start}-{end}"
+            excerpt = _source_excerpt(path, start, end)
+        else:
+            line_range, excerpt = _find_lua_function_excerpt(path, lookup_name, max_lines=14)
+        rows.append(
+            {
+                "stage": stage,
+                "function": function_name,
+                "fields": fields,
+                "meaning": meaning,
+                "source_file": str(path or ""),
+                "lines": line_range,
+                "code_excerpt": excerpt,
+            }
+        )
+    return rows
+
+
+def _buff_change_result_decoder_privacy_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "field": "proId",
+            "sample_action": "allowlist 60034 only when studying ordinary buff results",
+            "reason": "narrows runtime observation to the known buff result packet",
+        },
+        {
+            "field": "resultVOs[].damage/damageView/recoverHp/recoverMp/fightEffect/modelId",
+            "sample_action": "keep numeric/display fields",
+            "reason": "needed for formula/result attribution checks",
+        },
+        {
+            "field": "resultVOs[].id/ownerId/casterId/targetId",
+            "sample_action": "hash or truncate runtime entity ids",
+            "reason": "ids help correlate rows without exposing live character/session identity",
+        },
+        {
+            "field": "account/token/sign/device/server/session/raw socket stream",
+            "sample_action": "do not persist",
+            "reason": "not needed for this packet-level decoder and may contain private credentials/session state",
+        },
+        {
+            "field": "SM_BuffChangeHpAndMp payload",
+            "sample_action": "store decoded JSON shape only after field allowlist filtering",
+            "reason": "keeps future samples useful while avoiding broad packet dumps",
+        },
+    ]
+
+
+def build_fanxiu_buff_change_result_decoder_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Build a decoder/consumer map for SM_BuffChangeHpAndMp/BuffResultVO."""
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    files = _collect_buff_change_result_decoder_files(export_base)
+
+    packet_rows = _buff_change_result_decoder_packet_rows(files)
+    schema_rows = _extract_buff_change_result_schema_rows("SM_BuffChangeHpAndMp", files["sm_buff_change"])
+    schema_rows.extend(_extract_buff_change_result_schema_rows("BuffResultVO", files["buff_result_vo"]))
+    flow_rows = _buff_change_result_decoder_flow_rows(files)
+    privacy_rows = _buff_change_result_decoder_privacy_rows()
+
+    packet_count = _write_tsv(
+        output_dir / "hot_update_buff_change_result_decoder_packet.tsv",
+        [
+            "packet",
+            "packet_id",
+            "value_vo",
+            "value_vo_id",
+            "handler",
+            "consumer",
+            "ownership_fields",
+            "runtime_state_counterpart",
+            "schema_file",
+            "vo_file",
+            "handler_file",
+            "handler_lines",
+            "handler_excerpt",
+        ],
+        packet_rows,
+    )
+    schema_count = _write_tsv(
+        output_dir / "hot_update_buff_change_result_decoder_schema.tsv",
+        [
+            "packet",
+            "order",
+            "field",
+            "read_method",
+            "nested_type",
+            "line",
+            "source_file",
+            "role",
+            "ownership_note",
+        ],
+        schema_rows,
+    )
+    flow_count = _write_tsv(
+        output_dir / "hot_update_buff_change_result_decoder_flow.tsv",
+        ["stage", "function", "fields", "meaning", "source_file", "lines", "code_excerpt"],
+        flow_rows,
+    )
+    privacy_count = _write_tsv(
+        output_dir / "hot_update_buff_change_result_decoder_privacy.tsv",
+        ["field", "sample_action", "reason"],
+        privacy_rows,
+    )
+
+    packet_id = str(packet_rows[0].get("packet_id", "")) if packet_rows else ""
+    value_vo_id = str(packet_rows[0].get("value_vo_id", "")) if packet_rows else ""
+    buff_result_fields = [str(row.get("field")) for row in schema_rows if row.get("packet") == "BuffResultVO"]
+    result_packet_fields = [str(row.get("field")) for row in schema_rows if row.get("packet") == "SM_BuffChangeHpAndMp"]
+    verdict = {
+        "buff_change_packet_found": packet_id == "60034",
+        "buff_result_vo_found": value_vo_id == "60033",
+        "result_list_nested_type_found": any(
+            row.get("packet") == "SM_BuffChangeHpAndMp"
+            and row.get("field") == "resultVOs"
+            and row.get("nested_type") == "BuffResultVO"
+            for row in schema_rows
+        ),
+        "buff_result_vo_has_no_config_link": not any(
+            field.lower() in {"configid", "buffid"} for field in buff_result_fields
+        ),
+        "numeric_result_fields_found": all(
+            field in buff_result_fields
+            for field in ["damage", "damageView", "recoverHp", "recoverMp", "fightEffect"]
+        ),
+        "consumer_flow_reaches_hurtdata": any(row.get("stage") == "display_projection" and row.get("code_excerpt") for row in flow_rows),
+        "state_counterpart_links_config_id": any(
+            row.get("stage") == "state_packet_counterpart" and "configId" in str(row.get("code_excerpt", ""))
+            for row in flow_rows
+        ),
+        "decoder_spec_ready_for_runtime_samples": True,
+    }
+    verdict["supports_buff_change_decoder_map"] = all(verdict.values())
+
+    lines = [
+        "# Buff Change Result Decoder Probe",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Packet rows: {packet_count}",
+        f"- Schema rows: {schema_count}",
+        f"- Flow rows: {flow_count}",
+        f"- Privacy rows: {privacy_count}",
+        "- Scope: maps `SM_BuffChangeHpAndMp` and nested `BuffResultVO` for future privacy-filtered runtime samples. This report does not capture traffic, hook the client, patch APKs, or replay packets.",
+        "",
+        "## Packet",
+        "",
+        "| Packet | Id | Value VO | VO Id | Handler | Consumer | Ownership |",
+        "| --- | ---: | --- | ---: | --- | --- | --- |",
+    ]
+    for row in packet_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('packet', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('packet_id', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('value_vo', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('value_vo_id', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('handler', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('consumer', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('ownership_fields', ''), limit=160)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Decode Order",
+            "",
+            "- Allowlist packet id `60034` (`SM_BuffChangeHpAndMp`).",
+            "- Read `resultVOs` with `readMessageList2List`; each element is `BuffResultVO` (`60033`).",
+            "- For each `BuffResultVO`, read `id`, `ownerId`, `casterId`, `targetId`, `modelId`, `damage`, `damageView`, `recoverHp`, `recoverMp`, and `fightEffect` in that order.",
+            "- `BuffResultVO` has no visible `configId` or `buffId`; active state attribution remains on the separate `BuffVO.configId` path.",
+            "- Final consumer path is `BuffNetLogic.SM_BuffChangeHpAndMpFunc -> BuffMgr.UpdateBuffResult -> EntityFightView.AddBuffResult -> HurtData`.",
+            "",
+            "## BuffResultVO Fields",
+            "",
+            "| Order | Field | Read | Role |",
+            "| ---: | --- | --- | --- |",
+        ]
+    )
+    for row in schema_rows:
+        if row.get("packet") != "BuffResultVO" or str(row.get("order")) == "super":
+            continue
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('order', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('field', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('read_method', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('role', ''), limit=200)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Runtime Sampling Boundary",
+            "",
+            "- If exact ordinary-buff result attribution is needed later, sample only decoded `60034` rows and apply the privacy filter in `hot_update_buff_change_result_decoder_privacy.tsv`.",
+            "- This decoder can prove payload shape and result values, but it still cannot by itself link one result row back to `BuffResource.id` without additional runtime correlation evidence.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_buff_change_result_decoder_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "packet_rows": packet_count,
+            "schema_rows": schema_count,
+            "flow_rows": flow_count,
+            "privacy_rows": privacy_count,
+            "packet_id": packet_id,
+            "value_vo_id": value_vo_id,
+            "result_packet_fields": result_packet_fields,
+            "buff_result_vo_fields": len(buff_result_fields),
+        },
+        "verdict": verdict,
+        "outputs": {
+            "packet": str(output_dir / "hot_update_buff_change_result_decoder_packet.tsv"),
+            "schema": str(output_dir / "hot_update_buff_change_result_decoder_schema.tsv"),
+            "flow": str(output_dir / "hot_update_buff_change_result_decoder_flow.tsv"),
+            "privacy": str(output_dir / "hot_update_buff_change_result_decoder_privacy.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_buff_change_result_decoder_report.json"),
+        },
+    }
+    (output_dir / "hot_update_buff_change_result_decoder_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _collect_buff_state_decoder_files(export_base: Path) -> dict[str, Path | None]:
+    by_source = export_base / "by_source" / "lscripts"
+    return {
+        "buff_net_logic": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffNetLogic.lua"),
+        "sm_add_buff": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_AddBuff.lua"),
+        "sm_update_buff": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_UpdateBuff.lua"),
+        "sm_remove_buff": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_RemoveBuff.lua"),
+        "sm_all_buff": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/SM_AllBuff.lua"),
+        "buff_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffVO.lua"),
+        "buff_effect_vo": _find_one_file(by_source, "gamesystem/game/message_*/text_assets/BuffEffectVO.lua"),
+        "buff_mgr": _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/BuffMgr.lua"),
+        "entity_fight_view": _find_one_file(by_source, "core_*/text_assets/EntityFightView.lua")
+        or _find_one_file(by_source, "gamesystem/game/battle_*/text_assets/EntityFightView.lua"),
+    }
+
+
+def _buff_state_field_role(packet_name: str, field: str) -> str:
+    roles = {
+        "buffVO": "single BuffVO state payload carrying runtime buff id and configId",
+        "buffVOList": "full active BuffVO state list",
+        "id": "runtime buff instance id",
+        "configId": "BuffResource.id config link",
+        "layer": "buff stack/layer count",
+        "ownerId": "entity that owns the active buff",
+        "remainTime": "remaining runtime duration",
+        "duration": "total runtime duration",
+        "effectVO": "optional nested effect state; current base bean has no visible fields",
+        "destroyReason": "remove reason/display context",
+    }
+    return roles.get(field, f"{packet_name} field")
+
+
+def _extract_buff_state_schema_rows(packet_name: str, path: Path | None) -> list[dict[str, object]]:
+    if not path or not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return []
+    rows: list[dict[str, object]] = []
+    order = 0
+    for line_no, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        bean_match = re.search(
+            r"self\.(?P<field>\w+)\s*=.*?self:readBean\(typeof\((?P<nested>\w+)\)\)",
+            stripped,
+        )
+        read_match = re.search(r"self\.(?P<field>\w+)\s*=\s*self:(?P<method>read\w+)\(", stripped)
+        list_match = re.search(r"self:readMessageList2List\(self\.(?P<field>\w+)\)", stripped)
+        super_match = "_M._super_.reading(self)" in stripped
+        if bean_match:
+            order += 1
+            field = bean_match.group("field")
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": order,
+                    "field": field,
+                    "read_method": "readBean",
+                    "nested_type": bean_match.group("nested"),
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": _buff_state_field_role(packet_name, field),
+                    "ownership_note": "config_link_inside_buff_vo" if bean_match.group("nested") == "BuffVO" else "nested_state",
+                }
+            )
+            continue
+        if read_match:
+            order += 1
+            field = read_match.group("field")
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": order,
+                    "field": field,
+                    "read_method": read_match.group("method"),
+                    "nested_type": "",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": _buff_state_field_role(packet_name, field),
+                    "ownership_note": "config_link" if field == "configId" else "runtime_state",
+                }
+            )
+            continue
+        if list_match:
+            order += 1
+            field = list_match.group("field")
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": order,
+                    "field": field,
+                    "read_method": "readMessageList2List",
+                    "nested_type": "BuffVO" if field == "buffVOList" else "",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": _buff_state_field_role(packet_name, field),
+                    "ownership_note": "full_state_snapshot_list",
+                }
+            )
+            continue
+        if super_match:
+            rows.append(
+                {
+                    "packet": packet_name,
+                    "order": "super",
+                    "field": "BaseMessage.*",
+                    "read_method": "_super_.reading",
+                    "nested_type": "BaseMessage",
+                    "line": line_no,
+                    "source_file": str(path),
+                    "role": "generated packet base read hook",
+                    "ownership_note": "base_packet",
+                }
+            )
+    return rows
+
+
+def _buff_state_decoder_packet_rows(files: dict[str, Path | None]) -> list[dict[str, object]]:
+    specs = [
+        (
+            "SM_RemoveBuff",
+            "sm_remove_buff",
+            "server_state_remove",
+            "SM_RemoveBuffFunc",
+            "BuffMgr.RemoveBuff(msg)",
+            "id/configId/ownerId/destroyReason",
+        ),
+        (
+            "SM_AddBuff",
+            "sm_add_buff",
+            "server_state_add",
+            "SM_AddBuffFunc",
+            "BuffMgr.AddBuff(msg.buffVO)",
+            "BuffVO.id/configId/ownerId/layer/remainTime/duration",
+        ),
+        (
+            "SM_UpdateBuff",
+            "sm_update_buff",
+            "server_state_update",
+            "SM_UpdateBuffFunc",
+            "BuffMgr.ModifyBuff(msg.buffVO)",
+            "BuffVO.id/configId/ownerId/layer/remainTime/duration",
+        ),
+        (
+            "SM_AllBuff",
+            "sm_all_buff",
+            "server_state_snapshot",
+            "SM_AllBuffFunc",
+            "RemoveAllBuff then AddBuff for each BuffVO",
+            "BuffVOList[].id/configId/ownerId/layer/remainTime/duration",
+        ),
+        ("BuffVO", "buff_vo", "state_value_object", "", "nested in buff state packets", "id/configId/ownerId"),
+        ("BuffEffectVO", "buff_effect_vo", "state_value_object", "", "nested in BuffVO.effectVO", "no visible fields"),
+    ]
+    rows: list[dict[str, object]] = []
+    for packet, file_key, role, handler, consumer, ownership_fields in specs:
+        path = files[file_key]
+        handler_lines, handler_excerpt = ("", "")
+        if handler:
+            handler_lines, handler_excerpt = _find_lua_function_excerpt(files["buff_net_logic"], handler)
+        rows.append(
+            {
+                "packet": packet,
+                "packet_id": _lua_packet_id(path),
+                "role": role,
+                "handler": handler,
+                "consumer": consumer,
+                "ownership_fields": ownership_fields,
+                "schema_file": str(path or ""),
+                "handler_file": str(files["buff_net_logic"] or ""),
+                "handler_lines": handler_lines,
+                "handler_excerpt": handler_excerpt,
+            }
+        )
+    return rows
+
+
+def _buff_state_decoder_flow_rows(files: dict[str, Path | None]) -> list[dict[str, object]]:
+    specs = [
+        (
+            "message_pool_registration",
+            files["buff_net_logic"],
+            "BuffNetLogic",
+            "F_Register SM_AddBuff/SM_RemoveBuff/SM_UpdateBuff/SM_AllBuff",
+            "server state packets are registered in BuffNetLogic",
+            "BuffNetLogic",
+            18,
+            27,
+        ),
+        ("add_state_handler", files["buff_net_logic"], "SM_AddBuffFunc", "msg.buffVO", "add single BuffVO state", "SM_AddBuffFunc", None, None),
+        (
+            "update_state_handler",
+            files["buff_net_logic"],
+            "SM_UpdateBuffFunc",
+            "msg.buffVO",
+            "update single BuffVO state",
+            "SM_UpdateBuffFunc",
+            None,
+            None,
+        ),
+        (
+            "remove_state_handler",
+            files["buff_net_logic"],
+            "SM_RemoveBuffFunc",
+            "msg.id/msg.configId/msg.ownerId",
+            "remove active buff by instance id and config id",
+            "SM_RemoveBuffFunc",
+            None,
+            None,
+        ),
+        (
+            "snapshot_state_handler",
+            files["buff_net_logic"],
+            "SM_AllBuffFunc",
+            "msg.buffVOList",
+            "replace active buff state then add each BuffVO",
+            "SM_AllBuffFunc",
+            None,
+            None,
+        ),
+        ("manager_add", files["buff_mgr"], "BuffMgr.AddBuff", "buffVO.ownerId", "route add state to owner entity", "AddBuff", None, None),
+        ("manager_modify", files["buff_mgr"], "BuffMgr.ModifyBuff", "msg.buffVO.ownerId", "route update state to owner entity", "ModifyBuff", None, None),
+        ("manager_remove", files["buff_mgr"], "BuffMgr.RemoveBuff", "msg.ownerId/id/configId", "route remove state to owner entity", "RemoveBuff", None, None),
+        (
+            "entity_add_buff",
+            files["entity_fight_view"],
+            "EntityFightView.AddBuff",
+            "BuffDic keyed by configId",
+            "entity view stores active buff state under buff config id",
+            "AddBuff",
+            None,
+            None,
+        ),
+        (
+            "entity_modify_buff",
+            files["entity_fight_view"],
+            "EntityFightView.ModifyBuff",
+            "buffVO.id/configId/layer/remainTime",
+            "entity view refreshes active buff instance state",
+            "ModifyBuff",
+            None,
+            None,
+        ),
+        (
+            "entity_remove_buff",
+            files["entity_fight_view"],
+            "EntityFightView.RemoveBuff",
+            "uid/configId/destroyReason",
+            "entity view removes active buff instance state",
+            "RemoveBuff",
+            None,
+            None,
+        ),
+    ]
+    rows: list[dict[str, object]] = []
+    for stage, path, function_name, fields, meaning, lookup_name, start, end in specs:
+        if start is not None and end is not None:
+            line_range = f"{start}-{end}"
+            excerpt = _source_excerpt(path, start, end)
+        else:
+            line_range, excerpt = _find_lua_function_excerpt(path, lookup_name, max_lines=18)
+        rows.append(
+            {
+                "stage": stage,
+                "function": function_name,
+                "fields": fields,
+                "meaning": meaning,
+                "source_file": str(path or ""),
+                "lines": line_range,
+                "code_excerpt": excerpt,
+            }
+        )
+    return rows
+
+
+def build_fanxiu_buff_state_decoder_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Build a decoder/consumer map for active buff state packets."""
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    files = _collect_buff_state_decoder_files(export_base)
+    packet_rows = _buff_state_decoder_packet_rows(files)
+    schema_rows: list[dict[str, object]] = []
+    for packet, key in [
+        ("SM_RemoveBuff", "sm_remove_buff"),
+        ("SM_AddBuff", "sm_add_buff"),
+        ("SM_UpdateBuff", "sm_update_buff"),
+        ("SM_AllBuff", "sm_all_buff"),
+        ("BuffVO", "buff_vo"),
+        ("BuffEffectVO", "buff_effect_vo"),
+    ]:
+        schema_rows.extend(_extract_buff_state_schema_rows(packet, files[key]))
+    flow_rows = _buff_state_decoder_flow_rows(files)
+
+    packet_count = _write_tsv(
+        output_dir / "hot_update_buff_state_decoder_packets.tsv",
+        [
+            "packet",
+            "packet_id",
+            "role",
+            "handler",
+            "consumer",
+            "ownership_fields",
+            "schema_file",
+            "handler_file",
+            "handler_lines",
+            "handler_excerpt",
+        ],
+        packet_rows,
+    )
+    schema_count = _write_tsv(
+        output_dir / "hot_update_buff_state_decoder_schema.tsv",
+        [
+            "packet",
+            "order",
+            "field",
+            "read_method",
+            "nested_type",
+            "line",
+            "source_file",
+            "role",
+            "ownership_note",
+        ],
+        schema_rows,
+    )
+    flow_count = _write_tsv(
+        output_dir / "hot_update_buff_state_decoder_flow.tsv",
+        ["stage", "function", "fields", "meaning", "source_file", "lines", "code_excerpt"],
+        flow_rows,
+    )
+    packet_ids = {str(row["packet"]): str(row.get("packet_id", "")) for row in packet_rows}
+    buff_vo_fields = [str(row.get("field", "")) for row in schema_rows if row.get("packet") == "BuffVO"]
+    verdict = {
+        "state_packet_ids_found": all(packet_ids.get(name) for name in ["SM_RemoveBuff", "SM_AddBuff", "SM_UpdateBuff", "SM_AllBuff"]),
+        "buff_vo_id_found": packet_ids.get("BuffVO") == "60017",
+        "buff_effect_vo_is_empty_base_bean": packet_ids.get("BuffEffectVO") == "60051"
+        and not any(row.get("packet") == "BuffEffectVO" and str(row.get("order")) != "super" for row in schema_rows),
+        "buff_vo_has_config_link": "configId" in buff_vo_fields,
+        "buff_vo_has_runtime_instance_id": "id" in buff_vo_fields,
+        "buff_vo_has_owner_and_timing": all(field in buff_vo_fields for field in ["ownerId", "remainTime", "duration"]),
+        "state_flow_reaches_entity_buffdic": any(
+            row.get("stage") == "entity_add_buff" and "BuffDic" in str(row.get("code_excerpt", ""))
+            for row in flow_rows
+        ),
+        "supports_state_decoder_for_result_correlation": True,
+    }
+    verdict["supports_buff_state_decoder_map"] = all(verdict.values())
+
+    lines = [
+        "# Buff State Decoder Probe",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Packet rows: {packet_count}",
+        f"- Schema rows: {schema_count}",
+        f"- Flow rows: {flow_count}",
+        "- Scope: maps active buff state packets and `BuffVO` fields for future privacy-filtered runtime correlation. This report does not capture traffic, hook the client, patch APKs, or replay packets.",
+        "",
+        "## Packet Family",
+        "",
+        "| Packet | Id | Role | Consumer | Ownership Fields |",
+        "| --- | ---: | --- | --- | --- |",
+    ]
+    for row in packet_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('packet', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('packet_id', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('role', ''), limit=100)} | "
+            f"{_markdown_table_cell(row.get('consumer', ''), limit=140)} | "
+            f"{_markdown_table_cell(row.get('ownership_fields', ''), limit=180)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## BuffVO State Fields",
+            "",
+            "| Order | Field | Read | Role |",
+            "| ---: | --- | --- | --- |",
+        ]
+    )
+    for row in schema_rows:
+        if row.get("packet") != "BuffVO" or str(row.get("order")) == "super":
+            continue
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('order', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('field', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('read_method', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('role', ''), limit=200)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Correlation Boundary",
+            "",
+            "- `BuffVO.configId` is the authoritative visible client-side state link back to `BuffResource.id`.",
+            "- `BuffVO.id` is the runtime buff instance id; `SM_RemoveBuff` removes by `id/configId/ownerId`.",
+            "- `SM_BuffChangeHpAndMp/BuffResultVO` result rows still have no visible `configId/buffId`, so this decoder is a companion for runtime correlation, not a static proof by itself.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_buff_state_decoder_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "packet_rows": packet_count,
+            "schema_rows": schema_count,
+            "flow_rows": flow_count,
+            "packet_ids": packet_ids,
+            "buff_vo_fields": len(buff_vo_fields),
+        },
+        "verdict": verdict,
+        "outputs": {
+            "packets": str(output_dir / "hot_update_buff_state_decoder_packets.tsv"),
+            "schema": str(output_dir / "hot_update_buff_state_decoder_schema.tsv"),
+            "flow": str(output_dir / "hot_update_buff_state_decoder_flow.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_buff_state_decoder_report.json"),
+        },
+    }
+    (output_dir / "hot_update_buff_state_decoder_report.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
@@ -22259,6 +27214,19 @@ def _find_latest_socket_capture_decoded_json(export_base: Path) -> Path | None:
     return candidates[0]
 
 
+def _find_socket_capture_decoded_jsons(export_base: Path) -> list[Path]:
+    capture_dir = export_base / "tcp_captures"
+    if not capture_dir.is_dir():
+        return []
+    codeyun_candidates = sorted(capture_dir.glob("*.codeyun_decoded.json"), key=lambda path: path.name.lower())
+    if codeyun_candidates:
+        return codeyun_candidates
+    return sorted(
+        (path for path in capture_dir.glob("*.decoded.json") if not path.name.endswith(".codeyun_decoded.json")),
+        key=lambda path: path.name.lower(),
+    )
+
+
 def _walk_json_keys(value: object) -> Iterable[str]:
     if isinstance(value, dict):
         for key, item in value.items():
@@ -22506,6 +27474,321 @@ def build_fanxiu_socket_capture_fixture_codec_calibration_probe(
         },
     }
     (output_dir / "hot_update_socket_capture_fixture_codec_calibration_report.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return result
+
+
+def _socket_result_sample_target_specs() -> list[dict[str, object]]:
+    return [
+        {
+            "pro_id": 60034,
+            "packet": "SM_BuffChangeHpAndMp",
+            "family": "ordinary_buff_result",
+            "expected_direction": "s2c",
+            "sample_use": "ordinary buff damage/recovery result attribution",
+        },
+        {
+            "pro_id": 60005,
+            "packet": "SM_FightResult",
+            "family": "fight_result_family",
+            "expected_direction": "s2c",
+            "sample_use": "normal skill FightResult attribution",
+        },
+        {
+            "pro_id": 60041,
+            "packet": "SM_FightResultTalisman",
+            "family": "fight_result_family",
+            "expected_direction": "s2c",
+            "sample_use": "talisman FightResult attribution",
+        },
+        {
+            "pro_id": 60054,
+            "packet": "SM_FightResultFunnel",
+            "family": "fight_result_family",
+            "expected_direction": "s2c",
+            "sample_use": "FUNNEL/buff-instance FightResult attribution",
+        },
+        {
+            "pro_id": 60055,
+            "packet": "SM_FightResultPet",
+            "family": "fight_result_family",
+            "expected_direction": "s2c",
+            "sample_use": "pet/part FightResult attribution",
+        },
+    ]
+
+
+def _load_socket_capture_frames(path: Path) -> tuple[list[dict[str, object]], str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return [], f"{type(exc).__name__}: {exc}"
+    raw_frames = data.get("frames", []) if isinstance(data, dict) else []
+    if not isinstance(raw_frames, list):
+        return [], "frames field is not a list"
+    return [frame for frame in raw_frames if isinstance(frame, dict)], ""
+
+
+def build_fanxiu_socket_result_sample_coverage_probe(
+    *,
+    export_root: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Report whether existing decoded TCP fixtures contain combat-result packet samples."""
+    export_base = resolve_fanxiu_export_root(export_root)
+    output_dir = export_base / "apk_static_index"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    decoded_paths = _find_socket_capture_decoded_jsons(export_base)
+    targets = _socket_result_sample_target_specs()
+    target_ids = {int(row["pro_id"]) for row in targets}
+    target_by_id = {int(row["pro_id"]): row for row in targets}
+
+    all_frames: list[dict[str, object]] = []
+    fixture_rows: list[dict[str, object]] = []
+    hit_rows: list[dict[str, object]] = []
+    errors: list[str] = []
+    for decoded_path in decoded_paths:
+        frames, error = _load_socket_capture_frames(decoded_path)
+        if error:
+            errors.append(f"{decoded_path.name}: {error}")
+        target_frames = [frame for frame in frames if isinstance(frame.get("pro_id"), int) and frame.get("pro_id") in target_ids]
+        all_frames.extend({**frame, "_fixture": decoded_path.name} for frame in frames)
+        fixture_rows.append(
+            {
+                "fixture": decoded_path.name,
+                "path": str(decoded_path),
+                "frame_count": len(frames),
+                "c2s_frames": sum(1 for frame in frames if frame.get("direction") == "c2s"),
+                "s2c_frames": sum(1 for frame in frames if frame.get("direction") == "s2c"),
+                "parsed_frames": sum(1 for frame in frames if frame.get("parsed")),
+                "target_result_frames": len(target_frames),
+                "target_ids_present": _unique_join(
+                    str(frame.get("pro_id", "")) for frame in target_frames if isinstance(frame.get("pro_id"), int)
+                ),
+                "error": error,
+            }
+        )
+        for index, frame in enumerate(frames):
+            pro_id = frame.get("pro_id")
+            if not isinstance(pro_id, int) or pro_id not in target_ids:
+                continue
+            spec = target_by_id[pro_id]
+            hit_rows.append(
+                {
+                    "fixture": decoded_path.name,
+                    "index": index,
+                    "direction": frame.get("direction", ""),
+                    "offset": frame.get("offset", ""),
+                    "pro_id": pro_id,
+                    "packet": spec["packet"],
+                    "family": spec["family"],
+                    "name": frame.get("name", ""),
+                    "frame_len": frame.get("frame_len", ""),
+                    "payload_len": frame.get("payload_len", ""),
+                    "zlib": frame.get("zlib", ""),
+                    "parsed": bool(frame.get("parsed")),
+                    "remain": frame.get("remain", ""),
+                    "privacy_note": "metadata_only_no_payload_values",
+                }
+            )
+
+    aggregate_counts: Counter[int] = Counter()
+    aggregate_parsed_counts: Counter[int] = Counter()
+    aggregate_files: dict[int, set[str]] = {int(row["pro_id"]): set() for row in targets}
+    aggregate_offsets: dict[int, list[str]] = {int(row["pro_id"]): [] for row in targets}
+    protocol_counts: Counter[tuple[str, int, str]] = Counter()
+    for frame in all_frames:
+        pro_id = frame.get("pro_id")
+        if not isinstance(pro_id, int):
+            continue
+        direction = str(frame.get("direction", ""))
+        name = str(frame.get("name", ""))
+        protocol_counts[(direction, pro_id, name)] += 1
+        if pro_id in target_ids:
+            aggregate_counts[pro_id] += 1
+            if frame.get("parsed"):
+                aggregate_parsed_counts[pro_id] += 1
+            aggregate_files.setdefault(pro_id, set()).add(str(frame.get("_fixture", "")))
+            if len(aggregate_offsets.setdefault(pro_id, [])) < 8:
+                aggregate_offsets[pro_id].append(str(frame.get("offset", "")))
+
+    target_rows: list[dict[str, object]] = []
+    for spec in targets:
+        pro_id = int(spec["pro_id"])
+        count = aggregate_counts.get(pro_id, 0)
+        target_rows.append(
+            {
+                "pro_id": pro_id,
+                "packet": spec["packet"],
+                "family": spec["family"],
+                "expected_direction": spec["expected_direction"],
+                "sample_use": spec["sample_use"],
+                "frame_count": count,
+                "parsed_count": aggregate_parsed_counts.get(pro_id, 0),
+                "fixtures": _unique_join(sorted(aggregate_files.get(pro_id, set()))),
+                "first_offsets": _unique_join(aggregate_offsets.get(pro_id, [])),
+                "coverage_status": "present" if count else "absent",
+                "interpretation": "usable existing sample candidate" if count else "no existing decoded sample for this packet id",
+            }
+        )
+    protocol_rows = [
+        {
+            "direction": direction,
+            "pro_id": pro_id,
+            "name": name,
+            "count": count,
+            "is_target_result_packet": pro_id in target_ids,
+        }
+        for (direction, pro_id, name), count in sorted(
+            protocol_counts.items(), key=lambda item: (-item[1], item[0][0], item[0][1], item[0][2])
+        )
+    ]
+
+    target_count = _write_tsv(
+        output_dir / "hot_update_socket_result_sample_coverage_targets.tsv",
+        [
+            "pro_id",
+            "packet",
+            "family",
+            "expected_direction",
+            "sample_use",
+            "frame_count",
+            "parsed_count",
+            "fixtures",
+            "first_offsets",
+            "coverage_status",
+            "interpretation",
+        ],
+        target_rows,
+    )
+    fixture_count = _write_tsv(
+        output_dir / "hot_update_socket_result_sample_coverage_fixtures.tsv",
+        [
+            "fixture",
+            "path",
+            "frame_count",
+            "c2s_frames",
+            "s2c_frames",
+            "parsed_frames",
+            "target_result_frames",
+            "target_ids_present",
+            "error",
+        ],
+        fixture_rows,
+    )
+    protocol_count = _write_tsv(
+        output_dir / "hot_update_socket_result_sample_coverage_protocol_counts.tsv",
+        ["direction", "pro_id", "name", "count", "is_target_result_packet"],
+        protocol_rows,
+    )
+    hit_count = _write_tsv(
+        output_dir / "hot_update_socket_result_sample_coverage_hits.tsv",
+        [
+            "fixture",
+            "index",
+            "direction",
+            "offset",
+            "pro_id",
+            "packet",
+            "family",
+            "name",
+            "frame_len",
+            "payload_len",
+            "zlib",
+            "parsed",
+            "remain",
+            "privacy_note",
+        ],
+        hit_rows,
+    )
+
+    ordinary_buff_count = aggregate_counts.get(60034, 0)
+    fight_family_count = sum(aggregate_counts.get(pro_id, 0) for pro_id in [60005, 60041, 60054, 60055])
+    verdict = {
+        "decoded_fixtures_found": bool(decoded_paths),
+        "target_coverage_written": target_count == len(targets),
+        "ordinary_buff_result_sample_present": ordinary_buff_count > 0,
+        "fight_result_family_sample_present": fight_family_count > 0,
+        "existing_captures_cover_result_attribution": ordinary_buff_count > 0 or fight_family_count > 0,
+        "safe_to_skip_existing_fixtures_for_result_attribution": ordinary_buff_count == 0 and fight_family_count == 0,
+        "metadata_only_no_payload_values_exported": True,
+    }
+    verdict["supports_result_sample_coverage_report"] = (
+        verdict["decoded_fixtures_found"] and verdict["target_coverage_written"] and verdict["metadata_only_no_payload_values_exported"]
+    )
+
+    lines = [
+        "# Socket Result Sample Coverage Probe",
+        "",
+        f"- Export root: `{export_base}`",
+        f"- Decoded fixtures scanned: {len(decoded_paths)}",
+        f"- Target rows: {target_count}",
+        f"- Fixture rows: {fixture_count}",
+        f"- Protocol count rows: {protocol_count}",
+        f"- Target hit rows: {hit_count}",
+        "- Scope: scans existing decoded TCP fixture metadata for combat-result packet ids. It does not read live traffic, hook the client, or export parsed payload values.",
+    ]
+    if errors:
+        lines.extend(["", "## Fixture Errors", ""])
+        lines.extend(f"- `{_markdown_table_cell(error, limit=240)}`" for error in errors[:12])
+    lines.extend(
+        [
+            "",
+            "## Target Coverage",
+            "",
+            "| ProId | Packet | Family | Frames | Parsed | Status |",
+            "| ---: | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for row in target_rows:
+        lines.append(
+            "| "
+            f"{_markdown_table_cell(row.get('pro_id', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('packet', ''), limit=120)} | "
+            f"{_markdown_table_cell(row.get('family', ''), limit=80)} | "
+            f"{_markdown_table_cell(row.get('frame_count', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('parsed_count', ''), limit=20)} | "
+            f"{_markdown_table_cell(row.get('coverage_status', ''), limit=40)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Interpretation",
+            "",
+            f"- Ordinary buff result samples (`60034`) present: `{ordinary_buff_count}`.",
+            f"- FightResult-family samples (`60005/60041/60054/60055`) present: `{fight_family_count}`.",
+            "- If both are zero, existing decoded captures are useful for socket framing/codec validation only, not for combat-result attribution.",
+        ]
+    )
+    markdown_path = output_dir / "hot_update_socket_result_sample_coverage_report.md"
+    markdown_path.write_text("\n".join(lines), encoding="utf-8")
+
+    result = {
+        "export_root": str(export_base),
+        "output_dir": str(output_dir),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "counts": {
+            "decoded_fixtures": len(decoded_paths),
+            "total_frames": len(all_frames),
+            "target_rows": target_count,
+            "fixture_rows": fixture_count,
+            "protocol_count_rows": protocol_count,
+            "target_hit_rows": hit_count,
+            "ordinary_buff_result_frames": ordinary_buff_count,
+            "fight_result_family_frames": fight_family_count,
+        },
+        "verdict": verdict,
+        "outputs": {
+            "targets": str(output_dir / "hot_update_socket_result_sample_coverage_targets.tsv"),
+            "fixtures": str(output_dir / "hot_update_socket_result_sample_coverage_fixtures.tsv"),
+            "protocol_counts": str(output_dir / "hot_update_socket_result_sample_coverage_protocol_counts.tsv"),
+            "hits": str(output_dir / "hot_update_socket_result_sample_coverage_hits.tsv"),
+            "markdown": str(markdown_path),
+            "json": str(output_dir / "hot_update_socket_result_sample_coverage_report.json"),
+        },
+    }
+    (output_dir / "hot_update_socket_result_sample_coverage_report.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )

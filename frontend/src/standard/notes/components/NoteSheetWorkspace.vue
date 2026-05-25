@@ -16170,9 +16170,10 @@ async function syncDefinedNamesForRestoreRequest(
   requestSeq: number,
   requestSheetId: number,
   requestWorkbookId: number | null,
+  definedNamesWorkbookId: number | null,
 ) {
   try {
-    const response = await fetchSheetDefinedNames(requestSheetId, { workbookId: requestWorkbookId })
+    const response = await fetchSheetDefinedNames(requestSheetId, { workbookId: definedNamesWorkbookId })
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }
@@ -16415,7 +16416,10 @@ async function restoreInitialDocument(options?: RestoreInitialDocumentOptions) {
       pendingDeletedPageRowIndexes.value = []
     }
 
-    await syncDefinedNamesForRestoreRequest(requestSeq, requestSheetId, requestWorkbookId)
+    const definedNamesWorkbookId = Number.isInteger(remote.parent_workbook_id)
+      ? Number(remote.parent_workbook_id)
+      : requestWorkbookId
+    await syncDefinedNamesForRestoreRequest(requestSeq, requestSheetId, requestWorkbookId, definedNamesWorkbookId)
     if (!isCurrentRestoreInitialDocumentRequest(requestSeq, requestSheetId, requestWorkbookId)) {
       return
     }

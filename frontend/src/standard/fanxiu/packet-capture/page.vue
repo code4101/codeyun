@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Connection, QuestionFilled, Refresh, SetUp } from '@element-plus/icons-vue'
+import { Connection, QuestionFilled, SetUp } from '@element-plus/icons-vue'
 
 import {
   clearFanxiuPacketActivity,
+  decodeFanxiuTcpCapture,
   getFanxiuPacketActivityHistory,
   getFanxiuPacketActivityStream,
   getFanxiuPacketActivityStatus,
   getFanxiuPacketCaptureSnapshot,
   getFanxiuPacketCaptureSessionStatus,
   getFanxiuPacketProxyTimeline,
+  listFanxiuTcpBusinessEntries,
+  listFanxiuTcpCaptures,
   startFanxiuPacketActivity,
   startFanxiuPacketCaptureSession,
   stopFanxiuPacketActivity,
@@ -27,10 +30,17 @@ import {
   type FanxiuPacketCaptureSnapshot,
   type FanxiuPacketProxyEvent,
   type FanxiuPacketProxyStatus,
+  type FanxiuTcpBusinessEntry,
+  type FanxiuTcpCaptureFile,
+  type FanxiuTcpDecodeResponse,
 } from '@/api/fanxiu'
+import {
+  FANXIU_PACKET_PROTOCOL_VISIBILITY_EVENT,
+  getHiddenFanxiuPacketProtocols,
+} from '../packetProtocolVisibility'
 
 const DEFAULT_DNS_HOSTS = 'cdn-frxxz.akbing.com\nakbing.com'
-type PageMode = 'activity' | 'connections' | 'http'
+type PageMode = 'decoder' | 'activity' | 'connections' | 'http'
 type ConnectionMeta = {
   firstSeenAt: string
   lastSeenAt: string
@@ -52,13 +62,28 @@ type PayloadJsonFragment = {
   text: string
 }
 
-const activeMode = ref<PageMode>('activity')
+const activeMode = ref<PageMode>('decoder')
 const dnsHostText = ref(DEFAULT_DNS_HOSTS)
 const snapshot = ref<FanxiuPacketCaptureSnapshot | null>(null)
 const packetActivityStatus = ref<FanxiuPacketActivityStatus | null>(null)
 const proxyStatus = ref<FanxiuPacketProxyStatus | null>(null)
 const androidProxyStatus = ref<FanxiuAndroidProxyStatus | null>(null)
 const proxyEvents = ref<FanxiuPacketProxyEvent[]>([])
+const tcpCaptures = ref<FanxiuTcpCaptureFile[]>([])
+const selectedTcpCapture = ref('')
+const tcpStream = ref(34)
+const tcpServerHost = ref('1.12.44.63')
+const tcpDecodeResult = ref<FanxiuTcpDecodeResponse | null>(null)
+const tcpDecoderLoading = ref(false)
+const tcpBusinessEntries = ref<FanxiuTcpBusinessEntry[]>([])
+const tcpBusinessEntryTotal = ref(0)
+const tcpBusinessEntryPage = ref(1)
+const tcpBusinessEntryPageSize = ref(50)
+const tcpBusinessEntryLoading = ref(false)
+const selectedTcpBusinessEntryId = ref('')
+const hiddenTcpBusinessProtocols = ref<string[]>(getHiddenFanxiuPacketProtocols())
+const liveTcpDecodeSize = ref(0)
+const liveTcpDecodeRunning = ref(false)
 const connectionMetas = ref<Record<string, ConnectionMeta>>({})
 const packetActivityBaseline = ref<PacketActivityBaseline | null>(null)
 const packetActivityMarkedAt = ref('')
@@ -117,6 +142,16 @@ const summaryItems = computed(() => {
   ]
 })
 
+const selectedTcpBusinessEntry = computed(() => {
+  if (!tcpBusinessEntries.value.length) return null
+  return tcpBusinessEntries.value.find(item => item.id === selectedTcpBusinessEntryId.value) ?? tcpBusinessEntries.value[0]
+})
+
+const selectedTcpBusinessEntryJson = computed(() => {
+  const entry = selectedTcpBusinessEntry.value
+  return entry ? JSON.stringify(entry.content, null, 2) : ''
+})
+
 const connectionKey = (item: FanxiuPacketCaptureConnection) => {
   const local = item.local?.label ?? ''
   const remote = item.remote?.label ?? ''
@@ -143,6 +178,35 @@ const localDateTimeLabel = () => {
 const formatClockTime = (value: string) => {
   if (!value) return '-'
   return value.slice(11, 19) || value
+}
+
+const parseDateTimeParts = (value: string) => {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
+  if (!match) return null
+  return {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    time: `${match[4]}:${match[5]}:${match[6]}`,
+    monthDay: `${match[2]}-${match[3]}`,
+    full: `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]}`,
+  }
+}
+
+const formatTcpBusinessTime = (value: string) => {
+  const parts = parseDateTimeParts(value)
+  if (!parts) return value || '-'
+  const now = new Date()
+  const currentYear = now.getFullYear()
+  const currentMonth = now.getMonth() + 1
+  const currentDay = now.getDate()
+  if (parts.year === currentYear && parts.month === currentMonth && parts.day === currentDay) {
+    return parts.time
+  }
+  if (parts.year === currentYear) {
+    return `${parts.monthDay} ${parts.time}`
+  }
+  return parts.full
 }
 
 const connectionMetaFor = (item: FanxiuPacketCaptureConnection) => {
@@ -755,6 +819,9 @@ const refreshPacketActivity = async (showLoading = false) => {
   if (showLoading) packetActivityLoading.value = true
   try {
     packetActivityStatus.value = await getFanxiuPacketActivityStatus()
+    if (activeMode.value === 'decoder') {
+      await autoDecodeLiveTcpCapture()
+    }
     if (selectedPacketActivityKey.value && packetActivityHistoryPage.value === 1) {
       await Promise.all([
         refreshPacketActivityHistory(false),
@@ -987,6 +1054,185 @@ const clearPacketActivity = async () => {
   }
 }
 
+const loadTcpCaptures = async (showLoading = false) => {
+  if (showLoading) tcpDecoderLoading.value = true
+  try {
+    const data = await listFanxiuTcpCaptures()
+    tcpCaptures.value = data.items
+    if (!selectedTcpCapture.value && data.items.length) {
+      selectedTcpCapture.value = data.items[0].relative_path || data.items[0].path
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '读取 TCP 抓包文件失败')
+  } finally {
+    if (showLoading) tcpDecoderLoading.value = false
+  }
+}
+
+const loadTcpBusinessEntries = async (showLoading = false, silent = false) => {
+  if (showLoading) tcpBusinessEntryLoading.value = true
+  try {
+    const data = await listFanxiuTcpBusinessEntries({
+      page: tcpBusinessEntryPage.value,
+      page_size: tcpBusinessEntryPageSize.value,
+      hidden_protocols: hiddenTcpBusinessProtocols.value.join(','),
+    })
+    tcpBusinessEntries.value = data.items
+    tcpBusinessEntryTotal.value = data.total
+    if (!data.items.length) {
+      selectedTcpBusinessEntryId.value = ''
+    } else if (!data.items.some(item => item.id === selectedTcpBusinessEntryId.value)) {
+      selectedTcpBusinessEntryId.value = data.items[0].id
+    }
+  } catch (error: any) {
+    if (!silent) ElMessage.error(error?.response?.data?.detail || error?.message || '读取明文结果失败')
+  } finally {
+    if (showLoading) tcpBusinessEntryLoading.value = false
+  }
+}
+
+const decodeSelectedTcpCapture = async (options: { persist?: boolean; silent?: boolean } = {}) => {
+  const persist = options.persist ?? true
+  const silent = options.silent ?? false
+  if (!selectedTcpCapture.value) {
+    if (!silent) ElMessage.warning('先选择一个 pcapng 文件')
+    return
+  }
+  if (!silent) tcpDecoderLoading.value = true
+  try {
+    const data = await decodeFanxiuTcpCapture({
+      pcap: selectedTcpCapture.value,
+      stream: tcpStream.value,
+      server_host: tcpServerHost.value,
+      persist,
+    })
+    tcpDecodeResult.value = data
+    tcpStream.value = data.stream
+    if (tcpBusinessEntryPage.value === 1) {
+      await loadTcpBusinessEntries(false, silent)
+    }
+    if (!silent) {
+      await loadTcpCaptures(false)
+      ElMessage.success(`已解析 ${data.frames.length} 条明文结果`)
+    }
+  } catch (error: any) {
+    if (!silent) ElMessage.error(error?.response?.data?.detail || error?.message || '解析 TCP 抓包失败')
+  } finally {
+    if (!silent) tcpDecoderLoading.value = false
+  }
+}
+
+const autoDecodeLiveTcpCapture = async () => {
+  const status = packetActivityStatus.value
+  if (!status?.running || !status.pcap_path || liveTcpDecodeRunning.value) return false
+  if (status.pcap_size < 256 || status.pcap_size === liveTcpDecodeSize.value) return false
+  liveTcpDecodeRunning.value = true
+  try {
+    selectedTcpCapture.value = status.pcap_path
+    tcpStream.value = -1
+    liveTcpDecodeSize.value = status.pcap_size
+    await decodeSelectedTcpCapture({ persist: false, silent: true })
+    return true
+  } finally {
+    liveTcpDecodeRunning.value = false
+  }
+}
+
+const startSimpleTcpCapture = async () => {
+  packetActivityLoading.value = true
+  try {
+    const status = await startFanxiuPacketActivity()
+    packetActivityStatus.value = status
+    tcpDecodeResult.value = null
+    liveTcpDecodeSize.value = 0
+    if (status.running) {
+      ElMessage.success('已开始抓包，现在去游戏里操作一下')
+    } else {
+      ElMessage.warning(status.last_error || '没有启动成功，可能需要管理员权限')
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '开始抓包失败')
+  } finally {
+    packetActivityLoading.value = false
+  }
+}
+
+const stopSimpleTcpCapture = async () => {
+  packetActivityLoading.value = true
+  try {
+    packetActivityStatus.value = await stopFanxiuPacketActivity()
+    await loadTcpCaptures(false)
+    if (packetActivityStatus.value.pcap_path) {
+      selectedTcpCapture.value = packetActivityStatus.value.pcap_path
+      tcpStream.value = -1
+      ElMessage.success('已停止抓包，可以解析明文')
+    } else {
+      ElMessage.warning(packetActivityStatus.value.last_error || '已停止，但没有生成 pcap 文件')
+    }
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.detail || error?.message || '停止抓包失败')
+  } finally {
+    packetActivityLoading.value = false
+  }
+}
+
+const stopAndDecodeSimpleTcpCapture = async () => {
+  if (packetActivityStatus.value?.running) {
+    await stopSimpleTcpCapture()
+  }
+  if (!selectedTcpCapture.value && packetActivityStatus.value?.pcap_path) {
+    selectedTcpCapture.value = packetActivityStatus.value.pcap_path
+  }
+  if (!selectedTcpCapture.value) {
+    ElMessage.warning('还没有可解析的抓包文件')
+    return
+  }
+  if (selectedTcpCapture.value === packetActivityStatus.value?.pcap_path) {
+    tcpStream.value = -1
+  }
+  tcpBusinessEntryPage.value = 1
+  await decodeSelectedTcpCapture()
+}
+
+const handleTcpBusinessPageChange = (page: number) => {
+  tcpBusinessEntryPage.value = page
+  loadTcpBusinessEntries(true)
+}
+
+const handleTcpBusinessPageSizeChange = (pageSize: number) => {
+  tcpBusinessEntryPageSize.value = pageSize
+  tcpBusinessEntryPage.value = 1
+  loadTcpBusinessEntries(true)
+}
+
+const isTcpBusinessUpstream = (direction: string) => direction === 'c2s'
+
+const selectTcpBusinessEntry = (row: FanxiuTcpBusinessEntry) => {
+  selectedTcpBusinessEntryId.value = row.id
+}
+
+const tcpBusinessEntryRowClass = ({ row }: { row: FanxiuTcpBusinessEntry }) => {
+  return [
+    row.id === selectedTcpBusinessEntryId.value ? 'is-selected-event' : '',
+    isTcpBusinessUpstream(row.direction) ? 'is-upstream-event' : '',
+  ].filter(Boolean).join(' ')
+}
+
+const tcpBusinessDisplaySegments = (row: FanxiuTcpBusinessEntry) => {
+  if (row.display_segments?.length) return row.display_segments
+  return [{ text: row.display_text || JSON.stringify(row.content), kind: 'text' }]
+}
+
+const toggleSimpleTcpCapture = async () => {
+  if (packetActivityStatus.value?.running) {
+    await stopAndDecodeSimpleTcpCapture()
+    return
+  }
+  await startSimpleTcpCapture()
+}
+
+const tcpDirectionLabel = (value: string) => value === 'c2s' ? '上行' : '下行'
+
 const markOperation = () => {
   operationBaselineKeys.value = new Set(currentConnectionKeys.value)
   operationMarkedAt.value = localDateTimeLabel()
@@ -996,23 +1242,6 @@ const markOperation = () => {
 const clearOperationMark = () => {
   operationBaselineKeys.value = null
   operationMarkedAt.value = ''
-}
-
-const refreshCurrent = async () => {
-  if (activeMode.value === 'activity') {
-    await Promise.all([refreshSnapshot(false, false), refreshPacketActivity(true)])
-    return
-  }
-  if (activeMode.value === 'http') {
-    await refreshCaptureSessionStatus()
-    await refreshProxyEvents()
-    return
-  }
-  await refreshSnapshot(false, true)
-}
-
-const refreshEvidence = () => {
-  refreshSnapshot(true, true)
 }
 
 const setBaseline = () => {
@@ -1041,14 +1270,25 @@ watch(includeLowValueEvents, () => {
   refreshProxyEvents()
 })
 
+const handlePacketProtocolVisibilityChange = () => {
+  hiddenTcpBusinessProtocols.value = getHiddenFanxiuPacketProtocols()
+  tcpBusinessEntryPage.value = 1
+  if (activeMode.value === 'decoder') {
+    loadTcpBusinessEntries(false, true)
+  }
+}
+
 onMounted(() => {
+  window.addEventListener(FANXIU_PACKET_PROTOCOL_VISIBILITY_EVENT, handlePacketProtocolVisibilityChange)
+  loadTcpCaptures()
+  loadTcpBusinessEntries()
   refreshSnapshot(false, true)
   refreshPacketActivity()
   connectionRefreshTimer = window.setInterval(() => {
     if ((activeMode.value === 'connections' || activeMode.value === 'activity') && connectionObserveRunning.value) {
       refreshSnapshot(false, false)
     }
-    if (activeMode.value === 'activity') {
+    if (activeMode.value === 'activity' || activeMode.value === 'decoder') {
       refreshPacketActivity()
     }
   }, 2000)
@@ -1060,6 +1300,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  window.removeEventListener(FANXIU_PACKET_PROTOCOL_VISIBILITY_EVENT, handlePacketProtocolVisibilityChange)
   if (connectionRefreshTimer) window.clearInterval(connectionRefreshTimer)
   if (proxyRefreshTimer) window.clearInterval(proxyRefreshTimer)
 })
@@ -1071,6 +1312,9 @@ watch(activeMode, (mode) => {
   } else if (mode === 'activity') {
     refreshSnapshot(false, true)
     refreshPacketActivity(true)
+  } else if (mode === 'decoder') {
+    loadTcpCaptures(true)
+    loadTcpBusinessEntries(true)
   } else {
     refreshSnapshot(false, true)
   }
@@ -1083,18 +1327,77 @@ watch(activeMode, (mode) => {
       <div>
         <h2 class="page-title">凡修抓包</h2>
       </div>
-      <div class="page-actions">
-        <el-button type="primary" :icon="Refresh" :loading="loading" @click="refreshCurrent">刷新</el-button>
-      </div>
     </header>
 
     <div class="mode-switch">
+      <button :class="{ active: activeMode === 'decoder' }" @click="activeMode = 'decoder'">TCP 解析</button>
       <button :class="{ active: activeMode === 'activity' }" @click="activeMode = 'activity'">包活动</button>
       <button :class="{ active: activeMode === 'connections' }" @click="activeMode = 'connections'">连接定位</button>
       <button :class="{ active: activeMode === 'http' }" @click="activeMode = 'http'">HTTP 代理</button>
     </div>
 
-    <section v-if="activeMode === 'activity'" class="packet-activity-panel">
+    <section v-if="activeMode === 'decoder'" class="tcp-decoder-panel">
+      <div class="tcp-simple-actions">
+        <el-button
+          size="large"
+          :type="packetActivityStatus?.running ? 'success' : 'primary'"
+          :loading="packetActivityLoading || tcpDecoderLoading"
+          @click="toggleSimpleTcpCapture"
+        >
+          {{ packetActivityStatus?.running ? '停止抓包' : '开始抓包' }}
+        </el-button>
+      </div>
+
+      <section class="tcp-plain-results">
+        <el-table
+          class="tcp-plain-table"
+          v-loading="tcpBusinessEntryLoading"
+          :data="tcpBusinessEntries"
+          table-layout="fixed"
+          :fit="true"
+          border
+          height="44vh"
+          :row-class-name="tcpBusinessEntryRowClass"
+          empty-text="还没有解析出业务明文"
+          @row-click="selectTcpBusinessEntry"
+        >
+          <el-table-column label="业务包" prop="name" width="190" />
+          <el-table-column label="内容" min-width="520">
+            <template #default="{ row }">
+              <span class="tcp-business-content">
+                <span
+                  v-for="(segment, index) in tcpBusinessDisplaySegments(row)"
+                  :key="`${row.id}-${index}`"
+                  :class="{ 'tcp-business-param': segment.kind === 'param' }"
+                >{{ segment.text }}</span>
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间" width="112">
+            <template #default="{ row }">{{ formatTcpBusinessTime(row.decoded_at) }}</template>
+          </el-table-column>
+        </el-table>
+        <div class="tcp-business-pagination">
+          <el-pagination
+            v-model:current-page="tcpBusinessEntryPage"
+            v-model:page-size="tcpBusinessEntryPageSize"
+            :page-sizes="[50, 100, 200]"
+            :total="tcpBusinessEntryTotal"
+            layout="total, sizes, prev, pager, next"
+            small
+            @current-change="handleTcpBusinessPageChange"
+            @size-change="handleTcpBusinessPageSizeChange"
+          />
+        </div>
+        <section v-if="selectedTcpBusinessEntry" class="tcp-business-detail json-block">
+          <h4>{{ selectedTcpBusinessEntry.name }} · {{ tcpDirectionLabel(selectedTcpBusinessEntry.direction) }} · {{ selectedTcpBusinessEntry.decoded_at }}</h4>
+          <pre>{{ selectedTcpBusinessEntryJson }}</pre>
+        </section>
+      </section>
+
+    </section>
+
+    <section v-else-if="activeMode === 'activity'" class="packet-activity-panel">
       <div class="section-header">
         <div>
           <h3 class="section-title">TCP/UDP 包活动</h3>
@@ -1616,7 +1919,6 @@ watch(activeMode, (mode) => {
             placeholder="cdn-frxxz.akbing.com"
           />
           <div class="baseline-actions">
-            <el-button :icon="Refresh" :loading="loading" @click="refreshEvidence">刷新诊断</el-button>
             <el-button :icon="SetUp" :disabled="!snapshot" @click="setBaseline">设基线</el-button>
             <el-button :disabled="!baselineKeys" @click="clearBaseline">清基线</el-button>
           </div>
@@ -1730,8 +2032,11 @@ watch(activeMode, (mode) => {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  height: calc(100vh - 74px);
   padding: 18px 22px 28px;
+  box-sizing: border-box;
   color: #1f2937;
+  overflow: hidden;
 }
 
 .page-header {
@@ -1745,12 +2050,6 @@ watch(activeMode, (mode) => {
   margin: 0;
   font-size: 22px;
   font-weight: 650;
-}
-
-.page-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .mode-switch {
@@ -1782,13 +2081,19 @@ watch(activeMode, (mode) => {
 }
 
 .connection-observer,
+.tcp-decoder-panel,
 .packet-activity-panel {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-height: 0;
   padding: 12px 0 16px;
   border-top: 1px solid #e5e7eb;
   border-bottom: 1px solid #e5e7eb;
+}
+
+.tcp-decoder-panel {
+  flex: 1;
 }
 
 .observe-toggle-button {
@@ -1894,6 +2199,82 @@ watch(activeMode, (mode) => {
 
 .host-input {
   width: min(560px, 100%);
+}
+
+.tcp-simple-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.tcp-plain-results {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  padding: 10px 0 0;
+}
+
+.tcp-plain-table :deep(.el-table__cell) {
+  padding: 4px 0;
+}
+
+.tcp-plain-table :deep(.cell) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tcp-plain-table :deep(.el-table__row) {
+  cursor: pointer;
+}
+
+.tcp-business-content {
+  white-space: nowrap;
+}
+
+.tcp-business-param {
+  display: inline-block;
+  margin: 0 1px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #fff7ed;
+  color: #b45309;
+  font-weight: 600;
+}
+
+.tcp-plain-table :deep(.el-table__row.is-upstream-event > td.el-table__cell) {
+  background: #f5f6f8;
+}
+
+.tcp-business-pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 10px;
+}
+
+.tcp-business-detail {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  margin-top: 10px;
+  width: 100%;
+}
+
+.tcp-business-detail pre {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+}
+
+.subsection-title {
+  margin: 0 0 8px;
+  color: #111827;
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .summary-strip {
@@ -2036,6 +2417,7 @@ watch(activeMode, (mode) => {
 }
 
 .proxy-event-table :deep(.el-table__row.is-selected-event > td.el-table__cell),
+.tcp-plain-table :deep(.el-table__row.is-selected-event > td.el-table__cell),
 .packet-activity-table :deep(.el-table__row.is-selected-event > td.el-table__cell) {
   background: #eff6ff;
 }
@@ -2468,7 +2850,6 @@ watch(activeMode, (mode) => {
     flex-direction: column;
   }
 
-  .page-actions,
   .section-header,
   .summary-strip,
   .summary-meta {

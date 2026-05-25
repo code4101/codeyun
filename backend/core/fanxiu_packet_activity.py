@@ -6,16 +6,19 @@ import threading
 import time
 import ipaddress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import psutil
 
 from backend.core.fanxiu_packet_capture import FAKE_IP_NETWORKS, build_fanxiu_packet_capture_snapshot
+from backend.core.fanxiu_tcp_flow import prune_fanxiu_tcp_storage, resolve_fanxiu_tcp_live_capture_dir
 
 MAX_PAYLOAD_SAMPLE_BYTES = 2048
 MAX_PAYLOAD_HISTORY_ITEMS = 5000
 DEFAULT_PAYLOAD_STREAM_BYTES = 32768
 MAX_PAYLOAD_STREAM_BYTES = 65536
+PCAP_LINKTYPE_RAW = 101
 
 
 @dataclass
@@ -146,6 +149,10 @@ def _now_label() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _now_file_label() -> str:
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
 def _is_fake_ip(value: str) -> bool:
     try:
         ip = ipaddress.ip_address(value)
@@ -255,6 +262,9 @@ class FanxiuPacketActivityService:
         self._total_bytes = 0
         self._history: list[PacketPayloadHistoryItem] = []
         self._next_history_id = 1
+        self._pcap_path: Path | None = None
+        self._pcap_file = None
+        self._pcap_size = 0
 
     def start(self, bind_ip: str = "") -> dict[str, Any]:
         selected_ip = (bind_ip or _choose_bind_ip()).strip()
@@ -275,6 +285,7 @@ class FanxiuPacketActivityService:
             self._total_bytes = 0
             self._history = []
             self._next_history_id = 1
+            self._open_pcap_locked(selected_ip)
             self._stop_event.clear()
             self._running = True
             self._thread = threading.Thread(target=self._run, args=(selected_ip,), daemon=True)
@@ -316,6 +327,8 @@ class FanxiuPacketActivityService:
                 "total_bytes": self._total_bytes,
                 "history_total": len(self._history),
                 "history_capacity": MAX_PAYLOAD_HISTORY_ITEMS,
+                "pcap_path": str(self._pcap_path) if self._pcap_path else "",
+                "pcap_size": self._pcap_size,
                 "items": items,
             }
 
@@ -393,6 +406,44 @@ class FanxiuPacketActivityService:
         self._running = False
         if thread and thread.is_alive():
             thread.join(timeout=1.5)
+        self._close_pcap_locked()
+
+    def _open_pcap_locked(self, bind_ip: str) -> None:
+        self._close_pcap_locked()
+        prune_fanxiu_tcp_storage()
+        capture_dir = resolve_fanxiu_tcp_live_capture_dir()
+        path = capture_dir / f"fanxiu_live_{_now_file_label()}_{bind_ip.replace('.', '-')}.pcap"
+        handle = path.open("wb")
+        handle.write(struct.pack("<IHHIIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, PCAP_LINKTYPE_RAW))
+        handle.flush()
+        self._pcap_path = path
+        self._pcap_file = handle
+        self._pcap_size = 24
+
+    def _close_pcap_locked(self) -> None:
+        handle = self._pcap_file
+        self._pcap_file = None
+        if handle:
+            try:
+                handle.flush()
+                handle.close()
+            except Exception:
+                pass
+
+    def _write_pcap_packet_locked(self, data: bytes) -> None:
+        if not self._pcap_file:
+            return
+        timestamp = time.time()
+        ts_sec = int(timestamp)
+        ts_usec = int((timestamp - ts_sec) * 1_000_000)
+        packet = data[:65535]
+        header = struct.pack("<IIII", ts_sec, ts_usec, len(packet), len(data))
+        try:
+            self._pcap_file.write(header)
+            self._pcap_file.write(packet)
+            self._pcap_size += len(header) + len(packet)
+        except Exception as exc:
+            self._last_error = f"写入 pcap 失败：{exc}"
 
     def _run(self, bind_ip: str) -> None:
         sock: socket.socket | None = None
@@ -410,7 +461,7 @@ class FanxiuPacketActivityService:
                 if not parsed:
                     continue
                 protocol, remote_ip, remote_port, direction, _local_port, byte_count, payload = parsed
-                self._record_packet(protocol, remote_ip, remote_port, direction, byte_count, payload)
+                self._record_packet(protocol, remote_ip, remote_port, direction, byte_count, payload, raw_packet=data)
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)
@@ -431,6 +482,7 @@ class FanxiuPacketActivityService:
         direction: str,
         byte_count: int,
         payload: bytes,
+        raw_packet: bytes = b"",
     ) -> None:
         key = f"{protocol}|{remote_ip}|{remote_port}"
         now = _now_label()
@@ -460,6 +512,8 @@ class FanxiuPacketActivityService:
                     flow.sample_payload_down = payload[:MAX_PAYLOAD_SAMPLE_BYTES]
             self._total_packets += 1
             self._total_bytes += byte_count
+            if raw_packet:
+                self._write_pcap_packet_locked(raw_packet)
             if payload:
                 self._history.append(
                     PacketPayloadHistoryItem(
