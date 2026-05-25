@@ -14,6 +14,7 @@ from backend.api.notes import (
     _build_codex_diary_blocks,
     _build_codex_diary_completion_progress_expr,
     _create_codex_diary_note,
+    _create_codex_diary_import_run_record,
     _draft_codex_diary_blocks_in_batches,
     _normalize_codex_diary_ai_summary_items,
     _normalize_codex_diary_ai_title,
@@ -636,6 +637,34 @@ def test_codex_diary_import_duplicate_requires_confirmation(
     assert confirmed_completed["created_note_count"] == 1
     assert confirmed_completed["created_note_ids"] != first_completed["created_note_ids"]
     assert confirmed_completed["duplicate_note_ids"] == first_completed["created_note_ids"]
+
+
+def test_codex_diary_import_rejects_active_same_scope_run(
+    session: Session,
+    auth_user,
+):
+    _create_device_entries(session, auth_user.id)
+
+    run, _, _, should_run = _create_codex_diary_import_run_record(
+        session,
+        current_user=auth_user,
+        diary_date_text="2026-05-02",
+    )
+    assert should_run is True
+    assert run.status == "running"
+
+    try:
+        _create_codex_diary_import_run_record(
+            session,
+            current_user=auth_user,
+            diary_date_text="2026-05-02",
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 409
+        assert exc.detail["code"] == "active_import"
+        assert exc.detail["run_id"] == run.id
+    else:
+        raise AssertionError("expected active Codex diary import to be rejected")
 
 
 def test_codex_diary_auto_import_job_runs_existing_diary_flow_and_skips_duplicates(

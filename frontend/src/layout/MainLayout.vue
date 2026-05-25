@@ -91,7 +91,6 @@ const FANXIU_TASK_STATUS_PATH = requirePageMenuPath('FanxiuTaskStatus');
 const FANXIU_GAME_WINDOW_PATH = requirePageMenuPath('FanxiuGameWindow');
 const FANXIU_PACKET_CAPTURE_PATH = requirePageMenuPath('FanxiuPacketCapture');
 const FANXIU_WIKI_PATH = requirePageMenuPath('FanxiuWiki');
-const FANXIU_PROTOCOL_SEMANTICS_PATH = requirePageMenuPath('FanxiuProtocolSemantics');
 const FANXIU_ACTIVITY_LIST_PATH = requirePageMenuPath('FanxiuActivityList');
 const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH = requirePageMenuPath('FanxiuKunlunSecret');
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH = requirePageMenuPath('FanxiuModaoInvasion');
@@ -160,7 +159,6 @@ const FANXIU_TASK_STATUS_TITLE = requirePermissionTitleByMenuPath(FANXIU_TASK_ST
 const FANXIU_GAME_WINDOW_TITLE = requirePermissionTitleByMenuPath(FANXIU_GAME_WINDOW_PATH);
 const FANXIU_PACKET_CAPTURE_TITLE = requirePermissionTitleByMenuPath(FANXIU_PACKET_CAPTURE_PATH);
 const FANXIU_WIKI_TITLE = requirePermissionTitleByMenuPath(FANXIU_WIKI_PATH);
-const FANXIU_PROTOCOL_SEMANTICS_TITLE = requirePermissionTitleByMenuPath(FANXIU_PROTOCOL_SEMANTICS_PATH);
 const FANXIU_ACTIVITY_LIST_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_PATH);
 const FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH);
 const FANXIU_ACTIVITY_LIST_MODAO_INVASION_TITLE = requirePermissionTitleByMenuPath(FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH);
@@ -387,7 +385,6 @@ const fanxiuMenuVisible = computed(() =>
     FANXIU_GAME_WINDOW_PATH,
     FANXIU_PACKET_CAPTURE_PATH,
     FANXIU_WIKI_PATH,
-    FANXIU_PROTOCOL_SEMANTICS_PATH,
     FANXIU_ACTIVITY_LIST_PATH,
     FANXIU_ACTIVITY_LIST_KUNLUN_SECRET_PATH,
     FANXIU_ACTIVITY_LIST_MODAO_INVASION_PATH,
@@ -808,7 +805,6 @@ watch(
               <el-menu-item v-if="canAccessMenuPath(FANXIU_GAME_WINDOW_PATH)" :index="FANXIU_GAME_WINDOW_PATH">{{ FANXIU_GAME_WINDOW_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_PACKET_CAPTURE_PATH)" :index="FANXIU_PACKET_CAPTURE_PATH">{{ FANXIU_PACKET_CAPTURE_TITLE }}</el-menu-item>
               <el-menu-item v-if="canAccessMenuPath(FANXIU_WIKI_PATH)" :index="FANXIU_WIKI_PATH">{{ FANXIU_WIKI_TITLE }}</el-menu-item>
-              <el-menu-item v-if="canAccessMenuPath(FANXIU_PROTOCOL_SEMANTICS_PATH)" :index="FANXIU_PROTOCOL_SEMANTICS_PATH">{{ FANXIU_PROTOCOL_SEMANTICS_TITLE }}</el-menu-item>
               <el-sub-menu v-if="fanxiuActivityListMenuVisible" :index="FANXIU_ACTIVITY_LIST_SUBMENU_INDEX">
                 <template #title>
                   <span class="menu-submenu-route-title" @click.stop="handleMenuTitleNavigate(fanxiuActivityListMenuEntryPath, $event)">

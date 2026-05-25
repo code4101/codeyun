@@ -109,6 +109,7 @@ _LEXICON_PINYIN_ANNOTATION_RE = re.compile(r"([\u3400-\u9fff])\(([^()]*)\)")
 _SUSPICIOUS_JIU_PHRASE_RE = re.compile(
     r"(久是|久全|久表示|久指导|久重置|久足够|久数据|久可以|列久|新书久|信息量久|作业组久|冲突久|错了久|更新时间久|更后面久)"
 )
+_IMPOSSIBLE_DUPLICATE_PHRASE_PARTS = {"是是"}
 
 _COMMON_TEXT_CORRECTIONS: tuple[tuple[str, str, str], ...] = (
     ("才复合", "才符合", "这里表达“满足条件/一致”时通常应写“符合”。"),
@@ -1363,6 +1364,8 @@ def _is_bad_corpus_phrase(phrase: str) -> bool:
     if not phrase:
         return True
     if any(f"{particle}{particle}" in phrase for particle in _REDUNDANT_PHRASE_PARTICLES):
+        return True
+    if any(part in phrase for part in _IMPOSSIBLE_DUPLICATE_PHRASE_PARTS):
         return True
     if phrase == "久":
         return True

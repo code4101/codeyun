@@ -359,17 +359,6 @@
       "default_anonymous_allow": true
     },
     {
-      "key": "fanxiu.protocol-semantics",
-      "title": "协议语义",
-      "node_type": "feature",
-      "parent_key": "fanxiu",
-      "sort_order": 6,
-      "route_paths": ["/fanxiu/protocol-semantics"],
-      "menu_paths": ["/fanxiu/protocol-semantics"],
-      "api_scopes": ["fanxiu"],
-      "default_anonymous_allow": true
-    },
-    {
       "key": "fanxiu.activity-list",
       "title": "活动列表",
       "node_type": "group",

@@ -156,7 +156,7 @@ NOTE_AI_WHITESPACE_RE = re.compile(r"\s+")
 CALENDAR_YEAR_MONTH_MEMOS_SETTING_VERSION = 1
 CALENDAR_YEAR_MONTH_MEMO_KEY_RE = re.compile(r"^\d{4}-\d{2}$")
 CALENDAR_YEAR_TITLE_KEY_RE = re.compile(r"^\d{4}$")
-CODEX_DIARY_TIMEOUT_SECONDS = 900.0
+CODEX_DIARY_TIMEOUT_SECONDS = 300.0
 CODEX_DIARY_STALE_HEARTBEAT_SECONDS = CODEX_DIARY_TIMEOUT_SECONDS * 2 + 60.0
 CODEX_DIARY_PROMPT_VERSION = "2026-05-24.deepseek-diary-draft-v3"
 CODEX_DIARY_TIMEZONE = "Asia/Shanghai"
@@ -172,6 +172,8 @@ CODEX_DIARY_TARGET_SECONDS = 2 * 60 * 60
 CODEX_DIARY_PROGRESS_BASE_MINUTES = CODEX_DIARY_TARGET_SECONDS // 60
 CODEX_DIARY_TINY_TAIL_SECONDS = 15 * 60
 CODEX_DIARY_DRAFT_BATCH_SIZE = 12
+CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK = 24
+CODEX_DIARY_AI_EDGE_RECORD_COUNT_PER_BLOCK = CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK // 2
 CODEX_DIARY_RESULT_KEYWORDS = (
     "已",
     "完成",
@@ -2223,7 +2225,14 @@ def _build_codex_diary_ai_user_prompt(source: dict[str, Any], blocks: list[dict[
     payload_blocks: list[dict[str, Any]] = []
     for block in blocks:
         records: list[dict[str, Any]] = []
-        for record in block.get("records") or []:
+        block_records = list(block.get("records") or [])
+        prompt_records = block_records
+        omitted_record_count = 0
+        if len(block_records) > CODEX_DIARY_AI_RECORD_LIMIT_PER_BLOCK:
+            edge_count = CODEX_DIARY_AI_EDGE_RECORD_COUNT_PER_BLOCK
+            prompt_records = [*block_records[:edge_count], *block_records[-edge_count:]]
+            omitted_record_count = len(block_records) - len(prompt_records)
+        for record in prompt_records:
             records.append(
                 {
                     "time_range": record.get("time_range"),
@@ -2243,6 +2252,8 @@ def _build_codex_diary_ai_user_prompt(source: dict[str, Any], blocks: list[dict[
                 "start_time": _format_codex_diary_time(float(block.get("start_at") or 0)),
                 "end_time": _format_codex_diary_time(float(block.get("end_at") or 0)),
                 "duration_minutes": _codex_diary_duration_minutes(block.get("duration_seconds")),
+                "record_count": len(block_records),
+                "omitted_middle_record_count": omitted_record_count,
                 "records": records,
             }
         )
@@ -2267,6 +2278,27 @@ def _build_codex_diary_ai_user_prompt(source: dict[str, Any], blocks: list[dict[
         },
     }
     return json.dumps(request_payload, ensure_ascii=False, indent=2)
+
+
+def _draft_codex_diary_block_without_ai(block: dict[str, Any]) -> dict[str, Any]:
+    records = list(block.get("records") or [])
+    summary_items = [
+        str(entry.get("summary") or "").strip()
+        for entry in _build_codex_diary_summary_entries(records)
+        if str(entry.get("summary") or "").strip()
+    ]
+    if not summary_items:
+        summary_items = ["该事项已有 Codex 处理结果，细节可回到原会话查看。"]
+    block["title"] = _normalize_codex_diary_ai_title(block.get("title")) or _build_codex_diary_title(block)
+    block["summary_items"] = summary_items[:6]
+    block["lifecycle_stage"] = (
+        "done" if any(str(record.get("assistant_result") or "").strip() for record in records) else "doing"
+    )
+    return block
+
+
+def _draft_codex_diary_blocks_without_ai(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [_draft_codex_diary_block_without_ai(block) for block in blocks]
 
 
 def _draft_codex_diary_blocks_with_ai(
@@ -2346,14 +2378,38 @@ def _draft_codex_diary_blocks_in_batches(
                 stage_label=f"调用 AI 生成日记草案 {batch_index}/{total_batches}",
             )
         batch = blocks[offset : offset + CODEX_DIARY_DRAFT_BATCH_SIZE]
-        drafted_blocks.extend(
-            _draft_codex_diary_blocks_with_ai(
-                source,
-                batch,
-                current_user=current_user,
-                session=session,
+        try:
+            drafted_blocks.extend(
+                _draft_codex_diary_blocks_with_ai(
+                    source,
+                    batch,
+                    current_user=current_user,
+                    session=session,
+                )
             )
-        )
+        except Exception as exc:
+            if run is not None:
+                _touch_codex_diary_run(
+                    session,
+                    run,
+                    status="running",
+                    stage="drafting_fallback",
+                    stage_label=f"AI 草案失败，使用规则摘要 {batch_index}/{total_batches}",
+                )
+                fallback_events = list((run.result_json or {}).get("draft_fallback_events") or [])
+                fallback_events.append(
+                    {
+                        "batch_index": batch_index,
+                        "total_batches": total_batches,
+                        "error": str(getattr(exc, "detail", None) or exc),
+                    }
+                )
+                run.result_json = {**(run.result_json or {}), "draft_fallback_events": fallback_events}
+                session.add(run)
+                session.commit()
+            drafted_blocks.extend(
+                _draft_codex_diary_blocks_without_ai(batch)
+            )
     return drafted_blocks
 
 
@@ -4807,6 +4863,7 @@ def _create_codex_diary_import_run_record(
     entry_ids: List[str] | None = None,
     confirm_duplicate: bool = False,
     skip_duplicate: bool = False,
+    skip_active: bool = False,
 ) -> tuple[CodexDiaryImportRun, list[dict[str, Any]], dict[str, str], bool]:
     diary_date, day_start_at, day_end_at = _parse_codex_diary_date(diary_date_text)
     entries = _get_codex_diary_entries(session, current_user, entry_ids)
@@ -4815,6 +4872,27 @@ def _create_codex_diary_import_run_record(
 
     entry_specs = _snapshot_codex_diary_entries(entries)
     scope_key, root_identity = _build_codex_diary_scope_identity(entry_specs)
+    active_run = session.exec(
+        select(CodexDiaryImportRun)
+        .where(CodexDiaryImportRun.user_id == current_user.id)
+        .where(CodexDiaryImportRun.diary_date == diary_date)
+        .where(CodexDiaryImportRun.scope_key == scope_key)
+        .where(CodexDiaryImportRun.status.in_(["pending", "running"]))
+        .order_by(CodexDiaryImportRun.created_at.desc())
+    ).first()
+    if active_run is not None:
+        if skip_active:
+            return active_run, entry_specs, root_identity, False
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "active_import",
+                "message": "该日期的 Codex 总结日记仍在导入中，请等待当前任务完成后再试。",
+                "run_id": active_run.id,
+                "stage": active_run.stage,
+                "stage_label": active_run.stage_label,
+            },
+        )
     duplicate_note_ids = _find_existing_codex_diary_notes(
         session,
         user_id=current_user.id,
@@ -4959,6 +5037,7 @@ def run_codex_diary_auto_import_job(
                     entry_ids=[],
                     confirm_duplicate=False,
                     skip_duplicate=True,
+                    skip_active=True,
                 )
             except HTTPException as exc:
                 detail = getattr(exc, "detail", None)

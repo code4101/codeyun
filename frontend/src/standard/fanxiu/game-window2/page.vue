@@ -93,7 +93,7 @@
                 </div>
                 <div class="control-field">
                   <span class="control-label">显示</span>
-                  <el-input-number v-model="displayScale" class="scale-input" size="small" :min="20" :max="100" :step="5" controls-position="right" @change="syncCanvasSoon" />
+                <el-input-number v-model="displayScale" class="scale-input" size="small" :min="20" :max="500" :step="5" controls-position="right" @change="syncCanvasSoon" />
                   <span class="control-label">%</span>
                 </div>
                 <div class="control-field">
@@ -145,37 +145,90 @@
           <div class="live-workspace">
             <div
               v-show="windowViewMode !== 'off'"
-              ref="imageWrapRef"
-              class="image-wrap"
-              :class="{ 'is-control-enabled': controlEnabled }"
+              ref="liveViewportRef"
+              class="live-viewport"
+              :class="liveViewportClasses"
+              :style="liveCanvasStyle"
+              @wheel="handleLiveWheel"
+              @mousedown.capture="handleLiveViewportMouseDown"
             >
-              <img
-                v-if="streamEnabled && streamUrl"
-                ref="streamImageRef"
-                class="stream-image"
-                :src="streamUrl"
-                :style="streamImageStyle"
-                alt="凡修云手机窗口"
-                draggable="false"
-                @load="handleImageLoad"
-                @error="handleStreamError"
-              />
-              <div v-else class="paused-placeholder">{{ placeholderText }}</div>
-              <canvas
-                ref="overlayCanvasRef"
-                class="overlay-canvas"
-                @pointerdown="handlePointerDown"
-                @pointermove="handlePointerMove"
-                @pointerup="handlePointerUp"
-                @pointerleave="handlePointerLeave"
-                @contextmenu.prevent="handleContextMenu"
-              />
-              <div v-if="streamError" class="stream-error">{{ streamError }}</div>
+              <div class="live-stage-workspace" :style="liveCanvasStyle">
+                <div
+                  ref="imageWrapRef"
+                  class="image-wrap"
+                  :class="{ 'is-control-enabled': controlEnabled }"
+                  :style="liveContentStyle"
+                >
+                  <img
+                    v-if="streamEnabled && streamUrl"
+                    ref="streamImageRef"
+                    class="stream-image"
+                    :src="streamUrl"
+                    :style="liveCanvasStyle"
+                    alt="凡修云手机窗口"
+                    draggable="false"
+                    @load="handleImageLoad"
+                    @error="handleStreamError"
+                  />
+                  <div v-else class="paused-placeholder">{{ placeholderText }}</div>
+                  <canvas
+                    ref="overlayCanvasRef"
+                    class="overlay-canvas"
+                    @pointerdown="handlePointerDown"
+                    @pointermove="handlePointerMove"
+                    @pointerup="handlePointerUp"
+                    @pointerleave="handlePointerLeave"
+                    @contextmenu.prevent="handleContextMenu"
+                  />
+                  <div v-if="streamError" class="stream-error">{{ streamError }}</div>
+                </div>
+              </div>
             </div>
 
             <aside class="code-panel">
               <div class="code-panel-head">
-                <span>伪代码</span>
+                <div class="code-panel-title">
+                  <span>视觉宏</span>
+                  <el-popover trigger="click" placement="bottom-start" width="260">
+                    <template #reference>
+                      <el-button
+                        circle
+                        plain
+                        size="small"
+                        :icon="Setting"
+                        title="配置新视觉指令默认模板"
+                        aria-label="配置新视觉指令默认模板"
+                      />
+                    </template>
+                    <div class="visual-macro-config">
+                      <div class="visual-macro-config-title">新指令默认模板</div>
+                      <label class="visual-macro-config-row">
+                        <span>点击半径</span>
+                        <el-input-number
+                          v-model="visualMacroDefaultPointRadius"
+                          class="visual-number-input"
+                          size="small"
+                          :min="0"
+                          :max="200"
+                          :step="1"
+                          controls-position="right"
+                        />
+                      </label>
+                      <label class="visual-macro-config-row">
+                        <span>图片相似度</span>
+                        <el-input-number
+                          v-model="visualMacroDefaultThreshold"
+                          class="visual-number-input"
+                          size="small"
+                          :min="0.5"
+                          :max="1"
+                          :step="0.01"
+                          controls-position="right"
+                        />
+                      </label>
+                    </div>
+                  </el-popover>
+                </div>
                 <div class="code-panel-actions">
                   <el-button size="small" :loading="pseudoCompileLoading" @click="compilePseudoCode">编译</el-button>
                   <el-button size="small" type="primary" plain :loading="pseudoStartLoading" @click="startPseudoCode">启动</el-button>
@@ -221,6 +274,16 @@
                         </button>
                         <button
                           type="button"
+                          class="code-card-record"
+                          :class="{ 'is-recording': activeVisualMacroCardId === card.id }"
+                          :title="activeVisualMacroCardId === card.id ? '停止录制视觉指令' : '录制视觉指令'"
+                          :aria-label="activeVisualMacroCardId === card.id ? '停止录制视觉指令' : '录制视觉指令'"
+                          @click="toggleVisualMacroRecording(card.id)"
+                        >
+                          {{ activeVisualMacroCardId === card.id ? '停止录制' : '录制' }}
+                        </button>
+                        <button
+                          type="button"
                           class="code-card-delete"
                           title="删除卡片"
                           aria-label="删除卡片"
@@ -247,16 +310,122 @@
                           -
                         </button>
                       </div>
-                      <el-input
-                        v-if="isCodeCardExpanded(card.id)"
-                        v-model="card.body"
-                        class="code-card-body"
-                        type="textarea"
-                        placeholder="段落"
-                        :autosize="{ minRows: 5, maxRows: 16 }"
-                        @input="scheduleCodeCardSave(card)"
-                        @blur="saveCodeCardNow(card)"
-                      />
+                      <div v-if="isCodeCardExpanded(card.id)" class="visual-action-editor">
+                        <div v-if="activeVisualMacroCardId === card.id" class="visual-recording-hint">
+                          {{ visualMacroCapturePending ? '正在保存点击前画面...' : '录制中：在左侧直播画面点击或拖拽，会追加一条视觉指令。' }}
+                        </div>
+                        <div
+                          v-for="(instruction, instructionIndex) in visualInstructionsOf(card)"
+                          :key="instruction.id"
+                          class="visual-operation"
+                          :class="{ 'is-selected': selectedVisualInstructionKey === visualInstructionKey(card.id, instruction.id) }"
+                          @click="selectVisualInstructionFrame(card, instruction)"
+                        >
+                        <div class="visual-action-row">
+                          <span class="visual-operation-index">{{ instructionIndex + 1 }}</span>
+                          <el-select
+                            :model-value="instruction.action"
+                            class="visual-action-select"
+                            size="small"
+                            @change="value => updateVisualInstruction(card, instruction.id, { action: value as VisualActionKind })"
+                          >
+                            <el-option label="点击" value="click" />
+                            <el-option label="拖拽" value="drag" />
+                            <el-option label="等待" value="wait" />
+                          </el-select>
+                          <el-select
+                            :model-value="instruction.target"
+                            class="visual-target-select"
+                            size="small"
+                            @change="value => updateVisualInstruction(card, instruction.id, { target: value as VisualTargetKind })"
+                          >
+                            <el-option label="图片" value="image" />
+                            <el-option label="文本" value="text" />
+                            <el-option label="无目标" value="none" />
+                          </el-select>
+                          <el-select
+                            v-if="instruction.target === 'image'"
+                            :model-value="instruction.scan"
+                            class="visual-scan-select"
+                            size="small"
+                            @change="value => updateVisualInstruction(card, instruction.id, { scan: value as VisualScanMode })"
+                          >
+                            <el-option label="固定位置" value="fixed" />
+                            <el-option label="范围搜索" value="range" />
+                            <el-option label="全图搜索" value="full" />
+                          </el-select>
+                          <button
+                            type="button"
+                            class="visual-operation-delete"
+                            title="删除视觉指令"
+                            aria-label="删除视觉指令"
+                            @click.stop="deleteVisualInstruction(card, instruction.id)"
+                          >
+                            -
+                          </button>
+                        </div>
+
+                        <div class="visual-action-row">
+                          <template v-if="instruction.target === 'text'">
+                            <el-input
+                              :model-value="instruction.text"
+                              class="visual-text-input"
+                              size="small"
+                              placeholder="识别文本"
+                              @input="value => updateVisualInstruction(card, instruction.id, { text: String(value) })"
+                              @blur="saveCodeCardNow(card)"
+                            />
+                            <el-select
+                              :model-value="instruction.textMatch"
+                              class="visual-scan-select"
+                              size="small"
+                              @change="value => updateVisualInstruction(card, instruction.id, { textMatch: value as VisualTextMatch })"
+                            >
+                              <el-option label="包含" value="contains" />
+                              <el-option label="精确" value="exact" />
+                              <el-option label="正则" value="regex" />
+                            </el-select>
+                          </template>
+                        </div>
+
+                        <div v-if="instruction.action !== 'click'" class="visual-action-row">
+                          <template v-if="instruction.action === 'wait'">
+                            <span class="visual-inline-label">条件</span>
+                            <el-select
+                              :model-value="instruction.condition"
+                              class="visual-scan-select"
+                              size="small"
+                              @change="value => updateVisualInstruction(card, instruction.id, { condition: value as VisualCondition })"
+                            >
+                              <el-option label="出现" value="appear" />
+                              <el-option label="消失" value="disappear" />
+                              <el-option label="稳定" value="stable" />
+                              <el-option label="变化" value="changed" />
+                            </el-select>
+                            <span class="visual-inline-label">超时</span>
+                            <el-input-number
+                              :model-value="instruction.timeout"
+                              class="visual-small-number-input"
+                              size="small"
+                              :min="0"
+                              :max="120"
+                              controls-position="right"
+                              @change="value => updateVisualInstruction(card, instruction.id, { timeout: Number(value) || 0 })"
+                            />
+                            <span class="visual-inline-label">秒</span>
+                          </template>
+                          <template v-else-if="instruction.action === 'drag'">
+                            <span class="visual-inline-label">从</span>
+                            <code>{{ visualPointText(instruction.point) }}</code>
+                            <span class="visual-inline-label">到</span>
+                            <code>{{ visualPointText(instruction.endPoint) }}</code>
+                          </template>
+                        </div>
+                        </div>
+                        <div v-if="!visualInstructionsOf(card).length" class="visual-empty">
+                          点击本动作右上角“录制”后，在直播画面点击或拖拽，会追加视觉指令。
+                        </div>
+                      </div>
                     </section>
                     <div v-if="!codeCardsByScope(scopeInfo.scope).length && !codeCardsLoading" class="code-card-empty">
                       {{ scopeInfo.emptyText }}
@@ -292,81 +461,169 @@
             <div class="screenshot-head">
               <button type="button" class="screenshot-toggle" @click="toggleScreenshotPanel">
                 <span class="screenshot-caret">{{ screenshotPanelOpen ? '▼' : '▶' }}</span>
-                <span>截图</span>
+                <span>指令截图</span>
               </button>
-              <div v-if="screenshotImages.length" class="screenshot-nav">
-                <el-button
-                  :icon="ArrowLeft"
-                  size="small"
-                  circle
-                  :disabled="!canSelectPreviousScreenshotImage"
-                  @click="selectAdjacentScreenshotImage(-1)"
-                />
-                <div class="screenshot-current-item" @dblclick="startScreenshotJumpEdit">
-                  <el-input
-                    v-if="screenshotJumpEditing"
-                    ref="screenshotJumpInputRef"
-                    v-model="screenshotJumpText"
-                    class="screenshot-jump-input"
-                    size="small"
-                    @keydown.enter.prevent="confirmScreenshotJump"
-                    @keydown.esc.prevent="cancelScreenshotJump"
-                    @blur="cancelScreenshotJump"
-                  />
-                  <span v-else class="screenshot-name" title="双击输入编号跳转">
-                    {{ selectedScreenshotImage?.filename }}
-                  </span>
+              <el-popover trigger="click" placement="right-start" width="260">
+                <template #reference>
+                  <button
+                    type="button"
+                    class="screenshot-help"
+                    title="查看操作文档"
+                    aria-label="查看指令截图操作文档"
+                    @click.stop
+                  >
+                    ?
+                  </button>
+                </template>
+                <div class="screenshot-help-doc">
+                  <div>Ctrl + 滚轮：以鼠标位置缩放</div>
+                  <div>Ctrl + + / -：放大或缩小</div>
+                  <div>Ctrl + 0：适应视口</div>
+                  <div>空格 + 左键拖拽：拖动画面</div>
+                  <div>中键拖拽：拖动画面</div>
+                  <div>左键拖拽：新建标注框</div>
                 </div>
-                <el-button
-                  :icon="ArrowRight"
-                  size="small"
-                  circle
-                  :disabled="!canSelectNextScreenshotImage"
-                  @click="selectAdjacentScreenshotImage(1)"
-                />
-                <button
-                  type="button"
-                  class="screenshot-delete"
-                  :disabled="screenshotDeleting"
-                  title="删除这张截图"
-                  aria-label="删除这张截图"
-                  @click="deleteCurrentScreenshotImage"
-                >
-                  -
-                </button>
-              </div>
+              </el-popover>
               <span class="screenshot-summary">{{ screenshotPanelSummary }}</span>
             </div>
             <div v-if="screenshotPanelOpen" class="screenshot-body">
               <div v-if="screenshotLoading && !screenshotImages.length" class="screenshot-empty">加载中</div>
-              <div v-else-if="!screenshotImages.length" class="screenshot-empty">暂无截图</div>
+              <div v-else-if="!selectedScreenshotFilename" class="screenshot-empty">选择一条带帧的视觉指令</div>
+              <div v-else-if="!selectedScreenshotImage" class="screenshot-empty">未找到绑定截图</div>
               <div v-if="selectedScreenshotImage" class="screenshot-editor">
-                <div class="screenshot-preview">
-                  <div ref="screenshotImageWrapRef" class="screenshot-image-wrap">
-                    <img
-                      v-if="screenshotImageUrl"
-                      ref="screenshotImageRef"
-                      class="screenshot-image"
-                      :src="screenshotImageUrl"
-                      alt="截图"
-                      draggable="false"
-                      @load="handleScreenshotImageLoad"
-                      @error="handleScreenshotImageError"
-                    />
-                    <div v-else class="screenshot-image-placeholder">加载图片</div>
-                    <canvas
-                      ref="screenshotOverlayCanvasRef"
-                      class="screenshot-overlay-canvas"
-                      @pointerdown="handleScreenshotPointerDown"
-                      @pointermove="handleScreenshotPointerMove"
-                      @pointerup="handleScreenshotPointerUp"
-                      @pointerleave="handleScreenshotPointerLeave"
-                      @contextmenu.prevent="handleScreenshotContextMenu"
-                    />
+                <div
+                  ref="screenshotViewportRef"
+                  class="screenshot-preview"
+                  :class="screenshotViewportClasses"
+                  :style="screenshotCanvasStyle"
+                  @wheel="handleScreenshotWheel"
+                  @mousedown.capture="handleScreenshotViewportMouseDown"
+                >
+                  <div class="screenshot-workspace" :style="screenshotCanvasStyle">
+                    <div ref="screenshotImageWrapRef" class="screenshot-image-wrap" :style="screenshotContentStyle">
+                      <img
+                        v-if="screenshotImageUrl"
+                        ref="screenshotImageRef"
+                        class="screenshot-image"
+                        :src="screenshotImageUrl"
+                        :style="screenshotCanvasStyle"
+                        alt="截图"
+                        draggable="false"
+                        @load="handleScreenshotImageLoad"
+                        @error="handleScreenshotImageError"
+                      />
+                      <div v-else class="screenshot-image-placeholder">加载图片</div>
+                      <canvas
+                        ref="screenshotOverlayCanvasRef"
+                        class="screenshot-overlay-canvas"
+                        @pointerdown="handleScreenshotPointerDown"
+                        @pointermove="handleScreenshotPointerMove"
+                        @pointerup="handleScreenshotPointerUp"
+                        @pointerleave="handleScreenshotPointerLeave"
+                        @contextmenu.prevent="handleScreenshotContextMenu"
+                      />
+                    </div>
                   </div>
                 </div>
 
                 <div class="screenshot-pre-panel" @contextmenu.prevent.stop="openScreenshotBoxListPanelContextMenu">
+                  <div v-if="selectedVisualInstruction" class="screenshot-instruction-panel">
+                    <div class="screenshot-panel-title">{{ visualActionLabel(selectedVisualInstruction.action) }}</div>
+                    <div v-if="selectedVisualInstruction.action === 'click'" class="screenshot-instruction-metrics">
+                      <label class="screenshot-box-metric">
+                        <span>x</span>
+                        <el-input-number
+                          :model-value="selectedVisualInstruction.point?.x ?? 0"
+                          size="small"
+                          :controls="false"
+                          :step="1"
+                          @change="value => updateSelectedVisualInstructionPoint('point', 'x', value)"
+                        />
+                      </label>
+                      <label class="screenshot-box-metric">
+                        <span>y</span>
+                        <el-input-number
+                          :model-value="selectedVisualInstruction.point?.y ?? 0"
+                          size="small"
+                          :controls="false"
+                          :step="1"
+                          @change="value => updateSelectedVisualInstructionPoint('point', 'y', value)"
+                        />
+                      </label>
+                      <label class="screenshot-box-metric">
+                        <span>r</span>
+                        <el-input-number
+                          :model-value="selectedVisualInstruction.pointRadius"
+                          size="small"
+                          :controls="false"
+                          :step="1"
+                          @change="updateSelectedVisualInstructionRadius"
+                        />
+                      </label>
+                    </div>
+                    <div v-else-if="selectedVisualInstruction.action === 'drag'" class="screenshot-drag-metrics">
+                      <div class="screenshot-instruction-metrics">
+                        <span class="screenshot-metric-group-label">从</span>
+                        <label class="screenshot-box-metric">
+                          <span>x</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.point?.x ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionPoint('point', 'x', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>y</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.point?.y ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionPoint('point', 'y', value)"
+                          />
+                        </label>
+                      </div>
+                      <div class="screenshot-instruction-metrics">
+                        <span class="screenshot-metric-group-label">到</span>
+                        <label class="screenshot-box-metric">
+                          <span>x</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.endPoint?.x ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionPoint('endPoint', 'x', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>y</span>
+                          <el-input-number
+                            :model-value="selectedVisualInstruction.endPoint?.y ?? 0"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @change="value => updateSelectedVisualInstructionPoint('endPoint', 'y', value)"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    <div v-if="selectedVisualInstruction.target === 'image'" class="screenshot-advanced-metrics">
+                      <label class="screenshot-box-metric">
+                        <span>相似度</span>
+                        <el-input-number
+                          :model-value="selectedVisualInstruction.threshold"
+                          size="small"
+                          :min="0.5"
+                          :max="1"
+                          :step="0.01"
+                          controls-position="right"
+                          @change="updateSelectedVisualInstructionThreshold"
+                        />
+                      </label>
+                    </div>
+                  </div>
                   <div v-if="screenshotBoxes.length" class="screenshot-box-list">
                     <div
                       v-for="(box, index) in screenshotBoxes"
@@ -376,13 +633,63 @@
                       @click="selectScreenshotBox(box.id)"
                       @contextmenu.prevent.stop="openScreenshotBoxListContextMenu($event, box.id)"
                     >
-                      <span class="screenshot-box-number">{{ index + 1 }}</span>
-                      <el-input
-                        v-model="box.name"
-                        size="small"
-                        @focus="selectScreenshotBox(box.id)"
-                        @input="handleScreenshotBoxNameInput"
-                      />
+                      <div class="screenshot-box-main">
+                        <span class="screenshot-box-number">{{ index + 1 }}</span>
+                        <el-input
+                          v-model="box.name"
+                          class="screenshot-box-name"
+                          size="small"
+                          placeholder="名称"
+                          @focus="selectScreenshotBox(box.id)"
+                          @input="handleScreenshotBoxNameInput"
+                        />
+                      </div>
+                      <div class="screenshot-box-metrics">
+                        <label class="screenshot-box-metric">
+                          <span>x</span>
+                          <el-input-number
+                            :model-value="box.x"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @focus="selectScreenshotBox(box.id)"
+                            @change="value => updateScreenshotBoxMetric(box.id, 'x', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>y</span>
+                          <el-input-number
+                            :model-value="box.y"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @focus="selectScreenshotBox(box.id)"
+                            @change="value => updateScreenshotBoxMetric(box.id, 'y', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>w</span>
+                          <el-input-number
+                            :model-value="box.w"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @focus="selectScreenshotBox(box.id)"
+                            @change="value => updateScreenshotBoxMetric(box.id, 'w', value)"
+                          />
+                        </label>
+                        <label class="screenshot-box-metric">
+                          <span>h</span>
+                          <el-input-number
+                            :model-value="box.h"
+                            size="small"
+                            :controls="false"
+                            :step="1"
+                            @focus="selectScreenshotBox(box.id)"
+                            @change="value => updateScreenshotBoxMetric(box.id, 'h', value)"
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
                   <div v-else class="screenshot-empty">拖拽画框</div>
@@ -474,6 +781,7 @@ import {
   ArrowRight,
   Download,
   Refresh,
+  Setting,
 } from '@element-plus/icons-vue';
 import {
   clickFanxiuGameWindow2,
@@ -519,6 +827,10 @@ interface OverlayBox {
   h: number;
 }
 
+type OverlayBoxMetric = 'x' | 'y' | 'w' | 'h';
+type VisualPointField = 'point' | 'endPoint';
+type VisualPointMetric = 'x' | 'y';
+
 interface DraftState {
   pointerId: number;
   startX: number;
@@ -532,6 +844,13 @@ interface ScreenshotResizeState {
   boxId: string;
   handle: ScreenshotResizeHandle;
   original: OverlayBox;
+}
+
+interface ScreenshotPanState {
+  startClientX: number;
+  startClientY: number;
+  startPanX: number;
+  startPanY: number;
 }
 
 interface ControlClickState {
@@ -566,7 +885,6 @@ interface WindowSceneConfig {
   fps: number;
   quality: number;
   autoDismissPopup: boolean;
-  displayScale: number;
 }
 
 interface WindowScene {
@@ -587,6 +905,48 @@ interface CodeCardScopeInfo {
 interface LegacyCodeCard {
   title?: unknown;
   body?: unknown;
+}
+
+type VisualActionKind = 'click' | 'drag' | 'wait';
+type VisualTargetKind = 'image' | 'text' | 'none';
+type VisualScanMode = 'fixed' | 'range' | 'full';
+type VisualTextMatch = 'contains' | 'exact' | 'regex';
+type VisualCondition = 'appear' | 'disappear' | 'stable' | 'changed';
+
+interface VisualPoint {
+  x: number;
+  y: number;
+}
+
+interface VisualBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+interface VisualMacroAction {
+  version: 1;
+  id: string;
+  action: VisualActionKind;
+  target: VisualTargetKind;
+  label: string;
+  frame: string;
+  point: VisualPoint | null;
+  endPoint: VisualPoint | null;
+  pointRadius: number;
+  box: VisualBox | null;
+  scan: VisualScanMode;
+  threshold: number;
+  text: string;
+  textMatch: VisualTextMatch;
+  condition: VisualCondition;
+  timeout: number;
+}
+
+interface VisualMacroProgram {
+  version: 1;
+  operations: VisualMacroAction[];
 }
 
 interface ScreenshotBoxContextMenu {
@@ -628,7 +988,16 @@ const WINDOW_STORAGE_KEY = 'fanxiu.gameWindow2.windowKey';
 const WINDOW_CONFIG_STORAGE_PREFIX = 'fanxiu.gameWindow2.windowConfig';
 const SCREENSHOT_SELECTION_STORAGE_PREFIX = 'fanxiu.gameWindow2.screenshotFilename';
 const LEGACY_CODE_CARDS_STORAGE_KEY = 'fanxiu.gameWindow2.codeCards';
+const VISUAL_MACRO_DEFAULT_THRESHOLD_KEY = 'fanxiu.gameWindow2.visualMacro.defaultThreshold';
+const VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY = 'fanxiu.gameWindow2.visualMacro.defaultPointRadius';
+const SCREENSHOT_MIN_ZOOM_PERCENT = 20;
+const SCREENSHOT_MAX_ZOOM_PERCENT = 500;
+const SCREENSHOT_ZOOM_STEP = 10;
+const MIN_CONTENT_VISIBLE_AREA_RATIO = 0.2;
+const MIN_CONTENT_VISIBLE_AXIS_RATIO = Math.sqrt(MIN_CONTENT_VISIBLE_AREA_RATIO);
 const GAME_WINDOW_SERVICE_KEY = 'fanxiu-game-window';
+const VISUAL_ACTION_MARKER_START = '<!-- codeyun-visual-action-v1';
+const VISUAL_ACTION_MARKER_END = '-->';
 const windowViewModes: Array<{ value: WindowViewMode; label: string }> = [
   { value: 'live', label: '直播' },
   { value: 'control', label: '交互' },
@@ -719,11 +1088,16 @@ const selectedScreenshotFilename = ref('');
 const screenshotImageUrl = ref('');
 const screenshotNaturalWidth = ref(0);
 const screenshotNaturalHeight = ref(0);
+const screenshotZoomPercent = ref(100);
+const screenshotPanX = ref(0);
+const screenshotPanY = ref(0);
 const screenshotBoxes = ref<OverlayBox[]>([]);
 const selectedScreenshotBoxId = ref<string | null>(null);
 const screenshotDraftState = ref<DraftState | null>(null);
 const screenshotDraftBox = ref<OverlayBox | null>(null);
 const screenshotResizeState = ref<ScreenshotResizeState | null>(null);
+const screenshotPanState = ref<ScreenshotPanState | null>(null);
+const screenshotSpacePressed = ref(false);
 const screenshotDirty = ref(false);
 const screenshotJumpEditing = ref(false);
 const screenshotJumpText = ref('');
@@ -746,6 +1120,11 @@ const selectedMatchEntryId = ref('');
 const codeCards = ref<CodeCard[]>([]);
 const codeCardsLoading = ref(false);
 const expandedCodeCardIds = ref<string[]>([]);
+const activeVisualMacroCardId = ref<string | null>(null);
+const visualMacroCapturePending = ref(false);
+const visualMacroDefaultThreshold = ref(0.88);
+const visualMacroDefaultPointRadius = ref(10);
+const selectedVisualInstructionKey = ref('');
 const pseudoCompileLoading = ref(false);
 const pseudoStartLoading = ref(false);
 const pseudoOutputTab = ref<PseudoOutputTab>('log');
@@ -754,8 +1133,10 @@ const pseudoExecutionResult = ref('');
 
 const streamImageRef = ref<HTMLImageElement | null>(null);
 const imageWrapRef = ref<HTMLDivElement | null>(null);
+const liveViewportRef = ref<HTMLDivElement | null>(null);
 const overlayCanvasRef = ref<HTMLCanvasElement | null>(null);
 const screenshotImageRef = ref<HTMLImageElement | null>(null);
+const screenshotViewportRef = ref<HTMLDivElement | null>(null);
 const screenshotImageWrapRef = ref<HTMLDivElement | null>(null);
 const screenshotOverlayCanvasRef = ref<HTMLCanvasElement | null>(null);
 const screenshotJumpInputRef = ref<{ focus: () => void } | null>(null);
@@ -764,11 +1145,15 @@ const matchImageWrapRef = ref<HTMLDivElement | null>(null);
 const matchOverlayCanvasRef = ref<HTMLCanvasElement | null>(null);
 const naturalWidth = ref(0);
 const naturalHeight = ref(0);
+const liveContentZoomPercent = ref(100);
+const livePanX = ref(0);
+const livePanY = ref(0);
 const selectedBoxId = ref<string | null>(null);
 const boxes = ref<OverlayBox[]>([]);
 const draftState = ref<DraftState | null>(null);
 const draftBox = ref<OverlayBox | null>(null);
 const controlClickState = ref<ControlClickState | null>(null);
+const livePanState = ref<ScreenshotPanState | null>(null);
 
 let resizeObserver: ResizeObserver | null = null;
 let pollTimer: number | null = null;
@@ -794,6 +1179,18 @@ const serviceActive = computed(() => Boolean(serviceItem.value?.active));
 const selectedScreenshotImage = computed(() => (
   screenshotImages.value.find((item) => item.filename === selectedScreenshotFilename.value) ?? null
 ));
+const selectedVisualInstructionContext = computed(() => {
+  if (!selectedVisualInstructionKey.value) return null;
+  for (const card of codeCards.value) {
+    for (const instruction of visualInstructionsOf(card)) {
+      if (visualInstructionKey(card.id, instruction.id) === selectedVisualInstructionKey.value) {
+        return { card, instruction };
+      }
+    }
+  }
+  return null;
+});
+const selectedVisualInstruction = computed(() => selectedVisualInstructionContext.value?.instruction ?? null);
 const selectedScreenshotIndex = computed(() => (
   screenshotImages.value.findIndex((item) => item.filename === selectedScreenshotFilename.value)
 ));
@@ -843,11 +1240,44 @@ const naturalSizeText = computed(() => {
   if (!naturalWidth.value || !naturalHeight.value) return '等待画面';
   return `${naturalHeight.value} x ${naturalWidth.value}`;
 });
-const streamImageStyle = computed(() => {
-  if (!naturalWidth.value) return {};
-  const width = Math.max(1, Math.round(naturalWidth.value * displayScale.value / 100));
-  return { width: `${width}px` };
+const liveCanvasStyle = computed(() => {
+  const width = naturalWidth.value || 0;
+  const height = naturalHeight.value || 0;
+  if (!width || !height) return {};
+  const stageWidth = Math.max(1, Math.round(width * displayScale.value / 100));
+  const stageHeight = Math.max(1, Math.round(height * displayScale.value / 100));
+  return {
+    width: `${stageWidth}px`,
+    height: `${stageHeight}px`,
+  };
 });
+const liveContentStyle = computed(() => ({
+  ...liveCanvasStyle.value,
+  transform: `translate(${livePanX.value}px, ${livePanY.value}px) scale(${liveContentZoomPercent.value / 100})`,
+}));
+const liveViewportClasses = computed(() => ({
+  'is-pan-ready': screenshotSpacePressed.value && !livePanState.value,
+  'is-panning': Boolean(livePanState.value),
+}));
+const screenshotCanvasStyle = computed(() => {
+  const width = screenshotNaturalWidth.value || selectedScreenshotImage.value?.width || 0;
+  const height = screenshotNaturalHeight.value || selectedScreenshotImage.value?.height || 0;
+  if (!width || !height) return {};
+  const stageWidth = Math.max(1, Math.round(width * displayScale.value / 100));
+  const stageHeight = Math.max(1, Math.round(height * displayScale.value / 100));
+  return {
+    width: `${stageWidth}px`,
+    height: `${stageHeight}px`,
+  };
+});
+const screenshotContentStyle = computed(() => ({
+  ...screenshotCanvasStyle.value,
+  transform: `translate(${screenshotPanX.value}px, ${screenshotPanY.value}px) scale(${screenshotZoomPercent.value / 100})`,
+}));
+const screenshotViewportClasses = computed(() => ({
+  'is-pan-ready': screenshotSpacePressed.value && !screenshotPanState.value,
+  'is-panning': Boolean(screenshotPanState.value),
+}));
 const placeholderText = computed(() => {
   if (!selectedEntryId.value) return '选择设备';
   if (windowViewMode.value === 'off') return '直播已关闭';
@@ -857,13 +1287,308 @@ const placeholderText = computed(() => {
 });
 const screenshotPanelSummary = computed(() => {
   if (!selectedEntryId.value) return '未选设备';
-  if (!screenshotLoaded.value) return '未加载';
-  return `共${screenshotImages.value.length}张`;
+  if (!selectedVisualInstructionKey.value) return '未选指令';
+  return selectedScreenshotFilename.value || '未绑定帧';
 });
 const pseudoOutputText = computed(() => {
   if (pseudoOutputTab.value === 'result') return pseudoExecutionResult.value || '暂无结果';
   return pseudoExecutionLog.value || '暂无日志';
 });
+
+const defaultVisualAction = (overrides: Partial<VisualMacroAction> = {}): VisualMacroAction => ({
+  version: 1,
+  id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+  action: 'click',
+  target: 'image',
+  label: '',
+  frame: '',
+  point: null,
+  endPoint: null,
+  pointRadius: visualMacroDefaultPointRadius.value,
+  box: null,
+  scan: 'fixed',
+  threshold: visualMacroDefaultThreshold.value,
+  text: '',
+  textMatch: 'contains',
+  condition: 'appear',
+  timeout: 8,
+  ...overrides,
+});
+
+const defaultVisualProgram = (operations: VisualMacroAction[] = []): VisualMacroProgram => ({
+  version: 1,
+  operations,
+});
+
+const normalizeVisualPoint = (value: unknown): VisualPoint | null => {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Partial<VisualPoint>;
+  const x = Math.round(Number(item.x));
+  const y = Math.round(Number(item.y));
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+};
+
+const normalizeVisualBox = (value: unknown): VisualBox | null => {
+  if (!value || typeof value !== 'object') return null;
+  const item = value as Partial<VisualBox>;
+  const x = Math.round(Number(item.x));
+  const y = Math.round(Number(item.y));
+  const w = Math.round(Number(item.w));
+  const h = Math.round(Number(item.h));
+  if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+  return { x, y, w, h };
+};
+
+const normalizeVisualAction = (raw: unknown): VisualMacroAction => {
+  const item = raw && typeof raw === 'object' ? raw as Partial<VisualMacroAction> : {};
+  const action = ['click', 'drag', 'wait'].includes(String(item.action)) ? item.action as VisualActionKind : 'click';
+  const target = ['image', 'text', 'none'].includes(String(item.target)) ? item.target as VisualTargetKind : 'image';
+  const scan = ['fixed', 'range', 'full'].includes(String(item.scan)) ? item.scan as VisualScanMode : 'fixed';
+  const textMatch = ['contains', 'exact', 'regex'].includes(String(item.textMatch)) ? item.textMatch as VisualTextMatch : 'contains';
+  const condition = ['appear', 'disappear', 'stable', 'changed'].includes(String(item.condition)) ? item.condition as VisualCondition : 'appear';
+  const threshold = Number(item.threshold);
+  const timeout = Number(item.timeout);
+  const pointRadius = Number(item.pointRadius);
+  return defaultVisualAction({
+    id: String(item.id || `${Date.now()}-${Math.random().toString(16).slice(2)}`),
+    action,
+    target,
+    label: String(item.label || ''),
+    frame: String(item.frame || ''),
+    point: normalizeVisualPoint(item.point),
+    endPoint: normalizeVisualPoint(item.endPoint),
+    pointRadius: Number.isFinite(pointRadius) ? Math.max(0, Math.round(pointRadius)) : visualMacroDefaultPointRadius.value,
+    box: normalizeVisualBox(item.box),
+    scan,
+    threshold: Number.isFinite(threshold) ? clamp(threshold, 0.5, 1) : visualMacroDefaultThreshold.value,
+    text: String(item.text || ''),
+    textMatch,
+    condition,
+    timeout: Number.isFinite(timeout) ? Math.max(0, Math.round(timeout)) : 8,
+  });
+};
+
+const setVisualMacroDefaultThreshold = (value: unknown, persist = true) => {
+  if (value === null || value === undefined || value === '') {
+    visualMacroDefaultThreshold.value = 0.88;
+    if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
+    return;
+  }
+  const nextValue = Number(value);
+  visualMacroDefaultThreshold.value = Number.isFinite(nextValue) ? clamp(nextValue, 0.5, 1) : 0.88;
+  if (persist) {
+    window.localStorage.setItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY, String(visualMacroDefaultThreshold.value));
+  }
+};
+
+const setVisualMacroDefaultPointRadius = (value: unknown, persist = true) => {
+  if (value === null || value === undefined || value === '') {
+    visualMacroDefaultPointRadius.value = 10;
+    if (persist) window.localStorage.setItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY, String(visualMacroDefaultPointRadius.value));
+    return;
+  }
+  const nextValue = Math.round(Number(value));
+  visualMacroDefaultPointRadius.value = Number.isFinite(nextValue) ? Math.max(0, nextValue) : 10;
+  if (persist) {
+    window.localStorage.setItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY, String(visualMacroDefaultPointRadius.value));
+  }
+};
+
+const migrateVisualMacroDefaultThreshold = (value: unknown) => {
+  if (window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY) !== null) return;
+  const nextValue = Number(value);
+  if (!Number.isFinite(nextValue)) return;
+  setVisualMacroDefaultThreshold(nextValue);
+};
+
+const migrateVisualMacroDefaultPointRadius = (value: unknown) => {
+  if (window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY) !== null) return;
+  const nextValue = Number(value);
+  if (!Number.isFinite(nextValue)) return;
+  setVisualMacroDefaultPointRadius(nextValue);
+};
+
+const loadVisualMacroDefaults = () => {
+  setVisualMacroDefaultThreshold(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_THRESHOLD_KEY), false);
+  setVisualMacroDefaultPointRadius(window.localStorage.getItem(VISUAL_MACRO_DEFAULT_POINT_RADIUS_KEY), false);
+};
+
+const normalizeVisualProgram = (raw: unknown): VisualMacroProgram => {
+  if (!raw || typeof raw !== 'object') return defaultVisualProgram();
+  const item = raw as { defaultThreshold?: unknown; threshold?: unknown; operations?: unknown[] };
+  const operations = Array.isArray(item.operations) ? item.operations.map(normalizeVisualAction) : [normalizeVisualAction(raw)];
+  migrateVisualMacroDefaultThreshold(item.defaultThreshold ?? item.threshold ?? operations.find((operation) => operation.target === 'image')?.threshold);
+  migrateVisualMacroDefaultPointRadius(operations.find((operation) => operation.action === 'click')?.pointRadius);
+  return defaultVisualProgram(operations);
+};
+
+const parseVisualProgram = (body: string): VisualMacroProgram | null => {
+  const start = body.indexOf(VISUAL_ACTION_MARKER_START);
+  if (start < 0) return null;
+  const jsonStart = start + VISUAL_ACTION_MARKER_START.length;
+  const end = body.indexOf(VISUAL_ACTION_MARKER_END, jsonStart);
+  if (end < 0) return null;
+  try {
+    const raw = JSON.parse(body.slice(jsonStart, end).trim());
+    return normalizeVisualProgram(raw);
+  } catch {
+    return null;
+  }
+};
+
+const visualProgramOf = (card: CodeCard): VisualMacroProgram => {
+  const parsed = parseVisualProgram(card.body);
+  if (parsed) return parsed;
+  return defaultVisualProgram();
+};
+
+const visualInstructionsOf = (card: CodeCard) => visualProgramOf(card).operations;
+const visualInstructionKey = (cardId: string, instructionId: string) => `${cardId}:${instructionId}`;
+
+const selectVisualInstructionFrame = async (card: CodeCard, instruction: VisualMacroAction) => {
+  selectedVisualInstructionKey.value = visualInstructionKey(card.id, instruction.id);
+  if (!instruction.frame) {
+    clearScreenshotSelection();
+    return;
+  }
+  if (!screenshotPanelOpen.value) {
+    screenshotPanelOpen.value = true;
+    await nextTick();
+  }
+  if (!screenshotLoaded.value || !screenshotImages.value.some((item) => item.filename === instruction.frame)) {
+    await loadScreenshotList(instruction.frame);
+    return;
+  }
+  await selectScreenshotImage(instruction.frame);
+};
+
+const serializeVisualProgram = (program: VisualMacroProgram) => {
+  const lines = program.operations.flatMap((operation, index) => {
+    const frameNo = visualFrameNo(operation.frame);
+    const refText = frameNo && operation.label ? `${frameNo}#${operation.label}` : '';
+    return [
+      `${index + 1}. ${visualActionSummary(operation)}`,
+      operation.target === 'image' ? `   图片匹配：${visualScanLabel(operation.scan)}` : '',
+      operation.target === 'text' ? `   文本匹配：${operation.textMatch} ${operation.text || operation.label}` : '',
+      refText ? `   标注引用：${refText}` : '',
+    ].filter(Boolean);
+  });
+  return `${VISUAL_ACTION_MARKER_START}\n${JSON.stringify(program, null, 2)}\n${VISUAL_ACTION_MARKER_END}\n${lines.join('\n')}`;
+};
+
+const visualFrameNo = (frame: string) => {
+  const match = String(frame || '').match(/^(\d{1,4})\./);
+  return match ? String(Number(match[1])) : '';
+};
+
+const visualActionLabel = (action: VisualActionKind) => ({
+  click: '点击',
+  drag: '拖拽',
+  wait: '等待',
+}[action]);
+
+const visualTargetLabel = (target: VisualTargetKind) => ({
+  image: '图片',
+  text: '文本',
+  none: '无目标',
+}[target]);
+
+const visualConditionLabel = (condition: VisualCondition) => ({
+  appear: '出现',
+  disappear: '消失',
+  stable: '稳定',
+  changed: '变化',
+}[condition]);
+
+const visualScanLabel = (scan: VisualScanMode) => ({
+  fixed: '固定位置',
+  range: '范围搜索',
+  full: '全图搜索',
+}[scan]);
+
+const visualActionSummary = (action: VisualMacroAction) => {
+  const target = action.target === 'text'
+    ? `文本「${action.text || action.label || '未填写'}」`
+    : action.target === 'image'
+      ? `图片「${action.frame || '未绑定帧'}」`
+      : '无目标';
+  if (action.action === 'wait') {
+    return `等待 ${target} ${visualConditionLabel(action.condition)}`;
+  }
+  return `${visualActionLabel(action.action)} ${target}`;
+};
+
+const updateVisualInstruction = (card: CodeCard, operationId: string, patch: Partial<VisualMacroAction>) => {
+  const program = visualProgramOf(card);
+  const operations = program.operations.map((operation) => (
+    operation.id === operationId ? normalizeVisualAction({ ...operation, ...patch, id: operation.id }) : operation
+  ));
+  card.body = serializeVisualProgram(defaultVisualProgram(operations));
+  scheduleCodeCardSave(card);
+  if (selectedVisualInstructionKey.value === visualInstructionKey(card.id, operationId)) {
+    void nextTick(drawScreenshotOverlay);
+  }
+};
+
+const clampVisualPointValue = (metric: VisualPointMetric, value: number) => {
+  const max = metric === 'x' ? screenshotNaturalWidth.value : screenshotNaturalHeight.value;
+  if (!max) return Math.max(0, value);
+  return Math.round(clamp(value, 0, Math.max(0, max - 1)));
+};
+
+const updateSelectedVisualInstructionPoint = (
+  field: VisualPointField,
+  metric: VisualPointMetric,
+  value: number | undefined,
+) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  const current = context.instruction[field] ?? { x: 0, y: 0 };
+  updateVisualInstruction(context.card, context.instruction.id, {
+    [field]: {
+      ...current,
+      [metric]: clampVisualPointValue(metric, nextValue),
+    },
+  });
+};
+
+const updateSelectedVisualInstructionRadius = (value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  const maxRadius = Math.max(screenshotNaturalWidth.value, screenshotNaturalHeight.value, 0);
+  updateVisualInstruction(context.card, context.instruction.id, {
+    pointRadius: Math.round(clamp(nextValue, 0, maxRadius || Number.MAX_SAFE_INTEGER)),
+  });
+};
+
+const updateSelectedVisualInstructionThreshold = (value: number | undefined) => {
+  const nextValue = Number(value);
+  if (!Number.isFinite(nextValue)) return;
+  const context = selectedVisualInstructionContext.value;
+  if (!context) return;
+  updateVisualInstruction(context.card, context.instruction.id, {
+    threshold: clamp(nextValue, 0.5, 1),
+  });
+};
+
+const deleteVisualInstruction = (card: CodeCard, operationId: string) => {
+  const program = visualProgramOf(card);
+  card.body = serializeVisualProgram(defaultVisualProgram(program.operations.filter((operation) => operation.id !== operationId)));
+  if (selectedVisualInstructionKey.value === visualInstructionKey(card.id, operationId)) {
+    selectedVisualInstructionKey.value = '';
+    clearScreenshotSelection();
+  }
+  scheduleCodeCardSave(card);
+};
+
+const visualPointText = (point: VisualPoint | null) => (
+  point ? `${point.x},${point.y}` : '未设置'
+);
 
 const normalizeLegacyCodeCards = (raw: unknown): Array<{ title: string; body: string }> => {
   if (!Array.isArray(raw)) return [];
@@ -982,8 +1707,8 @@ const addCodeCard = async (scope: FanxiuPseudoCodeCardScope) => {
   try {
     const card = await createFanxiuPseudoCodeCard({
       scope,
-      title: `${scopeInfo?.label ?? '卡片'}${index}`,
-      body: '',
+      title: `${scopeInfo?.label ?? '动作'}${index}`,
+      body: serializeVisualProgram(defaultVisualProgram()),
       enabled: true,
       order_index: nextCodeCardOrder(scope),
     });
@@ -1010,6 +1735,7 @@ const deleteCodeCard = async (id: string) => {
     await deleteFanxiuPseudoCodeCard(id);
     codeCards.value = codeCards.value.filter((item) => item.id !== id);
     expandedCodeCardIds.value = expandedCodeCardIds.value.filter((expandedId) => expandedId !== id);
+    if (activeVisualMacroCardId.value === id) activeVisualMacroCardId.value = null;
   } catch (error) {
     ElMessage.error(getErrorMessage(error));
   }
@@ -1017,7 +1743,9 @@ const deleteCodeCard = async (id: string) => {
 
 const codeCardTitle = (card: CodeCard, scope: FanxiuPseudoCodeCardScope, index: number) => {
   const scopeInfo = codeCardScopes.find((item) => item.scope === scope);
-  return card.title.trim() || `${scopeInfo?.label ?? '卡片'}${index + 1}`;
+  const instructionCount = visualInstructionsOf(card).length;
+  if (instructionCount) return `${index + 1}. ${card.title.trim() || `${scopeInfo?.label ?? '动作'}${index + 1}`} · ${instructionCount} 指令`;
+  return `${index + 1}. ${card.title.trim() || `${scopeInfo?.label ?? '卡片'}${index + 1}`}`;
 };
 
 const isCodeCardExpanded = (id: string) => expandedCodeCardIds.value.includes(id);
@@ -1170,7 +1898,6 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
   const rotate = raw.rotateDegrees;
   const nextFps = Number(raw.fps ?? fallback.fps);
   const nextQuality = Number(raw.quality ?? fallback.quality);
-  const nextDisplayScale = Number(raw.displayScale ?? fallback.displayScale);
   return {
     trimBorderText: raw.trimBorderText || fallback.trimBorderText,
     rotateDegrees: rotate === '0' || rotate === '90' || rotate === '180' || rotate === '270'
@@ -1179,7 +1906,6 @@ const normalizeWindowConfig = (raw: Partial<WindowSceneConfig>, fallback: Window
     fps: Number.isFinite(nextFps) ? Math.min(Math.max(Math.round(nextFps), 1), 30) : fallback.fps,
     quality: Number.isFinite(nextQuality) ? Math.min(Math.max(Math.round(nextQuality), 1), 100) : fallback.quality,
     autoDismissPopup: typeof raw.autoDismissPopup === 'boolean' ? raw.autoDismissPopup : fallback.autoDismissPopup,
-    displayScale: Number.isFinite(nextDisplayScale) ? Math.min(Math.max(Math.round(nextDisplayScale), 20), 100) : fallback.displayScale,
   };
 };
 
@@ -1223,7 +1949,6 @@ const currentWindowConfig = (): WindowSceneConfig => ({
   fps: Number(fps.value) || selectedWindowScene.value.defaults.fps,
   quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
   autoDismissPopup: autoDismissPopup.value,
-  displayScale: Number(displayScale.value) || selectedWindowScene.value.defaults.displayScale,
 });
 
 const persistWindowConfig = () => {
@@ -1237,7 +1962,7 @@ const applyWindowConfig = () => {
   const config = readWindowConfig(selectedEntryId.value, selectedWindowKey.value);
   trimBorderText.value = config.trimBorderText;
   rotateDegrees.value = config.rotateDegrees;
-  displayScale.value = config.displayScale;
+  resetLiveViewState();
   fps.value = config.fps;
   quality.value = config.quality;
   autoDismissPopup.value = config.autoDismissPopup;
@@ -1383,8 +2108,7 @@ const normalizeBox = (box: OverlayBox): OverlayBox => {
 const getCanvasDisplaySize = () => {
   const canvas = overlayCanvasRef.value;
   if (!canvas) return { width: 0, height: 0 };
-  const rect = canvas.getBoundingClientRect();
-  return { width: rect.width, height: rect.height };
+  return { width: canvas.offsetWidth, height: canvas.offsetHeight };
 };
 
 const drawBox = (
@@ -1452,14 +2176,172 @@ const syncCanvas = () => {
   const canvas = overlayCanvasRef.value;
   const wrap = imageWrapRef.value;
   if (!canvas || !wrap) return;
-  const rect = wrap.getBoundingClientRect();
-  canvas.style.width = `${rect.width}px`;
-  canvas.style.height = `${rect.height}px`;
+  canvas.style.width = `${wrap.offsetWidth}px`;
+  canvas.style.height = `${wrap.offsetHeight}px`;
   drawOverlay();
 };
 
 const syncCanvasSoon = () => {
-  void nextTick(syncCanvas);
+  void nextTick(() => {
+    clampLivePan();
+    clampScreenshotPan();
+    syncCanvas();
+    syncScreenshotCanvas();
+  });
+};
+
+const resetLiveViewState = () => {
+  livePanState.value = null;
+  liveContentZoomPercent.value = 100;
+  livePanX.value = 0;
+  livePanY.value = 0;
+  displayScale.value = selectedWindowScene.value.defaults.displayScale;
+  void nextTick(() => {
+    syncCanvas();
+  });
+};
+
+const resetScreenshotViewState = () => {
+  screenshotPanState.value = null;
+  screenshotZoomPercent.value = normalizeScreenshotZoomPercent(100);
+  screenshotPanX.value = 0;
+  screenshotPanY.value = 0;
+  void nextTick(() => {
+    syncScreenshotCanvas();
+  });
+};
+
+const clampContentPan = (
+  panX: number,
+  panY: number,
+  viewport: HTMLElement | null,
+  zoomPercent: number,
+) => {
+  if (!viewport) return { x: panX, y: panY };
+  const width = viewport.clientWidth;
+  const height = viewport.clientHeight;
+  if (!width || !height) return { x: panX, y: panY };
+
+  const scale = Math.max(0.01, zoomPercent / 100);
+  const contentWidth = width * scale;
+  const contentHeight = height * scale;
+  const maxX = width * (1 - MIN_CONTENT_VISIBLE_AXIS_RATIO);
+  const maxY = height * (1 - MIN_CONTENT_VISIBLE_AXIS_RATIO);
+  const minX = width * MIN_CONTENT_VISIBLE_AXIS_RATIO - contentWidth;
+  const minY = height * MIN_CONTENT_VISIBLE_AXIS_RATIO - contentHeight;
+
+  return {
+    x: clamp(panX, Math.min(minX, maxX), Math.max(minX, maxX)),
+    y: clamp(panY, Math.min(minY, maxY), Math.max(minY, maxY)),
+  };
+};
+
+const clampLivePan = () => {
+  const nextPan = clampContentPan(
+    livePanX.value,
+    livePanY.value,
+    liveViewportRef.value,
+    liveContentZoomPercent.value,
+  );
+  livePanX.value = nextPan.x;
+  livePanY.value = nextPan.y;
+};
+
+const clampScreenshotPan = () => {
+  const nextPan = clampContentPan(
+    screenshotPanX.value,
+    screenshotPanY.value,
+    screenshotViewportRef.value,
+    screenshotZoomPercent.value,
+  );
+  screenshotPanX.value = nextPan.x;
+  screenshotPanY.value = nextPan.y;
+};
+
+const setLiveContentZoomPercent = async (
+  value: number,
+  options?: { anchorClientX?: number; anchorClientY?: number },
+) => {
+  const nextScale = clamp(Math.round(Number(value) / 5) * 5, 20, 500);
+  if (!Number.isFinite(nextScale) || nextScale === liveContentZoomPercent.value) return;
+  const viewport = liveViewportRef.value;
+  if (!viewport) {
+    liveContentZoomPercent.value = nextScale;
+    await nextTick(syncCanvas);
+    return;
+  }
+
+  const viewportRect = viewport.getBoundingClientRect();
+  const anchorClientX = options?.anchorClientX ?? (viewportRect.left + viewportRect.width / 2);
+  const anchorClientY = options?.anchorClientY ?? (viewportRect.top + viewportRect.height / 2);
+  const currentZoom = liveContentZoomPercent.value / 100;
+  const nextZoom = nextScale / 100;
+  const anchorX = anchorClientX - viewportRect.left;
+  const anchorY = anchorClientY - viewportRect.top;
+  const contentX = (anchorX - livePanX.value) / currentZoom;
+  const contentY = (anchorY - livePanY.value) / currentZoom;
+
+  liveContentZoomPercent.value = nextScale;
+  livePanX.value = anchorX - contentX * nextZoom;
+  livePanY.value = anchorY - contentY * nextZoom;
+  clampLivePan();
+  await nextTick();
+  clampLivePan();
+  syncCanvas();
+};
+
+const resetLiveContentView = async () => {
+  liveContentZoomPercent.value = 100;
+  livePanX.value = 0;
+  livePanY.value = 0;
+  await nextTick();
+  syncCanvas();
+};
+
+const handleLiveWheel = (event: WheelEvent) => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -5 : 5;
+  void setLiveContentZoomPercent(liveContentZoomPercent.value + delta, {
+    anchorClientX: event.clientX,
+    anchorClientY: event.clientY,
+  });
+};
+
+const beginLivePan = (event: MouseEvent) => {
+  const viewport = liveViewportRef.value;
+  if (!viewport) return;
+  livePanState.value = {
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startPanX: livePanX.value,
+    startPanY: livePanY.value,
+  };
+  document.addEventListener('mousemove', handleLiveWindowPanMove);
+  document.addEventListener('mouseup', stopLivePan);
+};
+
+function handleLiveWindowPanMove(event: MouseEvent) {
+  const viewport = liveViewportRef.value;
+  const state = livePanState.value;
+  if (!viewport || !state) return;
+  livePanX.value = state.startPanX + (event.clientX - state.startClientX);
+  livePanY.value = state.startPanY + (event.clientY - state.startClientY);
+  clampLivePan();
+}
+
+function stopLivePan() {
+  livePanState.value = null;
+  document.removeEventListener('mousemove', handleLiveWindowPanMove);
+  document.removeEventListener('mouseup', stopLivePan);
+}
+
+const handleLiveViewportMouseDown = (event: MouseEvent) => {
+  const shouldPan = event.button === 1 || (event.button === 0 && screenshotSpacePressed.value);
+  if (!shouldPan) return;
+  event.preventDefault();
+  event.stopPropagation();
+  beginLivePan(event);
 };
 
 const drawScreenshotBox = (
@@ -1497,13 +2379,105 @@ const drawScreenshotBox = (
   ctx.restore();
 };
 
+const screenshotDisplayPoint = (point: VisualPoint, displayWidth: number, displayHeight: number) => {
+  const scaleX = displayWidth / screenshotNaturalWidth.value;
+  const scaleY = displayHeight / screenshotNaturalHeight.value;
+  return {
+    x: point.x * scaleX,
+    y: point.y * scaleY,
+  };
+};
+
+const screenshotDisplayRadius = (radius: number, displayWidth: number, displayHeight: number) => {
+  if (!screenshotNaturalWidth.value || !screenshotNaturalHeight.value) return 0;
+  const scaleX = displayWidth / screenshotNaturalWidth.value;
+  const scaleY = displayHeight / screenshotNaturalHeight.value;
+  return Math.max(0, radius) * Math.max(scaleX, scaleY);
+};
+
+const drawScreenshotClickPoint = (
+  ctx: CanvasRenderingContext2D,
+  point: VisualPoint,
+  radius: number,
+  displayWidth: number,
+  displayHeight: number,
+) => {
+  if (!screenshotNaturalWidth.value || !screenshotNaturalHeight.value) return;
+  const p = screenshotDisplayPoint(point, displayWidth, displayHeight);
+  const displayRadius = screenshotDisplayRadius(radius, displayWidth, displayHeight);
+  ctx.save();
+  ctx.strokeStyle = '#2563eb';
+  ctx.lineWidth = 2;
+  if (displayRadius > 0) {
+    ctx.fillStyle = 'rgba(37, 99, 235, 0.12)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, displayRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+  ctx.beginPath();
+  const crossSize = 12;
+  ctx.moveTo(p.x - crossSize, p.y);
+  ctx.lineTo(p.x + crossSize, p.y);
+  ctx.moveTo(p.x, p.y - crossSize);
+  ctx.lineTo(p.x, p.y + crossSize);
+  ctx.stroke();
+  ctx.restore();
+};
+
+const drawScreenshotDragPoints = (
+  ctx: CanvasRenderingContext2D,
+  start: VisualPoint,
+  end: VisualPoint,
+  displayWidth: number,
+  displayHeight: number,
+) => {
+  if (!screenshotNaturalWidth.value || !screenshotNaturalHeight.value) return;
+  const from = screenshotDisplayPoint(start, displayWidth, displayHeight);
+  const to = screenshotDisplayPoint(end, displayWidth, displayHeight);
+  const angle = Math.atan2(to.y - from.y, to.x - from.x);
+  const headSize = 10;
+
+  ctx.save();
+  ctx.strokeStyle = '#2563eb';
+  ctx.fillStyle = '#2563eb';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(from.x, from.y);
+  ctx.lineTo(to.x, to.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(to.x, to.y);
+  ctx.lineTo(to.x - headSize * Math.cos(angle - Math.PI / 6), to.y - headSize * Math.sin(angle - Math.PI / 6));
+  ctx.lineTo(to.x - headSize * Math.cos(angle + Math.PI / 6), to.y - headSize * Math.sin(angle + Math.PI / 6));
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(from.x, from.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+};
+
+const drawSelectedVisualInstructionInput = (
+  ctx: CanvasRenderingContext2D,
+  displayWidth: number,
+  displayHeight: number,
+) => {
+  const instruction = selectedVisualInstruction.value;
+  if (!instruction || instruction.frame !== selectedScreenshotFilename.value || !instruction.point) return;
+  if (instruction.action === 'drag' && instruction.endPoint) {
+    drawScreenshotDragPoints(ctx, instruction.point, instruction.endPoint, displayWidth, displayHeight);
+    return;
+  }
+  drawScreenshotClickPoint(ctx, instruction.point, instruction.pointRadius, displayWidth, displayHeight);
+};
+
 const drawScreenshotOverlay = () => {
   const canvas = screenshotOverlayCanvasRef.value;
   if (!canvas) return;
 
-  const rect = canvas.getBoundingClientRect();
-  const width = rect.width;
-  const height = rect.height;
+  const width = canvas.offsetWidth;
+  const height = canvas.offsetHeight;
   const dpr = window.devicePixelRatio || 1;
   const pixelWidth = Math.max(1, Math.round(width * dpr));
   const pixelHeight = Math.max(1, Math.round(height * dpr));
@@ -1522,16 +2496,108 @@ const drawScreenshotOverlay = () => {
   if (screenshotDraftBox.value) {
     drawScreenshotBox(ctx, normalizeScreenshotBox(screenshotDraftBox.value), width, height, { draft: true });
   }
+  drawSelectedVisualInstructionInput(ctx, width, height);
 };
 
 const syncScreenshotCanvas = () => {
   const canvas = screenshotOverlayCanvasRef.value;
   const wrap = screenshotImageWrapRef.value;
   if (!canvas || !wrap) return;
-  const rect = wrap.getBoundingClientRect();
-  canvas.style.width = `${rect.width}px`;
-  canvas.style.height = `${rect.height}px`;
+  canvas.style.width = `${wrap.offsetWidth}px`;
+  canvas.style.height = `${wrap.offsetHeight}px`;
   drawScreenshotOverlay();
+};
+
+const normalizeScreenshotZoomPercent = (value: number) => {
+  if (!Number.isFinite(value)) return 100;
+  return clamp(Math.round(value / SCREENSHOT_ZOOM_STEP) * SCREENSHOT_ZOOM_STEP, SCREENSHOT_MIN_ZOOM_PERCENT, SCREENSHOT_MAX_ZOOM_PERCENT);
+};
+
+const resetScreenshotContentView = async () => {
+  screenshotZoomPercent.value = normalizeScreenshotZoomPercent(100);
+  screenshotPanX.value = 0;
+  screenshotPanY.value = 0;
+  await nextTick();
+  syncScreenshotCanvas();
+};
+
+const setScreenshotZoomPercent = async (
+  value: number,
+  options?: { anchorClientX?: number; anchorClientY?: number },
+) => {
+  const nextZoom = normalizeScreenshotZoomPercent(value);
+  const currentZoom = normalizeScreenshotZoomPercent(screenshotZoomPercent.value);
+  if (nextZoom === currentZoom) return;
+  const viewport = screenshotViewportRef.value;
+  if (!viewport) {
+    screenshotZoomPercent.value = nextZoom;
+    await nextTick(syncScreenshotCanvas);
+    return;
+  }
+
+  const viewportRect = viewport.getBoundingClientRect();
+  const anchorClientX = options?.anchorClientX ?? (viewportRect.left + viewportRect.width / 2);
+  const anchorClientY = options?.anchorClientY ?? (viewportRect.top + viewportRect.height / 2);
+  const currentScale = currentZoom / 100;
+  const nextScale = nextZoom / 100;
+  const anchorX = anchorClientX - viewportRect.left;
+  const anchorY = anchorClientY - viewportRect.top;
+  const contentX = (anchorX - screenshotPanX.value) / currentScale;
+  const contentY = (anchorY - screenshotPanY.value) / currentScale;
+
+  screenshotZoomPercent.value = nextZoom;
+  screenshotPanX.value = anchorX - contentX * nextScale;
+  screenshotPanY.value = anchorY - contentY * nextScale;
+  clampScreenshotPan();
+  await nextTick();
+  clampScreenshotPan();
+  syncScreenshotCanvas();
+};
+
+const handleScreenshotWheel = (event: WheelEvent) => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  event.preventDefault();
+  const delta = event.deltaY > 0 ? -SCREENSHOT_ZOOM_STEP : SCREENSHOT_ZOOM_STEP;
+  void setScreenshotZoomPercent(screenshotZoomPercent.value + delta, {
+    anchorClientX: event.clientX,
+    anchorClientY: event.clientY,
+  });
+};
+
+const beginScreenshotPan = (event: MouseEvent) => {
+  const viewport = screenshotViewportRef.value;
+  if (!viewport) return;
+  screenshotPanState.value = {
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startPanX: screenshotPanX.value,
+    startPanY: screenshotPanY.value,
+  };
+  document.addEventListener('mousemove', handleScreenshotWindowPanMove);
+  document.addEventListener('mouseup', stopScreenshotPan);
+};
+
+function handleScreenshotWindowPanMove(event: MouseEvent) {
+  const viewport = screenshotViewportRef.value;
+  const state = screenshotPanState.value;
+  if (!viewport || !state) return;
+  screenshotPanX.value = state.startPanX + (event.clientX - state.startClientX);
+  screenshotPanY.value = state.startPanY + (event.clientY - state.startClientY);
+  clampScreenshotPan();
+}
+
+function stopScreenshotPan() {
+  screenshotPanState.value = null;
+  document.removeEventListener('mousemove', handleScreenshotWindowPanMove);
+  document.removeEventListener('mouseup', stopScreenshotPan);
+}
+
+const handleScreenshotViewportMouseDown = (event: MouseEvent) => {
+  const shouldPan = event.button === 1 || (event.button === 0 && screenshotSpacePressed.value);
+  if (!shouldPan) return;
+  event.preventDefault();
+  event.stopPropagation();
+  beginScreenshotPan(event);
 };
 
 const drawMatchOverlay = () => {
@@ -1677,6 +2743,106 @@ const saveCurrentFrame = async () => {
   }
 };
 
+const captureVisualMacroFrame = async () => {
+  const result = await saveFanxiuGameWindow2Frame({
+    entry_id: selectedEntryId.value,
+    title: targetTitle.value.trim(),
+    mode: 'screen',
+    area: captureArea.value,
+    crop: cropText.value.trim(),
+    trim_border: trimBorderText.value.trim(),
+    rotate: rotateDegrees.value,
+    fixed_width: 0,
+    fixed_height: 0,
+    quality: Number(quality.value) || selectedWindowScene.value.defaults.quality,
+  });
+  if (screenshotPanelOpen.value) {
+    void loadScreenshotList(result.filename);
+  }
+  return result;
+};
+
+const buildDefaultImageBox = (point: VisualPoint, size = 50): VisualBox => {
+  const half = Math.round(size / 2);
+  const maxWidth = Math.max(1, naturalWidth.value || size);
+  const maxHeight = Math.max(1, naturalHeight.value || size);
+  const x = Math.round(clamp(point.x - half, 0, Math.max(0, maxWidth - size)));
+  const y = Math.round(clamp(point.y - half, 0, Math.max(0, maxHeight - size)));
+  return {
+    x,
+    y,
+    w: Math.min(size, maxWidth),
+    h: Math.min(size, maxHeight),
+  };
+};
+
+const appendVisualMacroAction = async (
+  cardId: string,
+  action: VisualActionKind,
+  frame: string,
+  point: VisualPoint | null,
+  endPoint: VisualPoint | null = null,
+  durationMs = 0,
+) => {
+  const card = codeCards.value.find((item) => item.id === cardId);
+  if (!card) return;
+  const program = visualProgramOf(card);
+  const index = program.operations.length + 1;
+  const visualAction = defaultVisualAction({
+    action,
+    target: action === 'drag' ? 'none' : 'image',
+    label: '',
+    frame,
+    point,
+    endPoint,
+    box: point ? buildDefaultImageBox(point) : null,
+    timeout: action === 'drag' ? Math.round(clamp(durationMs / 1000, 0, 120)) : 8,
+  });
+  card.body = serializeVisualProgram(defaultVisualProgram([...program.operations, visualAction]));
+  await saveCodeCardNow(card);
+  await selectVisualInstructionFrame(card, visualAction);
+};
+
+const recordVisualMacroInput = async (
+  action: VisualActionKind,
+  point: VisualPoint | null,
+  endPoint: VisualPoint | null = null,
+  durationMs = 0,
+) => {
+  if (!activeVisualMacroCardId.value || !selectedEntryId.value) return;
+  if (visualMacroCapturePending.value) return;
+  visualMacroCapturePending.value = true;
+  try {
+    const frame = await captureVisualMacroFrame();
+    await appendVisualMacroAction(activeVisualMacroCardId.value, action, frame.filename, point, endPoint, durationMs);
+    ElMessage.success('已追加视觉指令');
+  } catch (error) {
+    ElMessage.error(getErrorMessage(error));
+  } finally {
+    visualMacroCapturePending.value = false;
+  }
+};
+
+const toggleVisualMacroRecording = (cardId: string) => {
+  if (!selectedEntryId.value) {
+    ElMessage.warning('先选择设备并连接画面');
+    return;
+  }
+  activeVisualMacroCardId.value = activeVisualMacroCardId.value === cardId ? null : cardId;
+  if (!activeVisualMacroCardId.value) {
+    visualMacroCapturePending.value = false;
+    return;
+  }
+  if (!controlEnabled.value) {
+    windowViewMode.value = 'control';
+    controlEnabled.value = true;
+  }
+  const card = codeCards.value.find((item) => item.id === cardId);
+  if (card && !isCodeCardExpanded(card.id)) {
+    expandedCodeCardIds.value = [...expandedCodeCardIds.value, card.id];
+  }
+};
+
 const toMatchBoxPayload = (box: OverlayBox): FanxiuGameWindow2MatchBox => ({
   name: box.name.trim(),
   x: Math.round(box.x),
@@ -1788,6 +2954,7 @@ const clearScreenshotSelection = () => {
   screenshotDraftState.value = null;
   screenshotDraftBox.value = null;
   screenshotResizeState.value = null;
+  resetScreenshotViewState();
   screenshotDirty.value = false;
   revokeScreenshotImageUrl();
   drawScreenshotOverlay();
@@ -1902,6 +3069,7 @@ const selectScreenshotImage = async (filename: string, forceReload = false) => {
   screenshotDraftBox.value = null;
   screenshotResizeState.value = null;
   screenshotDirty.value = false;
+  resetScreenshotViewState();
   revokeScreenshotImageUrl();
   try {
     const [blob, preLabel] = await Promise.all([
@@ -2174,7 +3342,7 @@ const beginControlClick = (event: PointerEvent) => {
   overlayCanvasRef.value?.setPointerCapture(event.pointerId);
 };
 
-const finishControlClick = (event: PointerEvent) => {
+const finishControlClick = async (event: PointerEvent) => {
   const state = controlClickState.value;
   if (!state || state.pointerId !== event.pointerId) return;
   event.preventDefault();
@@ -2184,14 +3352,16 @@ const finishControlClick = (event: PointerEvent) => {
   const moveDistance = Math.hypot(event.clientX - state.clientX, event.clientY - state.clientY);
   const point = getFramePoint(event) ?? { x: state.frameX, y: state.frameY };
   if (moveDistance > 8) {
-    void sendRemoteDrag(
-      { x: state.frameX, y: state.frameY },
-      point,
-      Date.now() - state.startedAt,
-    );
+    const startPoint = normalizeControlPoint({ x: state.frameX, y: state.frameY });
+    const endPoint = normalizeControlPoint(point);
+    const durationMs = Date.now() - state.startedAt;
+    await recordVisualMacroInput('drag', startPoint, endPoint, durationMs);
+    void sendRemoteDrag(startPoint, endPoint, durationMs);
     return;
   }
-  void sendRemoteClick(point);
+  const clickPoint = normalizeControlPoint(point);
+  await recordVisualMacroInput('click', clickPoint);
+  void sendRemoteClick(clickPoint);
 };
 
 const selectBox = (id: string | null) => {
@@ -2200,6 +3370,7 @@ const selectBox = (id: string | null) => {
 };
 
 const handlePointerDown = (event: PointerEvent) => {
+  if (screenshotSpacePressed.value || livePanState.value) return;
   if (controlEnabled.value) {
     beginControlClick(event);
     return;
@@ -2274,7 +3445,7 @@ const finishDraft = () => {
 
 const handlePointerUp = (event: PointerEvent) => {
   if (controlClickState.value?.pointerId === event.pointerId) {
-    finishControlClick(event);
+    void finishControlClick(event);
     return;
   }
   if (draftState.value?.pointerId !== event.pointerId) return;
@@ -2452,9 +3623,35 @@ const handleScreenshotBoxNameInput = () => {
   drawScreenshotOverlay();
 };
 
+const updateScreenshotBoxMetric = (boxId: string, metric: OverlayBoxMetric, value: number | undefined) => {
+  const nextValue = Math.round(Number(value));
+  if (!Number.isFinite(nextValue)) return;
+  const box = screenshotBoxes.value.find((item) => item.id === boxId);
+  if (!box) return;
+
+  const maxWidth = screenshotNaturalWidth.value || Math.max(box.x + box.w, nextValue + box.w, 4);
+  const maxHeight = screenshotNaturalHeight.value || Math.max(box.y + box.h, nextValue + box.h, 4);
+  if (metric === 'x') {
+    box.x = Math.round(clamp(nextValue, 0, Math.max(0, maxWidth - 4)));
+    box.w = Math.round(clamp(box.w, 4, Math.max(4, maxWidth - box.x)));
+  } else if (metric === 'y') {
+    box.y = Math.round(clamp(nextValue, 0, Math.max(0, maxHeight - 4)));
+    box.h = Math.round(clamp(box.h, 4, Math.max(4, maxHeight - box.y)));
+  } else if (metric === 'w') {
+    box.w = Math.round(clamp(nextValue, 4, Math.max(4, maxWidth - box.x)));
+  } else {
+    box.h = Math.round(clamp(nextValue, 4, Math.max(4, maxHeight - box.y)));
+  }
+
+  selectedScreenshotBoxId.value = box.id;
+  markScreenshotDirty();
+  drawScreenshotOverlay();
+};
+
 const handleScreenshotPointerDown = (event: PointerEvent) => {
   closeScreenshotContextMenus();
   if (event.button !== 0) return;
+  if (screenshotSpacePressed.value || screenshotPanState.value) return;
   const point = getScreenshotFramePoint(event);
   if (!point) return;
 
@@ -2628,10 +3825,47 @@ const undoLastScreenshotBox = () => {
 
 const handleKeydown = (event: KeyboardEvent) => {
   const target = event.target as HTMLElement | null;
-  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return;
-  if (target?.isContentEditable) return;
-  if (!screenshotPanelOpen.value || !selectedScreenshotImage.value) return;
+  const isTextEditing =
+    !!target &&
+    (target.tagName === 'TEXTAREA' || target.isContentEditable);
 
+  if (!isTextEditing && event.code === 'Space') {
+    screenshotSpacePressed.value = true;
+    event.preventDefault();
+    return;
+  }
+  if (target && ['INPUT', 'SELECT'].includes(target.tagName)) return;
+  if (isTextEditing) return;
+  if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+    if (event.key === '+' || event.key === '=' || event.code === 'NumpadAdd') {
+      event.preventDefault();
+      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+        void setScreenshotZoomPercent(screenshotZoomPercent.value + SCREENSHOT_ZOOM_STEP);
+      } else {
+        void setLiveContentZoomPercent(liveContentZoomPercent.value + 5);
+      }
+      return;
+    }
+    if (event.key === '-' || event.key === '_' || event.code === 'NumpadSubtract') {
+      event.preventDefault();
+      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+        void setScreenshotZoomPercent(screenshotZoomPercent.value - SCREENSHOT_ZOOM_STEP);
+      } else {
+        void setLiveContentZoomPercent(liveContentZoomPercent.value - 5);
+      }
+      return;
+    }
+    if (event.key === '0' || event.code === 'Numpad0') {
+      event.preventDefault();
+      if (screenshotPanelOpen.value && selectedScreenshotImage.value) {
+        void resetScreenshotContentView();
+      } else {
+        void resetLiveContentView();
+      }
+      return;
+    }
+  }
+  if (!screenshotPanelOpen.value || !selectedScreenshotImage.value) return;
   if (event.key === 'Delete' || event.key === 'Backspace') {
     deleteSelectedScreenshotBox();
     event.preventDefault();
@@ -2641,6 +3875,16 @@ const handleKeydown = (event: KeyboardEvent) => {
     undoLastScreenshotBox();
     event.preventDefault();
   }
+};
+
+const handleKeyup = (event: KeyboardEvent) => {
+  if (event.code === 'Space') screenshotSpacePressed.value = false;
+};
+
+const handleWindowBlur = () => {
+  screenshotSpacePressed.value = false;
+  stopLivePan();
+  stopScreenshotPan();
 };
 
 const handleWindowResize = () => {
@@ -2667,13 +3911,23 @@ const stopPolling = () => {
 watch(layerVisible, drawOverlay);
 watch(boxes, drawOverlay, { deep: true });
 watch(
-  [trimBorderText, rotateDegrees, displayScale, fps, quality, autoDismissPopup],
+  [trimBorderText, rotateDegrees, fps, quality, autoDismissPopup],
   persistWindowConfig,
 );
 watch(displayScale, syncCanvasSoon);
+watch(selectedVisualInstructionKey, drawScreenshotOverlay);
+watch(visualMacroDefaultThreshold, (value) => {
+  setVisualMacroDefaultThreshold(value);
+});
+watch(visualMacroDefaultPointRadius, (value) => {
+  setVisualMacroDefaultPointRadius(value);
+});
 
 onMounted(async () => {
+  loadVisualMacroDefaults();
   window.addEventListener('keydown', handleKeydown);
+  window.addEventListener('keyup', handleKeyup);
+  window.addEventListener('blur', handleWindowBlur);
   window.addEventListener('resize', handleWindowResize);
   window.addEventListener('click', closeScreenshotContextMenus);
   void loadCodeCards();
@@ -2701,7 +3955,11 @@ onBeforeUnmount(() => {
   if (screenshotDirty.value) void flushScreenshotAutosave();
   void flushCodeCardSaves();
   window.removeEventListener('keydown', handleKeydown);
+  window.removeEventListener('keyup', handleKeyup);
+  window.removeEventListener('blur', handleWindowBlur);
   window.removeEventListener('resize', handleWindowResize);
+  stopLivePan();
+  stopScreenshotPan();
   window.removeEventListener('click', closeScreenshotContextMenus);
   resizeObserver?.disconnect();
   if (streamImageRef.value) streamImageRef.value.src = '';
@@ -2898,19 +4156,41 @@ onBeforeUnmount(() => {
   gap: 14px;
 }
 
+.live-viewport {
+  flex: 0 0 auto;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  border: 1px solid #d1d5db;
+}
+
+.live-viewport.is-pan-ready,
+.live-viewport.is-pan-ready * {
+  cursor: grab !important;
+}
+
+.live-viewport.is-panning,
+.live-viewport.is-panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.live-stage-workspace {
+  position: relative;
+  flex: 0 0 auto;
+}
+
 .image-wrap {
   position: relative;
   flex: 0 0 auto;
-  display: inline-block;
+  display: block;
   line-height: 0;
   background: #111827;
-  border: 1px solid #d1d5db;
+  transform-origin: 0 0;
 }
 
 .stream-image {
   display: block;
-  max-width: calc(100vw - 260px);
-  max-height: calc(100dvh - 160px);
+  object-fit: fill;
   user-select: none;
 }
 
@@ -2973,6 +4253,38 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 
+.code-panel-title {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.visual-macro-config {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.visual-macro-config-title {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.visual-macro-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.visual-macro-config-row span {
+  white-space: nowrap;
+}
+
 .code-scope-list {
   display: flex;
   flex-direction: column;
@@ -2996,6 +4308,7 @@ onBeforeUnmount(() => {
 
 .code-add,
 .code-card-collapse,
+.code-card-record,
 .code-card-delete {
   width: 24px;
   height: 24px;
@@ -3034,7 +4347,7 @@ onBeforeUnmount(() => {
 
 .code-card-head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px 24px;
+  grid-template-columns: minmax(0, 1fr) 24px 68px 24px;
   align-items: center;
   gap: 8px;
 }
@@ -3080,6 +4393,19 @@ onBeforeUnmount(() => {
   border-color: #cbd5e1;
 }
 
+.code-card-record {
+  width: 68px;
+  color: #dc2626;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.code-card-record.is-recording {
+  color: #dc2626;
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
 .code-card-delete {
   color: #dc2626;
   font-size: 18px;
@@ -3096,6 +4422,129 @@ onBeforeUnmount(() => {
 }
 
 .code-card-body :deep(.el-textarea__inner) {
+  line-height: 1.5;
+}
+
+.visual-action-editor {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.visual-operation {
+  padding: 6px 0;
+  border-top: 1px solid #eef2f7;
+  cursor: pointer;
+}
+
+.visual-operation:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.visual-operation.is-selected {
+  margin: 0 -6px;
+  padding-right: 6px;
+  padding-left: 6px;
+  background: #eff6ff;
+  border-radius: 4px;
+}
+
+.visual-recording-hint {
+  padding: 6px 8px;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.visual-action-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.visual-action-select {
+  width: 64px;
+}
+
+.visual-operation-index {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  background: #eef2f7;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.visual-target-select {
+  width: 76px;
+}
+
+.visual-scan-select {
+  width: 92px;
+}
+
+.visual-text-input {
+  width: 150px;
+}
+
+.visual-number-input {
+  width: 86px;
+}
+
+.visual-small-number-input {
+  width: 68px;
+}
+
+.visual-inline-label {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.visual-action-row code {
+  padding: 2px 5px;
+  color: #374151;
+  background: #f3f4f6;
+  border-radius: 3px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.visual-operation-delete {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #dc2626;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.visual-operation-delete:hover {
+  background: #fef2f2;
+  border-color: #fecaca;
+}
+
+.visual-empty {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  color: #94a3b8;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -3186,6 +4635,36 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.screenshot-help {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 50%;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.screenshot-help:hover {
+  color: #2563eb;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.screenshot-help-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .screenshot-caret {
   width: 12px;
   color: #64748b;
@@ -3264,27 +4743,45 @@ onBeforeUnmount(() => {
 .screenshot-editor {
   margin-top: 12px;
   display: grid;
-  grid-template-columns: minmax(320px, max-content) 240px;
+  grid-template-columns: max-content 340px;
   gap: 14px;
   align-items: start;
 }
 
 .screenshot-preview {
-  min-width: 0;
-  overflow: auto;
+  flex: 0 0 auto;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  border: 1px solid #d1d5db;
+}
+
+.screenshot-preview.is-pan-ready,
+.screenshot-preview.is-pan-ready * {
+  cursor: grab !important;
+}
+
+.screenshot-preview.is-panning,
+.screenshot-preview.is-panning * {
+  cursor: grabbing !important;
+  user-select: none;
+}
+
+.screenshot-workspace {
+  position: relative;
+  flex: 0 0 auto;
 }
 
 .screenshot-image-wrap {
   position: relative;
-  display: inline-block;
+  display: block;
   line-height: 0;
   background: #111827;
-  border: 1px solid #d1d5db;
+  transform-origin: 0 0;
 }
 
 .screenshot-image {
   display: block;
-  max-width: min(720px, calc(100vw - 520px));
+  object-fit: fill;
   user-select: none;
 }
 
@@ -3308,6 +4805,49 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.screenshot-instruction-panel {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.screenshot-panel-title {
+  margin-bottom: 6px;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.screenshot-instruction-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 72px));
+  gap: 6px;
+  align-items: center;
+}
+
+.screenshot-drag-metrics {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.screenshot-drag-metrics .screenshot-instruction-metrics {
+  grid-template-columns: 18px repeat(2, minmax(0, 72px));
+}
+
+.screenshot-advanced-metrics {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: minmax(0, 120px);
+  gap: 6px;
+}
+
+.screenshot-metric-group-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .screenshot-box-list {
   display: flex;
   flex-direction: column;
@@ -3315,10 +4855,9 @@ onBeforeUnmount(() => {
 }
 
 .screenshot-box-row {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: 4px;
@@ -3334,6 +4873,13 @@ onBeforeUnmount(() => {
   background: #fff7ed;
 }
 
+.screenshot-box-main {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
 .screenshot-box-number {
   width: 24px;
   height: 24px;
@@ -3346,6 +4892,37 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1;
   white-space: nowrap;
+}
+
+.screenshot-box-name {
+  min-width: 0;
+}
+
+.screenshot-box-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.screenshot-box-metric {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.screenshot-box-metric :deep(.el-input-number) {
+  width: 100%;
+}
+
+.screenshot-box-metric :deep(.el-input__wrapper) {
+  padding: 0 6px;
+}
+
+.screenshot-box-metric :deep(.el-input__inner) {
+  text-align: left;
 }
 
 .screenshot-box-menu {
@@ -3557,10 +5134,6 @@ onBeforeUnmount(() => {
 
   .match-body {
     grid-template-columns: 1fr;
-  }
-
-  .screenshot-image {
-    max-width: calc(100vw - 32px);
   }
 
   .match-image {

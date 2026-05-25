@@ -123,6 +123,150 @@ export interface FanxiuPacketCaptureSnapshot {
   summary: Record<string, number>;
 }
 
+export interface FanxiuTcpCaptureFile {
+  name: string;
+  path: string;
+  relative_path: string;
+  size: number;
+  modified_at: string;
+  decoded_path: string;
+  decoded: boolean;
+  capture_sha256: string;
+  record_id: string;
+  record_dir: string;
+  stored_pcap: string;
+  stored_decoded_path: string;
+  stored: boolean;
+}
+
+export interface FanxiuTcpCaptureListResponse {
+  export_root: string;
+  capture_dir: string;
+  store_capture_dir: string;
+  items: FanxiuTcpCaptureFile[];
+}
+
+export interface FanxiuTcpRecordItem {
+  record_id: string;
+  record_dir: string;
+  pcap_name: string;
+  source_pcap: string;
+  stored_pcap: string;
+  decoded_path: string;
+  decoded: boolean;
+  stream: number;
+  server_host: string;
+  capture_sha256: string;
+  created_at: string;
+  summary: Record<string, unknown>;
+}
+
+export interface FanxiuTcpRecordListResponse {
+  store_root: string;
+  items: FanxiuTcpRecordItem[];
+}
+
+export interface FanxiuTcpBusinessEntry {
+  id: string;
+  decoded_at: string;
+  record_id: string;
+  pcap_name: string;
+  source_kind: string;
+  direction: 'c2s' | 's2c' | string;
+  name: string;
+  category: string;
+  meaning: string;
+  protocol_meaning: string;
+  pro_id: number;
+  sn: number;
+  frame_index: number;
+  display_text: string;
+  display_segments: Array<{ text: string; kind?: string; key?: string }>;
+  content: Record<string, unknown>;
+}
+
+export interface FanxiuTcpBusinessCategorySummary {
+  category: string;
+  meaning: string;
+  count: number;
+  protocols: string[];
+}
+
+export interface FanxiuTcpBusinessProtocolSample {
+  id: string;
+  decoded_at: string;
+  direction: 'c2s' | 's2c' | string;
+  display_text: string;
+  display_segments: Array<{ text: string; kind?: string; key?: string }>;
+  content: Record<string, unknown>;
+  field_labels?: Record<string, Record<string, string>>;
+}
+
+export interface FanxiuTcpBusinessProtocolSummary {
+  name: string;
+  category: string;
+  meaning: string;
+  count: number;
+  samples: FanxiuTcpBusinessProtocolSample[];
+}
+
+export interface FanxiuTcpBusinessEntryListResponse {
+  page: number;
+  page_size: number;
+  total: number;
+  category_summary: FanxiuTcpBusinessCategorySummary[];
+  protocol_summary: FanxiuTcpBusinessProtocolSummary[];
+  items: FanxiuTcpBusinessEntry[];
+}
+
+export interface FanxiuTcpProtocolCount {
+  pro_id: number;
+  name: string;
+  count: number;
+}
+
+export interface FanxiuTcpDecodedFrame {
+  direction: 'c2s' | 's2c';
+  offset: number;
+  frame_len: number;
+  sn: number;
+  pro_id: number;
+  name?: string;
+  payload_len: number;
+  zlib?: boolean;
+  parsed?: Record<string, unknown>;
+  parsed_bytes?: number;
+  remain?: number;
+  parse_error?: string;
+  payload_hex?: string;
+  remain_hex?: string;
+}
+
+export interface FanxiuTcpDecodeResponse {
+  export_root: string;
+  pcap: string;
+  stream: number;
+  server_host: string;
+  text_assets: string;
+  output_path: string;
+  capture_sha256: string;
+  stream_candidates: Array<{ stream: number; packets: number; payload_bytes: number }>;
+  record_id: string;
+  record_dir: string;
+  stored_pcap: string;
+  stored_decoded_path: string;
+  meta_path: string;
+  summary: {
+    c2s_bytes: number;
+    s2c_bytes: number;
+    c2s_frames: number;
+    s2c_frames: number;
+    c2s_protocols: FanxiuTcpProtocolCount[];
+    s2c_protocols: FanxiuTcpProtocolCount[];
+  };
+  frames: FanxiuTcpDecodedFrame[];
+}
+
 export interface FanxiuPacketProxyStatus {
   running: boolean;
   host: string;
@@ -191,6 +335,8 @@ export interface FanxiuPacketActivityStatus {
   total_bytes: number;
   history_total: number;
   history_capacity: number;
+  pcap_path: string;
+  pcap_size: number;
   items: FanxiuPacketActivityFlow[];
 }
 
@@ -1493,6 +1639,91 @@ export interface FanxiuGongfaHomeMakeXianShuFormulaCatalogResponse {
   outputs: Record<string, string>;
 }
 
+export interface FanxiuGongfaSpecialFazeGroup {
+  gid: string;
+  gongfa_name: string;
+  stage_count: string;
+  faze_count: string;
+  effect_types: string;
+  reason_codes: string;
+  tip_texts: string;
+  consume_items: string;
+}
+
+export interface FanxiuGongfaSpecialFazeStage {
+  gid: string;
+  gongfa_name: string;
+  source_id: string;
+  stage: string;
+  source_name: string;
+  faze_id: string;
+  faze_name: string;
+  effect_id: string;
+  effect_type: string;
+  effect_params: string;
+  effect_attr: string;
+  tip_codes: string;
+  tip_texts: string;
+  tip_pairs: string;
+  consume: string;
+  skill: string;
+  attr: string;
+  describe_preview: string;
+}
+
+export interface FanxiuGongfaSpecialFazeEffectType {
+  effect_type: string;
+  stage_count: string;
+  gongfa_count: string;
+  effect_id_count: string;
+  sample_gongfa: string;
+  sample_effect_ids: string;
+  reason_codes: string;
+  tip_texts: string;
+  effect_params_sample: string;
+  effect_attr_sample: string;
+}
+
+export interface FanxiuGongfaSpecialFazeReason {
+  reason: string;
+  stage_count: string;
+  gongfa_count: string;
+  effect_types: string;
+  sample_gongfa: string;
+  tip_texts: string;
+}
+
+export interface FanxiuGongfaSpecialFazeCatalogResponse {
+  output_dir: string;
+  paths: Record<string, string>;
+  filters: {
+    query: string;
+    gid: string;
+    effect_type: string;
+    reason: string;
+    limit: number;
+    offset: number;
+  };
+  counts: {
+    groups: number;
+    stages: number;
+    effect_types: number;
+    reasons: number;
+    filtered_groups: number;
+    selected_stages: number;
+  };
+  groups: FanxiuGongfaSpecialFazeGroup[];
+  selected: {
+    gid: string;
+    group: FanxiuGongfaSpecialFazeGroup | null;
+    stages: FanxiuGongfaSpecialFazeStage[];
+    effect_types: FanxiuGongfaSpecialFazeEffectType[];
+    reasons: FanxiuGongfaSpecialFazeReason[];
+  };
+  top_effect_types: FanxiuGongfaSpecialFazeEffectType[];
+  top_reasons: FanxiuGongfaSpecialFazeReason[];
+}
+
 export interface FanxiuItemStats {
   item_count?: number;
   quality_count?: number;
@@ -2014,6 +2245,1073 @@ export interface FanxiuLingjieFeatureSearchResponse {
   items: FanxiuLingjieFeatureSearchItem[];
 }
 
+export interface FanxiuDoupoTDAttrEntry {
+  key: string;
+  label: string;
+  value?: string | number;
+  formatted?: string;
+  text: string;
+  sort?: number;
+}
+
+export interface FanxiuDoupoTDLinkedItem {
+  id?: string | number;
+  name?: string;
+  icon?: string;
+  small_icon?: string;
+  description?: string;
+  description_rich?: string;
+  quality_name?: string;
+}
+
+export interface FanxiuDoupoTDComposeCard {
+  id: string | number;
+  char_id?: string | number;
+  partner_name?: string;
+  name?: string;
+  quality?: string | number;
+  quality_name?: string;
+  star?: string | number;
+  title: string;
+  show_item?: FanxiuDoupoTDLinkedItem | null;
+  attrs?: FanxiuDoupoTDAttrEntry[];
+  attr_text?: string;
+}
+
+export interface FanxiuDoupoTDRewardItem {
+  type?: string;
+  id?: string | number;
+  count?: string | number;
+  extra_mark?: string | number;
+  item?: FanxiuDoupoTDLinkedItem | null;
+  raw?: string;
+  text?: string;
+}
+
+export interface FanxiuDoupoTDWeightedCardEntry {
+  card_id?: string | number;
+  title?: string;
+  partner_id?: string | number;
+  partner_name?: string;
+  quality_name?: string;
+  star?: string | number | null;
+  weight?: string | number;
+  chance_text?: string;
+}
+
+export interface FanxiuDoupoTDDrawSource {
+  id?: string | number;
+  sort?: string | number;
+  item_id?: string | number;
+  item?: FanxiuDoupoTDLinkedItem | null;
+  total_weight?: string | number;
+  entries?: FanxiuDoupoTDWeightedCardEntry[];
+  rewards?: FanxiuDoupoTDRewardItem[];
+}
+
+export interface FanxiuDoupoTDComposeQualitySource {
+  id?: string | number;
+  quality?: string | number;
+  quality_name?: string;
+  total_weight?: string | number;
+  entries?: FanxiuDoupoTDWeightedCardEntry[];
+}
+
+export interface FanxiuDoupoTDComposeProgressReward {
+  id?: string | number;
+  progress?: string | number;
+  rewards?: FanxiuDoupoTDRewardItem[];
+}
+
+export interface FanxiuDoupoTDComposeBookEntry {
+  id?: string | number;
+  quality?: string | number;
+  quality_name?: string;
+  sort?: string | number;
+  card_id?: string | number;
+  title?: string;
+  partner_id?: string | number;
+  partner_name?: string;
+}
+
+export interface FanxiuDoupoTDSkill {
+  id?: string | number;
+  skill_type?: string | number;
+  skill_title?: string;
+  skill_title_rich?: string;
+  skill_patch?: string;
+  skill_icon?: string;
+  skill_name?: string;
+  skill_description?: string;
+  skill_description_rich?: string;
+}
+
+export interface FanxiuDoupoTDBuffFlowFunction {
+  name?: string;
+  categories?: string[];
+  calls?: string[];
+  adds_buff?: boolean;
+  removes_buff?: boolean;
+  uses_random_gate?: boolean;
+  uses_skill_filter?: boolean;
+  uses_target_buff_check?: boolean;
+  uses_friend_target_expansion?: boolean;
+}
+
+export interface FanxiuDoupoTDBuffFlowRuntime {
+  hint?: string;
+  categories?: string[];
+  function_count?: number;
+  flow_step_count?: number;
+  key_functions?: FanxiuDoupoTDBuffFlowFunction[];
+}
+
+export interface FanxiuDoupoTDBuffRuntime {
+  id?: string | number;
+  source_kind?: string;
+  found?: boolean;
+  type?: string | number;
+  type_name?: string;
+  buff_class?: string;
+  target_type?: string | number;
+  target_type_name?: string;
+  trigger_type?: string;
+  layer_type?: string | number;
+  layer_type_name?: string;
+  duration?: string | number;
+  interval?: string | number;
+  damage?: string | number;
+  add_attr?: string;
+  timeline_id?: string | number;
+  trigger_buff_ids?: Array<string | number>;
+  kill_add_buff_ids?: Array<string | number>;
+  buff_end_skill_ids?: Array<string | number>;
+  semantic_flags?: string[];
+  flow?: FanxiuDoupoTDBuffFlowRuntime;
+}
+
+export interface FanxiuDoupoTDSkillRuntime {
+  timeline_ids?: Array<string | number>;
+  buff_ids?: Array<string | number>;
+  secondary_buff_ids?: Array<string | number>;
+  buffs?: FanxiuDoupoTDBuffRuntime[];
+}
+
+export interface FanxiuDoupoTDLogicSkill {
+  id?: string | number;
+  skillType?: string | number;
+  level?: string | number;
+  baseSkill?: string | number;
+  timeLineId?: string | number;
+  pvpTimeLineId?: string | number;
+  damage?: string | number;
+  cd?: string | number;
+  duration?: string | number;
+  interval?: string | number;
+  range?: string | number;
+  atkRange?: string | number;
+  buffId?: string | number | Array<string | number>;
+  extSkill?: string | number;
+  bulletCount?: string | number;
+  bulletSpeed?: string | number;
+  bulletDuration?: string | number;
+  maxHit?: string | number;
+  runtime?: FanxiuDoupoTDSkillRuntime;
+}
+
+export interface FanxiuDoupoTDSkillStrength {
+  id?: string | number;
+  quality_name?: string;
+  level?: string | number;
+  unlock_description?: string;
+  skill_patch?: string;
+  skill_icon?: string;
+  skill_name?: string;
+  skill_description?: string;
+  skill_description_rich?: string;
+}
+
+export interface FanxiuDoupoTDLevelSummary {
+  level_count?: number;
+  min_level?: string | number;
+  max_level?: string | number;
+  level1_attrs?: Record<string, string | number>;
+  max_level_attrs?: Record<string, string | number>;
+  default_skill?: Array<string | number>;
+  default_skill_enhance?: Array<string | number>;
+}
+
+export interface FanxiuDoupoTDPartnerCard {
+  id: string | number;
+  name: string;
+  different?: string;
+  position_type?: string | number;
+  career_type?: string | number;
+  positioning?: string;
+  model?: string | number;
+  quality?: string | number;
+  icon?: string;
+  big_icon?: string;
+  head_icon?: string;
+  skill_icon?: string;
+  skill_name?: string;
+  skill_description?: string;
+  skill_description_rich?: string;
+  skill_group?: string | number;
+  unlock_level?: string | number;
+  unlock_level1?: string | number;
+  unlock_condition?: string;
+  unlock_description?: string;
+  unlock_description1?: string;
+  sort?: string | number;
+  can_battle?: string | number;
+  damage_proportion?: string | number;
+  change_ration?: string | number;
+  light_icon?: string;
+  draw_effect?: string;
+  skills?: FanxiuDoupoTDSkill[];
+  logic_skills?: FanxiuDoupoTDLogicSkill[];
+  strengths?: FanxiuDoupoTDSkillStrength[];
+  level_summary?: FanxiuDoupoTDLevelSummary;
+  compose_cards?: FanxiuDoupoTDComposeCard[];
+  draw_sources?: FanxiuDoupoTDDrawSource[];
+  compose_quality_sources?: FanxiuDoupoTDComposeQualitySource[];
+  compose_progress_rewards?: FanxiuDoupoTDComposeProgressReward[];
+  compose_book_entries?: FanxiuDoupoTDComposeBookEntry[];
+  compose_card_count?: number;
+  skill_count?: number;
+  strength_count?: number;
+  terms?: string[];
+}
+
+export interface FanxiuDoupoTDPartnerSearchItem {
+  id: string | number;
+  name: string;
+  icon?: string;
+  head_icon?: string;
+  big_icon?: string;
+  positioning?: string;
+  career_type?: string | number;
+  position_type?: string | number;
+  skill_name?: string;
+  skill_description_preview?: string;
+  compose_card_count?: number;
+  skill_count?: number;
+  strength_count?: number;
+  terms?: string[];
+  score?: number;
+}
+
+export interface FanxiuDoupoTDStats {
+  partner_count?: number;
+  compose_card_count?: number;
+  skill_show_count?: number;
+  skill_logic_count?: number;
+  strength_count?: number;
+  level_row_count?: number;
+  draw_card_count?: number;
+  compose_progress_count?: number;
+  compose_book_count?: number;
+  quality_count?: number;
+}
+
+export interface FanxiuDoupoTDPartnerSearchResponse {
+  query: string;
+  limit: number;
+  offset: number;
+  total: number;
+  catalog_path?: string;
+  stats: FanxiuDoupoTDStats;
+  items: FanxiuDoupoTDPartnerSearchItem[];
+}
+
+export interface FanxiuDoupoTDPartnerCardResponse {
+  catalog_path: string;
+  card: FanxiuDoupoTDPartnerCard;
+}
+
+export interface FanxiuDigitDoorBuffRuntime {
+  id?: string | number;
+  type?: string | number;
+  target_type?: string | number;
+  trigger_type?: string;
+  duration?: string | number;
+  interval?: string | number | null;
+  eff_type?: string | number;
+  damage_raw?: string | number | null;
+  damage_text?: string;
+  add_attr?: string | null;
+  shield?: string | number | null;
+  slow_down?: string | number | null;
+  timeline_id?: string | number | null;
+}
+
+export interface FanxiuDigitDoorSkillRuntime {
+  skill_type?: string | number;
+  skill_group?: string | number;
+  timeline_id?: string | number;
+  pvp_timeline_id?: string | number;
+  cd_ms?: string | number;
+  damage_raw?: string | number;
+  damage_text?: string;
+  duration_ms?: string | number;
+  range?: string | number;
+  buff_ids?: Array<string | number>;
+  buffs?: FanxiuDigitDoorBuffRuntime[];
+}
+
+export interface FanxiuDigitDoorSkill {
+  id?: string | number;
+  partner_id?: string | number;
+  belong_id?: string | number;
+  base_skill?: string | number | null;
+  level_show?: string | number;
+  skill_title?: string;
+  skill_title_plain?: string;
+  skill_name?: string;
+  skill_description?: string;
+  skill_description_plain?: string;
+  skill_icon?: string;
+  skill_patch?: string;
+  show_condition?: string;
+  runtime?: FanxiuDigitDoorSkillRuntime;
+}
+
+export interface FanxiuDigitDoorLogicSkill {
+  id?: string | number;
+  char_id?: string | number;
+  skill_type?: string | number;
+  skill_group?: string | number;
+  level?: string | number;
+  timeline_id?: string | number;
+  pvp_timeline_id?: string | number;
+  cd_ms?: string | number;
+  damage_raw?: string | number;
+  damage_text?: string;
+  duration_ms?: string | number;
+  range?: string | number;
+  bullet_count?: string | number | null;
+  hit_num?: string | number | null;
+  buff_ids?: Array<string | number>;
+  buffs?: FanxiuDigitDoorBuffRuntime[];
+}
+
+export interface FanxiuDigitDoorSkillEnhanceEffect {
+  id?: string | number;
+  char_id?: string | number;
+  skill?: string | number;
+  skill_type?: string | number;
+  buff_id?: string | number | null;
+  buff?: FanxiuDigitDoorBuffRuntime | null;
+  ext_release_count?: string | number | null;
+  ext_hit_num?: string | number | null;
+  ext_penetrate?: string | number | null;
+  ext_atk_distance?: string | number | null;
+  mutex_timeline?: string | number | null;
+}
+
+export interface FanxiuDigitDoorDoorEffect {
+  id?: string | number;
+  char_id?: string | number;
+  customized_type?: string | number;
+  door_type?: string | number;
+  door_type_label?: string;
+  door_effect?: string;
+  effect_show?: string;
+  effect_show_plain?: string;
+  show_tips?: string;
+  show_tips_plain?: string;
+  refresh_weights?: string | number;
+  put_back?: string | number;
+  skill_ids?: Array<string | number>;
+  skills?: FanxiuDigitDoorSkill[];
+}
+
+export interface FanxiuDigitDoorLevelMilestone {
+  level?: string | number;
+  attrs?: Record<string, string | number>;
+  default_skill?: Array<string | number>;
+  default_skill_enhance?: Array<string | number>;
+}
+
+export interface FanxiuDigitDoorCharacterCard {
+  id: string | number;
+  name: string;
+  icon?: string;
+  head_icon?: string;
+  head_icon_alt?: string;
+  big_icon?: string;
+  bg_icon?: string;
+  quality?: string | number;
+  quality_label?: string;
+  positioning?: string;
+  position_type?: string | number;
+  career_type?: string | number;
+  skill_icon?: string;
+  skill_name?: string;
+  skill_description?: string;
+  skill_description_plain?: string;
+  unlock_level?: string | number;
+  sort?: string | number;
+  model?: string | number;
+  can_battle?: string | number;
+  min_level?: string | number;
+  max_level?: string | number;
+  level_count?: number;
+  level_milestones?: FanxiuDigitDoorLevelMilestone[];
+  skill_count?: number;
+  logic_skill_count?: number;
+  skill_enhance_effect_count?: number;
+  door_effect_count?: number;
+  skills?: FanxiuDigitDoorSkill[];
+  logic_skills?: FanxiuDigitDoorLogicSkill[];
+  skill_enhance_effects?: FanxiuDigitDoorSkillEnhanceEffect[];
+  door_effects?: FanxiuDigitDoorDoorEffect[];
+  terms?: string[];
+}
+
+export interface FanxiuDigitDoorCharacterSearchItem {
+  id: string | number;
+  name: string;
+  icon?: string;
+  head_icon?: string;
+  big_icon?: string;
+  positioning?: string;
+  quality?: string | number;
+  quality_label?: string;
+  skill_name?: string;
+  skill_description_preview?: string;
+  skill_count?: number;
+  logic_skill_count?: number;
+  skill_enhance_effect_count?: number;
+  enhance_count?: number;
+  door_effect_count?: number;
+  terms?: string[];
+  score?: number;
+}
+
+export interface FanxiuDigitDoorEnhanceRef {
+  id?: string | number;
+  name?: string;
+  description?: string;
+  description_plain?: string;
+  char_id?: string | number;
+  type?: string | number;
+  type_label?: string;
+  quality?: string | number;
+  quality_label?: string;
+}
+
+export interface FanxiuDigitDoorEnhanceLevelRange {
+  char_id?: string | number;
+  min_level?: string | number;
+  max_level?: string | number;
+}
+
+export interface FanxiuDigitDoorEnhance {
+  id?: string | number;
+  char_id?: string | number;
+  name?: string;
+  type?: string | number;
+  type_label?: string;
+  quality?: string | number;
+  quality_label?: string;
+  description?: string;
+  description_plain?: string;
+  effect_id?: string | number;
+  limit?: string | number;
+  weight?: string | number;
+  condition_raw?: string;
+  conditions?: unknown[];
+  prereq_ids?: Array<string | number>;
+  prereqs?: FanxiuDigitDoorEnhanceRef[];
+  mutex_ids?: Array<string | number>;
+  mutexes?: FanxiuDigitDoorEnhanceRef[];
+  level_ranges?: FanxiuDigitDoorEnhanceLevelRange[];
+  unlock_show_ids?: Array<string | number>;
+  unlock_show?: FanxiuDigitDoorEnhanceRef[];
+}
+
+export interface FanxiuDigitDoorEnhanceGroup {
+  char_id?: string | number;
+  name?: string;
+  description?: string;
+  description_plain?: string;
+  enhance_count?: number;
+  enhances?: FanxiuDigitDoorEnhance[];
+}
+
+export interface FanxiuDigitDoorEnhanceGroupSearchItem {
+  id?: string | number;
+  char_id?: string | number;
+  name?: string;
+  description_preview?: string;
+  enhance_count?: number;
+  condition_count?: number;
+  prereq_count?: number;
+  mutex_count?: number;
+  level_range_count?: number;
+  enhance_preview?: string;
+  score?: number;
+}
+
+export interface FanxiuDigitDoorEnhanceGroupSearchResponse {
+  query: string;
+  limit: number;
+  offset: number;
+  total: number;
+  catalog_path?: string;
+  stats: FanxiuDigitDoorStats;
+  items: FanxiuDigitDoorEnhanceGroupSearchItem[];
+}
+
+export interface FanxiuDigitDoorEnhanceGroupResponse {
+  catalog_path: string;
+  group: FanxiuDigitDoorEnhanceGroup;
+}
+
+export interface FanxiuDigitDoorStats {
+  character_count?: number;
+  level_row_count?: number;
+  skill_show_count?: number;
+  skill_logic_count?: number;
+  skill_enhance_effect_count?: number;
+  enhance_count?: number;
+  door_effect_count?: number;
+  buff_count?: number;
+  level_config_count?: number;
+  door_refresh_count?: number;
+  stage_count?: number;
+  pre_level_reward_count?: number;
+  skill_enhance_group_count?: number;
+  door_skill_ref_count?: number;
+  door_skill_ref_unique_count?: number;
+}
+
+export interface FanxiuDigitDoorStageOption {
+  id?: string | number;
+  name?: string;
+  reward_count?: number;
+  level_count?: number;
+}
+
+export interface FanxiuDigitDoorRewardLinkedItem {
+  id?: string | number;
+  name?: string;
+  icon?: string;
+  small_icon?: string;
+  quality_name?: string;
+  description?: string;
+}
+
+export interface FanxiuDigitDoorRewardItem {
+  type?: string;
+  id?: string | number;
+  count?: string | number;
+  extra_mark?: string | number | null;
+  item?: FanxiuDigitDoorRewardLinkedItem | null;
+  raw?: string;
+  text?: string;
+  reward_result?: FanxiuDoupoTDRewardResultResolution;
+}
+
+export interface FanxiuDigitDoorMonsterRefreshSummary {
+  level?: string | number;
+  name?: string;
+  stage?: string | number;
+  layer?: string | number;
+  sub_layer?: string | number;
+  declared_monster_ids?: Array<string | number>;
+  declared_monster_names?: string[];
+  declared_monster_unresolved_ids?: Array<string | number>;
+  refresh_point_count?: string | number;
+  wave_count?: string | number;
+  first_wave?: string | number;
+  last_wave?: string | number;
+  refresh_monster_ids?: Array<string | number>;
+  refresh_monster_count?: string | number;
+  max_attack?: string | number;
+  max_hp?: string | number;
+  confirmed?: boolean;
+  report_path?: string;
+}
+
+export interface FanxiuDigitDoorMonsterRefreshPoint {
+  id?: string | number;
+  level?: string | number;
+  refresh_wave?: string | number;
+  game_type?: string | number;
+  object_type?: string | number;
+  monster_id?: string | number;
+  monster_name?: string;
+  base_id?: string | number;
+  monster_type?: string | number;
+  attack?: string | number;
+  hp?: string | number;
+  critical?: string | number;
+  anti_critical?: string | number;
+  atk_speed?: string | number;
+  increase_damage?: string | number;
+  reduce_damage?: string | number;
+  kill_exp?: string | number;
+  wave_time?: string | number;
+  refresh_total_num?: string | number;
+  refresh_time?: string | number;
+  refresh_num?: string | number;
+  refresh_offset_dis?: string | number;
+  refresh_type?: string | number;
+  refresh_pos?: string | number;
+  next_wave_condition?: string;
+  default_skill_ids?: string;
+  unresolved_skill_ids?: string;
+  value_projections?: FanxiuDigitDoorMonsterRefreshPointValueProjection[];
+  attribute_projections?: FanxiuDigitDoorMonsterRefreshPointAttributeProjection[];
+}
+
+export interface FanxiuDigitDoorMonsterRefreshPointValueProjection {
+  field?: string;
+  raw_value?: string | number;
+  projection?: string;
+  formula?: string;
+  meaning?: string;
+  runtime_slot?: string;
+}
+
+export interface FanxiuDigitDoorMonsterRefreshPointAttributeProjection {
+  field?: string;
+  raw_value?: string | number;
+  projection?: string;
+  formula?: string;
+  meaning?: string;
+  runtime_slot?: string;
+}
+
+export interface FanxiuDigitDoorMonsterSkill {
+  id?: string | number;
+  type?: string | number;
+  type_name?: string;
+  trigger?: string | number;
+  trigger_name?: string;
+  timeline_id?: string | number;
+  cd?: string | number;
+  damage?: string | number;
+  buff_id?: string | number;
+  release_count?: string | number;
+  duration?: string | number;
+  hit_time?: string | number;
+  distance?: string | number;
+  hp_limit?: string | number;
+  summon_monster_id?: string | number;
+  summon_hp?: string | number;
+  summon_attack?: string | number;
+  runtime_hint?: string;
+  value_projections?: FanxiuDigitDoorMonsterSkillValueProjection[];
+  timeline_effect?: FanxiuDigitDoorMonsterSkillTimelineEffect | null;
+  buff_effects?: FanxiuDigitDoorMonsterSkillBuffEffect[];
+}
+
+export interface FanxiuDigitDoorMonsterSkillValueProjection {
+  field?: string;
+  raw_value?: string | number;
+  projection?: string;
+  formula?: string;
+  meaning?: string;
+  runtime_slot?: string;
+}
+
+export interface FanxiuDigitDoorMonsterSkillTimelineEffect {
+  skill_id?: string | number;
+  timeline_id?: string | number;
+  missing_timeline_id?: string | number;
+  sections?: string[];
+  effect_classes?: string[];
+  effect_class_count?: string | number;
+  timeline_files?: string[];
+  class_flows?: FanxiuDigitDoorMonsterEffectClassFlow[];
+  skill_data_accessors?: FanxiuDigitDoorMonsterSkillDataAccessor[];
+}
+
+export interface FanxiuDigitDoorMonsterEffectClassFlow {
+  class_name?: string;
+  source_file?: string;
+  function_count?: string | number;
+  flow_step_count?: string | number;
+  flow_categories?: string[];
+  flow_labels?: string[];
+  flow_hint?: string;
+}
+
+export interface FanxiuDigitDoorMonsterSkillDataAccessor {
+  class_name?: string;
+  function?: string;
+  accessor?: string;
+  config_field?: string;
+  source_data_class?: string;
+  transform?: string;
+}
+
+export interface FanxiuDigitDoorMonsterSkillBuffEffect {
+  skill_id?: string | number;
+  buff_id?: string | number;
+  buff_type?: string | number;
+  buff_type_name?: string;
+  buff_path?: string;
+  target_type?: string | number;
+  target_type_name?: string;
+  trigger_type?: string;
+  trigger_type_name?: string;
+  duration?: string | number;
+  interval?: string | number;
+  eff_type?: string | number;
+  plies_limit?: string | number;
+  damage?: string | number;
+  add_attr?: string;
+  shield?: string | number;
+  slow_down?: string | number;
+  passive?: string | number | boolean;
+  buff_timeline_id?: string | number;
+  runtime_hint?: string;
+  formula_projections?: FanxiuDigitDoorMonsterSkillBuffFormula[];
+}
+
+export interface FanxiuDigitDoorMonsterSkillBuffFormula {
+  field?: string;
+  raw_value?: string | number;
+  projection?: string;
+  formula?: string;
+  meaning?: string;
+  runtime_slot?: string;
+}
+
+export interface FanxiuDigitDoorMonsterRefreshMonster {
+  monster_id?: string | number;
+  name?: string;
+  text_name?: string;
+  base_id?: string | number;
+  info_name?: string;
+  type?: string | number;
+  info_type?: string | number;
+  model_id?: string | number;
+  speed?: string | number;
+  move_stop_distance?: string | number;
+  default_skill_ids?: string;
+  default_skill_count?: string | number;
+  unresolved_skill_ids?: string;
+  restrained_count?: string | number;
+  drops?: string | number;
+  weight?: string | number;
+  reduce_damage?: string | number;
+  evasion?: string | number;
+  repel?: string | number;
+  description?: string;
+  unlock_level?: string | number;
+  sort?: string | number;
+  default_skills?: FanxiuDigitDoorMonsterSkill[];
+}
+
+export interface FanxiuDigitDoorMonsterRefreshDetail {
+  summary?: FanxiuDigitDoorMonsterRefreshSummary;
+  points?: FanxiuDigitDoorMonsterRefreshPoint[];
+  monsters?: FanxiuDigitDoorMonsterRefreshMonster[];
+  skills?: FanxiuDigitDoorMonsterSkill[];
+}
+
+export interface FanxiuDigitDoorDoorRefreshSummary {
+  level?: string | number;
+  point_count?: string | number;
+  first_refresh_time?: string | number;
+  last_refresh_time?: string | number;
+  side_counts?: string;
+  customized_types?: Array<string | number>;
+  effect_pool_preview?: string;
+  pool_semantic_preview?: string;
+  replacement_pool_preview?: string;
+  effect_option_preview?: string;
+  effect_pool_count?: string | number;
+  special_rule_count?: string | number;
+  max_hp?: string | number;
+  confirmed?: boolean;
+  report_path?: string;
+}
+
+export interface FanxiuDigitDoorDoorPoolSemantic {
+  customized_type?: string | number;
+  semantic_label?: string;
+  static_role?: string;
+  source_field?: string;
+  effect_count?: string | number;
+  effect_ids?: Array<string | number>;
+  effect_shows?: string;
+  character_count?: string | number;
+  character_ids?: Array<string | number>;
+  character_names?: string;
+}
+
+export interface FanxiuDigitDoorDoorSpecialRuleOption {
+  customized_type?: string | number;
+  semantic_label?: string;
+  rate?: string | number;
+  rate_text?: string;
+  source_field?: string;
+  effect_options?: FanxiuDigitDoorDoorEffectOption[];
+  effect_option_preview?: string;
+}
+
+export interface FanxiuDigitDoorDoorSpecialRule {
+  kind?: string;
+  customized_type?: string | number;
+  semantic_label?: string;
+  source_field?: string;
+  effect_options?: FanxiuDigitDoorDoorEffectOption[];
+  effect_option_preview?: string;
+  trigger_probability?: string | number;
+  trigger_probability_text?: string;
+  options?: FanxiuDigitDoorDoorSpecialRuleOption[];
+}
+
+export interface FanxiuDigitDoorDoorEffectOption {
+  effect_id?: string | number;
+  customized_type?: string | number;
+  door_type?: string | number;
+  door_type_label?: string;
+  refresh_weights?: string | number;
+  put_back?: string | number;
+  char_id?: string | number;
+  char_name?: string;
+  effect_show?: string;
+  show_tips?: string;
+  skill_ids?: Array<string | number>;
+  skill_count?: string | number;
+  skill_names?: Array<string | number>;
+  effect_hints?: string[];
+  effect_hint_preview?: string;
+  display_text?: string;
+}
+
+export interface FanxiuDigitDoorDoorEffectPoolPoint {
+  point_id?: string | number;
+  start_refresh_time?: string | number;
+  timing_projection?: string;
+  position_projection?: string;
+}
+
+export interface FanxiuDigitDoorDoorEffectPool {
+  customized_type?: string | number;
+  semantic_label?: string;
+  static_role?: string;
+  refresh_weight_summary?: string;
+  put_back_summary?: string;
+  weighted_effect_count?: string | number;
+  put_back_reusable_count?: string | number;
+  effect_count?: string | number;
+  effect_options?: FanxiuDigitDoorDoorEffectOption[];
+  source_fields?: string[];
+  source_labels?: string[];
+  rate_texts?: string[];
+  points?: FanxiuDigitDoorDoorEffectPoolPoint[];
+  point_count?: string | number;
+  point_time_preview?: string;
+  effect_option_preview?: string;
+}
+
+export interface FanxiuDigitDoorDoorRefreshPoint {
+  point_id?: string | number;
+  level?: string | number;
+  name?: string;
+  side?: string | number;
+  side_label?: string;
+  start_refresh_time?: string | number;
+  timing_projection?: string;
+  door_type?: string | number;
+  customized_type_values?: Array<string | number>;
+  effect_pool_count?: string | number;
+  effect_pool_ids?: Array<string | number>;
+  effect_pool_preview?: string;
+  effect_options?: FanxiuDigitDoorDoorEffectOption[];
+  effect_option_preview?: string;
+  pool_semantics?: FanxiuDigitDoorDoorPoolSemantic[];
+  pool_semantic_text?: string;
+  replacement_pool_semantics?: FanxiuDigitDoorDoorPoolSemantic[];
+  replacement_pool_semantic_text?: string;
+  positive_effect_count?: string | number;
+  negative_effect_count?: string | number;
+  debuff_door_type?: string | number;
+  probability?: string | number;
+  rate_list?: Array<string | number>;
+  spx_door_type?: Array<string | number>;
+  special_rule_projection?: string;
+  special_rules?: FanxiuDigitDoorDoorSpecialRule[];
+  special_rule_text?: string;
+  door_damage?: string | number;
+  attack?: string | number;
+  volume?: string | number;
+  hp?: string | number;
+  refresh_offset_dis?: string | number;
+  position_projection?: string;
+  server_boundary?: string;
+}
+
+export interface FanxiuDigitDoorDoorRefreshDetail {
+  summary?: FanxiuDigitDoorDoorRefreshSummary;
+  effect_pools?: FanxiuDigitDoorDoorEffectPool[];
+  points?: FanxiuDigitDoorDoorRefreshPoint[];
+}
+
+export interface FanxiuDigitDoorLevelSearchItem {
+  id: string | number;
+  name: string;
+  stage?: string | number;
+  group?: string | number;
+  layer?: string | number;
+  sub_layer?: string | number;
+  type?: string | number;
+  init_char?: string | number;
+  recommend_tips?: string;
+  reward_show_title?: string;
+  reward_preview?: string;
+  reward_count?: number;
+  door_count?: number;
+  customized_types?: Array<string | number>;
+  monster_count?: number;
+  score?: number;
+}
+
+export interface FanxiuDigitDoorStageReward {
+  id?: string | number;
+  name?: string;
+  name_plain?: string;
+  title?: string;
+  title_plain?: string;
+  rewardShow?: string[];
+  reward_items?: FanxiuDigitDoorRewardItem[];
+}
+
+export interface FanxiuDigitDoorLevelConfig extends FanxiuDigitDoorLevelSearchItem {
+  name_plain?: string;
+  recommend_tips_plain?: string;
+  monster?: Array<string | number>;
+  reward?: string[];
+  reward_items?: FanxiuDigitDoorRewardItem[];
+  reward_show_title_plain?: string;
+  scene_id?: string | number;
+  show_img?: string | number;
+  door_type_counts?: Record<string, number>;
+  first_door_times?: Array<string | number>;
+  door_refresh?: FanxiuDigitDoorDoorRefreshDetail | null;
+  monster_refresh?: FanxiuDigitDoorMonsterRefreshDetail | null;
+}
+
+export interface FanxiuDigitDoorLevelSearchResponse {
+  query: string;
+  stage?: string;
+  limit: number;
+  offset: number;
+  total: number;
+  catalog_path?: string;
+  stats: FanxiuDigitDoorStats;
+  stage_options?: FanxiuDigitDoorStageOption[];
+  items: FanxiuDigitDoorLevelSearchItem[];
+}
+
+export interface FanxiuDigitDoorLevelConfigResponse {
+  catalog_path: string;
+  stats: FanxiuDigitDoorStats;
+  stage?: FanxiuDigitDoorStageReward | null;
+  item: FanxiuDigitDoorLevelConfig;
+}
+
+export interface FanxiuDigitDoorCharacterSearchResponse {
+  query: string;
+  limit: number;
+  offset: number;
+  total: number;
+  catalog_path?: string;
+  stats: FanxiuDigitDoorStats;
+  items: FanxiuDigitDoorCharacterSearchItem[];
+}
+
+export interface FanxiuDigitDoorCharacterCardResponse {
+  catalog_path: string;
+  card: FanxiuDigitDoorCharacterCard;
+}
+
+export interface FanxiuDoupoTDRewardResultResolution {
+  runtime_reward_type?: string | number;
+  runtime_reward_type_name?: string;
+  code?: string | number;
+  amount?: string | number;
+  extra_mark?: string | number;
+  extra_mark_name?: string;
+  extra_mark_show_type?: string | number;
+  extra_mark_eff_name?: string;
+  resolution_rule?: string;
+  note?: string;
+}
+
+export interface FanxiuDoupoTDRewardConfigRewardItem {
+  source_table?: string;
+  config_id?: string | number;
+  different?: string | number;
+  stage?: string | number;
+  layer?: string | number;
+  sub_layer?: string | number;
+  reward_index?: string | number;
+  reward_type?: string;
+  item_id?: string | number;
+  item_name?: string;
+  quality_name?: string;
+  count?: string | number;
+  extra_mark?: string | number;
+  text?: string;
+  raw?: string;
+  reward_title?: string;
+  reward_result?: FanxiuDoupoTDRewardResultResolution;
+}
+
+export interface FanxiuDoupoTDRewardConfigSearchItem {
+  source_table: string;
+  config_id: string | number;
+  different?: string | number;
+  stage?: string | number;
+  layer?: string | number;
+  sub_layer?: string | number;
+  show_pos_id?: string | number;
+  name?: string;
+  reward_title?: string;
+  show_img?: string | number;
+  reward_field?: string;
+  reward_count?: string | number;
+  reward_item_ids?: string;
+  reward_items?: string;
+  raw_rewards?: string;
+  items?: FanxiuDoupoTDRewardConfigRewardItem[];
+}
+
+export interface FanxiuDoupoTDRewardConfigStats {
+  level_config_count?: number;
+  level_reward_row_count?: number;
+  prelevel_config_count?: number;
+  prelevel_reward_row_count?: number;
+  reward_item_row_count?: number;
+  unique_reward_item_count?: number;
+  monster_group_count?: number;
+  monster_drop_group_ref_count?: number;
+  evidence_row_count?: number;
+}
+
+export interface FanxiuDoupoTDRewardConfigSearchResponse {
+  source?: Record<string, string>;
+  stats: FanxiuDoupoTDRewardConfigStats;
+  total: number;
+  items: FanxiuDoupoTDRewardConfigSearchItem[];
+}
+
+export interface FanxiuDoupoTDRewardConfigResponse {
+  source?: Record<string, string>;
+  stats: FanxiuDoupoTDRewardConfigStats;
+  item: FanxiuDoupoTDRewardConfigSearchItem;
+}
+
 const normalizeFanxiuNote = (raw: any): NoteNode => {
   const normalizeTimestamp = (value: unknown) => {
     const numeric = typeof value === 'number' ? value : Number(value ?? 0);
@@ -2110,6 +3408,30 @@ export const getFanxiuProcesses = () => {
 export const getFanxiuPacketCaptureSnapshot = (dnsHosts: string[], resolveDns = true) => {
   return api
     .post<FanxiuPacketCaptureSnapshot>('/fanxiu/packet-capture/snapshot', { dns_hosts: dnsHosts, resolve_dns: resolveDns })
+    .then(res => res.data);
+};
+
+export const listFanxiuTcpCaptures = (limit = 50) => {
+  return api
+    .get<FanxiuTcpCaptureListResponse>('/fanxiu/packet-capture/tcp/captures', { params: { limit } })
+    .then(res => res.data);
+};
+
+export const listFanxiuTcpRecords = (limit = 50) => {
+  return api
+    .get<FanxiuTcpRecordListResponse>('/fanxiu/packet-capture/tcp/records', { params: { limit } })
+    .then(res => res.data);
+};
+
+export const listFanxiuTcpBusinessEntries = (params: { page?: number; page_size?: number; category?: string; protocol?: string; hidden_protocols?: string } = {}) => {
+  return api
+    .get<FanxiuTcpBusinessEntryListResponse>('/fanxiu/packet-capture/tcp/business-entries', { params })
+    .then(res => res.data);
+};
+
+export const decodeFanxiuTcpCapture = (payload: { pcap: string; stream?: number; server_host?: string; persist?: boolean }) => {
+  return api
+    .post<FanxiuTcpDecodeResponse>('/fanxiu/packet-capture/tcp/decode', payload, { timeout: 120000 })
     .then(res => res.data);
 };
 
@@ -2341,6 +3663,25 @@ export const getFanxiuGongfaHomeMakeXianShuFormulaCatalog = (
     .then(res => res.data);
 };
 
+export const getFanxiuGongfaSpecialFazeCatalog = (params: {
+  query?: string;
+  gid?: string | number | null;
+  effect_type?: string;
+  reason?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuGongfaSpecialFazeCatalogResponse>(
+      '/fanxiu/resources/hot-update/gongfa-special-faze-catalog',
+      {
+        params,
+        timeout: 60000,
+      }
+    )
+    .then(res => res.data);
+};
+
 export const searchFanxiuItemCards = (params: {
   query?: string;
   quality_name?: string;
@@ -2392,6 +3733,92 @@ export const searchFanxiuLingjieFeatureCards = (params: {
 export const getFanxiuLingjieFeatureCard = (gongfaId: string | number) => {
   return api
     .get<FanxiuLingjieFeatureCard>('/fanxiu/resources/gongfa/lingjie-feature-card', { params: { gongfa_id: gongfaId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuDoupoTDPartnerCards = (params: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuDoupoTDPartnerSearchResponse>('/fanxiu/resources/doupotd/partner-cards', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuDoupoTDPartnerCard = (partnerId: string | number) => {
+  return api
+    .get<FanxiuDoupoTDPartnerCardResponse>('/fanxiu/resources/doupotd/partner-card', { params: { partner_id: partnerId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuDigitDoorCharacterCards = (params: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuDigitDoorCharacterSearchResponse>('/fanxiu/resources/digitdoor/character-cards', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuDigitDoorCharacterCard = (characterId: string | number) => {
+  return api
+    .get<FanxiuDigitDoorCharacterCardResponse>('/fanxiu/resources/digitdoor/character-card', { params: { character_id: characterId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuDigitDoorLevelConfigs = (params: {
+  query?: string;
+  stage?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuDigitDoorLevelSearchResponse>('/fanxiu/resources/digitdoor/level-configs', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuDigitDoorLevelConfig = (levelId: string | number) => {
+  return api
+    .get<FanxiuDigitDoorLevelConfigResponse>('/fanxiu/resources/digitdoor/level-config', { params: { level_id: levelId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuDigitDoorEnhanceGroups = (params: {
+  query?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuDigitDoorEnhanceGroupSearchResponse>('/fanxiu/resources/digitdoor/enhance-groups', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuDigitDoorEnhanceGroup = (groupId: string | number) => {
+  return api
+    .get<FanxiuDigitDoorEnhanceGroupResponse>('/fanxiu/resources/digitdoor/enhance-group', { params: { group_id: groupId } })
+    .then(res => res.data);
+};
+
+export const searchFanxiuDoupoTDRewardConfigs = (params: {
+  query?: string;
+  source_table?: string;
+  stage?: string;
+  item_id?: string;
+  limit?: number;
+  offset?: number;
+} = {}) => {
+  return api
+    .get<FanxiuDoupoTDRewardConfigSearchResponse>('/fanxiu/resources/doupotd/reward-configs', { params })
+    .then(res => res.data);
+};
+
+export const getFanxiuDoupoTDRewardConfig = (sourceTable: string, configId: string | number) => {
+  return api
+    .get<FanxiuDoupoTDRewardConfigResponse>('/fanxiu/resources/doupotd/reward-config', {
+      params: { source_table: sourceTable, config_id: configId },
+    })
     .then(res => res.data);
 };
 
